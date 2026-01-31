@@ -9,6 +9,7 @@ A Claude Code plugin that learns from your conversations to provide personalized
 - **AXIOMMIND Architecture**: Follows 7 principles for reliable memory management
 - **Memory Graduation**: Promotes frequently-accessed memories through L0→L4 levels
 - **Evidence Alignment**: Verifies that responses are grounded in actual memories
+- **History Import**: Import existing Claude Code sessions to learn from past conversations
 
 ## Architecture
 
@@ -74,6 +75,14 @@ The plugin automatically hooks into Claude Code sessions:
 # View statistics
 /memory-stats
 
+# Import existing sessions
+/memory-import                           # Import current project
+/memory-import --all                     # Import all projects
+/memory-import --project /path/to/project
+
+# List available sessions
+/memory-list
+
 # Forget memories
 /memory-forget --session <id> --confirm
 ```
@@ -90,8 +99,48 @@ npx code-memory history --limit 20
 # Stats
 npx code-memory stats
 
+# Import existing sessions
+npx code-memory import              # Current project
+npx code-memory import --all        # All projects
+npx code-memory import --verbose    # With detailed output
+
+# List available sessions
+npx code-memory list
+
 # Process embeddings
 npx code-memory process
+```
+
+## Importing Existing Sessions
+
+The plugin can import your existing Claude Code conversation history to learn from past sessions:
+
+```bash
+# Import all sessions from the current project
+npx code-memory import
+
+# Import all sessions from all projects
+npx code-memory import --all
+
+# List available sessions first
+npx code-memory list
+```
+
+### What Gets Imported
+
+- **User prompts**: All your questions and requests
+- **Agent responses**: Claude's responses (truncated to 5000 chars)
+- **Session metadata**: Timestamps, session IDs
+
+### Deduplication
+
+The importer uses content hashing to detect duplicates. You can safely run import multiple times - duplicate messages will be skipped automatically.
+
+### Session File Location
+
+Claude Code stores sessions in:
+```
+~/.claude/projects/<project-hash>/<session-id>.jsonl
 ```
 
 ## Memory Levels

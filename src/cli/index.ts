@@ -6,6 +6,7 @@
 
 import { Command } from 'commander';
 import { getDefaultMemoryService } from '../services/memory-service.js';
+import { createSessionHistoryImporter } from '../services/session-history-importer.js';
 
 const program = new Command();
 
@@ -181,6 +182,127 @@ program
       await service.shutdown();
     } catch (error) {
       console.error('Process failed:', error);
+      process.exit(1);
+    }
+  });
+
+/**
+ * Import command - import existing Claude Code sessions
+ */
+program
+  .command('import')
+  .description('Import existing Claude Code conversation history')
+  .option('-p, --project <path>', 'Import from specific project path')
+  .option('-s, --session <file>', 'Import specific session file (JSONL)')
+  .option('-a, --all', 'Import all sessions from all projects')
+  .option('-l, --limit <number>', 'Limit messages per session')
+  .option('-v, --verbose', 'Show detailed progress')
+  .action(async (options) => {
+    const service = getDefaultMemoryService();
+    const importer = createSessionHistoryImporter(service);
+
+    try {
+      await service.initialize();
+
+      let result;
+
+      if (options.session) {
+        // Import specific session file
+        console.log(`\n📥 Importing session: ${options.session}\n`);
+        result = await importer.importSessionFile(options.session, {
+          projectPath: options.project,
+          limit: options.limit ? parseInt(options.limit) : undefined,
+          verbose: options.verbose
+        });
+      } else if (options.project) {
+        // Import all sessions from a project
+        console.log(`\n📥 Importing project: ${options.project}\n`);
+        result = await importer.importProject(options.project, {
+          limit: options.limit ? parseInt(options.limit) : undefined,
+          verbose: options.verbose
+        });
+      } else if (options.all) {
+        // Import all sessions from all projects
+        console.log('\n📥 Importing all sessions from all projects\n');
+        result = await importer.importAll({
+          limit: options.limit ? parseInt(options.limit) : undefined,
+          verbose: options.verbose
+        });
+      } else {
+        // Default: import current project
+        const cwd = process.cwd();
+        console.log(`\n📥 Importing sessions for current project: ${cwd}\n`);
+        result = await importer.importProject(cwd, {
+          projectPath: cwd,
+          limit: options.limit ? parseInt(options.limit) : undefined,
+          verbose: options.verbose
+        });
+      }
+
+      // Process embeddings
+      console.log('\n⏳ Processing embeddings...');
+      const embedCount = await service.processPendingEmbeddings();
+
+      // Show results
+      console.log('\n✅ Import Complete\n');
+      console.log(`Sessions processed: ${result.totalSessions}`);
+      console.log(`Total messages: ${result.totalMessages}`);
+      console.log(`Imported prompts: ${result.importedPrompts}`);
+      console.log(`Imported responses: ${result.importedResponses}`);
+      console.log(`Skipped duplicates: ${result.skippedDuplicates}`);
+      console.log(`Embeddings processed: ${embedCount}`);
+
+      if (result.errors.length > 0) {
+        console.log(`\n⚠️  Errors (${result.errors.length}):`);
+        for (const error of result.errors.slice(0, 5)) {
+          console.log(`  - ${error}`);
+        }
+        if (result.errors.length > 5) {
+          console.log(`  ... and ${result.errors.length - 5} more`);
+        }
+      }
+
+      await service.shutdown();
+    } catch (error) {
+      console.error('Import failed:', error);
+      process.exit(1);
+    }
+  });
+
+/**
+ * List command - list available sessions for import
+ */
+program
+  .command('list')
+  .description('List available Claude Code sessions')
+  .option('-p, --project <path>', 'Filter by project path')
+  .action(async (options) => {
+    const service = getDefaultMemoryService();
+    const importer = createSessionHistoryImporter(service);
+
+    try {
+      const sessions = await importer.listAvailableSessions(options.project);
+
+      console.log('\n📋 Available Sessions\n');
+      console.log(`Found ${sessions.length} session(s)\n`);
+
+      for (const session of sessions.slice(0, 20)) {
+        const date = session.modifiedAt.toISOString().split('T')[0];
+        const sizeKB = (session.size / 1024).toFixed(1);
+        console.log(`📝 ${session.sessionId.slice(0, 16)}...`);
+        console.log(`   Modified: ${date}`);
+        console.log(`   Size: ${sizeKB} KB`);
+        console.log(`   Path: ${session.filePath}`);
+        console.log('');
+      }
+
+      if (sessions.length > 20) {
+        console.log(`... and ${sessions.length - 20} more sessions`);
+      }
+
+      console.log('\nUse "code-memory import --session <path>" to import a specific session');
+    } catch (error) {
+      console.error('List failed:', error);
       process.exit(1);
     }
   });
