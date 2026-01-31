@@ -1,0 +1,102 @@
+/**
+ * Build script for code-memory plugin
+ * Uses esbuild for fast bundling
+ */
+
+import * as esbuild from 'esbuild';
+import * as fs from 'fs';
+import * as path from 'path';
+
+const outdir = 'dist';
+
+// Clean output directory
+if (fs.existsSync(outdir)) {
+  fs.rmSync(outdir, { recursive: true });
+}
+fs.mkdirSync(outdir, { recursive: true });
+
+// Common build options
+const commonOptions: esbuild.BuildOptions = {
+  bundle: true,
+  platform: 'node',
+  target: 'node18',
+  format: 'esm',
+  sourcemap: true,
+  external: [
+    '@lancedb/lancedb',
+    '@xenova/transformers',
+    'duckdb',
+    'commander',
+    'zod'
+  ],
+  banner: {
+    js: `import { createRequire } from 'module';
+import { fileURLToPath } from 'url';
+import { dirname } from 'path';
+const require = createRequire(import.meta.url);
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);`
+  }
+};
+
+async function build() {
+  console.log('🔨 Building code-memory plugin...\n');
+
+  // Build CLI
+  console.log('📦 Building CLI...');
+  await esbuild.build({
+    ...commonOptions,
+    entryPoints: ['src/cli/index.ts'],
+    outfile: 'dist/cli/index.js'
+  });
+
+  // Build hooks
+  console.log('📦 Building hooks...');
+  const hooks = [
+    'session-start',
+    'user-prompt-submit',
+    'stop',
+    'session-end'
+  ];
+
+  for (const hook of hooks) {
+    await esbuild.build({
+      ...commonOptions,
+      entryPoints: [`src/hooks/${hook}.ts`],
+      outfile: `dist/hooks/${hook}.js`
+    });
+  }
+
+  // Build core modules as library
+  console.log('📦 Building core modules...');
+  await esbuild.build({
+    ...commonOptions,
+    entryPoints: ['src/core/index.ts'],
+    outfile: 'dist/core/index.js'
+  });
+
+  // Build services
+  console.log('📦 Building services...');
+  await esbuild.build({
+    ...commonOptions,
+    entryPoints: ['src/services/memory-service.ts'],
+    outfile: 'dist/services/memory-service.js'
+  });
+
+  // Copy plugin manifest
+  console.log('📋 Copying plugin files...');
+  fs.cpSync('.claude-plugin', path.join(outdir, '.claude-plugin'), { recursive: true });
+
+  console.log('\n✅ Build complete!');
+  console.log(`\nOutput: ${outdir}/`);
+  console.log('  - cli/index.js');
+  console.log('  - hooks/*.js');
+  console.log('  - core/index.js');
+  console.log('  - services/memory-service.js');
+  console.log('  - .claude-plugin/');
+}
+
+build().catch((err) => {
+  console.error('Build failed:', err);
+  process.exit(1);
+});

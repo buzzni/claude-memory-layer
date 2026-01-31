@@ -1,0 +1,45 @@
+{
+  "name": "code-memory",
+  "version": "1.0.0",
+  "description": "Claude Code plugin that learns from conversations to provide personalized assistance",
+  "main": "dist/index.js",
+  "bin": {
+    "code-memory": "dist/cli/index.js"
+  },
+  "type": "module",
+  "scripts": {
+    "build": "tsx scripts/build.ts",
+    "dev": "tsx src/cli/index.ts",
+    "test": "vitest",
+    "test:coverage": "vitest --coverage",
+    "lint": "eslint src/**/*.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "claude-code",
+    "plugin",
+    "memory",
+    "learning",
+    "personalization",
+    "context"
+  ],
+  "author": "Buzzni",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@lancedb/lancedb": "^0.5.0",
+    "@xenova/transformers": "^2.17.0",
+    "commander": "^12.0.0",
+    "duckdb": "^0.10.0",
+    "zod": "^3.22.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "esbuild": "^0.20.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.4.0",
+    "vitest": "^1.4.0"
+  }
+}
