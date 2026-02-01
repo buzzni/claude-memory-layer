@@ -12,12 +12,28 @@ Code Memory는 Claude Code에서 사용자와 AI 간의 모든 대화를 저장�
 
 ## Features
 
+### Core Features
+
 - **Conversation Memory**: 사용자 프롬프트와 AI 응답 저장
 - **Semantic Search**: 벡터 임베딩을 통한 의미 기반 검색
 - **AXIOMMIND Architecture**: 7가지 원칙 기반 안정적 메모리 관리
 - **Memory Graduation**: L0→L4 단계별 메모리 승격
 - **Evidence Alignment**: 응답이 실제 기억에 기반했는지 검증
 - **History Import**: 기존 Claude Code 세션 기록 임포트
+
+### Advanced Features
+
+- **Citations System**: 메모리 출처 추적 (`[mem:abc123]` 형식)으로 검색 결과의 원본 확인 가능
+- **Endless Mode**: 세션 경계 없는 연속적 메모리 스트림, Biomimetic Memory Architecture 기반
+- **Entity-Edge Model**: entries/entities/edges 3-layer 모델로 데이터 관계 명시적 모델링
+- **Evidence Aligner V2**: Quote 기반 3단계 정렬 (exact → normalized → fuzzy)
+- **MCP Desktop Integration**: Claude Desktop용 MCP 서버로 CLI와 동일한 메모리 공유
+- **PostToolUse Hook**: 도구 실행 결과 (Read, Write, Bash 등) 캡처 및 저장
+- **Private Tags**: `<private>` 태그로 민감 정보를 명시적으로 제외
+- **Progressive Disclosure**: 3-Layer 검색 (인덱스 → 타임라인 → 상세)으로 토큰 효율화
+- **Task Entity System**: Task를 Entity로 승격하여 세션 간 상태 추적
+- **Vector Outbox V2**: Transactional Outbox 패턴으로 DuckDB-LanceDB 정합성 보장
+- **Web Viewer UI**: localhost:37777 대시보드로 실시간 메모리 모니터링
 
 ## 설치 방법
 
@@ -113,6 +129,128 @@ npx code-memory list --project /path/to/project
 npx code-memory process
 ```
 
+## Privacy 기능
+
+### Private Tags
+
+민감한 정보를 메모리에서 제외하려면 `<private>` 태그를 사용합니다:
+
+```markdown
+이 부분은 저장됩니다.
+
+<private>
+API_KEY=sk-xxxx
+SECRET_TOKEN=abc123
+이 내용은 메모리에 저장되지 않습니다.
+</private>
+
+이 부분도 저장됩니다.
+```
+
+저장 결과:
+```
+이 부분은 저장됩니다.
+[PRIVATE]
+이 부분도 저장됩니다.
+```
+
+### 자동 필터링
+
+다음 패턴은 자동으로 마스킹됩니다:
+- `password`, `api_key`, `secret`, `token`
+- Bearer 토큰
+- Private Key 블록
+
+## Citations (인용 시스템)
+
+검색 결과에는 인용 ID가 포함됩니다:
+
+```
+🔍 Search Results:
+
+#1 [mem:a7Bc3x] (score: 0.94)
+   "DuckDB를 사용하여 이벤트 소싱 패턴을..."
+   📅 2026-01-30 | 🔗 Session abc123
+```
+
+원본 확인:
+```bash
+code-memory show mem:a7Bc3x
+```
+
+## Endless Mode
+
+세션 경계 없이 연속적인 메모리 스트림을 유지합니다:
+
+```bash
+# Endless Mode 활성화
+code-memory config set mode endless
+
+# 상태 확인
+code-memory status
+
+# 출력 예시:
+# Mode: Endless
+# Working Set: 47 events (last 18 hours)
+# Continuity Score: 0.85 (seamless)
+# Consolidated: 23 memories
+```
+
+### 모드 비교
+
+| 기존 세션 모드 | Endless Mode |
+|---------------|-------------|
+| 명확한 시작/끝 | 연속적 스트림 |
+| 세션별 요약 | 점진적 통합 |
+| 재시작 시 빈 상태 | 이전 컨텍스트 유지 |
+
+## MCP Desktop Integration
+
+Claude Desktop에서 메모리 검색을 사용하려면:
+
+```bash
+# MCP 서버 설치
+code-memory mcp install
+
+# 또는 수동 설정: ~/Library/Application Support/Claude/claude_desktop_config.json
+{
+  "mcpServers": {
+    "code-memory": {
+      "command": "npx",
+      "args": ["code-memory-mcp"]
+    }
+  }
+}
+```
+
+### 제공되는 MCP 도구
+
+| 도구 | 설명 |
+|------|------|
+| `mem-search` | 메모리 검색 |
+| `mem-timeline` | 타임라인 조회 |
+| `mem-details` | 상세 정보 조회 |
+| `mem-stats` | 통계 조회 |
+
+## Web Viewer
+
+브라우저에서 메모리 대시보드를 확인할 수 있습니다:
+
+```bash
+# 웹 서버 시작
+code-memory web
+
+# 브라우저에서 접속
+# http://localhost:37777
+```
+
+### 주요 기능
+- 실시간 이벤트 스트림
+- 세션/프로젝트별 탐색
+- 벡터 검색 인터페이스
+- 저장소 통계 대시보드
+- Outbox 상태 모니터링
+
 ## 기존 대화 기록 임포트
 
 이미 Claude Code를 사용해왔다면, 기존 대화 기록을 임포트하여 바로 활용할 수 있습니다:
@@ -203,10 +341,12 @@ Embeddings processed: 342
 
 ## Architecture
 
+### System Overview
+
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                     Claude Code Hooks                       │
-│  SessionStart │ UserPromptSubmit │ Stop │ SessionEnd        │
+│  SessionStart │ UserPromptSubmit │ Stop │ PostToolUse │ End │
 └──────────────────────────┬──────────────────────────────────┘
                            │
                            ▼
@@ -214,6 +354,7 @@ Embeddings processed: 342
 │                    Memory Service                           │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐         │
 │  │  Retriever  │  │   Matcher   │  │  Graduation │         │
+│  │  Progressive│  │   Evidence  │  │   L0 → L4   │         │
 │  └─────────────┘  └─────────────┘  └─────────────┘         │
 └──────────────────────────┬──────────────────────────────────┘
                            │
@@ -221,8 +362,55 @@ Embeddings processed: 342
         ▼                                      ▼
 ┌───────────────┐                    ┌───────────────┐
 │  EventStore   │ ──── Outbox ────▶ │  VectorStore  │
-│   (DuckDB)    │                    │   (LanceDB)   │
+│   (DuckDB)    │    (V2 Pattern)   │   (LanceDB)   │
 └───────────────┘                    └───────────────┘
+```
+
+### Entity-Edge Model (3-Layer)
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                        edges                                 │
+│  ┌──────────┐    evidence_of    ┌──────────┐               │
+│  │  Entry   │ ─────────────────▶│  Entity  │               │
+│  │ (Fact,   │                   │ (Task,   │               │
+│  │ Decision)│                   │ Artifact)│               │
+│  └──────────┘                   └──────────┘               │
+│       │                              │                       │
+│       │ derived_from                 │ blocked_by           │
+│       ▼                              ▼                       │
+│  ┌──────────┐                   ┌──────────┐               │
+│  │  Entry   │                   │  Entity  │               │
+│  └──────────┘                   └──────────┘               │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Progressive Disclosure (토큰 효율화)
+
+```
+Layer 1: Search Index (~50-100 tokens/result)
+    │     { id, summary, score }
+    │
+    └──▶ Layer 2: Timeline Context (~200 tokens)
+              │     시간순 전후 맥락
+              │
+              └──▶ Layer 3: Full Details (~500-1000 tokens)
+                        선택된 항목만 전체 로드
+```
+
+### MCP Integration
+
+```
+┌─────────────────────┐         ┌─────────────────────┐
+│   Claude Desktop    │◀────────│    code-memory-mcp  │
+│   (MCP Client)      │  stdio  │    (MCP Server)     │
+└─────────────────────┘         └──────────┬──────────┘
+                                           │
+                                           ▼
+                                ┌─────────────────────┐
+                                │   Shared Storage    │
+                                │  ~/.claude-code/    │
+                                └─────────────────────┘
 ```
 
 ## AXIOMMIND 7 원칙
@@ -278,6 +466,54 @@ npm run dev
 - **Zod**: 런타임 타입 검증
 - **Commander**: CLI 인터페이스
 - **TypeScript**: 타입 안전한 코드
+- **Bun**: HTTP 서버 (Web Viewer)
+- **Hono**: 경량 라우터
+- **MCP SDK**: Claude Desktop 통합
+
+## Specification Documents
+
+상세 설계 문서는 `specs/` 디렉토리에서 확인할 수 있습니다:
+
+| 문서 | 설명 |
+|------|------|
+| [citations-system](specs/citations-system/spec.md) | 메모리 인용 시스템 |
+| [endless-mode](specs/endless-mode/spec.md) | 연속 세션 모드 |
+| [entity-edge-model](specs/entity-edge-model/spec.md) | 3-Layer 데이터 모델 |
+| [evidence-aligner-v2](specs/evidence-aligner-v2/spec.md) | 증거 정렬 시스템 |
+| [mcp-desktop-integration](specs/mcp-desktop-integration/spec.md) | MCP 서버 통합 |
+| [post-tool-use-hook](specs/post-tool-use-hook/spec.md) | 도구 사용 기록 |
+| [private-tags](specs/private-tags/spec.md) | 프라이버시 태그 |
+| [progressive-disclosure](specs/progressive-disclosure/spec.md) | 토큰 효율화 검색 |
+| [task-entity-system](specs/task-entity-system/spec.md) | Task Entity 관리 |
+| [vector-outbox-v2](specs/vector-outbox-v2/spec.md) | Transactional Outbox |
+| [web-viewer-ui](specs/web-viewer-ui/spec.md) | 웹 대시보드 |
+
+## Roadmap
+
+### Phase 1: Core (완료)
+- [x] Event Store (DuckDB)
+- [x] Vector Store (LanceDB)
+- [x] Memory Graduation (L0→L4)
+- [x] Evidence Alignment
+- [x] History Import
+
+### Phase 2: Advanced Features (진행 중)
+- [ ] Citations System
+- [ ] Endless Mode
+- [ ] Entity-Edge Model
+- [ ] Evidence Aligner V2
+- [ ] Private Tags
+
+### Phase 3: Integration
+- [ ] MCP Desktop Integration
+- [ ] Web Viewer UI
+- [ ] PostToolUse Hook
+- [ ] Progressive Disclosure
+
+### Phase 4: Optimization
+- [ ] Vector Outbox V2
+- [ ] Task Entity System
+- [ ] Performance Tuning
 
 ## License
 
