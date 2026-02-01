@@ -110,6 +110,143 @@ export class EventStore {
       )
     `);
 
+    // ============================================================
+    // Entity-Edge Model Tables
+    // ============================================================
+
+    // Entries (immutable memory units)
+    await this.db.run(`
+      CREATE TABLE IF NOT EXISTS entries (
+        entry_id VARCHAR PRIMARY KEY,
+        created_ts TIMESTAMP NOT NULL,
+        entry_type VARCHAR NOT NULL,
+        title VARCHAR NOT NULL,
+        content_json JSON NOT NULL,
+        stage VARCHAR NOT NULL DEFAULT 'raw',
+        status VARCHAR DEFAULT 'active',
+        superseded_by VARCHAR,
+        build_id VARCHAR,
+        evidence_json JSON,
+        canonical_key VARCHAR,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // Entities (task/condition/artifact)
+    await this.db.run(`
+      CREATE TABLE IF NOT EXISTS entities (
+        entity_id VARCHAR PRIMARY KEY,
+        entity_type VARCHAR NOT NULL,
+        canonical_key VARCHAR NOT NULL,
+        title VARCHAR NOT NULL,
+        stage VARCHAR NOT NULL DEFAULT 'raw',
+        status VARCHAR NOT NULL DEFAULT 'active',
+        current_json JSON NOT NULL,
+        title_norm VARCHAR,
+        search_text VARCHAR,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // Entity aliases for canonical key lookup
+    await this.db.run(`
+      CREATE TABLE IF NOT EXISTS entity_aliases (
+        entity_type VARCHAR NOT NULL,
+        canonical_key VARCHAR NOT NULL,
+        entity_id VARCHAR NOT NULL,
+        is_primary BOOLEAN DEFAULT FALSE,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY(entity_type, canonical_key)
+      )
+    `);
+
+    // Edges (relationships between entries/entities)
+    await this.db.run(`
+      CREATE TABLE IF NOT EXISTS edges (
+        edge_id VARCHAR PRIMARY KEY,
+        src_type VARCHAR NOT NULL,
+        src_id VARCHAR NOT NULL,
+        rel_type VARCHAR NOT NULL,
+        dst_type VARCHAR NOT NULL,
+        dst_id VARCHAR NOT NULL,
+        meta_json JSON,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // ============================================================
+    // Vector Outbox V2 Table
+    // ============================================================
+
+    await this.db.run(`
+      CREATE TABLE IF NOT EXISTS vector_outbox (
+        job_id VARCHAR PRIMARY KEY,
+        item_kind VARCHAR NOT NULL,
+        item_id VARCHAR NOT NULL,
+        embedding_version VARCHAR NOT NULL,
+        status VARCHAR NOT NULL DEFAULT 'pending',
+        retry_count INT DEFAULT 0,
+        error VARCHAR,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(item_kind, item_id, embedding_version)
+      )
+    `);
+
+    // ============================================================
+    // Build Runs & Metrics Tables
+    // ============================================================
+
+    await this.db.run(`
+      CREATE TABLE IF NOT EXISTS build_runs (
+        build_id VARCHAR PRIMARY KEY,
+        started_at TIMESTAMP NOT NULL,
+        finished_at TIMESTAMP,
+        extractor_model VARCHAR NOT NULL,
+        extractor_prompt_hash VARCHAR NOT NULL,
+        embedder_model VARCHAR NOT NULL,
+        embedding_version VARCHAR NOT NULL,
+        idris_version VARCHAR NOT NULL,
+        schema_version VARCHAR NOT NULL,
+        status VARCHAR NOT NULL DEFAULT 'running',
+        error VARCHAR
+      )
+    `);
+
+    await this.db.run(`
+      CREATE TABLE IF NOT EXISTS pipeline_metrics (
+        id VARCHAR PRIMARY KEY,
+        ts TIMESTAMP NOT NULL,
+        stage VARCHAR NOT NULL,
+        latency_ms DOUBLE NOT NULL,
+        success BOOLEAN NOT NULL,
+        error VARCHAR,
+        session_id VARCHAR
+      )
+    `);
+
+    // ============================================================
+    // Create Indexes
+    // ============================================================
+
+    // Entry indexes
+    await this.db.run(`CREATE INDEX IF NOT EXISTS idx_entries_type ON entries(entry_type)`);
+    await this.db.run(`CREATE INDEX IF NOT EXISTS idx_entries_stage ON entries(stage)`);
+    await this.db.run(`CREATE INDEX IF NOT EXISTS idx_entries_canonical ON entries(canonical_key)`);
+
+    // Entity indexes
+    await this.db.run(`CREATE INDEX IF NOT EXISTS idx_entities_type_key ON entities(entity_type, canonical_key)`);
+    await this.db.run(`CREATE INDEX IF NOT EXISTS idx_entities_status ON entities(status)`);
+
+    // Edge indexes
+    await this.db.run(`CREATE INDEX IF NOT EXISTS idx_edges_src ON edges(src_id, rel_type)`);
+    await this.db.run(`CREATE INDEX IF NOT EXISTS idx_edges_dst ON edges(dst_id, rel_type)`);
+    await this.db.run(`CREATE INDEX IF NOT EXISTS idx_edges_rel ON edges(rel_type)`);
+
+    // Outbox indexes
+    await this.db.run(`CREATE INDEX IF NOT EXISTS idx_outbox_status ON vector_outbox(status)`);
+
     this.initialized = true;
   }
 
