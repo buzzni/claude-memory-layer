@@ -6,6 +6,7 @@
 import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs';
+import * as crypto from 'crypto';
 
 import { EventStore } from '../core/event-store.js';
 import { VectorStore } from '../core/vector-store.js';
@@ -19,8 +20,22 @@ import type {
   AppendResult,
   MemoryEvent,
   Config,
-  ConfigSchema
+  ConfigSchema,
+  ToolObservationPayload,
+  MemoryMode,
+  EndlessModeConfig,
+  EndlessModeConfigSchema,
+  WorkingSet,
+  ConsolidatedMemory,
+  EndlessModeStatus,
+  ContextSnapshot,
+  ContinuityScore
 } from '../core/types.js';
+import { createToolObservationEmbedding } from '../core/metadata-extractor.js';
+import { WorkingSetStore, createWorkingSetStore } from '../core/working-set-store.js';
+import { ConsolidatedStore, createConsolidatedStore } from '../core/consolidated-store.js';
+import { ConsolidationWorker, createConsolidationWorker } from '../core/consolidation-worker.js';
+import { ContinuityManager, createContinuityManager } from '../core/continuity-manager.js';
 
 export interface MemoryServiceConfig {
   storagePath: string;
@@ -36,6 +51,13 @@ export class MemoryService {
   private readonly graduation: GraduationPipeline;
   private vectorWorker: VectorWorker | null = null;
   private initialized = false;
+
+  // Endless Mode components
+  private workingSetStore: WorkingSetStore | null = null;
+  private consolidatedStore: ConsolidatedStore | null = null;
+  private consolidationWorker: ConsolidationWorker | null = null;
+  private continuityManager: ContinuityManager | null = null;
+  private endlessMode: MemoryMode = 'session';
 
   constructor(config: MemoryServiceConfig) {
     const storagePath = this.expandPath(config.storagePath);
@@ -78,6 +100,13 @@ export class MemoryService {
       this.embedder
     );
     this.vectorWorker.start();
+
+    // Load endless mode setting
+    const savedMode = await this.eventStore.getEndlessConfig('mode') as MemoryMode | null;
+    if (savedMode === 'endless') {
+      this.endlessMode = 'endless';
+      await this.initializeEndlessMode();
+    }
 
     this.initialized = true;
   }
@@ -184,6 +213,42 @@ export class MemoryService {
   }
 
   /**
+   * Store a tool observation
+   */
+  async storeToolObservation(
+    sessionId: string,
+    payload: ToolObservationPayload
+  ): Promise<AppendResult> {
+    await this.initialize();
+
+    // Create content for storage (JSON stringified payload)
+    const content = JSON.stringify(payload);
+
+    const result = await this.eventStore.append({
+      eventType: 'tool_observation',
+      sessionId,
+      timestamp: new Date(),
+      content,
+      metadata: {
+        toolName: payload.toolName,
+        success: payload.success
+      }
+    });
+
+    // Create embedding content (optimized for search)
+    if (result.success && !result.isDuplicate) {
+      const embeddingContent = createToolObservationEmbedding(
+        payload.toolName,
+        payload.metadata || {},
+        payload.success
+      );
+      await this.eventStore.enqueueForEmbedding(result.eventId, embeddingContent);
+    }
+
+    return result;
+  }
+
+  /**
    * Retrieve relevant memories for a query
    */
   async retrieveMemories(
@@ -271,10 +336,262 @@ export class MemoryService {
     return header + result.context;
   }
 
+  // ============================================================
+  // Endless Mode Methods
+  // ============================================================
+
+  /**
+   * Get the default endless mode config
+   */
+  private getDefaultEndlessConfig(): EndlessModeConfig {
+    return {
+      enabled: true,
+      workingSet: {
+        maxEvents: 100,
+        timeWindowHours: 24,
+        minRelevanceScore: 0.5
+      },
+      consolidation: {
+        triggerIntervalMs: 3600000, // 1 hour
+        triggerEventCount: 100,
+        triggerIdleMs: 1800000, // 30 minutes
+        useLLMSummarization: false
+      },
+      continuity: {
+        minScoreForSeamless: 0.7,
+        topicDecayHours: 48
+      }
+    };
+  }
+
+  /**
+   * Initialize Endless Mode components
+   */
+  async initializeEndlessMode(): Promise<void> {
+    const config = await this.getEndlessConfig();
+
+    this.workingSetStore = createWorkingSetStore(this.eventStore, config);
+    this.consolidatedStore = createConsolidatedStore(this.eventStore);
+    this.consolidationWorker = createConsolidationWorker(
+      this.workingSetStore,
+      this.consolidatedStore,
+      config
+    );
+    this.continuityManager = createContinuityManager(this.eventStore, config);
+
+    // Start consolidation worker
+    this.consolidationWorker.start();
+  }
+
+  /**
+   * Get Endless Mode configuration
+   */
+  async getEndlessConfig(): Promise<EndlessModeConfig> {
+    const savedConfig = await this.eventStore.getEndlessConfig('config') as EndlessModeConfig | null;
+    return savedConfig || this.getDefaultEndlessConfig();
+  }
+
+  /**
+   * Set Endless Mode configuration
+   */
+  async setEndlessConfig(config: Partial<EndlessModeConfig>): Promise<void> {
+    const current = await this.getEndlessConfig();
+    const merged = { ...current, ...config };
+    await this.eventStore.setEndlessConfig('config', merged);
+  }
+
+  /**
+   * Set memory mode (session or endless)
+   */
+  async setMode(mode: MemoryMode): Promise<void> {
+    await this.initialize();
+
+    if (mode === this.endlessMode) return;
+
+    this.endlessMode = mode;
+    await this.eventStore.setEndlessConfig('mode', mode);
+
+    if (mode === 'endless') {
+      await this.initializeEndlessMode();
+    } else {
+      // Stop endless mode components
+      if (this.consolidationWorker) {
+        this.consolidationWorker.stop();
+        this.consolidationWorker = null;
+      }
+      this.workingSetStore = null;
+      this.consolidatedStore = null;
+      this.continuityManager = null;
+    }
+  }
+
+  /**
+   * Get current memory mode
+   */
+  getMode(): MemoryMode {
+    return this.endlessMode;
+  }
+
+  /**
+   * Check if endless mode is active
+   */
+  isEndlessModeActive(): boolean {
+    return this.endlessMode === 'endless';
+  }
+
+  /**
+   * Add event to Working Set (Endless Mode)
+   */
+  async addToWorkingSet(eventId: string, relevanceScore?: number): Promise<void> {
+    if (!this.workingSetStore) return;
+    await this.workingSetStore.add(eventId, relevanceScore);
+  }
+
+  /**
+   * Get the current Working Set
+   */
+  async getWorkingSet(): Promise<WorkingSet | null> {
+    if (!this.workingSetStore) return null;
+    return this.workingSetStore.get();
+  }
+
+  /**
+   * Search consolidated memories
+   */
+  async searchConsolidated(
+    query: string,
+    options?: { topK?: number }
+  ): Promise<ConsolidatedMemory[]> {
+    if (!this.consolidatedStore) return [];
+    return this.consolidatedStore.search(query, options);
+  }
+
+  /**
+   * Get all consolidated memories
+   */
+  async getConsolidatedMemories(limit?: number): Promise<ConsolidatedMemory[]> {
+    if (!this.consolidatedStore) return [];
+    return this.consolidatedStore.getAll({ limit });
+  }
+
+  /**
+   * Calculate continuity score for current context
+   */
+  async calculateContinuity(
+    content: string,
+    metadata?: { files?: string[]; entities?: string[] }
+  ): Promise<ContinuityScore | null> {
+    if (!this.continuityManager) return null;
+
+    const snapshot = this.continuityManager.createSnapshot(
+      crypto.randomUUID(),
+      content,
+      metadata
+    );
+
+    return this.continuityManager.calculateScore(snapshot);
+  }
+
+  /**
+   * Record activity (for consolidation idle trigger)
+   */
+  recordActivity(): void {
+    if (this.consolidationWorker) {
+      this.consolidationWorker.recordActivity();
+    }
+  }
+
+  /**
+   * Force a consolidation run
+   */
+  async forceConsolidation(): Promise<number> {
+    if (!this.consolidationWorker) return 0;
+    return this.consolidationWorker.forceRun();
+  }
+
+  /**
+   * Get Endless Mode status
+   */
+  async getEndlessModeStatus(): Promise<EndlessModeStatus> {
+    await this.initialize();
+
+    let workingSetSize = 0;
+    let continuityScore = 0.5;
+    let consolidatedCount = 0;
+    let lastConsolidation: Date | null = null;
+
+    if (this.workingSetStore) {
+      workingSetSize = await this.workingSetStore.count();
+      const workingSet = await this.workingSetStore.get();
+      continuityScore = workingSet.continuityScore;
+    }
+
+    if (this.consolidatedStore) {
+      consolidatedCount = await this.consolidatedStore.count();
+      lastConsolidation = await this.consolidatedStore.getLastConsolidationTime();
+    }
+
+    return {
+      mode: this.endlessMode,
+      workingSetSize,
+      continuityScore,
+      consolidatedCount,
+      lastConsolidation
+    };
+  }
+
+  /**
+   * Format Endless Mode context for Claude
+   */
+  async formatEndlessContext(query: string): Promise<string> {
+    if (!this.isEndlessModeActive()) {
+      return '';
+    }
+
+    const workingSet = await this.getWorkingSet();
+    const consolidated = await this.searchConsolidated(query, { topK: 3 });
+    const continuity = await this.calculateContinuity(query);
+
+    const parts: string[] = [];
+
+    // Continuity status
+    if (continuity) {
+      const statusEmoji = continuity.transitionType === 'seamless' ? '🔗' :
+                          continuity.transitionType === 'topic_shift' ? '↪️' : '🆕';
+      parts.push(`${statusEmoji} Context: ${continuity.transitionType} (score: ${continuity.score.toFixed(2)})`);
+    }
+
+    // Working set summary
+    if (workingSet && workingSet.recentEvents.length > 0) {
+      parts.push('\n## Recent Context (Working Set)');
+      const recent = workingSet.recentEvents.slice(0, 5);
+      for (const event of recent) {
+        const preview = event.content.slice(0, 80) + (event.content.length > 80 ? '...' : '');
+        const time = event.timestamp.toLocaleTimeString();
+        parts.push(`- ${time} [${event.eventType}] ${preview}`);
+      }
+    }
+
+    // Consolidated memories
+    if (consolidated.length > 0) {
+      parts.push('\n## Related Knowledge (Consolidated)');
+      for (const memory of consolidated) {
+        parts.push(`- ${memory.topics.slice(0, 3).join(', ')}: ${memory.summary.slice(0, 100)}...`);
+      }
+    }
+
+    return parts.join('\n');
+  }
+
   /**
    * Shutdown service
    */
   async shutdown(): Promise<void> {
+    // Stop endless mode components
+    if (this.consolidationWorker) {
+      this.consolidationWorker.stop();
+    }
+
     if (this.vectorWorker) {
       this.vectorWorker.stop();
     }

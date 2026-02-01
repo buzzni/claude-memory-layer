@@ -22,6 +22,17 @@
         ]
       }
     ],
+    "PostToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node dist/hooks/post-tool-use.js"
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "matcher": "",

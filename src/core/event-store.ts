@@ -227,6 +227,57 @@ export class EventStore {
     `);
 
     // ============================================================
+    // Endless Mode Tables
+    // ============================================================
+
+    // Working Set table (active memory window)
+    await this.db.run(`
+      CREATE TABLE IF NOT EXISTS working_set (
+        id VARCHAR PRIMARY KEY,
+        event_id VARCHAR NOT NULL,
+        added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        relevance_score FLOAT DEFAULT 1.0,
+        topics JSON,
+        expires_at TIMESTAMP
+      )
+    `);
+
+    // Consolidated Memories table (long-term integrated memories)
+    await this.db.run(`
+      CREATE TABLE IF NOT EXISTS consolidated_memories (
+        memory_id VARCHAR PRIMARY KEY,
+        summary TEXT NOT NULL,
+        topics JSON,
+        source_events JSON,
+        confidence FLOAT DEFAULT 0.5,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        accessed_at TIMESTAMP,
+        access_count INTEGER DEFAULT 0
+      )
+    `);
+
+    // Continuity Log table (tracks context transitions)
+    await this.db.run(`
+      CREATE TABLE IF NOT EXISTS continuity_log (
+        log_id VARCHAR PRIMARY KEY,
+        from_context_id VARCHAR,
+        to_context_id VARCHAR,
+        continuity_score FLOAT,
+        transition_type VARCHAR,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // Endless Mode Config table
+    await this.db.run(`
+      CREATE TABLE IF NOT EXISTS endless_config (
+        key VARCHAR PRIMARY KEY,
+        value JSON,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // ============================================================
     // Create Indexes
     // ============================================================
 
@@ -246,6 +297,12 @@ export class EventStore {
 
     // Outbox indexes
     await this.db.run(`CREATE INDEX IF NOT EXISTS idx_outbox_status ON vector_outbox(status)`);
+
+    // Endless Mode indexes
+    await this.db.run(`CREATE INDEX IF NOT EXISTS idx_working_set_expires ON working_set(expires_at)`);
+    await this.db.run(`CREATE INDEX IF NOT EXISTS idx_working_set_relevance ON working_set(relevance_score DESC)`);
+    await this.db.run(`CREATE INDEX IF NOT EXISTS idx_consolidated_confidence ON consolidated_memories(confidence DESC)`);
+    await this.db.run(`CREATE INDEX IF NOT EXISTS idx_continuity_created ON continuity_log(created_at)`);
 
     this.initialized = true;
   }
@@ -529,6 +586,65 @@ export class EventStore {
     );
 
     return rows;
+  }
+
+  // ============================================================
+  // Endless Mode Helper Methods
+  // ============================================================
+
+  /**
+   * Get database instance for Endless Mode stores
+   */
+  getDatabase(): Database {
+    return this.db;
+  }
+
+  /**
+   * Get config value for endless mode
+   */
+  async getEndlessConfig(key: string): Promise<unknown | null> {
+    await this.initialize();
+
+    const rows = await this.db.all<Array<{ value: string }>>(
+      `SELECT value FROM endless_config WHERE key = ?`,
+      [key]
+    );
+
+    if (rows.length === 0) return null;
+    return JSON.parse(rows[0].value);
+  }
+
+  /**
+   * Set config value for endless mode
+   */
+  async setEndlessConfig(key: string, value: unknown): Promise<void> {
+    await this.initialize();
+
+    await this.db.run(
+      `INSERT OR REPLACE INTO endless_config (key, value, updated_at)
+       VALUES (?, ?, CURRENT_TIMESTAMP)`,
+      [key, JSON.stringify(value)]
+    );
+  }
+
+  /**
+   * Get all sessions
+   */
+  async getAllSessions(): Promise<Session[]> {
+    await this.initialize();
+
+    const rows = await this.db.all<Array<Record<string, unknown>>>(
+      `SELECT * FROM sessions ORDER BY started_at DESC`
+    );
+
+    return rows.map(row => ({
+      id: row.id as string,
+      startedAt: new Date(row.started_at as string),
+      endedAt: row.ended_at ? new Date(row.ended_at as string) : undefined,
+      projectPath: row.project_path as string | undefined,
+      summary: row.summary as string | undefined,
+      tags: row.tags ? JSON.parse(row.tags as string) : undefined
+    }));
   }
 
   /**

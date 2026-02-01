@@ -5,7 +5,20 @@
  */
 
 import { getDefaultMemoryService } from '../services/memory-service.js';
-import type { StopInput } from '../core/types.js';
+import { applyPrivacyFilter } from '../core/privacy/index.js';
+import type { StopInput, Config } from '../core/types.js';
+
+// Default privacy config
+const DEFAULT_PRIVACY_CONFIG: Config['privacy'] = {
+  excludePatterns: ['password', 'secret', 'api_key', 'token', 'bearer'],
+  anonymize: false,
+  privateTags: {
+    enabled: true,
+    marker: '[PRIVATE]',
+    preserveLineCount: false,
+    supportedFormats: ['xml']
+  }
+};
 
 async function main(): Promise<void> {
   // Read input from stdin
@@ -18,15 +31,22 @@ async function main(): Promise<void> {
     // Store agent responses from the conversation
     for (const message of input.messages) {
       if (message.role === 'assistant' && message.content) {
+        // Apply privacy filter
+        const filterResult = applyPrivacyFilter(message.content, DEFAULT_PRIVACY_CONFIG);
+        let content = filterResult.content;
+
         // Truncate very long responses
-        const content = message.content.length > 5000
-          ? message.content.slice(0, 5000) + '...[truncated]'
-          : message.content;
+        if (content.length > 5000) {
+          content = content.slice(0, 5000) + '...[truncated]';
+        }
 
         await memoryService.storeAgentResponse(
           input.session_id,
           content,
-          { stopReason: input.stop_reason }
+          {
+            stopReason: input.stop_reason,
+            privacy: filterResult.metadata
+          }
         );
       }
     }
