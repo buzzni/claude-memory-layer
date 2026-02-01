@@ -1,10 +1,10 @@
-# Code Memory
+# Claude Memory Layer
 
 Claude Code 플러그인으로, 대화 내용을 기억하여 사용할수록 똑똑해지는 AI 어시스턴트를 만듭니다.
 
 ## 개요
 
-Code Memory는 Claude Code에서 사용자와 AI 간의 모든 대화를 저장하고, 새로운 질문을 할 때 관련된 과거 대화를 자동으로 검색하여 컨텍스트로 제공합니다. 이를 통해:
+Claude Memory Layer는 Claude Code에서 사용자와 AI 간의 모든 대화를 저장하고, 새로운 질문을 할 때 관련된 과거 대화를 자동으로 검색하여 컨텍스트로 제공합니다. 이를 통해:
 
 - **연속성 있는 대화**: 이전 세션에서 논의한 내용을 기억
 - **프로젝트 맥락 이해**: 프로젝트별로 축적된 지식 활용
@@ -40,7 +40,7 @@ Code Memory는 Claude Code에서 사용자와 AI 간의 모든 대화를 저장�
 ### 1. 의존성 설치
 
 ```bash
-cd code-memory
+cd claude-memory-layer
 npm install
 ```
 
@@ -56,7 +56,7 @@ npm run build
 
 ```bash
 # Claude Code 설정 디렉토리에 플러그인 복사
-cp -r dist/.claude-plugin ~/.claude/plugins/code-memory/
+cp -r dist/.claude-plugin ~/.claude/plugins/claude-memory-layer/
 ```
 
 ## 사용 방법
@@ -106,27 +106,27 @@ Claude Code 내에서 사용할 수 있는 명령어:
 
 ```bash
 # 메모리 검색
-npx code-memory search "React 컴포넌트 패턴"
-npx code-memory search "API 에러 처리" --top-k 10
+npx claude-memory-layer search "React 컴포넌트 패턴"
+npx claude-memory-layer search "API 에러 처리" --top-k 10
 
 # 대화 기록 조회
-npx code-memory history
-npx code-memory history --limit 50 --type user_prompt
+npx claude-memory-layer history
+npx claude-memory-layer history --limit 50 --type user_prompt
 
 # 통계 확인
-npx code-memory stats
+npx claude-memory-layer stats
 
 # 기존 세션 임포트
-npx code-memory import                    # 현재 프로젝트
-npx code-memory import --all              # 모든 프로젝트
-npx code-memory import --all --verbose    # 상세 로그
+npx claude-memory-layer import                    # 현재 프로젝트
+npx claude-memory-layer import --all              # 모든 프로젝트
+npx claude-memory-layer import --all --verbose    # 상세 로그
 
 # 임포트 가능한 세션 목록
-npx code-memory list
-npx code-memory list --project /path/to/project
+npx claude-memory-layer list
+npx claude-memory-layer list --project /path/to/project
 
 # 임베딩 수동 처리
-npx code-memory process
+npx claude-memory-layer process
 ```
 
 ## Privacy 기능
@@ -175,7 +175,7 @@ SECRET_TOKEN=abc123
 
 원본 확인:
 ```bash
-code-memory show mem:a7Bc3x
+claude-memory-layer show mem:a7Bc3x
 ```
 
 ## Endless Mode
@@ -184,10 +184,10 @@ code-memory show mem:a7Bc3x
 
 ```bash
 # Endless Mode 활성화
-code-memory config set mode endless
+claude-memory-layer config set mode endless
 
 # 상태 확인
-code-memory status
+claude-memory-layer status
 
 # 출력 예시:
 # Mode: Endless
@@ -210,14 +210,14 @@ Claude Desktop에서 메모리 검색을 사용하려면:
 
 ```bash
 # MCP 서버 설치
-code-memory mcp install
+claude-memory-layer mcp install
 
 # 또는 수동 설정: ~/Library/Application Support/Claude/claude_desktop_config.json
 {
   "mcpServers": {
-    "code-memory": {
+    "claude-memory-layer": {
       "command": "npx",
-      "args": ["code-memory-mcp"]
+      "args": ["claude-memory-layer-mcp"]
     }
   }
 }
@@ -238,7 +238,7 @@ code-memory mcp install
 
 ```bash
 # 웹 서버 시작
-code-memory web
+claude-memory-layer dashboard
 
 # 브라우저에서 접속
 # http://localhost:37777
@@ -257,13 +257,13 @@ code-memory web
 
 ```bash
 # 1. 먼저 임포트 가능한 세션 확인
-npx code-memory list
+npx claude-memory-layer list
 
 # 2. 현재 프로젝트의 모든 세션 임포트
-npx code-memory import
+npx claude-memory-layer import
 
 # 3. 또는 모든 프로젝트의 세션 임포트
-npx code-memory import --all --verbose
+npx claude-memory-layer import --all --verbose
 ```
 
 ### 임포트 결과 예시
@@ -402,7 +402,7 @@ Layer 1: Search Index (~50-100 tokens/result)
 
 ```
 ┌─────────────────────┐         ┌─────────────────────┐
-│   Claude Desktop    │◀────────│    code-memory-mcp  │
+│   Claude Desktop    │◀────────│ claude-memory-layer │
 │   (MCP Client)      │  stdio  │    (MCP Server)     │
 └─────────────────────┘         └──────────┬──────────┘
                                            │
