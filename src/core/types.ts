@@ -194,7 +194,14 @@ export const ConfigSchema = z.object({
     sessionSummary: z.boolean().default(true),
     insightExtraction: z.boolean().default(true),
     crossProjectLearning: z.boolean().default(false),
-    singleWriterMode: z.boolean().default(true)
+    singleWriterMode: z.boolean().default(true),
+    sharedStore: z.object({
+      enabled: z.boolean().default(true),
+      autoPromote: z.boolean().default(true),
+      searchShared: z.boolean().default(true),
+      minConfidenceForPromotion: z.number().default(0.8),
+      sharedStoragePath: z.string().default('~/.claude-code/memory/shared')
+    }).default({})
   }).default({}),
   mode: z.enum(['session', 'endless']).default('session'),
   endless: z.object({
@@ -499,7 +506,8 @@ export const EntryTypeSchema = z.enum([
   'task_note',
   'reference',
   'preference',
-  'pattern'
+  'pattern',
+  'troubleshooting'
 ]);
 export type EntryType = z.infer<typeof EntryTypeSchema>;
 
@@ -838,4 +846,63 @@ export interface EndlessModeStatus {
   continuityScore: number;
   consolidatedCount: number;
   lastConsolidation: Date | null;
+}
+
+// ============================================================
+// Shared Store Types (Cross-Project Knowledge)
+// ============================================================
+
+export const SharedEntryTypeSchema = z.enum([
+  'troubleshooting',
+  'best_practice',
+  'common_error'
+]);
+export type SharedEntryType = z.infer<typeof SharedEntryTypeSchema>;
+
+export const SharedTroubleshootingEntrySchema = z.object({
+  entryId: z.string(),
+  sourceProjectHash: z.string(),
+  sourceEntryId: z.string(),
+  title: z.string(),
+  symptoms: z.array(z.string()),
+  rootCause: z.string(),
+  solution: z.string(),
+  topics: z.array(z.string()),
+  technologies: z.array(z.string()).optional(),
+  confidence: z.number().min(0).max(1),
+  usageCount: z.number().default(0),
+  lastUsedAt: z.date().optional(),
+  promotedAt: z.date(),
+  createdAt: z.date()
+});
+export type SharedTroubleshootingEntry = z.infer<typeof SharedTroubleshootingEntrySchema>;
+
+export interface SharedTroubleshootingInput {
+  sourceProjectHash: string;
+  sourceEntryId: string;
+  title: string;
+  symptoms: string[];
+  rootCause: string;
+  solution: string;
+  topics: string[];
+  technologies?: string[];
+  confidence: number;
+}
+
+export const SharedStoreConfigSchema = z.object({
+  enabled: z.boolean().default(true),
+  autoPromote: z.boolean().default(true),
+  searchShared: z.boolean().default(true),
+  minConfidenceForPromotion: z.number().default(0.8),
+  sharedStoragePath: z.string().default('~/.claude-code/memory/shared')
+});
+export type SharedStoreConfig = z.infer<typeof SharedStoreConfigSchema>;
+
+// Shared search result
+export interface SharedSearchResult {
+  id: string;
+  entryId: string;
+  content: string;
+  score: number;
+  entryType: SharedEntryType;
 }

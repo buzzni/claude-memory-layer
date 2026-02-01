@@ -4,7 +4,7 @@
  * Called when user submits a prompt - retrieves relevant memories
  */
 
-import { getDefaultMemoryService } from '../services/memory-service.js';
+import { getMemoryServiceForSession } from '../services/memory-service.js';
 import type { UserPromptSubmitInput, UserPromptSubmitOutput } from '../core/types.js';
 
 async function main(): Promise<void> {
@@ -12,13 +12,18 @@ async function main(): Promise<void> {
   const inputData = await readStdin();
   const input: UserPromptSubmitInput = JSON.parse(inputData);
 
-  const memoryService = getDefaultMemoryService();
+  // Get project-specific memory service via session lookup
+  const memoryService = getMemoryServiceForSession(input.session_id);
 
   try {
-    // Retrieve relevant memories for the prompt
+    // Check if shared store is enabled
+    const includeShared = memoryService.isSharedStoreEnabled();
+
+    // Retrieve relevant memories for the prompt (including shared if enabled)
     const retrievalResult = await memoryService.retrieveMemories(input.prompt, {
       topK: 5,
-      minScore: 0.7
+      minScore: 0.7,
+      includeShared
     });
 
     // Store the user prompt for future retrieval

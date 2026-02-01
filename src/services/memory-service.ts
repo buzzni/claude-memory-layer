@@ -13,8 +13,12 @@ import { VectorStore } from '../core/vector-store.js';
 import { Embedder, getDefaultEmbedder } from '../core/embedder.js';
 import { VectorWorker, createVectorWorker } from '../core/vector-worker.js';
 import { Matcher, getDefaultMatcher } from '../core/matcher.js';
-import { Retriever, createRetriever, RetrievalResult } from '../core/retriever.js';
+import { Retriever, createRetriever, RetrievalResult, UnifiedRetrievalResult } from '../core/retriever.js';
 import { GraduationPipeline, createGraduationPipeline } from '../core/graduation.js';
+import { SharedEventStore, createSharedEventStore } from '../core/shared-event-store.js';
+import { SharedStore, createSharedStore } from '../core/shared-store.js';
+import { SharedVectorStore, createSharedVectorStore } from '../core/shared-vector-store.js';
+import { SharedPromoter, createSharedPromoter, PromotionResult } from '../core/shared-promoter.js';
 import type {
   MemoryEventInput,
   AppendResult,
@@ -29,7 +33,9 @@ import type {
   ConsolidatedMemory,
   EndlessModeStatus,
   ContextSnapshot,
-  ContinuityScore
+  ContinuityScore,
+  SharedStoreConfig,
+  Entry
 } from '../core/types.js';
 import { createToolObservationEmbedding } from '../core/metadata-extractor.js';
 import { WorkingSetStore, createWorkingSetStore } from '../core/working-set-store.js';
@@ -40,6 +46,120 @@ import { ContinuityManager, createContinuityManager } from '../core/continuity-m
 export interface MemoryServiceConfig {
   storagePath: string;
   embeddingModel?: string;
+}
+
+// ============================================================
+// Project Path Utilities
+// ============================================================
+
+/**
+ * Normalize and resolve a project path, handling symlinks
+ */
+function normalizePath(projectPath: string): string {
+  const expanded = projectPath.startsWith('~')
+    ? path.join(os.homedir(), projectPath.slice(1))
+    : projectPath;
+
+  try {
+    // Resolve symlinks for consistent paths
+    return fs.realpathSync(expanded);
+  } catch {
+    // Path doesn't exist yet, just resolve it
+    return path.resolve(expanded);
+  }
+}
+
+/**
+ * Generate a stable 8-character hash from a project path
+ */
+export function hashProjectPath(projectPath: string): string {
+  const normalizedPath = normalizePath(projectPath);
+  return crypto.createHash('sha256')
+    .update(normalizedPath)
+    .digest('hex')
+    .slice(0, 8);
+}
+
+/**
+ * Get the storage path for a specific project
+ */
+export function getProjectStoragePath(projectPath: string): string {
+  const hash = hashProjectPath(projectPath);
+  return path.join(os.homedir(), '.claude-code', 'memory', 'projects', hash);
+}
+
+// ============================================================
+// Session Registry
+// ============================================================
+
+const REGISTRY_PATH = path.join(os.homedir(), '.claude-code', 'memory', 'session-registry.json');
+const SHARED_STORAGE_PATH = path.join(os.homedir(), '.claude-code', 'memory', 'shared');
+
+interface SessionRegistryEntry {
+  projectPath: string;
+  projectHash: string;
+  registeredAt: string;
+}
+
+interface SessionRegistry {
+  version: number;
+  sessions: Record<string, SessionRegistryEntry>;
+}
+
+function loadSessionRegistry(): SessionRegistry {
+  try {
+    if (fs.existsSync(REGISTRY_PATH)) {
+      const data = fs.readFileSync(REGISTRY_PATH, 'utf-8');
+      return JSON.parse(data);
+    }
+  } catch (error) {
+    console.error('Failed to load session registry:', error);
+  }
+  return { version: 1, sessions: {} };
+}
+
+function saveSessionRegistry(registry: SessionRegistry): void {
+  const dir = path.dirname(REGISTRY_PATH);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+
+  // Atomic write using temp file
+  const tempPath = REGISTRY_PATH + '.tmp';
+  fs.writeFileSync(tempPath, JSON.stringify(registry, null, 2));
+  fs.renameSync(tempPath, REGISTRY_PATH);
+}
+
+/**
+ * Register a session with its project path
+ */
+export function registerSession(sessionId: string, projectPath: string): void {
+  const registry = loadSessionRegistry();
+
+  registry.sessions[sessionId] = {
+    projectPath: normalizePath(projectPath),
+    projectHash: hashProjectPath(projectPath),
+    registeredAt: new Date().toISOString()
+  };
+
+  // Clean up old sessions (keep last 1000)
+  const entries = Object.entries(registry.sessions);
+  if (entries.length > 1000) {
+    const sorted = entries.sort((a, b) =>
+      new Date(b[1].registeredAt).getTime() - new Date(a[1].registeredAt).getTime()
+    );
+    registry.sessions = Object.fromEntries(sorted.slice(0, 1000));
+  }
+
+  saveSessionRegistry(registry);
+}
+
+/**
+ * Get the project path for a session
+ */
+export function getSessionProject(sessionId: string): SessionRegistryEntry | null {
+  const registry = loadSessionRegistry();
+  return registry.sessions[sessionId] || null;
 }
 
 export class MemoryService {
@@ -59,13 +179,26 @@ export class MemoryService {
   private continuityManager: ContinuityManager | null = null;
   private endlessMode: MemoryMode = 'session';
 
-  constructor(config: MemoryServiceConfig) {
+  // Shared Store components (cross-project knowledge)
+  private sharedEventStore: SharedEventStore | null = null;
+  private sharedStore: SharedStore | null = null;
+  private sharedVectorStore: SharedVectorStore | null = null;
+  private sharedPromoter: SharedPromoter | null = null;
+  private sharedStoreConfig: SharedStoreConfig | null = null;
+  private projectHash: string | null = null;
+
+  constructor(config: MemoryServiceConfig & { projectHash?: string; sharedStoreConfig?: SharedStoreConfig }) {
     const storagePath = this.expandPath(config.storagePath);
 
     // Ensure storage directory exists
     if (!fs.existsSync(storagePath)) {
       fs.mkdirSync(storagePath, { recursive: true });
     }
+
+    // Store project hash for shared store operations
+    this.projectHash = config.projectHash || null;
+    // Default: shared store enabled
+    this.sharedStoreConfig = config.sharedStoreConfig ?? { enabled: true };
 
     // Initialize components
     this.eventStore = new EventStore(path.join(storagePath, 'events.duckdb'));
@@ -108,7 +241,47 @@ export class MemoryService {
       await this.initializeEndlessMode();
     }
 
+    // Initialize shared store (enabled by default)
+    if (this.sharedStoreConfig?.enabled !== false) {
+      await this.initializeSharedStore();
+    }
+
     this.initialized = true;
+  }
+
+  /**
+   * Initialize Shared Store components
+   */
+  private async initializeSharedStore(): Promise<void> {
+    const sharedPath = this.sharedStoreConfig?.sharedStoragePath
+      ? this.expandPath(this.sharedStoreConfig.sharedStoragePath)
+      : SHARED_STORAGE_PATH;
+
+    // Ensure shared directory exists
+    if (!fs.existsSync(sharedPath)) {
+      fs.mkdirSync(sharedPath, { recursive: true });
+    }
+
+    this.sharedEventStore = createSharedEventStore(
+      path.join(sharedPath, 'shared.duckdb')
+    );
+    await this.sharedEventStore.initialize();
+
+    this.sharedStore = createSharedStore(this.sharedEventStore);
+    this.sharedVectorStore = createSharedVectorStore(
+      path.join(sharedPath, 'vectors')
+    );
+    await this.sharedVectorStore.initialize();
+
+    this.sharedPromoter = createSharedPromoter(
+      this.sharedStore,
+      this.sharedVectorStore,
+      this.embedder,
+      this.sharedStoreConfig || undefined
+    );
+
+    // Connect shared stores to retriever
+    this.retriever.setSharedStores(this.sharedStore, this.sharedVectorStore);
   }
 
   /**
@@ -257,13 +430,23 @@ export class MemoryService {
       topK?: number;
       minScore?: number;
       sessionId?: string;
+      includeShared?: boolean;
     }
-  ): Promise<RetrievalResult> {
+  ): Promise<UnifiedRetrievalResult> {
     await this.initialize();
 
     // Process any pending embeddings first
     if (this.vectorWorker) {
       await this.vectorWorker.processAll();
+    }
+
+    // Use unified retrieval if shared search is requested
+    if (options?.includeShared && this.sharedStore) {
+      return this.retriever.retrieveUnified(query, {
+        ...options,
+        includeShared: true,
+        projectHash: this.projectHash || undefined
+      });
     }
 
     return this.retriever.retrieve(query, options);
@@ -334,6 +517,62 @@ export class MemoryService {
     }
 
     return header + result.context;
+  }
+
+  // ============================================================
+  // Shared Store Methods (Cross-Project Knowledge)
+  // ============================================================
+
+  /**
+   * Check if shared store is enabled and initialized
+   */
+  isSharedStoreEnabled(): boolean {
+    return this.sharedStore !== null;
+  }
+
+  /**
+   * Promote an entry to shared storage
+   */
+  async promoteToShared(entry: Entry): Promise<PromotionResult> {
+    if (!this.sharedPromoter || !this.projectHash) {
+      return {
+        success: false,
+        error: 'Shared store not initialized or project hash not set'
+      };
+    }
+
+    return this.sharedPromoter.promoteEntry(entry, this.projectHash);
+  }
+
+  /**
+   * Get shared store statistics
+   */
+  async getSharedStoreStats(): Promise<{
+    total: number;
+    averageConfidence: number;
+    topTopics: Array<{ topic: string; count: number }>;
+    totalUsageCount: number;
+  } | null> {
+    if (!this.sharedStore) return null;
+    return this.sharedStore.getStats();
+  }
+
+  /**
+   * Search shared troubleshooting entries
+   */
+  async searchShared(
+    query: string,
+    options?: { topK?: number; minConfidence?: number }
+  ) {
+    if (!this.sharedStore) return [];
+    return this.sharedStore.search(query, options);
+  }
+
+  /**
+   * Get project hash for this service
+   */
+  getProjectHash(): string | null {
+    return this.projectHash;
   }
 
   // ============================================================
@@ -595,6 +834,12 @@ export class MemoryService {
     if (this.vectorWorker) {
       this.vectorWorker.stop();
     }
+
+    // Close shared store
+    if (this.sharedEventStore) {
+      await this.sharedEventStore.close();
+    }
+
     await this.eventStore.close();
   }
 
@@ -609,16 +854,62 @@ export class MemoryService {
   }
 }
 
-// Default instance
-let defaultService: MemoryService | null = null;
+// ============================================================
+// Service Instance Management
+// ============================================================
 
+// Instance cache: Map from project hash (or '__global__') to MemoryService
+const serviceCache = new Map<string, MemoryService>();
+const GLOBAL_KEY = '__global__';
+
+/**
+ * Get the global memory service (backward compatibility)
+ * Use this for operations not tied to a specific project
+ */
 export function getDefaultMemoryService(): MemoryService {
-  if (!defaultService) {
-    defaultService = new MemoryService({
+  if (!serviceCache.has(GLOBAL_KEY)) {
+    serviceCache.set(GLOBAL_KEY, new MemoryService({
       storagePath: '~/.claude-code/memory'
-    });
+    }));
   }
-  return defaultService;
+  return serviceCache.get(GLOBAL_KEY)!;
+}
+
+/**
+ * Get memory service for a specific project path
+ * Creates isolated storage at ~/.claude-code/memory/projects/{hash}/
+ */
+export function getMemoryServiceForProject(
+  projectPath: string,
+  sharedStoreConfig?: SharedStoreConfig
+): MemoryService {
+  const hash = hashProjectPath(projectPath);
+
+  if (!serviceCache.has(hash)) {
+    const storagePath = getProjectStoragePath(projectPath);
+    serviceCache.set(hash, new MemoryService({
+      storagePath,
+      projectHash: hash,
+      sharedStoreConfig
+    }));
+  }
+
+  return serviceCache.get(hash)!;
+}
+
+/**
+ * Get memory service for a session by looking up its project
+ * Falls back to global storage if session not found in registry
+ */
+export function getMemoryServiceForSession(sessionId: string): MemoryService {
+  const projectInfo = getSessionProject(sessionId);
+
+  if (projectInfo) {
+    return getMemoryServiceForProject(projectInfo.projectPath);
+  }
+
+  // Fallback to global storage for unknown sessions (backward compat)
+  return getDefaultMemoryService();
 }
 
 export function createMemoryService(config: MemoryServiceConfig): MemoryService {

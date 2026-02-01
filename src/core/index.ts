@@ -30,3 +30,9 @@ export * from './graduation.js';
 
 // Task Entity System
 export * from './task/index.js';
+
+// Shared Store (Cross-Project Knowledge)
+export * from './shared-event-store.js';
+export * from './shared-store.js';
+export * from './shared-vector-store.js';
+export * from './shared-promoter.js';

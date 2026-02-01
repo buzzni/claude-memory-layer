@@ -7,7 +7,9 @@ import { EventStore } from './event-store.js';
 import { VectorStore, SearchResult } from './vector-store.js';
 import { Embedder } from './embedder.js';
 import { Matcher } from './matcher.js';
-import type { MemoryEvent, MatchResult, Config } from './types.js';
+import { SharedStore } from './shared-store.js';
+import { SharedVectorStore } from './shared-vector-store.js';
+import type { MemoryEvent, MatchResult, Config, SharedTroubleshootingEntry } from './types.js';
 
 export interface RetrievalOptions {
   topK: number;
@@ -30,6 +32,15 @@ export interface MemoryWithContext {
   sessionContext?: string;
 }
 
+export interface UnifiedRetrievalOptions extends RetrievalOptions {
+  includeShared?: boolean;
+  projectHash?: string;
+}
+
+export interface UnifiedRetrievalResult extends RetrievalResult {
+  sharedMemories?: SharedTroubleshootingEntry[];
+}
+
 const DEFAULT_OPTIONS: RetrievalOptions = {
   topK: 5,
   minScore: 0.7,
@@ -37,22 +48,40 @@ const DEFAULT_OPTIONS: RetrievalOptions = {
   includeSessionContext: true
 };
 
+export interface SharedStoreOptions {
+  sharedStore?: SharedStore;
+  sharedVectorStore?: SharedVectorStore;
+}
+
 export class Retriever {
   private readonly eventStore: EventStore;
   private readonly vectorStore: VectorStore;
   private readonly embedder: Embedder;
   private readonly matcher: Matcher;
+  private sharedStore?: SharedStore;
+  private sharedVectorStore?: SharedVectorStore;
 
   constructor(
     eventStore: EventStore,
     vectorStore: VectorStore,
     embedder: Embedder,
-    matcher: Matcher
+    matcher: Matcher,
+    sharedOptions?: SharedStoreOptions
   ) {
     this.eventStore = eventStore;
     this.vectorStore = vectorStore;
     this.embedder = embedder;
     this.matcher = matcher;
+    this.sharedStore = sharedOptions?.sharedStore;
+    this.sharedVectorStore = sharedOptions?.sharedVectorStore;
+  }
+
+  /**
+   * Set shared stores after construction
+   */
+  setSharedStores(sharedStore: SharedStore, sharedVectorStore: SharedVectorStore): void {
+    this.sharedStore = sharedStore;
+    this.sharedVectorStore = sharedVectorStore;
   }
 
   /**
@@ -92,6 +121,93 @@ export class Retriever {
       totalTokens: this.estimateTokens(context),
       context
     };
+  }
+
+  /**
+   * Retrieve with unified search (project + shared)
+   */
+  async retrieveUnified(
+    query: string,
+    options: Partial<UnifiedRetrievalOptions> = {}
+  ): Promise<UnifiedRetrievalResult> {
+    // Get project-local results first
+    const projectResult = await this.retrieve(query, options);
+
+    // If shared search is not requested or stores not available, return project results only
+    if (!options.includeShared || !this.sharedStore || !this.sharedVectorStore) {
+      return projectResult;
+    }
+
+    try {
+      // Generate query embedding (reuse if possible)
+      const queryEmbedding = await this.embedder.embed(query);
+
+      // Vector search in shared store
+      const sharedVectorResults = await this.sharedVectorStore.search(
+        queryEmbedding.vector,
+        {
+          limit: options.topK || 5,
+          minScore: options.minScore || 0.7,
+          excludeProjectHash: options.projectHash
+        }
+      );
+
+      // Get full entries from shared store
+      const sharedMemories: SharedTroubleshootingEntry[] = [];
+      for (const result of sharedVectorResults) {
+        const entry = await this.sharedStore.get(result.entryId);
+        if (entry) {
+          // Exclude entries from current project if specified
+          if (!options.projectHash || entry.sourceProjectHash !== options.projectHash) {
+            sharedMemories.push(entry);
+            // Record usage for ranking
+            await this.sharedStore.recordUsage(entry.entryId);
+          }
+        }
+      }
+
+      // Build unified context
+      const unifiedContext = this.buildUnifiedContext(projectResult, sharedMemories);
+
+      return {
+        ...projectResult,
+        context: unifiedContext,
+        totalTokens: this.estimateTokens(unifiedContext),
+        sharedMemories
+      };
+    } catch (error) {
+      // If shared search fails, return project results only
+      console.error('Shared search failed:', error);
+      return projectResult;
+    }
+  }
+
+  /**
+   * Build unified context combining project and shared memories
+   */
+  private buildUnifiedContext(
+    projectResult: RetrievalResult,
+    sharedMemories: SharedTroubleshootingEntry[]
+  ): string {
+    let context = projectResult.context;
+
+    if (sharedMemories.length > 0) {
+      context += '\n\n## Cross-Project Knowledge\n\n';
+      for (const memory of sharedMemories.slice(0, 3)) {
+        context += `### ${memory.title}\n`;
+        if (memory.symptoms.length > 0) {
+          context += `**Symptoms:** ${memory.symptoms.join(', ')}\n`;
+        }
+        context += `**Root Cause:** ${memory.rootCause}\n`;
+        context += `**Solution:** ${memory.solution}\n`;
+        if (memory.technologies && memory.technologies.length > 0) {
+          context += `**Technologies:** ${memory.technologies.join(', ')}\n`;
+        }
+        context += `_Confidence: ${(memory.confidence * 100).toFixed(0)}%_\n\n`;
+      }
+    }
+
+    return context;
   }
 
   /**
