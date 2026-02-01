@@ -23,15 +23,17 @@ const commonOptions: esbuild.BuildOptions = {
   format: 'esm',
   sourcemap: true,
   external: [
+    '@hono/node-server',
+    '@hono/node-server/serve-static',
     '@lancedb/lancedb',
     '@xenova/transformers',
     'duckdb',
+    'better-sqlite3',
     'commander',
     'zod',
     'hono',
     'hono/cors',
-    'hono/logger',
-    'hono/bun'
+    'hono/logger'
   ],
   banner: {
     js: `import { createRequire } from 'module';
@@ -59,6 +61,7 @@ async function build() {
   const hooks = [
     'session-start',
     'user-prompt-submit',
+    'post-tool-use',
     'stop',
     'session-end'
   ];

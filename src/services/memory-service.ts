@@ -9,6 +9,8 @@ import * as fs from 'fs';
 import * as crypto from 'crypto';
 
 import { EventStore } from '../core/event-store.js';
+import { SQLiteEventStore } from '../core/sqlite-event-store.js';
+import { SyncWorker } from '../core/sync-worker.js';
 import { VectorStore } from '../core/vector-store.js';
 import { Embedder, getDefaultEmbedder } from '../core/embedder.js';
 import { VectorWorker, createVectorWorker } from '../core/vector-worker.js';
@@ -42,10 +44,14 @@ import { WorkingSetStore, createWorkingSetStore } from '../core/working-set-stor
 import { ConsolidatedStore, createConsolidatedStore } from '../core/consolidated-store.js';
 import { ConsolidationWorker, createConsolidationWorker } from '../core/consolidation-worker.js';
 import { ContinuityManager, createContinuityManager } from '../core/continuity-manager.js';
+import { GraduationWorker, createGraduationWorker, GraduationRunResult } from '../core/graduation-worker.js';
 
 export interface MemoryServiceConfig {
   storagePath: string;
   embeddingModel?: string;
+  readOnly?: boolean;
+  /** Enable DuckDB analytics store (default: true for server, false for hooks) */
+  analyticsEnabled?: boolean;
 }
 
 // ============================================================
@@ -163,13 +169,19 @@ export function getSessionProject(sessionId: string): SessionRegistryEntry | nul
 }
 
 export class MemoryService {
-  private readonly eventStore: EventStore;
+  // Primary store: SQLite (WAL mode) - for hooks, always available
+  private readonly sqliteStore: SQLiteEventStore;
+  // Analytics store: DuckDB - for server reads (optional, synced from SQLite)
+  private readonly analyticsStore: EventStore | null;
+  private syncWorker: SyncWorker | null = null;
+
   private readonly vectorStore: VectorStore;
   private readonly embedder: Embedder;
   private readonly matcher: Matcher;
   private readonly retriever: Retriever;
   private readonly graduation: GraduationPipeline;
   private vectorWorker: VectorWorker | null = null;
+  private graduationWorker: GraduationWorker | null = null;
   private initialized = false;
 
   // Endless Mode components
@@ -187,11 +199,14 @@ export class MemoryService {
   private sharedStoreConfig: SharedStoreConfig | null = null;
   private projectHash: string | null = null;
 
+  private readonly readOnly: boolean;
+
   constructor(config: MemoryServiceConfig & { projectHash?: string; sharedStoreConfig?: SharedStoreConfig }) {
     const storagePath = this.expandPath(config.storagePath);
+    this.readOnly = config.readOnly ?? false;
 
-    // Ensure storage directory exists
-    if (!fs.existsSync(storagePath)) {
+    // Ensure storage directory exists (only if not read-only)
+    if (!this.readOnly && !fs.existsSync(storagePath)) {
       fs.mkdirSync(storagePath, { recursive: true });
     }
 
@@ -200,20 +215,52 @@ export class MemoryService {
     // Default: shared store enabled
     this.sharedStoreConfig = config.sharedStoreConfig ?? { enabled: true };
 
-    // Initialize components
-    this.eventStore = new EventStore(path.join(storagePath, 'events.duckdb'));
+    // Initialize PRIMARY store: SQLite (WAL mode)
+    // This is always used for writes and is the source of truth
+    this.sqliteStore = new SQLiteEventStore(
+      path.join(storagePath, 'events.sqlite'),
+      { readonly: this.readOnly }
+    );
+
+    // Initialize ANALYTICS store: DuckDB (optional, for server reads)
+    // Hooks set analyticsEnabled=false to avoid DuckDB lock conflicts
+    const analyticsEnabled = config.analyticsEnabled ?? this.readOnly; // Default: enabled only for read-only (server)
+
+    if (!analyticsEnabled) {
+      // Hook mode: skip DuckDB entirely to avoid lock conflicts
+      this.analyticsStore = null;
+    } else if (this.readOnly) {
+      // Server mode: try to use DuckDB for analytics, will fallback to SQLite
+      try {
+        this.analyticsStore = new EventStore(
+          path.join(storagePath, 'analytics.duckdb'),
+          { readOnly: true }
+        );
+      } catch {
+        // DuckDB not available, will use SQLite for reads
+        this.analyticsStore = null;
+      }
+    } else {
+      // Writer mode with analytics: create DuckDB for sync target
+      this.analyticsStore = new EventStore(
+        path.join(storagePath, 'analytics.duckdb'),
+        { readOnly: false }
+      );
+    }
+
     this.vectorStore = new VectorStore(path.join(storagePath, 'vectors'));
     this.embedder = config.embeddingModel
       ? new Embedder(config.embeddingModel)
       : getDefaultEmbedder();
     this.matcher = getDefaultMatcher();
+    // Retriever uses SQLite as primary (always available)
     this.retriever = createRetriever(
-      this.eventStore,
+      this.sqliteStore as unknown as EventStore, // Interface compatible
       this.vectorStore,
       this.embedder,
       this.matcher
     );
-    this.graduation = createGraduationPipeline(this.eventStore);
+    this.graduation = createGraduationPipeline(this.sqliteStore as unknown as EventStore);
   }
 
   /**
@@ -222,28 +269,63 @@ export class MemoryService {
   async initialize(): Promise<void> {
     if (this.initialized) return;
 
-    await this.eventStore.initialize();
+    // Initialize PRIMARY store: SQLite (always)
+    await this.sqliteStore.initialize();
+
+    // Initialize analytics store if available (DuckDB)
+    if (this.analyticsStore) {
+      try {
+        await this.analyticsStore.initialize();
+      } catch (error) {
+        console.warn('[MemoryService] Analytics store (DuckDB) initialization failed, using SQLite for reads:', error);
+        // Continue without analytics - SQLite will be used for reads
+      }
+    }
+
     await this.vectorStore.initialize();
     await this.embedder.initialize();
 
-    // Start vector worker
-    this.vectorWorker = createVectorWorker(
-      this.eventStore,
-      this.vectorStore,
-      this.embedder
-    );
-    this.vectorWorker.start();
+    // Skip write-related workers in read-only mode
+    if (!this.readOnly) {
+      // Start vector worker (uses SQLite as source)
+      this.vectorWorker = createVectorWorker(
+        this.sqliteStore as unknown as EventStore,
+        this.vectorStore,
+        this.embedder
+      );
+      this.vectorWorker.start();
 
-    // Load endless mode setting
-    const savedMode = await this.eventStore.getEndlessConfig('mode') as MemoryMode | null;
-    if (savedMode === 'endless') {
-      this.endlessMode = 'endless';
-      await this.initializeEndlessMode();
-    }
+      // Connect graduation pipeline to retriever for access tracking
+      this.retriever.setGraduationPipeline(this.graduation);
 
-    // Initialize shared store (enabled by default)
-    if (this.sharedStoreConfig?.enabled !== false) {
-      await this.initializeSharedStore();
+      // Start graduation worker for automatic level promotion
+      this.graduationWorker = createGraduationWorker(
+        this.sqliteStore as unknown as EventStore,
+        this.graduation
+      );
+      this.graduationWorker.start();
+
+      // Start sync worker (SQLite -> DuckDB) if analytics store is available
+      if (this.analyticsStore) {
+        this.syncWorker = new SyncWorker(
+          this.sqliteStore,
+          this.analyticsStore,
+          { intervalMs: 30000, batchSize: 500 }
+        );
+        this.syncWorker.start();
+      }
+
+      // Load endless mode setting
+      const savedMode = await this.sqliteStore.getEndlessConfig('mode') as MemoryMode | null;
+      if (savedMode === 'endless') {
+        this.endlessMode = 'endless';
+        await this.initializeEndlessMode();
+      }
+
+      // Initialize shared store (enabled by default)
+      if (this.sharedStoreConfig?.enabled !== false) {
+        await this.initializeSharedStore();
+      }
     }
 
     this.initialized = true;
@@ -290,7 +372,7 @@ export class MemoryService {
   async startSession(sessionId: string, projectPath?: string): Promise<void> {
     await this.initialize();
 
-    await this.eventStore.upsertSession({
+    await this.sqliteStore.upsertSession({
       id: sessionId,
       startedAt: new Date(),
       projectPath
@@ -303,7 +385,7 @@ export class MemoryService {
   async endSession(sessionId: string, summary?: string): Promise<void> {
     await this.initialize();
 
-    await this.eventStore.upsertSession({
+    await this.sqliteStore.upsertSession({
       id: sessionId,
       endedAt: new Date(),
       summary
@@ -320,7 +402,7 @@ export class MemoryService {
   ): Promise<AppendResult> {
     await this.initialize();
 
-    const result = await this.eventStore.append({
+    const result = await this.sqliteStore.append({
       eventType: 'user_prompt',
       sessionId,
       timestamp: new Date(),
@@ -330,7 +412,7 @@ export class MemoryService {
 
     // Enqueue for embedding if new
     if (result.success && !result.isDuplicate) {
-      await this.eventStore.enqueueForEmbedding(result.eventId, content);
+      await this.sqliteStore.enqueueForEmbedding(result.eventId, content);
     }
 
     return result;
@@ -346,7 +428,7 @@ export class MemoryService {
   ): Promise<AppendResult> {
     await this.initialize();
 
-    const result = await this.eventStore.append({
+    const result = await this.sqliteStore.append({
       eventType: 'agent_response',
       sessionId,
       timestamp: new Date(),
@@ -356,7 +438,7 @@ export class MemoryService {
 
     // Enqueue for embedding if new
     if (result.success && !result.isDuplicate) {
-      await this.eventStore.enqueueForEmbedding(result.eventId, content);
+      await this.sqliteStore.enqueueForEmbedding(result.eventId, content);
     }
 
     return result;
@@ -371,7 +453,7 @@ export class MemoryService {
   ): Promise<AppendResult> {
     await this.initialize();
 
-    const result = await this.eventStore.append({
+    const result = await this.sqliteStore.append({
       eventType: 'session_summary',
       sessionId,
       timestamp: new Date(),
@@ -379,7 +461,7 @@ export class MemoryService {
     });
 
     if (result.success && !result.isDuplicate) {
-      await this.eventStore.enqueueForEmbedding(result.eventId, summary);
+      await this.sqliteStore.enqueueForEmbedding(result.eventId, summary);
     }
 
     return result;
@@ -397,7 +479,7 @@ export class MemoryService {
     // Create content for storage (JSON stringified payload)
     const content = JSON.stringify(payload);
 
-    const result = await this.eventStore.append({
+    const result = await this.sqliteStore.append({
       eventType: 'tool_observation',
       sessionId,
       timestamp: new Date(),
@@ -415,7 +497,7 @@ export class MemoryService {
         payload.metadata || {},
         payload.success
       );
-      await this.eventStore.enqueueForEmbedding(result.eventId, embeddingContent);
+      await this.sqliteStore.enqueueForEmbedding(result.eventId, embeddingContent);
     }
 
     return result;
@@ -457,7 +539,7 @@ export class MemoryService {
    */
   async getSessionHistory(sessionId: string): Promise<MemoryEvent[]> {
     await this.initialize();
-    return this.eventStore.getSessionEvents(sessionId);
+    return this.sqliteStore.getSessionEvents(sessionId);
   }
 
   /**
@@ -465,7 +547,7 @@ export class MemoryService {
    */
   async getRecentEvents(limit: number = 100): Promise<MemoryEvent[]> {
     await this.initialize();
-    return this.eventStore.getRecentEvents(limit);
+    return this.sqliteStore.getRecentEvents(limit);
   }
 
   /**
@@ -478,7 +560,7 @@ export class MemoryService {
   }> {
     await this.initialize();
 
-    const recentEvents = await this.eventStore.getRecentEvents(10000);
+    const recentEvents = await this.sqliteStore.getRecentEvents(10000);
     const vectorCount = await this.vectorStore.count();
     const levelStats = await this.graduation.getStats();
 
@@ -497,6 +579,22 @@ export class MemoryService {
       return this.vectorWorker.processAll();
     }
     return 0;
+  }
+
+  /**
+   * Get events by memory level
+   */
+  async getEventsByLevel(level: string, options?: { limit?: number; offset?: number }): Promise<MemoryEvent[]> {
+    await this.initialize();
+    return this.sqliteStore.getEventsByLevel(level, options);
+  }
+
+  /**
+   * Get memory level for a specific event
+   */
+  async getEventLevel(eventId: string): Promise<string | null> {
+    await this.initialize();
+    return this.sqliteStore.getEventLevel(eventId);
   }
 
   /**
@@ -609,14 +707,14 @@ export class MemoryService {
   async initializeEndlessMode(): Promise<void> {
     const config = await this.getEndlessConfig();
 
-    this.workingSetStore = createWorkingSetStore(this.eventStore, config);
-    this.consolidatedStore = createConsolidatedStore(this.eventStore);
+    this.workingSetStore = createWorkingSetStore(this.sqliteStore, config);
+    this.consolidatedStore = createConsolidatedStore(this.sqliteStore);
     this.consolidationWorker = createConsolidationWorker(
       this.workingSetStore,
       this.consolidatedStore,
       config
     );
-    this.continuityManager = createContinuityManager(this.eventStore, config);
+    this.continuityManager = createContinuityManager(this.sqliteStore, config);
 
     // Start consolidation worker
     this.consolidationWorker.start();
@@ -626,7 +724,7 @@ export class MemoryService {
    * Get Endless Mode configuration
    */
   async getEndlessConfig(): Promise<EndlessModeConfig> {
-    const savedConfig = await this.eventStore.getEndlessConfig('config') as EndlessModeConfig | null;
+    const savedConfig = await this.sqliteStore.getEndlessConfig('config') as EndlessModeConfig | null;
     return savedConfig || this.getDefaultEndlessConfig();
   }
 
@@ -636,7 +734,7 @@ export class MemoryService {
   async setEndlessConfig(config: Partial<EndlessModeConfig>): Promise<void> {
     const current = await this.getEndlessConfig();
     const merged = { ...current, ...config };
-    await this.eventStore.setEndlessConfig('config', merged);
+    await this.sqliteStore.setEndlessConfig('config', merged);
   }
 
   /**
@@ -648,7 +746,7 @@ export class MemoryService {
     if (mode === this.endlessMode) return;
 
     this.endlessMode = mode;
-    await this.eventStore.setEndlessConfig('mode', mode);
+    await this.sqliteStore.setEndlessConfig('mode', mode);
 
     if (mode === 'endless') {
       await this.initializeEndlessMode();
@@ -711,6 +809,49 @@ export class MemoryService {
   async getConsolidatedMemories(limit?: number): Promise<ConsolidatedMemory[]> {
     if (!this.consolidatedStore) return [];
     return this.consolidatedStore.getAll({ limit });
+  }
+
+  /**
+   * Get most accessed memories from events
+   */
+  async getMostAccessedMemories(limit: number = 10): Promise<any[]> {
+    // Try to get from SQLite event store if available
+    if (this.sqliteEventStore) {
+      const events = await this.sqliteEventStore.getMostAccessed(limit);
+      return events.map(event => ({
+        memoryId: event.id,
+        summary: event.content.substring(0, 200) + (event.content.length > 200 ? '...' : ''),
+        topics: [], // Could extract topics from content if needed
+        accessCount: (event as any).access_count || 0,
+        lastAccessed: (event as any).last_accessed_at || null,
+        confidence: 1.0,
+        createdAt: event.timestamp
+      }));
+    }
+
+    // Fallback to consolidated store if available
+    if (this.consolidatedStore) {
+      const consolidated = await this.consolidatedStore.getMostAccessed(limit);
+      return consolidated.map(m => ({
+        memoryId: m.memoryId,
+        summary: m.summary,
+        topics: m.topics,
+        accessCount: m.accessCount,
+        lastAccessed: m.accessedAt,
+        confidence: m.confidence,
+        createdAt: m.createdAt
+      }));
+    }
+
+    return [];
+  }
+
+  /**
+   * Mark a consolidated memory as accessed
+   */
+  async markMemoryAccessed(memoryId: string): Promise<void> {
+    if (!this.consolidatedStore) return;
+    await this.consolidatedStore.markAccessed(memoryId);
   }
 
   /**
@@ -823,9 +964,31 @@ export class MemoryService {
   }
 
   /**
+   * Force a graduation evaluation run
+   */
+  async forceGraduation(): Promise<GraduationRunResult> {
+    if (!this.graduationWorker) {
+      return { evaluated: 0, graduated: 0, byLevel: {} };
+    }
+    return this.graduationWorker.forceRun();
+  }
+
+  /**
+   * Record access to a memory event (for graduation scoring)
+   */
+  recordMemoryAccess(eventId: string, sessionId: string, confidence: number = 1.0): void {
+    this.graduation.recordAccess(eventId, sessionId, confidence);
+  }
+
+  /**
    * Shutdown service
    */
   async shutdown(): Promise<void> {
+    // Stop graduation worker
+    if (this.graduationWorker) {
+      this.graduationWorker.stop();
+    }
+
     // Stop endless mode components
     if (this.consolidationWorker) {
       this.consolidationWorker.stop();
@@ -835,12 +998,23 @@ export class MemoryService {
       this.vectorWorker.stop();
     }
 
+    // Stop sync worker
+    if (this.syncWorker) {
+      this.syncWorker.stop();
+    }
+
     // Close shared store
     if (this.sharedEventStore) {
       await this.sharedEventStore.close();
     }
 
-    await this.eventStore.close();
+    // Close primary store (SQLite)
+    await this.sqliteStore.close();
+
+    // Close analytics store (DuckDB)
+    if (this.analyticsStore) {
+      await this.analyticsStore.close();
+    }
   }
 
   /**
@@ -861,23 +1035,46 @@ export class MemoryService {
 // Instance cache: Map from project hash (or '__global__') to MemoryService
 const serviceCache = new Map<string, MemoryService>();
 const GLOBAL_KEY = '__global__';
+const GLOBAL_READONLY_KEY = '__global_readonly__';
 
 /**
  * Get the global memory service (backward compatibility)
  * Use this for operations not tied to a specific project
+ * Note: analyticsEnabled=false and sharedStore disabled to avoid DuckDB lock conflicts
  */
 export function getDefaultMemoryService(): MemoryService {
   if (!serviceCache.has(GLOBAL_KEY)) {
     serviceCache.set(GLOBAL_KEY, new MemoryService({
-      storagePath: '~/.claude-code/memory'
+      storagePath: '~/.claude-code/memory',
+      analyticsEnabled: false,  // Hooks don't need DuckDB
+      sharedStoreConfig: { enabled: false }  // Shared store uses DuckDB too
     }));
   }
   return serviceCache.get(GLOBAL_KEY)!;
 }
 
 /**
+ * Get a read-only global memory service
+ * Use this for web server/dashboard that only needs to read data
+ * Creates a fresh connection each time to avoid blocking the main writer process
+ * Uses SQLite (WAL mode) which supports concurrent readers
+ */
+export function getReadOnlyMemoryService(): MemoryService {
+  // Don't cache - create fresh instance each time to avoid holding locks
+  // The connection will be closed when the request completes
+  // Uses SQLite which supports concurrent readers via WAL mode
+  return new MemoryService({
+    storagePath: '~/.claude-code/memory',
+    readOnly: true,
+    analyticsEnabled: false,  // Use SQLite for reads (WAL supports concurrent readers)
+    sharedStoreConfig: { enabled: false }  // Skip shared store for now
+  });
+}
+
+/**
  * Get memory service for a specific project path
  * Creates isolated storage at ~/.claude-code/memory/projects/{hash}/
+ * Note: analyticsEnabled=false and sharedStore disabled to avoid DuckDB lock conflicts
  */
 export function getMemoryServiceForProject(
   projectPath: string,
@@ -890,7 +1087,9 @@ export function getMemoryServiceForProject(
     serviceCache.set(hash, new MemoryService({
       storagePath,
       projectHash: hash,
-      sharedStoreConfig
+      // Override shared store config - hooks don't need DuckDB
+      sharedStoreConfig: sharedStoreConfig ?? { enabled: false },
+      analyticsEnabled: false  // Hooks don't need DuckDB
     }));
   }
 

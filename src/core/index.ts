@@ -11,6 +11,9 @@ export * from './canonical-key.js';
 
 // Storage
 export * from './event-store.js';
+export * from './sqlite-wrapper.js';
+export * from './sqlite-event-store.js';
+export * from './sync-worker.js';
 export * from './entity-repo.js';
 export * from './edge-repo.js';
 
@@ -27,6 +30,7 @@ export * from './evidence-aligner.js';
 // Retrieval & Graduation
 export * from './retriever.js';
 export * from './graduation.js';
+export * from './graduation-worker.js';
 
 // Task Entity System
 export * from './task/index.js';
