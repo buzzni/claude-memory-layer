@@ -3,7 +3,7 @@
  * AXIOMMIND: Incremental processing with offset tracking
  */
 
-import { Database } from 'duckdb';
+import { dbRun, dbAll, toDate, type Database } from '../db-wrapper.js';
 import { randomUUID } from 'crypto';
 import type { BlockerMode, BlockerRef } from '../types.js';
 
@@ -37,7 +37,8 @@ export class TaskProjector {
    * Get current projection offset
    */
   async getOffset(): Promise<ProjectionOffset> {
-    const rows = await this.db.all<Array<Record<string, unknown>>>(
+    const rows = await dbAll<Record<string, unknown>>(
+      this.db,
       `SELECT last_event_id, last_timestamp
        FROM projection_offsets
        WHERE projection_name = ?`,
@@ -60,7 +61,8 @@ export class TaskProjector {
    * Update projection offset
    */
   private async updateOffset(eventId: string, timestamp: Date): Promise<void> {
-    await this.db.run(
+    await dbRun(
+      this.db,
       `INSERT INTO projection_offsets (projection_name, last_event_id, last_timestamp, updated_at)
        VALUES (?, ?, ?, CURRENT_TIMESTAMP)
        ON CONFLICT (projection_name) DO UPDATE SET
@@ -97,13 +99,13 @@ export class TaskProjector {
     query += ` ORDER BY timestamp ASC, id ASC LIMIT ?`;
     params.push(limit);
 
-    const rows = await this.db.all<Array<Record<string, unknown>>>(query, params);
+    const rows = await dbAll<Record<string, unknown>>(this.db, query, params);
 
     return rows.map(row => ({
       id: row.id as string,
       eventType: row.event_type as string,
       sessionId: row.session_id as string,
-      timestamp: new Date(row.timestamp as string),
+      timestamp: toDate(row.timestamp),
       content: typeof row.content === 'string'
         ? JSON.parse(row.content)
         : row.content as Record<string, unknown>
@@ -184,14 +186,16 @@ export class TaskProjector {
 
     // If status changed to 'done', remove all blocked_by edges
     if (toStatus === 'done') {
-      await this.db.run(
+      await dbRun(
+        this.db,
         `DELETE FROM edges
          WHERE src_id = ? AND rel_type IN ('blocked_by', 'blocked_by_suggested')`,
         [taskId]
       );
 
       // Clear blockers cache in entity
-      await this.db.run(
+      await dbRun(
+        this.db,
         `UPDATE entities
          SET current_json = json_remove(json_remove(current_json, '$.blockers'), '$.blockerSuggestions'),
              updated_at = CURRENT_TIMESTAMP
@@ -213,7 +217,8 @@ export class TaskProjector {
 
     if (mode === 'replace') {
       // Delete existing blocked_by edges
-      await this.db.run(
+      await dbRun(
+        this.db,
         `DELETE FROM edges WHERE src_id = ? AND rel_type = 'blocked_by'`,
         [taskId]
       );
@@ -225,7 +230,8 @@ export class TaskProjector {
 
       // Update entity cache
       const blockerIds = blockers.map(b => b.entityId);
-      await this.db.run(
+      await dbRun(
+        this.db,
         `UPDATE entities
          SET current_json = json_set(current_json, '$.blockers', ?),
              updated_at = CURRENT_TIMESTAMP
@@ -236,7 +242,8 @@ export class TaskProjector {
     } else {
       // mode === 'suggest'
       // Delete existing suggested edges
-      await this.db.run(
+      await dbRun(
+        this.db,
         `DELETE FROM edges WHERE src_id = ? AND rel_type = 'blocked_by_suggested'`,
         [taskId]
       );
@@ -248,7 +255,8 @@ export class TaskProjector {
 
       // Update entity cache (suggestions)
       const suggestionIds = blockers.map(b => b.entityId);
-      await this.db.run(
+      await dbRun(
+        this.db,
         `UPDATE entities
          SET current_json = json_set(current_json, '$.blockerSuggestions', ?),
              updated_at = CURRENT_TIMESTAMP
@@ -268,7 +276,8 @@ export class TaskProjector {
   ): Promise<void> {
     const edgeId = randomUUID();
 
-    await this.db.run(
+    await dbRun(
+      this.db,
       `INSERT INTO edges (edge_id, src_type, src_id, rel_type, dst_type, dst_id, meta_json, created_at)
        VALUES (?, 'entity', ?, ?, 'entity', ?, ?, CURRENT_TIMESTAMP)
        ON CONFLICT DO NOTHING`,
@@ -297,7 +306,8 @@ export class TaskProjector {
     };
 
     // Update condition entity
-    await this.db.run(
+    await dbRun(
+      this.db,
       `UPDATE entities
        SET current_json = json_set(json_set(current_json, '$.resolved', true), '$.resolvedTo', ?),
            updated_at = CURRENT_TIMESTAMP
@@ -315,7 +325,8 @@ export class TaskProjector {
     const jobId = randomUUID();
     const embeddingVersion = 'v1';  // Should come from config
 
-    await this.db.run(
+    await dbRun(
+      this.db,
       `INSERT INTO vector_outbox (job_id, item_kind, item_id, embedding_version, status, retry_count)
        VALUES (?, ?, ?, ?, 'pending', 0)
        ON CONFLICT (item_kind, item_id, embedding_version) DO NOTHING`,
@@ -329,12 +340,14 @@ export class TaskProjector {
    */
   async rebuild(): Promise<number> {
     // Clear task-related edges
-    await this.db.run(
+    await dbRun(
+      this.db,
       `DELETE FROM edges WHERE rel_type IN ('blocked_by', 'blocked_by_suggested', 'resolves_to')`
     );
 
     // Reset offset
-    await this.db.run(
+    await dbRun(
+      this.db,
       `DELETE FROM projection_offsets WHERE projection_name = ?`,
       [PROJECTOR_NAME]
     );

@@ -4,7 +4,7 @@
  * Called when agent stops - stores the conversation messages
  */
 
-import { getDefaultMemoryService } from '../services/memory-service.js';
+import { getMemoryServiceForSession } from '../services/memory-service.js';
 import { applyPrivacyFilter } from '../core/privacy/index.js';
 import type { StopInput, Config } from '../core/types.js';
 
@@ -25,7 +25,8 @@ async function main(): Promise<void> {
   const inputData = await readStdin();
   const input: StopInput = JSON.parse(inputData);
 
-  const memoryService = getDefaultMemoryService();
+  // Get project-specific memory service via session lookup
+  const memoryService = getMemoryServiceForSession(input.session_id);
 
   try {
     // Store agent responses from the conversation

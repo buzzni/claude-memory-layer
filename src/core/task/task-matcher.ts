@@ -3,7 +3,7 @@
  * AXIOMMIND: strict matching (≥0.92, gap≥0.03)
  */
 
-import { Database } from 'duckdb';
+import { dbAll, toDate, type Database } from '../db-wrapper.js';
 import type { Entity, MatchConfidence } from '../types.js';
 import { makeEntityCanonicalKey } from '../canonical-key.js';
 import { MATCH_THRESHOLDS } from '../types.js';
@@ -46,7 +46,8 @@ export class TaskMatcher {
   async findExact(title: string, project?: string): Promise<Entity | null> {
     const canonicalKey = makeEntityCanonicalKey('task', title, { project });
 
-    const rows = await this.db.all<Array<Record<string, unknown>>>(
+    const rows = await dbAll<Record<string, unknown>>(
+      this.db,
       `SELECT * FROM entities
        WHERE entity_type = 'task' AND canonical_key = ?
        AND status = 'active'`,
@@ -63,7 +64,8 @@ export class TaskMatcher {
   async findByAlias(title: string, project?: string): Promise<Entity | null> {
     const canonicalKey = makeEntityCanonicalKey('task', title, { project });
 
-    const rows = await this.db.all<Array<Record<string, unknown>>>(
+    const rows = await dbAll<Record<string, unknown>>(
+      this.db,
       `SELECT e.* FROM entities e
        JOIN entity_aliases a ON e.entity_id = a.entity_id
        WHERE a.entity_type = 'task' AND a.canonical_key = ?
@@ -105,7 +107,7 @@ export class TaskMatcher {
     sql += ` ORDER BY match_score DESC, updated_at DESC LIMIT ?`;
     params.push(this.config.maxCandidates);
 
-    const rows = await this.db.all<Array<Record<string, unknown>>>(sql, params);
+    const rows = await dbAll<Record<string, unknown>>(this.db, sql, params);
 
     return rows.map(row => ({
       entity: this.rowToEntity(row),
@@ -231,8 +233,8 @@ export class TaskMatcher {
         : row.current_json as Record<string, unknown>,
       titleNorm: row.title_norm as string | undefined,
       searchText: row.search_text as string | undefined,
-      createdAt: new Date(row.created_at as string),
-      updatedAt: new Date(row.updated_at as string)
+      createdAt: toDate(row.created_at),
+      updatedAt: toDate(row.updated_at)
     };
   }
 }

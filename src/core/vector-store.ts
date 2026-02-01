@@ -121,7 +121,11 @@ export class VectorStore {
 
     const { limit = 5, minScore = 0.7, sessionId } = options;
 
-    let query = this.table.search(queryVector).limit(limit * 2); // Get more for filtering
+    // Use cosine distance for semantic similarity
+    let query = this.table
+      .search(queryVector)
+      .distanceType('cosine')
+      .limit(limit * 2); // Get more for filtering
 
     // Apply session filter if specified
     if (sessionId) {
@@ -132,20 +136,27 @@ export class VectorStore {
 
     return results
       .filter(r => {
-        // Convert distance to score (assuming cosine distance)
-        const score = 1 - (r._distance || 0);
+        // Convert cosine distance to similarity score
+        // Cosine distance ranges from 0 (identical) to 2 (opposite)
+        // Score = 1 - (distance / 2) gives range [0, 1]
+        const distance = r._distance || 0;
+        const score = 1 - (distance / 2);
         return score >= minScore;
       })
       .slice(0, limit)
-      .map(r => ({
-        id: r.id as string,
-        eventId: r.eventId as string,
-        content: r.content as string,
-        score: 1 - (r._distance || 0),
-        sessionId: r.sessionId as string,
-        eventType: r.eventType as string,
-        timestamp: r.timestamp as string
-      }));
+      .map(r => {
+        const distance = r._distance || 0;
+        const score = 1 - (distance / 2);
+        return {
+          id: r.id as string,
+          eventId: r.eventId as string,
+          content: r.content as string,
+          score,
+          sessionId: r.sessionId as string,
+          eventType: r.eventType as string,
+          timestamp: r.timestamp as string
+        };
+      });
   }
 
   /**

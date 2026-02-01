@@ -5,7 +5,7 @@
  */
 
 import { randomUUID } from 'crypto';
-import { Database } from 'duckdb';
+import { dbRun, dbAll, toDate, type Database } from './db-wrapper.js';
 import type {
   MemoryEvent,
   EndlessModeConfig,
@@ -32,7 +32,8 @@ export class WorkingSetStore {
       Date.now() + this.config.workingSet.timeWindowHours * 60 * 60 * 1000
     );
 
-    await this.db.run(
+    await dbRun(
+      this.db,
       `INSERT OR REPLACE INTO working_set (id, event_id, added_at, relevance_score, topics, expires_at)
        VALUES (?, ?, CURRENT_TIMESTAMP, ?, ?, ?)`,
       [
@@ -56,7 +57,8 @@ export class WorkingSetStore {
     await this.cleanup();
 
     // Get working set items with their events
-    const rows = await this.db.all<Array<Record<string, unknown>>>(
+    const rows = await dbAll<Record<string, unknown>>(
+      this.db,
       `SELECT ws.*, e.*
        FROM working_set ws
        JOIN events e ON ws.event_id = e.id
@@ -69,7 +71,7 @@ export class WorkingSetStore {
       id: row.id as string,
       eventType: row.event_type as 'user_prompt' | 'agent_response' | 'session_summary' | 'tool_observation',
       sessionId: row.session_id as string,
-      timestamp: new Date(row.timestamp as string),
+      timestamp: toDate(row.timestamp),
       content: row.content as string,
       canonicalKey: row.canonical_key as string,
       dedupeKey: row.dedupe_key as string,
@@ -87,17 +89,18 @@ export class WorkingSetStore {
    * Get working set items (metadata only)
    */
   async getItems(): Promise<WorkingSetItem[]> {
-    const rows = await this.db.all<Array<Record<string, unknown>>>(
+    const rows = await dbAll<Record<string, unknown>>(
+      this.db,
       `SELECT * FROM working_set ORDER BY relevance_score DESC, added_at DESC`
     );
 
     return rows.map(row => ({
       id: row.id as string,
       eventId: row.event_id as string,
-      addedAt: new Date(row.added_at as string),
+      addedAt: toDate(row.added_at),
       relevanceScore: row.relevance_score as number,
       topics: row.topics ? JSON.parse(row.topics as string) : undefined,
-      expiresAt: new Date(row.expires_at as string)
+      expiresAt: toDate(row.expires_at)
     }));
   }
 
@@ -105,7 +108,8 @@ export class WorkingSetStore {
    * Update relevance score for an event
    */
   async updateRelevance(eventId: string, score: number): Promise<void> {
-    await this.db.run(
+    await dbRun(
+      this.db,
       `UPDATE working_set SET relevance_score = ? WHERE event_id = ?`,
       [score, eventId]
     );
@@ -118,7 +122,8 @@ export class WorkingSetStore {
     if (eventIds.length === 0) return;
 
     const placeholders = eventIds.map(() => '?').join(',');
-    await this.db.run(
+    await dbRun(
+      this.db,
       `DELETE FROM working_set WHERE event_id IN (${placeholders})`,
       eventIds
     );
@@ -128,7 +133,8 @@ export class WorkingSetStore {
    * Get the count of items in working set
    */
   async count(): Promise<number> {
-    const result = await this.db.all<Array<{ count: number }>>(
+    const result = await dbAll<{ count: number }>(
+      this.db,
       `SELECT COUNT(*) as count FROM working_set`
     );
     return result[0]?.count || 0;
@@ -138,14 +144,15 @@ export class WorkingSetStore {
    * Clear the entire working set
    */
   async clear(): Promise<void> {
-    await this.db.run(`DELETE FROM working_set`);
+    await dbRun(this.db, `DELETE FROM working_set`);
   }
 
   /**
    * Check if an event is in the working set
    */
   async contains(eventId: string): Promise<boolean> {
-    const result = await this.db.all<Array<{ count: number }>>(
+    const result = await dbAll<{ count: number }>(
+      this.db,
       `SELECT COUNT(*) as count FROM working_set WHERE event_id = ?`,
       [eventId]
     );
@@ -160,7 +167,8 @@ export class WorkingSetStore {
       Date.now() + this.config.workingSet.timeWindowHours * 60 * 60 * 1000
     );
 
-    await this.db.run(
+    await dbRun(
+      this.db,
       `UPDATE working_set SET expires_at = ? WHERE event_id = ?`,
       [newExpiresAt.toISOString(), eventId]
     );
@@ -170,7 +178,8 @@ export class WorkingSetStore {
    * Clean up expired items
    */
   private async cleanup(): Promise<void> {
-    await this.db.run(
+    await dbRun(
+      this.db,
       `DELETE FROM working_set WHERE expires_at < datetime('now')`
     );
   }
@@ -183,7 +192,8 @@ export class WorkingSetStore {
     const maxEvents = this.config.workingSet.maxEvents;
 
     // Get IDs to keep (highest relevance, most recent)
-    const keepIds = await this.db.all<Array<{ id: string }>>(
+    const keepIds = await dbAll<{ id: string }>(
+      this.db,
       `SELECT id FROM working_set
        ORDER BY relevance_score DESC, added_at DESC
        LIMIT ?`,
@@ -196,7 +206,8 @@ export class WorkingSetStore {
     const placeholders = keepIdList.map(() => '?').join(',');
 
     // Delete everything not in the keep list
-    await this.db.run(
+    await dbRun(
+      this.db,
       `DELETE FROM working_set WHERE id NOT IN (${placeholders})`,
       keepIdList
     );
@@ -206,7 +217,8 @@ export class WorkingSetStore {
    * Calculate continuity score based on recent context transitions
    */
   private async calculateContinuityScore(): Promise<number> {
-    const result = await this.db.all<Array<{ avg_score: number | null }>>(
+    const result = await dbAll<{ avg_score: number | null }>(
+      this.db,
       `SELECT AVG(continuity_score) as avg_score
        FROM continuity_log
        WHERE created_at > datetime('now', '-1 hour')`
@@ -219,7 +231,8 @@ export class WorkingSetStore {
    * Get topics from current working set for context matching
    */
   async getActiveTopics(): Promise<string[]> {
-    const rows = await this.db.all<Array<{ topics: string }>>(
+    const rows = await dbAll<{ topics: string }>(
+      this.db,
       `SELECT topics FROM working_set WHERE topics IS NOT NULL`
     );
 

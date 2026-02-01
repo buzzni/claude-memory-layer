@@ -3,7 +3,7 @@
  * AXIOMMIND Principle 6: DuckDB → outbox → LanceDB unidirectional flow
  */
 
-import { Database } from 'duckdb';
+import { dbRun, dbAll, toDate, type Database } from './db-wrapper.js';
 import { randomUUID } from 'crypto';
 import type {
   OutboxJob,
@@ -56,7 +56,8 @@ export class VectorOutbox {
     const jobId = randomUUID();
     const now = new Date().toISOString();
 
-    await this.db.run(
+    await dbRun(
+      this.db,
       `INSERT INTO vector_outbox (
         job_id, item_kind, item_id, embedding_version, status, retry_count, created_at, updated_at
       ) VALUES (?, ?, ?, ?, 'pending', 0, ?, ?)
@@ -74,7 +75,8 @@ export class VectorOutbox {
     const now = new Date().toISOString();
 
     // Atomic claim using UPDATE RETURNING
-    const rows = await this.db.all<Array<Record<string, unknown>>>(
+    const rows = await dbAll<Record<string, unknown>>(
+      this.db,
       `UPDATE vector_outbox
        SET status = 'processing', updated_at = ?
        WHERE job_id IN (
@@ -94,7 +96,8 @@ export class VectorOutbox {
    * Mark job as done
    */
   async markDone(jobId: string): Promise<void> {
-    await this.db.run(
+    await dbRun(
+      this.db,
       `UPDATE vector_outbox
        SET status = 'done', updated_at = ?
        WHERE job_id = ?`,
@@ -109,7 +112,8 @@ export class VectorOutbox {
     const now = new Date().toISOString();
 
     // Check retry count
-    const rows = await this.db.all<Array<{ retry_count: number }>>(
+    const rows = await dbAll<{ retry_count: number }>(
+      this.db,
       `SELECT retry_count FROM vector_outbox WHERE job_id = ?`,
       [jobId]
     );
@@ -121,7 +125,8 @@ export class VectorOutbox {
       ? 'failed'
       : 'pending';  // Will retry
 
-    await this.db.run(
+    await dbRun(
+      this.db,
       `UPDATE vector_outbox
        SET status = ?, error = ?, retry_count = retry_count + 1, updated_at = ?
        WHERE job_id = ?`,
@@ -133,7 +138,8 @@ export class VectorOutbox {
    * Get job by ID
    */
   async getJob(jobId: string): Promise<OutboxJob | null> {
-    const rows = await this.db.all<Array<Record<string, unknown>>>(
+    const rows = await dbAll<Record<string, unknown>>(
+      this.db,
       `SELECT * FROM vector_outbox WHERE job_id = ?`,
       [jobId]
     );
@@ -146,7 +152,8 @@ export class VectorOutbox {
    * Get jobs by status
    */
   async getJobsByStatus(status: OutboxStatus, limit: number = 100): Promise<OutboxJob[]> {
-    const rows = await this.db.all<Array<Record<string, unknown>>>(
+    const rows = await dbAll<Record<string, unknown>>(
+      this.db,
       `SELECT * FROM vector_outbox
        WHERE status = ?
        ORDER BY created_at ASC
@@ -165,7 +172,8 @@ export class VectorOutbox {
     const stuckThreshold = new Date(now.getTime() - this.config.stuckThresholdMs);
 
     // Recover stuck processing jobs
-    const recoveredResult = await this.db.run(
+    await dbRun(
+      this.db,
       `UPDATE vector_outbox
        SET status = 'pending', updated_at = ?
        WHERE status = 'processing'
@@ -174,7 +182,8 @@ export class VectorOutbox {
     );
 
     // Retry failed jobs that haven't exceeded max retries
-    const retriedResult = await this.db.run(
+    await dbRun(
+      this.db,
       `UPDATE vector_outbox
        SET status = 'pending', updated_at = ?
        WHERE status = 'failed'
@@ -183,7 +192,8 @@ export class VectorOutbox {
     );
 
     // Get counts (DuckDB doesn't return affected rows easily)
-    const recoveredRows = await this.db.all<Array<{ count: number }>>(
+    const recoveredRows = await dbAll<{ count: number }>(
+      this.db,
       `SELECT COUNT(*) as count FROM vector_outbox
        WHERE status = 'pending' AND updated_at = ?`,
       [now.toISOString()]
@@ -202,7 +212,8 @@ export class VectorOutbox {
     const threshold = new Date();
     threshold.setDate(threshold.getDate() - this.config.cleanupDays);
 
-    await this.db.run(
+    await dbRun(
+      this.db,
       `DELETE FROM vector_outbox
        WHERE status = 'done'
        AND updated_at < ?`,
@@ -216,13 +227,15 @@ export class VectorOutbox {
    * Get metrics
    */
   async getMetrics(): Promise<OutboxMetrics> {
-    const statusCounts = await this.db.all<Array<{ status: string; count: number }>>(
+    const statusCounts = await dbAll<{ status: string; count: number }>(
+      this.db,
       `SELECT status, COUNT(*) as count
        FROM vector_outbox
        GROUP BY status`
     );
 
-    const oldestPending = await this.db.all<Array<{ created_at: string }>>(
+    const oldestPending = await dbAll<{ created_at: string }>(
+      this.db,
       `SELECT created_at FROM vector_outbox
        WHERE status = 'pending'
        ORDER BY created_at ASC
@@ -288,8 +301,8 @@ export class VectorOutbox {
       status: row.status as OutboxStatus,
       retryCount: row.retry_count as number,
       error: row.error as string | undefined,
-      createdAt: new Date(row.created_at as string),
-      updatedAt: new Date(row.updated_at as string)
+      createdAt: toDate(row.created_at),
+      updatedAt: toDate(row.updated_at)
     };
   }
 }

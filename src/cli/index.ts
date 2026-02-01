@@ -5,7 +5,10 @@
  */
 
 import { Command } from 'commander';
-import { getDefaultMemoryService } from '../services/memory-service.js';
+import {
+  getDefaultMemoryService,
+  getMemoryServiceForProject
+} from '../services/memory-service.js';
 import { createSessionHistoryImporter } from '../services/session-history-importer.js';
 
 const program = new Command();
@@ -24,8 +27,10 @@ program
   .option('-k, --top-k <number>', 'Number of results', '5')
   .option('-s, --min-score <number>', 'Minimum similarity score', '0.7')
   .option('--session <id>', 'Filter by session ID')
+  .option('-p, --project <path>', 'Project path (defaults to cwd)')
   .action(async (query: string, options) => {
-    const service = getDefaultMemoryService();
+    const projectPath = options.project || process.cwd();
+    const service = getMemoryServiceForProject(projectPath);
 
     try {
       const result = await service.retrieveMemories(query, {
@@ -64,8 +69,10 @@ program
   .option('-l, --limit <number>', 'Number of events', '20')
   .option('--session <id>', 'Filter by session ID')
   .option('--type <type>', 'Filter by event type')
+  .option('-p, --project <path>', 'Project path (defaults to cwd)')
   .action(async (options) => {
-    const service = getDefaultMemoryService();
+    const projectPath = options.project || process.cwd();
+    const service = getMemoryServiceForProject(projectPath);
 
     try {
       let events;
@@ -107,8 +114,10 @@ program
 program
   .command('stats')
   .description('View memory statistics')
-  .action(async () => {
-    const service = getDefaultMemoryService();
+  .option('-p, --project <path>', 'Project path (defaults to cwd)')
+  .action(async (options) => {
+    const projectPath = options.project || process.cwd();
+    const service = getMemoryServiceForProject(projectPath);
 
     try {
       const stats = await service.getStats();
@@ -139,8 +148,10 @@ program
   .option('--session <id>', 'Forget all events from a session')
   .option('--before <date>', 'Forget events before date (YYYY-MM-DD)')
   .option('--confirm', 'Skip confirmation')
+  .option('-p, --project <path>', 'Project path (defaults to cwd)')
   .action(async (eventId: string | undefined, options) => {
-    const service = getDefaultMemoryService();
+    const projectPath = options.project || process.cwd();
+    const service = getMemoryServiceForProject(projectPath);
 
     try {
       if (!eventId && !options.session && !options.before) {
@@ -171,8 +182,10 @@ program
 program
   .command('process')
   .description('Process pending embeddings')
-  .action(async () => {
-    const service = getDefaultMemoryService();
+  .option('-p, --project <path>', 'Project path (defaults to cwd)')
+  .action(async (options) => {
+    const projectPath = options.project || process.cwd();
+    const service = getMemoryServiceForProject(projectPath);
 
     try {
       console.log('⏳ Processing pending embeddings...');
@@ -198,7 +211,11 @@ program
   .option('-l, --limit <number>', 'Limit messages per session')
   .option('-v, --verbose', 'Show detailed progress')
   .action(async (options) => {
-    const service = getDefaultMemoryService();
+    // Determine target project path for storage
+    const targetProjectPath = options.project || process.cwd();
+
+    // Use project-specific memory service
+    const service = getMemoryServiceForProject(targetProjectPath);
     const importer = createSessionHistoryImporter(service);
 
     try {
@@ -208,9 +225,10 @@ program
 
       if (options.session) {
         // Import specific session file
-        console.log(`\n📥 Importing session: ${options.session}\n`);
+        console.log(`\n📥 Importing session: ${options.session}`);
+        console.log(`   Target project: ${targetProjectPath}\n`);
         result = await importer.importSessionFile(options.session, {
-          projectPath: options.project,
+          projectPath: targetProjectPath,
           limit: options.limit ? parseInt(options.limit) : undefined,
           verbose: options.verbose
         });
@@ -223,11 +241,42 @@ program
         });
       } else if (options.all) {
         // Import all sessions from all projects
-        console.log('\n📥 Importing all sessions from all projects\n');
-        result = await importer.importAll({
+        // Note: --all imports to global storage for backward compatibility
+        console.log('\n📥 Importing all sessions from all projects');
+        console.log('   ⚠️  Using global storage (use -p for project-specific)\n');
+        const globalService = getDefaultMemoryService();
+        const globalImporter = createSessionHistoryImporter(globalService);
+        await globalService.initialize();
+        result = await globalImporter.importAll({
           limit: options.limit ? parseInt(options.limit) : undefined,
           verbose: options.verbose
         });
+
+        // Process embeddings
+        console.log('\n⏳ Processing embeddings...');
+        const embedCount = await globalService.processPendingEmbeddings();
+
+        // Show results
+        console.log('\n✅ Import Complete\n');
+        console.log(`Sessions processed: ${result.totalSessions}`);
+        console.log(`Total messages: ${result.totalMessages}`);
+        console.log(`Imported prompts: ${result.importedPrompts}`);
+        console.log(`Imported responses: ${result.importedResponses}`);
+        console.log(`Skipped duplicates: ${result.skippedDuplicates}`);
+        console.log(`Embeddings processed: ${embedCount}`);
+
+        if (result.errors.length > 0) {
+          console.log(`\n⚠️  Errors (${result.errors.length}):`);
+          for (const error of result.errors.slice(0, 5)) {
+            console.log(`  - ${error}`);
+          }
+          if (result.errors.length > 5) {
+            console.log(`  ... and ${result.errors.length - 5} more`);
+          }
+        }
+
+        await globalService.shutdown();
+        return;
       } else {
         // Default: import current project
         const cwd = process.cwd();
@@ -324,8 +373,10 @@ const endlessCmd = program
 endlessCmd
   .command('enable')
   .description('Enable Endless Mode')
-  .action(async () => {
-    const service = getDefaultMemoryService();
+  .option('-p, --project <path>', 'Project path (defaults to cwd)')
+  .action(async (options) => {
+    const projectPath = options.project || process.cwd();
+    const service = getMemoryServiceForProject(projectPath);
 
     try {
       await service.initialize();
@@ -353,8 +404,10 @@ endlessCmd
 endlessCmd
   .command('disable')
   .description('Disable Endless Mode (return to Session Mode)')
-  .action(async () => {
-    const service = getDefaultMemoryService();
+  .option('-p, --project <path>', 'Project path (defaults to cwd)')
+  .action(async (options) => {
+    const projectPath = options.project || process.cwd();
+    const service = getMemoryServiceForProject(projectPath);
 
     try {
       await service.initialize();
@@ -377,8 +430,10 @@ endlessCmd
 endlessCmd
   .command('status')
   .description('Show Endless Mode status')
-  .action(async () => {
-    const service = getDefaultMemoryService();
+  .option('-p, --project <path>', 'Project path (defaults to cwd)')
+  .action(async (options) => {
+    const projectPath = options.project || process.cwd();
+    const service = getMemoryServiceForProject(projectPath);
 
     try {
       await service.initialize();
@@ -423,8 +478,10 @@ endlessCmd
 endlessCmd
   .command('consolidate')
   .description('Manually trigger memory consolidation')
-  .action(async () => {
-    const service = getDefaultMemoryService();
+  .option('-p, --project <path>', 'Project path (defaults to cwd)')
+  .action(async (options) => {
+    const projectPath = options.project || process.cwd();
+    const service = getMemoryServiceForProject(projectPath);
 
     try {
       await service.initialize();
@@ -460,8 +517,10 @@ endlessCmd
   .alias('ws')
   .description('View current working set')
   .option('-l, --limit <number>', 'Number of events to show', '10')
+  .option('-p, --project <path>', 'Project path (defaults to cwd)')
   .action(async (options) => {
-    const service = getDefaultMemoryService();
+    const projectPath = options.project || process.cwd();
+    const service = getMemoryServiceForProject(projectPath);
 
     try {
       await service.initialize();
@@ -519,8 +578,10 @@ endlessCmd
   .description('View consolidated memories')
   .option('-l, --limit <number>', 'Number of memories to show', '10')
   .option('-q, --query <text>', 'Search consolidated memories')
+  .option('-p, --project <path>', 'Project path (defaults to cwd)')
   .action(async (options) => {
-    const service = getDefaultMemoryService();
+    const projectPath = options.project || process.cwd();
+    const service = getMemoryServiceForProject(projectPath);
 
     try {
       await service.initialize();

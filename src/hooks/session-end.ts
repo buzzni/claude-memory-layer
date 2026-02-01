@@ -4,7 +4,7 @@
  * Called when session ends - generates and stores session summary
  */
 
-import { getDefaultMemoryService } from '../services/memory-service.js';
+import { getMemoryServiceForSession } from '../services/memory-service.js';
 import type { SessionEndInput } from '../core/types.js';
 
 async function main(): Promise<void> {
@@ -12,7 +12,8 @@ async function main(): Promise<void> {
   const inputData = await readStdin();
   const input: SessionEndInput = JSON.parse(inputData);
 
-  const memoryService = getDefaultMemoryService();
+  // Get project-specific memory service via session lookup
+  const memoryService = getMemoryServiceForSession(input.session_id);
 
   try {
     // Get session history

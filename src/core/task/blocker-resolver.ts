@@ -3,7 +3,7 @@
  * AXIOMMIND: No stub task creation, fallback to condition
  */
 
-import { Database } from 'duckdb';
+import { dbRun, dbAll, type Database } from '../db-wrapper.js';
 import { randomUUID } from 'crypto';
 import type { BlockerRef, BlockerKind, Entity } from '../types.js';
 import { makeEntityCanonicalKey, makeArtifactKey } from '../canonical-key.js';
@@ -110,7 +110,8 @@ export class BlockerResolver {
     const canonicalKey = makeArtifactKey(text);
 
     // Find or create artifact
-    const existing = await this.db.all<Array<Record<string, unknown>>>(
+    const existing = await dbAll<Record<string, unknown>>(
+      this.db,
       `SELECT entity_id FROM entities
        WHERE entity_type = 'artifact' AND canonical_key = ?`,
       [canonicalKey]
@@ -138,7 +139,8 @@ export class BlockerResolver {
    */
   private async tryResolveAsTaskId(taskId: string): Promise<BlockerRef | null> {
     // taskId format: task:project:identifier
-    const rows = await this.db.all<Array<Record<string, unknown>>>(
+    const rows = await dbAll<Record<string, unknown>>(
+      this.db,
       `SELECT entity_id FROM entities
        WHERE entity_type = 'task' AND canonical_key = ?
        AND status = 'active'`,
@@ -169,7 +171,8 @@ export class BlockerResolver {
     });
 
     // Find existing condition
-    const existing = await this.db.all<Array<Record<string, unknown>>>(
+    const existing = await dbAll<Record<string, unknown>>(
+      this.db,
       `SELECT entity_id FROM entities
        WHERE entity_type = 'condition' AND canonical_key = ?`,
       [canonicalKey]
@@ -213,7 +216,8 @@ export class BlockerResolver {
       }))
     };
 
-    await this.db.run(
+    await dbRun(
+      this.db,
       `INSERT INTO entities (
         entity_id, entity_type, canonical_key, title, stage, status,
         current_json, title_norm, search_text, created_at, updated_at
@@ -234,7 +238,8 @@ export class BlockerResolver {
     );
 
     // Create alias
-    await this.db.run(
+    await dbRun(
+      this.db,
       `INSERT INTO entity_aliases (entity_type, canonical_key, entity_id, is_primary)
        VALUES (?, ?, ?, TRUE)
        ON CONFLICT (entity_type, canonical_key) DO NOTHING`,
@@ -269,7 +274,8 @@ export class BlockerResolver {
       artifactType
     };
 
-    await this.db.run(
+    await dbRun(
+      this.db,
       `INSERT INTO entities (
         entity_id, entity_type, canonical_key, title, stage, status,
         current_json, title_norm, search_text, created_at, updated_at
@@ -290,7 +296,8 @@ export class BlockerResolver {
     );
 
     // Create alias
-    await this.db.run(
+    await dbRun(
+      this.db,
       `INSERT INTO entity_aliases (entity_type, canonical_key, entity_id, is_primary)
        VALUES (?, ?, ?, TRUE)
        ON CONFLICT (entity_type, canonical_key) DO NOTHING`,
@@ -310,7 +317,8 @@ export class BlockerResolver {
     const ref = await this.createConditionBlocker(text);
 
     // Mark as auto placeholder
-    await this.db.run(
+    await dbRun(
+      this.db,
       `UPDATE entities
        SET current_json = json_set(current_json, '$.auto_placeholder', true)
        WHERE entity_id = ?`,

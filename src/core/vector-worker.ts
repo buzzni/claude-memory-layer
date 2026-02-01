@@ -186,7 +186,7 @@ export function createVectorWorker(
 // Vector Worker V2 - Extended for Task Entity System
 // ============================================================
 
-import { Database } from 'duckdb';
+import { dbAll, type Database } from './db-wrapper.js';
 import { VectorOutbox } from './vector-outbox.js';
 import type { OutboxJob, OutboxItemKind } from './types.js';
 
@@ -240,7 +240,8 @@ export class DefaultContentProvider implements ContentProvider {
     content: string;
     metadata: Record<string, unknown>;
   } | null> {
-    const rows = await this.db.all<Array<Record<string, unknown>>>(
+    const rows = await dbAll<Record<string, unknown>>(
+      this.db,
       `SELECT title, content_json, entry_type FROM entries WHERE entry_id = ?`,
       [entryId]
     );
@@ -265,7 +266,8 @@ export class DefaultContentProvider implements ContentProvider {
     content: string;
     metadata: Record<string, unknown>;
   } | null> {
-    const rows = await this.db.all<Array<Record<string, unknown>>>(
+    const rows = await dbAll<Record<string, unknown>>(
+      this.db,
       `SELECT title, search_text, current_json FROM entities
        WHERE entity_id = ? AND entity_type = 'task'`,
       [taskId]
@@ -287,7 +289,8 @@ export class DefaultContentProvider implements ContentProvider {
     content: string;
     metadata: Record<string, unknown>;
   } | null> {
-    const rows = await this.db.all<Array<Record<string, unknown>>>(
+    const rows = await dbAll<Record<string, unknown>>(
+      this.db,
       `SELECT content, event_type, session_id FROM events WHERE id = ?`,
       [eventId]
     );

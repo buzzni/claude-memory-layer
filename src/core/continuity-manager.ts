@@ -5,7 +5,7 @@
  */
 
 import { randomUUID } from 'crypto';
-import { Database } from 'duckdb';
+import { dbRun, dbAll, toDate, type Database } from './db-wrapper.js';
 import type {
   EndlessModeConfig,
   ContextSnapshot,
@@ -107,7 +107,8 @@ export class ContinuityManager {
    * Get recent continuity logs
    */
   async getRecentLogs(limit: number = 10): Promise<ContinuityLog[]> {
-    const rows = await this.db.all<Array<Record<string, unknown>>>(
+    const rows = await dbAll<Record<string, unknown>>(
+      this.db,
       `SELECT * FROM continuity_log
        ORDER BY created_at DESC
        LIMIT ?`,
@@ -120,7 +121,7 @@ export class ContinuityManager {
       toContextId: row.to_context_id as string | undefined,
       continuityScore: row.continuity_score as number,
       transitionType: row.transition_type as TransitionType,
-      createdAt: new Date(row.created_at as string)
+      createdAt: toDate(row.created_at)
     }));
   }
 
@@ -128,7 +129,8 @@ export class ContinuityManager {
    * Get average continuity score over time period
    */
   async getAverageScore(hours: number = 1): Promise<number> {
-    const result = await this.db.all<Array<{ avg_score: number | null }>>(
+    const result = await dbAll<{ avg_score: number | null }>(
+      this.db,
       `SELECT AVG(continuity_score) as avg_score
        FROM continuity_log
        WHERE created_at > datetime('now', '-${hours} hours')`
@@ -141,7 +143,8 @@ export class ContinuityManager {
    * Get transition type distribution
    */
   async getTransitionStats(hours: number = 24): Promise<Record<TransitionType, number>> {
-    const rows = await this.db.all<Array<{ transition_type: string; count: number }>>(
+    const rows = await dbAll<{ transition_type: string; count: number }>(
+      this.db,
       `SELECT transition_type, COUNT(*) as count
        FROM continuity_log
        WHERE created_at > datetime('now', '-${hours} hours')
@@ -165,7 +168,8 @@ export class ContinuityManager {
    * Clear old continuity logs
    */
   async cleanup(olderThanDays: number = 7): Promise<number> {
-    const result = await this.db.all<Array<{ changes: number }>>(
+    const result = await dbAll<{ changes: number }>(
+      this.db,
       `DELETE FROM continuity_log
        WHERE created_at < datetime('now', '-${olderThanDays} days')
        RETURNING COUNT(*) as changes`
@@ -211,7 +215,8 @@ export class ContinuityManager {
     score: number,
     type: TransitionType
   ): Promise<void> {
-    await this.db.run(
+    await dbRun(
+      this.db,
       `INSERT INTO continuity_log
         (log_id, from_context_id, to_context_id, continuity_score, transition_type, created_at)
        VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,

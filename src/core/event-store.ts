@@ -3,7 +3,6 @@
  * Principles: Append-only, Single Source of Truth, Idempotency
  */
 
-import { Database } from 'duckdb';
 import { randomUUID } from 'crypto';
 import {
   MemoryEvent,
@@ -13,13 +12,14 @@ import {
   OutboxItem
 } from './types.js';
 import { makeCanonicalKey, makeDedupeKey } from './canonical-key.js';
+import { createDatabase, dbRun, dbAll, dbClose, toDate, type Database } from './db-wrapper.js';
 
 export class EventStore {
   private db: Database;
   private initialized = false;
 
   constructor(private dbPath: string) {
-    this.db = new Database(dbPath);
+    this.db = createDatabase(dbPath);
   }
 
   /**
@@ -29,7 +29,7 @@ export class EventStore {
     if (this.initialized) return;
 
     // L0 EventStore: Single Source of Truth (immutable, append-only)
-    await this.db.run(`
+    await dbRun(this.db, `
       CREATE TABLE IF NOT EXISTS events (
         id VARCHAR PRIMARY KEY,
         event_type VARCHAR NOT NULL,
@@ -43,7 +43,7 @@ export class EventStore {
     `);
 
     // Dedup table for idempotency
-    await this.db.run(`
+    await dbRun(this.db, `
       CREATE TABLE IF NOT EXISTS event_dedup (
         dedupe_key VARCHAR PRIMARY KEY,
         event_id VARCHAR NOT NULL,
@@ -52,7 +52,7 @@ export class EventStore {
     `);
 
     // Session metadata
-    await this.db.run(`
+    await dbRun(this.db, `
       CREATE TABLE IF NOT EXISTS sessions (
         id VARCHAR PRIMARY KEY,
         started_at TIMESTAMP NOT NULL,
@@ -64,7 +64,7 @@ export class EventStore {
     `);
 
     // Insights (derived data, rebuildable)
-    await this.db.run(`
+    await dbRun(this.db, `
       CREATE TABLE IF NOT EXISTS insights (
         id VARCHAR PRIMARY KEY,
         insight_type VARCHAR NOT NULL,
@@ -78,7 +78,7 @@ export class EventStore {
     `);
 
     // Embedding Outbox (Single-Writer Pattern)
-    await this.db.run(`
+    await dbRun(this.db, `
       CREATE TABLE IF NOT EXISTS embedding_outbox (
         id VARCHAR PRIMARY KEY,
         event_id VARCHAR NOT NULL,
@@ -92,7 +92,7 @@ export class EventStore {
     `);
 
     // Projection offset tracking
-    await this.db.run(`
+    await dbRun(this.db, `
       CREATE TABLE IF NOT EXISTS projection_offsets (
         projection_name VARCHAR PRIMARY KEY,
         last_event_id VARCHAR,
@@ -102,7 +102,7 @@ export class EventStore {
     `);
 
     // Memory level tracking
-    await this.db.run(`
+    await dbRun(this.db, `
       CREATE TABLE IF NOT EXISTS memory_levels (
         event_id VARCHAR PRIMARY KEY,
         level VARCHAR NOT NULL DEFAULT 'L0',
@@ -115,7 +115,7 @@ export class EventStore {
     // ============================================================
 
     // Entries (immutable memory units)
-    await this.db.run(`
+    await dbRun(this.db, `
       CREATE TABLE IF NOT EXISTS entries (
         entry_id VARCHAR PRIMARY KEY,
         created_ts TIMESTAMP NOT NULL,
@@ -133,7 +133,7 @@ export class EventStore {
     `);
 
     // Entities (task/condition/artifact)
-    await this.db.run(`
+    await dbRun(this.db, `
       CREATE TABLE IF NOT EXISTS entities (
         entity_id VARCHAR PRIMARY KEY,
         entity_type VARCHAR NOT NULL,
@@ -150,7 +150,7 @@ export class EventStore {
     `);
 
     // Entity aliases for canonical key lookup
-    await this.db.run(`
+    await dbRun(this.db, `
       CREATE TABLE IF NOT EXISTS entity_aliases (
         entity_type VARCHAR NOT NULL,
         canonical_key VARCHAR NOT NULL,
@@ -162,7 +162,7 @@ export class EventStore {
     `);
 
     // Edges (relationships between entries/entities)
-    await this.db.run(`
+    await dbRun(this.db, `
       CREATE TABLE IF NOT EXISTS edges (
         edge_id VARCHAR PRIMARY KEY,
         src_type VARCHAR NOT NULL,
@@ -179,7 +179,7 @@ export class EventStore {
     // Vector Outbox V2 Table
     // ============================================================
 
-    await this.db.run(`
+    await dbRun(this.db, `
       CREATE TABLE IF NOT EXISTS vector_outbox (
         job_id VARCHAR PRIMARY KEY,
         item_kind VARCHAR NOT NULL,
@@ -198,7 +198,7 @@ export class EventStore {
     // Build Runs & Metrics Tables
     // ============================================================
 
-    await this.db.run(`
+    await dbRun(this.db, `
       CREATE TABLE IF NOT EXISTS build_runs (
         build_id VARCHAR PRIMARY KEY,
         started_at TIMESTAMP NOT NULL,
@@ -214,7 +214,7 @@ export class EventStore {
       )
     `);
 
-    await this.db.run(`
+    await dbRun(this.db, `
       CREATE TABLE IF NOT EXISTS pipeline_metrics (
         id VARCHAR PRIMARY KEY,
         ts TIMESTAMP NOT NULL,
@@ -231,7 +231,7 @@ export class EventStore {
     // ============================================================
 
     // Working Set table (active memory window)
-    await this.db.run(`
+    await dbRun(this.db, `
       CREATE TABLE IF NOT EXISTS working_set (
         id VARCHAR PRIMARY KEY,
         event_id VARCHAR NOT NULL,
@@ -243,7 +243,7 @@ export class EventStore {
     `);
 
     // Consolidated Memories table (long-term integrated memories)
-    await this.db.run(`
+    await dbRun(this.db, `
       CREATE TABLE IF NOT EXISTS consolidated_memories (
         memory_id VARCHAR PRIMARY KEY,
         summary TEXT NOT NULL,
@@ -257,7 +257,7 @@ export class EventStore {
     `);
 
     // Continuity Log table (tracks context transitions)
-    await this.db.run(`
+    await dbRun(this.db, `
       CREATE TABLE IF NOT EXISTS continuity_log (
         log_id VARCHAR PRIMARY KEY,
         from_context_id VARCHAR,
@@ -269,7 +269,7 @@ export class EventStore {
     `);
 
     // Endless Mode Config table
-    await this.db.run(`
+    await dbRun(this.db, `
       CREATE TABLE IF NOT EXISTS endless_config (
         key VARCHAR PRIMARY KEY,
         value JSON,
@@ -282,27 +282,27 @@ export class EventStore {
     // ============================================================
 
     // Entry indexes
-    await this.db.run(`CREATE INDEX IF NOT EXISTS idx_entries_type ON entries(entry_type)`);
-    await this.db.run(`CREATE INDEX IF NOT EXISTS idx_entries_stage ON entries(stage)`);
-    await this.db.run(`CREATE INDEX IF NOT EXISTS idx_entries_canonical ON entries(canonical_key)`);
+    await dbRun(this.db, `CREATE INDEX IF NOT EXISTS idx_entries_type ON entries(entry_type)`);
+    await dbRun(this.db, `CREATE INDEX IF NOT EXISTS idx_entries_stage ON entries(stage)`);
+    await dbRun(this.db, `CREATE INDEX IF NOT EXISTS idx_entries_canonical ON entries(canonical_key)`);
 
     // Entity indexes
-    await this.db.run(`CREATE INDEX IF NOT EXISTS idx_entities_type_key ON entities(entity_type, canonical_key)`);
-    await this.db.run(`CREATE INDEX IF NOT EXISTS idx_entities_status ON entities(status)`);
+    await dbRun(this.db, `CREATE INDEX IF NOT EXISTS idx_entities_type_key ON entities(entity_type, canonical_key)`);
+    await dbRun(this.db, `CREATE INDEX IF NOT EXISTS idx_entities_status ON entities(status)`);
 
     // Edge indexes
-    await this.db.run(`CREATE INDEX IF NOT EXISTS idx_edges_src ON edges(src_id, rel_type)`);
-    await this.db.run(`CREATE INDEX IF NOT EXISTS idx_edges_dst ON edges(dst_id, rel_type)`);
-    await this.db.run(`CREATE INDEX IF NOT EXISTS idx_edges_rel ON edges(rel_type)`);
+    await dbRun(this.db, `CREATE INDEX IF NOT EXISTS idx_edges_src ON edges(src_id, rel_type)`);
+    await dbRun(this.db, `CREATE INDEX IF NOT EXISTS idx_edges_dst ON edges(dst_id, rel_type)`);
+    await dbRun(this.db, `CREATE INDEX IF NOT EXISTS idx_edges_rel ON edges(rel_type)`);
 
     // Outbox indexes
-    await this.db.run(`CREATE INDEX IF NOT EXISTS idx_outbox_status ON vector_outbox(status)`);
+    await dbRun(this.db, `CREATE INDEX IF NOT EXISTS idx_outbox_status ON vector_outbox(status)`);
 
     // Endless Mode indexes
-    await this.db.run(`CREATE INDEX IF NOT EXISTS idx_working_set_expires ON working_set(expires_at)`);
-    await this.db.run(`CREATE INDEX IF NOT EXISTS idx_working_set_relevance ON working_set(relevance_score DESC)`);
-    await this.db.run(`CREATE INDEX IF NOT EXISTS idx_consolidated_confidence ON consolidated_memories(confidence DESC)`);
-    await this.db.run(`CREATE INDEX IF NOT EXISTS idx_continuity_created ON continuity_log(created_at)`);
+    await dbRun(this.db, `CREATE INDEX IF NOT EXISTS idx_working_set_expires ON working_set(expires_at)`);
+    await dbRun(this.db, `CREATE INDEX IF NOT EXISTS idx_working_set_relevance ON working_set(relevance_score DESC)`);
+    await dbRun(this.db, `CREATE INDEX IF NOT EXISTS idx_consolidated_confidence ON consolidated_memories(confidence DESC)`);
+    await dbRun(this.db, `CREATE INDEX IF NOT EXISTS idx_continuity_created ON continuity_log(created_at)`);
 
     this.initialized = true;
   }
@@ -318,7 +318,8 @@ export class EventStore {
     const dedupeKey = makeDedupeKey(input.content, input.sessionId);
 
     // Check for duplicate
-    const existing = await this.db.all<{ event_id: string }[]>(
+    const existing = await dbAll<{ event_id: string }>(
+      this.db,
       `SELECT event_id FROM event_dedup WHERE dedupe_key = ?`,
       [dedupeKey]
     );
@@ -335,7 +336,8 @@ export class EventStore {
     const timestamp = input.timestamp.toISOString();
 
     try {
-      await this.db.run(
+      await dbRun(
+        this.db,
         `INSERT INTO events (id, event_type, session_id, timestamp, content, canonical_key, dedupe_key, metadata)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         [
@@ -350,13 +352,15 @@ export class EventStore {
         ]
       );
 
-      await this.db.run(
+      await dbRun(
+        this.db,
         `INSERT INTO event_dedup (dedupe_key, event_id) VALUES (?, ?)`,
         [dedupeKey, id]
       );
 
       // Initialize at L0
-      await this.db.run(
+      await dbRun(
+        this.db,
         `INSERT INTO memory_levels (event_id, level) VALUES (?, 'L0')`,
         [id]
       );
@@ -376,7 +380,8 @@ export class EventStore {
   async getSessionEvents(sessionId: string): Promise<MemoryEvent[]> {
     await this.initialize();
 
-    const rows = await this.db.all<Array<Record<string, unknown>>>(
+    const rows = await dbAll<Record<string, unknown>>(
+      this.db,
       `SELECT * FROM events WHERE session_id = ? ORDER BY timestamp ASC`,
       [sessionId]
     );
@@ -390,7 +395,8 @@ export class EventStore {
   async getRecentEvents(limit: number = 100): Promise<MemoryEvent[]> {
     await this.initialize();
 
-    const rows = await this.db.all<Array<Record<string, unknown>>>(
+    const rows = await dbAll<Record<string, unknown>>(
+      this.db,
       `SELECT * FROM events ORDER BY timestamp DESC LIMIT ?`,
       [limit]
     );
@@ -404,7 +410,8 @@ export class EventStore {
   async getEvent(id: string): Promise<MemoryEvent | null> {
     await this.initialize();
 
-    const rows = await this.db.all<Array<Record<string, unknown>>>(
+    const rows = await dbAll<Record<string, unknown>>(
+      this.db,
       `SELECT * FROM events WHERE id = ?`,
       [id]
     );
@@ -419,13 +426,15 @@ export class EventStore {
   async upsertSession(session: Partial<Session> & { id: string }): Promise<void> {
     await this.initialize();
 
-    const existing = await this.db.all<Array<{ id: string }>>(
+    const existing = await dbAll<{ id: string }>(
+      this.db,
       `SELECT id FROM sessions WHERE id = ?`,
       [session.id]
     );
 
     if (existing.length === 0) {
-      await this.db.run(
+      await dbRun(
+        this.db,
         `INSERT INTO sessions (id, started_at, project_path, tags)
          VALUES (?, ?, ?, ?)`,
         [
@@ -454,7 +463,8 @@ export class EventStore {
 
       if (updates.length > 0) {
         values.push(session.id);
-        await this.db.run(
+        await dbRun(
+          this.db,
           `UPDATE sessions SET ${updates.join(', ')} WHERE id = ?`,
           values
         );
@@ -468,7 +478,8 @@ export class EventStore {
   async getSession(id: string): Promise<Session | null> {
     await this.initialize();
 
-    const rows = await this.db.all<Array<Record<string, unknown>>>(
+    const rows = await dbAll<Record<string, unknown>>(
+      this.db,
       `SELECT * FROM sessions WHERE id = ?`,
       [id]
     );
@@ -478,8 +489,8 @@ export class EventStore {
     const row = rows[0];
     return {
       id: row.id as string,
-      startedAt: new Date(row.started_at as string),
-      endedAt: row.ended_at ? new Date(row.ended_at as string) : undefined,
+      startedAt: toDate(row.started_at),
+      endedAt: row.ended_at ? toDate(row.ended_at) : undefined,
       projectPath: row.project_path as string | undefined,
       summary: row.summary as string | undefined,
       tags: row.tags ? JSON.parse(row.tags as string) : undefined
@@ -493,7 +504,8 @@ export class EventStore {
     await this.initialize();
 
     const id = randomUUID();
-    await this.db.run(
+    await dbRun(
+      this.db,
       `INSERT INTO embedding_outbox (id, event_id, content, status, retry_count)
        VALUES (?, ?, ?, 'pending', 0)`,
       [id, eventId, content]
@@ -508,27 +520,34 @@ export class EventStore {
   async getPendingOutboxItems(limit: number = 32): Promise<OutboxItem[]> {
     await this.initialize();
 
-    // Atomic update to claim items
-    const rows = await this.db.all<Array<Record<string, unknown>>>(
-      `UPDATE embedding_outbox
-       SET status = 'processing'
-       WHERE id IN (
-         SELECT id FROM embedding_outbox
-         WHERE status = 'pending'
-         ORDER BY created_at
-         LIMIT ?
-       )
-       RETURNING *`,
+    // First, get pending items
+    const pending = await dbAll<Record<string, unknown>>(
+      this.db,
+      `SELECT * FROM embedding_outbox
+       WHERE status = 'pending'
+       ORDER BY created_at
+       LIMIT ?`,
       [limit]
     );
 
-    return rows.map(row => ({
+    if (pending.length === 0) return [];
+
+    // Update status to processing
+    const ids = pending.map(r => r.id as string);
+    const placeholders = ids.map(() => '?').join(',');
+    await dbRun(
+      this.db,
+      `UPDATE embedding_outbox SET status = 'processing' WHERE id IN (${placeholders})`,
+      ids
+    );
+
+    return pending.map(row => ({
       id: row.id as string,
       eventId: row.event_id as string,
       content: row.content as string,
-      status: row.status as 'pending' | 'processing' | 'done' | 'failed',
+      status: 'processing' as const,
       retryCount: row.retry_count as number,
-      createdAt: new Date(row.created_at as string),
+      createdAt: toDate(row.created_at),
       errorMessage: row.error_message as string | undefined
     }));
   }
@@ -540,7 +559,8 @@ export class EventStore {
     if (ids.length === 0) return;
 
     const placeholders = ids.map(() => '?').join(',');
-    await this.db.run(
+    await dbRun(
+      this.db,
       `DELETE FROM embedding_outbox WHERE id IN (${placeholders})`,
       ids
     );
@@ -553,7 +573,8 @@ export class EventStore {
     if (ids.length === 0) return;
 
     const placeholders = ids.map(() => '?').join(',');
-    await this.db.run(
+    await dbRun(
+      this.db,
       `UPDATE embedding_outbox
        SET status = CASE WHEN retry_count >= 3 THEN 'failed' ELSE 'pending' END,
            retry_count = retry_count + 1,
@@ -569,7 +590,8 @@ export class EventStore {
   async updateMemoryLevel(eventId: string, level: string): Promise<void> {
     await this.initialize();
 
-    await this.db.run(
+    await dbRun(
+      this.db,
       `UPDATE memory_levels SET level = ?, promoted_at = CURRENT_TIMESTAMP WHERE event_id = ?`,
       [level, eventId]
     );
@@ -581,7 +603,8 @@ export class EventStore {
   async getLevelStats(): Promise<Array<{ level: string; count: number }>> {
     await this.initialize();
 
-    const rows = await this.db.all<Array<{ level: string; count: number }>>(
+    const rows = await dbAll<{ level: string; count: number }>(
+      this.db,
       `SELECT level, COUNT(*) as count FROM memory_levels GROUP BY level`
     );
 
@@ -605,7 +628,8 @@ export class EventStore {
   async getEndlessConfig(key: string): Promise<unknown | null> {
     await this.initialize();
 
-    const rows = await this.db.all<Array<{ value: string }>>(
+    const rows = await dbAll<{ value: string }>(
+      this.db,
       `SELECT value FROM endless_config WHERE key = ?`,
       [key]
     );
@@ -620,7 +644,8 @@ export class EventStore {
   async setEndlessConfig(key: string, value: unknown): Promise<void> {
     await this.initialize();
 
-    await this.db.run(
+    await dbRun(
+      this.db,
       `INSERT OR REPLACE INTO endless_config (key, value, updated_at)
        VALUES (?, ?, CURRENT_TIMESTAMP)`,
       [key, JSON.stringify(value)]
@@ -633,14 +658,15 @@ export class EventStore {
   async getAllSessions(): Promise<Session[]> {
     await this.initialize();
 
-    const rows = await this.db.all<Array<Record<string, unknown>>>(
+    const rows = await dbAll<Record<string, unknown>>(
+      this.db,
       `SELECT * FROM sessions ORDER BY started_at DESC`
     );
 
     return rows.map(row => ({
       id: row.id as string,
-      startedAt: new Date(row.started_at as string),
-      endedAt: row.ended_at ? new Date(row.ended_at as string) : undefined,
+      startedAt: toDate(row.started_at),
+      endedAt: row.ended_at ? toDate(row.ended_at) : undefined,
       projectPath: row.project_path as string | undefined,
       summary: row.summary as string | undefined,
       tags: row.tags ? JSON.parse(row.tags as string) : undefined
@@ -651,7 +677,7 @@ export class EventStore {
    * Close database connection
    */
   async close(): Promise<void> {
-    await this.db.close();
+    await dbClose(this.db);
   }
 
   /**
@@ -662,7 +688,7 @@ export class EventStore {
       id: row.id as string,
       eventType: row.event_type as 'user_prompt' | 'agent_response' | 'session_summary',
       sessionId: row.session_id as string,
-      timestamp: new Date(row.timestamp as string),
+      timestamp: toDate(row.timestamp),
       content: row.content as string,
       canonicalKey: row.canonical_key as string,
       dedupeKey: row.dedupe_key as string,

@@ -3,7 +3,7 @@
  * AXIOMMIND Principle 5: Task is Entity
  */
 
-import { Database } from 'duckdb';
+import { dbRun, dbAll, toDate, type Database } from './db-wrapper.js';
 import { randomUUID } from 'crypto';
 import type {
   Entity,
@@ -48,7 +48,8 @@ export class EntityRepo {
 
     const now = new Date();
 
-    await this.db.run(
+    await dbRun(
+      this.db,
       `INSERT INTO entities (
         entity_id, entity_type, canonical_key, title, stage, status,
         current_json, title_norm, search_text, created_at, updated_at
@@ -69,7 +70,8 @@ export class EntityRepo {
     );
 
     // Create primary alias
-    await this.db.run(
+    await dbRun(
+      this.db,
       `INSERT INTO entity_aliases (entity_type, canonical_key, entity_id, is_primary)
        VALUES (?, ?, ?, TRUE)
        ON CONFLICT (entity_type, canonical_key) DO NOTHING`,
@@ -95,7 +97,8 @@ export class EntityRepo {
    * Find entity by ID
    */
   async findById(entityId: string): Promise<Entity | null> {
-    const rows = await this.db.all<Array<Record<string, unknown>>>(
+    const rows = await dbAll<Record<string, unknown>>(
+      this.db,
       `SELECT * FROM entities WHERE entity_id = ?`,
       [entityId]
     );
@@ -111,7 +114,8 @@ export class EntityRepo {
     entityType: EntityType,
     canonicalKey: string
   ): Promise<Entity | null> {
-    const rows = await this.db.all<Array<Record<string, unknown>>>(
+    const rows = await dbAll<Record<string, unknown>>(
+      this.db,
       `SELECT * FROM entities
        WHERE entity_type = ? AND canonical_key = ?`,
       [entityType, canonicalKey]
@@ -170,7 +174,8 @@ export class EntityRepo {
 
     values.push(entityId);
 
-    await this.db.run(
+    await dbRun(
+      this.db,
       `UPDATE entities SET ${updates.join(', ')} WHERE entity_id = ?`,
       values
     );
@@ -204,7 +209,7 @@ export class EntityRepo {
       params.push(options.offset);
     }
 
-    const rows = await this.db.all<Array<Record<string, unknown>>>(query, params);
+    const rows = await dbAll<Record<string, unknown>>(this.db, query, params);
     return rows.map(row => this.rowToEntity(row));
   }
 
@@ -232,7 +237,7 @@ export class EntityRepo {
       params.push(options.limit);
     }
 
-    const rows = await this.db.all<Array<Record<string, unknown>>>(sql, params);
+    const rows = await dbAll<Record<string, unknown>>(this.db, sql, params);
     return rows.map(row => this.rowToEntity(row));
   }
 
@@ -240,7 +245,8 @@ export class EntityRepo {
    * Get tasks by status
    */
   async getTasksByStatus(status: string): Promise<Entity[]> {
-    const rows = await this.db.all<Array<Record<string, unknown>>>(
+    const rows = await dbAll<Record<string, unknown>>(
+      this.db,
       `SELECT * FROM entities
        WHERE entity_type = 'task'
        AND json_extract(current_json, '$.status') = ?
@@ -267,7 +273,8 @@ export class EntityRepo {
     }> = [];
 
     for (const task of tasks) {
-      const blockerEdges = await this.db.all<Array<Record<string, unknown>>>(
+      const blockerEdges = await dbAll<Record<string, unknown>>(
+        this.db,
         `SELECT e.dst_id, ent.entity_type, ent.title
          FROM edges e
          JOIN entities ent ON ent.entity_id = e.dst_id
@@ -296,7 +303,8 @@ export class EntityRepo {
     canonicalKey: string,
     entityId: string
   ): Promise<void> {
-    await this.db.run(
+    await dbRun(
+      this.db,
       `INSERT INTO entity_aliases (entity_type, canonical_key, entity_id, is_primary)
        VALUES (?, ?, ?, FALSE)
        ON CONFLICT (entity_type, canonical_key) DO NOTHING`,
@@ -308,7 +316,8 @@ export class EntityRepo {
    * Find entity by alias
    */
   async findByAlias(entityType: EntityType, canonicalKey: string): Promise<Entity | null> {
-    const rows = await this.db.all<Array<Record<string, unknown>>>(
+    const rows = await dbAll<Record<string, unknown>>(
+      this.db,
       `SELECT e.* FROM entities e
        JOIN entity_aliases a ON e.entity_id = a.entity_id
        WHERE a.entity_type = ? AND a.canonical_key = ?`,
@@ -335,8 +344,8 @@ export class EntityRepo {
         : row.current_json as Record<string, unknown>,
       titleNorm: row.title_norm as string | undefined,
       searchText: row.search_text as string | undefined,
-      createdAt: new Date(row.created_at as string),
-      updatedAt: new Date(row.updated_at as string)
+      createdAt: toDate(row.created_at),
+      updatedAt: toDate(row.updated_at)
     };
   }
 }

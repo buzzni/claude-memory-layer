@@ -5,7 +5,7 @@
  */
 
 import { randomUUID } from 'crypto';
-import { Database } from 'duckdb';
+import { dbRun, dbAll, toDate, type Database } from './db-wrapper.js';
 import type {
   ConsolidatedMemory,
   ConsolidatedMemoryInput
@@ -25,7 +25,8 @@ export class ConsolidatedStore {
   async create(input: ConsolidatedMemoryInput): Promise<string> {
     const memoryId = randomUUID();
 
-    await this.db.run(
+    await dbRun(
+      this.db,
       `INSERT INTO consolidated_memories
         (memory_id, summary, topics, source_events, confidence, created_at)
        VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
@@ -45,7 +46,8 @@ export class ConsolidatedStore {
    * Get a consolidated memory by ID
    */
   async get(memoryId: string): Promise<ConsolidatedMemory | null> {
-    const rows = await this.db.all<Array<Record<string, unknown>>>(
+    const rows = await dbAll<Record<string, unknown>>(
+      this.db,
       `SELECT * FROM consolidated_memories WHERE memory_id = ?`,
       [memoryId]
     );
@@ -60,7 +62,8 @@ export class ConsolidatedStore {
   async search(query: string, options?: { topK?: number }): Promise<ConsolidatedMemory[]> {
     const topK = options?.topK || 5;
 
-    const rows = await this.db.all<Array<Record<string, unknown>>>(
+    const rows = await dbAll<Record<string, unknown>>(
+      this.db,
       `SELECT * FROM consolidated_memories
        WHERE summary LIKE ?
        ORDER BY confidence DESC
@@ -81,7 +84,8 @@ export class ConsolidatedStore {
     const topicConditions = topics.map(() => `topics LIKE ?`).join(' OR ');
     const topicParams = topics.map(t => `%"${t}"%`);
 
-    const rows = await this.db.all<Array<Record<string, unknown>>>(
+    const rows = await dbAll<Record<string, unknown>>(
+      this.db,
       `SELECT * FROM consolidated_memories
        WHERE ${topicConditions}
        ORDER BY confidence DESC
@@ -98,7 +102,8 @@ export class ConsolidatedStore {
   async getAll(options?: { limit?: number }): Promise<ConsolidatedMemory[]> {
     const limit = options?.limit || 100;
 
-    const rows = await this.db.all<Array<Record<string, unknown>>>(
+    const rows = await dbAll<Record<string, unknown>>(
+      this.db,
       `SELECT * FROM consolidated_memories
        ORDER BY confidence DESC, created_at DESC
        LIMIT ?`,
@@ -115,7 +120,8 @@ export class ConsolidatedStore {
     const limit = options?.limit || 10;
     const hours = options?.hours || 24;
 
-    const rows = await this.db.all<Array<Record<string, unknown>>>(
+    const rows = await dbAll<Record<string, unknown>>(
+      this.db,
       `SELECT * FROM consolidated_memories
        WHERE created_at > datetime('now', '-${hours} hours')
        ORDER BY created_at DESC
@@ -130,7 +136,8 @@ export class ConsolidatedStore {
    * Mark a memory as accessed (tracks usage for importance scoring)
    */
   async markAccessed(memoryId: string): Promise<void> {
-    await this.db.run(
+    await dbRun(
+      this.db,
       `UPDATE consolidated_memories
        SET accessed_at = CURRENT_TIMESTAMP,
            access_count = access_count + 1
@@ -143,7 +150,8 @@ export class ConsolidatedStore {
    * Update confidence score for a memory
    */
   async updateConfidence(memoryId: string, confidence: number): Promise<void> {
-    await this.db.run(
+    await dbRun(
+      this.db,
       `UPDATE consolidated_memories
        SET confidence = ?
        WHERE memory_id = ?`,
@@ -155,7 +163,8 @@ export class ConsolidatedStore {
    * Delete a consolidated memory
    */
   async delete(memoryId: string): Promise<void> {
-    await this.db.run(
+    await dbRun(
+      this.db,
       `DELETE FROM consolidated_memories WHERE memory_id = ?`,
       [memoryId]
     );
@@ -165,7 +174,8 @@ export class ConsolidatedStore {
    * Get count of consolidated memories
    */
   async count(): Promise<number> {
-    const result = await this.db.all<Array<{ count: number }>>(
+    const result = await dbAll<{ count: number }>(
+      this.db,
       `SELECT COUNT(*) as count FROM consolidated_memories`
     );
     return result[0]?.count || 0;
@@ -175,7 +185,8 @@ export class ConsolidatedStore {
    * Get most accessed memories (for importance scoring)
    */
   async getMostAccessed(limit: number = 10): Promise<ConsolidatedMemory[]> {
-    const rows = await this.db.all<Array<Record<string, unknown>>>(
+    const rows = await dbAll<Record<string, unknown>>(
+      this.db,
       `SELECT * FROM consolidated_memories
        WHERE access_count > 0
        ORDER BY access_count DESC
@@ -197,12 +208,14 @@ export class ConsolidatedStore {
   }> {
     const total = await this.count();
 
-    const avgResult = await this.db.all<Array<{ avg: number | null }>>(
+    const avgResult = await dbAll<{ avg: number | null }>(
+      this.db,
       `SELECT AVG(confidence) as avg FROM consolidated_memories`
     );
     const averageConfidence = avgResult[0]?.avg || 0;
 
-    const recentResult = await this.db.all<Array<{ count: number }>>(
+    const recentResult = await dbAll<{ count: number }>(
+      this.db,
       `SELECT COUNT(*) as count FROM consolidated_memories
        WHERE created_at > datetime('now', '-24 hours')`
     );
@@ -230,7 +243,8 @@ export class ConsolidatedStore {
    */
   async isAlreadyConsolidated(eventIds: string[]): Promise<boolean> {
     for (const eventId of eventIds) {
-      const result = await this.db.all<Array<{ count: number }>>(
+      const result = await dbAll<{ count: number }>(
+        this.db,
         `SELECT COUNT(*) as count FROM consolidated_memories
          WHERE source_events LIKE ?`,
         [`%"${eventId}"%`]
@@ -244,7 +258,8 @@ export class ConsolidatedStore {
    * Get the last consolidation time
    */
   async getLastConsolidationTime(): Promise<Date | null> {
-    const result = await this.db.all<Array<{ created_at: string }>>(
+    const result = await dbAll<{ created_at: string }>(
+      this.db,
       `SELECT created_at FROM consolidated_memories
        ORDER BY created_at DESC
        LIMIT 1`
@@ -264,8 +279,8 @@ export class ConsolidatedStore {
       topics: JSON.parse(row.topics as string || '[]'),
       sourceEvents: JSON.parse(row.source_events as string || '[]'),
       confidence: row.confidence as number,
-      createdAt: new Date(row.created_at as string),
-      accessedAt: row.accessed_at ? new Date(row.accessed_at as string) : undefined,
+      createdAt: toDate(row.created_at),
+      accessedAt: row.accessed_at ? toDate(row.accessed_at) : undefined,
       accessCount: row.access_count as number || 0
     };
   }

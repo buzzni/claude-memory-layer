@@ -3,7 +3,7 @@
  * AXIOMMIND Entity-Edge Model
  */
 
-import { Database } from 'duckdb';
+import { dbRun, dbAll, toDate, type Database } from './db-wrapper.js';
 import { randomUUID } from 'crypto';
 import type { Edge, NodeType, RelationType } from './types.js';
 
@@ -26,7 +26,8 @@ export class EdgeRepo {
     const edgeId = randomUUID();
     const now = new Date();
 
-    await this.db.run(
+    await dbRun(
+      this.db,
       `INSERT INTO edges (edge_id, src_type, src_id, rel_type, dst_type, dst_id, meta_json, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT DO NOTHING`,
@@ -69,7 +70,8 @@ export class EdgeRepo {
 
     if (existing) {
       // Update meta_json
-      await this.db.run(
+      await dbRun(
+        this.db,
         `UPDATE edges SET meta_json = ? WHERE edge_id = ?`,
         [JSON.stringify(input.metaJson ?? {}), existing.edgeId]
       );
@@ -89,7 +91,8 @@ export class EdgeRepo {
     dstType: NodeType,
     dstId: string
   ): Promise<Edge | null> {
-    const rows = await this.db.all<Array<Record<string, unknown>>>(
+    const rows = await dbAll<Record<string, unknown>>(
+      this.db,
       `SELECT * FROM edges
        WHERE src_type = ? AND src_id = ? AND rel_type = ?
        AND dst_type = ? AND dst_id = ?`,
@@ -117,7 +120,7 @@ export class EdgeRepo {
 
     query += ` ORDER BY created_at DESC`;
 
-    const rows = await this.db.all<Array<Record<string, unknown>>>(query, params);
+    const rows = await dbAll<Record<string, unknown>>(this.db, query, params);
     return rows.map(row => this.rowToEdge(row));
   }
 
@@ -138,7 +141,7 @@ export class EdgeRepo {
 
     query += ` ORDER BY created_at DESC`;
 
-    const rows = await this.db.all<Array<Record<string, unknown>>>(query, params);
+    const rows = await dbAll<Record<string, unknown>>(this.db, query, params);
     return rows.map(row => this.rowToEdge(row));
   }
 
@@ -155,7 +158,8 @@ export class EdgeRepo {
    * Delete edge by ID
    */
   async delete(edgeId: string): Promise<boolean> {
-    const result = await this.db.run(
+    await dbRun(
+      this.db,
       `DELETE FROM edges WHERE edge_id = ?`,
       [edgeId]
     );
@@ -166,7 +170,8 @@ export class EdgeRepo {
    * Delete edges by source and relation type
    */
   async deleteBySrcAndRel(srcId: string, relType: RelationType): Promise<number> {
-    await this.db.run(
+    await dbRun(
+      this.db,
       `DELETE FROM edges WHERE src_id = ? AND rel_type = ?`,
       [srcId, relType]
     );
@@ -177,7 +182,8 @@ export class EdgeRepo {
    * Delete edges by destination and relation type
    */
   async deleteByDstAndRel(dstId: string, relType: RelationType): Promise<number> {
-    await this.db.run(
+    await dbRun(
+      this.db,
       `DELETE FROM edges WHERE dst_id = ? AND rel_type = ?`,
       [dstId, relType]
     );
@@ -231,7 +237,8 @@ export class EdgeRepo {
 
     for (const edge of blockerEdges) {
       // Check if blocker has resolves_to edge
-      const resolvesTo = await this.db.all<Array<Record<string, unknown>>>(
+      const resolvesTo = await dbAll<Record<string, unknown>>(
+        this.db,
         `SELECT dst_id FROM edges
          WHERE src_id = ? AND rel_type = 'resolves_to'
          LIMIT 1`,
@@ -264,7 +271,8 @@ export class EdgeRepo {
     viaEntityId: string;
     relationPath: string;
   }>> {
-    const rows = await this.db.all<Array<Record<string, unknown>>>(
+    const rows = await dbAll<Record<string, unknown>>(
+      this.db,
       `WITH first_hop AS (
          SELECT e1.dst_id AS entity_id
          FROM edges e1
@@ -295,7 +303,8 @@ export class EdgeRepo {
    * Count edges by relation type
    */
   async countByRelType(): Promise<Array<{ relType: string; count: number }>> {
-    const rows = await this.db.all<Array<{ rel_type: string; count: number }>>(
+    const rows = await dbAll<{ rel_type: string; count: number }>(
+      this.db,
       `SELECT rel_type, COUNT(*) as count FROM edges GROUP BY rel_type`
     );
     return rows.map(row => ({
@@ -318,7 +327,7 @@ export class EdgeRepo {
       metaJson: typeof row.meta_json === 'string'
         ? JSON.parse(row.meta_json)
         : row.meta_json as Record<string, unknown> | undefined,
-      createdAt: new Date(row.created_at as string)
+      createdAt: toDate(row.created_at)
     };
   }
 }

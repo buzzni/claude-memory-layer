@@ -3,7 +3,7 @@
  * AXIOMMIND: Task state via event fold, no direct updates
  */
 
-import { Database } from 'duckdb';
+import { dbRun, dbAll, type Database } from '../db-wrapper.js';
 import { randomUUID } from 'crypto';
 import type {
   Entity,
@@ -154,7 +154,8 @@ export class TaskResolver {
     };
 
     // Insert entity
-    await this.db.run(
+    await dbRun(
+      this.db,
       `INSERT INTO entities (
         entity_id, entity_type, canonical_key, title, stage, status,
         current_json, title_norm, search_text, created_at, updated_at
@@ -175,7 +176,8 @@ export class TaskResolver {
     );
 
     // Create alias
-    await this.db.run(
+    await dbRun(
+      this.db,
       `INSERT INTO entity_aliases (entity_type, canonical_key, entity_id, is_primary)
        VALUES (?, ?, ?, TRUE)
        ON CONFLICT (entity_type, canonical_key) DO NOTHING`,
@@ -245,7 +247,8 @@ export class TaskResolver {
     });
 
     // Update entity (projector will do this, but we update for immediate consistency)
-    await this.db.run(
+    await dbRun(
+      this.db,
       `UPDATE entities
        SET current_json = json_set(current_json, '$.status', ?),
            updated_at = ?
@@ -278,7 +281,8 @@ export class TaskResolver {
     });
 
     // Update entity
-    await this.db.run(
+    await dbRun(
+      this.db,
       `UPDATE entities
        SET current_json = json_set(current_json, '$.priority', ?),
            updated_at = ?
@@ -348,7 +352,8 @@ export class TaskResolver {
     );
 
     // Check for duplicate
-    const existing = await this.db.all<Array<{ event_id: string }>>(
+    const existing = await dbAll<{ event_id: string }>(
+      this.db,
       `SELECT event_id FROM event_dedup WHERE dedupe_key = ?`,
       [dedupeKey]
     );
@@ -358,7 +363,8 @@ export class TaskResolver {
     }
 
     // Insert event
-    await this.db.run(
+    await dbRun(
+      this.db,
       `INSERT INTO events (
         id, event_type, session_id, timestamp, content,
         canonical_key, dedupe_key, metadata
@@ -376,7 +382,8 @@ export class TaskResolver {
     );
 
     // Insert dedup record
-    await this.db.run(
+    await dbRun(
+      this.db,
       `INSERT INTO event_dedup (dedupe_key, event_id)
        VALUES (?, ?)
        ON CONFLICT DO NOTHING`,
@@ -402,7 +409,8 @@ export class TaskResolver {
     });
 
     // Create resolves_to edge
-    await this.db.run(
+    await dbRun(
+      this.db,
       `INSERT INTO edges (edge_id, src_type, src_id, rel_type, dst_type, dst_id, meta_json)
        VALUES (?, 'entity', ?, 'resolves_to', 'entity', ?, ?)
        ON CONFLICT DO NOTHING`,
