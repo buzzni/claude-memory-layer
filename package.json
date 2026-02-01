@@ -4,7 +4,7 @@
   "description": "Claude Code plugin that learns from conversations to provide personalized assistance",
   "main": "dist/index.js",
   "bin": {
-    "code-memory": "dist/cli/index.js"
+    "claude-memory-layer": "dist/cli/index.js"
   },
   "type": "module",
   "scripts": {

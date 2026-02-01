@@ -1,5 +1,5 @@
 /**
- * Core types for code-memory plugin
+ * Core types for claude-memory-layer plugin
  * Idris2 inspired: Complete, immutable type definitions with Zod validation
  */
 

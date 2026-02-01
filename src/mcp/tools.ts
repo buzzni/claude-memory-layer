@@ -8,7 +8,7 @@ import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 export const tools: Tool[] = [
   {
     name: 'mem-search',
-    description: 'Search code-memory for relevant past conversations and insights. Returns a compact index of results - use mem-details to get full content.',
+    description: 'Search claude-memory-layer for relevant past conversations and insights. Returns a compact index of results - use mem-details to get full content.',
     inputSchema: {
       type: 'object',
       properties: {

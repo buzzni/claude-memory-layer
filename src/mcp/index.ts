@@ -16,7 +16,7 @@ import { handleToolCall } from './handlers.js';
 
 const server = new Server(
   {
-    name: 'code-memory-mcp',
+    name: 'claude-memory-layer-mcp',
     version: '1.0.0'
   },
   {
@@ -41,7 +41,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error('code-memory MCP server started');
+  console.error('claude-memory-layer MCP server started');
 }
 
 main().catch(console.error);

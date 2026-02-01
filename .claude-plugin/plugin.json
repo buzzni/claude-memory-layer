@@ -1,14 +1,14 @@
 {
-  "name": "code-memory",
+  "name": "claude-memory-layer",
   "description": "Learn from conversations to provide personalized assistance. The more you use it, the smarter it gets.",
   "version": "1.0.0",
   "author": {
     "name": "Buzzni"
   },
-  "homepage": "https://github.com/buzzni/code-memory",
+  "homepage": "https://github.com/buzzni/claude-memory-layer",
   "repository": {
     "type": "git",
-    "url": "https://github.com/buzzni/code-memory.git"
+    "url": "https://github.com/buzzni/claude-memory-layer.git"
   },
   "license": "MIT",
   "engines": {

@@ -16,7 +16,7 @@ import { startServer, stopServer, isServerRunning } from '../server/index.js';
 const program = new Command();
 
 program
-  .name('code-memory')
+  .name('claude-memory-layer')
   .description('Claude Code Memory Plugin CLI')
   .version('1.0.0');
 
@@ -351,7 +351,7 @@ program
         console.log(`... and ${sessions.length - 20} more sessions`);
       }
 
-      console.log('\nUse "code-memory import --session <path>" to import a specific session');
+      console.log('\nUse "claude-memory-layer import --session <path>" to import a specific session');
     } catch (error) {
       console.error('List failed:', error);
       process.exit(1);
@@ -391,7 +391,7 @@ endlessCmd
       console.log('  - Working Set: Recent context kept active');
       console.log('  - Consolidation: Automatic memory integration');
       console.log('  - Continuity: Seamless context transitions\n');
-      console.log('Use "code-memory endless status" to view current state');
+      console.log('Use "claude-memory-layer endless status" to view current state');
 
       await service.shutdown();
     } catch (error) {
@@ -464,7 +464,7 @@ endlessCmd
         }
       } else {
         console.log('Endless Mode is disabled.');
-        console.log('Use "code-memory endless enable" to activate.');
+        console.log('Use "claude-memory-layer endless enable" to activate.');
       }
 
       await service.shutdown();
@@ -490,7 +490,7 @@ endlessCmd
 
       if (!service.isEndlessModeActive()) {
         console.log('\n⚠️  Endless Mode is not active');
-        console.log('Use "code-memory endless enable" first');
+        console.log('Use "claude-memory-layer endless enable" first');
         process.exit(1);
       }
 
@@ -529,7 +529,7 @@ endlessCmd
 
       if (!service.isEndlessModeActive()) {
         console.log('\n⚠️  Endless Mode is not active');
-        console.log('Use "code-memory endless enable" first');
+        console.log('Use "claude-memory-layer endless enable" first');
         process.exit(1);
       }
 

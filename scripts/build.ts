@@ -1,5 +1,5 @@
 /**
- * Build script for code-memory plugin
+ * Build script for claude-memory-layer plugin
  * Uses esbuild for fast bundling
  */
 
@@ -44,7 +44,7 @@ const __dirname = dirname(__filename);`
 };
 
 async function build() {
-  console.log('🔨 Building code-memory plugin...\n');
+  console.log('🔨 Building claude-memory-layer plugin...\n');
 
   // Build CLI
   console.log('📦 Building CLI...');
