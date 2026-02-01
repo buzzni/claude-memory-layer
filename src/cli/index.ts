@@ -307,4 +307,264 @@ program
     }
   });
 
+// ============================================================
+// Endless Mode Commands
+// ============================================================
+
+/**
+ * Endless Mode parent command
+ */
+const endlessCmd = program
+  .command('endless')
+  .description('Manage Endless Mode (biomimetic continuous memory)');
+
+/**
+ * Enable Endless Mode
+ */
+endlessCmd
+  .command('enable')
+  .description('Enable Endless Mode')
+  .action(async () => {
+    const service = getDefaultMemoryService();
+
+    try {
+      await service.initialize();
+      await service.setMode('endless');
+
+      console.log('\n♾️  Endless Mode Enabled\n');
+      console.log('Your conversations will now be continuously integrated');
+      console.log('across session boundaries.\n');
+      console.log('Features:');
+      console.log('  - Working Set: Recent context kept active');
+      console.log('  - Consolidation: Automatic memory integration');
+      console.log('  - Continuity: Seamless context transitions\n');
+      console.log('Use "code-memory endless status" to view current state');
+
+      await service.shutdown();
+    } catch (error) {
+      console.error('Enable failed:', error);
+      process.exit(1);
+    }
+  });
+
+/**
+ * Disable Endless Mode
+ */
+endlessCmd
+  .command('disable')
+  .description('Disable Endless Mode (return to Session Mode)')
+  .action(async () => {
+    const service = getDefaultMemoryService();
+
+    try {
+      await service.initialize();
+      await service.setMode('session');
+
+      console.log('\n📋 Session Mode Enabled\n');
+      console.log('Returned to traditional session-based memory.');
+      console.log('Existing Endless Mode data is preserved for future use.');
+
+      await service.shutdown();
+    } catch (error) {
+      console.error('Disable failed:', error);
+      process.exit(1);
+    }
+  });
+
+/**
+ * Endless Mode Status
+ */
+endlessCmd
+  .command('status')
+  .description('Show Endless Mode status')
+  .action(async () => {
+    const service = getDefaultMemoryService();
+
+    try {
+      await service.initialize();
+      const status = await service.getEndlessModeStatus();
+
+      const modeIcon = status.mode === 'endless' ? '♾️' : '📋';
+      const modeName = status.mode === 'endless' ? 'Endless Mode' : 'Session Mode';
+
+      console.log(`\n${modeIcon} ${modeName}\n`);
+
+      if (status.mode === 'endless') {
+        // Continuity score bar
+        const continuityBars = '█'.repeat(Math.round(status.continuityScore * 10));
+        const continuityEmpty = '░'.repeat(10 - Math.round(status.continuityScore * 10));
+
+        console.log('📊 Status:');
+        console.log(`   Working Set: ${status.workingSetSize} events`);
+        console.log(`   Continuity:  [${continuityBars}${continuityEmpty}] ${(status.continuityScore * 100).toFixed(0)}%`);
+        console.log(`   Consolidated: ${status.consolidatedCount} memories`);
+
+        if (status.lastConsolidation) {
+          const ago = Math.round((Date.now() - status.lastConsolidation.getTime()) / 60000);
+          console.log(`   Last Consolidation: ${ago} minutes ago`);
+        } else {
+          console.log('   Last Consolidation: Never');
+        }
+      } else {
+        console.log('Endless Mode is disabled.');
+        console.log('Use "code-memory endless enable" to activate.');
+      }
+
+      await service.shutdown();
+    } catch (error) {
+      console.error('Status failed:', error);
+      process.exit(1);
+    }
+  });
+
+/**
+ * Consolidate command - manually trigger consolidation
+ */
+endlessCmd
+  .command('consolidate')
+  .description('Manually trigger memory consolidation')
+  .action(async () => {
+    const service = getDefaultMemoryService();
+
+    try {
+      await service.initialize();
+
+      if (!service.isEndlessModeActive()) {
+        console.log('\n⚠️  Endless Mode is not active');
+        console.log('Use "code-memory endless enable" first');
+        process.exit(1);
+      }
+
+      console.log('\n⏳ Running memory consolidation...');
+      const count = await service.forceConsolidation();
+
+      if (count > 0) {
+        console.log(`\n✅ Consolidated ${count} memory group(s)`);
+      } else {
+        console.log('\n📋 No memories to consolidate');
+        console.log('(Working set may not have enough events yet)');
+      }
+
+      await service.shutdown();
+    } catch (error) {
+      console.error('Consolidation failed:', error);
+      process.exit(1);
+    }
+  });
+
+/**
+ * Working Set command - view current working set
+ */
+endlessCmd
+  .command('working-set')
+  .alias('ws')
+  .description('View current working set')
+  .option('-l, --limit <number>', 'Number of events to show', '10')
+  .action(async (options) => {
+    const service = getDefaultMemoryService();
+
+    try {
+      await service.initialize();
+
+      if (!service.isEndlessModeActive()) {
+        console.log('\n⚠️  Endless Mode is not active');
+        console.log('Use "code-memory endless enable" first');
+        process.exit(1);
+      }
+
+      const workingSet = await service.getWorkingSet();
+
+      if (!workingSet || workingSet.recentEvents.length === 0) {
+        console.log('\n📋 Working Set is empty');
+        console.log('Events will be added as you interact with Claude');
+        process.exit(0);
+      }
+
+      console.log('\n🧠 Working Set\n');
+      console.log(`Total events: ${workingSet.recentEvents.length}`);
+      console.log(`Continuity score: ${(workingSet.continuityScore * 100).toFixed(0)}%`);
+      console.log(`Last activity: ${workingSet.lastActivity.toISOString()}\n`);
+
+      const limit = parseInt(options.limit);
+      const events = workingSet.recentEvents.slice(0, limit);
+
+      for (const event of events) {
+        const icon = event.eventType === 'user_prompt' ? '👤' :
+                    event.eventType === 'agent_response' ? '🤖' :
+                    event.eventType === 'tool_observation' ? '🔧' : '📝';
+        const time = event.timestamp.toLocaleTimeString();
+        const preview = event.content.slice(0, 80) + (event.content.length > 80 ? '...' : '');
+
+        console.log(`${icon} [${time}] ${event.eventType}`);
+        console.log(`   ${preview}`);
+        console.log('');
+      }
+
+      if (workingSet.recentEvents.length > limit) {
+        console.log(`... and ${workingSet.recentEvents.length - limit} more events`);
+      }
+
+      await service.shutdown();
+    } catch (error) {
+      console.error('Working set failed:', error);
+      process.exit(1);
+    }
+  });
+
+/**
+ * Consolidated memories command
+ */
+endlessCmd
+  .command('memories')
+  .description('View consolidated memories')
+  .option('-l, --limit <number>', 'Number of memories to show', '10')
+  .option('-q, --query <text>', 'Search consolidated memories')
+  .action(async (options) => {
+    const service = getDefaultMemoryService();
+
+    try {
+      await service.initialize();
+
+      let memories;
+
+      if (options.query) {
+        memories = await service.searchConsolidated(options.query, {
+          topK: parseInt(options.limit)
+        });
+        console.log(`\n🔍 Searching for: "${options.query}"\n`);
+      } else {
+        memories = await service.getConsolidatedMemories(parseInt(options.limit));
+        console.log('\n💾 Consolidated Memories\n');
+      }
+
+      if (memories.length === 0) {
+        console.log('No consolidated memories found.');
+        if (!service.isEndlessModeActive()) {
+          console.log('Enable Endless Mode to start consolidating memories.');
+        }
+        process.exit(0);
+      }
+
+      console.log(`Showing ${memories.length} memory(ies)\n`);
+
+      for (const memory of memories) {
+        const date = memory.createdAt.toISOString().split('T')[0];
+        const confidenceBars = '█'.repeat(Math.round(memory.confidence * 5));
+
+        console.log(`📚 ${memory.topics.slice(0, 3).join(', ')}`);
+        console.log(`   Created: ${date}`);
+        console.log(`   Confidence: [${confidenceBars}] ${(memory.confidence * 100).toFixed(0)}%`);
+        console.log(`   Sources: ${memory.sourceEvents.length} events`);
+        console.log(`   Access count: ${memory.accessCount}`);
+        console.log(`   Summary: ${memory.summary.slice(0, 200)}${memory.summary.length > 200 ? '...' : ''}`);
+        console.log('');
+      }
+
+      await service.shutdown();
+    } catch (error) {
+      console.error('Memories failed:', error);
+      process.exit(1);
+    }
+  });
+
 program.parse();

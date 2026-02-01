@@ -12,7 +12,8 @@ import { z } from 'zod';
 export const EventTypeSchema = z.enum([
   'user_prompt',
   'agent_response',
-  'session_summary'
+  'session_summary',
+  'tool_observation'
 ]);
 export type EventType = z.infer<typeof EventTypeSchema>;
 
@@ -172,8 +173,21 @@ export const ConfigSchema = z.object({
     }).default({})
   }).default({}),
   privacy: z.object({
-    excludePatterns: z.array(z.string()).default(['password', 'secret', 'api_key']),
-    anonymize: z.boolean().default(false)
+    excludePatterns: z.array(z.string()).default(['password', 'secret', 'api_key', 'token', 'bearer']),
+    anonymize: z.boolean().default(false),
+    privateTags: z.object({
+      enabled: z.boolean().default(true),
+      marker: z.enum(['[PRIVATE]', '[REDACTED]', '']).default('[PRIVATE]'),
+      preserveLineCount: z.boolean().default(false),
+      supportedFormats: z.array(z.enum(['xml', 'bracket', 'comment'])).default(['xml'])
+    }).default({})
+  }).default({}),
+  toolObservation: z.object({
+    enabled: z.boolean().default(true),
+    excludedTools: z.array(z.string()).default(['TodoWrite', 'TodoRead']),
+    maxOutputLength: z.number().default(10000),
+    maxOutputLines: z.number().default(100),
+    storeOnlyOnSuccess: z.boolean().default(false)
   }).default({}),
   features: z.object({
     autoSave: z.boolean().default(true),
@@ -181,7 +195,26 @@ export const ConfigSchema = z.object({
     insightExtraction: z.boolean().default(true),
     crossProjectLearning: z.boolean().default(false),
     singleWriterMode: z.boolean().default(true)
-  }).default({})
+  }).default({}),
+  mode: z.enum(['session', 'endless']).default('session'),
+  endless: z.object({
+    enabled: z.boolean().default(false),
+    workingSet: z.object({
+      maxEvents: z.number().default(100),
+      timeWindowHours: z.number().default(24),
+      minRelevanceScore: z.number().default(0.5)
+    }).default({}),
+    consolidation: z.object({
+      triggerIntervalMs: z.number().default(3600000),
+      triggerEventCount: z.number().default(100),
+      triggerIdleMs: z.number().default(1800000),
+      useLLMSummarization: z.boolean().default(false)
+    }).default({}),
+    continuity: z.object({
+      minScoreForSeamless: z.number().default(0.7),
+      topicDecayHours: z.number().default(48)
+    }).default({})
+  }).optional()
 });
 export type Config = z.infer<typeof ConfigSchema>;
 
@@ -225,6 +258,45 @@ export interface StopInput {
 export interface SessionEndInput {
   session_id: string;
 }
+
+// PostToolUse Hook Input
+export interface PostToolUseInput {
+  tool_name: string;
+  tool_input: Record<string, unknown>;
+  tool_output: string;
+  tool_error?: string;
+  session_id: string;
+  started_at: string;
+  ended_at: string;
+}
+
+// ============================================================
+// Tool Observation Types
+// ============================================================
+
+export const ToolMetadataSchema = z.object({
+  filePath: z.string().optional(),
+  fileType: z.string().optional(),
+  lineCount: z.number().optional(),
+  command: z.string().optional(),
+  exitCode: z.number().optional(),
+  pattern: z.string().optional(),
+  matchCount: z.number().optional(),
+  url: z.string().optional(),
+  statusCode: z.number().optional()
+});
+export type ToolMetadata = z.infer<typeof ToolMetadataSchema>;
+
+export const ToolObservationPayloadSchema = z.object({
+  toolName: z.string(),
+  toolInput: z.record(z.unknown()),
+  toolOutput: z.string(),
+  durationMs: z.number(),
+  success: z.boolean(),
+  errorMessage: z.string().optional(),
+  metadata: ToolMetadataSchema.optional()
+});
+export type ToolObservationPayload = z.infer<typeof ToolObservationPayloadSchema>;
 
 // ============================================================
 // Vector Record
@@ -544,3 +616,226 @@ export const PipelineMetricSchema = z.object({
   sessionId: z.string().optional()
 });
 export type PipelineMetric = z.infer<typeof PipelineMetricSchema>;
+
+// ============================================================
+// Progressive Disclosure Types
+// ============================================================
+
+// Layer 1: Search Index (lightweight)
+export const SearchIndexItemSchema = z.object({
+  id: z.string(),
+  summary: z.string().max(100),
+  score: z.number(),
+  type: z.enum(['user_prompt', 'agent_response', 'session_summary', 'tool_observation']),
+  timestamp: z.date(),
+  sessionId: z.string()
+});
+export type SearchIndexItem = z.infer<typeof SearchIndexItemSchema>;
+
+// Layer 2: Timeline
+export const TimelineItemSchema = z.object({
+  id: z.string(),
+  timestamp: z.date(),
+  type: z.enum(['user_prompt', 'agent_response', 'session_summary', 'tool_observation']),
+  preview: z.string().max(200),
+  isTarget: z.boolean()
+});
+export type TimelineItem = z.infer<typeof TimelineItemSchema>;
+
+// Layer 3: Full Detail
+export const FullDetailSchema = z.object({
+  id: z.string(),
+  content: z.string(),
+  type: z.enum(['user_prompt', 'agent_response', 'session_summary', 'tool_observation']),
+  timestamp: z.date(),
+  sessionId: z.string(),
+  citationId: z.string().optional(),
+  metadata: z.object({
+    tokenCount: z.number(),
+    hasCode: z.boolean(),
+    files: z.array(z.string()).optional(),
+    tools: z.array(z.string()).optional()
+  })
+});
+export type FullDetail = z.infer<typeof FullDetailSchema>;
+
+// Progressive Search Result
+export const ProgressiveSearchResultSchema = z.object({
+  index: z.array(SearchIndexItemSchema),
+  timeline: z.array(TimelineItemSchema).optional(),
+  details: z.array(FullDetailSchema).optional(),
+  meta: z.object({
+    totalMatches: z.number(),
+    expandedCount: z.number(),
+    estimatedTokens: z.number(),
+    expansionReason: z.string().optional()
+  })
+});
+export type ProgressiveSearchResult = z.infer<typeof ProgressiveSearchResultSchema>;
+
+// Progressive Disclosure Config
+export const ProgressiveDisclosureConfigSchema = z.object({
+  enabled: z.boolean().default(true),
+  layer1: z.object({
+    topK: z.number().default(10),
+    minScore: z.number().default(0.7)
+  }).default({}),
+  autoExpand: z.object({
+    enabled: z.boolean().default(true),
+    highConfidenceThreshold: z.number().default(0.92),
+    scoreGapThreshold: z.number().default(0.1),
+    maxAutoExpandCount: z.number().default(3)
+  }).default({}),
+  tokenBudget: z.object({
+    maxTotalTokens: z.number().default(2000),
+    layer1PerItem: z.number().default(50),
+    layer2PerItem: z.number().default(40),
+    layer3PerItem: z.number().default(500)
+  }).default({})
+});
+export type ProgressiveDisclosureConfig = z.infer<typeof ProgressiveDisclosureConfigSchema>;
+
+// ============================================================
+// Citation Types
+// ============================================================
+
+export const CitationSchema = z.object({
+  citationId: z.string().length(6),
+  eventId: z.string(),
+  createdAt: z.date()
+});
+export type Citation = z.infer<typeof CitationSchema>;
+
+export const CitationUsageSchema = z.object({
+  usageId: z.string(),
+  citationId: z.string(),
+  sessionId: z.string(),
+  usedAt: z.date(),
+  context: z.string().optional()
+});
+export type CitationUsage = z.infer<typeof CitationUsageSchema>;
+
+export interface CitedSearchResult {
+  event: MemoryEvent;
+  citation: Citation;
+  score: number;
+}
+
+export interface CitationStats {
+  usageCount: number;
+  lastUsed: Date | null;
+}
+
+// ============================================================
+// Endless Mode Types
+// ============================================================
+
+export const MemoryModeSchema = z.enum(['session', 'endless']);
+export type MemoryMode = z.infer<typeof MemoryModeSchema>;
+
+export const EndlessModeConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+
+  workingSet: z.object({
+    maxEvents: z.number().default(100),
+    timeWindowHours: z.number().default(24),
+    minRelevanceScore: z.number().default(0.5)
+  }).default({}),
+
+  consolidation: z.object({
+    triggerIntervalMs: z.number().default(3600000), // 1 hour
+    triggerEventCount: z.number().default(100),
+    triggerIdleMs: z.number().default(1800000), // 30 minutes
+    useLLMSummarization: z.boolean().default(false)
+  }).default({}),
+
+  continuity: z.object({
+    minScoreForSeamless: z.number().default(0.7),
+    topicDecayHours: z.number().default(48)
+  }).default({})
+});
+export type EndlessModeConfig = z.infer<typeof EndlessModeConfigSchema>;
+
+// Working Set Item
+export const WorkingSetItemSchema = z.object({
+  id: z.string(),
+  eventId: z.string(),
+  addedAt: z.date(),
+  relevanceScore: z.number(),
+  topics: z.array(z.string()).optional(),
+  expiresAt: z.date()
+});
+export type WorkingSetItem = z.infer<typeof WorkingSetItemSchema>;
+
+// Working Set
+export interface WorkingSet {
+  recentEvents: MemoryEvent[];
+  lastActivity: Date;
+  continuityScore: number;
+}
+
+// Consolidated Memory
+export const ConsolidatedMemorySchema = z.object({
+  memoryId: z.string(),
+  summary: z.string(),
+  topics: z.array(z.string()),
+  sourceEvents: z.array(z.string()),
+  confidence: z.number(),
+  createdAt: z.date(),
+  accessedAt: z.date().optional(),
+  accessCount: z.number().default(0)
+});
+export type ConsolidatedMemory = z.infer<typeof ConsolidatedMemorySchema>;
+
+// Consolidated Memory Input (for creation)
+export interface ConsolidatedMemoryInput {
+  summary: string;
+  topics: string[];
+  sourceEvents: string[];
+  confidence: number;
+}
+
+// Event Group (for consolidation)
+export interface EventGroup {
+  topics: string[];
+  events: MemoryEvent[];
+}
+
+// Context Snapshot (for continuity calculation)
+export interface ContextSnapshot {
+  id: string;
+  timestamp: number;
+  topics: string[];
+  files: string[];
+  entities: string[];
+}
+
+// Transition Type
+export const TransitionTypeSchema = z.enum(['seamless', 'topic_shift', 'break']);
+export type TransitionType = z.infer<typeof TransitionTypeSchema>;
+
+// Continuity Score Result
+export interface ContinuityScore {
+  score: number;
+  transitionType: TransitionType;
+}
+
+// Continuity Log
+export const ContinuityLogSchema = z.object({
+  logId: z.string(),
+  fromContextId: z.string().optional(),
+  toContextId: z.string().optional(),
+  continuityScore: z.number(),
+  transitionType: TransitionTypeSchema,
+  createdAt: z.date()
+});
+export type ContinuityLog = z.infer<typeof ContinuityLogSchema>;
+
+// Endless Mode Status
+export interface EndlessModeStatus {
+  mode: MemoryMode;
+  workingSetSize: number;
+  continuityScore: number;
+  consolidatedCount: number;
+  lastConsolidation: Date | null;
+}
