@@ -144,6 +144,14 @@
                </div>
              </div>
              
+             <!-- Sort Controls -->
+             <div class="sort-controls">
+               <span class="sort-label">Sort:</span>
+               <button class="sort-btn active" data-sort="recent">Latest</button>
+               <button class="sort-btn" data-sort="accessed">Recently Used</button>
+               <button class="sort-btn" data-sort="most-accessed">Most Used</button>
+             </div>
+
              <!-- Events List -->
              <div id="event-list-container" class="event-list">
                <!-- Events injected by JS -->
@@ -195,7 +203,7 @@
                 <span>Global Knowledge</span>
               </div>
             </div>
-            
+
             <div class="shared-list">
               <div class="shared-item">
                 <div class="shared-info">
@@ -220,7 +228,34 @@
               </div>
             </div>
           </div>
-          
+
+          <!-- Memory Usage -->
+          <div class="card">
+            <div class="card-header">
+              <div class="card-title">
+                <i class="ri-bar-chart-box-line"></i>
+                <span>Memory Usage</span>
+              </div>
+            </div>
+
+            <div class="graduation-stats">
+              <div class="section-label">Graduation Distribution</div>
+              <div id="graduation-bars"></div>
+            </div>
+
+            <div style="margin-top:20px;">
+              <div class="section-label">Helpfulness</div>
+              <div id="helpfulness-summary" style="padding:8px 0; font-size:13px; color:var(--text-muted);">Loading...</div>
+            </div>
+
+            <div style="margin-top:20px;">
+              <div class="section-label">Most Helpful Memories</div>
+              <div id="most-helpful-list" class="shared-list">
+                <div style="padding:12px; text-align:center; color:var(--text-muted); font-size:13px;">Loading...</div>
+              </div>
+            </div>
+          </div>
+
         </div>
 
       </div>

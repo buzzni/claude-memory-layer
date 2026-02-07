@@ -255,6 +255,41 @@ statsRouter.get('/timeline', async (c) => {
   }
 });
 
+// GET /api/stats/helpfulness - Get helpfulness statistics and top helpful memories
+statsRouter.get('/helpfulness', async (c) => {
+  const limit = parseInt(c.req.query('limit') || '10', 10);
+  const memoryService = getReadOnlyMemoryService();
+
+  try {
+    await memoryService.initialize();
+    const stats = await memoryService.getHelpfulnessStats();
+    const topMemories = await memoryService.getHelpfulMemories(limit);
+
+    return c.json({
+      ...stats,
+      topMemories: topMemories.map(m => ({
+        eventId: m.eventId,
+        summary: m.summary,
+        helpfulnessScore: m.helpfulnessScore,
+        accessCount: m.accessCount,
+        evaluationCount: m.evaluationCount
+      }))
+    });
+  } catch (error) {
+    return c.json({
+      avgScore: 0,
+      totalEvaluated: 0,
+      totalRetrievals: 0,
+      helpful: 0,
+      neutral: 0,
+      unhelpful: 0,
+      topMemories: []
+    });
+  } finally {
+    await memoryService.shutdown();
+  }
+});
+
 // POST /api/stats/graduation/run - Force graduation evaluation
 statsRouter.post('/graduation/run', async (c) => {
   const memoryService = getReadOnlyMemoryService();

@@ -15,6 +15,18 @@ const MAX_MEMORIES = parseInt(process.env.CLAUDE_MEMORY_MAX_COUNT || '5');
 const MIN_SCORE = parseFloat(process.env.CLAUDE_MEMORY_MIN_SCORE || '0.3');
 const ENABLE_SEARCH = process.env.CLAUDE_MEMORY_SEARCH !== 'false';
 
+/**
+ * Determine if a prompt is worth storing as a memory.
+ * Filters slash commands, very short inputs, and trivial patterns.
+ */
+function shouldStorePrompt(prompt: string): boolean {
+  const trimmed = prompt.trim();
+  if (trimmed.startsWith('/')) return false;
+  if (trimmed.length < 15) return false;
+  if (!/[a-zA-Z가-힣]{2,}/.test(trimmed)) return false;
+  return true;
+}
+
 async function main(): Promise<void> {
   // Read input from stdin
   const inputData = await readStdin();
@@ -24,11 +36,13 @@ async function main(): Promise<void> {
   const memoryService = getLightweightMemoryService(input.session_id);
 
   try {
-    // Store the user prompt for future retrieval
-    await memoryService.storeUserPrompt(
-      input.session_id,
-      input.prompt
-    );
+    // Store only non-trivial prompts (skip /commands, short inputs)
+    if (shouldStorePrompt(input.prompt)) {
+      await memoryService.storeUserPrompt(
+        input.session_id,
+        input.prompt
+      );
+    }
 
     let context = '';
 
@@ -43,6 +57,18 @@ async function main(): Promise<void> {
         // Increment access count for found memories
         const eventIds = results.map(r => r.event.id);
         await memoryService.incrementMemoryAccess(eventIds);
+
+        // Record each retrieval for helpfulness tracking
+        for (const r of results) {
+          try {
+            await memoryService.recordRetrieval(
+              r.event.id,
+              input.session_id,
+              r.score,
+              input.prompt
+            );
+          } catch { /* non-critical */ }
+        }
 
         // Format context
         const memories = results.map(r => {

@@ -12,6 +12,8 @@ export const eventsRouter = new Hono();
 eventsRouter.get('/', async (c) => {
   const sessionId = c.req.query('sessionId');
   const eventType = c.req.query('type');
+  const level = c.req.query('level');
+  const sort = c.req.query('sort') || 'recent'; // recent | accessed | oldest
   const limit = parseInt(c.req.query('limit') || '100', 10);
   const offset = parseInt(c.req.query('offset') || '0', 10);
   const memoryService = getReadOnlyMemoryService();
@@ -19,7 +21,14 @@ eventsRouter.get('/', async (c) => {
   try {
     await memoryService.initialize();
 
-    let events = await memoryService.getRecentEvents(limit + offset + 1000);
+    let events: any[];
+
+    // Filter by level using the dedicated method
+    if (level) {
+      events = await memoryService.getEventsByLevel(level, { limit: limit + offset + 1000, offset: 0 });
+    } else {
+      events = await memoryService.getRecentEvents(limit + offset + 1000);
+    }
 
     // Filter by session
     if (sessionId) {
@@ -30,6 +39,20 @@ eventsRouter.get('/', async (c) => {
     if (eventType) {
       events = events.filter(e => e.eventType === eventType);
     }
+
+    // Sort
+    if (sort === 'accessed') {
+      events.sort((a: any, b: any) => {
+        const aTime = a.last_accessed_at || '';
+        const bTime = b.last_accessed_at || '';
+        return bTime.localeCompare(aTime);
+      });
+    } else if (sort === 'most-accessed') {
+      events.sort((a: any, b: any) => (b.access_count || 0) - (a.access_count || 0));
+    } else if (sort === 'oldest') {
+      events.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+    }
+    // 'recent' is default (already sorted by timestamp DESC from the query)
 
     // Pagination
     const total = events.length;
@@ -42,7 +65,9 @@ eventsRouter.get('/', async (c) => {
         timestamp: e.timestamp,
         sessionId: e.sessionId,
         preview: e.content.slice(0, 200) + (e.content.length > 200 ? '...' : ''),
-        contentLength: e.content.length
+        contentLength: e.content.length,
+        accessCount: (e as any).access_count || 0,
+        lastAccessedAt: (e as any).last_accessed_at || null
       })),
       total,
       limit,

@@ -29,6 +29,11 @@ async function main(): Promise<void> {
       // End session with summary
       await memoryService.endSession(input.session_id, summary);
 
+      // Evaluate helpfulness of memory retrievals in this session
+      try {
+        await memoryService.evaluateSessionHelpfulness(input.session_id);
+      } catch { /* non-critical */ }
+
       // Process any pending embeddings
       await memoryService.processPendingEmbeddings();
     }

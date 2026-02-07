@@ -906,6 +906,51 @@ export class MemoryService {
   }
 
   /**
+   * Record a memory retrieval for helpfulness tracking
+   */
+  async recordRetrieval(eventId: string, sessionId: string, score: number, query: string): Promise<void> {
+    await this.initialize();
+    await this.sqliteStore.recordRetrieval(eventId, sessionId, score, query);
+  }
+
+  /**
+   * Evaluate helpfulness of retrievals in a session (called at session end)
+   */
+  async evaluateSessionHelpfulness(sessionId: string): Promise<void> {
+    await this.initialize();
+    await this.sqliteStore.evaluateSessionHelpfulness(sessionId);
+  }
+
+  /**
+   * Get most helpful memories ranked by helpfulness score
+   */
+  async getHelpfulMemories(limit: number = 10): Promise<Array<{
+    eventId: string;
+    summary: string;
+    helpfulnessScore: number;
+    accessCount: number;
+    evaluationCount: number;
+  }>> {
+    await this.initialize();
+    return this.sqliteStore.getHelpfulMemories(limit);
+  }
+
+  /**
+   * Get helpfulness statistics for dashboard
+   */
+  async getHelpfulnessStats(): Promise<{
+    avgScore: number;
+    totalEvaluated: number;
+    totalRetrievals: number;
+    helpful: number;
+    neutral: number;
+    unhelpful: number;
+  }> {
+    await this.initialize();
+    return this.sqliteStore.getHelpfulnessStats();
+  }
+
+  /**
    * Mark a consolidated memory as accessed
    */
   async markMemoryAccessed(memoryId: string): Promise<void> {

@@ -258,6 +258,23 @@ export class SQLiteEventStore {
         updated_at TEXT DEFAULT (datetime('now'))
       );
 
+      -- Memory Helpfulness tracking
+      CREATE TABLE IF NOT EXISTS memory_helpfulness (
+        id TEXT PRIMARY KEY,
+        event_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        retrieval_score REAL DEFAULT 0,
+        query_preview TEXT,
+        session_continued INTEGER DEFAULT 0,
+        prompt_count_after INTEGER DEFAULT 0,
+        tool_success_count INTEGER DEFAULT 0,
+        tool_total_count INTEGER DEFAULT 0,
+        was_reasked INTEGER DEFAULT 0,
+        helpfulness_score REAL DEFAULT 0.5,
+        created_at TEXT DEFAULT (datetime('now')),
+        measured_at TEXT
+      );
+
       -- Sync position tracking (for SQLite -> DuckDB sync)
       CREATE TABLE IF NOT EXISTS sync_positions (
         target_name TEXT PRIMARY KEY,
@@ -283,6 +300,9 @@ export class SQLiteEventStore {
       CREATE INDEX IF NOT EXISTS idx_consolidated_confidence ON consolidated_memories(confidence);
       CREATE INDEX IF NOT EXISTS idx_continuity_created ON continuity_log(created_at);
       CREATE INDEX IF NOT EXISTS idx_embedding_outbox_status ON embedding_outbox(status);
+      CREATE INDEX IF NOT EXISTS idx_helpfulness_event ON memory_helpfulness(event_id);
+      CREATE INDEX IF NOT EXISTS idx_helpfulness_session ON memory_helpfulness(session_id);
+      CREATE INDEX IF NOT EXISTS idx_helpfulness_score ON memory_helpfulness(helpfulness_score DESC);
 
       -- FTS5 Full-Text Search for fast keyword search
       CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(
@@ -827,6 +847,189 @@ export class SQLiteEventStore {
     );
 
     return rows.map(row => this.rowToEvent(row));
+  }
+
+  /**
+   * Record a memory retrieval for helpfulness tracking
+   */
+  async recordRetrieval(eventId: string, sessionId: string, score: number, query: string): Promise<void> {
+    if (this.readOnly) return;
+    await this.initialize();
+
+    const id = randomUUID();
+    sqliteRun(
+      this.db,
+      `INSERT INTO memory_helpfulness (id, event_id, session_id, retrieval_score, query_preview, created_at)
+       VALUES (?, ?, ?, ?, ?, datetime('now'))`,
+      [id, eventId, sessionId, score, query.slice(0, 100)]
+    );
+  }
+
+  /**
+   * Evaluate helpfulness for all retrievals in a session
+   * Called at session end - uses behavioral signals to compute score
+   */
+  async evaluateSessionHelpfulness(sessionId: string): Promise<void> {
+    if (this.readOnly) return;
+    await this.initialize();
+
+    // Get all retrieval records for this session
+    const retrievals = sqliteAll<Record<string, unknown>>(
+      this.db,
+      `SELECT * FROM memory_helpfulness WHERE session_id = ? AND measured_at IS NULL`,
+      [sessionId]
+    );
+
+    if (retrievals.length === 0) return;
+
+    // Get session events to analyze behavior after retrieval
+    const sessionEvents = sqliteAll<Record<string, unknown>>(
+      this.db,
+      `SELECT * FROM events WHERE session_id = ? ORDER BY timestamp ASC`,
+      [sessionId]
+    );
+
+    const promptEvents = sessionEvents.filter((e: any) => e.event_type === 'user_prompt');
+    const toolEvents = sessionEvents.filter((e: any) => e.event_type === 'tool_observation');
+
+    // Count successful vs failed tools
+    let toolSuccessCount = 0;
+    let toolTotalCount = toolEvents.length;
+    for (const t of toolEvents) {
+      try {
+        const content = JSON.parse(t.content as string);
+        if (content.success !== false) toolSuccessCount++;
+      } catch {
+        toolSuccessCount++; // Assume success if can't parse
+      }
+    }
+    const toolSuccessRatio = toolTotalCount > 0 ? toolSuccessCount / toolTotalCount : 0.5;
+
+    for (const retrieval of retrievals) {
+      const retrievalTime = retrieval.created_at as string;
+
+      // 1. Session continued after retrieval?
+      const eventsAfter = sessionEvents.filter((e: any) => e.timestamp > retrievalTime);
+      const sessionContinued = eventsAfter.length > 0 ? 1 : 0;
+
+      // 2. How many prompts came after?
+      const promptsAfter = promptEvents.filter((e: any) => e.timestamp > retrievalTime);
+      const promptCountAfter = promptsAfter.length;
+
+      // 3. Was a similar query asked again? (simple word overlap check)
+      const queryWords = new Set((retrieval.query_preview as string || '').toLowerCase().split(/\s+/).filter(w => w.length > 2));
+      let wasReasked = 0;
+      for (const p of promptsAfter) {
+        const pWords = new Set((p.content as string).toLowerCase().split(/\s+/).filter((w: string) => w.length > 2));
+        let overlap = 0;
+        for (const w of queryWords) {
+          if (pWords.has(w)) overlap++;
+        }
+        if (queryWords.size > 0 && overlap / queryWords.size > 0.5) {
+          wasReasked = 1;
+          break;
+        }
+      }
+
+      // Calculate helpfulness score
+      const retrievalScore = retrieval.retrieval_score as number || 0;
+      const helpfulnessScore = (
+        0.30 * Math.min(retrievalScore, 1.0) +
+        0.25 * (sessionContinued ? 1.0 : 0.0) +
+        0.25 * toolSuccessRatio +
+        0.20 * (wasReasked ? 0.0 : 1.0)
+      );
+
+      sqliteRun(
+        this.db,
+        `UPDATE memory_helpfulness
+         SET session_continued = ?, prompt_count_after = ?,
+             tool_success_count = ?, tool_total_count = ?,
+             was_reasked = ?, helpfulness_score = ?,
+             measured_at = datetime('now')
+         WHERE id = ?`,
+        [sessionContinued, promptCountAfter, toolSuccessCount, toolTotalCount,
+         wasReasked, helpfulnessScore, retrieval.id]
+      );
+    }
+  }
+
+  /**
+   * Get most helpful memories ranked by helpfulness score
+   */
+  async getHelpfulMemories(limit: number = 10): Promise<Array<{
+    eventId: string;
+    summary: string;
+    helpfulnessScore: number;
+    accessCount: number;
+    evaluationCount: number;
+  }>> {
+    await this.initialize();
+
+    const rows = sqliteAll<Record<string, unknown>>(
+      this.db,
+      `SELECT
+         mh.event_id,
+         AVG(mh.helpfulness_score) as avg_score,
+         COUNT(*) as eval_count,
+         e.content,
+         e.access_count
+       FROM memory_helpfulness mh
+       JOIN events e ON e.id = mh.event_id
+       WHERE mh.measured_at IS NOT NULL
+       GROUP BY mh.event_id
+       ORDER BY avg_score DESC
+       LIMIT ?`,
+      [limit]
+    );
+
+    return rows.map(r => ({
+      eventId: r.event_id as string,
+      summary: (r.content as string).substring(0, 200) + ((r.content as string).length > 200 ? '...' : ''),
+      helpfulnessScore: Math.round((r.avg_score as number) * 100) / 100,
+      accessCount: (r.access_count as number) || 0,
+      evaluationCount: r.eval_count as number
+    }));
+  }
+
+  /**
+   * Get helpfulness statistics for dashboard
+   */
+  async getHelpfulnessStats(): Promise<{
+    avgScore: number;
+    totalEvaluated: number;
+    totalRetrievals: number;
+    helpful: number;
+    neutral: number;
+    unhelpful: number;
+  }> {
+    await this.initialize();
+
+    const stats = sqliteGet<Record<string, unknown>>(
+      this.db,
+      `SELECT
+         AVG(helpfulness_score) as avg_score,
+         COUNT(*) as total_evaluated,
+         SUM(CASE WHEN helpfulness_score >= 0.7 THEN 1 ELSE 0 END) as helpful,
+         SUM(CASE WHEN helpfulness_score >= 0.4 AND helpfulness_score < 0.7 THEN 1 ELSE 0 END) as neutral,
+         SUM(CASE WHEN helpfulness_score < 0.4 THEN 1 ELSE 0 END) as unhelpful
+       FROM memory_helpfulness
+       WHERE measured_at IS NOT NULL`
+    );
+
+    const totalRow = sqliteGet<Record<string, unknown>>(
+      this.db,
+      `SELECT COUNT(*) as total FROM memory_helpfulness`
+    );
+
+    return {
+      avgScore: Math.round(((stats?.avg_score as number) || 0) * 100) / 100,
+      totalEvaluated: (stats?.total_evaluated as number) || 0,
+      totalRetrievals: (totalRow?.total as number) || 0,
+      helpful: (stats?.helpful as number) || 0,
+      neutral: (stats?.neutral as number) || 0,
+      unhelpful: (stats?.unhelpful as number) || 0
+    };
   }
 
   /**
