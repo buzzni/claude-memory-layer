@@ -857,6 +857,37 @@ export class MemoryService {
   }
 
   /**
+   * Extract topic keywords from event content (markdown headings and key terms)
+   */
+  private extractTopicsFromContent(content: string): string[] {
+    const topics: Set<string> = new Set();
+
+    // Extract markdown headings (## heading)
+    const headings = content.match(/^#{1,3}\s+(.+)$/gm);
+    if (headings) {
+      for (const h of headings.slice(0, 5)) {
+        const text = h.replace(/^#+\s+/, '').replace(/[*_`#]/g, '').trim();
+        if (text.length > 2 && text.length < 50) {
+          topics.add(text);
+        }
+      }
+    }
+
+    // Extract bold terms (**term**)
+    const boldTerms = content.match(/\*\*([^*]+)\*\*/g);
+    if (boldTerms) {
+      for (const b of boldTerms.slice(0, 5)) {
+        const text = b.replace(/\*\*/g, '').trim();
+        if (text.length > 2 && text.length < 30) {
+          topics.add(text);
+        }
+      }
+    }
+
+    return Array.from(topics).slice(0, 5);
+  }
+
+  /**
    * Increment access count for memories that were used in prompts
    */
   async incrementMemoryAccess(eventIds: string[]): Promise<void> {
@@ -884,7 +915,7 @@ export class MemoryService {
       return events.map(event => ({
         memoryId: event.id,
         summary: event.content.substring(0, 200) + (event.content.length > 200 ? '...' : ''),
-        topics: [], // Could extract topics from content if needed
+        topics: this.extractTopicsFromContent(event.content),
         accessCount: (event as any).access_count || 0,
         lastAccessed: (event as any).last_accessed_at || null,
         confidence: 1.0,

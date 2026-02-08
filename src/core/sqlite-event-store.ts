@@ -856,12 +856,13 @@ export class SQLiteEventStore {
   }
 
   /**
-   * Get most accessed memories
+   * Get most accessed memories (falls back to recent events if none accessed)
    */
   async getMostAccessed(limit: number = 10): Promise<MemoryEvent[]> {
     await this.initialize();
 
-    const rows = sqliteAll<Record<string, unknown>>(
+    // First try events with access_count > 0
+    let rows = sqliteAll<Record<string, unknown>>(
       this.db,
       `SELECT * FROM events
        WHERE access_count > 0
@@ -869,6 +870,17 @@ export class SQLiteEventStore {
        LIMIT ?`,
       [limit]
     );
+
+    // Fallback: if no accessed events, show recent events
+    if (rows.length === 0) {
+      rows = sqliteAll<Record<string, unknown>>(
+        this.db,
+        `SELECT * FROM events
+         ORDER BY timestamp DESC
+         LIMIT ?`,
+        [limit]
+      );
+    }
 
     return rows.map(row => this.rowToEvent(row));
   }
