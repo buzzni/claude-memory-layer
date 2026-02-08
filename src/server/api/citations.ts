@@ -4,7 +4,7 @@
  */
 
 import { Hono } from 'hono';
-import { getReadOnlyMemoryService } from '../../services/memory-service.js';
+import { getServiceFromQuery } from './utils.js';
 import { generateCitationId, parseCitationId } from '../../core/citation-generator.js';
 
 export const citationsRouter = new Hono();
@@ -15,7 +15,7 @@ citationsRouter.get('/:id', async (c) => {
 
   // Support both formats: "a7Bc3x" or "mem:a7Bc3x"
   const citationId = parseCitationId(id) || id;
-  const memoryService = getReadOnlyMemoryService();
+  const memoryService = getServiceFromQuery(c);
 
   try {
     await memoryService.initialize();
@@ -57,7 +57,7 @@ citationsRouter.get('/:id', async (c) => {
 citationsRouter.get('/:id/related', async (c) => {
   const { id } = c.req.param();
   const citationId = parseCitationId(id) || id;
-  const memoryService = getReadOnlyMemoryService();
+  const memoryService = getServiceFromQuery(c);
 
   try {
     await memoryService.initialize();

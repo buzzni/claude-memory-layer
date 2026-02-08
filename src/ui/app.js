@@ -14,6 +14,8 @@ const state = {
   currentLevel: 'L0',
   currentSort: 'recent',
   currentView: 'overview',
+  currentProject: '', // empty = global
+  projects: [],
   events: [],
   isLoading: false,
   chartInstance: null
@@ -31,6 +33,21 @@ const CHART_COLORS = {
   L4: '#FF4560'
 };
 
+// --- API URL Helper ---
+
+function apiUrl(path, params = {}) {
+  const url = new URL(path, window.location.origin);
+  if (state.currentProject) {
+    url.searchParams.set('project', state.currentProject);
+  }
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== null) {
+      url.searchParams.set(key, String(value));
+    }
+  }
+  return url.toString();
+}
+
 // --- Initialization ---
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -38,9 +55,34 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 async function initDashboard() {
+  await loadProjects();
   await refreshData();
   setupEventListeners();
   await initActivityChart();
+}
+
+async function loadProjects() {
+  try {
+    const res = await fetch(`${API_BASE}/projects`);
+    const data = await res.json();
+    state.projects = data.projects || [];
+
+    const select = document.getElementById('project-select');
+    if (!select) return;
+
+    // Clear existing options except first
+    while (select.options.length > 1) select.remove(1);
+
+    // Add project options
+    state.projects.forEach(p => {
+      const option = document.createElement('option');
+      option.value = p.hash;
+      option.textContent = `${p.projectName} (${p.dbSizeHuman})`;
+      select.appendChild(option);
+    });
+  } catch (error) {
+    console.error('Failed to load projects:', error);
+  }
 }
 
 function setupEventListeners() {
@@ -64,6 +106,24 @@ function setupEventListeners() {
   const searchInput = document.getElementById('search-input');
   if (searchInput) {
     searchInput.addEventListener('input', debounce((e) => handleSearch(e.target.value), 300));
+  }
+
+  // Project selector
+  const projectSelect = document.getElementById('project-select');
+  if (projectSelect) {
+    projectSelect.addEventListener('change', async (e) => {
+      state.currentProject = e.target.value;
+      await refreshData();
+      if (state.chartInstance) {
+        state.chartInstance.destroy();
+        state.chartInstance = null;
+      }
+      await initActivityChart();
+      // Reload current view if not overview
+      if (state.currentView !== 'overview') {
+        switchView(state.currentView);
+      }
+    });
   }
 
   // Refresh
@@ -119,10 +179,10 @@ async function refreshData() {
 
   try {
     const [stats, shared, mostAccessed, helpfulness] = await Promise.all([
-      fetch(`${API_BASE}/stats`).then(r => r.json()).catch(() => null),
-      fetch(`${API_BASE}/stats/shared`).then(r => r.json()).catch(() => null),
-      fetch(`${API_BASE}/stats/most-accessed?limit=10`).then(r => r.json()).catch(() => null),
-      fetch(`${API_BASE}/stats/helpfulness?limit=5`).then(r => r.json()).catch(() => null)
+      fetch(apiUrl(`${API_BASE}/stats`)).then(r => r.json()).catch(() => null),
+      fetch(apiUrl(`${API_BASE}/stats/shared`)).then(r => r.json()).catch(() => null),
+      fetch(apiUrl(`${API_BASE}/stats/most-accessed`, { limit: 10 })).then(r => r.json()).catch(() => null),
+      fetch(apiUrl(`${API_BASE}/stats/helpfulness`, { limit: 5 })).then(r => r.json()).catch(() => null)
     ]);
 
     state.stats = stats;
@@ -150,7 +210,7 @@ async function loadLevelEvents(level, sort) {
   updateEventsListUI();
 
   try {
-    const response = await fetch(`${API_BASE}/events?level=${level}&limit=20&sort=${state.currentSort}`);
+    const response = await fetch(apiUrl(`${API_BASE}/events`, { level, limit: 20, sort: state.currentSort }));
     if (response.ok) {
       const data = await response.json();
       state.events = data.events || [];
@@ -375,7 +435,7 @@ async function initActivityChart() {
   let categories = [];
   let seriesData = [];
   try {
-    const res = await fetch(`${API_BASE}/stats/timeline?days=14`);
+    const res = await fetch(apiUrl(`${API_BASE}/stats/timeline`, { days: 14 }));
     const data = await res.json();
     if (data.daily && data.daily.length > 0) {
       categories = data.daily.map(d => d.date);
@@ -498,7 +558,7 @@ async function openDetailModal(eventId) {
   openModal('detail-modal');
 
   try {
-    const res = await fetch(`${API_BASE}/events/${eventId}`);
+    const res = await fetch(apiUrl(`${API_BASE}/events/${eventId}`));
     if (!res.ok) throw new Error('Event not found');
     const data = await res.json();
     const evt = data.event;
@@ -568,7 +628,7 @@ async function showEventsListModal() {
   openModal('list-modal');
 
   try {
-    const res = await fetch(`${API_BASE}/events?limit=50`);
+    const res = await fetch(apiUrl(`${API_BASE}/events`, { limit: 50 }));
     const data = await res.json();
     const events = data.events || [];
 
@@ -604,7 +664,7 @@ async function showSessionsModal() {
   openModal('list-modal');
 
   try {
-    const res = await fetch(`${API_BASE}/sessions?pageSize=50`);
+    const res = await fetch(apiUrl(`${API_BASE}/sessions`, { pageSize: 50 }));
     const data = await res.json();
     const sessions = data.sessions || [];
 
@@ -637,7 +697,7 @@ async function showSessionDetailInModal(sessionId) {
   body.innerHTML = '<div style="text-align:center; padding:40px; color:var(--text-muted);">Loading session...</div>';
 
   try {
-    const res = await fetch(`${API_BASE}/sessions/${sessionId}`);
+    const res = await fetch(apiUrl(`${API_BASE}/sessions/${sessionId}`));
     const data = await res.json();
     const session = data.session;
     const events = data.events || [];
@@ -793,8 +853,8 @@ async function loadKnowledgeGraphView() {
 
   try {
     const [mostAccessedRes, helpfulnessRes] = await Promise.all([
-      fetch(`${API_BASE}/stats/most-accessed?limit=20`).then(r => r.json()).catch(() => ({ memories: [] })),
-      fetch(`${API_BASE}/stats/helpfulness?limit=10`).then(r => r.json()).catch(() => ({ topMemories: [] }))
+      fetch(apiUrl(`${API_BASE}/stats/most-accessed`, { limit: 20 })).then(r => r.json()).catch(() => ({ memories: [] })),
+      fetch(apiUrl(`${API_BASE}/stats/helpfulness`, { limit: 10 })).then(r => r.json()).catch(() => ({ topMemories: [] }))
     ]);
 
     const memories = mostAccessedRes.memories || [];
@@ -899,8 +959,8 @@ async function loadMemoryBanksView() {
 
   try {
     const [statsRes, graduationRes] = await Promise.all([
-      fetch(`${API_BASE}/stats`).then(r => r.json()).catch(() => null),
-      fetch(`${API_BASE}/stats/graduation`).then(r => r.json()).catch(() => null)
+      fetch(apiUrl(`${API_BASE}/stats`)).then(r => r.json()).catch(() => null),
+      fetch(apiUrl(`${API_BASE}/stats/graduation`)).then(r => r.json()).catch(() => null)
     ]);
 
     const levelStats = statsRes?.levelStats || [];
@@ -980,7 +1040,7 @@ async function loadMemoryBankLevel(level) {
   container.innerHTML = '<div style="text-align:center; padding:20px; color:var(--text-muted);">Loading...</div>';
 
   try {
-    const res = await fetch(`${API_BASE}/stats/levels/${level}?limit=30`);
+    const res = await fetch(apiUrl(`${API_BASE}/stats/levels/${level}`, { limit: 30 }));
     const data = await res.json();
     const events = data.events || [];
 
@@ -1022,9 +1082,9 @@ async function loadConfigurationView() {
 
   try {
     const [statsRes, graduationRes, endlessRes] = await Promise.all([
-      fetch(`${API_BASE}/stats`).then(r => r.json()).catch(() => null),
-      fetch(`${API_BASE}/stats/graduation`).then(r => r.json()).catch(() => null),
-      fetch(`${API_BASE}/stats/endless`).then(r => r.json()).catch(() => null)
+      fetch(apiUrl(`${API_BASE}/stats`)).then(r => r.json()).catch(() => null),
+      fetch(apiUrl(`${API_BASE}/stats/graduation`)).then(r => r.json()).catch(() => null),
+      fetch(apiUrl(`${API_BASE}/stats/endless`)).then(r => r.json()).catch(() => null)
     ]);
 
     const memory = statsRes?.memory || {};

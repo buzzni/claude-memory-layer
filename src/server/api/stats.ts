@@ -4,13 +4,14 @@
  */
 
 import { Hono } from 'hono';
-import { getReadOnlyMemoryService, getMemoryServiceForProject } from '../../services/memory-service.js';
+import { getMemoryServiceForProject } from '../../services/memory-service.js';
+import { getServiceFromQuery } from './utils.js';
 
 export const statsRouter = new Hono();
 
 // GET /api/stats/shared - Get shared store statistics
 statsRouter.get('/shared', async (c) => {
-  const memoryService = getReadOnlyMemoryService();
+  const memoryService = getServiceFromQuery(c);
   try {
     await memoryService.initialize();
     const sharedStats = await memoryService.getSharedStoreStats();
@@ -74,7 +75,7 @@ statsRouter.get('/levels/:level', async (c) => {
     return c.json({ error: `Invalid level. Must be one of: ${validLevels.join(', ')}` }, 400);
   }
 
-  const memoryService = getReadOnlyMemoryService();
+  const memoryService = getServiceFromQuery(c);
   try {
     await memoryService.initialize();
     let events = await memoryService.getEventsByLevel(level, { limit: limit * 2, offset });
@@ -131,7 +132,7 @@ statsRouter.get('/levels/:level', async (c) => {
 
 // GET /api/stats - Get overall statistics
 statsRouter.get('/', async (c) => {
-  const memoryService = getReadOnlyMemoryService();
+  const memoryService = getServiceFromQuery(c);
   try {
     await memoryService.initialize();
     const stats = await memoryService.getStats();
@@ -187,7 +188,7 @@ statsRouter.get('/', async (c) => {
 statsRouter.get('/most-accessed', async (c) => {
   const limit = parseInt(c.req.query('limit') || '10', 10);
   // Use the same read-only service that other stats endpoints use
-  const memoryService = getReadOnlyMemoryService();
+  const memoryService = getServiceFromQuery(c);
 
   try {
     await memoryService.initialize();
@@ -222,7 +223,7 @@ statsRouter.get('/most-accessed', async (c) => {
 // GET /api/stats/timeline - Get activity timeline
 statsRouter.get('/timeline', async (c) => {
   const days = parseInt(c.req.query('days') || '7', 10);
-  const memoryService = getReadOnlyMemoryService();
+  const memoryService = getServiceFromQuery(c);
 
   try {
     await memoryService.initialize();
@@ -258,7 +259,7 @@ statsRouter.get('/timeline', async (c) => {
 // GET /api/stats/helpfulness - Get helpfulness statistics and top helpful memories
 statsRouter.get('/helpfulness', async (c) => {
   const limit = parseInt(c.req.query('limit') || '10', 10);
-  const memoryService = getReadOnlyMemoryService();
+  const memoryService = getServiceFromQuery(c);
 
   try {
     await memoryService.initialize();
@@ -292,7 +293,7 @@ statsRouter.get('/helpfulness', async (c) => {
 
 // POST /api/stats/graduation/run - Force graduation evaluation
 statsRouter.post('/graduation/run', async (c) => {
-  const memoryService = getReadOnlyMemoryService();
+  const memoryService = getServiceFromQuery(c);
   try {
     await memoryService.initialize();
     const result = await memoryService.forceGraduation();

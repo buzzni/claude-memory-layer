@@ -4,7 +4,7 @@
  */
 
 import { Hono } from 'hono';
-import { getReadOnlyMemoryService } from '../../services/memory-service.js';
+import { getServiceFromQuery } from './utils.js';
 
 export const searchRouter = new Hono();
 
@@ -20,7 +20,7 @@ interface SearchRequest {
 
 // POST /api/search - Search memories
 searchRouter.post('/', async (c) => {
-  const memoryService = getReadOnlyMemoryService();
+  const memoryService = getServiceFromQuery(c);
   try {
     const body = await c.req.json<SearchRequest>();
 
@@ -74,7 +74,7 @@ searchRouter.get('/', async (c) => {
   }
 
   const topK = parseInt(c.req.query('topK') || '5', 10);
-  const memoryService = getReadOnlyMemoryService();
+  const memoryService = getServiceFromQuery(c);
 
   try {
     await memoryService.initialize();

@@ -4,7 +4,7 @@
  */
 
 import { Hono } from 'hono';
-import { getReadOnlyMemoryService } from '../../services/memory-service.js';
+import { getServiceFromQuery } from './utils.js';
 
 export const eventsRouter = new Hono();
 
@@ -16,7 +16,7 @@ eventsRouter.get('/', async (c) => {
   const sort = c.req.query('sort') || 'recent'; // recent | accessed | oldest
   const limit = parseInt(c.req.query('limit') || '100', 10);
   const offset = parseInt(c.req.query('offset') || '0', 10);
-  const memoryService = getReadOnlyMemoryService();
+  const memoryService = getServiceFromQuery(c);
 
   try {
     await memoryService.initialize();
@@ -84,7 +84,7 @@ eventsRouter.get('/', async (c) => {
 // GET /api/events/:id - Get event details
 eventsRouter.get('/:id', async (c) => {
   const { id } = c.req.param();
-  const memoryService = getReadOnlyMemoryService();
+  const memoryService = getServiceFromQuery(c);
 
   try {
     await memoryService.initialize();
