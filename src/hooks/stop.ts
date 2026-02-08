@@ -17,6 +17,7 @@ import * as fs from 'fs';
 import * as readline from 'readline';
 import { getLightweightMemoryService } from '../services/memory-service.js';
 import { applyPrivacyFilter } from '../core/privacy/index.js';
+import { readTurnState, clearTurnState } from '../core/turn-state.js';
 import type { StopInput, Config } from '../core/types.js';
 
 // Default privacy config
@@ -87,6 +88,9 @@ async function main(): Promise<void> {
   const memoryService = getLightweightMemoryService(input.session_id);
 
   try {
+    // Read current turn_id from state file
+    const turnId = readTurnState(input.session_id);
+
     // Read assistant messages from transcript
     const assistantMessages = await extractAssistantMessages(input.transcript_path);
 
@@ -108,10 +112,14 @@ async function main(): Promise<void> {
         input.session_id,
         content,
         {
-          privacy: filterResult.metadata
+          privacy: filterResult.metadata,
+          ...(turnId ? { turnId } : {})
         }
       );
     }
+
+    // Clean up turn state file after processing
+    clearTurnState(input.session_id);
 
     // Embeddings enqueued in SQLite - will be processed by vector worker when server runs
     await memoryService.processPendingEmbeddings();

@@ -327,7 +327,7 @@ export class SQLiteEventStore {
       END;
     `);
 
-    // Migrate existing events table to add access tracking columns if they don't exist
+    // Migrate existing events table to add new columns if they don't exist
     // Check if columns exist before trying to add them
     const tableInfo = sqliteAll(this.db, "PRAGMA table_info(events)", []);
     const columnNames = tableInfo.map((col: any) => col.name);
@@ -352,6 +352,17 @@ export class SQLiteEventStore {
       }
     }
 
+    // Add turn_id column for grouping events within a conversation turn
+    if (!columnNames.includes('turn_id')) {
+      try {
+        sqliteExec(this.db, `
+          ALTER TABLE events ADD COLUMN turn_id TEXT;
+        `);
+      } catch (err: any) {
+        console.error('Error adding turn_id column:', err);
+      }
+    }
+
     // Create indexes for new columns if they don't exist
     try {
       sqliteExec(this.db, `
@@ -364,6 +375,14 @@ export class SQLiteEventStore {
     try {
       sqliteExec(this.db, `
         CREATE INDEX IF NOT EXISTS idx_events_last_accessed ON events(last_accessed_at DESC);
+      `);
+    } catch (err: any) {
+      // Index may already exist, ignore
+    }
+
+    try {
+      sqliteExec(this.db, `
+        CREATE INDEX IF NOT EXISTS idx_events_turn_id ON events(turn_id);
       `);
     } catch (err: any) {
       // Index may already exist, ignore
@@ -400,10 +419,14 @@ export class SQLiteEventStore {
     const timestamp = toSQLiteTimestamp(input.timestamp);
 
     try {
+      // Extract turnId from metadata if present
+      const metadata = input.metadata || {};
+      const turnId = (metadata.turnId as string) || null;
+
       // Use transaction for atomicity
       const insertEvent = this.db.prepare(`
-        INSERT INTO events (id, event_type, session_id, timestamp, content, canonical_key, dedupe_key, metadata)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO events (id, event_type, session_id, timestamp, content, canonical_key, dedupe_key, metadata, turn_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
 
       const insertDedup = this.db.prepare(`
@@ -423,7 +446,8 @@ export class SQLiteEventStore {
           input.content,
           canonicalKey,
           dedupeKey,
-          JSON.stringify(input.metadata || {})
+          JSON.stringify(metadata),
+          turnId
         );
         insertDedup.run(dedupeKey, id);
         insertLevel.run(id);
@@ -1123,6 +1147,201 @@ export class SQLiteEventStore {
   }
 
   /**
+   * Get events grouped by turn_id for a session
+   * Returns turns ordered by first event timestamp (newest first)
+   */
+  async getSessionTurns(sessionId: string, options?: { limit?: number; offset?: number }): Promise<Array<{
+    turnId: string;
+    events: MemoryEvent[];
+    startedAt: Date;
+    promptPreview: string;
+    eventCount: number;
+    toolCount: number;
+    hasResponse: boolean;
+  }>> {
+    await this.initialize();
+
+    const limit = options?.limit || 20;
+    const offset = options?.offset || 0;
+
+    // Get distinct turn_ids for this session, ordered by first event timestamp
+    const turnRows = sqliteAll<{ turn_id: string; min_ts: string }>(
+      this.db,
+      `SELECT turn_id, MIN(timestamp) as min_ts
+       FROM events
+       WHERE session_id = ? AND turn_id IS NOT NULL
+       GROUP BY turn_id
+       ORDER BY min_ts DESC
+       LIMIT ? OFFSET ?`,
+      [sessionId, limit, offset]
+    );
+
+    const turns: Array<{
+      turnId: string;
+      events: MemoryEvent[];
+      startedAt: Date;
+      promptPreview: string;
+      eventCount: number;
+      toolCount: number;
+      hasResponse: boolean;
+    }> = [];
+
+    for (const turnRow of turnRows) {
+      const events = await this.getEventsByTurn(turnRow.turn_id);
+
+      const promptEvent = events.find(e => e.eventType === 'user_prompt');
+      const toolEvents = events.filter(e => e.eventType === 'tool_observation');
+      const hasResponse = events.some(e => e.eventType === 'agent_response');
+
+      turns.push({
+        turnId: turnRow.turn_id,
+        events,
+        startedAt: toDateFromSQLite(turnRow.min_ts),
+        promptPreview: promptEvent
+          ? promptEvent.content.slice(0, 200) + (promptEvent.content.length > 200 ? '...' : '')
+          : '(no prompt)',
+        eventCount: events.length,
+        toolCount: toolEvents.length,
+        hasResponse
+      });
+    }
+
+    return turns;
+  }
+
+  /**
+   * Get all events for a specific turn_id
+   */
+  async getEventsByTurn(turnId: string): Promise<MemoryEvent[]> {
+    await this.initialize();
+
+    const rows = sqliteAll<Record<string, unknown>>(
+      this.db,
+      `SELECT * FROM events WHERE turn_id = ? ORDER BY timestamp ASC`,
+      [turnId]
+    );
+
+    return rows.map(this.rowToEvent);
+  }
+
+  /**
+   * Count total turns for a session
+   */
+  async countSessionTurns(sessionId: string): Promise<number> {
+    await this.initialize();
+
+    const row = sqliteGet<{ count: number }>(
+      this.db,
+      `SELECT COUNT(DISTINCT turn_id) as count
+       FROM events
+       WHERE session_id = ? AND turn_id IS NOT NULL`,
+      [sessionId]
+    );
+
+    return row?.count || 0;
+  }
+
+  /**
+   * Migrate existing events: backfill turn_id for events that have turnId in metadata
+   * but no turn_id column value (for events stored before this migration)
+   */
+  async backfillTurnIds(): Promise<number> {
+    await this.initialize();
+
+    // Find events with turnId in metadata JSON but no turn_id column value
+    const rows = sqliteAll<{ id: string; metadata: string }>(
+      this.db,
+      `SELECT id, metadata FROM events
+       WHERE turn_id IS NULL AND metadata IS NOT NULL AND metadata LIKE '%turnId%'`
+    );
+
+    let updated = 0;
+    for (const row of rows) {
+      try {
+        const metadata = JSON.parse(row.metadata);
+        if (metadata.turnId) {
+          sqliteRun(
+            this.db,
+            `UPDATE events SET turn_id = ? WHERE id = ?`,
+            [metadata.turnId, row.id]
+          );
+          updated++;
+        }
+      } catch {
+        // Skip rows with invalid JSON
+      }
+    }
+
+    return updated;
+  }
+
+  /**
+   * Delete all events for a session (for force reimport)
+   */
+  async deleteSessionEvents(sessionId: string): Promise<number> {
+    await this.initialize();
+
+    // Get event IDs first for cascading deletes
+    const events = sqliteAll<{ id: string }>(
+      this.db,
+      `SELECT id FROM events WHERE session_id = ?`,
+      [sessionId]
+    );
+
+    if (events.length === 0) return 0;
+
+    const eventIds = events.map(e => e.id);
+    const placeholders = eventIds.map(() => '?').join(',');
+
+    // Drop FTS triggers to prevent SQLITE_CORRUPT_VTAB during bulk delete
+    const ftsTriggersDropped: string[] = [];
+    for (const triggerName of ['events_fts_delete', 'events_fts_update', 'events_fts_insert']) {
+      try {
+        sqliteRun(this.db, `DROP TRIGGER IF EXISTS ${triggerName}`);
+        ftsTriggersDropped.push(triggerName);
+      } catch {
+        // Trigger may not exist
+      }
+    }
+
+    // Delete from related tables first (some may not exist depending on DB version)
+    for (const table of ['event_dedup', 'memory_levels', 'embedding_queue', 'embedding_outbox', 'vector_outbox']) {
+      try {
+        sqliteRun(this.db, `DELETE FROM ${table} WHERE event_id IN (${placeholders})`, eventIds);
+      } catch {
+        // Table may not exist
+      }
+    }
+
+    // Delete events
+    const result = sqliteRun(this.db, `DELETE FROM events WHERE session_id = ?`, [sessionId]);
+
+    // Rebuild FTS index if we dropped triggers
+    if (ftsTriggersDropped.length > 0) {
+      try {
+        // Rebuild FTS from remaining events
+        sqliteRun(this.db, `INSERT INTO events_fts(events_fts) VALUES('rebuild')`);
+
+        // Recreate triggers
+        sqliteRun(this.db, `CREATE TRIGGER IF NOT EXISTS events_fts_insert AFTER INSERT ON events BEGIN
+          INSERT INTO events_fts(rowid, content) VALUES (NEW.rowid, NEW.content);
+        END`);
+        sqliteRun(this.db, `CREATE TRIGGER IF NOT EXISTS events_fts_delete AFTER DELETE ON events BEGIN
+          INSERT INTO events_fts(events_fts, rowid, content) VALUES('delete', OLD.rowid, OLD.content);
+        END`);
+        sqliteRun(this.db, `CREATE TRIGGER IF NOT EXISTS events_fts_update AFTER UPDATE ON events BEGIN
+          INSERT INTO events_fts(events_fts, rowid, content) VALUES('delete', OLD.rowid, OLD.content);
+          INSERT INTO events_fts(rowid, content) VALUES (NEW.rowid, NEW.content);
+        END`);
+      } catch {
+        // FTS rebuild failed - non-critical, will be rebuilt on next initialize
+      }
+    }
+
+    return result.changes || 0;
+  }
+
+  /**
    * Convert database row to MemoryEvent
    */
   private rowToEvent(row: Record<string, unknown>): MemoryEvent {
@@ -1143,6 +1362,10 @@ export class SQLiteEventStore {
     }
     if (row.last_accessed_at !== undefined) {
       event.last_accessed_at = row.last_accessed_at;
+    }
+    // Include turn_id if present
+    if (row.turn_id !== undefined && row.turn_id !== null) {
+      event.turn_id = row.turn_id;
     }
 
     return event;

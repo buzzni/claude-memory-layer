@@ -10,7 +10,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as readline from 'readline';
-import { MemoryService } from './memory-service.js';
+import { randomUUID } from 'crypto';
+import { MemoryService, registerSession } from './memory-service.js';
 
 export type ProgressEvent =
   | { phase: 'scan'; message: string }
@@ -25,6 +26,7 @@ export interface ImportOptions {
   sessionId?: string;
   limit?: number;
   skipExisting?: boolean;
+  force?: boolean;
   verbose?: boolean;
   onProgress?: (event: ProgressEvent) => void;
 }
@@ -42,10 +44,60 @@ export interface ClaudeMessage {
   type: string;
   message?: {
     role: string;
-    content: string | Array<{ type: string; text?: string }>;
+    content: string | Array<{ type: string; text?: string; name?: string; tool_use_id?: string }>;
   };
   sessionId?: string;
   timestamp?: string;
+}
+
+/**
+ * Classify a JSONL entry into a logical message type:
+ * - 'user_prompt': Real user input (string content or text blocks without tool_result)
+ * - 'tool_result': Tool execution result (user message with tool_result blocks)
+ * - 'agent_text': Assistant text response (text blocks)
+ * - 'tool_use': Assistant tool call (tool_use blocks)
+ * - 'thinking': Assistant thinking (thinking blocks)
+ * - 'skip': Everything else (progress, system, summary, etc.)
+ */
+function classifyEntry(entry: ClaudeMessage): 'user_prompt' | 'tool_result' | 'agent_text' | 'tool_use' | 'thinking' | 'skip' {
+  if (entry.type !== 'user' && entry.type !== 'assistant') {
+    return 'skip';
+  }
+
+  const content = entry.message?.content;
+  if (!content) return 'skip';
+
+  if (entry.type === 'user') {
+    // String content = real user input
+    if (typeof content === 'string') return 'user_prompt';
+
+    // Array content: check for tool_result blocks
+    if (Array.isArray(content)) {
+      const hasToolResult = content.some(b => b.type === 'tool_result');
+      if (hasToolResult) return 'tool_result';
+
+      // Text-only blocks from user = real user input
+      const hasText = content.some(b => b.type === 'text' && b.text);
+      if (hasText) return 'user_prompt';
+    }
+    return 'skip';
+  }
+
+  // assistant type
+  if (Array.isArray(content)) {
+    const hasToolUse = content.some(b => b.type === 'tool_use');
+    if (hasToolUse) return 'tool_use';
+
+    const hasText = content.some(b => b.type === 'text' && b.text);
+    if (hasText) return 'agent_text';
+
+    const hasThinking = content.some(b => b.type === 'thinking');
+    if (hasThinking) return 'thinking';
+  } else if (typeof content === 'string' && content.length > 0) {
+    return 'agent_text';
+  }
+
+  return 'skip';
 }
 
 export class SessionHistoryImporter {
@@ -137,6 +189,14 @@ export class SessionHistoryImporter {
     // Extract session ID from filename
     const sessionId = path.basename(filePath, '.jsonl');
 
+    // Force reimport: delete existing events for this session
+    if (options.force) {
+      const deleted = await this.memoryService.deleteSessionEvents(sessionId);
+      if (options.verbose && deleted > 0) {
+        console.log(`  Deleted ${deleted} existing events for session ${sessionId}`);
+      }
+    }
+
     // Start session in memory
     await this.memoryService.startSession(sessionId, options.projectPath);
 
@@ -153,6 +213,48 @@ export class SessionHistoryImporter {
     const sessionIndex = (options as ImportOptions & { _sessionIndex?: number })._sessionIndex ?? 0;
     let lastProgressAt = 0;
 
+    // Turn grouping with buffering:
+    // - Buffer assistant text blocks within a turn
+    // - On new user_prompt or EOF, flush buffer as a single merged agent_response
+    // - Filter out short transitional text (< 100 chars) like "Let me check..."
+    let currentTurnId: string | null = null;
+    let textBuffer: string[] = [];
+    let lastTimestamp: string | undefined;
+
+    // Flush buffered text as a single agent_response
+    const flushTextBuffer = async () => {
+      if (textBuffer.length === 0 || !currentTurnId) return;
+
+      // Filter: keep substantive text (>= 100 chars), discard short transitional phrases
+      const substantive = textBuffer.filter(t => t.length >= 100);
+
+      // If all filtered out, keep the longest block (there's always something meaningful)
+      const merged = substantive.length > 0
+        ? substantive.join('\n\n')
+        : textBuffer.reduce((a, b) => a.length >= b.length ? a : b, '');
+
+      if (!merged) { textBuffer = []; return; }
+
+      // Truncate if very long
+      const truncated = merged.length > 10000
+        ? merged.slice(0, 10000) + '...[truncated]'
+        : merged;
+
+      const appendResult = await this.memoryService.storeAgentResponse(
+        sessionId,
+        truncated,
+        { importedFrom: filePath, originalTimestamp: lastTimestamp, turnId: currentTurnId }
+      );
+
+      if (appendResult.isDuplicate) {
+        result.skippedDuplicates++;
+      } else {
+        result.importedResponses++;
+      }
+      lineCount++;
+      textBuffer = [];
+    };
+
     for await (const line of rl) {
       if (lineCount >= limit) break;
 
@@ -160,56 +262,51 @@ export class SessionHistoryImporter {
         const entry = JSON.parse(line) as ClaudeMessage;
         result.totalMessages++;
 
-        // Process message entries
-        if (entry.type === 'user' || entry.type === 'assistant') {
+        const msgClass = classifyEntry(entry);
+
+        if (msgClass === 'user_prompt') {
+          // Flush previous turn's buffered responses before starting new turn
+          await flushTextBuffer();
+
           const content = this.extractContent(entry);
           if (!content) continue;
 
-          if (entry.type === 'user') {
-            const appendResult = await this.memoryService.storeUserPrompt(
-              sessionId,
-              content,
-              { importedFrom: filePath, originalTimestamp: entry.timestamp }
-            );
+          // New turn starts with each real user prompt
+          currentTurnId = randomUUID();
 
-            if (appendResult.isDuplicate) {
-              result.skippedDuplicates++;
-            } else {
-              result.importedPrompts++;
-            }
-          } else if (entry.type === 'assistant') {
-            // Truncate very long responses
-            const truncatedContent = content.length > 5000
-              ? content.slice(0, 5000) + '...[truncated]'
-              : content;
+          const appendResult = await this.memoryService.storeUserPrompt(
+            sessionId,
+            content,
+            { importedFrom: filePath, originalTimestamp: entry.timestamp, turnId: currentTurnId }
+          );
 
-            const appendResult = await this.memoryService.storeAgentResponse(
-              sessionId,
-              truncatedContent,
-              { importedFrom: filePath, originalTimestamp: entry.timestamp }
-            );
-
-            if (appendResult.isDuplicate) {
-              result.skippedDuplicates++;
-            } else {
-              result.importedResponses++;
-            }
+          if (appendResult.isDuplicate) {
+            result.skippedDuplicates++;
+          } else {
+            result.importedPrompts++;
           }
-
           lineCount++;
-
-          // Emit progress every 50 messages to avoid too much output
-          const now = Date.now();
-          if (now - lastProgressAt > 200) {
-            lastProgressAt = now;
-            onProgress?.({
-              phase: 'session-progress',
-              sessionIndex,
-              messagesProcessed: result.totalMessages,
-              imported: result.importedPrompts + result.importedResponses,
-              skipped: result.skippedDuplicates
-            });
+        } else if (msgClass === 'agent_text') {
+          // Buffer text instead of storing immediately
+          const content = this.extractContent(entry);
+          if (content) {
+            textBuffer.push(content);
+            lastTimestamp = entry.timestamp;
           }
+        }
+        // tool_result, tool_use, thinking, skip → ignored
+
+        // Emit progress periodically
+        const now = Date.now();
+        if (now - lastProgressAt > 200) {
+          lastProgressAt = now;
+          onProgress?.({
+            phase: 'session-progress',
+            sessionIndex,
+            messagesProcessed: result.totalMessages,
+            imported: result.importedPrompts + result.importedResponses,
+            skipped: result.skippedDuplicates
+          });
         }
       } catch (parseError) {
         // Skip malformed lines
@@ -217,8 +314,16 @@ export class SessionHistoryImporter {
       }
     }
 
+    // Flush any remaining buffered text from the last turn
+    await flushTextBuffer();
+
     // End session
     await this.memoryService.endSession(sessionId);
+
+    // Register session in registry so projects API can map hash → path
+    if (options.projectPath) {
+      registerSession(sessionId, options.projectPath);
+    }
 
     if (options.verbose) {
       console.log(`Imported ${result.importedPrompts} prompts, ${result.importedResponses} responses from ${filePath}`);

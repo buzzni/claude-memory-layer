@@ -103,18 +103,18 @@ export function getProjectStoragePath(projectPath: string): string {
 const REGISTRY_PATH = path.join(os.homedir(), '.claude-code', 'memory', 'session-registry.json');
 const SHARED_STORAGE_PATH = path.join(os.homedir(), '.claude-code', 'memory', 'shared');
 
-interface SessionRegistryEntry {
+export interface SessionRegistryEntry {
   projectPath: string;
   projectHash: string;
   registeredAt: string;
 }
 
-interface SessionRegistry {
+export interface SessionRegistry {
   version: number;
   sessions: Record<string, SessionRegistryEntry>;
 }
 
-function loadSessionRegistry(): SessionRegistry {
+export function loadSessionRegistry(): SessionRegistry {
   try {
     if (fs.existsSync(REGISTRY_PATH)) {
       const data = fs.readFileSync(REGISTRY_PATH, 'utf-8');
@@ -490,6 +490,9 @@ export class MemoryService {
     // Create content for storage (JSON stringified payload)
     const content = JSON.stringify(payload);
 
+    // Extract turnId from payload metadata if present (set by PostToolUse hook)
+    const turnId = payload.metadata?.turnId;
+
     const result = await this.sqliteStore.append({
       eventType: 'tool_observation',
       sessionId,
@@ -497,7 +500,8 @@ export class MemoryService {
       content,
       metadata: {
         toolName: payload.toolName,
-        success: payload.success
+        success: payload.success,
+        ...(turnId ? { turnId } : {})
       }
     });
 
@@ -1022,6 +1026,58 @@ export class MemoryService {
       consolidatedCount,
       lastConsolidation
     };
+  }
+
+  // ============================================================
+  // Turn Grouping Methods
+  // ============================================================
+
+  /**
+   * Get events grouped by turn for a session
+   */
+  async getSessionTurns(sessionId: string, options?: { limit?: number; offset?: number }): Promise<Array<{
+    turnId: string;
+    events: MemoryEvent[];
+    startedAt: Date;
+    promptPreview: string;
+    eventCount: number;
+    toolCount: number;
+    hasResponse: boolean;
+  }>> {
+    await this.initialize();
+    return this.sqliteStore.getSessionTurns(sessionId, options);
+  }
+
+  /**
+   * Get all events for a specific turn
+   */
+  async getEventsByTurn(turnId: string): Promise<MemoryEvent[]> {
+    await this.initialize();
+    return this.sqliteStore.getEventsByTurn(turnId);
+  }
+
+  /**
+   * Count total turns for a session
+   */
+  async countSessionTurns(sessionId: string): Promise<number> {
+    await this.initialize();
+    return this.sqliteStore.countSessionTurns(sessionId);
+  }
+
+  /**
+   * Backfill turn_ids from metadata for events stored before the migration
+   */
+  async backfillTurnIds(): Promise<number> {
+    await this.initialize();
+    return this.sqliteStore.backfillTurnIds();
+  }
+
+  /**
+   * Delete all events for a session (for force reimport)
+   */
+  async deleteSessionEvents(sessionId: string): Promise<number> {
+    await this.initialize();
+    return this.sqliteStore.deleteSessionEvents(sessionId);
   }
 
   /**

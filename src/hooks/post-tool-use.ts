@@ -14,6 +14,7 @@
 import { getLightweightMemoryService } from '../services/memory-service.js';
 import { applyPrivacyFilter, maskSensitiveInput, truncateOutput } from '../core/privacy/index.js';
 import { extractMetadata } from '../core/metadata-extractor.js';
+import { readTurnState } from '../core/turn-state.js';
 import type { PostToolUseInput, ToolObservationPayload, Config } from '../core/types.js';
 
 // Default config
@@ -125,7 +126,10 @@ async function main(): Promise<void> {
       success
     );
 
-    // 9. Create payload
+    // 8.5. Read current turn_id from state file
+    const turnId = readTurnState(input.session_id);
+
+    // 9. Create payload (include turnId in metadata for grouping)
     const payload: ToolObservationPayload = {
       toolName: input.tool_name,
       toolInput: maskedInput,
@@ -133,7 +137,10 @@ async function main(): Promise<void> {
       durationMs: 0, // Claude Code doesn't provide timing info
       success,
       errorMessage: input.tool_response?.stderr || undefined,
-      metadata
+      metadata: {
+        ...metadata,
+        ...(turnId ? { turnId } : {})
+      }
     };
 
     // 10. Store observation

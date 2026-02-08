@@ -512,6 +512,7 @@ program
   .option('-s, --session <file>', 'Import specific session file (JSONL)')
   .option('-a, --all', 'Import all sessions from all projects')
   .option('-l, --limit <number>', 'Limit messages per session')
+  .option('-f, --force', 'Force reimport: delete existing events and reimport with turn_id grouping')
   .option('-v, --verbose', 'Show detailed progress')
   .action(async (options) => {
     const startTime = Date.now();
@@ -525,6 +526,7 @@ program
 
     const importOpts = {
       limit: options.limit ? parseInt(options.limit) : undefined,
+      force: options.force,
       verbose: options.verbose,
       onProgress: renderProgress
     };
@@ -533,6 +535,10 @@ program
       console.log('\n⏳ Initializing memory service...');
       await service.initialize();
       console.log('  ✅ Ready\n');
+
+      if (options.force) {
+        console.log('🔄 Force mode: existing events will be deleted and reimported with turn_id grouping\n');
+      }
 
       let result;
 

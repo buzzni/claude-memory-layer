@@ -5,9 +5,14 @@
  *
  * Uses SQLite FTS5 for fast keyword-based search (no ML model needed)
  * Much faster than vector search (~100ms vs 3-5s)
+ *
+ * Turn Grouping: Generates a turn_id and persists it to a state file
+ * so PostToolUse and Stop hooks can associate their events with this turn.
  */
 
+import { randomUUID } from 'crypto';
 import { getLightweightMemoryService } from '../services/memory-service.js';
+import { writeTurnState } from '../core/turn-state.js';
 import type { UserPromptSubmitInput, UserPromptSubmitOutput } from '../core/types.js';
 
 // Configuration
@@ -32,6 +37,13 @@ async function main(): Promise<void> {
   const inputData = await readStdin();
   const input: UserPromptSubmitInput = JSON.parse(inputData);
 
+  // Generate a new turn_id for this user prompt
+  // This groups the prompt with subsequent tool calls and the final agent response
+  const turnId = randomUUID();
+
+  // Persist turn state so PostToolUse and Stop hooks can read it
+  writeTurnState(input.session_id, turnId);
+
   // Use lightweight service (SQLite only, no embedder/vector - FAST!)
   const memoryService = getLightweightMemoryService(input.session_id);
 
@@ -40,7 +52,8 @@ async function main(): Promise<void> {
     if (shouldStorePrompt(input.prompt)) {
       await memoryService.storeUserPrompt(
         input.session_id,
-        input.prompt
+        input.prompt,
+        { turnId }
       );
     }
 
