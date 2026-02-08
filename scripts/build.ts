@@ -30,6 +30,7 @@ const commonOptions: esbuild.BuildOptions = {
     'duckdb',
     'better-sqlite3',
     'commander',
+    'mongodb',
     'zod',
     'hono',
     'hono/cors',

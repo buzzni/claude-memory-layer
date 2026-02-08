@@ -526,6 +526,104 @@ export class SQLiteEventStore {
   }
 
   /**
+   * Get events since a SQLite rowid (for robust incremental replication).
+   * Rowid is monotonic for append-only tables, independent of client timestamps.
+   */
+  async getEventsSinceRowid(
+    lastRowid: number,
+    limit: number = 1000
+  ): Promise<Array<{ rowid: number; event: MemoryEvent }>> {
+    await this.initialize();
+
+    const rows = sqliteAll<Record<string, unknown>>(
+      this.db,
+      `SELECT rowid as _rowid, * FROM events WHERE rowid > ? ORDER BY rowid ASC LIMIT ?`,
+      [lastRowid, limit]
+    );
+
+    return rows.map(row => ({
+      rowid: row._rowid as number,
+      event: this.rowToEvent(row)
+    }));
+  }
+
+  /**
+   * Import events with fixed IDs (used for cross-machine replication).
+   * Idempotent: skips if event id or dedupeKey already exists.
+   *
+   * NOTE: This bypasses the append() id generation to preserve stable IDs.
+   */
+  async importEvents(events: MemoryEvent[]): Promise<{ inserted: number; skipped: number }> {
+    if (events.length === 0) return { inserted: 0, skipped: 0 };
+    if (this.readOnly) return { inserted: 0, skipped: events.length };
+
+    await this.initialize();
+
+    const getById = this.db.prepare(`SELECT id FROM events WHERE id = ?`);
+    const getByDedupe = this.db.prepare(`SELECT event_id FROM event_dedup WHERE dedupe_key = ?`);
+
+    const insertEvent = this.db.prepare(`
+      INSERT INTO events (id, event_type, session_id, timestamp, content, canonical_key, dedupe_key, metadata, turn_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    const insertDedup = this.db.prepare(`
+      INSERT INTO event_dedup (dedupe_key, event_id) VALUES (?, ?)
+    `);
+
+    const insertLevel = this.db.prepare(`
+      INSERT INTO memory_levels (event_id, level) VALUES (?, 'L0')
+    `);
+
+    let inserted = 0;
+    let skipped = 0;
+
+    const tx = this.db.transaction((batch: MemoryEvent[]) => {
+      for (const ev of batch) {
+        // Skip if already present by id
+        const existingById = getById.get(ev.id) as { id: string } | undefined;
+        if (existingById) {
+          skipped++;
+          continue;
+        }
+
+        const canonicalKey = ev.canonicalKey || makeCanonicalKey(ev.content);
+        const dedupeKey = ev.dedupeKey || makeDedupeKey(ev.content, ev.sessionId);
+
+        // Skip if already present by dedupe key
+        const existingByDedupe = getByDedupe.get(dedupeKey) as { event_id: string } | undefined;
+        if (existingByDedupe) {
+          skipped++;
+          continue;
+        }
+
+        const metadata = ev.metadata || {};
+        const turnId = (metadata as any).turnId as string | undefined;
+
+        insertEvent.run(
+          ev.id,
+          ev.eventType,
+          ev.sessionId,
+          toSQLiteTimestamp(ev.timestamp),
+          ev.content,
+          canonicalKey,
+          dedupeKey,
+          JSON.stringify(metadata),
+          turnId ?? null
+        );
+
+        insertDedup.run(dedupeKey, ev.id);
+        insertLevel.run(ev.id);
+        inserted++;
+      }
+    });
+
+    tx(events);
+
+    return { inserted, skipped };
+  }
+
+  /**
    * Create or update session
    */
   async upsertSession(session: Partial<Session> & { id: string }): Promise<void> {

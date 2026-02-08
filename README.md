@@ -127,6 +127,20 @@ npx claude-memory-layer list --project /path/to/project
 
 # 임베딩 수동 처리
 npx claude-memory-layer process
+
+# MongoDB 동기화 (옵션, 멀티 서버 협업)
+# - 여러 서버에서 같은 프로젝트를 개발할 때, 각 서버의 로컬 SQLite(events.sqlite) 이벤트를
+#   하나의 MongoDB로 모아 push/pull 동기화할 수 있습니다.
+# - 동일 프로젝트는 반드시 같은 project key로 실행해야 합니다.
+export CLAUDE_MEMORY_MONGO_URI="mongodb://USER:PASSWORD@HOST:PORT/"
+export CLAUDE_MEMORY_MONGO_DB="claude_memory_layer"
+export CLAUDE_MEMORY_MONGO_PROJECT="my-project"
+
+# 1회 동기화 (push+pull)
+npx claude-memory-layer mongo-sync
+
+# 지속 동기화 (주기적으로 push+pull)
+npx claude-memory-layer mongo-sync --watch --interval 30000
 ```
 
 ## Privacy 기능

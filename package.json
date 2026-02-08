@@ -42,6 +42,7 @@
     "commander": "^12.0.0",
     "duckdb": "^0.10.0",
     "hono": "^4.0.0",
+    "mongodb": "^6.14.0",
     "zod": "^3.22.0"
   },
   "devDependencies": {

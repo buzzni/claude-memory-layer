@@ -14,6 +14,7 @@ export * from './event-store.js';
 export * from './sqlite-wrapper.js';
 export * from './sqlite-event-store.js';
 export * from './sync-worker.js';
+export * from './mongo-sync-worker.js';
 export * from './entity-repo.js';
 export * from './edge-repo.js';
 

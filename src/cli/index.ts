@@ -11,10 +11,13 @@ import * as path from 'path';
 import * as os from 'os';
 import {
   getDefaultMemoryService,
-  getMemoryServiceForProject
+  getMemoryServiceForProject,
+  getProjectStoragePath
 } from '../services/memory-service.js';
 import { createSessionHistoryImporter, type ProgressEvent } from '../services/session-history-importer.js';
 import { startServer, stopServer, isServerRunning } from '../server/index.js';
+import { SQLiteEventStore } from '../core/sqlite-event-store.js';
+import { MongoSyncWorker } from '../core/mongo-sync-worker.js';
 
 // ============================================================
 // Hook Installation Utilities
@@ -423,6 +426,103 @@ program
       await service.shutdown();
     } catch (error) {
       console.error('Process failed:', error);
+      process.exit(1);
+    }
+  });
+
+/**
+ * Mongo Sync command - sync local SQLite events with a shared MongoDB database (optional)
+ */
+program
+  .command('mongo-sync')
+  .description('Sync events with MongoDB for multi-server collaboration (optional)')
+  .option('-p, --project <path>', 'Project path (defaults to cwd)')
+  .option('--mongo-uri <uri>', 'MongoDB connection URI (env: CLAUDE_MEMORY_MONGO_URI)')
+  .option('--mongo-db <name>', 'MongoDB database name (env: CLAUDE_MEMORY_MONGO_DB)')
+  .option('--mongo-project <key>', 'Remote project key (env: CLAUDE_MEMORY_MONGO_PROJECT, default: basename(projectPath))')
+  .option('--direction <dir>', 'push|pull|both', 'both')
+  .option('--batch-size <n>', 'Batch size', '500')
+  .option('--interval <ms>', 'Watch interval ms', '30000')
+  .option('--watch', 'Run continuously')
+  .action(async (options) => {
+    const projectPath = options.project || process.cwd();
+    const mongoUri = options.mongoUri || process.env.CLAUDE_MEMORY_MONGO_URI;
+    const mongoDb = options.mongoDb || process.env.CLAUDE_MEMORY_MONGO_DB;
+    const projectKey = options.mongoProject || process.env.CLAUDE_MEMORY_MONGO_PROJECT || path.basename(projectPath);
+    const direction = String(options.direction || 'both').toLowerCase();
+
+    if (!mongoUri || !mongoDb) {
+      console.error('\n❌ MongoDB sync is not configured.');
+      console.error('   Set --mongo-uri/--mongo-db or env CLAUDE_MEMORY_MONGO_URI/CLAUDE_MEMORY_MONGO_DB.\n');
+      process.exit(1);
+    }
+
+    if (!['push', 'pull', 'both'].includes(direction)) {
+      console.error('\n❌ Invalid --direction. Use: push | pull | both\n');
+      process.exit(1);
+    }
+
+    const storagePath = getProjectStoragePath(projectPath);
+    if (!fs.existsSync(storagePath)) {
+      fs.mkdirSync(storagePath, { recursive: true });
+    }
+
+    const batchSizeParsed = parseInt(options.batchSize, 10);
+    const intervalParsed = parseInt(options.interval, 10);
+    const batchSize = (Number.isFinite(batchSizeParsed) && batchSizeParsed > 0) ? batchSizeParsed : 500;
+    const intervalMs = (Number.isFinite(intervalParsed) && intervalParsed > 0) ? intervalParsed : 30000;
+
+    const sqliteStore = new SQLiteEventStore(path.join(storagePath, 'events.sqlite'));
+    const worker = new MongoSyncWorker(sqliteStore, {
+      uri: mongoUri,
+      dbName: mongoDb,
+      projectKey,
+      direction,
+      batchSize,
+      intervalMs
+    });
+
+    const runOnce = async () => {
+      const { pushed, pulled } = await worker.syncNow();
+      const ts = new Date().toISOString();
+      process.stdout.write(`[mongo-sync] ${ts} project=${projectKey} pushed=${pushed} pulled=${pulled}\n`);
+    };
+
+    try {
+      if (!options.watch) {
+        await runOnce();
+        await worker.shutdown();
+        sqliteStore.close();
+        return;
+      }
+
+      console.log(`[mongo-sync] Watch mode started (interval=${intervalMs}ms, project=${projectKey})`);
+
+      const handle = setInterval(() => {
+        runOnce().catch((err) => {
+          console.error('[mongo-sync] Sync failed:', err);
+        });
+      }, intervalMs);
+
+      const shutdown = async () => {
+        clearInterval(handle);
+        console.log('\n[mongo-sync] Shutting down...');
+        try {
+          await worker.shutdown();
+        } finally {
+          sqliteStore.close();
+        }
+        process.exit(0);
+      };
+
+      process.on('SIGINT', () => { void shutdown(); });
+      process.on('SIGTERM', () => { void shutdown(); });
+
+      // Run immediately, then keep alive
+      await runOnce();
+      await new Promise(() => {});
+    } catch (error) {
+      console.error('[mongo-sync] Failed:', error);
       process.exit(1);
     }
   });
