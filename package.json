@@ -13,7 +13,13 @@
     "test": "vitest",
     "test:coverage": "vitest --coverage",
     "lint": "eslint src/**/*.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "ops:sync-gap:report": "node scripts/report-sync-gap.js",
+    "ops:sync-gap:fix": "node scripts/fix-sync-gap.js",
+    "ops:sync-gap:heal": "bash scripts/sync-gap-auto-heal.sh",
+    "ops:review:resolve": "node scripts/review-queue-auto-resolve.js",
+    "ops:heartbeat": "bash scripts/heartbeat-memory-orchestrator.sh",
+    "ops:health": "npm run ops:sync-gap:report && npm run ops:sync-gap:heal && npm run ops:review:resolve"
   },
   "keywords": [
     "claude-code",
