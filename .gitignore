@@ -3,3 +3,4 @@ dist/
 .claude-memory/
 .history/
 test_access.js
+.omc/
