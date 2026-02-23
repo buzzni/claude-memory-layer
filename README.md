@@ -31,6 +31,7 @@ Claude Memory Layer는 Claude Code에서 사용자와 AI 간의 모든 대화를
 - **PostToolUse Hook**: 도구 실행 결과 (Read, Write, Bash 등) 캡처 및 저장
 - **Private Tags**: `<private>` 태그로 민감 정보를 명시적으로 제외
 - **Progressive Disclosure**: 3-Layer 검색 (인덱스 → 타임라인 → 상세)으로 토큰 효율화
+- **memU-inspired Retrieval**: fast/deep 전략 + 스코프 필터(session prefix, canonical key prefix, metadata path)
 - **Task Entity System**: Task를 Entity로 승격하여 세션 간 상태 추적
 - **Vector Outbox V2**: Transactional Outbox 패턴으로 DuckDB-LanceDB 정합성 보장
 - **Web Viewer UI**: localhost:37777 대시보드로 실시간 메모리 모니터링
