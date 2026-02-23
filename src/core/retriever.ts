@@ -1,6 +1,6 @@
 /**
  * Memory Retriever - Unified retrieval interface
- * Combines vector search, event store lookups, and matching
+ * Combines vector search, keyword search, scoped filtering, and matching
  */
 
 import { EventStore } from './event-store.js';
@@ -10,7 +10,18 @@ import { Matcher } from './matcher.js';
 import { SharedStore } from './shared-store.js';
 import { SharedVectorStore } from './shared-vector-store.js';
 import { GraduationPipeline } from './graduation.js';
-import type { MemoryEvent, MatchResult, Config, SharedTroubleshootingEntry } from './types.js';
+import type { MemoryEvent, MatchResult, SharedTroubleshootingEntry } from './types.js';
+
+export interface RetrievalScope {
+  sessionId?: string;
+  eventTypes?: MemoryEvent['eventType'][];
+  metadata?: Record<string, unknown>;
+  canonicalKeyPrefix?: string;
+  sessionIdPrefix?: string;
+  contentIncludes?: string[];
+}
+
+export type RetrievalStrategy = 'auto' | 'fast' | 'deep';
 
 export interface RetrievalOptions {
   topK: number;
@@ -18,6 +29,9 @@ export interface RetrievalOptions {
   sessionId?: string;
   maxTokens: number;
   includeSessionContext: boolean;
+  scope?: RetrievalScope;
+  strategy?: RetrievalStrategy;
+  rerankWithKeyword?: boolean;
 }
 
 export interface RetrievalResult {
@@ -46,7 +60,9 @@ const DEFAULT_OPTIONS: RetrievalOptions = {
   topK: 5,
   minScore: 0.7,
   maxTokens: 2000,
-  includeSessionContext: true
+  includeSessionContext: true,
+  strategy: 'auto',
+  rerankWithKeyword: true
 };
 
 export interface SharedStoreOptions {
@@ -54,8 +70,12 @@ export interface SharedStoreOptions {
   sharedVectorStore?: SharedVectorStore;
 }
 
+type EventStoreLike = EventStore & {
+  keywordSearch?: (query: string, limit?: number) => Promise<Array<{ event: MemoryEvent; rank: number }>>;
+};
+
 export class Retriever {
-  private readonly eventStore: EventStore;
+  private readonly eventStore: EventStoreLike;
   private readonly vectorStore: VectorStore;
   private readonly embedder: Embedder;
   private readonly matcher: Matcher;
@@ -70,7 +90,7 @@ export class Retriever {
     matcher: Matcher,
     sharedOptions?: SharedStoreOptions
   ) {
-    this.eventStore = eventStore;
+    this.eventStore = eventStore as EventStoreLike;
     this.vectorStore = vectorStore;
     this.embedder = embedder;
     this.matcher = matcher;
@@ -78,50 +98,38 @@ export class Retriever {
     this.sharedVectorStore = sharedOptions?.sharedVectorStore;
   }
 
-  /**
-   * Set graduation pipeline for access tracking
-   */
   setGraduationPipeline(graduation: GraduationPipeline): void {
     this.graduation = graduation;
   }
 
-  /**
-   * Set shared stores after construction
-   */
   setSharedStores(sharedStore: SharedStore, sharedVectorStore: SharedVectorStore): void {
     this.sharedStore = sharedStore;
     this.sharedVectorStore = sharedVectorStore;
   }
 
-  /**
-   * Retrieve relevant memories for a query
-   */
   async retrieve(
     query: string,
     options: Partial<RetrievalOptions> = {}
   ): Promise<RetrievalResult> {
     const opts = { ...DEFAULT_OPTIONS, ...options };
+    const sessionFilter = opts.scope?.sessionId ?? opts.sessionId;
 
-    // Generate query embedding
-    const queryEmbedding = await this.embedder.embed(query);
-
-    // Search vector store
-    const searchResults = await this.vectorStore.search(queryEmbedding.vector, {
-      limit: opts.topK * 2, // Get extra for filtering
+    const initialResults = await this.searchByStrategy(query, {
+      strategy: opts.strategy || 'auto',
+      topK: opts.topK,
       minScore: opts.minScore,
-      sessionId: opts.sessionId
+      sessionId: sessionFilter
     });
 
-    // Get match result using AXIOMMIND matcher
-    const matchResult = this.matcher.matchSearchResults(
-      searchResults,
-      (eventId) => this.getEventAgeDays(eventId)
-    );
+    const rerankedResults = opts.rerankWithKeyword
+      ? this.rerankByKeywordOverlap(initialResults, query)
+      : initialResults;
 
-    // Enrich results with full event data and session context
-    const memories = await this.enrichResults(searchResults.slice(0, opts.topK), opts);
+    const filteredSearchResults = await this.applyScopeFilters(rerankedResults, opts.scope);
+    const top = filteredSearchResults.slice(0, opts.topK);
 
-    // Build context string
+    const matchResult = this.matcher.matchSearchResults(top, () => 0);
+    const memories = await this.enrichResults(top, opts as RetrievalOptions);
     const context = this.buildContext(memories, opts.maxTokens);
 
     return {
@@ -132,52 +140,35 @@ export class Retriever {
     };
   }
 
-  /**
-   * Retrieve with unified search (project + shared)
-   */
   async retrieveUnified(
     query: string,
     options: Partial<UnifiedRetrievalOptions> = {}
   ): Promise<UnifiedRetrievalResult> {
-    // Get project-local results first
     const projectResult = await this.retrieve(query, options);
 
-    // If shared search is not requested or stores not available, return project results only
     if (!options.includeShared || !this.sharedStore || !this.sharedVectorStore) {
       return projectResult;
     }
 
     try {
-      // Generate query embedding (reuse if possible)
       const queryEmbedding = await this.embedder.embed(query);
+      const sharedVectorResults = await this.sharedVectorStore.search(queryEmbedding.vector, {
+        limit: options.topK || 5,
+        minScore: options.minScore || 0.7,
+        excludeProjectHash: options.projectHash
+      });
 
-      // Vector search in shared store
-      const sharedVectorResults = await this.sharedVectorStore.search(
-        queryEmbedding.vector,
-        {
-          limit: options.topK || 5,
-          minScore: options.minScore || 0.7,
-          excludeProjectHash: options.projectHash
-        }
-      );
-
-      // Get full entries from shared store
       const sharedMemories: SharedTroubleshootingEntry[] = [];
       for (const result of sharedVectorResults) {
         const entry = await this.sharedStore.get(result.entryId);
-        if (entry) {
-          // Exclude entries from current project if specified
-          if (!options.projectHash || entry.sourceProjectHash !== options.projectHash) {
-            sharedMemories.push(entry);
-            // Record usage for ranking
-            await this.sharedStore.recordUsage(entry.entryId);
-          }
+        if (!entry) continue;
+        if (!options.projectHash || entry.sourceProjectHash !== options.projectHash) {
+          sharedMemories.push(entry);
+          await this.sharedStore.recordUsage(entry.entryId);
         }
       }
 
-      // Build unified context
       const unifiedContext = this.buildUnifiedContext(projectResult, sharedMemories);
-
       return {
         ...projectResult,
         context: unifiedContext,
@@ -185,74 +176,130 @@ export class Retriever {
         sharedMemories
       };
     } catch (error) {
-      // If shared search fails, return project results only
       console.error('Shared search failed:', error);
       return projectResult;
     }
   }
 
-  /**
-   * Build unified context combining project and shared memories
-   */
-  private buildUnifiedContext(
-    projectResult: RetrievalResult,
-    sharedMemories: SharedTroubleshootingEntry[]
-  ): string {
-    let context = projectResult.context;
+  private async searchByStrategy(
+    query: string,
+    input: { strategy: RetrievalStrategy; topK: number; minScore: number; sessionId?: string }
+  ): Promise<SearchResult[]> {
+    const strategy = input.strategy === 'auto' ? 'deep' : input.strategy;
 
-    if (sharedMemories.length > 0) {
-      context += '\n\n## Cross-Project Knowledge\n\n';
-      for (const memory of sharedMemories.slice(0, 3)) {
-        context += `### ${memory.title}\n`;
-        if (memory.symptoms.length > 0) {
-          context += `**Symptoms:** ${memory.symptoms.join(', ')}\n`;
-        }
-        context += `**Root Cause:** ${memory.rootCause}\n`;
-        context += `**Solution:** ${memory.solution}\n`;
-        if (memory.technologies && memory.technologies.length > 0) {
-          context += `**Technologies:** ${memory.technologies.join(', ')}\n`;
-        }
-        context += `_Confidence: ${(memory.confidence * 100).toFixed(0)}%_\n\n`;
-      }
+    if (strategy === 'fast') {
+      const keyword = await this.searchByKeyword(query, {
+        limit: Math.max(5, input.topK * 3),
+        sessionId: input.sessionId
+      });
+      return keyword;
     }
 
-    return context;
+    const queryEmbedding = await this.embedder.embed(query);
+    return this.vectorStore.search(queryEmbedding.vector, {
+      limit: Math.max(5, input.topK * 3),
+      minScore: input.minScore,
+      sessionId: input.sessionId
+    });
   }
 
-  /**
-   * Retrieve memories from a specific session
-   */
+  private async searchByKeyword(
+    query: string,
+    input: { limit: number; sessionId?: string }
+  ): Promise<SearchResult[]> {
+    if (this.eventStore.keywordSearch) {
+      const rows = await this.eventStore.keywordSearch(query, input.limit);
+      const filtered = input.sessionId ? rows.filter((r) => r.event.sessionId === input.sessionId) : rows;
+      return filtered.map((row, idx) => ({
+        id: `kw-${row.event.id}`,
+        eventId: row.event.id,
+        content: row.event.content,
+        score: Math.max(0.4, 1 - idx * 0.04),
+        sessionId: row.event.sessionId,
+        eventType: row.event.eventType,
+        timestamp: row.event.timestamp.toISOString()
+      }));
+    }
+
+    const recent = await this.eventStore.getRecentEvents(input.limit * 4);
+    const tokens = this.tokenize(query);
+    const filtered = recent
+      .filter((e) => (input.sessionId ? e.sessionId === input.sessionId : true))
+      .map((e) => ({ e, overlap: this.keywordOverlap(tokens, this.tokenize(e.content)) }))
+      .filter((r) => r.overlap > 0)
+      .sort((a, b) => b.overlap - a.overlap)
+      .slice(0, input.limit);
+
+    return filtered.map((row, idx) => ({
+      id: `kw-fallback-${row.e.id}`,
+      eventId: row.e.id,
+      content: row.e.content,
+      score: Math.max(0.3, 0.9 - idx * 0.05),
+      sessionId: row.e.sessionId,
+      eventType: row.e.eventType,
+      timestamp: row.e.timestamp.toISOString()
+    }));
+  }
+
+  private rerankByKeywordOverlap(results: SearchResult[], query: string): SearchResult[] {
+    const q = this.tokenize(query);
+    const now = Date.now();
+
+    return [...results]
+      .map((r) => {
+        const overlap = this.keywordOverlap(q, this.tokenize(r.content));
+        const recencyDays = Math.max(0, (now - new Date(r.timestamp).getTime()) / (1000 * 60 * 60 * 24));
+        const recency = Math.max(0, 1 - recencyDays / 30);
+        const blended = r.score * 0.7 + overlap * 0.2 + recency * 0.1;
+        return { ...r, score: blended };
+      })
+      .sort((a, b) => b.score - a.score);
+  }
+
+  private async applyScopeFilters(results: SearchResult[], scope?: RetrievalScope): Promise<SearchResult[]> {
+    if (!scope) return results;
+
+    const normalizedIncludes = (scope.contentIncludes || []).map((s) => s.toLowerCase());
+    const filtered: SearchResult[] = [];
+
+    for (const result of results) {
+      if (scope.sessionId && result.sessionId !== scope.sessionId) continue;
+      if (scope.sessionIdPrefix && !result.sessionId.startsWith(scope.sessionIdPrefix)) continue;
+      if (scope.eventTypes && scope.eventTypes.length > 0 && !scope.eventTypes.includes(result.eventType as MemoryEvent['eventType'])) continue;
+
+      const event = await this.eventStore.getEvent(result.eventId);
+      if (!event) continue;
+
+      if (scope.canonicalKeyPrefix && !event.canonicalKey.startsWith(scope.canonicalKeyPrefix)) continue;
+      if (normalizedIncludes.length > 0) {
+        const lc = event.content.toLowerCase();
+        if (!normalizedIncludes.some((needle) => lc.includes(needle))) continue;
+      }
+      if (scope.metadata && !this.matchesMetadataScope(event.metadata, scope.metadata)) continue;
+
+      filtered.push(result);
+    }
+
+    return filtered;
+  }
+
   async retrieveFromSession(sessionId: string): Promise<MemoryEvent[]> {
     return this.eventStore.getSessionEvents(sessionId);
   }
 
-  /**
-   * Get recent memories across all sessions
-   */
   async retrieveRecent(limit: number = 100): Promise<MemoryEvent[]> {
     return this.eventStore.getRecentEvents(limit);
   }
 
-  /**
-   * Enrich search results with full event data
-   */
-  private async enrichResults(
-    results: SearchResult[],
-    options: RetrievalOptions
-  ): Promise<MemoryWithContext[]> {
+  private async enrichResults(results: SearchResult[], options: RetrievalOptions): Promise<MemoryWithContext[]> {
     const memories: MemoryWithContext[] = [];
 
     for (const result of results) {
       const event = await this.eventStore.getEvent(result.eventId);
       if (!event) continue;
 
-      // Record access for graduation scoring (keep this for graduation logic)
       if (this.graduation) {
-        this.graduation.recordAccess(
-          event.id,
-          options.sessionId || 'unknown',
-          result.score
-        );
+        this.graduation.recordAccess(event.id, options.sessionId || 'unknown', result.score);
       }
 
       let sessionContext: string | undefined;
@@ -260,37 +307,20 @@ export class Retriever {
         sessionContext = await this.getSessionContext(event.sessionId, event.id);
       }
 
-      memories.push({
-        event,
-        score: result.score,
-        sessionContext
-      });
+      memories.push({ event, score: result.score, sessionContext });
     }
-
-    // Note: Access count is NOT incremented here anymore.
-    // It should be incremented only when memories are actually used in prompts.
 
     return memories;
   }
 
-  /**
-   * Get surrounding context from the same session
-   */
-  private async getSessionContext(
-    sessionId: string,
-    eventId: string
-  ): Promise<string | undefined> {
+  private async getSessionContext(sessionId: string, eventId: string): Promise<string | undefined> {
     const sessionEvents = await this.eventStore.getSessionEvents(sessionId);
-
-    // Find the event index
     const eventIndex = sessionEvents.findIndex(e => e.id === eventId);
     if (eventIndex === -1) return undefined;
 
-    // Get 1 event before and after for context
     const start = Math.max(0, eventIndex - 1);
     const end = Math.min(sessionEvents.length, eventIndex + 2);
     const contextEvents = sessionEvents.slice(start, end);
-
     if (contextEvents.length <= 1) return undefined;
 
     return contextEvents
@@ -299,9 +329,23 @@ export class Retriever {
       .join('\n');
   }
 
-  /**
-   * Build context string from memories (respecting token limit)
-   */
+  private buildUnifiedContext(projectResult: RetrievalResult, sharedMemories: SharedTroubleshootingEntry[]): string {
+    let context = projectResult.context;
+    if (sharedMemories.length === 0) return context;
+
+    context += '\n\n## Cross-Project Knowledge\n\n';
+    for (const memory of sharedMemories.slice(0, 3)) {
+      context += `### ${memory.title}\n`;
+      if (memory.symptoms.length > 0) context += `**Symptoms:** ${memory.symptoms.join(', ')}\n`;
+      context += `**Root Cause:** ${memory.rootCause}\n`;
+      context += `**Solution:** ${memory.solution}\n`;
+      if (memory.technologies && memory.technologies.length > 0) context += `**Technologies:** ${memory.technologies.join(', ')}\n`;
+      context += `_Confidence: ${(memory.confidence * 100).toFixed(0)}%_\n\n`;
+    }
+
+    return context;
+  }
+
   private buildContext(memories: MemoryWithContext[], maxTokens: number): string {
     const parts: string[] = [];
     let currentTokens = 0;
@@ -309,59 +353,62 @@ export class Retriever {
     for (const memory of memories) {
       const memoryText = this.formatMemory(memory);
       const memoryTokens = this.estimateTokens(memoryText);
-
-      if (currentTokens + memoryTokens > maxTokens) {
-        break;
-      }
-
+      if (currentTokens + memoryTokens > maxTokens) break;
       parts.push(memoryText);
       currentTokens += memoryTokens;
     }
 
-    if (parts.length === 0) {
-      return '';
-    }
-
+    if (parts.length === 0) return '';
     return `## Relevant Memories\n\n${parts.join('\n\n---\n\n')}`;
   }
 
-  /**
-   * Format a single memory for context
-   */
   private formatMemory(memory: MemoryWithContext): string {
     const { event, score, sessionContext } = memory;
     const date = event.timestamp.toISOString().split('T')[0];
 
     let text = `**${event.eventType}** (${date}, score: ${score.toFixed(2)})\n${event.content}`;
-
-    if (sessionContext) {
-      text += `\n\n_Context:_ ${sessionContext}`;
-    }
-
+    if (sessionContext) text += `\n\n_Context:_ ${sessionContext}`;
     return text;
   }
 
-  /**
-   * Estimate token count (rough approximation)
-   */
-  private estimateTokens(text: string): number {
-    // Rough estimate: ~4 characters per token
-    return Math.ceil(text.length / 4);
+  private matchesMetadataScope(
+    metadata: Record<string, unknown> | undefined,
+    expected: Record<string, unknown>
+  ): boolean {
+    if (!metadata) return false;
+
+    return Object.entries(expected).every(([path, value]) => {
+      const actual = path.split('.').reduce<unknown>((acc, key) => {
+        if (typeof acc !== 'object' || acc === null) return undefined;
+        return (acc as Record<string, unknown>)[key];
+      }, metadata);
+
+      return actual === value;
+    });
   }
 
-  /**
-   * Get event age in days (for recency scoring)
-   */
-  private getEventAgeDays(eventId: string): number {
-    // This would ideally cache event timestamps
-    // For now, return 0 (assume recent)
-    return 0;
+  private tokenize(text: string): string[] {
+    return text
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+      .split(/\s+/)
+      .filter((t) => t.length >= 2)
+      .slice(0, 64);
+  }
+
+  private keywordOverlap(a: string[], b: string[]): number {
+    if (a.length === 0 || b.length === 0) return 0;
+    const bs = new Set(b);
+    let hit = 0;
+    for (const t of a) if (bs.has(t)) hit += 1;
+    return hit / a.length;
+  }
+
+  private estimateTokens(text: string): number {
+    return Math.ceil(text.length / 4);
   }
 }
 
-/**
- * Create a retriever with default components
- */
 export function createRetriever(
   eventStore: EventStore,
   vectorStore: VectorStore,

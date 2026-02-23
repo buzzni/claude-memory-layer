@@ -45,6 +45,11 @@ import { ConsolidatedStore, createConsolidatedStore } from '../core/consolidated
 import { ConsolidationWorker, createConsolidationWorker } from '../core/consolidation-worker.js';
 import { ContinuityManager, createContinuityManager } from '../core/continuity-manager.js';
 import { GraduationWorker, createGraduationWorker, GraduationRunResult } from '../core/graduation-worker.js';
+import {
+  IngestInterceptor,
+  IngestInterceptorRegistry,
+  mergeHierarchicalMetadata
+} from '../core/ingest-interceptor.js';
 
 export interface MemoryServiceConfig {
   storagePath: string;
@@ -185,6 +190,7 @@ export class MemoryService {
   private vectorWorker: VectorWorker | null = null;
   private graduationWorker: GraduationWorker | null = null;
   private initialized = false;
+  private readonly ingestInterceptors = new IngestInterceptorRegistry();
 
   // Endless Mode components
   private workingSetStore: WorkingSetStore | null = null;
@@ -377,6 +383,68 @@ export class MemoryService {
     this.retriever.setSharedStores(this.sharedStore, this.sharedVectorStore);
   }
 
+  registerIngestBefore(interceptor: IngestInterceptor): () => void {
+    return this.ingestInterceptors.registerBefore(interceptor);
+  }
+
+  registerIngestAfter(interceptor: IngestInterceptor): () => void {
+    return this.ingestInterceptors.registerAfter(interceptor);
+  }
+
+  registerIngestOnError(interceptor: IngestInterceptor): () => void {
+    return this.ingestInterceptors.registerOnError(interceptor);
+  }
+
+  private async ingestWithInterceptors(
+    operation: 'user_prompt' | 'agent_response' | 'session_summary' | 'tool_observation',
+    input: MemoryEventInput,
+    onSuccess?: (eventId: string) => Promise<void>
+  ): Promise<AppendResult> {
+    const normalizedInput: MemoryEventInput = {
+      ...input,
+      metadata: mergeHierarchicalMetadata(
+        {
+          ingest: {
+            operation,
+            pipeline: 'default',
+            ts: new Date().toISOString()
+          }
+        },
+        input.metadata
+      )
+    };
+
+    await this.ingestInterceptors.run('before', {
+      operation,
+      sessionId: normalizedInput.sessionId,
+      event: normalizedInput
+    });
+
+    try {
+      const result = await this.sqliteStore.append(normalizedInput);
+      if (result.success && !result.isDuplicate && onSuccess) {
+        await onSuccess(result.eventId);
+      }
+
+      await this.ingestInterceptors.run('after', {
+        operation,
+        sessionId: normalizedInput.sessionId,
+        event: normalizedInput
+      });
+
+      return result;
+    } catch (error) {
+      const normalizedError = error instanceof Error ? error : new Error(String(error));
+      await this.ingestInterceptors.run('error', {
+        operation,
+        sessionId: normalizedInput.sessionId,
+        event: normalizedInput,
+        error: normalizedError
+      });
+      throw error;
+    }
+  }
+
   /**
    * Start a new session
    */
@@ -413,20 +481,19 @@ export class MemoryService {
   ): Promise<AppendResult> {
     await this.initialize();
 
-    const result = await this.sqliteStore.append({
-      eventType: 'user_prompt',
-      sessionId,
-      timestamp: new Date(),
-      content,
-      metadata
-    });
-
-    // Enqueue for embedding if new
-    if (result.success && !result.isDuplicate) {
-      await this.sqliteStore.enqueueForEmbedding(result.eventId, content);
-    }
-
-    return result;
+    return this.ingestWithInterceptors(
+      'user_prompt',
+      {
+        eventType: 'user_prompt',
+        sessionId,
+        timestamp: new Date(),
+        content,
+        metadata
+      },
+      async (eventId) => {
+        await this.sqliteStore.enqueueForEmbedding(eventId, content);
+      }
+    );
   }
 
   /**
@@ -439,20 +506,19 @@ export class MemoryService {
   ): Promise<AppendResult> {
     await this.initialize();
 
-    const result = await this.sqliteStore.append({
-      eventType: 'agent_response',
-      sessionId,
-      timestamp: new Date(),
-      content,
-      metadata
-    });
-
-    // Enqueue for embedding if new
-    if (result.success && !result.isDuplicate) {
-      await this.sqliteStore.enqueueForEmbedding(result.eventId, content);
-    }
-
-    return result;
+    return this.ingestWithInterceptors(
+      'agent_response',
+      {
+        eventType: 'agent_response',
+        sessionId,
+        timestamp: new Date(),
+        content,
+        metadata
+      },
+      async (eventId) => {
+        await this.sqliteStore.enqueueForEmbedding(eventId, content);
+      }
+    );
   }
 
   /**
@@ -464,18 +530,18 @@ export class MemoryService {
   ): Promise<AppendResult> {
     await this.initialize();
 
-    const result = await this.sqliteStore.append({
-      eventType: 'session_summary',
-      sessionId,
-      timestamp: new Date(),
-      content: summary
-    });
-
-    if (result.success && !result.isDuplicate) {
-      await this.sqliteStore.enqueueForEmbedding(result.eventId, summary);
-    }
-
-    return result;
+    return this.ingestWithInterceptors(
+      'session_summary',
+      {
+        eventType: 'session_summary',
+        sessionId,
+        timestamp: new Date(),
+        content: summary
+      },
+      async (eventId) => {
+        await this.sqliteStore.enqueueForEmbedding(eventId, summary);
+      }
+    );
   }
 
   /**
@@ -493,29 +559,28 @@ export class MemoryService {
     // Extract turnId from payload metadata if present (set by PostToolUse hook)
     const turnId = payload.metadata?.turnId;
 
-    const result = await this.sqliteStore.append({
-      eventType: 'tool_observation',
-      sessionId,
-      timestamp: new Date(),
-      content,
-      metadata: {
-        toolName: payload.toolName,
-        success: payload.success,
-        ...(turnId ? { turnId } : {})
+    return this.ingestWithInterceptors(
+      'tool_observation',
+      {
+        eventType: 'tool_observation',
+        sessionId,
+        timestamp: new Date(),
+        content,
+        metadata: {
+          toolName: payload.toolName,
+          success: payload.success,
+          ...(turnId ? { turnId } : {})
+        }
+      },
+      async (eventId) => {
+        const embeddingContent = createToolObservationEmbedding(
+          payload.toolName,
+          payload.metadata || {},
+          payload.success
+        );
+        await this.sqliteStore.enqueueForEmbedding(eventId, embeddingContent);
       }
-    });
-
-    // Create embedding content (optimized for search)
-    if (result.success && !result.isDuplicate) {
-      const embeddingContent = createToolObservationEmbedding(
-        payload.toolName,
-        payload.metadata || {},
-        payload.success
-      );
-      await this.sqliteStore.enqueueForEmbedding(result.eventId, embeddingContent);
-    }
-
-    return result;
+    );
   }
 
   /**
