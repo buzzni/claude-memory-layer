@@ -24,6 +24,12 @@ describe('MarkdownMirror', () => {
     expect(p).toContain(path.join('memory', 'briefing', 'preferences', 'morning', '2026-02-24.md'));
   });
 
+  it('uses uncategorized when category is missing', () => {
+    const ev = { ...makeEvent(), metadata: { namespace: 'Briefing' } };
+    const p = buildMirrorPath('/tmp/demo', ev);
+    expect(p).toContain(path.join('memory', 'briefing', 'uncategorized', '2026-02-24.md'));
+  });
+
   it('appends without overwrite', async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'cl-md-mirror-'));
     const mirror = new MarkdownMirror(tmp);

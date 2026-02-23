@@ -32,7 +32,7 @@ Claude Memory Layer는 Claude Code에서 사용자와 AI 간의 모든 대화를
 - **Private Tags**: `<private>` 태그로 민감 정보를 명시적으로 제외
 - **Progressive Disclosure**: 3-Layer 검색 (인덱스 → 타임라인 → 상세)으로 토큰 효율화
 - **memU-inspired Retrieval**: fast/deep 전략 + 스코프 필터(session prefix, canonical key prefix, metadata path)
-- **Append-only Markdown Mirror**: 저장 이벤트를 `memory/<namespace>/<category...>/YYYY-MM-DD.md`에도 동기 append (기본값: `namespace=default`, category 미지정 시 event type 사용, 경로 세그먼트 sanitize)
+- **Append-only Markdown Mirror**: 저장 이벤트를 `memory/<namespace>/<category...>/YYYY-MM-DD.md`에도 동기 append (기본값: `namespace=default`, `category=uncategorized`, 경로 세그먼트 sanitize)
   - `memory/_index.md` 인덱스를 자동 갱신
 - **Task Entity System**: Task를 Entity로 승격하여 세션 간 상태 추적
 - **Vector Outbox V2**: Transactional Outbox 패턴으로 DuckDB-LanceDB 정합성 보장

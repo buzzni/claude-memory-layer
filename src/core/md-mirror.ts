@@ -24,7 +24,7 @@ export function buildMirrorPath(rootDir: string, event: MemoryEventInput): strin
   const categoryRaw = getAtPath(meta, 'categoryPath') ?? getAtPath(meta, 'scope.categoryPath');
   const categoryPath = Array.isArray(categoryRaw) && categoryRaw.length > 0
     ? categoryRaw.map((x) => sanitizeSegment(typeof x === 'string' ? x : undefined, 'uncategorized'))
-    : [sanitizeSegment(event.eventType, 'uncategorized')];
+    : ['uncategorized'];
 
   const d = event.timestamp;
   const yyyy = d.getFullYear();
