@@ -24,15 +24,17 @@ import {
   type SQLiteDatabase,
   type SQLiteOptions
 } from './sqlite-wrapper.js';
+import { MarkdownMirror } from './markdown-mirror.js';
 
 export interface SQLiteEventStoreOptions extends SQLiteOptions {
-  // Additional options can be added here
+  markdownMirrorRoot?: string;
 }
 
 export class SQLiteEventStore {
   private db: SQLiteDatabase;
   private initialized = false;
   private readonly readOnly: boolean;
+  private readonly markdownMirror: MarkdownMirror | null;
 
   constructor(private dbPath: string, options?: SQLiteEventStoreOptions) {
     this.readOnly = options?.readonly ?? false;
@@ -40,6 +42,9 @@ export class SQLiteEventStore {
       readonly: this.readOnly,
       walMode: !this.readOnly
     });
+    this.markdownMirror = this.readOnly || !options?.markdownMirrorRoot
+      ? null
+      : new MarkdownMirror(options.markdownMirrorRoot);
   }
 
   /**
@@ -455,6 +460,22 @@ export class SQLiteEventStore {
 
       transaction();
 
+      if (this.markdownMirror) {
+        const event: MemoryEvent = {
+          id,
+          eventType: input.eventType,
+          sessionId: input.sessionId,
+          timestamp: input.timestamp,
+          content: input.content,
+          canonicalKey,
+          dedupeKey,
+          metadata
+        };
+        this.markdownMirror.append(event).catch((err) => {
+          console.warn('[SQLiteEventStore] markdown mirror append failed:', err);
+        });
+      }
+
       return { success: true, eventId: id, isDuplicate: false };
     } catch (error) {
       return {
@@ -577,6 +598,7 @@ export class SQLiteEventStore {
 
     let inserted = 0;
     let skipped = 0;
+    const insertedEvents: MemoryEvent[] = [];
 
     const tx = this.db.transaction((batch: MemoryEvent[]) => {
       for (const ev of batch) {
@@ -615,10 +637,19 @@ export class SQLiteEventStore {
         insertDedup.run(dedupeKey, ev.id);
         insertLevel.run(ev.id);
         inserted++;
+        insertedEvents.push(ev);
       }
     });
 
     tx(events);
+
+    if (this.markdownMirror && insertedEvents.length > 0) {
+      for (const ev of insertedEvents) {
+        this.markdownMirror.append(ev).catch((err) => {
+          console.warn('[SQLiteEventStore] markdown mirror append failed:', err);
+        });
+      }
+    }
 
     return { inserted, skipped };
   }
