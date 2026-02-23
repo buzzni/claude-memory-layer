@@ -539,7 +539,8 @@ export class MemoryService {
    */
   async storeSessionSummary(
     sessionId: string,
-    summary: string
+    summary: string,
+    metadata?: Record<string, unknown>
   ): Promise<AppendResult> {
     await this.initialize();
 
@@ -549,7 +550,8 @@ export class MemoryService {
         eventType: 'session_summary',
         sessionId,
         timestamp: new Date(),
-        content: summary
+        content: summary,
+        metadata
       },
       async (eventId) => {
         await this.sqliteStore.enqueueForEmbedding(eventId, summary);

@@ -103,6 +103,21 @@ Claude Code 내에서 사용할 수 있는 명령어:
 /memory-forget --session <id> --confirm
 ```
 
+### 기존 메모리 정리 Import (구조화)
+
+레거시 markdown 메모리를 읽어서 구조화 경로로 재저장(import)할 수 있습니다.
+
+```bash
+# 미리보기(실제 저장 없음)
+claude-memory-layer organize-import /path/to/legacy-memory --dry-run
+
+# 실제 import
+claude-memory-layer organize-import /path/to/legacy-memory --project /path/to/project
+
+# 일부만 import
+claude-memory-layer organize-import /path/to/legacy-memory --limit 100
+```
+
 ### CLI 명령어
 
 터미널에서 직접 사용:

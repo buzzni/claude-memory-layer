@@ -602,6 +602,120 @@ function printImportSummary(result: import('../services/session-history-importer
   }
 }
 
+function sanitizeSegment(input: string | undefined, fallback: string): string {
+  const v = (input || '').trim().toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
+  return v || fallback;
+}
+
+async function listMarkdownFiles(root: string): Promise<string[]> {
+  const out: string[] = [];
+  const stack = [root];
+
+  while (stack.length > 0) {
+    const dir = stack.pop()!;
+    const entries = await fs.promises.readdir(dir, { withFileTypes: true });
+    for (const e of entries) {
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) stack.push(full);
+      else if (e.isFile() && e.name.endsWith('.md') && e.name !== '_index.md') out.push(full);
+    }
+  }
+
+  return out.sort();
+}
+
+function deriveNamespaceCategory(sourceRoot: string, filePath: string): { namespace: string; categoryPath: string[] } {
+  const rel = path.relative(sourceRoot, filePath);
+  const dirSeg = path.dirname(rel).split(path.sep).filter(Boolean);
+
+  if (dirSeg.length >= 2) {
+    const namespace = sanitizeSegment(dirSeg[0], 'default');
+    const categoryPath = dirSeg.slice(1).map((s) => sanitizeSegment(s, 'uncategorized'));
+    return { namespace, categoryPath: categoryPath.length > 0 ? categoryPath : ['uncategorized'] };
+  }
+
+  return { namespace: 'default', categoryPath: ['uncategorized'] };
+}
+
+/**
+ * Organize-import command - import legacy markdown memories into structured mirror
+ */
+program
+  .command('organize-import <sourceDir>')
+  .description('Import existing markdown memory files and re-save in structured memory/<namespace>/<category...>/YYYY-MM-DD.md')
+  .option('-p, --project <path>', 'Project path (defaults to cwd)')
+  .option('--session <id>', 'Session id for imported events (default: import:organized)')
+  .option('--limit <n>', 'Limit number of files to import')
+  .option('--dry-run', 'Preview mapping without writing')
+  .action(async (sourceDir: string, options) => {
+    const projectPath = options.project || process.cwd();
+    const sessionId = options.session || 'import:organized';
+    const sourceRoot = path.resolve(sourceDir);
+
+    if (!fs.existsSync(sourceRoot)) {
+      console.error(`\n❌ Source not found: ${sourceRoot}\n`);
+      process.exit(1);
+    }
+
+    const service = getMemoryServiceForProject(projectPath);
+
+    try {
+      const files = await listMarkdownFiles(sourceRoot);
+      const limit = options.limit ? Math.max(1, parseInt(options.limit, 10)) : files.length;
+      const targets = files.slice(0, limit);
+
+      console.log(`\n📦 organize-import`);
+      console.log(`  Source: ${sourceRoot}`);
+      console.log(`  Project: ${projectPath}`);
+      console.log(`  Files: ${targets.length}${targets.length < files.length ? `/${files.length}` : ''}`);
+      console.log(`  Dry-run: ${options.dryRun ? 'yes' : 'no'}\n`);
+
+      if (!options.dryRun) {
+        await service.initialize();
+      }
+
+      let imported = 0;
+      let skipped = 0;
+
+      for (const file of targets) {
+        const text = await fs.promises.readFile(file, 'utf8');
+        if (!text.trim()) {
+          skipped += 1;
+          continue;
+        }
+
+        const { namespace, categoryPath } = deriveNamespaceCategory(sourceRoot, file);
+        const rel = path.relative(sourceRoot, file);
+
+        if (options.dryRun) {
+          console.log(`- ${rel} -> namespace=${namespace} category=${categoryPath.join('/')}`);
+          continue;
+        }
+
+        await service.storeSessionSummary(sessionId, text, {
+          namespace,
+          categoryPath,
+          import: {
+            sourceFile: rel,
+            importedAt: new Date().toISOString()
+          }
+        });
+        imported += 1;
+      }
+
+      if (!options.dryRun) {
+        const embed = await service.processPendingEmbeddings();
+        await service.shutdown();
+        console.log(`\n✅ Imported: ${imported}, skipped-empty: ${skipped}, embeddings: ${embed}\n`);
+      } else {
+        console.log(`\n✅ Dry-run complete (planned imports: ${targets.length - skipped}, skipped-empty: ${skipped})\n`);
+      }
+    } catch (error) {
+      console.error('\n❌ organize-import failed:', error);
+      process.exit(1);
+    }
+  });
+
 /**
  * Import command - import existing Claude Code sessions
  */
