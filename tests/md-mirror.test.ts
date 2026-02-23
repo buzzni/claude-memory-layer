@@ -37,5 +37,8 @@ describe('MarkdownMirror', () => {
     expect(text).toContain('e1');
     expect(text).toContain('e2');
     expect(text).toContain('두번째 기록');
+
+    const index = fs.readFileSync(path.join(tmp, 'memory', '_index.md'), 'utf8');
+    expect(index).toContain('memory/briefing/preferences/morning/2026-02-24.md');
   });
 });

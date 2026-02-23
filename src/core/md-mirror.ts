@@ -50,5 +50,43 @@ export class MarkdownMirror {
     ];
 
     await fs.promises.appendFile(out, lines.join('\n'), 'utf8');
+    await this.refreshIndex();
+  }
+
+  private async refreshIndex(): Promise<void> {
+    const memoryRoot = path.join(this.rootDir, 'memory');
+    await fs.promises.mkdir(memoryRoot, { recursive: true });
+
+    const files: string[] = [];
+    await this.walk(memoryRoot, files);
+
+    const mdFiles = files
+      .filter((f) => f.endsWith('.md'))
+      .map((f) => path.relative(this.rootDir, f))
+      .filter((rel) => rel !== path.join('memory', '_index.md'))
+      .sort();
+
+    const index = [
+      '# Memory Index',
+      '',
+      'Generated automatically by MarkdownMirror.',
+      '',
+      ...mdFiles.map((rel) => `- ${rel}`),
+      '',
+    ].join('\n');
+
+    await fs.promises.writeFile(path.join(memoryRoot, '_index.md'), index, 'utf8');
+  }
+
+  private async walk(dir: string, out: string[]): Promise<void> {
+    const entries = await fs.promises.readdir(dir, { withFileTypes: true });
+    for (const e of entries) {
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) {
+        await this.walk(full, out);
+      } else {
+        out.push(full);
+      }
+    }
   }
 }
