@@ -144,6 +144,48 @@ npx claude-memory-layer mongo-sync
 npx claude-memory-layer mongo-sync --watch --interval 30000
 ```
 
+### memU-inspired Retrieval 사용 예시
+
+아래 예시는 SDK/서비스 레벨에서 `retrieveMemories()` 호출 시 적용되는 옵션입니다.
+
+```ts
+import { getMemoryServiceForProject } from './src/services/memory-service.js';
+
+const memory = getMemoryServiceForProject('/path/to/project');
+
+// 1) Fast: 키워드 기반 빠른 검색
+const fast = await memory.retrieveMemories('브리핑 포맷', {
+  strategy: 'fast',
+  topK: 5,
+  minScore: 0.6
+});
+
+// 2) Deep: 벡터 검색 + 키워드 오버랩 재정렬
+const deep = await memory.retrieveMemories('브리핑 포맷', {
+  strategy: 'deep',
+  topK: 10,
+  rerankWithKeyword: true
+});
+
+// 3) Scoped filter: 세션/타입/계층형 메타데이터로 범위 제한
+const scoped = await memory.retrieveMemories('아침 브리핑', {
+  strategy: 'deep',
+  scope: {
+    sessionIdPrefix: 'agent:main:',
+    eventTypes: ['user_prompt', 'agent_response'],
+    canonicalKeyPrefix: 'pref/briefing',
+    contentIncludes: ['아침'],
+    metadata: {
+      'scope.project.id': 'alpha'
+    }
+  }
+});
+```
+
+팁:
+- `strategy: 'auto'`는 기본적으로 `deep` 경로를 사용합니다.
+- 저지연 응답이 중요하면 `fast`, 정확도 우선이면 `deep`를 권장합니다.
+
 ## Privacy 기능
 
 ### Private Tags
