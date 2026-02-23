@@ -45,6 +45,7 @@ import { ConsolidatedStore, createConsolidatedStore } from '../core/consolidated
 import { ConsolidationWorker, createConsolidationWorker } from '../core/consolidation-worker.js';
 import { ContinuityManager, createContinuityManager } from '../core/continuity-manager.js';
 import { GraduationWorker, createGraduationWorker, GraduationRunResult } from '../core/graduation-worker.js';
+import { MarkdownMirror } from '../core/md-mirror.js';
 import {
   IngestInterceptor,
   IngestInterceptorRegistry,
@@ -209,11 +210,13 @@ export class MemoryService {
 
   private readonly readOnly: boolean;
   private readonly lightweightMode: boolean;
+  private readonly mdMirror: MarkdownMirror;
 
   constructor(config: MemoryServiceConfig & { projectHash?: string; sharedStoreConfig?: SharedStoreConfig }) {
     const storagePath = this.expandPath(config.storagePath);
     this.readOnly = config.readOnly ?? false;
     this.lightweightMode = config.lightweightMode ?? false;
+    this.mdMirror = new MarkdownMirror(process.cwd());
 
     // Ensure storage directory exists (only if not read-only)
     if (!this.readOnly && !fs.existsSync(storagePath)) {
@@ -229,7 +232,10 @@ export class MemoryService {
     // This is always used for writes and is the source of truth
     this.sqliteStore = new SQLiteEventStore(
       path.join(storagePath, 'events.sqlite'),
-      { readonly: this.readOnly }
+      {
+        readonly: this.readOnly,
+        markdownMirrorRoot: storagePath
+      }
     );
 
     // Initialize ANALYTICS store: DuckDB (optional, for server reads)
@@ -422,8 +428,15 @@ export class MemoryService {
 
     try {
       const result = await this.sqliteStore.append(normalizedInput);
-      if (result.success && !result.isDuplicate && onSuccess) {
-        await onSuccess(result.eventId);
+      if (result.success && !result.isDuplicate) {
+        if (onSuccess) {
+          await onSuccess(result.eventId);
+        }
+        try {
+          await this.mdMirror.append(normalizedInput, result.eventId);
+        } catch {
+          // non-breaking markdown mirror write
+        }
       }
 
       await this.ingestInterceptors.run('after', {
