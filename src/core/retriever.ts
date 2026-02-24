@@ -43,6 +43,11 @@ export interface RetrievalOptions {
     maxPenalty?: number;
   };
   intentRewrite?: boolean;
+  graphHop?: {
+    enabled?: boolean;
+    maxHops?: number;
+    hopPenalty?: number;
+  };
 }
 
 export interface RetrievalResult {
@@ -79,6 +84,11 @@ const DEFAULT_OPTIONS: RetrievalOptions = {
     enabled: true,
     windowDays: 30,
     maxPenalty: 0.15
+  },
+  graphHop: {
+    enabled: true,
+    maxHops: 1,
+    hopPenalty: 0.08
   }
 };
 
@@ -150,7 +160,8 @@ export class Retriever {
       rerankWithKeyword: opts.rerankWithKeyword !== false,
       rerankWeights: opts.rerankWeights,
       decayPolicy: opts.decayPolicy,
-      intentRewrite: opts.intentRewrite === true
+      intentRewrite: opts.intentRewrite === true,
+      graphHop: opts.graphHop
     });
     fallbackTrace.push(`stage:primary:${primaryStrategy}`);
 
@@ -164,7 +175,8 @@ export class Retriever {
         scope: opts.scope,
         rerankWithKeyword: opts.rerankWithKeyword !== false,
         rerankWeights: opts.rerankWeights,
-        decayPolicy: opts.decayPolicy
+        decayPolicy: opts.decayPolicy,
+        graphHop: opts.graphHop
       });
       fallbackTrace.push('fallback:deep');
     }
@@ -179,7 +191,8 @@ export class Retriever {
         scope: undefined,
         rerankWithKeyword: true,
         rerankWeights: opts.rerankWeights,
-        decayPolicy: opts.decayPolicy
+        decayPolicy: opts.decayPolicy,
+        graphHop: opts.graphHop
       });
       fallbackTrace.push('fallback:scope-expanded');
     }
@@ -267,6 +280,11 @@ export class Retriever {
         maxPenalty?: number;
       };
       intentRewrite?: boolean;
+      graphHop?: {
+        enabled?: boolean;
+        maxHops?: number;
+        hopPenalty?: number;
+      };
     }
   ): Promise<{ results: SearchResult[]; matchResult: MatchResult }> {
     let initialResults = await this.searchByStrategy(query, {
@@ -289,9 +307,17 @@ export class Retriever {
       }
     }
 
+    const expandedResults = input.graphHop?.enabled === false
+      ? initialResults
+      : await this.expandGraphHops(initialResults, {
+          maxHops: Math.max(1, input.graphHop?.maxHops ?? 1),
+          hopPenalty: Math.max(0, input.graphHop?.hopPenalty ?? 0.08),
+          limit: input.topK * 4,
+        });
+
     const rerankedResults = input.rerankWithKeyword
-      ? this.rerankByKeywordOverlap(initialResults, query, input.rerankWeights, input.decayPolicy)
-      : initialResults;
+      ? this.rerankByKeywordOverlap(expandedResults, query, input.rerankWeights, input.decayPolicy)
+      : expandedResults;
 
     const filtered = await this.applyScopeFilters(rerankedResults, input.scope);
     const top = filtered.slice(0, input.topK);
@@ -310,6 +336,56 @@ export class Retriever {
       }
     }
     return [...byId.values()].sort((a, b) => b.score - a.score).slice(0, limit);
+  }
+
+  private async expandGraphHops(
+    seeds: SearchResult[],
+    opts: { maxHops: number; hopPenalty: number; limit: number }
+  ): Promise<SearchResult[]> {
+    const byId = new Map<string, SearchResult>();
+    for (const s of seeds) byId.set(s.eventId, s);
+
+    let frontier = seeds.map((s) => ({ row: s, hop: 0 }));
+
+    for (let hop = 1; hop <= opts.maxHops; hop += 1) {
+      const next: Array<{ row: SearchResult; hop: number }> = [];
+
+      for (const f of frontier) {
+        const ev = await this.eventStore.getEvent(f.row.eventId);
+        if (!ev) continue;
+        const rel = ((ev.metadata as Record<string, unknown> | undefined)?.relatedEventIds ?? []) as unknown;
+        const relatedIds = Array.isArray(rel)
+          ? rel.filter((x): x is string => typeof x === 'string')
+          : [];
+
+        for (const rid of relatedIds) {
+          if (byId.has(rid)) continue;
+          const target = await this.eventStore.getEvent(rid);
+          if (!target) continue;
+
+          const score = Math.max(0, f.row.score - opts.hopPenalty * hop);
+          const row: SearchResult = {
+            id: `hop-${hop}-${rid}`,
+            eventId: target.id,
+            content: target.content,
+            score,
+            sessionId: target.sessionId,
+            eventType: target.eventType,
+            timestamp: target.timestamp.toISOString(),
+          };
+
+          byId.set(row.eventId, row);
+          next.push({ row, hop });
+          if (byId.size >= opts.limit) break;
+        }
+        if (byId.size >= opts.limit) break;
+      }
+
+      frontier = next;
+      if (frontier.length === 0 || byId.size >= opts.limit) break;
+    }
+
+    return [...byId.values()].sort((a, b) => b.score - a.score).slice(0, opts.limit);
   }
 
   private shouldFallback(matchResult: MatchResult, results: SearchResult[]): boolean {

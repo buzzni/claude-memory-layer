@@ -161,6 +161,46 @@ describe('Retriever fallback chain', () => {
     expect(out.memories[0]?.event.id).toBe('b');
   });
 
+  it('expands related events with graph-hop retrieval', async () => {
+    const seed = ev('seed', 'seed event');
+    const neighbor = {
+      ...ev('neighbor', 'related artifact memory'),
+      metadata: { relatedEventIds: ['seed'] },
+    };
+    const seedWithEdge = { ...seed, metadata: { relatedEventIds: ['neighbor'] } };
+
+    const fakeEventStore = {
+      async keywordSearch() { return []; },
+      async getRecentEvents() { return [seedWithEdge, neighbor]; },
+      async getEvent(id: string) {
+        if (id === 'seed') return seedWithEdge;
+        if (id === 'neighbor') return neighbor;
+        return null;
+      },
+      async getSessionEvents() { return [seedWithEdge, neighbor]; }
+    };
+
+    const fakeVectorStore = {
+      async search() {
+        return [{ id: 'v1', eventId: 'seed', content: seedWithEdge.content, score: 0.95, sessionId: 's1', eventType: seedWithEdge.eventType, timestamp: seedWithEdge.timestamp.toISOString() }];
+      }
+    };
+
+    const fakeEmbedder = { async embed() { return { vector: [0.1, 0.2] }; } };
+    const retriever = new Retriever(fakeEventStore as any, fakeVectorStore as any, fakeEmbedder as any, new Matcher());
+
+    const out = await retriever.retrieve('seed event', {
+      strategy: 'deep',
+      topK: 5,
+      includeSessionContext: false,
+      graphHop: { enabled: true, maxHops: 1, hopPenalty: 0.1 }
+    });
+
+    const ids = out.memories.map((m) => m.event.id);
+    expect(ids).toContain('seed');
+    expect(ids).toContain('neighbor');
+  });
+
   it('uses summary fallback when both fast and deep fail', async () => {
     const e = ev('e2', 'keyword overlap fallback candidate');
 
