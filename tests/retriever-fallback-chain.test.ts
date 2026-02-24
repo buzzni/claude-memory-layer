@@ -125,6 +125,42 @@ describe('Retriever fallback chain', () => {
     expect(out.memories[0]?.event.id).toBe('fresh');
   });
 
+  it('merges rewritten deep query results when intentRewrite is enabled', async () => {
+    const a = ev('a', '원문 질의에서는 약한 결과');
+    const b = ev('b', '재작성 질의에서 강한 결과');
+
+    const fakeEventStore = {
+      async keywordSearch() { return []; },
+      async getRecentEvents() { return [a, b]; },
+      async getEvent(id: string) { return id === 'a' ? a : id === 'b' ? b : null; },
+      async getSessionEvents() { return [a, b]; }
+    };
+
+    let call = 0;
+    const fakeVectorStore = {
+      async search() {
+        call += 1;
+        if (call === 1) {
+          return [{ id: 'v1', eventId: 'a', content: a.content, score: 0.8, sessionId: 's1', eventType: a.eventType, timestamp: a.timestamp.toISOString() }];
+        }
+        return [{ id: 'v2', eventId: 'b', content: b.content, score: 0.95, sessionId: 's1', eventType: b.eventType, timestamp: b.timestamp.toISOString() }];
+      }
+    };
+
+    const fakeEmbedder = { async embed() { return { vector: [0.1, 0.2] }; } };
+    const retriever = new Retriever(fakeEventStore as any, fakeVectorStore as any, fakeEmbedder as any, new Matcher());
+    retriever.setQueryRewriter(async () => '확장된 재작성 질의');
+
+    const out = await retriever.retrieve('원문 질의', {
+      strategy: 'deep',
+      topK: 3,
+      includeSessionContext: false,
+      intentRewrite: true,
+    });
+
+    expect(out.memories[0]?.event.id).toBe('b');
+  });
+
   it('uses summary fallback when both fast and deep fail', async () => {
     const e = ev('e2', 'keyword overlap fallback candidate');
 

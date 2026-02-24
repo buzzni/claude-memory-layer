@@ -276,6 +276,7 @@ export class MemoryService {
       this.embedder,
       this.matcher
     );
+    this.retriever.setQueryRewriter((q) => this.rewriteQueryIntent(q));
     this.graduation = createGraduationPipeline(this.sqliteStore as unknown as EventStore);
   }
 
@@ -609,6 +610,7 @@ export class MemoryService {
       sessionId?: string;
       includeShared?: boolean;
       adaptiveRerank?: boolean;
+      intentRewrite?: boolean;
     }
   ): Promise<UnifiedRetrievalResult> {
     await this.initialize();
@@ -622,13 +624,67 @@ export class MemoryService {
     if (options?.includeShared && this.sharedStore) {
       return this.retriever.retrieveUnified(query, {
         ...options,
+        intentRewrite: options?.intentRewrite === true,
         rerankWeights,
         includeShared: true,
         projectHash: this.projectHash || undefined
       });
     }
 
-    return this.retriever.retrieve(query, { ...options, rerankWeights });
+    return this.retriever.retrieve(query, { ...options, intentRewrite: options?.intentRewrite === true, rerankWeights });
+  }
+
+  private async rewriteQueryIntent(query: string): Promise<string | null> {
+    if (process.env.MEMORY_INTENT_REWRITE_ENABLED !== '1') return null;
+
+    const apiUrl = process.env.COMPANY_STOCK_API_URL || process.env.COMPANY_INT_API_URL;
+    if (!apiUrl) return null;
+
+    const controller = new AbortController();
+    const timeoutMs = Number(process.env.MEMORY_INTENT_REWRITE_TIMEOUT_MS || 5000);
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      const prompt = [
+        'Rewrite user query for memory retrieval intent expansion.',
+        'Return plain text only, one line, no markdown.',
+        `Query: ${query}`,
+      ].join('\n');
+
+      const res = await fetch(apiUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: '*/*',
+          Origin: process.env.COMPANY_INT_ORIGIN || 'http://company-int.aplusai.ai',
+          Referer: process.env.COMPANY_INT_REFERER || 'http://company-int.aplusai.ai/',
+        },
+        body: JSON.stringify({
+          question: prompt,
+          company_name: null,
+          conversation_id: null,
+        }),
+        signal: controller.signal,
+      });
+
+      const text = (await res.text()).trim();
+      if (!text) return null;
+
+      const oneLine = text
+        .replace(/^data:\s*/gm, '')
+        .split(/\r?\n/)
+        .map((x) => x.trim())
+        .filter(Boolean)
+        .join(' ')
+        .slice(0, 240);
+
+      if (!oneLine || oneLine.toLowerCase() === query.toLowerCase()) return null;
+      return oneLine;
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 
   private async getAdaptiveRerankWeights(): Promise<{ semantic: number; lexical: number; recency: number } | undefined> {

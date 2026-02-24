@@ -42,6 +42,7 @@ export interface RetrievalOptions {
     windowDays?: number;
     maxPenalty?: number;
   };
+  intentRewrite?: boolean;
 }
 
 export interface RetrievalResult {
@@ -98,6 +99,7 @@ export class Retriever {
   private sharedStore?: SharedStore;
   private sharedVectorStore?: SharedVectorStore;
   private graduation?: GraduationPipeline;
+  private queryRewriter?: (query: string) => Promise<string | null>;
 
   constructor(
     eventStore: EventStore,
@@ -123,6 +125,10 @@ export class Retriever {
     this.sharedVectorStore = sharedVectorStore;
   }
 
+  setQueryRewriter(rewriter: (query: string) => Promise<string | null>): void {
+    this.queryRewriter = rewriter;
+  }
+
   async retrieve(
     query: string,
     options: Partial<RetrievalOptions> = {}
@@ -143,7 +149,8 @@ export class Retriever {
       scope: opts.scope,
       rerankWithKeyword: opts.rerankWithKeyword !== false,
       rerankWeights: opts.rerankWeights,
-      decayPolicy: opts.decayPolicy
+      decayPolicy: opts.decayPolicy,
+      intentRewrite: opts.intentRewrite === true
     });
     fallbackTrace.push(`stage:primary:${primaryStrategy}`);
 
@@ -259,14 +266,28 @@ export class Retriever {
         windowDays?: number;
         maxPenalty?: number;
       };
+      intentRewrite?: boolean;
     }
   ): Promise<{ results: SearchResult[]; matchResult: MatchResult }> {
-    const initialResults = await this.searchByStrategy(query, {
+    let initialResults = await this.searchByStrategy(query, {
       strategy: input.strategy,
       topK: input.topK,
       minScore: input.minScore,
       sessionId: input.sessionId
     });
+
+    if (input.intentRewrite && input.strategy === 'deep' && this.queryRewriter) {
+      const rewritten = (await this.queryRewriter(query))?.trim();
+      if (rewritten && rewritten !== query) {
+        const rewrittenResults = await this.searchByStrategy(rewritten, {
+          strategy: 'deep',
+          topK: input.topK,
+          minScore: Math.max(0.5, input.minScore - 0.1),
+          sessionId: input.sessionId
+        });
+        initialResults = this.mergeResults(initialResults, rewrittenResults, input.topK * 3);
+      }
+    }
 
     const rerankedResults = input.rerankWithKeyword
       ? this.rerankByKeywordOverlap(initialResults, query, input.rerankWeights, input.decayPolicy)
@@ -277,6 +298,18 @@ export class Retriever {
     const matchResult = this.matcher.matchSearchResults(top, () => 0);
 
     return { results: top, matchResult };
+  }
+
+  private mergeResults(primary: SearchResult[], secondary: SearchResult[], limit: number): SearchResult[] {
+    const byId = new Map<string, SearchResult>();
+    for (const row of primary) byId.set(row.eventId, row);
+    for (const row of secondary) {
+      const prev = byId.get(row.eventId);
+      if (!prev || row.score > prev.score) {
+        byId.set(row.eventId, row);
+      }
+    }
+    return [...byId.values()].sort((a, b) => b.score - a.score).slice(0, limit);
   }
 
   private shouldFallback(matchResult: MatchResult, results: SearchResult[]): boolean {
