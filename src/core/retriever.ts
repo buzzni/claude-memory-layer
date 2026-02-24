@@ -32,6 +32,11 @@ export interface RetrievalOptions {
   scope?: RetrievalScope;
   strategy?: RetrievalStrategy;
   rerankWithKeyword?: boolean;
+  rerankWeights?: {
+    semantic?: number;
+    lexical?: number;
+    recency?: number;
+  };
 }
 
 export interface RetrievalResult {
@@ -126,7 +131,8 @@ export class Retriever {
       minScore: opts.minScore,
       sessionId: sessionFilter,
       scope: opts.scope,
-      rerankWithKeyword: opts.rerankWithKeyword !== false
+      rerankWithKeyword: opts.rerankWithKeyword !== false,
+      rerankWeights: opts.rerankWeights
     });
     fallbackTrace.push(`stage:primary:${primaryStrategy}`);
 
@@ -138,7 +144,8 @@ export class Retriever {
         minScore: opts.minScore,
         sessionId: sessionFilter,
         scope: opts.scope,
-        rerankWithKeyword: opts.rerankWithKeyword !== false
+        rerankWithKeyword: opts.rerankWithKeyword !== false,
+        rerankWeights: opts.rerankWeights
       });
       fallbackTrace.push('fallback:deep');
     }
@@ -151,7 +158,8 @@ export class Retriever {
         minScore: Math.max(0.5, opts.minScore - 0.15),
         sessionId: undefined,
         scope: undefined,
-        rerankWithKeyword: true
+        rerankWithKeyword: true,
+        rerankWeights: opts.rerankWeights
       });
       fallbackTrace.push('fallback:scope-expanded');
     }
@@ -228,6 +236,11 @@ export class Retriever {
       sessionId?: string;
       scope?: RetrievalScope;
       rerankWithKeyword: boolean;
+      rerankWeights?: {
+        semantic?: number;
+        lexical?: number;
+        recency?: number;
+      };
     }
   ): Promise<{ results: SearchResult[]; matchResult: MatchResult }> {
     const initialResults = await this.searchByStrategy(query, {
@@ -238,7 +251,7 @@ export class Retriever {
     });
 
     const rerankedResults = input.rerankWithKeyword
-      ? this.rerankByKeywordOverlap(initialResults, query)
+      ? this.rerankByKeywordOverlap(initialResults, query, input.rerankWeights)
       : initialResults;
 
     const filtered = await this.applyScopeFilters(rerankedResults, input.scope);
@@ -336,16 +349,25 @@ export class Retriever {
     }));
   }
 
-  private rerankByKeywordOverlap(results: SearchResult[], query: string): SearchResult[] {
+  private rerankByKeywordOverlap(
+    results: SearchResult[],
+    query: string,
+    weights?: { semantic?: number; lexical?: number; recency?: number }
+  ): SearchResult[] {
     const q = this.tokenize(query);
     const now = Date.now();
+
+    const sw = Math.max(0, weights?.semantic ?? 0.7);
+    const lw = Math.max(0, weights?.lexical ?? 0.2);
+    const rw = Math.max(0, weights?.recency ?? 0.1);
+    const total = sw + lw + rw || 1;
 
     return [...results]
       .map((r) => {
         const overlap = this.keywordOverlap(q, this.tokenize(r.content));
         const recencyDays = Math.max(0, (now - new Date(r.timestamp).getTime()) / (1000 * 60 * 60 * 24));
         const recency = Math.max(0, 1 - recencyDays / 30);
-        const blended = r.score * 0.7 + overlap * 0.2 + recency * 0.1;
+        const blended = (r.score * sw + overlap * lw + recency * rw) / total;
         return { ...r, score: blended };
       })
       .sort((a, b) => b.score - a.score);

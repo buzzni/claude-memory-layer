@@ -608,6 +608,7 @@ export class MemoryService {
       minScore?: number;
       sessionId?: string;
       includeShared?: boolean;
+      adaptiveRerank?: boolean;
     }
   ): Promise<UnifiedRetrievalResult> {
     await this.initialize();
@@ -615,16 +616,49 @@ export class MemoryService {
     // Note: Pending embeddings are processed by the background worker
     // Don't block retrieval - search with whatever vectors are available
 
+    const rerankWeights = options?.adaptiveRerank ? await this.getAdaptiveRerankWeights() : undefined;
+
     // Use unified retrieval if shared search is requested
     if (options?.includeShared && this.sharedStore) {
       return this.retriever.retrieveUnified(query, {
         ...options,
+        rerankWeights,
         includeShared: true,
         projectHash: this.projectHash || undefined
       });
     }
 
-    return this.retriever.retrieve(query, options);
+    return this.retriever.retrieve(query, { ...options, rerankWeights });
+  }
+
+  private async getAdaptiveRerankWeights(): Promise<{ semantic: number; lexical: number; recency: number } | undefined> {
+    try {
+      const s = await this.sqliteStore.getHelpfulnessStats();
+      if (s.totalEvaluated < 20) return undefined;
+
+      // base weights
+      let semantic = 0.7;
+      let lexical = 0.2;
+      let recency = 0.1;
+
+      if (s.avgScore < 0.45) {
+        semantic -= 0.1;
+        lexical += 0.1;
+      } else if (s.avgScore > 0.75) {
+        semantic += 0.05;
+        lexical -= 0.05;
+      }
+
+      if (s.unhelpful > s.helpful) {
+        recency += 0.05;
+        semantic -= 0.03;
+        lexical -= 0.02;
+      }
+
+      return { semantic, lexical, recency };
+    } catch {
+      return undefined;
+    }
   }
 
   /**
