@@ -8,7 +8,9 @@ import { randomUUID } from 'crypto';
 import { dbRun, dbAll, toDate, type Database } from './db-wrapper.js';
 import type {
   ConsolidatedMemory,
-  ConsolidatedMemoryInput
+  ConsolidatedMemoryInput,
+  ConsolidationRule,
+  ConsolidationRuleInput
 } from './types.js';
 import { EventStore } from './event-store.js';
 
@@ -168,6 +170,66 @@ export class ConsolidatedStore {
       `DELETE FROM consolidated_memories WHERE memory_id = ?`,
       [memoryId]
     );
+  }
+
+  /**
+   * Create a long-term rule promoted from stable summaries
+   */
+  async createRule(input: ConsolidationRuleInput): Promise<string> {
+    const ruleId = randomUUID();
+
+    await dbRun(
+      this.db,
+      `INSERT INTO consolidated_rules
+        (rule_id, rule, topics, source_memory_ids, source_events, confidence, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+      [
+        ruleId,
+        input.rule,
+        JSON.stringify(input.topics),
+        JSON.stringify(input.sourceMemoryIds),
+        JSON.stringify(input.sourceEvents),
+        input.confidence
+      ]
+    );
+
+    return ruleId;
+  }
+
+  async getRules(options?: { limit?: number }): Promise<ConsolidationRule[]> {
+    const limit = options?.limit || 100;
+    const rows = await dbAll<Record<string, unknown>>(
+      this.db,
+      `SELECT * FROM consolidated_rules ORDER BY confidence DESC, created_at DESC LIMIT ?`,
+      [limit]
+    );
+
+    return rows.map((row) => ({
+      ruleId: row.rule_id as string,
+      rule: row.rule as string,
+      topics: JSON.parse((row.topics as string) || '[]'),
+      sourceMemoryIds: JSON.parse((row.source_memory_ids as string) || '[]'),
+      sourceEvents: JSON.parse((row.source_events as string) || '[]'),
+      confidence: Number(row.confidence ?? 0.5),
+      createdAt: toDate(row.created_at) || new Date()
+    }));
+  }
+
+  async countRules(): Promise<number> {
+    const result = await dbAll<{ count: number }>(
+      this.db,
+      `SELECT COUNT(*) as count FROM consolidated_rules`
+    );
+    return result[0]?.count || 0;
+  }
+
+  async hasRuleForSourceMemory(memoryId: string): Promise<boolean> {
+    const rows = await dbAll<{ count: number }>(
+      this.db,
+      `SELECT COUNT(*) as count FROM consolidated_rules WHERE source_memory_ids LIKE ?`,
+      [`%"${memoryId}"%`]
+    );
+    return (rows[0]?.count || 0) > 0;
   }
 
   /**

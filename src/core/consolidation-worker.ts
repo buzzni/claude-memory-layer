@@ -8,7 +8,8 @@ import type {
   EndlessModeConfig,
   MemoryEvent,
   EventGroup,
-  WorkingSet
+  WorkingSet,
+  ConsolidationCostQualityReport
 } from './types.js';
 import { WorkingSetStore } from './working-set-store.js';
 import { ConsolidatedStore } from './consolidated-store.js';
@@ -62,7 +63,19 @@ export class ConsolidationWorker {
    * Force a consolidation run (manual trigger)
    */
   async forceRun(): Promise<number> {
-    return await this.consolidate();
+    const out = await this.consolidateWithReport();
+    return out.consolidatedCount;
+  }
+
+  /**
+   * Force a consolidation run and return metrics report
+   */
+  async forceRunWithReport(): Promise<{
+    consolidatedCount: number;
+    promotedRuleCount: number;
+    report: ConsolidationCostQualityReport;
+  }> {
+    return this.consolidateWithReport();
   }
 
   /**
@@ -109,15 +122,29 @@ export class ConsolidationWorker {
    * Perform consolidation
    */
   private async consolidate(): Promise<number> {
+    const out = await this.consolidateWithReport();
+    return out.consolidatedCount;
+  }
+
+  private async consolidateWithReport(): Promise<{
+    consolidatedCount: number;
+    promotedRuleCount: number;
+    report: ConsolidationCostQualityReport;
+  }> {
     const workingSet = await this.workingSetStore.get();
 
     if (workingSet.recentEvents.length < 3) {
-      return 0; // Not enough events to consolidate
+      return {
+        consolidatedCount: 0,
+        promotedRuleCount: 0,
+        report: this.buildCostQualityReport(workingSet.recentEvents, [], 0)
+      };
     }
 
     // Group events by topic
     const groups = this.groupByTopic(workingSet.recentEvents);
     let consolidatedCount = 0;
+    const createdMemoryIds: string[] = [];
 
     for (const group of groups) {
       // Require minimum 3 events per group
@@ -132,15 +159,17 @@ export class ConsolidationWorker {
       const summary = await this.summarize(group);
 
       // Create consolidated memory
-      await this.consolidatedStore.create({
+      const memoryId = await this.consolidatedStore.create({
         summary,
         topics: group.topics,
         sourceEvents: eventIds,
         confidence: this.calculateConfidence(group)
       });
-
+      createdMemoryIds.push(memoryId);
       consolidatedCount++;
     }
+
+    const promotedRuleCount = await this.promoteStableSummariesToRules(createdMemoryIds);
 
     // Prune consolidated events from working set
     if (consolidatedCount > 0) {
@@ -161,7 +190,87 @@ export class ConsolidationWorker {
       }
     }
 
-    return consolidatedCount;
+    const report = this.buildCostQualityReport(workingSet.recentEvents, groups, consolidatedCount);
+    return { consolidatedCount, promotedRuleCount, report };
+  }
+
+  private async promoteStableSummariesToRules(memoryIds: string[]): Promise<number> {
+    let promoted = 0;
+
+    for (const memoryId of memoryIds) {
+      const memory = await this.consolidatedStore.get(memoryId);
+      if (!memory) continue;
+      if (memory.confidence < 0.55) continue;
+      if (memory.sourceEvents.length < 4) continue;
+
+      const exists = await this.consolidatedStore.hasRuleForSourceMemory(memoryId);
+      if (exists) continue;
+
+      const rule = this.buildRuleFromSummary(memory.summary, memory.topics);
+      if (!rule) continue;
+
+      await this.consolidatedStore.createRule({
+        rule,
+        topics: memory.topics,
+        sourceMemoryIds: [memory.memoryId],
+        sourceEvents: memory.sourceEvents,
+        confidence: Math.min(1, memory.confidence + 0.08)
+      });
+      promoted++;
+    }
+
+    return promoted;
+  }
+
+  private buildRuleFromSummary(summary: string, topics: string[]): string | null {
+    const lines = summary
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .filter((l) => !l.toLowerCase().startsWith('topics:'));
+
+    const bullet = lines.find((l) => l.startsWith('- '))?.replace(/^-\s*/, '');
+    const seed = bullet || lines[0];
+    if (!seed || seed.length < 8) return null;
+
+    const topicPrefix = topics.length > 0 ? `[${topics.slice(0, 2).join(', ')}] ` : '';
+    return `${topicPrefix}${seed}`;
+  }
+
+  private buildCostQualityReport(
+    events: MemoryEvent[],
+    groups: EventGroup[],
+    consolidatedCount: number
+  ): ConsolidationCostQualityReport {
+    const beforeTokenEstimate = events.reduce((acc, e) => acc + this.estimateTokens(e.content), 0);
+
+    const afterSummaries = groups
+      .filter((g) => g.events.length >= 3)
+      .slice(0, Math.max(consolidatedCount, 1));
+
+    const afterTokenEstimate = afterSummaries.length > 0
+      ? afterSummaries.reduce((acc, g) => acc + this.estimateTokens(this.ruleBasedSummary(g)), 0)
+      : beforeTokenEstimate;
+
+    const reductionRatio = beforeTokenEstimate > 0
+      ? Math.max(0, (beforeTokenEstimate - afterTokenEstimate) / beforeTokenEstimate)
+      : 0;
+
+    const qualityGuardPassed = consolidatedCount === 0
+      ? true
+      : groups.filter((g) => g.events.length >= 3).every((g) => this.calculateConfidence(g) >= 0.55);
+
+    return {
+      beforeTokenEstimate,
+      afterTokenEstimate,
+      reductionRatio,
+      qualityGuardPassed,
+      details: `groups=${groups.length}, consolidated=${consolidatedCount}`
+    };
+  }
+
+  private estimateTokens(text: string): number {
+    return Math.ceil((text || '').length / 4);
   }
 
   /**

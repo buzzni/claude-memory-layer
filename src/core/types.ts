@@ -818,6 +818,34 @@ export interface ConsolidatedMemoryInput {
   confidence: number;
 }
 
+// Long-term Rule (promoted from stable summaries)
+export const ConsolidationRuleSchema = z.object({
+  ruleId: z.string(),
+  rule: z.string(),
+  topics: z.array(z.string()),
+  sourceMemoryIds: z.array(z.string()),
+  sourceEvents: z.array(z.string()),
+  confidence: z.number(),
+  createdAt: z.date()
+});
+export type ConsolidationRule = z.infer<typeof ConsolidationRuleSchema>;
+
+export interface ConsolidationRuleInput {
+  rule: string;
+  topics: string[];
+  sourceMemoryIds: string[];
+  sourceEvents: string[];
+  confidence: number;
+}
+
+export interface ConsolidationCostQualityReport {
+  beforeTokenEstimate: number;
+  afterTokenEstimate: number;
+  reductionRatio: number;
+  qualityGuardPassed: boolean;
+  details: string;
+}
+
 // Event Group (for consolidation)
 export interface EventGroup {
   topics: string[];

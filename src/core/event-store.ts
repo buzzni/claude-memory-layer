@@ -280,6 +280,19 @@ export class EventStore {
       )
     `);
 
+    // Consolidated Rules table (long-term stable memory)
+    await dbRun(this.db, `
+      CREATE TABLE IF NOT EXISTS consolidated_rules (
+        rule_id VARCHAR PRIMARY KEY,
+        rule TEXT NOT NULL,
+        topics JSON,
+        source_memory_ids JSON,
+        source_events JSON,
+        confidence FLOAT DEFAULT 0.5,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
     // Endless Mode Config table
     await dbRun(this.db, `
       CREATE TABLE IF NOT EXISTS endless_config (
@@ -314,6 +327,7 @@ export class EventStore {
     await dbRun(this.db, `CREATE INDEX IF NOT EXISTS idx_working_set_expires ON working_set(expires_at)`);
     await dbRun(this.db, `CREATE INDEX IF NOT EXISTS idx_working_set_relevance ON working_set(relevance_score DESC)`);
     await dbRun(this.db, `CREATE INDEX IF NOT EXISTS idx_consolidated_confidence ON consolidated_memories(confidence DESC)`);
+    await dbRun(this.db, `CREATE INDEX IF NOT EXISTS idx_consolidated_rules_confidence ON consolidated_rules(confidence DESC)`);
     await dbRun(this.db, `CREATE INDEX IF NOT EXISTS idx_continuity_created ON continuity_log(created_at)`);
 
     this.initialized = true;

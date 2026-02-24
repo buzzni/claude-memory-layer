@@ -256,6 +256,17 @@ export class SQLiteEventStore {
         created_at TEXT DEFAULT (datetime('now'))
       );
 
+      -- Consolidated Rules table (long-term stable memory)
+      CREATE TABLE IF NOT EXISTS consolidated_rules (
+        rule_id TEXT PRIMARY KEY,
+        rule TEXT NOT NULL,
+        topics TEXT,
+        source_memory_ids TEXT,
+        source_events TEXT,
+        confidence REAL DEFAULT 0.5,
+        created_at TEXT DEFAULT (datetime('now'))
+      );
+
       -- Endless Mode Config table
       CREATE TABLE IF NOT EXISTS endless_config (
         key TEXT PRIMARY KEY,
@@ -304,6 +315,7 @@ export class SQLiteEventStore {
       CREATE INDEX IF NOT EXISTS idx_working_set_relevance ON working_set(relevance_score);
       CREATE INDEX IF NOT EXISTS idx_consolidated_confidence ON consolidated_memories(confidence);
       CREATE INDEX IF NOT EXISTS idx_continuity_created ON continuity_log(created_at);
+      CREATE INDEX IF NOT EXISTS idx_consolidated_rules_confidence ON consolidated_rules(confidence);
       CREATE INDEX IF NOT EXISTS idx_embedding_outbox_status ON embedding_outbox(status);
       CREATE INDEX IF NOT EXISTS idx_helpfulness_event ON memory_helpfulness(event_id);
       CREATE INDEX IF NOT EXISTS idx_helpfulness_session ON memory_helpfulness(session_id);
