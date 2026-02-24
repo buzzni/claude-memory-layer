@@ -86,6 +86,45 @@ describe('Retriever fallback chain', () => {
     expect(out.memories[0]?.event.id).toBe('a');
   });
 
+  it('applies TTL/decay penalty for stale low-overlap memories', async () => {
+    const old = {
+      ...ev('old', 'generic memory'),
+      timestamp: new Date(Date.now() - 1000 * 60 * 60 * 24 * 120),
+    };
+    const fresh = {
+      ...ev('fresh', 'generic memory'),
+      timestamp: new Date(),
+    };
+
+    const fakeEventStore = {
+      async keywordSearch() { return []; },
+      async getRecentEvents() { return [old, fresh]; },
+      async getEvent(id: string) { return id === 'old' ? old : id === 'fresh' ? fresh : null; },
+      async getSessionEvents() { return [old, fresh]; }
+    };
+
+    const fakeVectorStore = {
+      async search() {
+        return [
+          { id: 'v1', eventId: 'old', content: old.content, score: 0.9, sessionId: old.sessionId, eventType: old.eventType, timestamp: old.timestamp.toISOString() },
+          { id: 'v2', eventId: 'fresh', content: fresh.content, score: 0.85, sessionId: fresh.sessionId, eventType: fresh.eventType, timestamp: fresh.timestamp.toISOString() },
+        ];
+      }
+    };
+
+    const fakeEmbedder = { async embed() { return { vector: [0.1, 0.2] }; } };
+    const retriever = new Retriever(fakeEventStore as any, fakeVectorStore as any, fakeEmbedder as any, new Matcher());
+
+    const out = await retriever.retrieve('different query', {
+      strategy: 'deep',
+      topK: 2,
+      includeSessionContext: false,
+      decayPolicy: { enabled: true, windowDays: 30, maxPenalty: 0.3 }
+    });
+
+    expect(out.memories[0]?.event.id).toBe('fresh');
+  });
+
   it('uses summary fallback when both fast and deep fail', async () => {
     const e = ev('e2', 'keyword overlap fallback candidate');
 

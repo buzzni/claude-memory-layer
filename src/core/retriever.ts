@@ -37,6 +37,11 @@ export interface RetrievalOptions {
     lexical?: number;
     recency?: number;
   };
+  decayPolicy?: {
+    enabled?: boolean;
+    windowDays?: number;
+    maxPenalty?: number;
+  };
 }
 
 export interface RetrievalResult {
@@ -68,7 +73,12 @@ const DEFAULT_OPTIONS: RetrievalOptions = {
   maxTokens: 2000,
   includeSessionContext: true,
   strategy: 'auto',
-  rerankWithKeyword: true
+  rerankWithKeyword: true,
+  decayPolicy: {
+    enabled: true,
+    windowDays: 30,
+    maxPenalty: 0.15
+  }
 };
 
 export interface SharedStoreOptions {
@@ -132,7 +142,8 @@ export class Retriever {
       sessionId: sessionFilter,
       scope: opts.scope,
       rerankWithKeyword: opts.rerankWithKeyword !== false,
-      rerankWeights: opts.rerankWeights
+      rerankWeights: opts.rerankWeights,
+      decayPolicy: opts.decayPolicy
     });
     fallbackTrace.push(`stage:primary:${primaryStrategy}`);
 
@@ -145,7 +156,8 @@ export class Retriever {
         sessionId: sessionFilter,
         scope: opts.scope,
         rerankWithKeyword: opts.rerankWithKeyword !== false,
-        rerankWeights: opts.rerankWeights
+        rerankWeights: opts.rerankWeights,
+        decayPolicy: opts.decayPolicy
       });
       fallbackTrace.push('fallback:deep');
     }
@@ -159,7 +171,8 @@ export class Retriever {
         sessionId: undefined,
         scope: undefined,
         rerankWithKeyword: true,
-        rerankWeights: opts.rerankWeights
+        rerankWeights: opts.rerankWeights,
+        decayPolicy: opts.decayPolicy
       });
       fallbackTrace.push('fallback:scope-expanded');
     }
@@ -241,6 +254,11 @@ export class Retriever {
         lexical?: number;
         recency?: number;
       };
+      decayPolicy?: {
+        enabled?: boolean;
+        windowDays?: number;
+        maxPenalty?: number;
+      };
     }
   ): Promise<{ results: SearchResult[]; matchResult: MatchResult }> {
     const initialResults = await this.searchByStrategy(query, {
@@ -251,7 +269,7 @@ export class Retriever {
     });
 
     const rerankedResults = input.rerankWithKeyword
-      ? this.rerankByKeywordOverlap(initialResults, query, input.rerankWeights)
+      ? this.rerankByKeywordOverlap(initialResults, query, input.rerankWeights, input.decayPolicy)
       : initialResults;
 
     const filtered = await this.applyScopeFilters(rerankedResults, input.scope);
@@ -352,7 +370,8 @@ export class Retriever {
   private rerankByKeywordOverlap(
     results: SearchResult[],
     query: string,
-    weights?: { semantic?: number; lexical?: number; recency?: number }
+    weights?: { semantic?: number; lexical?: number; recency?: number },
+    decayPolicy?: { enabled?: boolean; windowDays?: number; maxPenalty?: number }
   ): SearchResult[] {
     const q = this.tokenize(query);
     const now = Date.now();
@@ -362,13 +381,23 @@ export class Retriever {
     const rw = Math.max(0, weights?.recency ?? 0.1);
     const total = sw + lw + rw || 1;
 
+    const decayEnabled = decayPolicy?.enabled !== false;
+    const decayWindow = Math.max(1, decayPolicy?.windowDays ?? 30);
+    const decayMaxPenalty = Math.max(0, decayPolicy?.maxPenalty ?? 0.15);
+
     return [...results]
       .map((r) => {
         const overlap = this.keywordOverlap(q, this.tokenize(r.content));
         const recencyDays = Math.max(0, (now - new Date(r.timestamp).getTime()) / (1000 * 60 * 60 * 24));
-        const recency = Math.max(0, 1 - recencyDays / 30);
-        const blended = (r.score * sw + overlap * lw + recency * rw) / total;
-        return { ...r, score: blended };
+        const recency = Math.max(0, 1 - recencyDays / decayWindow);
+        let blended = (r.score * sw + overlap * lw + recency * rw) / total;
+
+        if (decayEnabled && recencyDays > decayWindow && overlap < 0.5) {
+          const ageFactor = Math.min(1, (recencyDays - decayWindow) / decayWindow);
+          blended -= decayMaxPenalty * ageFactor;
+        }
+
+        return { ...r, score: Math.max(0, blended) };
       })
       .sort((a, b) => b.score - a.score);
   }
