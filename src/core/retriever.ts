@@ -39,6 +39,7 @@ export interface RetrievalResult {
   matchResult: MatchResult;
   totalTokens: number;
   context: string;
+  fallbackTrace?: string[];
 }
 
 export interface MemoryWithContext {
@@ -113,30 +114,67 @@ export class Retriever {
   ): Promise<RetrievalResult> {
     const opts = { ...DEFAULT_OPTIONS, ...options };
     const sessionFilter = opts.scope?.sessionId ?? opts.sessionId;
+    const fallbackTrace: string[] = [];
 
-    const initialResults = await this.searchByStrategy(query, {
-      strategy: opts.strategy || 'auto',
+    const fallbackEnabled = (opts.strategy ?? 'auto') === 'auto';
+
+    // Stage 1: primary retrieval
+    const primaryStrategy: RetrievalStrategy = opts.strategy === 'auto' ? 'fast' : (opts.strategy || 'fast');
+    let current = await this.runStage(query, {
+      strategy: primaryStrategy,
       topK: opts.topK,
       minScore: opts.minScore,
-      sessionId: sessionFilter
+      sessionId: sessionFilter,
+      scope: opts.scope,
+      rerankWithKeyword: opts.rerankWithKeyword !== false
     });
+    fallbackTrace.push(`stage:primary:${primaryStrategy}`);
 
-    const rerankedResults = opts.rerankWithKeyword
-      ? this.rerankByKeywordOverlap(initialResults, query)
-      : initialResults;
+    // Stage 2: deep fallback
+    if (fallbackEnabled && this.shouldFallback(current.matchResult, current.results) && primaryStrategy !== 'deep') {
+      current = await this.runStage(query, {
+        strategy: 'deep',
+        topK: opts.topK,
+        minScore: opts.minScore,
+        sessionId: sessionFilter,
+        scope: opts.scope,
+        rerankWithKeyword: opts.rerankWithKeyword !== false
+      });
+      fallbackTrace.push('fallback:deep');
+    }
 
-    const filteredSearchResults = await this.applyScopeFilters(rerankedResults, opts.scope);
-    const top = filteredSearchResults.slice(0, opts.topK);
+    // Stage 3: scope-expanded deep fallback
+    if (fallbackEnabled && this.shouldFallback(current.matchResult, current.results)) {
+      current = await this.runStage(query, {
+        strategy: 'deep',
+        topK: opts.topK,
+        minScore: Math.max(0.5, opts.minScore - 0.15),
+        sessionId: undefined,
+        scope: undefined,
+        rerankWithKeyword: true
+      });
+      fallbackTrace.push('fallback:scope-expanded');
+    }
 
-    const matchResult = this.matcher.matchSearchResults(top, () => 0);
-    const memories = await this.enrichResults(top, opts as RetrievalOptions);
+    // Stage 4: summary fallback
+    if (fallbackEnabled && this.shouldFallback(current.matchResult, current.results)) {
+      const summary = await this.buildSummaryFallback(query, opts.topK);
+      current = {
+        results: summary,
+        matchResult: this.matcher.matchSearchResults(summary, () => 0)
+      };
+      fallbackTrace.push('fallback:summary');
+    }
+
+    const memories = await this.enrichResults(current.results.slice(0, opts.topK), opts as RetrievalOptions);
     const context = this.buildContext(memories, opts.maxTokens);
 
     return {
       memories,
-      matchResult,
+      matchResult: current.matchResult,
       totalTokens: this.estimateTokens(context),
-      context
+      context,
+      fallbackTrace
     };
   }
 
@@ -179,6 +217,63 @@ export class Retriever {
       console.error('Shared search failed:', error);
       return projectResult;
     }
+  }
+
+  private async runStage(
+    query: string,
+    input: {
+      strategy: RetrievalStrategy;
+      topK: number;
+      minScore: number;
+      sessionId?: string;
+      scope?: RetrievalScope;
+      rerankWithKeyword: boolean;
+    }
+  ): Promise<{ results: SearchResult[]; matchResult: MatchResult }> {
+    const initialResults = await this.searchByStrategy(query, {
+      strategy: input.strategy,
+      topK: input.topK,
+      minScore: input.minScore,
+      sessionId: input.sessionId
+    });
+
+    const rerankedResults = input.rerankWithKeyword
+      ? this.rerankByKeywordOverlap(initialResults, query)
+      : initialResults;
+
+    const filtered = await this.applyScopeFilters(rerankedResults, input.scope);
+    const top = filtered.slice(0, input.topK);
+    const matchResult = this.matcher.matchSearchResults(top, () => 0);
+
+    return { results: top, matchResult };
+  }
+
+  private shouldFallback(matchResult: MatchResult, results: SearchResult[]): boolean {
+    if (results.length === 0) return true;
+    if (matchResult.confidence === 'none') return true;
+    return false;
+  }
+
+  private async buildSummaryFallback(query: string, topK: number): Promise<SearchResult[]> {
+    const recent = await this.eventStore.getRecentEvents(Math.max(topK * 6, 20));
+    const q = this.tokenize(query);
+
+    const ranked = recent
+      .map((e) => ({ e, overlap: this.keywordOverlap(q, this.tokenize(e.content)) }))
+      .filter((r) => r.overlap > 0)
+      .sort((a, b) => b.overlap - a.overlap)
+      .slice(0, topK)
+      .map((row, idx) => ({
+        id: `summary-${row.e.id}`,
+        eventId: row.e.id,
+        content: row.e.content,
+        score: Math.max(0.25, 0.6 - idx * 0.05),
+        sessionId: row.e.sessionId,
+        eventType: row.e.eventType,
+        timestamp: row.e.timestamp.toISOString()
+      }));
+
+    return ranked;
   }
 
   private async searchByStrategy(
