@@ -43,8 +43,7 @@ function walkCodeFiles(root: string): string[] {
   const out: string[] = [];
 
   function walk(dir: string): void {
-    const entries = fs.readdirSync(dir, { withFileTypes: true })
-      .sort((a, b) => a.name.localeCompare(b.name));
+    const entries = fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name));
 
     for (const e of entries) {
       const full = path.join(dir, e.name);
@@ -66,8 +65,7 @@ function detectLanguage(file: string): string {
   const map: Record<string, string> = {
     '.ts': 'TypeScript', '.tsx': 'TypeScript', '.js': 'JavaScript', '.jsx': 'JavaScript', '.mjs': 'JavaScript', '.cjs': 'JavaScript',
     '.py': 'Python', '.go': 'Go', '.rs': 'Rust', '.java': 'Java', '.kt': 'Kotlin', '.swift': 'Swift', '.rb': 'Ruby', '.php': 'PHP',
-    '.cs': 'C#', '.scala': 'Scala', '.sh': 'Shell', '.zsh': 'Shell', '.yaml': 'YAML', '.yml': 'YAML', '.json': 'JSON', '.sql': 'SQL',
-    '.md': 'Markdown'
+    '.cs': 'C#', '.scala': 'Scala', '.sh': 'Shell', '.zsh': 'Shell', '.yaml': 'YAML', '.yml': 'YAML', '.json': 'JSON', '.sql': 'SQL', '.md': 'Markdown'
   };
   return map[ext] || 'Other';
 }
@@ -80,9 +78,7 @@ function summarizeModules(repoPath: string, files: string[]): ModuleSummary[] {
     const seg = rel.split('/').filter(Boolean);
     const top = seg[0] || 'root';
 
-    if (!modules.has(top)) {
-      modules.set(top, { files: [], langs: new Map() });
-    }
+    if (!modules.has(top)) modules.set(top, { files: [], langs: new Map() });
 
     const bucket = modules.get(top)!;
     bucket.files.push(rel);
@@ -97,9 +93,7 @@ function summarizeModules(repoPath: string, files: string[]): ModuleSummary[] {
       root: name,
       fileCount: data.files.length,
       languages: [...data.langs.entries()].sort((a, b) => b[1] - a[1]).map(([l]) => l).slice(0, 5),
-      entryCandidates: data.files
-        .filter((f) => /(index|main|app|server|cli)\./i.test(path.basename(f)))
-        .slice(0, 10)
+      entryCandidates: data.files.filter((f) => /(index|main|app|server|cli)\./i.test(path.basename(f))).slice(0, 10)
     }))
     .sort((a, b) => b.fileCount - a.fileCount || a.name.localeCompare(b.name));
 }
@@ -218,8 +212,11 @@ export async function bootstrapKnowledgeBase(options: BootstrapKnowledgeOptions)
   const generatedFiles: string[] = [];
 
   const sections = {
-    root: outDir,
+    overview: path.join(outDir, 'overview'),
     modules: path.join(outDir, 'modules'),
+    decisions: path.join(outDir, 'decisions'),
+    timeline: path.join(outDir, 'timeline'),
+    glossary: path.join(outDir, 'glossary'),
     sources: path.join(outDir, 'sources')
   };
 
@@ -227,12 +224,12 @@ export async function bootstrapKnowledgeBase(options: BootstrapKnowledgeOptions)
     mkdirp(sectionDir);
   }
 
-  const overviewPath = path.join(sections.root, 'overview.md');
+  const overviewPath = path.join(sections.overview, 'overview.md');
   const overview = [
     '# Codebase Overview',
     '',
     `- generatedAt: ${new Date().toISOString()}`,
-    `- deterministicPipeline: true`,
+    '- deterministicPipeline: true',
     `- repo: ${repoPath}`,
     `- filesAnalyzed: ${codeFiles.length}`,
     `- commitsAnalyzed: ${commits.length}`,
@@ -284,7 +281,7 @@ export async function bootstrapKnowledgeBase(options: BootstrapKnowledgeOptions)
     generatedFiles.push(modulePath);
   }
 
-  const decisionsPath = path.join(sections.root, 'decisions.md');
+  const decisionsPath = path.join(sections.decisions, 'decisions.md');
   const decisionsMd = [
     '# Decisions (extracted)',
     '',
@@ -293,7 +290,7 @@ export async function bootstrapKnowledgeBase(options: BootstrapKnowledgeOptions)
     ...(decisions.length > 0
       ? decisions.slice(0, 500).map((d) => [
         `## ${d.date} | ${d.subject}`,
-        `- status: active (inferred)`,
+        '- status: active (inferred)',
         sourceLine(`commit:${d.hash}`),
         `- author: ${d.author}`,
         `- changedFiles: ${d.files.length}`,
@@ -308,7 +305,7 @@ export async function bootstrapKnowledgeBase(options: BootstrapKnowledgeOptions)
   writeFile(decisionsPath, decisionsMd);
   generatedFiles.push(decisionsPath);
 
-  const timelinePath = path.join(sections.root, 'timeline.md');
+  const timelinePath = path.join(sections.timeline, 'timeline.md');
   const timelineMd = [
     '# Timeline',
     '',
@@ -326,7 +323,7 @@ export async function bootstrapKnowledgeBase(options: BootstrapKnowledgeOptions)
   writeFile(timelinePath, timelineMd);
   generatedFiles.push(timelinePath);
 
-  const glossaryPath = path.join(sections.root, 'glossary.md');
+  const glossaryPath = path.join(sections.glossary, 'glossary.md');
   const glossaryMd = [
     '# Glossary (auto-extracted)',
     '',
@@ -341,9 +338,7 @@ export async function bootstrapKnowledgeBase(options: BootstrapKnowledgeOptions)
   writeFile(glossaryPath, glossaryMd);
   generatedFiles.push(glossaryPath);
 
-  const outputs = generatedFiles
-    .map((f) => safeRel(outDir, f))
-    .sort((a, b) => a.localeCompare(b));
+  const outputs = generatedFiles.map((f) => safeRel(outDir, f)).sort((a, b) => a.localeCompare(b));
 
   const sourceItems = [
     ...codeFiles.slice(0, 200).map((f) => ({ type: 'file', ref: safeRel(repoPath, f) })),
@@ -374,7 +369,7 @@ export async function bootstrapKnowledgeBase(options: BootstrapKnowledgeOptions)
   const manifestMd = [
     '# Sources Manifest',
     '',
-    `- deterministicPipeline: true`,
+    '- deterministicPipeline: true',
     `- sourceCount: ${sourceItems.length}`,
     '',
     '## Outputs',

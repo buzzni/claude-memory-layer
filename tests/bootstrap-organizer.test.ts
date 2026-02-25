@@ -44,10 +44,12 @@ describe('bootstrapKnowledgeBase', () => {
     expect(result.commitCount).toBeGreaterThan(0);
 
     const expected = [
-      path.join(outDir, 'overview.md'),
-      path.join(outDir, 'decisions.md'),
-      path.join(outDir, 'timeline.md'),
-      path.join(outDir, 'glossary.md'),
+      path.join(outDir, 'overview', 'overview.md'),
+      path.join(outDir, 'modules', 'src.md'),
+      path.join(outDir, 'decisions', 'decisions.md'),
+      path.join(outDir, 'timeline', 'timeline.md'),
+      path.join(outDir, 'glossary', 'glossary.md'),
+      path.join(outDir, 'sources', 'manifest.md'),
       path.join(outDir, 'sources', 'manifest.json')
     ];
 
@@ -56,12 +58,12 @@ describe('bootstrapKnowledgeBase', () => {
       expect(stat.isFile()).toBe(true);
     }
 
-    const overview = await fs.readFile(path.join(outDir, 'overview.md'), 'utf8');
+    const overview = await fs.readFile(path.join(outDir, 'overview', 'overview.md'), 'utf8');
     expect(overview).toContain('deterministicPipeline: true');
     expect(overview).toContain('- confidence:');
     expect(overview).toContain('- source:');
 
-    const decisions = await fs.readFile(path.join(outDir, 'decisions.md'), 'utf8');
+    const decisions = await fs.readFile(path.join(outDir, 'decisions', 'decisions.md'), 'utf8');
     expect(decisions).toContain('commit:');
 
     const manifestJson = JSON.parse(await fs.readFile(path.join(outDir, 'sources', 'manifest.json'), 'utf8')) as {
