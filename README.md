@@ -116,6 +116,27 @@ claude-memory-layer organize-import /path/to/legacy-memory --project /path/to/pr
 
 # 일부만 import
 claude-memory-layer organize-import /path/to/legacy-memory --limit 100
+
+# source에 markdown이 없으면 자동 bootstrap(코드+git 분석)
+claude-memory-layer organize-import /path/to/empty-dir --project /path/to/project
+
+# bootstrap 강제 실행
+claude-memory-layer organize-import /path/to/memory --force-bootstrap --repo /path/to/project
+
+# 자동 bootstrap 비활성화
+claude-memory-layer organize-import /path/to/empty-dir --no-bootstrap-if-empty
+
+# markdown이 없는 초기 상태면 bootstrap 생성 + import
+claude-memory-layer organize-import /path/to/empty-dir --bootstrap --repo /path/to/codebase
+
+# bootstrap 강제 재생성 (기존 markdown 있어도)
+claude-memory-layer organize-import /path/to/legacy-memory --force-bootstrap --repo /path/to/codebase --out /path/to/legacy-memory/bootstrap-kb
+
+# 증분 bootstrap (기본값): 이전 manifest를 기준으로 변경분 중심 업데이트
+claude-memory-layer organize-import /path/to/legacy-memory --bootstrap --repo /path/to/codebase --incremental
+
+# 전체 재생성 bootstrap
+claude-memory-layer organize-import /path/to/legacy-memory --bootstrap --repo /path/to/codebase --no-incremental
 ```
 
 ### CLI 명령어

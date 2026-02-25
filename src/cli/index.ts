@@ -15,6 +15,7 @@ import {
   getProjectStoragePath
 } from '../services/memory-service.js';
 import { createSessionHistoryImporter, type ProgressEvent } from '../services/session-history-importer.js';
+import { bootstrapKnowledgeBase } from '../services/bootstrap-organizer.js';
 import { startServer, stopServer, isServerRunning } from '../server/index.js';
 import { SQLiteEventStore } from '../core/sqlite-event-store.js';
 import { MongoSyncWorker } from '../core/mongo-sync-worker.js';
@@ -637,35 +638,95 @@ function deriveNamespaceCategory(sourceRoot: string, filePath: string): { namesp
   return { namespace: 'default', categoryPath: ['uncategorized'] };
 }
 
+function extractImportEvidence(markdown: string): { confidence?: string; sources: string[] } {
+  const confidenceMatch = markdown.match(/^-\s*confidence:\s*([^\n]+)/m);
+  const sources = markdown
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith('- source:'))
+    .map((line) => line.replace(/^-\s*source:\s*/i, '').trim())
+    .filter(Boolean)
+    .slice(0, 30);
+
+  return {
+    confidence: confidenceMatch ? confidenceMatch[1].trim() : undefined,
+    sources
+  };
+}
+
 /**
  * Organize-import command - import legacy markdown memories into structured mirror
  */
 program
-  .command('organize-import <sourceDir>')
-  .description('Import existing markdown memory files and re-save in structured memory/<namespace>/<category...>/YYYY-MM-DD.md')
+  .command('organize-import [sourceDir]')
+  .description('Import existing markdown memory files, or bootstrap knowledge docs from codebase/git when markdown is missing')
   .option('-p, --project <path>', 'Project path (defaults to cwd)')
   .option('--session <id>', 'Session id for imported events (default: import:organized)')
   .option('--limit <n>', 'Limit number of files to import')
   .option('--dry-run', 'Preview mapping without writing')
-  .action(async (sourceDir: string, options) => {
+  .option('--bootstrap', 'Force-generate structured markdown from codebase + git history before import')
+  .option('--bootstrap-if-empty', 'Auto-bootstrap when source has no markdown files (default: true)', true)
+  .option('--no-bootstrap-if-empty', 'Disable auto-bootstrap when source has no markdown files')
+  .option('--force-bootstrap', 'Run bootstrap even when markdown files exist')
+  .option('--repo <path>', 'Repository root for bootstrap analysis (default: project path)')
+  .option('--out <path>', 'Output directory for generated bootstrap markdown (default: <sourceDir>/bootstrap-kb)')
+  .option('--since <range>', 'Git history range for bootstrap (default: "180 days ago")')
+  .option('--max-commits <n>', 'Max commits to analyze for bootstrap (default: 1000)')
+  .option('--incremental', 'Use previous bootstrap manifest as baseline for incremental updates (default: true)', true)
+  .option('--no-incremental', 'Disable incremental bootstrap; regenerate full snapshot')
+  .action(async (sourceDir: string | undefined, options) => {
     const projectPath = options.project || process.cwd();
     const sessionId = options.session || 'import:organized';
-    const sourceRoot = path.resolve(sourceDir);
+    const sourceRoot = path.resolve(sourceDir || options.out || projectPath);
+    const repoPath = path.resolve(options.repo || projectPath);
 
     if (!fs.existsSync(sourceRoot)) {
-      console.error(`\n❌ Source not found: ${sourceRoot}\n`);
-      process.exit(1);
+      fs.mkdirSync(sourceRoot, { recursive: true });
     }
 
     const service = getMemoryServiceForProject(projectPath);
 
     try {
-      const files = await listMarkdownFiles(sourceRoot);
+      let activeSourceRoot = sourceRoot;
+      let importRoot = sourceRoot;
+      let files = await listMarkdownFiles(importRoot);
+      const hasMarkdown = files.length > 0;
+      const shouldBootstrap = Boolean(options.forceBootstrap || options.bootstrap || (!hasMarkdown && options.bootstrapIfEmpty));
+
+      if (shouldBootstrap) {
+        const outDir = path.resolve(options.out || path.join(sourceRoot, 'bootstrap-kb'));
+        const since = options.since || '180 days ago';
+        const maxCommits = options.maxCommits ? Math.max(1, parseInt(options.maxCommits, 10)) : 1000;
+
+        console.log('\n🧠 Bootstrapping markdown knowledge base...');
+        const bootstrap = await bootstrapKnowledgeBase({
+          repoPath,
+          outDir,
+          since,
+          maxCommits,
+          incremental: options.incremental
+        });
+        console.log(`  Repo: ${repoPath}`);
+        console.log(`  Output: ${bootstrap.outDir}`);
+        console.log(`  Files analyzed: ${bootstrap.fileCount}`);
+        console.log(`  Commits analyzed: ${bootstrap.commitCount}`);
+        console.log(`  Modules: ${bootstrap.moduleCount}`);
+
+        activeSourceRoot = outDir;
+        importRoot = outDir;
+        files = await listMarkdownFiles(importRoot);
+      }
+
+      if (files.length === 0) {
+        console.error('\n❌ organize-import found no markdown files to import.\n');
+        process.exit(1);
+      }
+
       const limit = options.limit ? Math.max(1, parseInt(options.limit, 10)) : files.length;
       const targets = files.slice(0, limit);
 
       console.log(`\n📦 organize-import`);
-      console.log(`  Source: ${sourceRoot}`);
+      console.log(`  Source: ${activeSourceRoot}`);
       console.log(`  Project: ${projectPath}`);
       console.log(`  Files: ${targets.length}${targets.length < files.length ? `/${files.length}` : ''}`);
       console.log(`  Dry-run: ${options.dryRun ? 'yes' : 'no'}\n`);
@@ -684,20 +745,24 @@ program
           continue;
         }
 
-        const { namespace, categoryPath } = deriveNamespaceCategory(sourceRoot, file);
-        const rel = path.relative(sourceRoot, file);
+        const { namespace, categoryPath } = deriveNamespaceCategory(activeSourceRoot, file);
+        const rel = path.relative(activeSourceRoot, file);
+        const evidence = extractImportEvidence(text);
 
         if (options.dryRun) {
-          console.log(`- ${rel} -> namespace=${namespace} category=${categoryPath.join('/')}`);
+          console.log(`- ${rel} -> namespace=${namespace} category=${categoryPath.join('/')} confidence=${evidence.confidence || 'n/a'} sources=${evidence.sources.length}`);
           continue;
         }
 
         await service.storeSessionSummary(sessionId, text, {
           namespace,
           categoryPath,
+          confidence: evidence.confidence,
+          sources: evidence.sources,
           import: {
             sourceFile: rel,
-            importedAt: new Date().toISOString()
+            importedAt: new Date().toISOString(),
+            bootstrap: shouldBootstrap === true
           }
         });
         imported += 1;
