@@ -131,6 +131,12 @@ claude-memory-layer organize-import /path/to/empty-dir --bootstrap --repo /path/
 
 # bootstrap 강제 재생성 (기존 markdown 있어도)
 claude-memory-layer organize-import /path/to/legacy-memory --force-bootstrap --repo /path/to/codebase --out /path/to/legacy-memory/bootstrap-kb
+
+# 증분 bootstrap (기본값): 이전 manifest를 기준으로 변경분 중심 업데이트
+claude-memory-layer organize-import /path/to/legacy-memory --bootstrap --repo /path/to/codebase --incremental
+
+# 전체 재생성 bootstrap
+claude-memory-layer organize-import /path/to/legacy-memory --bootstrap --repo /path/to/codebase --no-incremental
 ```
 
 ### CLI 명령어

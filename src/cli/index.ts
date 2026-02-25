@@ -672,6 +672,8 @@ program
   .option('--out <path>', 'Output directory for generated bootstrap markdown (default: <sourceDir>/bootstrap-kb)')
   .option('--since <range>', 'Git history range for bootstrap (default: "180 days ago")')
   .option('--max-commits <n>', 'Max commits to analyze for bootstrap (default: 1000)')
+  .option('--incremental', 'Use previous bootstrap manifest as baseline for incremental updates (default: true)', true)
+  .option('--no-incremental', 'Disable incremental bootstrap; regenerate full snapshot')
   .action(async (sourceDir: string | undefined, options) => {
     const projectPath = options.project || process.cwd();
     const sessionId = options.session || 'import:organized';
@@ -697,7 +699,13 @@ program
         const maxCommits = options.maxCommits ? Math.max(1, parseInt(options.maxCommits, 10)) : 1000;
 
         console.log('\n🧠 Bootstrapping markdown knowledge base...');
-        const bootstrap = await bootstrapKnowledgeBase({ repoPath, outDir, since, maxCommits });
+        const bootstrap = await bootstrapKnowledgeBase({
+          repoPath,
+          outDir,
+          since,
+          maxCommits,
+          incremental: options.incremental
+        });
         console.log(`  Repo: ${repoPath}`);
         console.log(`  Output: ${bootstrap.outDir}`);
         console.log(`  Files analyzed: ${bootstrap.fileCount}`);

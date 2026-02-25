@@ -7,6 +7,7 @@ export interface BootstrapKnowledgeOptions {
   outDir: string;
   since?: string;
   maxCommits?: number;
+  incremental?: boolean;
 }
 
 interface CommitInfo {
@@ -190,6 +191,36 @@ function sourceLine(source: string): string {
   return `- source: ${source}`;
 }
 
+interface ExistingManifest {
+  generatedAt?: string;
+  lastCommitDate?: string;
+}
+
+function loadExistingManifest(outDir: string): ExistingManifest | null {
+  try {
+    const p = path.join(outDir, 'sources', 'manifest.json');
+    if (!fs.existsSync(p)) return null;
+    const data = JSON.parse(fs.readFileSync(p, 'utf8')) as ExistingManifest;
+    return data;
+  } catch {
+    return null;
+  }
+}
+
+function listMarkdownOutputs(outDir: string): string[] {
+  const out: string[] = [];
+  const stack = [outDir];
+  while (stack.length) {
+    const dir = stack.pop()!;
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) stack.push(full);
+      else if (entry.isFile() && entry.name.endsWith('.md')) out.push(full);
+    }
+  }
+  return out.sort((a, b) => a.localeCompare(b));
+}
+
 export async function bootstrapKnowledgeBase(options: BootstrapKnowledgeOptions): Promise<{
   outDir: string;
   fileCount: number;
@@ -199,8 +230,11 @@ export async function bootstrapKnowledgeBase(options: BootstrapKnowledgeOptions)
 }> {
   const repoPath = path.resolve(options.repoPath);
   const outDir = path.resolve(options.outDir);
-  const since = options.since || '180 days ago';
   const maxCommits = options.maxCommits ?? 1000;
+
+  const existingManifest = options.incremental ? loadExistingManifest(outDir) : null;
+  const incrementalSince = existingManifest?.lastCommitDate || existingManifest?.generatedAt;
+  const since = options.since || incrementalSince || '180 days ago';
 
   const codeFiles = walkCodeFiles(repoPath);
   const modules = summarizeModules(repoPath, codeFiles);
@@ -252,7 +286,17 @@ export async function bootstrapKnowledgeBase(options: BootstrapKnowledgeOptions)
   writeFile(overviewPath, overview);
   generatedFiles.push(overviewPath);
 
-  for (const m of modules.slice(0, 200)) {
+  const touchedRoots = new Set(
+    commits
+      .flatMap((c) => c.files)
+      .map((f) => f.split('/').filter(Boolean)[0])
+      .filter(Boolean)
+  );
+  const moduleTargets = options.incremental && touchedRoots.size > 0
+    ? modules.filter((m) => touchedRoots.has(m.root)).slice(0, 200)
+    : modules.slice(0, 200);
+
+  for (const m of moduleTargets) {
     const relatedCommits = commits.filter((c) => c.files.some((f) => f.startsWith(`${m.root}/`))).slice(0, 15);
     const content = [
       `# Module: ${m.name}`,
@@ -339,25 +383,31 @@ export async function bootstrapKnowledgeBase(options: BootstrapKnowledgeOptions)
   generatedFiles.push(glossaryPath);
 
   const outputs = generatedFiles.map((f) => safeRel(outDir, f)).sort((a, b) => a.localeCompare(b));
+  const allOutputs = listMarkdownOutputs(outDir).map((f) => safeRel(outDir, f));
 
   const sourceItems = [
     ...codeFiles.slice(0, 200).map((f) => ({ type: 'file', ref: safeRel(repoPath, f) })),
     ...commits.slice(0, 400).map((c) => ({ type: 'commit', ref: c.hash, date: c.date, subject: c.subject }))
   ];
 
+  const latestCommitDate = commits.length > 0 ? commits[commits.length - 1].date : undefined;
   const manifest = {
     generatedAt: new Date().toISOString(),
     deterministicPipeline: true,
+    mode: options.incremental ? 'incremental' : 'full',
     repoPath,
-    options: { since, maxCommits },
+    options: { since, maxCommits, incremental: Boolean(options.incremental) },
     stats: {
       filesAnalyzed: codeFiles.length,
       modules: modules.length,
+      modulesGenerated: moduleTargets.length,
       commits: commits.length,
       decisions: decisions.length,
       glossaryTerms: glossary.length
     },
+    lastCommitDate: latestCommitDate,
     outputs,
+    allOutputs,
     sources: sourceItems
   };
 
@@ -370,6 +420,7 @@ export async function bootstrapKnowledgeBase(options: BootstrapKnowledgeOptions)
     '# Sources Manifest',
     '',
     '- deterministicPipeline: true',
+    `- mode: ${options.incremental ? 'incremental' : 'full'}`,
     `- sourceCount: ${sourceItems.length}`,
     '',
     '## Outputs',

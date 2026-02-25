@@ -73,4 +73,39 @@ describe('bootstrapKnowledgeBase', () => {
     expect(manifestJson.deterministicPipeline).toBe(true);
     expect(manifestJson.outputs.length).toBeGreaterThan(0);
   });
+
+  it('supports incremental bootstrap mode with manifest baseline', async () => {
+    const repo = await makeTempRepo();
+    const outDir = path.join(repo, '.generated-kb');
+
+    await bootstrapKnowledgeBase({
+      repoPath: repo,
+      outDir,
+      since: '365 days ago',
+      maxCommits: 50,
+      incremental: false
+    });
+
+    await fs.writeFile(path.join(repo, 'src', 'index.ts'), 'export const hello = () => "world2";\n', 'utf8');
+    execSync('git add src/index.ts', { cwd: repo, stdio: 'ignore' });
+    execSync('git commit -m "feat: change index output"', { cwd: repo, stdio: 'ignore' });
+
+    const result = await bootstrapKnowledgeBase({
+      repoPath: repo,
+      outDir,
+      maxCommits: 50,
+      incremental: true
+    });
+
+    expect(result.commitCount).toBeGreaterThan(0);
+
+    const manifestJson = JSON.parse(await fs.readFile(path.join(outDir, 'sources', 'manifest.json'), 'utf8')) as {
+      mode: string;
+      options?: { incremental?: boolean };
+      stats?: { modulesGenerated?: number };
+    };
+    expect(manifestJson.mode).toBe('incremental');
+    expect(manifestJson.options?.incremental).toBe(true);
+    expect((manifestJson.stats?.modulesGenerated ?? 0)).toBeGreaterThan(0);
+  });
 });
