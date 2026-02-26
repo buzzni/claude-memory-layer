@@ -1446,28 +1446,33 @@ export class SQLiteEventStore {
   }>> {
     await this.initialize();
 
-    const rows = sqliteAll<Record<string, unknown>>(
-      this.db,
-      `SELECT * FROM retrieval_traces ORDER BY created_at DESC LIMIT ?`,
-      [limit]
-    );
+    try {
+      const rows = sqliteAll<Record<string, unknown>>(
+        this.db,
+        `SELECT * FROM retrieval_traces ORDER BY created_at DESC LIMIT ?`,
+        [limit]
+      );
 
-    return rows.map((row) => ({
-      traceId: row.trace_id as string,
-      sessionId: (row.session_id as string) || undefined,
-      projectHash: (row.project_hash as string) || undefined,
-      queryText: row.query_text as string,
-      strategy: (row.strategy as string) || undefined,
-      candidateEventIds: row.candidate_event_ids ? JSON.parse(row.candidate_event_ids as string) : [],
-      selectedEventIds: row.selected_event_ids ? JSON.parse(row.selected_event_ids as string) : [],
-      candidateDetails: row.candidate_details_json ? JSON.parse(row.candidate_details_json as string) : [],
-      selectedDetails: row.selected_details_json ? JSON.parse(row.selected_details_json as string) : [],
-      candidateCount: Number(row.candidate_count || 0),
-      selectedCount: Number(row.selected_count || 0),
-      confidence: (row.confidence as string) || undefined,
-      fallbackTrace: row.fallback_trace ? JSON.parse(row.fallback_trace as string) : [],
-      createdAt: toDateFromSQLite(row.created_at),
-    }));
+      return rows.map((row) => ({
+        traceId: row.trace_id as string,
+        sessionId: (row.session_id as string) || undefined,
+        projectHash: (row.project_hash as string) || undefined,
+        queryText: row.query_text as string,
+        strategy: (row.strategy as string) || undefined,
+        candidateEventIds: row.candidate_event_ids ? JSON.parse(row.candidate_event_ids as string) : [],
+        selectedEventIds: row.selected_event_ids ? JSON.parse(row.selected_event_ids as string) : [],
+        candidateDetails: row.candidate_details_json ? JSON.parse(row.candidate_details_json as string) : [],
+        selectedDetails: row.selected_details_json ? JSON.parse(row.selected_details_json as string) : [],
+        candidateCount: Number(row.candidate_count || 0),
+        selectedCount: Number(row.selected_count || 0),
+        confidence: (row.confidence as string) || undefined,
+        fallbackTrace: row.fallback_trace ? JSON.parse(row.fallback_trace as string) : [],
+        createdAt: toDateFromSQLite(row.created_at),
+      }));
+    } catch (err: any) {
+      if (err?.message?.includes('no such table')) return [];
+      throw err;
+    }
   }
 
   async getRetrievalTraceStats(): Promise<{
@@ -1478,26 +1483,33 @@ export class SQLiteEventStore {
   }> {
     await this.initialize();
 
-    const row = sqliteGet<Record<string, unknown>>(
-      this.db,
-      `SELECT
-        COUNT(*) as total_queries,
-        AVG(candidate_count) as avg_candidate_count,
-        AVG(selected_count) as avg_selected_count,
-        CASE
-          WHEN SUM(candidate_count) > 0 THEN (SUM(selected_count) * 1.0 / SUM(candidate_count))
-          ELSE 0
-        END as selection_rate
-       FROM retrieval_traces`,
-      []
-    );
+    try {
+      const row = sqliteGet<Record<string, unknown>>(
+        this.db,
+        `SELECT
+          COUNT(*) as total_queries,
+          AVG(candidate_count) as avg_candidate_count,
+          AVG(selected_count) as avg_selected_count,
+          CASE
+            WHEN SUM(candidate_count) > 0 THEN (SUM(selected_count) * 1.0 / SUM(candidate_count))
+            ELSE 0
+          END as selection_rate
+         FROM retrieval_traces`,
+        []
+      );
 
-    return {
-      totalQueries: Number(row?.total_queries || 0),
-      avgCandidateCount: Number(row?.avg_candidate_count || 0),
-      avgSelectedCount: Number(row?.avg_selected_count || 0),
-      selectionRate: Number(row?.selection_rate || 0),
-    };
+      return {
+        totalQueries: Number(row?.total_queries || 0),
+        avgCandidateCount: Number(row?.avg_candidate_count || 0),
+        avgSelectedCount: Number(row?.avg_selected_count || 0),
+        selectionRate: Number(row?.selection_rate || 0),
+      };
+    } catch (err: any) {
+      if (err?.message?.includes('no such table')) {
+        return { totalQueries: 0, avgCandidateCount: 0, avgSelectedCount: 0, selectionRate: 0 };
+      }
+      throw err;
+    }
   }
 
   /**
