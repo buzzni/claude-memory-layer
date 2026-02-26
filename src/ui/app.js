@@ -11,6 +11,7 @@ const state = {
   sharedStats: null,
   mostAccessed: null,
   helpfulness: null,
+  retrievalTraces: null,
   currentLevel: 'L0',
   currentSort: 'recent',
   currentView: 'overview',
@@ -235,17 +236,19 @@ async function refreshData() {
   if(btn) btn.classList.add('loading');
 
   try {
-    const [stats, shared, mostAccessed, helpfulness] = await Promise.all([
+    const [stats, shared, mostAccessed, helpfulness, retrievalTraces] = await Promise.all([
       fetch(apiUrl(`${API_BASE}/stats`)).then(r => r.json()).catch(() => null),
       fetch(apiUrl(`${API_BASE}/stats/shared`)).then(r => r.json()).catch(() => null),
       fetch(apiUrl(`${API_BASE}/stats/most-accessed`, { limit: 10 })).then(r => r.json()).catch(() => null),
-      fetch(apiUrl(`${API_BASE}/stats/helpfulness`, { limit: 5 })).then(r => r.json()).catch(() => null)
+      fetch(apiUrl(`${API_BASE}/stats/helpfulness`, { limit: 5 })).then(r => r.json()).catch(() => null),
+      fetch(apiUrl(`${API_BASE}/stats/retrieval-traces`, { limit: 20 })).then(r => r.json()).catch(() => null)
     ]);
 
     state.stats = stats;
     state.sharedStats = shared;
     state.mostAccessed = mostAccessed;
     state.helpfulness = helpfulness;
+    state.retrievalTraces = retrievalTraces;
 
     updateStatsUI();
     updateSharedUI();
@@ -397,6 +400,7 @@ function updateMemoryUsageUI() {
   updateGraduationBars();
   updateHelpfulnessUI();
   updateMostHelpfulList();
+  updateRetrievalTraceUI();
 }
 
 function updateGraduationBars() {
@@ -482,6 +486,55 @@ function updateMostHelpfulList() {
     `;
   }).join('');
 }
+
+
+function updateRetrievalTraceUI() {
+  const summaryEl = document.getElementById('retrieval-trace-summary');
+  const listEl = document.getElementById('retrieval-trace-list');
+  if (!summaryEl || !listEl) return;
+
+  const payload = state.retrievalTraces;
+  const stats = payload?.stats;
+  const traces = payload?.traces || [];
+
+  if (!stats || !Number.isFinite(stats.totalQueries) || stats.totalQueries === 0) {
+    summaryEl.innerHTML = '<span style="color:var(--text-muted);">No retrieval traces yet.</span>';
+    listEl.innerHTML = '<div style="padding:12px; text-align:center; color:var(--text-muted); font-size:13px;">No query/context trace data</div>';
+    return;
+  }
+
+  const selectionRate = ((stats.selectionRate || 0) * 100).toFixed(1);
+  summaryEl.innerHTML = `
+    <div style="display:flex; gap:14px; flex-wrap:wrap; font-size:12px;">
+      <span><strong>${formatNumber(stats.totalQueries)}</strong> queries</span>
+      <span><strong>${Number(stats.avgCandidateCount || 0).toFixed(1)}</strong> avg candidates</span>
+      <span><strong>${Number(stats.avgSelectedCount || 0).toFixed(1)}</strong> avg selected</span>
+      <span><strong>${selectionRate}%</strong> selection rate</span>
+    </div>
+  `;
+
+  listEl.innerHTML = traces.slice(0, 8).map((t) => {
+    const ts = t.createdAt ? new Date(t.createdAt).toLocaleString() : '-';
+    const confidence = t.confidence || 'n/a';
+    const selected = Number(t.selectedCount || 0);
+    const candidates = Number(t.candidateCount || 0);
+    const selectedIds = (t.selectedEventIds || []).slice(0, 2).join(', ');
+    return `
+      <div class="shared-item" style="align-items:flex-start;">
+        <div class="shared-info" style="align-items:flex-start; flex-direction:column; gap:4px;">
+          <span style="font-size:12px; color:var(--text-secondary);"><strong>Q:</strong> ${escapeHtml((t.queryText || '').slice(0, 120))}</span>
+          <span style="font-size:11px; color:var(--text-muted);">${ts} · strategy=${escapeHtml(t.strategy || 'auto')} · conf=${escapeHtml(confidence)}</span>
+          <span style="font-size:11px; color:var(--text-muted);">selected IDs: ${escapeHtml(selectedIds || '-')}</span>
+        </div>
+        <div style="display:flex; flex-direction:column; align-items:flex-end; gap:2px; min-width:68px;">
+          <span style="font-size:13px; font-weight:600; color:var(--accent-primary);">${selected}/${candidates}</span>
+          <span style="font-size:10px; color:var(--text-muted);">sel/cand</span>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
 
 // --- Charts ---
 

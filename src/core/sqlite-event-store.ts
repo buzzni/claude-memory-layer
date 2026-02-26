@@ -291,6 +291,22 @@ export class SQLiteEventStore {
         measured_at TEXT
       );
 
+      -- Retrieval trace log (query -> candidates -> selected for context)
+      CREATE TABLE IF NOT EXISTS retrieval_traces (
+        trace_id TEXT PRIMARY KEY,
+        session_id TEXT,
+        project_hash TEXT,
+        query_text TEXT NOT NULL,
+        strategy TEXT,
+        candidate_event_ids TEXT,
+        selected_event_ids TEXT,
+        candidate_count INTEGER DEFAULT 0,
+        selected_count INTEGER DEFAULT 0,
+        confidence TEXT,
+        fallback_trace TEXT,
+        created_at TEXT DEFAULT (datetime('now'))
+      );
+
       -- Sync position tracking (for SQLite -> DuckDB sync)
       CREATE TABLE IF NOT EXISTS sync_positions (
         target_name TEXT PRIMARY KEY,
@@ -320,6 +336,9 @@ export class SQLiteEventStore {
       CREATE INDEX IF NOT EXISTS idx_helpfulness_event ON memory_helpfulness(event_id);
       CREATE INDEX IF NOT EXISTS idx_helpfulness_session ON memory_helpfulness(session_id);
       CREATE INDEX IF NOT EXISTS idx_helpfulness_score ON memory_helpfulness(helpfulness_score DESC);
+      CREATE INDEX IF NOT EXISTS idx_retrieval_traces_created_at ON retrieval_traces(created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_retrieval_traces_project_hash ON retrieval_traces(project_hash);
+      CREATE INDEX IF NOT EXISTS idx_retrieval_traces_session_id ON retrieval_traces(session_id);
 
       -- FTS5 Full-Text Search for fast keyword search
       CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(
@@ -1327,6 +1346,111 @@ export class SQLiteEventStore {
    */
   getDatabase(): SQLiteDatabase {
     return this.db;
+  }
+
+
+  async recordRetrievalTrace(input: {
+    sessionId?: string;
+    projectHash?: string;
+    queryText: string;
+    strategy?: string;
+    candidateEventIds: string[];
+    selectedEventIds: string[];
+    confidence?: string;
+    fallbackTrace?: string[];
+  }): Promise<void> {
+    await this.initialize();
+
+    const traceId = randomUUID();
+    sqliteRun(
+      this.db,
+      `INSERT INTO retrieval_traces (
+        trace_id, session_id, project_hash, query_text, strategy,
+        candidate_event_ids, selected_event_ids,
+        candidate_count, selected_count, confidence, fallback_trace
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        traceId,
+        input.sessionId || null,
+        input.projectHash || null,
+        input.queryText,
+        input.strategy || null,
+        JSON.stringify(input.candidateEventIds || []),
+        JSON.stringify(input.selectedEventIds || []),
+        (input.candidateEventIds || []).length,
+        (input.selectedEventIds || []).length,
+        input.confidence || null,
+        JSON.stringify(input.fallbackTrace || [])
+      ]
+    );
+  }
+
+  async getRecentRetrievalTraces(limit: number = 50): Promise<Array<{
+    traceId: string;
+    sessionId?: string;
+    projectHash?: string;
+    queryText: string;
+    strategy?: string;
+    candidateEventIds: string[];
+    selectedEventIds: string[];
+    candidateCount: number;
+    selectedCount: number;
+    confidence?: string;
+    fallbackTrace: string[];
+    createdAt: Date;
+  }>> {
+    await this.initialize();
+
+    const rows = sqliteAll<Record<string, unknown>>(
+      this.db,
+      `SELECT * FROM retrieval_traces ORDER BY created_at DESC LIMIT ?`,
+      [limit]
+    );
+
+    return rows.map((row) => ({
+      traceId: row.trace_id as string,
+      sessionId: (row.session_id as string) || undefined,
+      projectHash: (row.project_hash as string) || undefined,
+      queryText: row.query_text as string,
+      strategy: (row.strategy as string) || undefined,
+      candidateEventIds: row.candidate_event_ids ? JSON.parse(row.candidate_event_ids as string) : [],
+      selectedEventIds: row.selected_event_ids ? JSON.parse(row.selected_event_ids as string) : [],
+      candidateCount: Number(row.candidate_count || 0),
+      selectedCount: Number(row.selected_count || 0),
+      confidence: (row.confidence as string) || undefined,
+      fallbackTrace: row.fallback_trace ? JSON.parse(row.fallback_trace as string) : [],
+      createdAt: toDateFromSQLite(row.created_at),
+    }));
+  }
+
+  async getRetrievalTraceStats(): Promise<{
+    totalQueries: number;
+    avgCandidateCount: number;
+    avgSelectedCount: number;
+    selectionRate: number;
+  }> {
+    await this.initialize();
+
+    const row = sqliteGet<Record<string, unknown>>(
+      this.db,
+      `SELECT
+        COUNT(*) as total_queries,
+        AVG(candidate_count) as avg_candidate_count,
+        AVG(selected_count) as avg_selected_count,
+        CASE
+          WHEN SUM(candidate_count) > 0 THEN (SUM(selected_count) * 1.0 / SUM(candidate_count))
+          ELSE 0
+        END as selection_rate
+       FROM retrieval_traces`,
+      []
+    );
+
+    return {
+      totalQueries: Number(row?.total_queries || 0),
+      avgCandidateCount: Number(row?.avg_candidate_count || 0),
+      avgSelectedCount: Number(row?.avg_selected_count || 0),
+      selectionRate: Number(row?.selection_rate || 0),
+    };
   }
 
   /**

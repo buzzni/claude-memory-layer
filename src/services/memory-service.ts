@@ -656,8 +656,10 @@ export class MemoryService {
     const rerankWeights = await this.getRerankWeights(options?.adaptiveRerank === true);
 
     // Use unified retrieval if shared search is requested
+    let result: UnifiedRetrievalResult;
+
     if (options?.includeShared && this.sharedStore) {
-      return this.retriever.retrieveUnified(query, {
+      result = await this.retriever.retrieveUnified(query, {
         ...options,
         intentRewrite: options?.intentRewrite === true,
         rerankWeights,
@@ -666,16 +668,35 @@ export class MemoryService {
         projectScopeMode: options?.projectScopeMode ?? (this.projectHash ? 'strict' : 'global'),
         allowedProjectHashes: options?.allowedProjectHashes
       });
+    } else {
+      result = await this.retriever.retrieve(query, {
+        ...options,
+        intentRewrite: options?.intentRewrite === true,
+        rerankWeights,
+        projectHash: this.projectHash || undefined,
+        projectScopeMode: options?.projectScopeMode ?? (this.projectHash ? 'strict' : 'global'),
+        allowedProjectHashes: options?.allowedProjectHashes
+      });
     }
 
-    return this.retriever.retrieve(query, {
-      ...options,
-      intentRewrite: options?.intentRewrite === true,
-      rerankWeights,
-      projectHash: this.projectHash || undefined,
-      projectScopeMode: options?.projectScopeMode ?? (this.projectHash ? 'strict' : 'global'),
-      allowedProjectHashes: options?.allowedProjectHashes
-    });
+    try {
+      const selectedEventIds = result.memories.map((m) => m.event.id);
+      const candidateEventIds = result.memories.map((m) => m.event.id);
+      await this.sqliteStore.recordRetrievalTrace({
+        sessionId: options?.sessionId,
+        projectHash: this.projectHash || undefined,
+        queryText: query,
+        strategy: options?.strategy || 'auto',
+        candidateEventIds,
+        selectedEventIds,
+        confidence: result.matchResult.confidence,
+        fallbackTrace: result.fallbackTrace || []
+      });
+    } catch {
+      // non-blocking telemetry
+    }
+
+    return result;
   }
 
   private getConfiguredRerankWeights(): { semantic: number; lexical: number; recency: number } | undefined {
@@ -845,6 +866,21 @@ export class MemoryService {
   }> {
     await this.initialize();
     return this.sqliteStore.getOutboxStats();
+  }
+
+  async getRetrievalTraceStats(): Promise<{
+    totalQueries: number;
+    avgCandidateCount: number;
+    avgSelectedCount: number;
+    selectionRate: number;
+  }> {
+    await this.initialize();
+    return this.sqliteStore.getRetrievalTraceStats();
+  }
+
+  async getRecentRetrievalTraces(limit: number = 50) {
+    await this.initialize();
+    return this.sqliteStore.getRecentRetrievalTraces(limit);
   }
 
   async getStats(): Promise<{

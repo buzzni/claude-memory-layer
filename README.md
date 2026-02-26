@@ -70,6 +70,7 @@ npx claude-memory-layer search "배포 이슈"
 - 상태 점검:
   - `GET /health` (서버 헬스)
   - `GET /api/health` (outbox pending/failed 포함 상세 헬스)
+  - `GET /api/stats/retrieval-traces` (검색→컨텍스트 채택 추적)
 
 ---
 
@@ -409,6 +410,7 @@ claude-memory-layer dashboard
 - 벡터 검색 인터페이스
 - 저장소 통계 대시보드
 - Outbox 상태 모니터링
+- Retrieval Trace (검색 질의 → 후보 개수 → 최종 context 채택 IDs) 1:1 확인
 
 ## 기존 대화 기록 임포트
 

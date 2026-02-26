@@ -158,6 +158,8 @@ statsRouter.get('/', async (c) => {
         return acc;
       }, {} as Record<string, number>);
 
+    const retrievalTrace = await memoryService.getRetrievalTraceStats();
+
     return c.json({
       storage: {
         eventCount: stats.totalEvents,
@@ -175,7 +177,8 @@ statsRouter.get('/', async (c) => {
         heapUsed: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
         heapTotal: Math.round(process.memoryUsage().heapTotal / 1024 / 1024)
       },
-      levelStats: stats.levelStats
+      levelStats: stats.levelStats,
+      retrievalTrace
     });
   } catch (error) {
     return c.json({ error: (error as Error).message }, 500);
@@ -286,6 +289,46 @@ statsRouter.get('/helpfulness', async (c) => {
       unhelpful: 0,
       topMemories: []
     });
+  } finally {
+    await memoryService.shutdown();
+  }
+});
+
+
+
+// GET /api/stats/retrieval-traces - Get recent retrieval traces (query -> selected context)
+statsRouter.get('/retrieval-traces', async (c) => {
+  const limit = parseInt(c.req.query('limit') || '50', 10);
+  const memoryService = getServiceFromQuery(c);
+
+  try {
+    await memoryService.initialize();
+    const traces = await memoryService.getRecentRetrievalTraces(limit);
+    const traceStats = await memoryService.getRetrievalTraceStats();
+
+    return c.json({
+      stats: traceStats,
+      traces: traces.map((t) => ({
+        traceId: t.traceId,
+        sessionId: t.sessionId || null,
+        projectHash: t.projectHash || null,
+        queryText: t.queryText,
+        strategy: t.strategy || null,
+        candidateEventIds: t.candidateEventIds,
+        selectedEventIds: t.selectedEventIds,
+        candidateCount: t.candidateCount,
+        selectedCount: t.selectedCount,
+        confidence: t.confidence || null,
+        fallbackTrace: t.fallbackTrace,
+        createdAt: t.createdAt.toISOString()
+      }))
+    });
+  } catch (error) {
+    return c.json({
+      stats: { totalQueries: 0, avgCandidateCount: 0, avgSelectedCount: 0, selectionRate: 0 },
+      traces: [],
+      error: (error as Error).message
+    }, 500);
   } finally {
     await memoryService.shutdown();
   }
