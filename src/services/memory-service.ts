@@ -207,12 +207,13 @@ export class MemoryService {
   private sharedPromoter: SharedPromoter | null = null;
   private sharedStoreConfig: SharedStoreConfig | null = null;
   private projectHash: string | null = null;
+  private projectPath: string | null = null;
 
   private readonly readOnly: boolean;
   private readonly lightweightMode: boolean;
   private readonly mdMirror: MarkdownMirror;
 
-  constructor(config: MemoryServiceConfig & { projectHash?: string; sharedStoreConfig?: SharedStoreConfig }) {
+  constructor(config: MemoryServiceConfig & { projectHash?: string; projectPath?: string; sharedStoreConfig?: SharedStoreConfig }) {
     const storagePath = this.expandPath(config.storagePath);
     this.readOnly = config.readOnly ?? false;
     this.lightweightMode = config.lightweightMode ?? false;
@@ -225,6 +226,7 @@ export class MemoryService {
 
     // Store project hash for shared store operations
     this.projectHash = config.projectHash || null;
+    this.projectPath = config.projectPath || null;
     // Default: shared store enabled
     this.sharedStoreConfig = config.sharedStoreConfig ?? { enabled: true };
 
@@ -415,11 +417,33 @@ export class MemoryService {
             operation,
             pipeline: 'default',
             ts: new Date().toISOString()
-          }
+          },
+          ...(this.projectHash
+            ? {
+                scope: {
+                  project: {
+                    hash: this.projectHash,
+                    ...(this.projectPath ? { path: this.projectPath } : {})
+                  }
+                },
+                tags: [`proj:${this.projectHash}`]
+              }
+            : {})
         },
         input.metadata
       )
     };
+
+    if (this.projectHash && normalizedInput.metadata) {
+      const meta = normalizedInput.metadata as Record<string, unknown>;
+      const currentTags = Array.isArray(meta.tags)
+        ? meta.tags.filter((x): x is string => typeof x === 'string')
+        : [];
+      const projectTag = `proj:${this.projectHash}`;
+      if (!currentTags.includes(projectTag)) {
+        meta.tags = [...currentTags, projectTag];
+      }
+    }
 
     await this.ingestInterceptors.run('before', {
       operation,
@@ -611,6 +635,8 @@ export class MemoryService {
       includeShared?: boolean;
       adaptiveRerank?: boolean;
       intentRewrite?: boolean;
+      projectScopeMode?: 'strict' | 'prefer' | 'global';
+      allowedProjectHashes?: string[];
     }
   ): Promise<UnifiedRetrievalResult> {
     await this.initialize();
@@ -627,11 +653,20 @@ export class MemoryService {
         intentRewrite: options?.intentRewrite === true,
         rerankWeights,
         includeShared: true,
-        projectHash: this.projectHash || undefined
+        projectHash: this.projectHash || undefined,
+        projectScopeMode: options?.projectScopeMode ?? (this.projectHash ? 'strict' : 'global'),
+        allowedProjectHashes: options?.allowedProjectHashes
       });
     }
 
-    return this.retriever.retrieve(query, { ...options, intentRewrite: options?.intentRewrite === true, rerankWeights });
+    return this.retriever.retrieve(query, {
+      ...options,
+      intentRewrite: options?.intentRewrite === true,
+      rerankWeights,
+      projectHash: this.projectHash || undefined,
+      projectScopeMode: options?.projectScopeMode ?? (this.projectHash ? 'strict' : 'global'),
+      allowedProjectHashes: options?.allowedProjectHashes
+    });
   }
 
   private async rewriteQueryIntent(query: string): Promise<string | null> {
@@ -1448,6 +1483,7 @@ export function getMemoryServiceForProject(
     serviceCache.set(hash, new MemoryService({
       storagePath,
       projectHash: hash,
+      projectPath,
       // Override shared store config - hooks don't need DuckDB
       sharedStoreConfig: sharedStoreConfig ?? { enabled: false },
       analyticsEnabled: false  // Hooks don't need DuckDB
@@ -1489,6 +1525,7 @@ export function getLightweightMemoryService(sessionId: string): MemoryService {
     serviceCache.set(key, new MemoryService({
       storagePath,
       projectHash: projectInfo?.projectHash,
+      projectPath: projectInfo?.projectPath,
       lightweightMode: true,  // Skip embedder/vector/workers
       analyticsEnabled: false,
       sharedStoreConfig: { enabled: false }

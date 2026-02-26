@@ -22,6 +22,7 @@ export interface RetrievalScope {
 }
 
 export type RetrievalStrategy = 'auto' | 'fast' | 'deep';
+export type ProjectScopeMode = 'strict' | 'prefer' | 'global';
 
 export interface RetrievalOptions {
   topK: number;
@@ -48,6 +49,9 @@ export interface RetrievalOptions {
     maxHops?: number;
     hopPenalty?: number;
   };
+  projectScopeMode?: ProjectScopeMode;
+  projectHash?: string;
+  allowedProjectHashes?: string[];
 }
 
 export interface RetrievalResult {
@@ -89,7 +93,8 @@ const DEFAULT_OPTIONS: RetrievalOptions = {
     enabled: true,
     maxHops: 1,
     hopPenalty: 0.08
-  }
+  },
+  projectScopeMode: 'global'
 };
 
 export interface SharedStoreOptions {
@@ -161,7 +166,10 @@ export class Retriever {
       rerankWeights: opts.rerankWeights,
       decayPolicy: opts.decayPolicy,
       intentRewrite: opts.intentRewrite === true,
-      graphHop: opts.graphHop
+      graphHop: opts.graphHop,
+      projectScopeMode: opts.projectScopeMode,
+      projectHash: opts.projectHash,
+      allowedProjectHashes: opts.allowedProjectHashes
     });
     fallbackTrace.push(`stage:primary:${primaryStrategy}`);
 
@@ -176,7 +184,10 @@ export class Retriever {
         rerankWithKeyword: opts.rerankWithKeyword !== false,
         rerankWeights: opts.rerankWeights,
         decayPolicy: opts.decayPolicy,
-        graphHop: opts.graphHop
+        graphHop: opts.graphHop,
+        projectScopeMode: opts.projectScopeMode,
+        projectHash: opts.projectHash,
+        allowedProjectHashes: opts.allowedProjectHashes
       });
       fallbackTrace.push('fallback:deep');
     }
@@ -192,7 +203,10 @@ export class Retriever {
         rerankWithKeyword: true,
         rerankWeights: opts.rerankWeights,
         decayPolicy: opts.decayPolicy,
-        graphHop: opts.graphHop
+        graphHop: opts.graphHop,
+        projectScopeMode: opts.projectScopeMode,
+        projectHash: opts.projectHash,
+        allowedProjectHashes: opts.allowedProjectHashes
       });
       fallbackTrace.push('fallback:scope-expanded');
     }
@@ -285,6 +299,9 @@ export class Retriever {
         maxHops?: number;
         hopPenalty?: number;
       };
+      projectScopeMode?: ProjectScopeMode;
+      projectHash?: string;
+      allowedProjectHashes?: string[];
     }
   ): Promise<{ results: SearchResult[]; matchResult: MatchResult }> {
     let initialResults = await this.searchByStrategy(query, {
@@ -319,7 +336,12 @@ export class Retriever {
       ? this.rerankByKeywordOverlap(expandedResults, query, input.rerankWeights, input.decayPolicy)
       : expandedResults;
 
-    const filtered = await this.applyScopeFilters(rerankedResults, input.scope);
+    const filtered = await this.applyScopeFilters(rerankedResults, {
+      scope: input.scope,
+      projectScopeMode: input.projectScopeMode,
+      projectHash: input.projectHash,
+      allowedProjectHashes: input.allowedProjectHashes
+    });
     const top = filtered.slice(0, input.topK);
     const matchResult = this.matcher.matchSearchResults(top, () => 0);
 
@@ -511,31 +533,68 @@ export class Retriever {
       .sort((a, b) => b.score - a.score);
   }
 
-  private async applyScopeFilters(results: SearchResult[], scope?: RetrievalScope): Promise<SearchResult[]> {
-    if (!scope) return results;
+  private async applyScopeFilters(
+    results: SearchResult[],
+    options?: {
+      scope?: RetrievalScope;
+      projectScopeMode?: ProjectScopeMode;
+      projectHash?: string;
+      allowedProjectHashes?: string[];
+    }
+  ): Promise<SearchResult[]> {
+    const scope = options?.scope;
+    const projectScopeMode = options?.projectScopeMode ?? 'global';
+    const allowedProjectHashes = new Set(
+      [options?.projectHash, ...(options?.allowedProjectHashes || [])].filter(
+        (value): value is string => typeof value === 'string' && value.length > 0
+      )
+    );
 
-    const normalizedIncludes = (scope.contentIncludes || []).map((s) => s.toLowerCase());
-    const filtered: SearchResult[] = [];
+    if (!scope && projectScopeMode === 'global') return results;
+
+    const normalizedIncludes = (scope?.contentIncludes || []).map((s) => s.toLowerCase());
+    const filtered: Array<{ result: SearchResult; projectHash?: string }> = [];
 
     for (const result of results) {
-      if (scope.sessionId && result.sessionId !== scope.sessionId) continue;
-      if (scope.sessionIdPrefix && !result.sessionId.startsWith(scope.sessionIdPrefix)) continue;
-      if (scope.eventTypes && scope.eventTypes.length > 0 && !scope.eventTypes.includes(result.eventType as MemoryEvent['eventType'])) continue;
+      if (scope?.sessionId && result.sessionId !== scope.sessionId) continue;
+      if (scope?.sessionIdPrefix && !result.sessionId.startsWith(scope.sessionIdPrefix)) continue;
+      if (scope?.eventTypes && scope.eventTypes.length > 0 && !scope.eventTypes.includes(result.eventType as MemoryEvent['eventType'])) continue;
 
       const event = await this.eventStore.getEvent(result.eventId);
       if (!event) continue;
 
-      if (scope.canonicalKeyPrefix && !event.canonicalKey.startsWith(scope.canonicalKeyPrefix)) continue;
+      if (scope?.canonicalKeyPrefix && !event.canonicalKey.startsWith(scope.canonicalKeyPrefix)) continue;
       if (normalizedIncludes.length > 0) {
         const lc = event.content.toLowerCase();
         if (!normalizedIncludes.some((needle) => lc.includes(needle))) continue;
       }
-      if (scope.metadata && !this.matchesMetadataScope(event.metadata, scope.metadata)) continue;
+      if (scope?.metadata && !this.matchesMetadataScope(event.metadata, scope.metadata)) continue;
 
-      filtered.push(result);
+      const projectHash = this.extractProjectHash(event.metadata);
+      filtered.push({ result, projectHash });
     }
 
-    return filtered;
+    if (projectScopeMode === 'global' || allowedProjectHashes.size === 0) {
+      return filtered.map((x) => x.result);
+    }
+
+    const projectMatched = filtered.filter((x) => x.projectHash && allowedProjectHashes.has(x.projectHash));
+
+    if (projectScopeMode === 'strict') {
+      return projectMatched.map((x) => x.result);
+    }
+
+    return (projectMatched.length > 0 ? projectMatched : filtered).map((x) => x.result);
+  }
+
+  private extractProjectHash(metadata: Record<string, unknown> | undefined): string | undefined {
+    if (!metadata || typeof metadata !== 'object') return undefined;
+    const scope = metadata.scope;
+    if (!scope || typeof scope !== 'object') return undefined;
+    const project = (scope as Record<string, unknown>).project;
+    if (!project || typeof project !== 'object') return undefined;
+    const hash = (project as Record<string, unknown>).hash;
+    return typeof hash === 'string' && hash.length > 0 ? hash : undefined;
   }
 
   async retrieveFromSession(sessionId: string): Promise<MemoryEvent[]> {
