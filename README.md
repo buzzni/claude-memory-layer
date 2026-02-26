@@ -10,6 +10,69 @@ Claude Memory Layer는 Claude Code에서 사용자와 AI 간의 모든 대화를
 - **프로젝트 맥락 이해**: 프로젝트별로 축적된 지식 활용
 - **개인화된 응답**: 사용자의 선호도와 패턴 학습
 
+## 빠른 시작 (신규 프로젝트 기준)
+
+아래 순서대로 하면 됩니다.
+
+### 0) 최초 1회(머신 전체) 설치
+
+```bash
+cd ~/workspace/claude-memory-layer
+npm install
+npm run build
+npx claude-memory-layer install
+```
+
+- `install`은 **한 번만** 하면 됩니다(Claude Code hooks 등록).
+- 이후 프로젝트별로 메모리 저장소가 자동 분리됩니다.
+
+### 1) 새 프로젝트에서 초기 메모리 생성
+
+```bash
+cd /path/to/your-project
+npx claude-memory-layer import
+```
+
+- 현재 프로젝트의 기존 Claude 세션(`~/.claude/projects/...`)을 읽어와 메모리로 적재합니다.
+- 벡터 임베딩까지 한 번에 처리됩니다.
+
+### 2) 사용 중 확인
+
+```bash
+# 프로젝트 메모리 검색
+npx claude-memory-layer search "인증 구조"
+
+# 통계 확인
+npx claude-memory-layer stats
+
+# 대시보드 실행
+npx claude-memory-layer dashboard
+```
+
+### 3) 다른 프로젝트에도 동일하게 적용?
+
+네. **완전히 동일한 흐름**을 각 프로젝트에서 반복하면 됩니다.
+
+```bash
+cd /path/to/another-project
+npx claude-memory-layer import
+npx claude-memory-layer search "배포 이슈"
+```
+
+프로젝트마다 내부적으로 별도 저장소(`~/.claude-code/memory/projects/<hash>`)를 사용하므로,
+기억이 자동으로 분리됩니다.
+
+### 4) 운영 팁
+
+- 특정 프로젝트를 명시하고 싶으면 대부분 명령에 `--project <path>` 사용 가능
+- 대규모 리임포트가 필요하면 `import --force` 사용
+- 백그라운드 worker가 못 처리한 임베딩은 `process`로 수동 처리
+- 상태 점검:
+  - `GET /health` (서버 헬스)
+  - `GET /api/health` (outbox pending/failed 포함 상세 헬스)
+
+---
+
 ## Features
 
 ### Core Features
@@ -221,8 +284,9 @@ const scoped = await memory.retrieveMemories('아침 브리핑', {
 ```
 
 팁:
-- `strategy: 'auto'`는 기본적으로 `deep` 경로를 사용합니다.
+- `strategy: 'auto'`는 기본적으로 fallback 체인을 사용해 결과를 찾습니다.
 - 저지연 응답이 중요하면 `fast`, 정확도 우선이면 `deep`를 권장합니다.
+- 프로젝트 서비스(`getMemoryServiceForProject`) 기준 검색 스코프는 기본적으로 project-aware(엄격 모드)로 동작합니다.
 
 ## Privacy 기능
 
@@ -524,8 +588,9 @@ Layer 1: Search Index (~50-100 tokens/result)
 
 ```
 ~/.claude-code/memory/
-├── events.duckdb     # 이벤트 저장소
-└── vectors/          # 벡터 임베딩
+├── projects/<hash>/events.sqlite  # 프로젝트별 이벤트 저장소 (primary)
+├── projects/<hash>/vectors/        # 프로젝트별 벡터 임베딩
+└── shared/                         # (옵션) 공유 지식 저장소
 ```
 
 Claude Code 세션 기록 위치:
