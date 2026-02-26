@@ -412,6 +412,7 @@ claude-memory-layer dashboard
 - Outbox 상태 모니터링
 - Retrieval Trace (검색 질의 → 후보/채택 수 → 최종 context 채택 IDs) 1:1 확인
 - 채택된 event ID 클릭으로 상세 모달 확인 + score breakdown(semantic/lexical/recency) 확인
+- 후보(candidate) event ID 스냅샷도 함께 노출되어 검색→채택 전 과정을 추적 가능
 
 ## 기존 대화 기록 임포트
 

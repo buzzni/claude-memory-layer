@@ -316,6 +316,7 @@ statsRouter.get('/retrieval-traces', async (c) => {
         strategy: t.strategy || null,
         candidateEventIds: t.candidateEventIds,
         selectedEventIds: t.selectedEventIds,
+        candidateDetails: t.candidateDetails || [],
         selectedDetails: t.selectedDetails || [],
         candidateCount: t.candidateCount,
         selectedCount: t.selectedCount,

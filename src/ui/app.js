@@ -519,6 +519,7 @@ function updateRetrievalTraceUI() {
     const selected = Number(t.selectedCount || 0);
     const candidates = Number(t.candidateCount || 0);
     const selectedDetails = (t.selectedDetails || []).slice(0, 2);
+    const candidateDetails = (t.candidateDetails || []).slice(0, 3);
     const selectedIdsHtml = selectedDetails.length > 0
       ? selectedDetails.map((d) => {
           const breakdown = `score=${Number(d.score || 0).toFixed(3)} · s=${Number(d.semanticScore || 0).toFixed(3)} · l=${Number(d.lexicalScore || 0).toFixed(3)} · r=${Number(d.recencyScore || 0).toFixed(3)}`;
@@ -536,6 +537,7 @@ function updateRetrievalTraceUI() {
           <span style="font-size:12px; color:var(--text-secondary);"><strong>Q:</strong> ${escapeHtml((t.queryText || '').slice(0, 120))}</span>
           <span style="font-size:11px; color:var(--text-muted);">${ts} · strategy=${escapeHtml(t.strategy || 'auto')} · conf=${escapeHtml(confidence)}</span>
           <span style="font-size:11px; color:var(--text-muted);">selected IDs: ${selectedIdsHtml}</span>
+          <span style="font-size:11px; color:var(--text-muted);">candidates: ${candidateDetails.map((d) => `<span class=\"event-type-badge\" style=\"cursor:pointer;\" onclick=\"openDetailModal('${d.eventId}')\">${escapeHtml((d.eventId || '').slice(0, 8))}...</span>`).join(' ') || '-'}</span>
           ${scoreBreakdownHtml}
         </div>
         <div style="display:flex; flex-direction:column; align-items:flex-end; gap:2px; min-width:68px;">

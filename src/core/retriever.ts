@@ -67,6 +67,13 @@ export interface RetrievalResult {
     lexicalScore?: number;
     recencyScore?: number;
   }>;
+  candidateDebug?: Array<{
+    eventId: string;
+    score: number;
+    semanticScore?: number;
+    lexicalScore?: number;
+    recencyScore?: number;
+  }>;
 }
 
 export interface MemoryWithContext {
@@ -223,6 +230,7 @@ export class Retriever {
       const summary = await this.buildSummaryFallback(query, opts.topK);
       current = {
         results: summary,
+        candidateResults: summary,
         matchResult: this.matcher.matchSearchResults(summary, () => 0)
       };
       fallbackTrace.push('fallback:summary');
@@ -238,6 +246,13 @@ export class Retriever {
       context,
       fallbackTrace,
       selectedDebug: current.results.slice(0, opts.topK).map((r: SearchResult & { semanticScore?: number; lexicalScore?: number; recencyScore?: number }) => ({
+        eventId: r.eventId,
+        score: r.score,
+        semanticScore: r.semanticScore,
+        lexicalScore: r.lexicalScore,
+        recencyScore: r.recencyScore,
+      })),
+      candidateDebug: (current.candidateResults || []).slice(0, Math.max(opts.topK * 3, 20)).map((r: SearchResult & { semanticScore?: number; lexicalScore?: number; recencyScore?: number }) => ({
         eventId: r.eventId,
         score: r.score,
         semanticScore: r.semanticScore,
@@ -359,7 +374,7 @@ export class Retriever {
     const top = filtered.slice(0, input.topK);
     const matchResult = this.matcher.matchSearchResults(top, () => 0);
 
-    return { results: top, matchResult };
+    return { results: top, candidateResults: filtered, matchResult };
   }
 
   private mergeResults(primary: SearchResult[], secondary: SearchResult[], limit: number): SearchResult[] {

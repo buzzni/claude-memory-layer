@@ -300,6 +300,7 @@ export class SQLiteEventStore {
         strategy TEXT,
         candidate_event_ids TEXT,
         selected_event_ids TEXT,
+        candidate_details_json TEXT,
         selected_details_json TEXT,
         candidate_count INTEGER DEFAULT 0,
         selected_count INTEGER DEFAULT 0,
@@ -368,6 +369,11 @@ export class SQLiteEventStore {
     // Best-effort forward migration for retrieval trace detail column
     try {
       sqliteExec(this.db, `ALTER TABLE retrieval_traces ADD COLUMN selected_details_json TEXT;`);
+    } catch {
+      // column may already exist
+    }
+    try {
+      sqliteExec(this.db, `ALTER TABLE retrieval_traces ADD COLUMN candidate_details_json TEXT;`);
     } catch {
       // column may already exist
     }
@@ -1365,6 +1371,13 @@ export class SQLiteEventStore {
     strategy?: string;
     candidateEventIds: string[];
     selectedEventIds: string[];
+    candidateDetails?: Array<{
+      eventId: string;
+      score: number;
+      semanticScore?: number;
+      lexicalScore?: number;
+      recencyScore?: number;
+    }>;
     selectedDetails?: Array<{
       eventId: string;
       score: number;
@@ -1382,9 +1395,9 @@ export class SQLiteEventStore {
       this.db,
       `INSERT INTO retrieval_traces (
         trace_id, session_id, project_hash, query_text, strategy,
-        candidate_event_ids, selected_event_ids, selected_details_json,
+        candidate_event_ids, selected_event_ids, candidate_details_json, selected_details_json,
         candidate_count, selected_count, confidence, fallback_trace
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         traceId,
         input.sessionId || null,
@@ -1393,6 +1406,7 @@ export class SQLiteEventStore {
         input.strategy || null,
         JSON.stringify(input.candidateEventIds || []),
         JSON.stringify(input.selectedEventIds || []),
+        JSON.stringify(input.candidateDetails || []),
         JSON.stringify(input.selectedDetails || []),
         (input.candidateEventIds || []).length,
         (input.selectedEventIds || []).length,
@@ -1410,6 +1424,13 @@ export class SQLiteEventStore {
     strategy?: string;
     candidateEventIds: string[];
     selectedEventIds: string[];
+    candidateDetails: Array<{
+      eventId: string;
+      score: number;
+      semanticScore?: number;
+      lexicalScore?: number;
+      recencyScore?: number;
+    }>;
     selectedDetails: Array<{
       eventId: string;
       score: number;
@@ -1439,6 +1460,7 @@ export class SQLiteEventStore {
       strategy: (row.strategy as string) || undefined,
       candidateEventIds: row.candidate_event_ids ? JSON.parse(row.candidate_event_ids as string) : [],
       selectedEventIds: row.selected_event_ids ? JSON.parse(row.selected_event_ids as string) : [],
+      candidateDetails: row.candidate_details_json ? JSON.parse(row.candidate_details_json as string) : [],
       selectedDetails: row.selected_details_json ? JSON.parse(row.selected_details_json as string) : [],
       candidateCount: Number(row.candidate_count || 0),
       selectedCount: Number(row.selected_count || 0),
