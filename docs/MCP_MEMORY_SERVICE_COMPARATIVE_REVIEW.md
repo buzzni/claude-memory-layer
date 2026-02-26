@@ -246,13 +246,26 @@
 
 ## 8) 보너스: 바로 체크할 TODO
 
-- [ ] `projectScopeMode` 옵션 추가
-- [ ] 기본 검색 strict project filter 적용
-- [ ] `proj:<hash>` 자동 태깅
-- [ ] tag taxonomy 모듈 생성
+- [x] `projectScopeMode` 옵션 추가
+- [x] 기본 검색 strict project filter 적용
+- [x] `proj:<hash>` 자동 태깅
+- [x] tag taxonomy 모듈 생성
 - [ ] health command/API에 outbox failed/pending 수치 노출
 - [ ] 문서에 cross-project 허용 조건 명시
 
+### P1 적용 메모 (이번 반영)
+
+- 태그 taxonomy 파일 추가: `src/core/tag-taxonomy.ts`
+  - namespace 유효성 검증(`sys:, q:, proj:, topic:, t:, user:, agent:`)
+  - tags 정규화(`normalizeTags`)로 ingest 시 품질 보정
+- rerank 가중치 설정화
+  - 환경변수 지원:
+    - `MEMORY_RERANK_WEIGHT_SEMANTIC`
+    - `MEMORY_RERANK_WEIGHT_LEXICAL`
+    - `MEMORY_RERANK_WEIGHT_RECENCY`
+  - 3개가 모두 유효하면 정규화해서 고정값 사용
+  - 없으면 기존 adaptive/기본 동작 fallback
+
 ---
 
-원하면 다음 단계로, 위 P0 항목 3~4개를 실제 코드 PR 수준(diff 형태)로 바로 작성 가능.
+원하면 다음 단계로 health endpoint/운영 지표(outbox backlog, failed 카운트)까지 이어서 붙일 수 있음.

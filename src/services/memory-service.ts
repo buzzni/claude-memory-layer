@@ -51,6 +51,7 @@ import {
   IngestInterceptorRegistry,
   mergeHierarchicalMetadata
 } from '../core/ingest-interceptor.js';
+import { normalizeTags } from '../core/tag-taxonomy.js';
 
 export interface MemoryServiceConfig {
   storagePath: string;
@@ -445,6 +446,14 @@ export class MemoryService {
       }
     }
 
+    if (normalizedInput.metadata) {
+      const meta = normalizedInput.metadata as Record<string, unknown>;
+      const normalizedTags = normalizeTags(meta.tags);
+      if (normalizedTags.length > 0) {
+        meta.tags = normalizedTags;
+      }
+    }
+
     await this.ingestInterceptors.run('before', {
       operation,
       sessionId: normalizedInput.sessionId,
@@ -644,7 +653,7 @@ export class MemoryService {
     // Note: Pending embeddings are processed by the background worker
     // Don't block retrieval - search with whatever vectors are available
 
-    const rerankWeights = options?.adaptiveRerank ? await this.getAdaptiveRerankWeights() : undefined;
+    const rerankWeights = await this.getRerankWeights(options?.adaptiveRerank === true);
 
     // Use unified retrieval if shared search is requested
     if (options?.includeShared && this.sharedStore) {
@@ -667,6 +676,32 @@ export class MemoryService {
       projectScopeMode: options?.projectScopeMode ?? (this.projectHash ? 'strict' : 'global'),
       allowedProjectHashes: options?.allowedProjectHashes
     });
+  }
+
+  private getConfiguredRerankWeights(): { semantic: number; lexical: number; recency: number } | undefined {
+    const semantic = Number(process.env.MEMORY_RERANK_WEIGHT_SEMANTIC ?? '');
+    const lexical = Number(process.env.MEMORY_RERANK_WEIGHT_LEXICAL ?? '');
+    const recency = Number(process.env.MEMORY_RERANK_WEIGHT_RECENCY ?? '');
+
+    const allFinite = [semantic, lexical, recency].every((v) => Number.isFinite(v));
+    if (!allFinite) return undefined;
+
+    const nonNegative = [semantic, lexical, recency].every((v) => v >= 0);
+    const total = semantic + lexical + recency;
+    if (!nonNegative || total <= 0) return undefined;
+
+    return {
+      semantic: semantic / total,
+      lexical: lexical / total,
+      recency: recency / total,
+    };
+  }
+
+  private async getRerankWeights(adaptive: boolean): Promise<{ semantic: number; lexical: number; recency: number } | undefined> {
+    const configured = this.getConfiguredRerankWeights();
+    if (configured) return configured;
+    if (adaptive) return this.getAdaptiveRerankWeights();
+    return undefined;
   }
 
   private async rewriteQueryIntent(query: string): Promise<string | null> {
