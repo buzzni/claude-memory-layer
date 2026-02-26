@@ -8,6 +8,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 const outdir = 'dist';
+const packageJson = JSON.parse(fs.readFileSync('package.json', 'utf-8')) as { version?: string };
+const appVersion = packageJson.version ?? '0.0.0';
 
 // Clean output directory
 if (fs.existsSync(outdir)) {
@@ -36,6 +38,9 @@ const commonOptions: esbuild.BuildOptions = {
     'hono/cors',
     'hono/logger'
   ],
+  define: {
+    'process.env.CLAUDE_MEMORY_LAYER_VERSION': JSON.stringify(appVersion)
+  },
   banner: {
     js: `import { createRequire } from 'module';
 import { fileURLToPath } from 'url';

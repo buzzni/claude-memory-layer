@@ -111,7 +111,7 @@ const program = new Command();
 program
   .name('claude-memory-layer')
   .description('Claude Code Memory Plugin CLI')
-  .version('1.0.0');
+  .version(process.env.CLAUDE_MEMORY_LAYER_VERSION || '0.0.0');
 
 // ============================================================
 // Install / Uninstall Commands

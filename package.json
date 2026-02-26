@@ -1,6 +1,6 @@
 {
   "name": "claude-memory-layer",
-  "version": "1.0.10",
+  "version": "1.0.15",
   "description": "Claude Code plugin that learns from conversations to provide personalized assistance",
   "main": "dist/index.js",
   "bin": {
