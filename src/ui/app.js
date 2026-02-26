@@ -518,13 +518,25 @@ function updateRetrievalTraceUI() {
     const confidence = t.confidence || 'n/a';
     const selected = Number(t.selectedCount || 0);
     const candidates = Number(t.candidateCount || 0);
-    const selectedIds = (t.selectedEventIds || []).slice(0, 2).join(', ');
+    const selectedDetails = (t.selectedDetails || []).slice(0, 2);
+    const selectedIdsHtml = selectedDetails.length > 0
+      ? selectedDetails.map((d) => {
+          const breakdown = `score=${Number(d.score || 0).toFixed(3)} · s=${Number(d.semanticScore || 0).toFixed(3)} · l=${Number(d.lexicalScore || 0).toFixed(3)} · r=${Number(d.recencyScore || 0).toFixed(3)}`;
+          return `<span class="event-type-badge" style="cursor:pointer;" onclick="openDetailModal('${d.eventId}')" title="${escapeHtml(breakdown)}">${escapeHtml((d.eventId || '').slice(0, 8))}...</span>`;
+        }).join(' ')
+      : ((t.selectedEventIds || []).slice(0, 2).map((id) => `<span class="event-type-badge" style="cursor:pointer;" onclick="openDetailModal('${id}')">${escapeHtml((id || '').slice(0, 8))}...</span>`).join(' ') || '-');
+
+    const scoreBreakdownHtml = selectedDetails.length > 0
+      ? selectedDetails.map((d) => `<div style="font-size:10px; color:var(--text-muted);">${escapeHtml((d.eventId || '').slice(0, 8))}... → score ${Number(d.score || 0).toFixed(3)} (s ${Number(d.semanticScore || 0).toFixed(3)}, l ${Number(d.lexicalScore || 0).toFixed(3)}, r ${Number(d.recencyScore || 0).toFixed(3)})</div>`).join('')
+      : '';
+
     return `
       <div class="shared-item" style="align-items:flex-start;">
         <div class="shared-info" style="align-items:flex-start; flex-direction:column; gap:4px;">
           <span style="font-size:12px; color:var(--text-secondary);"><strong>Q:</strong> ${escapeHtml((t.queryText || '').slice(0, 120))}</span>
           <span style="font-size:11px; color:var(--text-muted);">${ts} · strategy=${escapeHtml(t.strategy || 'auto')} · conf=${escapeHtml(confidence)}</span>
-          <span style="font-size:11px; color:var(--text-muted);">selected IDs: ${escapeHtml(selectedIds || '-')}</span>
+          <span style="font-size:11px; color:var(--text-muted);">selected IDs: ${selectedIdsHtml}</span>
+          ${scoreBreakdownHtml}
         </div>
         <div style="display:flex; flex-direction:column; align-items:flex-end; gap:2px; min-width:68px;">
           <span style="font-size:13px; font-weight:600; color:var(--accent-primary);">${selected}/${candidates}</span>

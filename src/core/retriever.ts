@@ -60,6 +60,13 @@ export interface RetrievalResult {
   totalTokens: number;
   context: string;
   fallbackTrace?: string[];
+  selectedDebug?: Array<{
+    eventId: string;
+    score: number;
+    semanticScore?: number;
+    lexicalScore?: number;
+    recencyScore?: number;
+  }>;
 }
 
 export interface MemoryWithContext {
@@ -229,7 +236,14 @@ export class Retriever {
       matchResult: current.matchResult,
       totalTokens: this.estimateTokens(context),
       context,
-      fallbackTrace
+      fallbackTrace,
+      selectedDebug: current.results.slice(0, opts.topK).map((r: SearchResult & { semanticScore?: number; lexicalScore?: number; recencyScore?: number }) => ({
+        eventId: r.eventId,
+        score: r.score,
+        semanticScore: r.semanticScore,
+        lexicalScore: r.lexicalScore,
+        recencyScore: r.recencyScore,
+      }))
     };
   }
 
@@ -528,7 +542,7 @@ export class Retriever {
           blended -= decayMaxPenalty * ageFactor;
         }
 
-        return { ...r, score: Math.max(0, blended) };
+        return { ...r, score: Math.max(0, blended), semanticScore: r.score, lexicalScore: overlap, recencyScore: recency };
       })
       .sort((a, b) => b.score - a.score);
   }

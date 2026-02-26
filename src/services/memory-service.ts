@@ -681,7 +681,16 @@ export class MemoryService {
 
     try {
       const selectedEventIds = result.memories.map((m) => m.event.id);
-      const candidateEventIds = result.memories.map((m) => m.event.id);
+      const selectedDetails = (result.selectedDebug || []).map((d) => ({
+        eventId: d.eventId,
+        score: d.score,
+        semanticScore: d.semanticScore,
+        lexicalScore: d.lexicalScore,
+        recencyScore: d.recencyScore,
+      }));
+      const candidateEventIds = selectedDetails.length > 0
+        ? selectedDetails.map((d) => d.eventId)
+        : selectedEventIds;
       await this.sqliteStore.recordRetrievalTrace({
         sessionId: options?.sessionId,
         projectHash: this.projectHash || undefined,
@@ -689,6 +698,7 @@ export class MemoryService {
         strategy: options?.strategy || 'auto',
         candidateEventIds,
         selectedEventIds,
+        selectedDetails,
         confidence: result.matchResult.confidence,
         fallbackTrace: result.fallbackTrace || []
       });

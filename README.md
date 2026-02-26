@@ -410,7 +410,8 @@ claude-memory-layer dashboard
 - 벡터 검색 인터페이스
 - 저장소 통계 대시보드
 - Outbox 상태 모니터링
-- Retrieval Trace (검색 질의 → 후보 개수 → 최종 context 채택 IDs) 1:1 확인
+- Retrieval Trace (검색 질의 → 후보/채택 수 → 최종 context 채택 IDs) 1:1 확인
+- 채택된 event ID 클릭으로 상세 모달 확인 + score breakdown(semantic/lexical/recency) 확인
 
 ## 기존 대화 기록 임포트
 
