@@ -5,7 +5,7 @@
  */
 
 import {
-  getMemoryServiceForProject,
+  getLightweightMemoryService,
   registerSession
 } from '../services/memory-service.js';
 import type { SessionStartInput, SessionStartOutput } from '../core/types.js';
@@ -18,8 +18,8 @@ async function main(): Promise<void> {
   // Register session with project path for other hooks to find
   registerSession(input.session_id, input.cwd);
 
-  // Get project-specific memory service
-  const memoryService = getMemoryServiceForProject(input.cwd);
+  // Use lightweight service to avoid starting background workers in hook process
+  const memoryService = getLightweightMemoryService(input.session_id);
 
   try {
     // Start session in memory service
@@ -42,6 +42,12 @@ async function main(): Promise<void> {
   } catch (error) {
     console.error('Memory hook error:', error);
     console.log(JSON.stringify({ context: '' }));
+  } finally {
+    try {
+      await memoryService.close();
+    } catch {
+      // Best-effort cleanup
+    }
   }
 }
 
