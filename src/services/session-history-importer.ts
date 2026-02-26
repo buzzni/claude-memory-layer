@@ -426,24 +426,32 @@ export class SessionHistoryImporter {
       .map(name => path.join(projectsDir, name))
       .filter(p => fs.statSync(p).isDirectory());
 
-    const normalizedPath = projectPath.replace(/\/+/g, '/').replace(/\/$/, '');
-    const normalizedDashed = normalizedPath.replace(/\//g, '-').replace(/^-/, '');
-    const baseName = path.basename(normalizedPath);
+    const normalizedPath = projectPath.replace(/\+/g, '/').replace(/\/$/, '');
+    const normalizeToken = (value: string) => value
+      .toLowerCase()
+      .replace(/[\s_]+/g, '-')
+      .replace(/\/+/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-|-$/g, '');
+
+    const normalizedDashed = normalizeToken(normalizedPath);
+    const baseName = normalizeToken(path.basename(normalizedPath));
 
     const scored = projectDirs.map((dir) => {
       const dirName = path.basename(dir);
+      const normalizedDirName = dirName.toLowerCase().replace(/[\s_]+/g, '-');
       let score = 0;
 
       // strong matches
-      if (dirName.includes(normalizedDashed)) score += 100;
-      if (normalizedDashed.includes(dirName)) score += 80;
+      if (normalizedDirName.includes(normalizedDashed)) score += 100;
+      if (normalizedDashed.includes(normalizedDirName)) score += 80;
 
       // basename signal (handles wrappers adding extra suffix)
-      if (baseName && dirName.includes(baseName)) score += 30;
+      if (baseName && normalizedDirName.includes(baseName)) score += 30;
 
       // token overlap signal
       const pathTokens = normalizedDashed.split('-').filter(Boolean);
-      const tokenHits = pathTokens.filter(t => t.length >= 3 && dirName.includes(t)).length;
+      const tokenHits = pathTokens.filter(t => t.length >= 3 && normalizedDirName.includes(t)).length;
       score += Math.min(tokenHits, 20);
 
       return { dir, score, dirName };
