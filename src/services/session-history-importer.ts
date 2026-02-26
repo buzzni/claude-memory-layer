@@ -126,19 +126,31 @@ export class SessionHistoryImporter {
 
     // Find project directory
     onProgress?.({ phase: 'scan', message: 'Scanning for session files...' });
-    const projectDir = await this.findProjectDir(projectPath);
-    if (!projectDir) {
+    const projectDirs = await this.findProjectDirs(projectPath);
+    if (projectDirs.length === 0) {
       result.errors.push(`Project directory not found for: ${projectPath}`);
       return result;
     }
 
-    // Find all session files
-    const sessionFiles = await this.findSessionFiles(projectDir);
+    // Find all session files across matched directories
+    const allSessionFiles: string[] = [];
+    for (const dir of projectDirs) {
+      const files = await this.findSessionFiles(dir);
+      allSessionFiles.push(...files);
+    }
+    const sessionFiles = [...new Set(allSessionFiles)];
     result.totalSessions = sessionFiles.length;
-    onProgress?.({ phase: 'scan', message: `Found ${sessionFiles.length} sessions in ${path.basename(projectDir)}` });
+    onProgress?.({
+      phase: 'scan',
+      message: `Found ${sessionFiles.length} sessions in ${projectDirs.length} matched project folder(s)`
+    });
 
     if (options.verbose) {
-      console.log(`Found ${sessionFiles.length} session files in ${projectDir}`);
+      console.log(`Matched project folders:`);
+      for (const dir of projectDirs) {
+        console.log(`  - ${dir}`);
+      }
+      console.log(`Found ${sessionFiles.length} session files across matched folders`);
     }
 
     // Import each session
@@ -401,33 +413,52 @@ export class SessionHistoryImporter {
   }
 
   /**
-   * Find project directory from project path
+   * Find project directories from project path.
+   * Supports wrappers (e.g. happy) that append extra path segments in folder names.
    */
-  private async findProjectDir(projectPath: string): Promise<string | null> {
+  private async findProjectDirs(projectPath: string): Promise<string[]> {
     const projectsDir = path.join(this.claudeDir, 'projects');
     if (!fs.existsSync(projectsDir)) {
-      return null;
+      return [];
     }
 
-    // Claude uses a hash of the project path as directory name
-    // Try to find matching directory by checking all projects
     const projectDirs = fs.readdirSync(projectsDir)
       .map(name => path.join(projectsDir, name))
       .filter(p => fs.statSync(p).isDirectory());
 
-    // Look for directory that matches the project path pattern
-    // The directory name format is: -home-user-project-name
-    const normalizedPath = projectPath.replace(/\//g, '-').replace(/^-/, '');
+    const normalizedPath = projectPath.replace(/\/+/g, '/').replace(/\/$/, '');
+    const normalizedDashed = normalizedPath.replace(/\//g, '-').replace(/^-/, '');
+    const baseName = path.basename(normalizedPath);
 
-    for (const dir of projectDirs) {
+    const scored = projectDirs.map((dir) => {
       const dirName = path.basename(dir);
-      if (dirName.includes(normalizedPath) || normalizedPath.includes(dirName)) {
-        return dir;
-      }
-    }
+      let score = 0;
 
-    // If exact match not found, return first match or null
-    return projectDirs.length > 0 ? projectDirs[0] : null;
+      // strong matches
+      if (dirName.includes(normalizedDashed)) score += 100;
+      if (normalizedDashed.includes(dirName)) score += 80;
+
+      // basename signal (handles wrappers adding extra suffix)
+      if (baseName && dirName.includes(baseName)) score += 30;
+
+      // token overlap signal
+      const pathTokens = normalizedDashed.split('-').filter(Boolean);
+      const tokenHits = pathTokens.filter(t => t.length >= 3 && dirName.includes(t)).length;
+      score += Math.min(tokenHits, 20);
+
+      return { dir, score, dirName };
+    }).filter(x => x.score > 0)
+      .sort((a, b) => b.score - a.score);
+
+    if (scored.length === 0) return [];
+
+    // Keep close matches (same family) to include wrapper-generated variants
+    const top = scored[0].score;
+    const threshold = Math.max(30, top - 25);
+
+    return scored
+      .filter(x => x.score >= threshold)
+      .map(x => x.dir);
   }
 
   /**
@@ -489,10 +520,7 @@ export class SessionHistoryImporter {
     let projectDirs: string[] = [];
 
     if (projectPath) {
-      const projectDir = await this.findProjectDir(projectPath);
-      if (projectDir) {
-        projectDirs = [projectDir];
-      }
+      projectDirs = await this.findProjectDirs(projectPath);
     } else {
       const projectsDir = path.join(this.claudeDir, 'projects');
       if (fs.existsSync(projectsDir)) {
