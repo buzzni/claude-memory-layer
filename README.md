@@ -71,6 +71,9 @@ npx claude-memory-layer search "배포 이슈"
   - `GET /health` (서버 헬스)
   - `GET /api/health` (outbox pending/failed 포함 상세 헬스)
   - `GET /api/stats/retrieval-traces` (검색→컨텍스트 채택 추적)
+- 주입 임계값 튜닝(환경변수):
+  - `CLAUDE_MEMORY_MIN_SCORE` (기본 0.4)
+  - `CLAUDE_MEMORY_FALLBACK_MIN_SCORE` (기본 0.3, 결과 0건일 때 재시도)
 
 ---
 

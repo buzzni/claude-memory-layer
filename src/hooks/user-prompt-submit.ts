@@ -17,7 +17,9 @@ import type { UserPromptSubmitInput, UserPromptSubmitOutput } from '../core/type
 
 // Configuration
 const MAX_MEMORIES = parseInt(process.env.CLAUDE_MEMORY_MAX_COUNT || '5');
-const MIN_SCORE = parseFloat(process.env.CLAUDE_MEMORY_MIN_SCORE || '0.3');
+// Tuned default for noise/recall balance on shopping_assistant-like corpus
+const BASE_MIN_SCORE = parseFloat(process.env.CLAUDE_MEMORY_MIN_SCORE || '0.4');
+const FALLBACK_MIN_SCORE = parseFloat(process.env.CLAUDE_MEMORY_FALLBACK_MIN_SCORE || '0.3');
 const ENABLE_SEARCH = process.env.CLAUDE_MEMORY_SEARCH !== 'false';
 
 /**
@@ -30,6 +32,14 @@ function shouldStorePrompt(prompt: string): boolean {
   if (trimmed.length < 15) return false;
   if (!/[a-zA-Z가-힣]{2,}/.test(trimmed)) return false;
   return true;
+}
+
+
+function getDynamicMinScore(prompt: string): number {
+  const len = prompt.trim().length;
+  if (len <= 20) return Math.min(0.55, BASE_MIN_SCORE + 0.1);   // short query → stricter
+  if (len >= 80) return Math.max(0.3, BASE_MIN_SCORE - 0.05);    // long query → slightly looser
+  return BASE_MIN_SCORE;
 }
 
 async function main(): Promise<void> {
@@ -61,10 +71,19 @@ async function main(): Promise<void> {
 
     // Fast keyword search if enabled
     if (ENABLE_SEARCH && input.prompt.length > 10) {
-      const results = await memoryService.keywordSearch(input.prompt, {
+      const minScore = getDynamicMinScore(input.prompt);
+      let results = await memoryService.keywordSearch(input.prompt, {
         topK: MAX_MEMORIES,
-        minScore: MIN_SCORE
+        minScore
       });
+
+      // recall rescue: if nothing found at tuned threshold, retry with fallback floor
+      if (results.length === 0 && FALLBACK_MIN_SCORE < minScore) {
+        results = await memoryService.keywordSearch(input.prompt, {
+          topK: MAX_MEMORIES,
+          minScore: FALLBACK_MIN_SCORE
+        });
+      }
 
       if (results.length > 0) {
         // Increment access count for found memories
