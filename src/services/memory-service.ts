@@ -838,6 +838,15 @@ export class MemoryService {
   /**
    * Get memory statistics
    */
+
+  async getOutboxStats(): Promise<{
+    embedding: { pending: number; processing: number; failed: number; total: number };
+    vector: { pending: number; processing: number; failed: number; total: number };
+  }> {
+    await this.initialize();
+    return this.sqliteStore.getOutboxStats();
+  }
+
   async getStats(): Promise<{
     totalEvents: number;
     vectorCount: number;

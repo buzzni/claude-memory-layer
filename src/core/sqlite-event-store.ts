@@ -849,6 +849,43 @@ export class SQLiteEventStore {
     );
   }
 
+
+  /**
+   * Get embedding/vector outbox health statistics
+   */
+  async getOutboxStats(): Promise<{
+    embedding: { pending: number; processing: number; failed: number; total: number };
+    vector: { pending: number; processing: number; failed: number; total: number };
+  }> {
+    await this.initialize();
+
+    const embeddingRows = sqliteAll<{ status: string; count: number }>(
+      this.db,
+      `SELECT status, COUNT(*) as count FROM embedding_outbox GROUP BY status`
+    );
+    const vectorRows = sqliteAll<{ status: string; count: number }>(
+      this.db,
+      `SELECT status, COUNT(*) as count FROM vector_outbox GROUP BY status`
+    );
+
+    const fromRows = (rows: Array<{ status: string; count: number }>) => {
+      const out = { pending: 0, processing: 0, failed: 0, total: 0 };
+      for (const row of rows) {
+        const key = row.status as 'pending' | 'processing' | 'failed' | 'done';
+        if (key === 'pending' || key === 'processing' || key === 'failed') {
+          out[key] += row.count;
+        }
+        out.total += row.count;
+      }
+      return out;
+    };
+
+    return {
+      embedding: fromRows(embeddingRows),
+      vector: fromRows(vectorRows)
+    };
+  }
+
   /**
    * Update memory level
    */

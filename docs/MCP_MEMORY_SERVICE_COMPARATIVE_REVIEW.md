@@ -250,7 +250,7 @@
 - [x] 기본 검색 strict project filter 적용
 - [x] `proj:<hash>` 자동 태깅
 - [x] tag taxonomy 모듈 생성
-- [ ] health command/API에 outbox failed/pending 수치 노출
+- [x] health API에 outbox failed/pending 수치 노출 (`GET /api/health`)
 - [ ] 문서에 cross-project 허용 조건 명시
 
 ### P1 적용 메모 (이번 반영)

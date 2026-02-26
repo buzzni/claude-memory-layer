@@ -12,6 +12,7 @@ import { citationsRouter } from './citations.js';
 import { turnsRouter } from './turns.js';
 import { projectsRouter } from './projects.js';
 import { chatRouter } from './chat.js';
+import { healthRouter } from './health.js';
 
 export const apiRouter = new Hono()
   .route('/sessions', sessionsRouter)
@@ -21,4 +22,5 @@ export const apiRouter = new Hono()
   .route('/citations', citationsRouter)
   .route('/turns', turnsRouter)
   .route('/projects', projectsRouter)
-  .route('/chat', chatRouter);
+  .route('/chat', chatRouter)
+  .route('/health', healthRouter);
