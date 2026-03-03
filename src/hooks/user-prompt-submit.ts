@@ -35,6 +35,7 @@ interface AdherenceState {
   turnCount: number;
   lastCheckedTurn: number;
   lastPrompt: string;
+  lastReason?: string;
   updatedAt: string;
 }
 
@@ -95,6 +96,7 @@ function readAdherenceState(sessionId: string): AdherenceState {
         turnCount: 0,
         lastCheckedTurn: 0,
         lastPrompt: '',
+        lastReason: 'init',
         updatedAt: new Date().toISOString()
       };
     }
@@ -109,6 +111,7 @@ function readAdherenceState(sessionId: string): AdherenceState {
       turnCount: 0,
       lastCheckedTurn: 0,
       lastPrompt: '',
+      lastReason: 'init',
       updatedAt: new Date().toISOString()
     };
   }
@@ -164,6 +167,12 @@ function shouldRunAdherenceCheck(turnCount: number, prompt: string, state: Adher
   return { run: false, reason: 'skip' };
 }
 
+function logAdherenceDecision(sessionId: string, turn: number, run: boolean, reason: string): void {
+  if (!process.env.CLAUDE_MEMORY_DEBUG) return;
+  const mode = run ? 'enforced' : 'skipped';
+  console.error(`[adherence] session=${sessionId} turn=${turn} mode=${mode} reason=${reason}`);
+}
+
 async function main(): Promise<void> {
   // Read input from stdin
   const inputData = await readStdin();
@@ -180,20 +189,28 @@ async function main(): Promise<void> {
   const memoryService = getLightweightMemoryService(input.session_id);
 
   try {
-    // Store only non-trivial prompts (skip /commands, short inputs)
-    if (shouldStorePrompt(input.prompt)) {
-      await memoryService.storeUserPrompt(
-        input.session_id,
-        input.prompt,
-        { turnId }
-      );
-    }
-
     let context = '';
 
     const adherenceState = readAdherenceState(input.session_id);
     const currentTurn = adherenceState.turnCount + 1;
     const adherenceDecision = shouldRunAdherenceCheck(currentTurn, input.prompt, adherenceState);
+    logAdherenceDecision(input.session_id, currentTurn, adherenceDecision.run, adherenceDecision.reason);
+
+    // Store only non-trivial prompts (skip /commands, short inputs)
+    if (shouldStorePrompt(input.prompt)) {
+      await memoryService.storeUserPrompt(
+        input.session_id,
+        input.prompt,
+        {
+          turnId,
+          adherence: {
+            checked: adherenceDecision.run,
+            reason: adherenceDecision.reason,
+            turn: currentTurn
+          }
+        }
+      );
+    }
 
     // Search strategy: turn-1 always enforce adherence check,
     // then adaptively enforce on write-intent/topic-shift/interval
@@ -289,6 +306,7 @@ async function main(): Promise<void> {
       turnCount: currentTurn,
       lastCheckedTurn: adherenceDecision.run ? currentTurn : adherenceState.lastCheckedTurn,
       lastPrompt: input.prompt,
+      lastReason: adherenceDecision.reason,
       updatedAt: new Date().toISOString()
     });
 
