@@ -14,6 +14,7 @@ eventsRouter.get('/', async (c) => {
   const eventType = c.req.query('type');
   const level = c.req.query('level');
   const sort = c.req.query('sort') || 'recent'; // recent | accessed | oldest
+  const q = (c.req.query('q') || '').trim().toLowerCase();
   const limit = parseInt(c.req.query('limit') || '100', 10);
   const offset = parseInt(c.req.query('offset') || '0', 10);
   const memoryService = getServiceFromQuery(c);
@@ -38,6 +39,11 @@ eventsRouter.get('/', async (c) => {
     // Filter by type
     if (eventType) {
       events = events.filter(e => e.eventType === eventType);
+    }
+
+    // Content query filter
+    if (q) {
+      events = events.filter(e => (e.content || '').toLowerCase().includes(q));
     }
 
     // Sort

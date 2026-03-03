@@ -51,6 +51,10 @@
             <i class="ri-brain-line"></i>
             <span>Memory Banks</span>
           </li>
+          <li class="nav-item" data-nav="user-prompts">
+            <i class="ri-message-2-line"></i>
+            <span>User Prompts</span>
+          </li>
           <li class="nav-item" data-nav="configuration">
             <i class="ri-settings-4-line"></i>
             <span>Configuration</span>
@@ -360,6 +364,34 @@
         </header>
         <div id="mb-content">
           <div style="text-align:center; padding:60px; color:var(--text-muted);">Loading...</div>
+        </div>
+      </div>
+
+      <!-- ========== VIEW: User Prompts ========== -->
+      <div id="view-user-prompts" class="page-view">
+        <header class="top-header">
+          <div class="page-title">
+            <h1>User Prompts</h1>
+            <p>Search and browse recent user prompts</p>
+          </div>
+        </header>
+        <div class="card" style="margin-bottom:16px;">
+          <div style="display:flex; gap:10px; align-items:center;">
+            <div class="search-wrapper" style="width:420px; max-width:100%;">
+              <i class="ri-search-line"></i>
+              <input type="text" id="user-prompt-search" class="search-input" placeholder="Search user prompts...">
+            </div>
+            <button id="user-prompt-refresh" class="btn btn-secondary"><i class="ri-refresh-line"></i><span>Refresh</span></button>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title"><i class="ri-history-line"></i><span>Latest User Prompt History</span></div>
+            <div id="user-prompt-meta" style="font-size:12px; color:var(--text-muted);"></div>
+          </div>
+          <div id="user-prompt-list" class="event-list">
+            <div style="padding:20px; text-align:center; color:var(--text-muted);">Loading...</div>
+          </div>
         </div>
       </div>
 

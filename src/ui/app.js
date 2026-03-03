@@ -14,6 +14,8 @@ const state = {
   retrievalTraces: null,
   adherenceSummary: null,
   adherenceWindow: '24h',
+  userPromptSearchQuery: '',
+  userPromptItems: [],
   currentLevel: 'L0',
   currentSort: 'recent',
   currentView: 'overview',
@@ -147,6 +149,21 @@ function setupEventListeners() {
   const searchInput = document.getElementById('search-input');
   if (searchInput) {
     searchInput.addEventListener('input', debounce((e) => handleSearch(e.target.value), 300));
+  }
+
+  // User prompt search
+  const userPromptSearch = document.getElementById('user-prompt-search');
+  if (userPromptSearch) {
+    userPromptSearch.addEventListener('input', debounce(async (e) => {
+      state.userPromptSearchQuery = e.target.value || '';
+      await loadUserPromptsView();
+    }, 250));
+  }
+  const userPromptRefresh = document.getElementById('user-prompt-refresh');
+  if (userPromptRefresh) {
+    userPromptRefresh.addEventListener('click', async () => {
+      await loadUserPromptsView();
+    });
   }
 
   // Project selector
@@ -1197,6 +1214,7 @@ function switchView(viewName) {
   switch (viewName) {
     case 'knowledge-graph': loadKnowledgeGraphView(); break;
     case 'memory-banks': loadMemoryBanksView(); break;
+    case 'user-prompts': loadUserPromptsView(); break;
     case 'configuration': loadConfigurationView(); break;
   }
 }
@@ -1427,6 +1445,50 @@ async function loadMemoryBankLevel(level) {
     `;
   } catch (error) {
     container.innerHTML = `<div style="text-align:center; padding:20px; color:var(--error);">Failed to load level ${level}</div>`;
+  }
+}
+
+// --- User Prompts View ---
+
+async function loadUserPromptsView() {
+  const listEl = document.getElementById('user-prompt-list');
+  const metaEl = document.getElementById('user-prompt-meta');
+  if (!listEl) return;
+
+  listEl.innerHTML = '<div style="padding:20px; text-align:center; color:var(--text-muted);">Loading user prompts...</div>';
+
+  try {
+    const params = {
+      type: 'user_prompt',
+      sort: 'recent',
+      limit: 200,
+      q: state.userPromptSearchQuery || undefined
+    };
+    const res = await fetch(apiUrl(`${API_BASE}/events`, params));
+    const data = await res.json();
+    const items = data.events || [];
+    state.userPromptItems = items;
+
+    if (metaEl) {
+      metaEl.textContent = `${items.length} prompts${state.userPromptSearchQuery ? ` · query: "${state.userPromptSearchQuery}"` : ''}`;
+    }
+
+    if (items.length === 0) {
+      listEl.innerHTML = '<div style="padding:20px; text-align:center; color:var(--text-muted);">No user prompts found.</div>';
+      return;
+    }
+
+    listEl.innerHTML = items.map((e) => `
+      <div class="event-item" style="cursor:pointer;" onclick="openDetailModal('${e.id}')">
+        <div class="event-header">
+          <span class="event-type-badge type-user-prompt">user_prompt</span>
+          <span class="event-time">${new Date(e.timestamp).toLocaleString()}</span>
+        </div>
+        <div class="event-content" style="-webkit-line-clamp:4;">${escapeHtml(e.preview || '')}</div>
+      </div>
+    `).join('');
+  } catch (error) {
+    listEl.innerHTML = `<div style="padding:20px; text-align:center; color:var(--error);">Failed to load user prompts: ${escapeHtml(error.message)}</div>`;
   }
 }
 

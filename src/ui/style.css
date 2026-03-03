@@ -502,8 +502,11 @@ body {
 }
 
 .type-user { background: rgba(59, 130, 246, 0.2); color: #60A5FA; }
+.type-user-prompt { background: rgba(59, 130, 246, 0.2); color: #60A5FA; }
 .type-agent { background: rgba(16, 185, 129, 0.2); color: #34D399; }
+.type-agent-response { background: rgba(16, 185, 129, 0.2); color: #34D399; }
 .type-tool { background: rgba(245, 158, 11, 0.2); color: #FBBF24; }
+.type-tool-observation { background: rgba(245, 158, 11, 0.2); color: #FBBF24; }
 .type-system { background: rgba(139, 92, 246, 0.2); color: #A78BFA; }
 
 .event-time {
