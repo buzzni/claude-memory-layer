@@ -152,8 +152,8 @@ export const ConfigSchema = z.object({
   }).default({}),
   embedding: z.object({
     provider: z.enum(['local', 'openai']).default('local'),
-    model: z.string().default('jinaai/jina-embeddings-v5-text-small'),
-    openaiModel: z.string().default('jinaai/jina-embeddings-v5-text-small'),
+    model: z.string().default('jinaai/jina-embeddings-v5-text-nano'),
+    openaiModel: z.string().default('jinaai/jina-embeddings-v5-text-nano'),
     batchSize: z.number().default(32)
   }).default({}),
   retrieval: z.object({

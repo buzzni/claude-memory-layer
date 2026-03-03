@@ -16,7 +16,7 @@ export class Embedder {
   private readonly modelName: string;
   private initialized = false;
 
-  constructor(modelName: string = 'jinaai/jina-embeddings-v5-text-small') {
+  constructor(modelName: string = 'jinaai/jina-embeddings-v5-text-nano') {
     this.modelName = modelName;
   }
 
@@ -117,8 +117,9 @@ export class Embedder {
 let defaultEmbedder: Embedder | null = null;
 
 export function getDefaultEmbedder(): Embedder {
+  const envModel = process.env.CLAUDE_MEMORY_EMBEDDING_MODEL;
   if (!defaultEmbedder) {
-    defaultEmbedder = new Embedder();
+    defaultEmbedder = new Embedder(envModel || undefined);
   }
   return defaultEmbedder;
 }
