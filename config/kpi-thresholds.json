@@ -1,0 +1,7 @@
+{
+  "usefulRecallRateMin": 0.45,
+  "reworkRateMax": 0.25,
+  "postChangeFailureRateMax": 0.2,
+  "avgCompletionTurnsMax": 12,
+  "memoryHitRateMin": 0.35
+}

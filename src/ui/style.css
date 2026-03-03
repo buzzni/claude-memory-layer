@@ -329,6 +329,13 @@ body {
   opacity: 0.5;
 }
 
+.kpi-grid .stat-card .stat-value {
+  font-size: 28px;
+}
+.kpi-grid .stat-card .stat-label {
+  font-size: 12px;
+}
+
 .stat-value {
   font-size: 36px;
   font-weight: 700;

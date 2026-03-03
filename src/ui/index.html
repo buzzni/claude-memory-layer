@@ -120,6 +120,41 @@
           </div>
         </div>
 
+        <!-- KPI Cards -->
+        <div class="stats-grid kpi-grid" style="margin-top:-4px;">
+          <div class="stat-card kpi-card">
+            <div class="stat-value" id="kpi-useful-recall">-</div>
+            <div class="stat-label"><i class="ri-thumb-up-line"></i> Useful Recall Rate</div>
+          </div>
+          <div class="stat-card kpi-card">
+            <div class="stat-value" id="kpi-completion-turns">-</div>
+            <div class="stat-label"><i class="ri-repeat-line"></i> Avg Completion Turns</div>
+          </div>
+          <div class="stat-card kpi-card">
+            <div class="stat-value" id="kpi-rework-rate">-</div>
+            <div class="stat-label"><i class="ri-hammer-line"></i> Rework Rate</div>
+          </div>
+          <div class="stat-card kpi-card">
+            <div class="stat-value" id="kpi-failure-rate">-</div>
+            <div class="stat-label"><i class="ri-error-warning-line"></i> Post-change Failure</div>
+          </div>
+        </div>
+
+        <div class="card" style="margin-bottom:24px;">
+          <div class="card-header">
+            <div class="card-title">
+              <i class="ri-line-chart-line"></i>
+              <span>KPI Trend</span>
+            </div>
+            <div style="display:flex; gap:8px;">
+              <button class="sort-btn active" data-kpi-window="7d">7d</button>
+              <button class="sort-btn" data-kpi-window="30d">30d</button>
+            </div>
+          </div>
+          <div id="kpi-alerts" style="font-size:12px; color:var(--text-muted); margin-bottom:10px;">Loading...</div>
+          <div id="kpi-trend-chart" style="height:240px;"></div>
+        </div>
+
         <!-- Main Grid -->
         <div class="dashboard-grid">
 

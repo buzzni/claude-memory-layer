@@ -22,6 +22,9 @@ const state = {
   events: [],
   isLoading: false,
   chartInstance: null,
+  kpiChartInstance: null,
+  kpiWindow: '7d',
+  kpi: null,
   chatMessages: [],
   isChatOpen: false,
   isChatStreaming: false,
@@ -125,6 +128,21 @@ function setupEventListeners() {
     });
   });
 
+  // KPI window controls
+  document.querySelectorAll('.sort-btn[data-kpi-window]').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      const window = e.currentTarget.dataset.kpiWindow;
+      if (!window || state.kpiWindow === window) return;
+      state.kpiWindow = window;
+      document.querySelectorAll('.sort-btn[data-kpi-window]').forEach(b => {
+        b.classList.toggle('active', b.dataset.kpiWindow === window);
+      });
+      await loadKpiData();
+      updateKpiCardsUI();
+      renderKpiTrendChart();
+    });
+  });
+
   // Search
   const searchInput = document.getElementById('search-input');
   if (searchInput) {
@@ -140,6 +158,10 @@ function setupEventListeners() {
       if (state.chartInstance) {
         state.chartInstance.destroy();
         state.chartInstance = null;
+      }
+      if (state.kpiChartInstance) {
+        state.kpiChartInstance.destroy();
+        state.kpiChartInstance = null;
       }
       await initActivityChart();
       // Reload current view if not overview
@@ -247,6 +269,12 @@ function setupEventListeners() {
 
 // --- Data Fetching ---
 
+async function loadKpiData() {
+  state.kpi = await fetch(apiUrl(`${API_BASE}/stats/kpi`, { window: state.kpiWindow }))
+    .then(r => r.json())
+    .catch(() => null);
+}
+
 async function refreshData() {
   const btn = document.getElementById('refresh-btn');
   if(btn) btn.classList.add('loading');
@@ -268,9 +296,13 @@ async function refreshData() {
     state.retrievalTraces = retrievalTraces;
     state.adherenceSummary = adherenceSummary;
 
+    await loadKpiData();
+
     updateStatsUI();
     updateSharedUI();
     updateMemoryUsageUI();
+    updateKpiCardsUI();
+    renderKpiTrendChart();
     await loadLevelEvents(state.currentLevel);
 
     checkEndlessStatus();
@@ -343,6 +375,74 @@ function updateSharedUI() {
   document.getElementById('shared-troubleshooting').textContent = formatNumber(state.sharedStats.troubleshooting || 0);
   document.getElementById('shared-best-practices').textContent = formatNumber(state.sharedStats.bestPractices || 0);
   document.getElementById('shared-errors').textContent = formatNumber(state.sharedStats.commonErrors || 0);
+}
+
+function percentText(v) {
+  return `${((v || 0) * 100).toFixed(1)}%`;
+}
+
+function updateKpiCardsUI() {
+  const m = state.kpi?.metrics;
+  if (!m) return;
+  const set = (id, value) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = value;
+  };
+  set('kpi-useful-recall', percentText(m.usefulRecallRate));
+  set('kpi-completion-turns', Number(m.avgCompletionTurns || 0).toFixed(2));
+  set('kpi-rework-rate', percentText(m.reworkRate));
+  set('kpi-failure-rate', percentText(m.postChangeFailureRate));
+
+  const alertsEl = document.getElementById('kpi-alerts');
+  if (alertsEl) {
+    const alerts = state.kpi?.alerts || [];
+    if (alerts.length === 0) {
+      alertsEl.innerHTML = '<span style="color:var(--success);">No KPI alerts in current window.</span>';
+    } else {
+      alertsEl.innerHTML = alerts.slice(0, 3).map(a => `⚠️ ${escapeHtml(a.message)} (${a.metric})`).join(' · ');
+    }
+  }
+}
+
+function renderKpiTrendChart() {
+  const chartEl = document.querySelector('#kpi-trend-chart');
+  if (!chartEl) return;
+
+  const daily = state.kpi?.trend?.daily || [];
+  const categories = daily.map(d => d.date);
+  const useful = daily.map(d => Number(d.usefulRecallRate || 0) * 100);
+  const rework = daily.map(d => Number(d.reworkRate || 0) * 100);
+  const fail = daily.map(d => Number(d.postChangeFailureRate || 0) * 100);
+
+  if (state.kpiChartInstance) {
+    state.kpiChartInstance.destroy();
+    state.kpiChartInstance = null;
+  }
+
+  const options = {
+    series: [
+      { name: 'Useful Recall %', data: useful },
+      { name: 'Rework %', data: rework },
+      { name: 'Failure %', data: fail }
+    ],
+    chart: {
+      type: 'line',
+      height: 240,
+      background: 'transparent',
+      toolbar: { show: false },
+      fontFamily: 'Outfit, sans-serif'
+    },
+    stroke: { curve: 'smooth', width: 2 },
+    dataLabels: { enabled: false },
+    xaxis: { categories, labels: { style: { colors: '#8B9BB4' } } },
+    yaxis: { labels: { formatter: (v) => `${v.toFixed(0)}%`, style: { colors: '#8B9BB4' } } },
+    theme: { mode: 'dark' },
+    grid: { borderColor: 'rgba(255,255,255,0.05)', strokeDashArray: 4 },
+    colors: ['#34D399', '#FEB019', '#FF4560']
+  };
+
+  state.kpiChartInstance = new ApexCharts(chartEl, options);
+  state.kpiChartInstance.render();
 }
 
 function selectLevel(level) {

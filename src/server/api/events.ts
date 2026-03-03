@@ -66,6 +66,7 @@ eventsRouter.get('/', async (c) => {
         sessionId: e.sessionId,
         preview: e.content.slice(0, 200) + (e.content.length > 200 ? '...' : ''),
         contentLength: e.content.length,
+        metadata: e.metadata,
         accessCount: (e as any).access_count || 0,
         lastAccessedAt: (e as any).last_accessed_at || null
       })),
