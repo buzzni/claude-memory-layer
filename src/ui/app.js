@@ -12,6 +12,7 @@ const state = {
   mostAccessed: null,
   helpfulness: null,
   retrievalTraces: null,
+  adherenceSummary: null,
   currentLevel: 'L0',
   currentSort: 'recent',
   currentView: 'overview',
@@ -236,12 +237,13 @@ async function refreshData() {
   if(btn) btn.classList.add('loading');
 
   try {
-    const [stats, shared, mostAccessed, helpfulness, retrievalTraces] = await Promise.all([
+    const [stats, shared, mostAccessed, helpfulness, retrievalTraces, adherenceSummary] = await Promise.all([
       fetch(apiUrl(`${API_BASE}/stats`)).then(r => r.json()).catch(() => null),
       fetch(apiUrl(`${API_BASE}/stats/shared`)).then(r => r.json()).catch(() => null),
       fetch(apiUrl(`${API_BASE}/stats/most-accessed`, { limit: 10 })).then(r => r.json()).catch(() => null),
       fetch(apiUrl(`${API_BASE}/stats/helpfulness`, { limit: 5 })).then(r => r.json()).catch(() => null),
-      fetch(apiUrl(`${API_BASE}/stats/retrieval-traces`, { limit: 20 })).then(r => r.json()).catch(() => null)
+      fetch(apiUrl(`${API_BASE}/stats/retrieval-traces`, { limit: 20 })).then(r => r.json()).catch(() => null),
+      fetchAdherenceSummary().catch(() => null)
     ]);
 
     state.stats = stats;
@@ -249,6 +251,7 @@ async function refreshData() {
     state.mostAccessed = mostAccessed;
     state.helpfulness = helpfulness;
     state.retrievalTraces = retrievalTraces;
+    state.adherenceSummary = adherenceSummary;
 
     updateStatsUI();
     updateSharedUI();
@@ -421,7 +424,57 @@ function updateMemoryUsageUI() {
   updateGraduationBars();
   updateHelpfulnessUI();
   updateMostHelpfulList();
+  updateAdherenceSummaryUI();
   updateRetrievalTraceUI();
+}
+
+async function fetchAdherenceSummary() {
+  const res = await fetch(apiUrl(`${API_BASE}/events`, { level: 'L0', limit: 300, sort: 'recent' }));
+  if (!res.ok) return null;
+  const data = await res.json();
+  const events = data.events || [];
+
+  const counts = {};
+  let checked = 0;
+  let skipped = 0;
+  let total = 0;
+
+  for (const e of events) {
+    const adherence = e?.metadata?.adherence || e?.meta?.adherence;
+    if (!adherence) continue;
+    total++;
+    const reason = adherence.reason || 'unknown';
+    counts[reason] = (counts[reason] || 0) + 1;
+    if (adherence.checked) checked++; else skipped++;
+  }
+
+  return { total, checked, skipped, counts };
+}
+
+function updateAdherenceSummaryUI() {
+  const el = document.getElementById('adherence-summary');
+  if (!el) return;
+
+  const s = state.adherenceSummary;
+  if (!s || !s.total) {
+    el.innerHTML = '<span style="color:var(--text-muted);">No adherence metadata yet.</span>';
+    return;
+  }
+
+  const top = Object.entries(s.counts || {})
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([reason, count]) => `<span class="adherence-badge adherence-checked" style="margin-right:6px;">${escapeHtml(reason)}: ${count}</span>`)
+    .join('');
+
+  el.innerHTML = `
+    <div style="display:flex; gap:12px; flex-wrap:wrap; margin-bottom:8px;">
+      <span><strong>${s.total}</strong> tagged prompts</span>
+      <span style="color:var(--success);"><strong>${s.checked}</strong> checked</span>
+      <span style="color:var(--text-muted);"><strong>${s.skipped}</strong> skipped</span>
+    </div>
+    <div>${top}</div>
+  `;
 }
 
 function updateGraduationBars() {
