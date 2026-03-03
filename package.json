@@ -1,6 +1,6 @@
 {
   "name": "claude-memory-layer",
-  "version": "1.0.15",
+  "version": "1.0.18",
   "description": "Claude Code plugin that learns from conversations to provide personalized assistance",
   "main": "dist/index.js",
   "bin": {
@@ -19,7 +19,8 @@
     "ops:sync-gap:heal": "bash scripts/sync-gap-auto-heal.sh",
     "ops:review:resolve": "node scripts/review-queue-auto-resolve.js",
     "ops:heartbeat": "bash scripts/heartbeat-memory-orchestrator.sh",
-    "ops:health": "npm run ops:sync-gap:report && npm run ops:sync-gap:heal && npm run ops:review:resolve"
+    "ops:health": "npm run ops:sync-gap:report && npm run ops:sync-gap:heal && npm run ops:review:resolve",
+    "ops:projects:clean-unknown": "node scripts/delete-unknown-projects.js"
   },
   "keywords": [
     "claude-code",

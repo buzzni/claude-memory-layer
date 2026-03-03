@@ -32,6 +32,7 @@ interface ClaudeSettings {
     PostToolUse?: Array<{ matcher: string; hooks: Array<{ type: string; command: string }> }>;
     SessionStart?: Array<{ matcher: string; hooks: Array<{ type: string; command: string }> }>;
     Stop?: Array<{ matcher: string; hooks: Array<{ type: string; command: string }> }>;
+    SessionEnd?: Array<{ matcher: string; hooks: Array<{ type: string; command: string }> }>;
   };
   [key: string]: unknown;
 }
@@ -79,30 +80,39 @@ function saveClaudeSettings(settings: ClaudeSettings): void {
   fs.renameSync(tempPath, CLAUDE_SETTINGS_PATH);
 }
 
+const REQUIRED_HOOK_FILES = [
+  'user-prompt-submit.js',
+  'post-tool-use.js',
+  'session-start.js',
+  'stop.js',
+  'session-end.js'
+] as const;
+
+function hasHook(settings: ClaudeSettings, hookName: keyof NonNullable<ClaudeSettings['hooks']>, commandFragment: string): boolean {
+  const hookEntries = settings.hooks?.[hookName];
+  if (!hookEntries) return false;
+  return hookEntries.some((entry) => entry.hooks?.some((hook) => hook.command?.includes(commandFragment)));
+}
+
 function getHooksConfig(pluginPath: string): ClaudeSettings['hooks'] {
+  const makeHook = (fileName: string) => [
+    {
+      matcher: '',
+      hooks: [
+        {
+          type: 'command',
+          command: `node ${path.join(pluginPath, 'hooks', fileName)}`
+        }
+      ]
+    }
+  ];
+
   return {
-    UserPromptSubmit: [
-      {
-        matcher: '',
-        hooks: [
-          {
-            type: 'command',
-            command: `node ${path.join(pluginPath, 'hooks', 'user-prompt-submit.js')}`
-          }
-        ]
-      }
-    ],
-    PostToolUse: [
-      {
-        matcher: '',
-        hooks: [
-          {
-            type: 'command',
-            command: `node ${path.join(pluginPath, 'hooks', 'post-tool-use.js')}`
-          }
-        ]
-      }
-    ]
+    SessionStart: makeHook('session-start.js'),
+    UserPromptSubmit: makeHook('user-prompt-submit.js'),
+    PostToolUse: makeHook('post-tool-use.js'),
+    Stop: makeHook('stop.js'),
+    SessionEnd: makeHook('session-end.js')
   };
 }
 
@@ -129,9 +139,12 @@ program
       const pluginPath = options.path || getPluginPath();
 
       // Verify hooks exist
-      const userPromptHook = path.join(pluginPath, 'hooks', 'user-prompt-submit.js');
-      if (!fs.existsSync(userPromptHook)) {
+      const missingHooks = REQUIRED_HOOK_FILES.filter((file) =>
+        !fs.existsSync(path.join(pluginPath, 'hooks', file))
+      );
+      if (missingHooks.length > 0) {
         console.error(`\n❌ Hook files not found at: ${pluginPath}`);
+        console.error(`   Missing: ${missingHooks.join(', ')}`);
         console.error('   Make sure you have built the plugin with "npm run build"');
         process.exit(1);
       }
@@ -151,8 +164,11 @@ program
 
       console.log('\n✅ Claude Memory Layer installed!\n');
       console.log('Hooks registered:');
+      console.log('  - SessionStart: Register session -> project mapping');
       console.log('  - UserPromptSubmit: Memory retrieval on user input');
-      console.log('  - PostToolUse: Store tool observations\n');
+      console.log('  - PostToolUse: Store tool observations');
+      console.log('  - Stop: Store assistant responses');
+      console.log('  - SessionEnd: Persist session summary\n');
       console.log('Plugin path:', pluginPath);
       console.log('\n⚠️  Restart Claude Code for changes to take effect.\n');
       console.log('Commands:');
@@ -183,8 +199,11 @@ program
       }
 
       // Remove our hooks
+      delete settings.hooks.SessionStart;
       delete settings.hooks.UserPromptSubmit;
       delete settings.hooks.PostToolUse;
+      delete settings.hooks.Stop;
+      delete settings.hooks.SessionEnd;
 
       // Clean up empty hooks object
       if (Object.keys(settings.hooks).length === 0) {
@@ -219,19 +238,22 @@ program
       console.log('\n🧠 Claude Memory Layer Status\n');
 
       // Check hooks
-      const hasUserPromptHook = settings.hooks?.UserPromptSubmit?.some(h =>
-        h.hooks?.some(hook => hook.command?.includes('user-prompt-submit'))
-      );
-      const hasPostToolHook = settings.hooks?.PostToolUse?.some(h =>
-        h.hooks?.some(hook => hook.command?.includes('post-tool-use'))
-      );
+      const hasSessionStartHook = hasHook(settings, 'SessionStart', 'session-start');
+      const hasUserPromptHook = hasHook(settings, 'UserPromptSubmit', 'user-prompt-submit');
+      const hasPostToolHook = hasHook(settings, 'PostToolUse', 'post-tool-use');
+      const hasStopHook = hasHook(settings, 'Stop', 'stop');
+      const hasSessionEndHook = hasHook(settings, 'SessionEnd', 'session-end');
 
       console.log('Hooks:');
+      console.log(`  SessionStart: ${hasSessionStartHook ? '✅ Installed' : '❌ Not installed'}`);
       console.log(`  UserPromptSubmit: ${hasUserPromptHook ? '✅ Installed' : '❌ Not installed'}`);
       console.log(`  PostToolUse: ${hasPostToolHook ? '✅ Installed' : '❌ Not installed'}`);
+      console.log(`  Stop: ${hasStopHook ? '✅ Installed' : '❌ Not installed'}`);
+      console.log(`  SessionEnd: ${hasSessionEndHook ? '✅ Installed' : '❌ Not installed'}`);
 
       // Check plugin files
-      const hooksExist = fs.existsSync(path.join(pluginPath, 'hooks', 'user-prompt-submit.js'));
+      const hooksExist = REQUIRED_HOOK_FILES
+        .every((file) => fs.existsSync(path.join(pluginPath, 'hooks', file)));
       console.log(`\nPlugin files: ${hooksExist ? '✅ Found' : '❌ Not found'}`);
       console.log(`  Path: ${pluginPath}`);
 
@@ -239,7 +261,7 @@ program
       const dashboardRunning = await isServerRunning(37777);
       console.log(`\nDashboard: ${dashboardRunning ? '✅ Running at http://localhost:37777' : '⏹️  Not running'}`);
 
-      if (!hasUserPromptHook || !hasPostToolHook) {
+      if (!hasSessionStartHook || !hasUserPromptHook || !hasPostToolHook || !hasStopHook || !hasSessionEndHook) {
         console.log('\n💡 Run "claude-memory-layer install" to set up hooks.\n');
       } else {
         console.log('\n✅ Plugin is fully installed and configured.\n');
