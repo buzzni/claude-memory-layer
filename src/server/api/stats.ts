@@ -106,6 +106,110 @@ function computeSessionTurnCount(sessionEvents: MemoryEvent[]): number {
   return sessionEvents.filter((e) => e.eventType === 'user_prompt').length;
 }
 
+type KpiMetrics = {
+  memoryHitRate: number;
+  usefulRecallRate: number;
+  avgCompletionTurns: number;
+  timeToFirstValidEditMinutes: number;
+  reworkRate: number;
+  postChangeFailureRate: number;
+};
+
+function computeKpiMetrics(events: MemoryEvent[], usefulRecallRate: number): KpiMetrics {
+  const prompts = events.filter((e) => e.eventType === 'user_prompt');
+  const promptCount = prompts.length;
+  const memoryHitPrompts = prompts.filter((p) => (p.metadata as any)?.adherence?.checked).length;
+  const memoryHitRate = round(safeRatio(memoryHitPrompts, promptCount));
+
+  const sessions = new Map<string, MemoryEvent[]>();
+  for (const e of events) {
+    const arr = sessions.get(e.sessionId) || [];
+    arr.push(e);
+    sessions.set(e.sessionId, arr);
+  }
+
+  let sessionTurnTotal = 0;
+  let sessionTurnSamples = 0;
+  let firstValidEditMinutesTotal = 0;
+  let firstValidEditSamples = 0;
+
+  for (const sessionEvents of sessions.values()) {
+    sessionEvents.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+    const turns = computeSessionTurnCount(sessionEvents);
+    if (turns > 0) {
+      sessionTurnTotal += turns;
+      sessionTurnSamples++;
+    }
+
+    const firstPrompt = sessionEvents.find((e) => e.eventType === 'user_prompt');
+    const firstEdit = sessionEvents.find((e) => {
+      const payload = parseToolPayload(e);
+      return payload?.toolName && isEditToolName(payload.toolName) && payload.success === true;
+    });
+    if (firstPrompt && firstEdit) {
+      const minutes = (firstEdit.timestamp.getTime() - firstPrompt.timestamp.getTime()) / 60000;
+      if (minutes >= 0) {
+        firstValidEditMinutesTotal += minutes;
+        firstValidEditSamples++;
+      }
+    }
+  }
+
+  const avgCompletionTurns = round(safeRatio(sessionTurnTotal, sessionTurnSamples), 2);
+  const timeToFirstValidEditMinutes = round(safeRatio(firstValidEditMinutesTotal, firstValidEditSamples), 2);
+
+  const editActions: Array<{ sessionId: string; timestamp: number; filePath?: string }> = [];
+  let testRunsAfterEdit = 0;
+  let failedTestRunsAfterEdit = 0;
+
+  for (const [sessionId, sessionEvents] of sessions.entries()) {
+    const sorted = [...sessionEvents].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+    let seenEdit = false;
+
+    for (const e of sorted) {
+      const payload = parseToolPayload(e);
+      if (!payload?.toolName) continue;
+
+      if (isEditToolName(payload.toolName) && payload.success === true) {
+        editActions.push({ sessionId, timestamp: e.timestamp.getTime(), filePath: payload.filePath });
+        seenEdit = true;
+        continue;
+      }
+
+      if (seenEdit && isTestLikeCommand(payload.command)) {
+        testRunsAfterEdit++;
+        if (payload.success === false) failedTestRunsAfterEdit++;
+      }
+    }
+  }
+
+  const THIRTY_MIN_MS = 30 * 60 * 1000;
+  let reworkCount = 0;
+  const bySessionFile = new Map<string, number>();
+  const sortedEdits = [...editActions].sort((a, b) => a.timestamp - b.timestamp);
+  for (const edit of sortedEdits) {
+    if (!edit.filePath) continue;
+    const key = `${edit.sessionId}::${edit.filePath}`;
+    const prev = bySessionFile.get(key);
+    if (typeof prev === 'number' && edit.timestamp - prev <= THIRTY_MIN_MS) {
+      reworkCount++;
+    }
+    bySessionFile.set(key, edit.timestamp);
+  }
+
+  const reworkRate = round(safeRatio(reworkCount, editActions.length));
+  const postChangeFailureRate = round(safeRatio(failedTestRunsAfterEdit, testRunsAfterEdit));
+
+  return {
+    memoryHitRate,
+    usefulRecallRate,
+    avgCompletionTurns,
+    timeToFirstValidEditMinutes,
+    reworkRate,
+    postChangeFailureRate
+  };
+}
+
 
 // GET /api/stats/shared - Get shared store statistics
 statsRouter.get('/shared', async (c) => {
@@ -447,100 +551,29 @@ statsRouter.get('/kpi', async (c) => {
     const allEvents = await memoryService.getRecentEvents(20000);
     const events = allEvents.filter((e) => inWindow(e, now, window));
 
-    const prompts = events.filter((e) => e.eventType === 'user_prompt');
-    const promptCount = prompts.length;
-
-    let memoryHitPrompts = 0;
-    for (const p of prompts) {
-      const adherence = (p.metadata as any)?.adherence;
-      if (adherence && adherence.checked) memoryHitPrompts++;
-    }
-    const memoryHitRate = round(safeRatio(memoryHitPrompts, promptCount));
-
     const helpfulness = await memoryService.getHelpfulnessStats();
     const usefulRecallRate = helpfulness.totalEvaluated > 0
       ? round(safeRatio(helpfulness.helpful, helpfulness.totalEvaluated))
       : 0;
 
-    const sessions = new Map<string, MemoryEvent[]>();
-    for (const e of events) {
-      const arr = sessions.get(e.sessionId) || [];
-      arr.push(e);
-      sessions.set(e.sessionId, arr);
-    }
+    const metrics = computeKpiMetrics(events, usefulRecallRate);
 
-    let sessionTurnTotal = 0;
-    let sessionTurnSamples = 0;
-    let firstValidEditMinutesTotal = 0;
-    let firstValidEditSamples = 0;
+    const windowMs = windowToMs(window);
+    const prevEvents = allEvents.filter((e) => {
+      const age = now - e.timestamp.getTime();
+      return age > windowMs && age <= windowMs * 2;
+    });
+    const previousMetrics = computeKpiMetrics(prevEvents, usefulRecallRate);
+    const deltas = {
+      memoryHitRate: round(metrics.memoryHitRate - previousMetrics.memoryHitRate),
+      usefulRecallRate: round(metrics.usefulRecallRate - previousMetrics.usefulRecallRate),
+      avgCompletionTurns: round(metrics.avgCompletionTurns - previousMetrics.avgCompletionTurns, 2),
+      timeToFirstValidEditMinutes: round(metrics.timeToFirstValidEditMinutes - previousMetrics.timeToFirstValidEditMinutes, 2),
+      reworkRate: round(metrics.reworkRate - previousMetrics.reworkRate),
+      postChangeFailureRate: round(metrics.postChangeFailureRate - previousMetrics.postChangeFailureRate)
+    };
 
-    for (const sessionEvents of sessions.values()) {
-      sessionEvents.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
-      const turns = computeSessionTurnCount(sessionEvents);
-      if (turns > 0) {
-        sessionTurnTotal += turns;
-        sessionTurnSamples++;
-      }
-
-      const firstPrompt = sessionEvents.find((e) => e.eventType === 'user_prompt');
-      const firstEdit = sessionEvents.find((e) => {
-        const payload = parseToolPayload(e);
-        return payload?.toolName && isEditToolName(payload.toolName) && payload.success === true;
-      });
-      if (firstPrompt && firstEdit) {
-        const minutes = (firstEdit.timestamp.getTime() - firstPrompt.timestamp.getTime()) / 60000;
-        if (minutes >= 0) {
-          firstValidEditMinutesTotal += minutes;
-          firstValidEditSamples++;
-        }
-      }
-    }
-
-    const avgCompletionTurns = round(safeRatio(sessionTurnTotal, sessionTurnSamples), 2);
-    const timeToFirstValidEditMinutes = round(safeRatio(firstValidEditMinutesTotal, firstValidEditSamples), 2);
-
-    const editActions: Array<{ sessionId: string; timestamp: number; filePath?: string }> = [];
-    let testRunsAfterEdit = 0;
-    let failedTestRunsAfterEdit = 0;
-
-    for (const [sessionId, sessionEvents] of sessions.entries()) {
-      const sorted = [...sessionEvents].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
-      let seenEdit = false;
-
-      for (const e of sorted) {
-        const payload = parseToolPayload(e);
-        if (!payload?.toolName) continue;
-
-        if (isEditToolName(payload.toolName) && payload.success === true) {
-          editActions.push({ sessionId, timestamp: e.timestamp.getTime(), filePath: payload.filePath });
-          seenEdit = true;
-          continue;
-        }
-
-        if (seenEdit && isTestLikeCommand(payload.command)) {
-          testRunsAfterEdit++;
-          if (payload.success === false) failedTestRunsAfterEdit++;
-        }
-      }
-    }
-
-    // Rework: same file edited again in same session within 30 min
     const THIRTY_MIN_MS = 30 * 60 * 1000;
-    let reworkCount = 0;
-    const bySessionFile = new Map<string, number>();
-    const sortedEdits = [...editActions].sort((a, b) => a.timestamp - b.timestamp);
-    for (const edit of sortedEdits) {
-      if (!edit.filePath) continue;
-      const key = `${edit.sessionId}::${edit.filePath}`;
-      const prev = bySessionFile.get(key);
-      if (typeof prev === 'number' && edit.timestamp - prev <= THIRTY_MIN_MS) {
-        reworkCount++;
-      }
-      bySessionFile.set(key, edit.timestamp);
-    }
-
-    const reworkRate = round(safeRatio(reworkCount, editActions.length));
-    const postChangeFailureRate = round(safeRatio(failedTestRunsAfterEdit, testRunsAfterEdit));
 
     // Trend (daily buckets for last 30 days)
     const trendWindowMs = 30 * 24 * 60 * 60 * 1000;
@@ -615,32 +648,27 @@ statsRouter.get('/kpi', async (c) => {
       });
 
     const alerts: Array<{ metric: string; level: 'warn'; message: string; value: number; threshold: number }> = [];
-    if (usefulRecallRate < thresholds.usefulRecallRateMin) {
-      alerts.push({ metric: 'usefulRecallRate', level: 'warn', message: 'Useful recall rate is below threshold', value: usefulRecallRate, threshold: thresholds.usefulRecallRateMin });
+    if (metrics.usefulRecallRate < thresholds.usefulRecallRateMin) {
+      alerts.push({ metric: 'usefulRecallRate', level: 'warn', message: 'Useful recall rate is below threshold', value: metrics.usefulRecallRate, threshold: thresholds.usefulRecallRateMin });
     }
-    if (reworkRate > thresholds.reworkRateMax) {
-      alerts.push({ metric: 'reworkRate', level: 'warn', message: 'Rework rate is above threshold', value: reworkRate, threshold: thresholds.reworkRateMax });
+    if (metrics.reworkRate > thresholds.reworkRateMax) {
+      alerts.push({ metric: 'reworkRate', level: 'warn', message: 'Rework rate is above threshold', value: metrics.reworkRate, threshold: thresholds.reworkRateMax });
     }
-    if (postChangeFailureRate > thresholds.postChangeFailureRateMax) {
-      alerts.push({ metric: 'postChangeFailureRate', level: 'warn', message: 'Post-change failure rate is above threshold', value: postChangeFailureRate, threshold: thresholds.postChangeFailureRateMax });
+    if (metrics.postChangeFailureRate > thresholds.postChangeFailureRateMax) {
+      alerts.push({ metric: 'postChangeFailureRate', level: 'warn', message: 'Post-change failure rate is above threshold', value: metrics.postChangeFailureRate, threshold: thresholds.postChangeFailureRateMax });
     }
-    if (avgCompletionTurns > thresholds.avgCompletionTurnsMax) {
-      alerts.push({ metric: 'avgCompletionTurns', level: 'warn', message: 'Average completion turns is above threshold', value: avgCompletionTurns, threshold: thresholds.avgCompletionTurnsMax });
+    if (metrics.avgCompletionTurns > thresholds.avgCompletionTurnsMax) {
+      alerts.push({ metric: 'avgCompletionTurns', level: 'warn', message: 'Average completion turns is above threshold', value: metrics.avgCompletionTurns, threshold: thresholds.avgCompletionTurnsMax });
     }
-    if (memoryHitRate < thresholds.memoryHitRateMin) {
-      alerts.push({ metric: 'memoryHitRate', level: 'warn', message: 'Memory hit rate is below threshold', value: memoryHitRate, threshold: thresholds.memoryHitRateMin });
+    if (metrics.memoryHitRate < thresholds.memoryHitRateMin) {
+      alerts.push({ metric: 'memoryHitRate', level: 'warn', message: 'Memory hit rate is below threshold', value: metrics.memoryHitRate, threshold: thresholds.memoryHitRateMin });
     }
 
     return c.json({
       window,
-      metrics: {
-        memoryHitRate,
-        usefulRecallRate,
-        avgCompletionTurns,
-        timeToFirstValidEditMinutes,
-        reworkRate,
-        postChangeFailureRate
-      },
+      metrics,
+      previousMetrics,
+      deltas,
       trend: {
         daily: trendDaily
       },

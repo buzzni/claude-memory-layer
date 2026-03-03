@@ -381,8 +381,25 @@ function percentText(v) {
   return `${((v || 0) * 100).toFixed(1)}%`;
 }
 
+function renderDelta(id, value, lowerIsBetter = false, asPercent = true) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const v = Number(value || 0);
+  const sign = v > 0 ? '+' : '';
+  const text = asPercent ? `${sign}${(v * 100).toFixed(1)}%` : `${sign}${v.toFixed(2)}`;
+
+  let positive = v > 0;
+  if (lowerIsBetter) positive = v < 0;
+  const cls = v === 0 ? 'neutral' : (positive ? 'good' : 'bad');
+  const arrow = v === 0 ? '→' : (positive ? '▲' : '▼');
+
+  el.className = `kpi-delta ${cls}`;
+  el.textContent = `${arrow} ${text} vs prev`;
+}
+
 function updateKpiCardsUI() {
   const m = state.kpi?.metrics;
+  const d = state.kpi?.deltas;
   if (!m) return;
   const set = (id, value) => {
     const el = document.getElementById(id);
@@ -392,6 +409,13 @@ function updateKpiCardsUI() {
   set('kpi-completion-turns', Number(m.avgCompletionTurns || 0).toFixed(2));
   set('kpi-rework-rate', percentText(m.reworkRate));
   set('kpi-failure-rate', percentText(m.postChangeFailureRate));
+
+  if (d) {
+    renderDelta('kpi-useful-recall-delta', d.usefulRecallRate, false, true);
+    renderDelta('kpi-completion-turns-delta', d.avgCompletionTurns, true, false);
+    renderDelta('kpi-rework-rate-delta', d.reworkRate, true, true);
+    renderDelta('kpi-failure-rate-delta', d.postChangeFailureRate, true, true);
+  }
 
   const alertsEl = document.getElementById('kpi-alerts');
   if (alertsEl) {

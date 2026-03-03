@@ -335,6 +335,16 @@ body {
 .kpi-grid .stat-card .stat-label {
   font-size: 12px;
 }
+.kpi-delta {
+  font-size: 11px;
+  margin-top: -4px;
+  margin-bottom: 8px;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+.kpi-delta.good { color: var(--success); }
+.kpi-delta.bad { color: var(--error); }
+.kpi-delta.neutral { color: var(--text-muted); }
 
 .stat-value {
   font-size: 36px;
