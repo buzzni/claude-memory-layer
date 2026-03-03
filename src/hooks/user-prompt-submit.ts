@@ -11,7 +11,7 @@
  */
 
 import { randomUUID } from 'crypto';
-import { getLightweightMemoryService } from '../services/memory-service.js';
+import { getLightweightMemoryService, getMemoryServiceForSession } from '../services/memory-service.js';
 import { writeTurnState } from '../core/turn-state.js';
 import type { UserPromptSubmitInput, UserPromptSubmitOutput } from '../core/types.js';
 
@@ -21,6 +21,8 @@ const MAX_MEMORIES = parseInt(process.env.CLAUDE_MEMORY_MAX_COUNT || '5');
 const BASE_MIN_SCORE = parseFloat(process.env.CLAUDE_MEMORY_MIN_SCORE || '0.4');
 const FALLBACK_MIN_SCORE = parseFloat(process.env.CLAUDE_MEMORY_FALLBACK_MIN_SCORE || '0.3');
 const ENABLE_SEARCH = process.env.CLAUDE_MEMORY_SEARCH !== 'false';
+const RETRIEVAL_MODE = (process.env.CLAUDE_MEMORY_RETRIEVAL_MODE || 'hybrid') as 'keyword' | 'semantic' | 'hybrid';
+const SEMANTIC_TIMEOUT_MS = parseInt(process.env.CLAUDE_MEMORY_SEMANTIC_TIMEOUT_MS || '1200');
 
 /**
  * Determine if a prompt is worth storing as a memory.
@@ -40,6 +42,30 @@ function getDynamicMinScore(prompt: string): number {
   if (len <= 20) return Math.min(0.55, BASE_MIN_SCORE + 0.1);   // short query → stricter
   if (len >= 80) return Math.max(0.3, BASE_MIN_SCORE - 0.05);    // long query → slightly looser
   return BASE_MIN_SCORE;
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`semantic retrieval timeout (${timeoutMs}ms)`)), timeoutMs);
+    promise
+      .then((result) => {
+        clearTimeout(timer);
+        resolve(result);
+      })
+      .catch((error) => {
+        clearTimeout(timer);
+        reject(error);
+      });
+  });
+}
+
+function formatMemoryContext(items: Array<{ type: string; content: string }>): string {
+  if (items.length === 0) return '';
+  const lines = items.map((m) => {
+    const preview = m.content.length > 300 ? m.content.substring(0, 300) + '...' : m.content;
+    return `- [${m.type}] ${preview}`;
+  });
+  return `💡 **Related memories found:**\n\n${lines.join('\n\n')}`;
 }
 
 async function main(): Promise<void> {
@@ -69,48 +95,91 @@ async function main(): Promise<void> {
 
     let context = '';
 
-    // Fast keyword search if enabled
+    // Search strategy: semantic/hybrid first (bounded by timeout), then keyword fallback
     if (ENABLE_SEARCH && input.prompt.length > 10) {
       const minScore = getDynamicMinScore(input.prompt);
-      let results = await memoryService.keywordSearch(input.prompt, {
-        topK: MAX_MEMORIES,
-        minScore
-      });
+      let mergedMemories: Array<{ type: string; content: string; id?: string; score?: number }> = [];
 
-      // recall rescue: if nothing found at tuned threshold, retry with fallback floor
-      if (results.length === 0 && FALLBACK_MIN_SCORE < minScore) {
-        results = await memoryService.keywordSearch(input.prompt, {
-          topK: MAX_MEMORIES,
-          minScore: FALLBACK_MIN_SCORE
-        });
+      const canUseSemantic = RETRIEVAL_MODE === 'semantic' || RETRIEVAL_MODE === 'hybrid';
+      if (canUseSemantic) {
+        try {
+          const semanticService = getMemoryServiceForSession(input.session_id);
+          const semantic = await withTimeout(
+            semanticService.retrieveMemories(input.prompt, {
+              topK: MAX_MEMORIES,
+              minScore,
+              sessionId: input.session_id,
+              intentRewrite: true,
+              adaptiveRerank: true,
+              projectScopeMode: 'strict'
+            }),
+            SEMANTIC_TIMEOUT_MS
+          );
+
+          mergedMemories = semantic.memories.map((m) => ({
+            type: m.event.eventType,
+            content: m.event.content,
+            id: m.event.id,
+            score: m.score
+          }));
+        } catch {
+          // Semantic retrieval is best-effort; fallback below handles the rest
+        }
       }
 
-      if (results.length > 0) {
+      const shouldUseKeywordFallback =
+        RETRIEVAL_MODE === 'keyword' ||
+        RETRIEVAL_MODE === 'hybrid' ||
+        mergedMemories.length === 0;
+
+      if (shouldUseKeywordFallback && mergedMemories.length < MAX_MEMORIES) {
+        let results = await memoryService.keywordSearch(input.prompt, {
+          topK: MAX_MEMORIES,
+          minScore
+        });
+
+        // recall rescue: if nothing found at tuned threshold, retry with fallback floor
+        if (results.length === 0 && FALLBACK_MIN_SCORE < minScore) {
+          results = await memoryService.keywordSearch(input.prompt, {
+            topK: MAX_MEMORIES,
+            minScore: FALLBACK_MIN_SCORE
+          });
+        }
+
+        const existingIds = new Set(mergedMemories.map((m) => m.id).filter(Boolean));
+        for (const r of results) {
+          if (existingIds.has(r.event.id)) continue;
+          mergedMemories.push({
+            type: r.event.eventType,
+            content: r.event.content,
+            id: r.event.id,
+            score: r.score
+          });
+          if (mergedMemories.length >= MAX_MEMORIES) break;
+        }
+      }
+
+      if (mergedMemories.length > 0) {
         // Increment access count for found memories
-        const eventIds = results.map(r => r.event.id);
-        await memoryService.incrementMemoryAccess(eventIds);
+        const eventIds = mergedMemories.map((m) => m.id).filter((v): v is string => Boolean(v));
+        if (eventIds.length > 0) {
+          await memoryService.incrementMemoryAccess(eventIds);
+        }
 
         // Record each retrieval for helpfulness tracking
-        for (const r of results) {
+        for (const m of mergedMemories) {
+          if (!m.id) continue;
           try {
             await memoryService.recordRetrieval(
-              r.event.id,
+              m.id,
               input.session_id,
-              r.score,
+              m.score ?? minScore,
               input.prompt
             );
           } catch { /* non-critical */ }
         }
 
-        // Format context
-        const memories = results.map(r => {
-          const preview = r.event.content.length > 300
-            ? r.event.content.substring(0, 300) + '...'
-            : r.event.content;
-          return `- [${r.event.eventType}] ${preview}`;
-        });
-
-        context = `💡 **Related memories found:**\n\n${memories.join('\n\n')}`;
+        context = formatMemoryContext(mergedMemories);
       }
     }
 

@@ -1475,6 +1475,13 @@ export class MemoryService {
   }
 
   /**
+   * Backward-compatible alias used by some hooks
+   */
+  async close(): Promise<void> {
+    await this.shutdown();
+  }
+
+  /**
    * Shutdown service
    */
   async shutdown(): Promise<void> {
