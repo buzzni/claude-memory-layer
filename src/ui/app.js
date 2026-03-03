@@ -347,6 +347,23 @@ function selectSort(sort) {
   loadLevelEvents(state.currentLevel, sort);
 }
 
+function getAdherenceInfo(event) {
+  const adherence = event?.metadata?.adherence || event?.meta?.adherence || null;
+  if (!adherence || typeof adherence !== 'object') return null;
+  const reason = adherence.reason || 'unknown';
+  const checked = Boolean(adherence.checked);
+  const turn = adherence.turn;
+  return { reason, checked, turn };
+}
+
+function renderAdherenceBadge(event) {
+  const info = getAdherenceInfo(event);
+  if (!info) return '';
+  const modeClass = info.checked ? 'adherence-checked' : 'adherence-skipped';
+  const turnText = Number.isFinite(info.turn) ? ` · T${info.turn}` : '';
+  return `<span class="adherence-badge ${modeClass}" title="adherence ${info.checked ? 'checked' : 'skipped'}${turnText}">adh:${escapeHtml(info.reason)}</span>`;
+}
+
 function updateEventsListUI() {
   const container = document.getElementById('event-list-container');
   container.innerHTML = '';
@@ -374,13 +391,17 @@ function updateEventsListUI() {
     const accessBadge = event.accessCount > 0
       ? `<span class="access-badge"><i class="ri-eye-line"></i> ${event.accessCount}</span>`
       : '';
+    const adherenceBadge = renderAdherenceBadge(event);
     const lastUsed = (state.currentSort === 'accessed' || state.currentSort === 'most-accessed') && event.lastAccessedAt
       ? `<span class="event-time" style="color:var(--accent-secondary);">used ${new Date(event.lastAccessedAt).toLocaleString()}</span>`
       : '';
 
     el.innerHTML = `
       <div class="event-header">
-        <span class="event-type-badge ${typeClass}">${eventType}</span>
+        <div style="display:flex; gap:8px; align-items:center;">
+          <span class="event-type-badge ${typeClass}">${eventType}</span>
+          ${adherenceBadge}
+        </div>
         <div style="display:flex; gap:8px; align-items:center;">
           ${accessBadge}
           ${lastUsed}
@@ -691,6 +712,7 @@ async function openDetailModal(eventId) {
     const eventType = evt.eventType || 'unknown';
     const typeClass = `type-${eventType.toLowerCase().replace('_', '-')}`;
     const time = new Date(evt.timestamp).toLocaleString();
+    const adherenceBadge = renderAdherenceBadge(evt);
 
     let contextHtml = '';
     if (ctx.length > 0) {
@@ -716,6 +738,7 @@ async function openDetailModal(eventId) {
           <i class="ri-price-tag-3-line"></i>
           <span class="event-type-badge ${typeClass}">${eventType}</span>
         </div>
+        ${adherenceBadge ? `<div class="modal-meta-item">${adherenceBadge}</div>` : ''}
         <div class="modal-meta-item">
           <i class="ri-time-line"></i>
           ${time}
@@ -763,11 +786,13 @@ async function showEventsListModal() {
 
     body.innerHTML = events.map(e => {
       const typeClass = `type-${(e.eventType || '').toLowerCase().replace('_', '-')}`;
+      const adherenceBadge = renderAdherenceBadge(e);
       return `
         <div class="modal-list-item" onclick="openDetailModal('${e.id}')">
           <div class="modal-list-info">
             <div class="title">
               <span class="event-type-badge ${typeClass}" style="margin-right:8px;">${e.eventType}</span>
+              ${adherenceBadge}
               ${escapeHtml((e.preview || '').slice(0, 80))}
             </div>
             <div class="subtitle">${new Date(e.timestamp).toLocaleString()} | Session: ${(e.sessionId || '').slice(0, 12)}...</div>
@@ -847,11 +872,13 @@ async function showSessionDetailInModal(sessionId) {
       <div class="modal-section-title">Events</div>
       ${events.map(e => {
         const typeClass = `type-${(e.eventType || '').toLowerCase().replace('_', '-')}`;
+        const adherenceBadge = renderAdherenceBadge(e);
         return `
           <div class="modal-list-item" onclick="closeAllModals(); openDetailModal('${e.id}')">
             <div class="modal-list-info">
               <div class="title">
                 <span class="event-type-badge ${typeClass}" style="margin-right:8px;">${e.eventType}</span>
+                ${adherenceBadge}
                 ${escapeHtml((e.preview || '').slice(0, 80))}
               </div>
               <div class="subtitle">${new Date(e.timestamp).toLocaleString()}</div>

@@ -594,6 +594,23 @@ body {
   font-weight: 600;
 }
 
+.adherence-badge {
+  font-size: 10px;
+  padding: 3px 7px;
+  border-radius: 6px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.2px;
+}
+.adherence-checked {
+  background: rgba(52, 211, 153, 0.14);
+  color: #34D399;
+}
+.adherence-skipped {
+  background: rgba(148, 163, 184, 0.14);
+  color: #94A3B8;
+}
+
 /* Section Label */
 .section-label {
   font-size: 12px;
