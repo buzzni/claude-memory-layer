@@ -273,7 +273,14 @@
               </div>
 
               <div style="margin-top:20px;">
-                <div class="section-label">Adherence Reasons</div>
+                <div class="section-label" style="display:flex; justify-content:space-between; align-items:center;">
+                  <span>Adherence Reasons</span>
+                  <span id="adherence-window-controls" style="display:flex; gap:6px;">
+                    <button class="sort-btn active" data-adh-window="24h">24h</button>
+                    <button class="sort-btn" data-adh-window="7d">7d</button>
+                    <button class="sort-btn" data-adh-window="30d">30d</button>
+                  </span>
+                </div>
                 <div id="adherence-summary" style="padding:8px 0; font-size:13px; color:var(--text-muted);">Loading...</div>
               </div>
 

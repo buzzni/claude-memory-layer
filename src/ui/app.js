@@ -13,6 +13,7 @@ const state = {
   helpfulness: null,
   retrievalTraces: null,
   adherenceSummary: null,
+  adherenceWindow: '24h',
   currentLevel: 'L0',
   currentSort: 'recent',
   currentView: 'overview',
@@ -103,10 +104,24 @@ function setupEventListeners() {
   });
 
   // Sort buttons
-  document.querySelectorAll('.sort-btn').forEach(btn => {
+  document.querySelectorAll('.sort-btn[data-sort]').forEach(btn => {
     btn.addEventListener('click', (e) => {
       const sort = e.currentTarget.dataset.sort;
       if (sort) selectSort(sort);
+    });
+  });
+
+  // Adherence window controls
+  document.querySelectorAll('#adherence-window-controls .sort-btn').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      const window = e.currentTarget.dataset.adhWindow;
+      if (!window || state.adherenceWindow === window) return;
+      state.adherenceWindow = window;
+      document.querySelectorAll('#adherence-window-controls .sort-btn').forEach(b => {
+        b.classList.toggle('active', b.dataset.adhWindow === window);
+      });
+      state.adherenceSummary = await fetchAdherenceSummary().catch(() => null);
+      updateAdherenceSummaryUI();
     });
   });
 
@@ -428,8 +443,15 @@ function updateMemoryUsageUI() {
   updateRetrievalTraceUI();
 }
 
+function adherenceWindowToMs(window) {
+  if (window === '24h') return 24 * 60 * 60 * 1000;
+  if (window === '7d') return 7 * 24 * 60 * 60 * 1000;
+  if (window === '30d') return 30 * 24 * 60 * 60 * 1000;
+  return 24 * 60 * 60 * 1000;
+}
+
 async function fetchAdherenceSummary() {
-  const res = await fetch(apiUrl(`${API_BASE}/events`, { level: 'L0', limit: 300, sort: 'recent' }));
+  const res = await fetch(apiUrl(`${API_BASE}/events`, { level: 'L0', limit: 500, sort: 'recent' }));
   if (!res.ok) return null;
   const data = await res.json();
   const events = data.events || [];
@@ -439,7 +461,13 @@ async function fetchAdherenceSummary() {
   let skipped = 0;
   let total = 0;
 
+  const now = Date.now();
+  const windowMs = adherenceWindowToMs(state.adherenceWindow);
+
   for (const e of events) {
+    const ts = e?.timestamp ? new Date(e.timestamp).getTime() : 0;
+    if (!ts || now - ts > windowMs) continue;
+
     const adherence = e?.metadata?.adherence || e?.meta?.adherence;
     if (!adherence) continue;
     total++;
@@ -448,7 +476,7 @@ async function fetchAdherenceSummary() {
     if (adherence.checked) checked++; else skipped++;
   }
 
-  return { total, checked, skipped, counts };
+  return { total, checked, skipped, counts, window: state.adherenceWindow };
 }
 
 function updateAdherenceSummaryUI() {
@@ -469,7 +497,7 @@ function updateAdherenceSummaryUI() {
 
   el.innerHTML = `
     <div style="display:flex; gap:12px; flex-wrap:wrap; margin-bottom:8px;">
-      <span><strong>${s.total}</strong> tagged prompts</span>
+      <span><strong>${s.total}</strong> tagged prompts (${escapeHtml(s.window || state.adherenceWindow)})</span>
       <span style="color:var(--success);"><strong>${s.checked}</strong> checked</span>
       <span style="color:var(--text-muted);"><strong>${s.skipped}</strong> skipped</span>
     </div>
