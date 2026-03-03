@@ -16,6 +16,8 @@ const state = {
   adherenceWindow: '24h',
   userPromptSearchQuery: '',
   userPromptItems: [],
+  userPromptPage: 1,
+  userPromptPageSize: 30,
   currentLevel: 'L0',
   currentSort: 'recent',
   currentView: 'overview',
@@ -156,6 +158,7 @@ function setupEventListeners() {
   if (userPromptSearch) {
     userPromptSearch.addEventListener('input', debounce(async (e) => {
       state.userPromptSearchQuery = e.target.value || '';
+      state.userPromptPage = 1;
       await loadUserPromptsView();
     }, 250));
   }
@@ -163,6 +166,23 @@ function setupEventListeners() {
   if (userPromptRefresh) {
     userPromptRefresh.addEventListener('click', async () => {
       await loadUserPromptsView();
+    });
+  }
+  const userPromptPrev = document.getElementById('user-prompt-prev');
+  if (userPromptPrev) {
+    userPromptPrev.addEventListener('click', async () => {
+      if (state.userPromptPage <= 1) return;
+      state.userPromptPage -= 1;
+      await renderUserPromptList();
+    });
+  }
+  const userPromptNext = document.getElementById('user-prompt-next');
+  if (userPromptNext) {
+    userPromptNext.addEventListener('click', async () => {
+      const totalPages = Math.max(1, Math.ceil((state.userPromptItems?.length || 0) / state.userPromptPageSize));
+      if (state.userPromptPage >= totalPages) return;
+      state.userPromptPage += 1;
+      await renderUserPromptList();
     });
   }
 
@@ -1450,35 +1470,53 @@ async function loadMemoryBankLevel(level) {
 
 // --- User Prompts View ---
 
-async function loadUserPromptsView() {
+async function renderUserPromptList() {
   const listEl = document.getElementById('user-prompt-list');
+  const pageEl = document.getElementById('user-prompt-page');
+  const prevBtn = document.getElementById('user-prompt-prev');
+  const nextBtn = document.getElementById('user-prompt-next');
   const metaEl = document.getElementById('user-prompt-meta');
   if (!listEl) return;
 
-  listEl.innerHTML = '<div style="padding:20px; text-align:center; color:var(--text-muted);">Loading user prompts...</div>';
+  const items = state.userPromptItems || [];
+  const pageSize = state.userPromptPageSize;
+  const totalPages = Math.max(1, Math.ceil(items.length / pageSize));
+  if (state.userPromptPage > totalPages) state.userPromptPage = totalPages;
 
-  try {
-    const params = {
-      type: 'user_prompt',
-      sort: 'recent',
-      limit: 200,
-      q: state.userPromptSearchQuery || undefined
-    };
-    const res = await fetch(apiUrl(`${API_BASE}/events`, params));
-    const data = await res.json();
-    const items = data.events || [];
-    state.userPromptItems = items;
+  const start = (state.userPromptPage - 1) * pageSize;
+  const paged = items.slice(start, start + pageSize);
 
-    if (metaEl) {
-      metaEl.textContent = `${items.length} prompts${state.userPromptSearchQuery ? ` · query: "${state.userPromptSearchQuery}"` : ''}`;
-    }
+  if (pageEl) pageEl.textContent = `${state.userPromptPage} / ${totalPages}`;
+  if (prevBtn) prevBtn.disabled = state.userPromptPage <= 1;
+  if (nextBtn) nextBtn.disabled = state.userPromptPage >= totalPages;
 
-    if (items.length === 0) {
-      listEl.innerHTML = '<div style="padding:20px; text-align:center; color:var(--text-muted);">No user prompts found.</div>';
-      return;
-    }
+  if (metaEl) {
+    const sessionCount = new Set(items.map(i => i.sessionId)).size;
+    metaEl.textContent = `${items.length} prompts · ${sessionCount} sessions${state.userPromptSearchQuery ? ` · query: "${state.userPromptSearchQuery}"` : ''}`;
+  }
 
-    listEl.innerHTML = items.map((e) => `
+  if (paged.length === 0) {
+    listEl.innerHTML = '<div style="padding:20px; text-align:center; color:var(--text-muted);">No user prompts found.</div>';
+    return;
+  }
+
+  // Group current page by session
+  const groups = new Map();
+  for (const e of paged) {
+    const key = e.sessionId || 'unknown';
+    const arr = groups.get(key) || [];
+    arr.push(e);
+    groups.set(key, arr);
+  }
+
+  const html = Array.from(groups.entries()).map(([sessionId, sessionItems]) => {
+    const heading = `
+      <div style="margin:10px 0 6px; font-size:12px; color:var(--text-muted); font-weight:600;">
+        <i class="ri-chat-1-line"></i> Session ${escapeHtml((sessionId || '').slice(0, 16))}... · ${sessionItems.length} prompts
+      </div>
+    `;
+
+    const cards = sessionItems.map((e) => `
       <div class="event-item" style="cursor:pointer;" onclick="openDetailModal('${e.id}')">
         <div class="event-header">
           <span class="event-type-badge type-user-prompt">user_prompt</span>
@@ -1487,6 +1525,32 @@ async function loadUserPromptsView() {
         <div class="event-content" style="-webkit-line-clamp:4;">${escapeHtml(e.preview || '')}</div>
       </div>
     `).join('');
+
+    return heading + cards;
+  }).join('');
+
+  listEl.innerHTML = html;
+}
+
+async function loadUserPromptsView() {
+  const listEl = document.getElementById('user-prompt-list');
+  if (!listEl) return;
+
+  listEl.innerHTML = '<div style="padding:20px; text-align:center; color:var(--text-muted);">Loading user prompts...</div>';
+
+  try {
+    const params = {
+      type: 'user_prompt',
+      sort: 'recent',
+      limit: 500,
+      q: state.userPromptSearchQuery || undefined
+    };
+    const res = await fetch(apiUrl(`${API_BASE}/events`, params));
+    const data = await res.json();
+    const items = data.events || [];
+    state.userPromptItems = items;
+
+    await renderUserPromptList();
   } catch (error) {
     listEl.innerHTML = `<div style="padding:20px; text-align:center; color:var(--error);">Failed to load user prompts: ${escapeHtml(error.message)}</div>`;
   }

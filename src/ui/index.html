@@ -385,9 +385,16 @@
           </div>
         </div>
         <div class="card">
-          <div class="card-header">
-            <div class="card-title"><i class="ri-history-line"></i><span>Latest User Prompt History</span></div>
-            <div id="user-prompt-meta" style="font-size:12px; color:var(--text-muted);"></div>
+          <div class="card-header" style="align-items:flex-end;">
+            <div>
+              <div class="card-title"><i class="ri-history-line"></i><span>Latest User Prompt History</span></div>
+              <div id="user-prompt-meta" style="font-size:12px; color:var(--text-muted); margin-top:6px;"></div>
+            </div>
+            <div style="display:flex; gap:8px; align-items:center;">
+              <button id="user-prompt-prev" class="sort-btn">Prev</button>
+              <span id="user-prompt-page" style="font-size:12px; color:var(--text-muted);">1 / 1</span>
+              <button id="user-prompt-next" class="sort-btn">Next</button>
+            </div>
           </div>
           <div id="user-prompt-list" class="event-list">
             <div style="padding:20px; text-align:center; color:var(--text-muted);">Loading...</div>

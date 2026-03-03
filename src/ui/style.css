@@ -600,6 +600,10 @@ body {
   color: var(--accent-primary);
   font-weight: 600;
 }
+.sort-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
 
 /* Access Badge */
 .access-badge {
