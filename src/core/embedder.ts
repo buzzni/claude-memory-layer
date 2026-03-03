@@ -16,7 +16,7 @@ export class Embedder {
   private readonly modelName: string;
   private initialized = false;
 
-  constructor(modelName: string = 'Xenova/all-MiniLM-L6-v2') {
+  constructor(modelName: string = 'jinaai/jina-embeddings-v5-text-small') {
     this.modelName = modelName;
   }
 

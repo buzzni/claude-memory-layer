@@ -866,6 +866,38 @@ export class SQLiteEventStore {
   }
 
   /**
+   * Clear embedding outbox (used for embedding model migration)
+   */
+  async clearEmbeddingOutbox(): Promise<void> {
+    await this.initialize();
+    sqliteRun(this.db, `DELETE FROM embedding_outbox`);
+  }
+
+  /**
+   * Count total events
+   */
+  async countEvents(): Promise<number> {
+    await this.initialize();
+    const row = sqliteGet<{ count: number }>(this.db, `SELECT COUNT(*) as count FROM events`);
+    return row?.count || 0;
+  }
+
+  /**
+   * Get events page in timestamp ascending order (stable migration/reindex scans)
+   */
+  async getEventsPage(limit: number = 1000, offset: number = 0): Promise<MemoryEvent[]> {
+    await this.initialize();
+
+    const rows = sqliteAll<Record<string, unknown>>(
+      this.db,
+      `SELECT * FROM events ORDER BY timestamp ASC LIMIT ? OFFSET ?`,
+      [limit, offset]
+    );
+
+    return rows.map(this.rowToEvent);
+  }
+
+  /**
    * Mark outbox items as failed
    */
   async failOutboxItems(ids: string[], error: string): Promise<void> {

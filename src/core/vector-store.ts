@@ -195,6 +195,26 @@ export class VectorStore {
   }
 
   /**
+   * Clear all vectors (used for embedding model migration)
+   */
+  async clearAll(): Promise<void> {
+    await this.initialize();
+    if (!this.db) return;
+
+    try {
+      if (typeof (this.db as any).dropTable === 'function') {
+        await (this.db as any).dropTable(this.tableName);
+      } else if (typeof (this.db as any).drop_table === 'function') {
+        await (this.db as any).drop_table(this.tableName);
+      }
+    } catch {
+      // Ignore if table does not exist
+    }
+
+    this.table = null;
+  }
+
+  /**
    * Check if vector exists for event
    */
   async exists(eventId: string): Promise<boolean> {

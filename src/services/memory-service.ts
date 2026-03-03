@@ -213,9 +213,11 @@ export class MemoryService {
   private readonly readOnly: boolean;
   private readonly lightweightMode: boolean;
   private readonly mdMirror: MarkdownMirror;
+  private readonly storagePath: string;
 
   constructor(config: MemoryServiceConfig & { projectHash?: string; projectPath?: string; sharedStoreConfig?: SharedStoreConfig }) {
     const storagePath = this.expandPath(config.storagePath);
+    this.storagePath = storagePath;
     this.readOnly = config.readOnly ?? false;
     this.lightweightMode = config.lightweightMode ?? false;
     this.mdMirror = new MarkdownMirror(process.cwd());
@@ -268,8 +270,9 @@ export class MemoryService {
     }
 
     this.vectorStore = new VectorStore(path.join(storagePath, 'vectors'));
-    this.embedder = config.embeddingModel
-      ? new Embedder(config.embeddingModel)
+    const embeddingModel = config.embeddingModel || process.env.CLAUDE_MEMORY_EMBEDDING_MODEL;
+    this.embedder = embeddingModel
+      ? new Embedder(embeddingModel)
       : getDefaultEmbedder();
     this.matcher = getDefaultMatcher();
     // Retriever uses SQLite as primary (always available)
@@ -1472,6 +1475,113 @@ export class MemoryService {
    */
   recordMemoryAccess(eventId: string, sessionId: string, confidence: number = 1.0): void {
     this.graduation.recordAccess(eventId, sessionId, confidence);
+  }
+
+  getEmbeddingModelName(): string {
+    return this.embedder.getModelName();
+  }
+
+  /**
+   * Ensure embedding model metadata is in sync and optionally migrate vectors.
+   * Migration strategy: clear vector index + clear embedding outbox + re-enqueue all events.
+   */
+  async ensureEmbeddingModelForImport(options?: { autoMigrate?: boolean }): Promise<{
+    changed: boolean;
+    previousModel: string | null;
+    currentModel: string;
+    enqueued: number;
+    reason?: string;
+  }> {
+    await this.initialize();
+
+    const currentModel = this.getEmbeddingModelName();
+    const metaPath = path.join(this.storagePath, 'embedding-meta.json');
+
+    let previousModel: string | null = null;
+    try {
+      if (fs.existsSync(metaPath)) {
+        const parsed = JSON.parse(fs.readFileSync(metaPath, 'utf-8')) as { model?: string };
+        previousModel = parsed?.model || null;
+      }
+    } catch {
+      previousModel = null;
+    }
+
+    const stats = await this.getStats();
+    const hasExistingVectors = (stats.vectorCount || 0) > 0;
+
+    // First-time metadata write (no migration needed unless legacy vectors exist)
+    if (!previousModel && !hasExistingVectors) {
+      fs.writeFileSync(metaPath, JSON.stringify({ model: currentModel, updatedAt: new Date().toISOString() }, null, 2));
+      return { changed: false, previousModel: null, currentModel, enqueued: 0, reason: 'initialized-meta' };
+    }
+
+    const modelChanged = previousModel !== currentModel;
+    const legacyUnknownButVectorsExist = !previousModel && hasExistingVectors;
+
+    if (!modelChanged && !legacyUnknownButVectorsExist) {
+      return { changed: false, previousModel, currentModel, enqueued: 0 };
+    }
+
+    if (options?.autoMigrate === false) {
+      return {
+        changed: true,
+        previousModel,
+        currentModel,
+        enqueued: 0,
+        reason: legacyUnknownButVectorsExist ? 'legacy-vectors-without-meta' : 'model-mismatch'
+      };
+    }
+
+    // Pause background vector processing while preparing migration
+    const wasRunning = this.vectorWorker?.isRunning() || false;
+    if (wasRunning) this.vectorWorker?.stop();
+
+    // Reset vector and outbox state
+    await this.vectorStore.clearAll();
+    await this.sqliteStore.clearEmbeddingOutbox();
+
+    // Re-enqueue all events for new embeddings
+    const pageSize = 1000;
+    let offset = 0;
+    let enqueued = 0;
+
+    while (true) {
+      const page = await this.sqliteStore.getEventsPage(pageSize, offset);
+      if (page.length === 0) break;
+
+      for (const event of page) {
+        await this.sqliteStore.enqueueForEmbedding(event.id, event.content);
+        enqueued += 1;
+      }
+
+      offset += page.length;
+      if (page.length < pageSize) break;
+    }
+
+    fs.writeFileSync(
+      metaPath,
+      JSON.stringify(
+        {
+          model: currentModel,
+          previousModel,
+          migratedAt: new Date().toISOString(),
+          enqueued
+        },
+        null,
+        2
+      )
+    );
+
+    if (wasRunning) this.vectorWorker?.start();
+
+    return {
+      changed: true,
+      previousModel,
+      currentModel,
+      enqueued,
+      reason: legacyUnknownButVectorsExist ? 'legacy-vectors-without-meta' : 'model-mismatch'
+    };
   }
 
   /**

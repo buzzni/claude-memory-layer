@@ -814,12 +814,17 @@ program
   .option('-a, --all', 'Import all sessions from all projects')
   .option('-l, --limit <number>', 'Limit messages per session')
   .option('-f, --force', 'Force reimport: delete existing events and reimport with turn_id grouping')
+  .option('--embedding-model <name>', 'Embedding model override (default: jinaai/jina-embeddings-v5-text-small)')
   .option('-v, --verbose', 'Show detailed progress')
   .action(async (options) => {
     const startTime = Date.now();
 
     // Determine target project path for storage
     const targetProjectPath = options.project || process.cwd();
+
+    if (options.embeddingModel) {
+      process.env.CLAUDE_MEMORY_EMBEDDING_MODEL = options.embeddingModel;
+    }
 
     // Use project-specific memory service
     const service = getMemoryServiceForProject(targetProjectPath);
@@ -835,7 +840,16 @@ program
     try {
       console.log('\n⏳ Initializing memory service...');
       await service.initialize();
-      console.log('  ✅ Ready\n');
+      console.log(`  ✅ Ready (embedder: ${service.getEmbeddingModelName()})\n`);
+
+      const migration = await service.ensureEmbeddingModelForImport({ autoMigrate: true });
+      if (migration.changed) {
+        console.log('🔁 Embedding model migration detected/required');
+        console.log(`   Previous: ${migration.previousModel || 'legacy-unknown'}`);
+        console.log(`   Current:  ${migration.currentModel}`);
+        console.log(`   Re-queued embeddings: ${migration.enqueued}`);
+        console.log('   (Import will continue and process embeddings with the new model)\n');
+      }
 
       if (options.force) {
         console.log('🔄 Force mode: existing events will be deleted and reimported with turn_id grouping\n');
@@ -862,6 +876,14 @@ program
         const globalService = getDefaultMemoryService();
         const globalImporter = createSessionHistoryImporter(globalService);
         await globalService.initialize();
+        console.log(`  ✅ Global service ready (embedder: ${globalService.getEmbeddingModelName()})`);
+        const globalMigration = await globalService.ensureEmbeddingModelForImport({ autoMigrate: true });
+        if (globalMigration.changed) {
+          console.log('🔁 Global embedding migration detected');
+          console.log(`   Previous: ${globalMigration.previousModel || 'legacy-unknown'}`);
+          console.log(`   Current:  ${globalMigration.currentModel}`);
+          console.log(`   Re-queued embeddings: ${globalMigration.enqueued}`);
+        }
         result = await globalImporter.importAll(importOpts);
 
         // Process embeddings
