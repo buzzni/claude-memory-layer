@@ -1255,6 +1255,27 @@ export class MemoryService {
   }
 
   /**
+   * Record a query-level retrieval trace (used by user-prompt-submit hook).
+   * Feeds the retrieval_traces table that powers dashboard stats.
+   */
+  async recordQueryTrace(input: {
+    sessionId: string;
+    queryText: string;
+    strategy: string;
+    candidateEventIds: string[];
+    selectedEventIds: string[];
+    confidence: string;
+  }): Promise<void> {
+    await this.initialize();
+    await this.sqliteStore.recordRetrievalTrace({
+      ...input,
+      candidateDetails: [],
+      selectedDetails: [],
+      fallbackTrace: [],
+    });
+  }
+
+  /**
    * Evaluate helpfulness of retrievals in a session (called at session end)
    */
   async evaluateSessionHelpfulness(sessionId: string): Promise<void> {

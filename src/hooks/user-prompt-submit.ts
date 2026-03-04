@@ -288,6 +288,19 @@ async function main(): Promise<void> {
 
         context = formatMemoryContext(mergedMemories);
       }
+
+      // Record query-level trace for dashboard stats (retrieval_traces table)
+      const allCandidateIds = mergedMemories.map((m) => m.id).filter((v): v is string => Boolean(v));
+      try {
+        await memoryService.recordQueryTrace({
+          sessionId: input.session_id,
+          queryText: retrievalQuery,
+          strategy: RETRIEVAL_MODE,
+          candidateEventIds: allCandidateIds,
+          selectedEventIds: allCandidateIds,
+          confidence: mergedMemories.length > 0 ? 'medium' : 'none'
+        });
+      } catch { /* non-critical */ }
     }
 
     writeAdherenceState({
