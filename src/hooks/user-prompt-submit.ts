@@ -20,7 +20,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { getLightweightMemoryService } from '../services/memory-service.js';
-import { writeTurnState } from '../core/turn-state.js';
+import { writeTurnState, readLastAssistantSnippet } from '../core/turn-state.js';
 import { retrieveSemanticMemories } from './semantic-daemon-client.js';
 import type { UserPromptSubmitInput, UserPromptSubmitOutput } from '../core/types.js';
 
@@ -205,9 +205,17 @@ async function main(): Promise<void> {
 
     // Search strategy: turn-1 always enforce adherence check,
     // then adaptively enforce on write-intent/topic-shift/interval
-    if (ENABLE_SEARCH && input.prompt.length > 10 && adherenceDecision.run) {
+    const isSlashCommand = input.prompt.trimStart().startsWith('/');
+    if (ENABLE_SEARCH && !isSlashCommand && input.prompt.length > 10 && adherenceDecision.run) {
       const minScore = getDynamicMinScore(input.prompt);
       let mergedMemories: Array<{ type: string; content: string; id?: string; score?: number }> = [];
+
+      // On turn 2+, enrich the retrieval query with the previous assistant response
+      // so short/ambiguous follow-ups ("그거 고쳐줘") resolve correctly.
+      const lastSnippet = currentTurn > 1 ? readLastAssistantSnippet(input.session_id) : null;
+      const retrievalQuery = lastSnippet
+        ? `${lastSnippet}\n\n${input.prompt}`
+        : input.prompt;
 
       const canUseSemantic = RETRIEVAL_MODE === 'semantic' || RETRIEVAL_MODE === 'hybrid';
       if (canUseSemantic) {
@@ -215,7 +223,7 @@ async function main(): Promise<void> {
           mergedMemories = await retrieveSemanticMemories(
             {
               sessionId: input.session_id,
-              prompt: input.prompt,
+              prompt: retrievalQuery,
               topK: MAX_MEMORIES,
               minScore
             },
@@ -232,14 +240,14 @@ async function main(): Promise<void> {
         mergedMemories.length === 0;
 
       if (shouldUseKeywordFallback && mergedMemories.length < MAX_MEMORIES) {
-        let results = await memoryService.keywordSearch(input.prompt, {
+        let results = await memoryService.keywordSearch(retrievalQuery, {
           topK: MAX_MEMORIES,
           minScore
         });
 
         // recall rescue: if nothing found at tuned threshold, retry with fallback floor
         if (results.length === 0 && FALLBACK_MIN_SCORE < minScore) {
-          results = await memoryService.keywordSearch(input.prompt, {
+          results = await memoryService.keywordSearch(retrievalQuery, {
             topK: MAX_MEMORIES,
             minScore: FALLBACK_MIN_SCORE
           });

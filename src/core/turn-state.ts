@@ -122,6 +122,54 @@ export function clearTurnState(sessionId: string): void {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Last Assistant Snippet State
+// Persists the last ~500 chars of the assistant's response so the next
+// UserPromptSubmit can enrich the retrieval query with conversation context.
+// ---------------------------------------------------------------------------
+
+const LAST_RESPONSE_SNIPPET_CHARS = 500;
+
+interface LastResponseState {
+  sessionId: string;
+  snippet: string;
+  createdAt: string;
+}
+
+function getLastResponsePath(sessionId: string): string {
+  return path.join(TURN_STATE_DIR, `.last-response-${sessionId}.json`);
+}
+
+export function writeLastAssistantSnippet(sessionId: string, text: string): void {
+  try {
+    if (!fs.existsSync(TURN_STATE_DIR)) {
+      fs.mkdirSync(TURN_STATE_DIR, { recursive: true });
+    }
+    const snippet = text.slice(0, LAST_RESPONSE_SNIPPET_CHARS);
+    const state: LastResponseState = { sessionId, snippet, createdAt: new Date().toISOString() };
+    const filePath = getLastResponsePath(sessionId);
+    const tempPath = filePath + '.tmp';
+    fs.writeFileSync(tempPath, JSON.stringify(state));
+    fs.renameSync(tempPath, filePath);
+  } catch {
+    // non-critical
+  }
+}
+
+export function readLastAssistantSnippet(sessionId: string): string | null {
+  try {
+    const filePath = getLastResponsePath(sessionId);
+    if (!fs.existsSync(filePath)) return null;
+    const state: LastResponseState = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+    if (state.sessionId !== sessionId) return null;
+    // Ignore if older than 2 hours (stale session)
+    if (Date.now() - new Date(state.createdAt).getTime() > 2 * 60 * 60 * 1000) return null;
+    return state.snippet || null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Clean up stale turn state files (older than 1 hour).
  * Can be called periodically to prevent file accumulation.

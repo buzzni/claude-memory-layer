@@ -3,7 +3,6 @@ import * as fs from 'fs';
 import * as net from 'net';
 import * as os from 'os';
 import * as path from 'path';
-import { fileURLToPath } from 'url';
 
 interface SemanticRequest {
   sessionId: string;
@@ -179,8 +178,7 @@ async function ensureDaemonRunning(): Promise<void> {
 }
 
 function getDaemonScriptPath(): string {
-  const currentFile = fileURLToPath(import.meta.url);
-  return path.join(path.dirname(currentFile), 'semantic-daemon.js');
+  return path.join(path.dirname(new URL(import.meta.url).pathname), 'semantic-daemon.js');
 }
 
 function canConnect(): Promise<boolean> {

@@ -76,6 +76,11 @@ function makeErrorResponse(error: unknown): SemanticDaemonResponse {
   return { ok: false, error: error instanceof Error ? error.message : 'unknown daemon error' };
 }
 
+function isVectorSessionFilterError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message.toLowerCase() : '';
+  return message.includes('no field named sessionid');
+}
+
 function getServiceForSession(sessionId: string): MemoryService {
   const projectInfo = getSessionProject(sessionId);
   const key = projectInfo?.projectHash || '__global__';
@@ -107,14 +112,31 @@ async function handleRequest(raw: string): Promise<SemanticDaemonResponse> {
 
   try {
     const service = getServiceForSession(input.sessionId);
-    const result = await service.retrieveMemories(input.prompt, {
-      topK: input.topK,
-      minScore: input.minScore,
-      sessionId: input.sessionId,
-      intentRewrite: true,
-      adaptiveRerank: true,
-      projectScopeMode: 'strict'
-    });
+    let result;
+    try {
+      result = await service.retrieveMemories(input.prompt, {
+        topK: input.topK,
+        minScore: input.minScore,
+        sessionId: input.sessionId,
+        intentRewrite: true,
+        adaptiveRerank: true,
+        projectScopeMode: 'strict'
+      });
+    } catch (error) {
+      if (!isVectorSessionFilterError(error)) {
+        throw error;
+      }
+
+      // LanceDB field-case mismatch can fail sessionId filtering.
+      // Retry without session filter and keep project strict scoping.
+      result = await service.retrieveMemories(input.prompt, {
+        topK: input.topK,
+        minScore: input.minScore,
+        intentRewrite: true,
+        adaptiveRerank: true,
+        projectScopeMode: 'strict'
+      });
+    }
 
     const memories = result.memories.map((m) => ({
       type: m.event.eventType,
@@ -130,7 +152,7 @@ async function handleRequest(raw: string): Promise<SemanticDaemonResponse> {
 }
 
 function createServer(): net.Server {
-  return net.createServer((socket) => {
+  return net.createServer({ allowHalfOpen: true }, (socket) => {
     scheduleIdleShutdown();
     socket.setEncoding('utf8');
 

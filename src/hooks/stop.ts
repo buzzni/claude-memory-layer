@@ -17,7 +17,7 @@ import * as fs from 'fs';
 import * as readline from 'readline';
 import { getLightweightMemoryService } from '../services/memory-service.js';
 import { applyPrivacyFilter } from '../core/privacy/index.js';
-import { readTurnState, clearTurnState } from '../core/turn-state.js';
+import { readTurnState, clearTurnState, writeLastAssistantSnippet } from '../core/turn-state.js';
 import type { StopInput, Config } from '../core/types.js';
 
 // Default privacy config
@@ -116,6 +116,12 @@ async function main(): Promise<void> {
           ...(turnId ? { turnId } : {})
         }
       );
+    }
+
+    // Save last assistant response snippet for next-turn retrieval context enrichment
+    if (assistantMessages.length > 0) {
+      const lastMessage = assistantMessages[assistantMessages.length - 1];
+      writeLastAssistantSnippet(input.session_id, lastMessage);
     }
 
     // Clean up turn state file after processing
