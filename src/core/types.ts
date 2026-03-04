@@ -185,6 +185,7 @@ export const ConfigSchema = z.object({
   toolObservation: z.object({
     enabled: z.boolean().default(true),
     excludedTools: z.array(z.string()).default(['TodoWrite', 'TodoRead']),
+    minOutputLength: z.number().default(100),
     maxOutputLength: z.number().default(10000),
     maxOutputLines: z.number().default(100),
     storeOnlyOnSuccess: z.boolean().default(false)

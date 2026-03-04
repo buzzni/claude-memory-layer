@@ -20,11 +20,41 @@ import type { PostToolUseInput, ToolObservationPayload, Config } from '../core/t
 // Default config
 const DEFAULT_CONFIG: Config['toolObservation'] = {
   enabled: true,
-  excludedTools: ['TodoWrite', 'TodoRead'],
+  excludedTools: [
+    // Trivial meta tools
+    'TodoWrite', 'TodoRead',
+    // Reproducible query tools (no storage value)
+    'Read', 'Grep', 'Glob',
+    'ToolSearch', 'WebFetch', 'WebSearch', 'NotebookRead',
+    // Low-value system tools
+    'Skill', 'EnterPlanMode',
+  ],
+  minOutputLength: parseInt(process.env.CLAUDE_MEMORY_TOOL_MIN_OUTPUT_LEN || '100'),
   maxOutputLength: 10000,
   maxOutputLines: 100,
   storeOnlyOnSuccess: false
 };
+
+// Tools that are always stored regardless of output length
+const ALWAYS_STORE_TOOLS = new Set([
+  'Write', 'Edit', 'MultiEdit', 'Agent', 'Task', 'ExitPlanMode'
+]);
+
+/**
+ * Determine if a tool output is significant enough to store.
+ * Always-store tools bypass the length check.
+ * Other tools require non-empty stderr or output length >= minLen.
+ */
+function hasSignificantOutput(
+  toolName: string,
+  output: string,
+  response: PostToolUseInput['tool_response'],
+  minLen: number
+): boolean {
+  if (ALWAYS_STORE_TOOLS.has(toolName)) return true;
+  if (response?.stderr && response.stderr.trim().length > 0) return true;
+  return output.trim().length >= minLen;
+}
 
 const DEFAULT_PRIVACY_CONFIG: Config['privacy'] = {
   excludePatterns: ['password', 'secret', 'api_key', 'token', 'bearer'],
@@ -77,8 +107,14 @@ async function main(): Promise<void> {
   const inputData = await readStdin();
   const input: PostToolUseInput = JSON.parse(inputData);
 
-  const config = DEFAULT_CONFIG;
+  const config = { ...DEFAULT_CONFIG };
   const privacyConfig = DEFAULT_PRIVACY_CONFIG;
+
+  // Allow env-based blocklist override
+  const envBlocklist = process.env.CLAUDE_MEMORY_TOOL_BLOCKLIST;
+  if (envBlocklist !== undefined) {
+    config.excludedTools = envBlocklist.split(',').map((s) => s.trim()).filter(Boolean);
+  }
 
   // 1. Check if tool observation is enabled
   if (!config.enabled) {
@@ -98,6 +134,15 @@ async function main(): Promise<void> {
 
   // 4. Check success filter
   if (!success && config.storeOnlyOnSuccess) {
+    console.log(JSON.stringify({}));
+    return;
+  }
+
+  // 4.5. Output-level filter: skip low-signal outputs
+  if (!hasSignificantOutput(
+    input.tool_name, toolOutput, input.tool_response,
+    config.minOutputLength ?? 100
+  )) {
     console.log(JSON.stringify({}));
     return;
   }

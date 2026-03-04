@@ -59,6 +59,18 @@ export interface ClaudeMessage {
  * - 'thinking': Assistant thinking (thinking blocks)
  * - 'skip': Everything else (progress, system, summary, etc.)
  */
+/**
+ * Filter trivial user inputs that aren't worth storing.
+ * Mirrors the shouldStorePrompt() logic from user-prompt-submit.ts.
+ */
+function isWorthStoringPrompt(content: string): boolean {
+  const trimmed = content.trim();
+  if (trimmed.startsWith('/')) return false;
+  if (trimmed.length < 15) return false;
+  if (!/[a-zA-Z가-힣]{2,}/.test(trimmed)) return false;
+  return true;
+}
+
 function classifyEntry(entry: ClaudeMessage): 'user_prompt' | 'tool_result' | 'agent_text' | 'tool_use' | 'thinking' | 'skip' {
   if (entry.type !== 'user' && entry.type !== 'assistant') {
     return 'skip';
@@ -282,6 +294,12 @@ export class SessionHistoryImporter {
 
           const content = this.extractContent(entry);
           if (!content) continue;
+
+          // Skip trivial inputs: slash commands, very short, no real words
+          if (!isWorthStoringPrompt(content)) {
+            result.skippedDuplicates++;
+            continue;
+          }
 
           // New turn starts with each real user prompt
           currentTurnId = randomUUID();

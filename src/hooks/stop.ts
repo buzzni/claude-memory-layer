@@ -94,8 +94,16 @@ async function main(): Promise<void> {
     // Read assistant messages from transcript
     const assistantMessages = await extractAssistantMessages(input.transcript_path);
 
+    const MIN_AGENT_RESPONSE_LEN = parseInt(
+      process.env.CLAUDE_MEMORY_AGENT_RESPONSE_MIN_LEN || '150'
+    );
+    const lastIdx = assistantMessages.length - 1;
+
     // Store each assistant response
-    for (const text of assistantMessages) {
+    for (let i = 0; i < assistantMessages.length; i++) {
+      const text = assistantMessages[i];
+      const isLast = i === lastIdx;
+
       // Apply privacy filter
       const filterResult = applyPrivacyFilter(text, DEFAULT_PRIVACY_CONFIG);
       let content = filterResult.content;
@@ -105,8 +113,9 @@ async function main(): Promise<void> {
         content = content.slice(0, 5000) + '...[truncated]';
       }
 
-      // Skip very short responses (likely just tool calls)
-      if (content.trim().length < 10) continue;
+      // Skip very short responses (likely just tool calls or transition messages)
+      // Always store the last message (may be the final answer)
+      if (!isLast && content.trim().length < MIN_AGENT_RESPONSE_LEN) continue;
 
       await memoryService.storeAgentResponse(
         input.session_id,
