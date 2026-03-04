@@ -95,7 +95,8 @@ function getServiceForSession(sessionId: string): MemoryService {
       : path.join(os.homedir(), '.claude-code', 'memory'),
     projectHash: projectInfo?.projectHash,
     projectPath: projectInfo?.projectPath,
-    readOnly: true,
+    readOnly: false,
+    embeddingOnly: true,
     analyticsEnabled: false,
     sharedStoreConfig: { enabled: false }
   });

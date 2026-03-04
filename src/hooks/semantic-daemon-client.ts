@@ -132,7 +132,7 @@ function requestFromDaemon(
   });
 }
 
-async function ensureDaemonRunning(): Promise<void> {
+export async function ensureDaemonRunning(): Promise<void> {
   if (daemonStartPromise) {
     return daemonStartPromise;
   }

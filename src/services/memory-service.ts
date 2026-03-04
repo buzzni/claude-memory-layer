@@ -61,6 +61,8 @@ export interface MemoryServiceConfig {
   analyticsEnabled?: boolean;
   /** Lightweight mode for hooks - skip heavy initialization (default: false) */
   lightweightMode?: boolean;
+  /** Start only VectorWorker, skip GraduationWorker and SyncWorker (default: false) */
+  embeddingOnly?: boolean;
 }
 
 // ============================================================
@@ -212,6 +214,7 @@ export class MemoryService {
 
   private readonly readOnly: boolean;
   private readonly lightweightMode: boolean;
+  private readonly embeddingOnly: boolean;
   private readonly mdMirror: MarkdownMirror;
   private readonly storagePath: string;
 
@@ -220,6 +223,7 @@ export class MemoryService {
     this.storagePath = storagePath;
     this.readOnly = config.readOnly ?? false;
     this.lightweightMode = config.lightweightMode ?? false;
+    this.embeddingOnly = config.embeddingOnly ?? false;
     this.mdMirror = new MarkdownMirror(process.cwd());
 
     // Ensure storage directory exists (only if not read-only)
@@ -325,24 +329,26 @@ export class MemoryService {
       );
       this.vectorWorker.start();
 
-      // Connect graduation pipeline to retriever for access tracking
-      this.retriever.setGraduationPipeline(this.graduation);
+      if (!this.embeddingOnly) {
+        // Connect graduation pipeline to retriever for access tracking
+        this.retriever.setGraduationPipeline(this.graduation);
 
-      // Start graduation worker for automatic level promotion
-      this.graduationWorker = createGraduationWorker(
-        this.sqliteStore as unknown as EventStore,
-        this.graduation
-      );
-      this.graduationWorker.start();
-
-      // Start sync worker (SQLite -> DuckDB) if analytics store is available
-      if (this.analyticsStore) {
-        this.syncWorker = new SyncWorker(
-          this.sqliteStore,
-          this.analyticsStore,
-          { intervalMs: 30000, batchSize: 500 }
+        // Start graduation worker for automatic level promotion
+        this.graduationWorker = createGraduationWorker(
+          this.sqliteStore as unknown as EventStore,
+          this.graduation
         );
-        this.syncWorker.start();
+        this.graduationWorker.start();
+
+        // Start sync worker (SQLite -> DuckDB) if analytics store is available
+        if (this.analyticsStore) {
+          this.syncWorker = new SyncWorker(
+            this.sqliteStore,
+            this.analyticsStore,
+            { intervalMs: 30000, batchSize: 500 }
+          );
+          this.syncWorker.start();
+        }
       }
 
       // Load endless mode setting

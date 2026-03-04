@@ -8,6 +8,7 @@ import {
   getLightweightMemoryService,
   registerSession
 } from '../services/memory-service.js';
+import { ensureDaemonRunning } from './semantic-daemon-client.js';
 import type { SessionStartInput, SessionStartOutput } from '../core/types.js';
 
 async function main(): Promise<void> {
@@ -17,6 +18,12 @@ async function main(): Promise<void> {
 
   // Register session with project path for other hooks to find
   registerSession(input.session_id, input.cwd);
+
+  // Start semantic daemon in the background (non-blocking) so VectorWorker
+  // can process any pending embedding_outbox items immediately.
+  ensureDaemonRunning().catch(() => {
+    // Ignore - daemon will start on first prompt if needed
+  });
 
   // Use lightweight service to avoid starting background workers in hook process
   const memoryService = getLightweightMemoryService(input.session_id);
