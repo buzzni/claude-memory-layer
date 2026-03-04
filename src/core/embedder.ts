@@ -3,7 +3,7 @@
  * AXIOMMIND Principle 7: Standard JSON format for vectors
  */
 
-import { pipeline, Pipeline } from '@xenova/transformers';
+import { pipeline, Pipeline } from '@huggingface/transformers';
 
 export interface EmbeddingResult {
   vector: number[];

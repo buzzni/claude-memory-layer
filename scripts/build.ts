@@ -29,6 +29,7 @@ const commonOptions: esbuild.BuildOptions = {
     '@hono/node-server/serve-static',
     '@lancedb/lancedb',
     '@xenova/transformers',
+    '@huggingface/transformers',
     'duckdb',
     'better-sqlite3',
     'commander',
