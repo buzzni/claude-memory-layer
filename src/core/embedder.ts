@@ -46,6 +46,13 @@ export class Embedder {
     }
   }
 
+  // ~4 chars per token; 512 tokens * 4 = 2048, use 2000 to be safe
+  private static readonly MAX_CHARS = 2000;
+
+  private truncate(text: string): string {
+    return text.length > Embedder.MAX_CHARS ? text.slice(0, Embedder.MAX_CHARS) : text;
+  }
+
   /**
    * Generate embedding for a single text
    */
@@ -56,9 +63,11 @@ export class Embedder {
       throw new Error('Embedding pipeline not initialized');
     }
 
-    const output = await this.pipeline(text, {
+    const output = await this.pipeline(this.truncate(text), {
       pooling: 'mean',
-      normalize: true
+      normalize: true,
+      truncation: true,
+      max_length: 512
     });
 
     const vector = Array.from(output.data as Float32Array);
@@ -88,9 +97,11 @@ export class Embedder {
       const batch = texts.slice(i, i + batchSize);
 
       for (const text of batch) {
-        const output = await this.pipeline(text, {
+        const output = await this.pipeline(this.truncate(text), {
           pooling: 'mean',
-          normalize: true
+          normalize: true,
+          truncation: true,
+          max_length: 512
         });
 
         const vector = Array.from(output.data as Float32Array);

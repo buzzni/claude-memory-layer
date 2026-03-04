@@ -70,7 +70,8 @@ async function build() {
     'user-prompt-submit',
     'post-tool-use',
     'stop',
-    'session-end'
+    'session-end',
+    'semantic-daemon'
   ];
 
   for (const hook of hooks) {

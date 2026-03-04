@@ -95,15 +95,13 @@ function hasHook(settings: ClaudeSettings, hookName: keyof NonNullable<ClaudeSet
 }
 
 function getHooksConfig(pluginPath: string): ClaudeSettings['hooks'] {
-  const makeHook = (fileName: string, env?: Record<string, string>) => [
+  const makeHook = (fileName: string) => [
     {
       matcher: '',
       hooks: [
         {
           type: 'command',
-          command: `${env
-            ? Object.entries(env).map(([k, v]) => `${k}=${v}`).join(' ') + ' '
-            : ''}node ${path.join(pluginPath, 'hooks', fileName)}`
+          command: `node ${path.join(pluginPath, 'hooks', fileName)}`
         }
       ]
     }
@@ -111,8 +109,7 @@ function getHooksConfig(pluginPath: string): ClaudeSettings['hooks'] {
 
   return {
     SessionStart: makeHook('session-start.js'),
-    // Default retrieval mode is keyword-first for lower latency.
-    UserPromptSubmit: makeHook('user-prompt-submit.js', { CLAUDE_MEMORY_RETRIEVAL_MODE: 'keyword' }),
+    UserPromptSubmit: makeHook('user-prompt-submit.js'),
     PostToolUse: makeHook('post-tool-use.js'),
     Stop: makeHook('stop.js'),
     SessionEnd: makeHook('session-end.js')

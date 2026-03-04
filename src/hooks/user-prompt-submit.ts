@@ -1,10 +1,15 @@
 #!/usr/bin/env node
 /**
  * User Prompt Submit Hook
- * Called when user submits a prompt - retrieves relevant memories using fast keyword search
+ * Called when user submits a prompt - retrieves relevant memories.
  *
- * Uses SQLite FTS5 for fast keyword-based search (no ML model needed)
- * Much faster than vector search (~100ms vs 3-5s)
+ * Retrieval mode (CLAUDE_MEMORY_RETRIEVAL_MODE):
+ *   - keyword (default-fast): SQLite FTS5 only, no ML model (~10ms)
+ *   - semantic: vector search via long-running semantic daemon (~15-20ms warm)
+ *   - hybrid: semantic first, keyword fallback (default)
+ *
+ * The semantic daemon keeps the embedding model in memory across hook invocations,
+ * avoiding per-request model initialization (~730ms cold start).
  *
  * Turn Grouping: Generates a turn_id and persists it to a state file
  * so PostToolUse and Stop hooks can associate their events with this turn.
@@ -14,8 +19,9 @@ import { randomUUID } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { getLightweightMemoryService, getMemoryServiceForSession } from '../services/memory-service.js';
+import { getLightweightMemoryService } from '../services/memory-service.js';
 import { writeTurnState } from '../core/turn-state.js';
+import { retrieveSemanticMemories } from './semantic-daemon-client.js';
 import type { UserPromptSubmitInput, UserPromptSubmitOutput } from '../core/types.js';
 
 // Configuration
@@ -24,8 +30,8 @@ const MAX_MEMORIES = parseInt(process.env.CLAUDE_MEMORY_MAX_COUNT || '5');
 const BASE_MIN_SCORE = parseFloat(process.env.CLAUDE_MEMORY_MIN_SCORE || '0.4');
 const FALLBACK_MIN_SCORE = parseFloat(process.env.CLAUDE_MEMORY_FALLBACK_MIN_SCORE || '0.3');
 const ENABLE_SEARCH = process.env.CLAUDE_MEMORY_SEARCH !== 'false';
-const RETRIEVAL_MODE = (process.env.CLAUDE_MEMORY_RETRIEVAL_MODE || 'keyword') as 'keyword' | 'semantic' | 'hybrid';
-const SEMANTIC_TIMEOUT_MS = parseInt(process.env.CLAUDE_MEMORY_SEMANTIC_TIMEOUT_MS || '1200');
+const RETRIEVAL_MODE = (process.env.CLAUDE_MEMORY_RETRIEVAL_MODE || 'hybrid') as 'keyword' | 'semantic' | 'hybrid';
+const SEMANTIC_TIMEOUT_MS = parseInt(process.env.CLAUDE_MEMORY_SEMANTIC_TIMEOUT_MS || '2000');
 const ADHERENCE_INTERVAL_TURNS = parseInt(process.env.CLAUDE_MEMORY_ADHERENCE_INTERVAL_TURNS || '3');
 
 const ADHERENCE_STATE_DIR = path.join(os.homedir(), '.claude-code', 'memory');
@@ -57,21 +63,6 @@ function getDynamicMinScore(prompt: string): number {
   if (len <= 20) return Math.min(0.55, BASE_MIN_SCORE + 0.1);   // short query → stricter
   if (len >= 80) return Math.max(0.3, BASE_MIN_SCORE - 0.05);    // long query → slightly looser
   return BASE_MIN_SCORE;
-}
-
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`semantic retrieval timeout (${timeoutMs}ms)`)), timeoutMs);
-    promise
-      .then((result) => {
-        clearTimeout(timer);
-        resolve(result);
-      })
-      .catch((error) => {
-        clearTimeout(timer);
-        reject(error);
-      });
-  });
 }
 
 function formatMemoryContext(items: Array<{ type: string; content: string }>): string {
@@ -221,25 +212,15 @@ async function main(): Promise<void> {
       const canUseSemantic = RETRIEVAL_MODE === 'semantic' || RETRIEVAL_MODE === 'hybrid';
       if (canUseSemantic) {
         try {
-          const semanticService = getMemoryServiceForSession(input.session_id);
-          const semantic = await withTimeout(
-            semanticService.retrieveMemories(input.prompt, {
-              topK: MAX_MEMORIES,
-              minScore,
+          mergedMemories = await retrieveSemanticMemories(
+            {
               sessionId: input.session_id,
-              intentRewrite: true,
-              adaptiveRerank: true,
-              projectScopeMode: 'strict'
-            }),
+              prompt: input.prompt,
+              topK: MAX_MEMORIES,
+              minScore
+            },
             SEMANTIC_TIMEOUT_MS
           );
-
-          mergedMemories = semantic.memories.map((m) => ({
-            type: m.event.eventType,
-            content: m.event.content,
-            id: m.event.id,
-            score: m.score
-          }));
         } catch {
           // Semantic retrieval is best-effort; fallback below handles the rest
         }

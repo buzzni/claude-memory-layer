@@ -72,7 +72,8 @@ npx claude-memory-layer search "배포 이슈"
   - `GET /api/health` (outbox pending/failed 포함 상세 헬스)
   - `GET /api/stats/retrieval-traces` (검색→컨텍스트 채택 추적)
 - 주입 임계값 튜닝(환경변수):
-  - `CLAUDE_MEMORY_RETRIEVAL_MODE` (기본 `keyword`, `keyword`/`hybrid`/`semantic`)
+  - `CLAUDE_MEMORY_RETRIEVAL_MODE` (기본 `hybrid`, `keyword`/`hybrid`/`semantic`)
+  - `CLAUDE_MEMORY_SEMANTIC_DAEMON_IDLE_MS` (기본 `600000`, semantic daemon 유휴 종료 시간)
   - `CLAUDE_MEMORY_MIN_SCORE` (기본 0.4)
   - `CLAUDE_MEMORY_FALLBACK_MIN_SCORE` (기본 0.3, 결과 0건일 때 재시도)
 
