@@ -10,7 +10,6 @@ import * as crypto from 'crypto';
 
 import { EventStore } from '../core/event-store.js';
 import { SQLiteEventStore } from '../core/sqlite-event-store.js';
-import { SyncWorker } from '../core/sync-worker.js';
 import { VectorStore } from '../core/vector-store.js';
 import { Embedder, getDefaultEmbedder } from '../core/embedder.js';
 import { VectorWorker, createVectorWorker } from '../core/vector-worker.js';
@@ -182,9 +181,6 @@ export function getSessionProject(sessionId: string): SessionRegistryEntry | nul
 export class MemoryService {
   // Primary store: SQLite (WAL mode) - for hooks, always available
   private readonly sqliteStore: SQLiteEventStore;
-  // Analytics store: DuckDB - for server reads (optional, synced from SQLite)
-  private readonly analyticsStore: EventStore | null;
-  private syncWorker: SyncWorker | null = null;
 
   private readonly vectorStore: VectorStore;
   private readonly embedder: Embedder;
@@ -247,32 +243,6 @@ export class MemoryService {
       }
     );
 
-    // Initialize ANALYTICS store: DuckDB (optional, for server reads)
-    // Hooks set analyticsEnabled=false to avoid DuckDB lock conflicts
-    const analyticsEnabled = config.analyticsEnabled ?? this.readOnly; // Default: enabled only for read-only (server)
-
-    if (!analyticsEnabled) {
-      // Hook mode: skip DuckDB entirely to avoid lock conflicts
-      this.analyticsStore = null;
-    } else if (this.readOnly) {
-      // Server mode: try to use DuckDB for analytics, will fallback to SQLite
-      try {
-        this.analyticsStore = new EventStore(
-          path.join(storagePath, 'analytics.duckdb'),
-          { readOnly: true }
-        );
-      } catch {
-        // DuckDB not available, will use SQLite for reads
-        this.analyticsStore = null;
-      }
-    } else {
-      // Writer mode with analytics: create DuckDB for sync target
-      this.analyticsStore = new EventStore(
-        path.join(storagePath, 'analytics.duckdb'),
-        { readOnly: false }
-      );
-    }
-
     this.vectorStore = new VectorStore(path.join(storagePath, 'vectors'));
     const embeddingModel = config.embeddingModel || process.env.CLAUDE_MEMORY_EMBEDDING_MODEL;
     this.embedder = embeddingModel
@@ -306,16 +276,6 @@ export class MemoryService {
       return;
     }
 
-    // Initialize analytics store if available (DuckDB)
-    if (this.analyticsStore) {
-      try {
-        await this.analyticsStore.initialize();
-      } catch (error) {
-        console.warn('[MemoryService] Analytics store (DuckDB) initialization failed, using SQLite for reads:', error);
-        // Continue without analytics - SQLite will be used for reads
-      }
-    }
-
     await this.vectorStore.initialize();
     await this.embedder.initialize();
 
@@ -340,15 +300,6 @@ export class MemoryService {
         );
         this.graduationWorker.start();
 
-        // Start sync worker (SQLite -> DuckDB) if analytics store is available
-        if (this.analyticsStore) {
-          this.syncWorker = new SyncWorker(
-            this.sqliteStore,
-            this.analyticsStore,
-            { intervalMs: 30000, batchSize: 500 }
-          );
-          this.syncWorker.start();
-        }
       }
 
       // Load endless mode setting
@@ -1652,11 +1603,6 @@ export class MemoryService {
       this.vectorWorker.stop();
     }
 
-    // Stop sync worker
-    if (this.syncWorker) {
-      this.syncWorker.stop();
-    }
-
     // Close shared store
     if (this.sharedEventStore) {
       await this.sharedEventStore.close();
@@ -1665,10 +1611,6 @@ export class MemoryService {
     // Close primary store (SQLite)
     await this.sqliteStore.close();
 
-    // Close analytics store (DuckDB)
-    if (this.analyticsStore) {
-      await this.analyticsStore.close();
-    }
   }
 
   /**

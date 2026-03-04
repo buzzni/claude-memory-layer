@@ -1,34 +1,14 @@
 /**
- * DuckDB Promise Wrapper
- * Wraps the callback-based DuckDB API with Promise-based async/await interface
+ * SQLite Database Wrapper
+ * Provides Promise-based interface over better-sqlite3 synchronous API
  */
 
-import duckdb from 'duckdb';
+import BetterSqlite3 from 'better-sqlite3';
 
-export type Database = duckdb.Database;
-
-/**
- * Converts BigInt values to Number in an object
- * DuckDB returns BigInt for COUNT(*) and other aggregate functions
- */
-function convertBigInts<T>(obj: T): T {
-  if (obj === null || obj === undefined) return obj;
-  if (typeof obj === 'bigint') return Number(obj) as unknown as T;
-  if (obj instanceof Date) return obj; // Preserve Date objects
-  if (Array.isArray(obj)) return obj.map(convertBigInts) as unknown as T;
-  if (typeof obj === 'object') {
-    const result: Record<string, unknown> = {};
-    for (const [key, value] of Object.entries(obj as Record<string, unknown>)) {
-      result[key] = convertBigInts(value);
-    }
-    return result as T;
-  }
-  return obj;
-}
+export type Database = BetterSqlite3.Database;
 
 /**
  * Safely converts a value to a Date object
- * Handles both Date objects and string timestamps from DuckDB
  */
 export function toDate(value: unknown): Date {
   if (value instanceof Date) return value;
@@ -42,78 +22,43 @@ export interface DatabaseOptions {
 }
 
 /**
- * Creates a new DuckDB database with Promise-based API
+ * Creates a new SQLite database connection
  */
-export function createDatabase(path: string, options?: DatabaseOptions): Database {
-  if (options?.readOnly) {
-    return new duckdb.Database(path, { access_mode: 'READ_ONLY' });
-  }
-  return new duckdb.Database(path);
+export function createDatabase(dbPath: string, options?: DatabaseOptions): Database {
+  return new BetterSqlite3(dbPath, { readonly: options?.readOnly });
 }
 
 /**
- * Promisified db.run() - executes a statement that doesn't return rows
+ * Executes a statement that doesn't return rows
  */
 export function dbRun(db: Database, sql: string, params: unknown[] = []): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (params.length === 0) {
-      db.run(sql, (err: Error | null) => {
-        if (err) reject(err);
-        else resolve();
-      });
-    } else {
-      db.run(sql, ...params, (err: Error | null) => {
-        if (err) reject(err);
-        else resolve();
-      });
-    }
-  });
+  db.prepare(sql).run(...(params as never[]));
+  return Promise.resolve();
 }
 
 /**
- * Promisified db.all() - executes a query and returns all rows
- * Automatically converts BigInt values to Number
+ * Executes a query and returns all rows
  */
 export function dbAll<T = Record<string, unknown>>(
   db: Database,
   sql: string,
   params: unknown[] = []
 ): Promise<T[]> {
-  return new Promise((resolve, reject) => {
-    if (params.length === 0) {
-      db.all(sql, (err: Error | null, rows: T[]) => {
-        if (err) reject(err);
-        else resolve(convertBigInts(rows || []));
-      });
-    } else {
-      db.all(sql, ...params, (err: Error | null, rows: T[]) => {
-        if (err) reject(err);
-        else resolve(convertBigInts(rows || []));
-      });
-    }
-  });
+  return Promise.resolve(db.prepare(sql).all(...(params as never[])) as T[]);
 }
 
 /**
- * Promisified db.close() - closes the database connection
+ * Closes the database connection
  */
 export function dbClose(db: Database): Promise<void> {
-  return new Promise((resolve, reject) => {
-    db.close((err: Error | null) => {
-      if (err) reject(err);
-      else resolve();
-    });
-  });
+  db.close();
+  return Promise.resolve();
 }
 
 /**
- * Promisified db.exec() - executes multiple statements
+ * Executes multiple statements
  */
 export function dbExec(db: Database, sql: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    db.exec(sql, (err: Error | null) => {
-      if (err) reject(err);
-      else resolve();
-    });
-  });
+  db.exec(sql);
+  return Promise.resolve();
 }
