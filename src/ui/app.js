@@ -388,8 +388,19 @@ function updateStatsUI() {
   const sharedCount = state.sharedStats ?
     ((state.sharedStats.troubleshooting || 0) + (state.sharedStats.bestPractices || 0) + (state.sharedStats.commonErrors || 0)) : 0;
 
-  document.getElementById('stat-shared').textContent = formatNumber(sharedCount);
   document.getElementById('stat-vectors').textContent = formatNumber(vectorCount);
+
+  // Retrieval quality stat card
+  const rtStats = state.retrievalTraces?.stats;
+  const totalQueries = rtStats?.totalQueries || 0;
+  const selRate = rtStats ? ((rtStats.selectionRate || 0) * 100).toFixed(0) : null;
+  document.getElementById('stat-retrieval-queries').textContent = formatNumber(totalQueries);
+  const rateEl = document.getElementById('stat-retrieval-rate');
+  if (rateEl) {
+    rateEl.textContent = totalQueries > 0 && selRate !== null
+      ? `${selRate}% selection rate`
+      : totalQueries > 0 ? '' : 'no queries yet';
+  }
 
   const levelCounts = {};
   if (state.stats.levelStats) {
@@ -596,10 +607,46 @@ function updateEventsListUI() {
 
 // --- Memory Usage ---
 
+function updateTopAccessedEventsUI() {
+  const container = document.getElementById('top-accessed-events-list');
+  if (!container) return;
+
+  const events = (state.mostAccessed?.events || state.mostAccessed?.memories || []);
+  const filtered = events.filter(e => (e.accessCount || 0) > 0).slice(0, 5);
+
+  if (filtered.length === 0) {
+    container.innerHTML = '<div style="padding:12px; text-align:center; color:var(--text-muted); font-size:13px;">No accessed memories yet</div>';
+    return;
+  }
+
+  container.innerHTML = filtered.map((m, i) => {
+    const type = m.eventType || m.type || 'memory';
+    const preview = (m.summary || m.preview || m.content || '').replace(/<[^>]*>/g, '').slice(0, 80);
+    const lastAccessed = m.lastAccessedAt ? new Date(m.lastAccessedAt).toLocaleDateString() : (m.lastAccessed ? new Date(m.lastAccessed).toLocaleDateString() : '-');
+    const id = m.id || m.memoryId || '';
+    return `
+      <div class="shared-item" style="cursor:pointer;" ${id ? `onclick="openDetailModal('${id}')"` : ''}>
+        <div class="shared-info" style="flex-direction:column; align-items:flex-start; gap:2px;">
+          <div style="display:flex; gap:6px; align-items:center;">
+            <span class="event-type-badge type-${type.replace('_','-')}">${type}</span>
+            <span style="font-size:10px; color:var(--text-muted);">last: ${lastAccessed}</span>
+          </div>
+          <span style="font-size:12px; color:var(--text-secondary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:200px;" title="${escapeHtml(preview)}">${escapeHtml(preview) || '(no preview)'}</span>
+        </div>
+        <div style="display:flex; flex-direction:column; align-items:flex-end; gap:2px; min-width:40px;">
+          <span style="font-size:15px; font-weight:700; color:var(--accent-primary);">${m.accessCount}</span>
+          <span style="font-size:10px; color:var(--text-muted);">hits</span>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
 function updateMemoryUsageUI() {
   updateGraduationBars();
   updateHelpfulnessUI();
   updateMostHelpfulList();
+  updateTopAccessedEventsUI();
   updateAdherenceSummaryUI();
   updateRetrievalTraceUI();
 }

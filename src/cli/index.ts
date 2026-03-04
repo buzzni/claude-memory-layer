@@ -442,6 +442,7 @@ program
     const service = getMemoryServiceForProject(projectPath);
 
     try {
+      await service.initialize();
       console.log('⏳ Processing pending embeddings...');
       const count = await service.processPendingEmbeddings();
       console.log(`✅ Processed ${count} embeddings`);
