@@ -1146,6 +1146,22 @@ export class SQLiteEventStore {
   }
 
   /**
+   * Get session IDs that have unevaluated retrievals (measured_at IS NULL).
+   * Excludes the current session. Used to backfill sessions that ended without Stop hook.
+   */
+  async getUnevaluatedSessions(currentSessionId: string, limit = 5): Promise<string[]> {
+    await this.initialize();
+    const rows = sqliteAll<{ session_id: string }>(
+      this.db,
+      `SELECT DISTINCT session_id FROM memory_helpfulness
+       WHERE measured_at IS NULL AND session_id != ?
+       ORDER BY created_at DESC LIMIT ?`,
+      [currentSessionId, limit]
+    );
+    return rows.map((r) => r.session_id);
+  }
+
+  /**
    * Evaluate helpfulness for all retrievals in a session
    * Called at session end - uses behavioral signals to compute score
    */

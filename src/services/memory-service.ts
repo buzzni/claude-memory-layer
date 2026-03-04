@@ -1284,6 +1284,22 @@ export class MemoryService {
   }
 
   /**
+   * Backfill helpfulness evaluation for sessions that ended without Stop hook.
+   * Call on first turn of a new session to catch missed evaluations.
+   */
+  async evaluatePendingSessions(currentSessionId: string): Promise<void> {
+    await this.initialize();
+    const sessions = await this.sqliteStore.getUnevaluatedSessions(currentSessionId, 5);
+    for (const sid of sessions) {
+      try {
+        await this.sqliteStore.evaluateSessionHelpfulness(sid);
+      } catch {
+        // non-critical, skip failed
+      }
+    }
+  }
+
+  /**
    * Get most helpful memories ranked by helpfulness score
    */
   async getHelpfulMemories(limit: number = 10): Promise<Array<{

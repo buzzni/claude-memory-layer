@@ -187,6 +187,12 @@ async function main(): Promise<void> {
     const adherenceDecision = shouldRunAdherenceCheck(currentTurn, input.prompt, adherenceState);
     logAdherenceDecision(input.session_id, currentTurn, adherenceDecision.run, adherenceDecision.reason);
 
+    // On first turn of a new session, backfill helpfulness for sessions
+    // that ended without Stop hook (crash, force-close, etc.)
+    if (currentTurn === 1) {
+      memoryService.evaluatePendingSessions(input.session_id).catch(() => {});
+    }
+
     // Store only non-trivial prompts (skip /commands, short inputs)
     if (shouldStorePrompt(input.prompt)) {
       await memoryService.storeUserPrompt(
