@@ -14,10 +14,12 @@ export interface EmbeddingResult {
 export class Embedder {
   private pipeline: Pipeline | null = null;
   private readonly modelName: string;
+  private activeModelName: string;
   private initialized = false;
 
-  constructor(modelName: string = 'jinaai/jina-embeddings-v5-text-nano') {
+  constructor(modelName: string = 'jinaai/jina-embeddings-v5-text-nano-text-matching') {
     this.modelName = modelName;
+    this.activeModelName = modelName;
   }
 
   /**
@@ -26,8 +28,22 @@ export class Embedder {
   async initialize(): Promise<void> {
     if (this.initialized) return;
 
-    this.pipeline = await pipeline('feature-extraction', this.modelName);
-    this.initialized = true;
+    try {
+      this.pipeline = await pipeline('feature-extraction', this.modelName);
+      this.activeModelName = this.modelName;
+      this.initialized = true;
+      return;
+    } catch (primaryError) {
+      const fallbackModel = process.env.CLAUDE_MEMORY_EMBEDDING_FALLBACK_MODEL || 'onnx-community/embeddinggemma-300m-ONNX';
+      if (fallbackModel === this.modelName) {
+        throw primaryError;
+      }
+
+      console.warn(`[Embedder] Primary model failed (${this.modelName}). Falling back to ${fallbackModel}`);
+      this.pipeline = await pipeline('feature-extraction', fallbackModel);
+      this.activeModelName = fallbackModel;
+      this.initialized = true;
+    }
   }
 
   /**
@@ -49,7 +65,7 @@ export class Embedder {
 
     return {
       vector,
-      model: this.modelName,
+      model: this.activeModelName,
       dimensions: vector.length
     };
   }
@@ -81,7 +97,7 @@ export class Embedder {
 
         results.push({
           vector,
-          model: this.modelName,
+          model: this.activeModelName,
           dimensions: vector.length
         });
       }
@@ -109,7 +125,7 @@ export class Embedder {
    * Get model name
    */
   getModelName(): string {
-    return this.modelName;
+    return this.activeModelName;
   }
 }
 

@@ -814,7 +814,7 @@ program
   .option('-a, --all', 'Import all sessions from all projects')
   .option('-l, --limit <number>', 'Limit messages per session')
   .option('-f, --force', 'Force reimport: delete existing events and reimport with turn_id grouping')
-  .option('--embedding-model <name>', 'Embedding model override (default: jinaai/jina-embeddings-v5-text-nano, or env CLAUDE_MEMORY_EMBEDDING_MODEL)')
+  .option('--embedding-model <name>', 'Embedding model override (default: jinaai/jina-embeddings-v5-text-nano-text-matching, or env CLAUDE_MEMORY_EMBEDDING_MODEL; fallback env: CLAUDE_MEMORY_EMBEDDING_FALLBACK_MODEL)')
   .option('-v, --verbose', 'Show detailed progress')
   .action(async (options) => {
     const startTime = Date.now();
