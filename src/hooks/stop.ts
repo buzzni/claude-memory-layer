@@ -136,6 +136,20 @@ async function main(): Promise<void> {
     // Clean up turn state file after processing
     clearTurnState(input.session_id);
 
+    // Evaluate helpfulness of retrieved memories for this session
+    try {
+      await memoryService.evaluateSessionHelpfulness(input.session_id);
+    } catch {
+      // non-critical
+    }
+
+    // Generate session summary from recent events (rule-based, no LLM needed)
+    try {
+      await memoryService.generateSessionSummary(input.session_id);
+    } catch {
+      // non-critical
+    }
+
     // Embeddings enqueued in SQLite - will be processed by vector worker when server runs
     await memoryService.processPendingEmbeddings();
 

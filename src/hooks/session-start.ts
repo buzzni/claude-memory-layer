@@ -32,6 +32,10 @@ async function main(): Promise<void> {
     // Start session in memory service
     await memoryService.startSession(input.session_id, input.cwd);
 
+    // Backfill session summaries for recent sessions that ended without Stop hook
+    // (crash, force-close, etc.). Run in background - non-blocking.
+    memoryService.backfillMissingSummaries(input.session_id, 5).catch(() => {});
+
     // Get recent context for this project (now automatically scoped)
     const recentEvents = await memoryService.getRecentEvents(10);
 

@@ -19,7 +19,7 @@ import { MemoryService } from '../../services/memory-service.js';
  * VectorWorker lifecycle issues with per-request services.
  */
 export function getServiceFromQuery(c: Context): MemoryService {
-  const project = c.req.query('project');
+  const project = c.req.query('project') || c.req.query('projectId');
   if (project) {
     // Check if it's a hash (8 hex chars) or a path
     const isHash = /^[a-f0-9]{8}$/.test(project);

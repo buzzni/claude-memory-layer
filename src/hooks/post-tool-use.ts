@@ -40,9 +40,33 @@ const ALWAYS_STORE_TOOLS = new Set([
   'Write', 'Edit', 'MultiEdit', 'Agent', 'Task', 'ExitPlanMode'
 ]);
 
+// Keywords that indicate a Bash output is worth storing
+const IMPORTANT_BASH_KEYWORDS = [
+  'error', 'failed', 'exception', 'traceback', 'panic',
+  'warning', 'deprecated',
+  'test passed', 'test failed', 'tests passed', 'tests failed',
+  'coverage', 'assert',
+  'published', 'deployed', 'built successfully', 'build complete',
+  'successfully installed', 'successfully created',
+];
+
+/**
+ * For Bash commands, only store output that is significant:
+ * - Has stderr content
+ * - Contains important keywords (errors, test results, deploy events)
+ * - Output is very long (> 2000 chars), indicating meaningful work
+ */
+function isBashSignificant(output: string, response: PostToolUseInput['tool_response']): boolean {
+  if (response?.stderr && response.stderr.trim().length > 20) return true;
+  const lower = output.toLowerCase();
+  if (IMPORTANT_BASH_KEYWORDS.some((kw) => lower.includes(kw))) return true;
+  return output.trim().length > 2000;
+}
+
 /**
  * Determine if a tool output is significant enough to store.
  * Always-store tools bypass the length check.
+ * Bash uses keyword-based significance detection.
  * Other tools require non-empty stderr or output length >= minLen.
  */
 function hasSignificantOutput(
@@ -52,6 +76,7 @@ function hasSignificantOutput(
   minLen: number
 ): boolean {
   if (ALWAYS_STORE_TOOLS.has(toolName)) return true;
+  if (toolName === 'Bash') return isBashSignificant(output, response);
   if (response?.stderr && response.stderr.trim().length > 0) return true;
   return output.trim().length >= minLen;
 }

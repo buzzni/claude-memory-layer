@@ -554,6 +554,67 @@ export class MemoryService {
   }
 
   /**
+   * Backfill session summaries for recent sessions that are missing them.
+   * Called from session-start hook to catch sessions that ended without Stop hook.
+   */
+  async backfillMissingSummaries(currentSessionId: string, limit = 5): Promise<void> {
+    await this.initialize();
+
+    // Get recent sessions that don't have a summary event
+    const recentSessionIds = await this.sqliteStore.getSessionsWithoutSummary(currentSessionId, limit);
+    for (const sid of recentSessionIds) {
+      try {
+        await this.generateSessionSummary(sid);
+      } catch {
+        // non-critical
+      }
+    }
+  }
+
+  /**
+   * Generate a rule-based session summary from stored events.
+   * Called at session end (Stop hook) when no LLM-generated summary exists.
+   * Skips if a summary already exists for this session.
+   */
+  async generateSessionSummary(sessionId: string): Promise<void> {
+    await this.initialize();
+
+    const events = await this.sqliteStore.getSessionEvents(sessionId);
+    if (events.length < 3) return; // Too short to summarize
+
+    // Skip if summary already exists
+    const hasSummary = events.some((e) => e.eventType === 'session_summary');
+    if (hasSummary) return;
+
+    const prompts = events.filter((e) => e.eventType === 'user_prompt');
+    const toolObs = events.filter((e) => e.eventType === 'tool_observation');
+    const toolNames = [...new Set(
+      toolObs.map((e) => (e.metadata as Record<string, unknown>)?.toolName as string).filter(Boolean)
+    )];
+    const errorObs = toolObs.filter((e) => {
+      const meta = e.metadata as Record<string, unknown>;
+      return meta?.exitCode !== undefined && meta.exitCode !== 0;
+    });
+
+    const datePart = events[0].timestamp.toISOString().split('T')[0];
+    const parts: string[] = [`[${datePart}] ${prompts.length}턴 세션.`];
+
+    if (prompts.length > 0) {
+      const firstPrompt = prompts[0].content.slice(0, 120).replace(/\n/g, ' ');
+      parts.push(`주요 작업: ${firstPrompt}`);
+    }
+    if (toolNames.length > 0) {
+      parts.push(`사용 툴: ${toolNames.slice(0, 6).join(', ')}`);
+    }
+    if (errorObs.length > 0) {
+      parts.push(`오류 ${errorObs.length}건 발생`);
+    }
+
+    const summary = parts.join('. ');
+    await this.storeSessionSummary(sessionId, summary, { generated: 'rule-based', eventCount: events.length });
+  }
+
+  /**
    * Store a tool observation
    */
   async storeToolObservation(
@@ -1226,6 +1287,7 @@ export class MemoryService {
     await this.initialize();
     await this.sqliteStore.recordRetrievalTrace({
       ...input,
+      projectHash: this.projectHash || undefined,
       candidateDetails: [],
       selectedDetails: [],
       fallbackTrace: [],

@@ -532,6 +532,30 @@ export class SQLiteEventStore {
   }
 
   /**
+   * Get session IDs that have events but no session_summary event.
+   * Used to backfill summaries for sessions that ended without Stop hook.
+   */
+  async getSessionsWithoutSummary(currentSessionId: string, limit = 5): Promise<string[]> {
+    await this.initialize();
+    const rows = sqliteAll<{ session_id: string }>(
+      this.db,
+      `SELECT DISTINCT e.session_id
+       FROM events e
+       WHERE e.session_id != ?
+         AND e.event_type != 'session_summary'
+         AND e.session_id NOT IN (
+           SELECT DISTINCT session_id FROM events WHERE event_type = 'session_summary'
+         )
+       GROUP BY e.session_id
+       HAVING COUNT(*) >= 3
+       ORDER BY MAX(e.timestamp) DESC
+       LIMIT ?`,
+      [currentSessionId, limit]
+    );
+    return rows.map((r) => r.session_id);
+  }
+
+  /**
    * Get events by session ID
    */
   async getSessionEvents(sessionId: string): Promise<MemoryEvent[]> {
@@ -1228,12 +1252,16 @@ export class SQLiteEventStore {
       }
 
       // Calculate helpfulness score
+      // Weights tuned for shopping-assistant-like corpora where sessions
+      // continue on the same topic (was_reasked was over-penalising normal conversation flow)
       const retrievalScore = retrieval.retrieval_score as number || 0;
+      // More prompts after retrieval = memory was actually useful to the conversation
+      const promptNorm = Math.min(promptCountAfter / 2, 1.0);
       const helpfulnessScore = (
-        0.30 * Math.min(retrievalScore, 1.0) +
-        0.25 * (sessionContinued ? 1.0 : 0.0) +
-        0.25 * toolSuccessRatio +
-        0.20 * (wasReasked ? 0.0 : 1.0)
+        0.40 * Math.min(retrievalScore, 1.0) +
+        0.30 * promptNorm +
+        0.20 * toolSuccessRatio +
+        0.10 * (sessionContinued ? 1.0 : 0.0)
       );
 
       sqliteRun(
