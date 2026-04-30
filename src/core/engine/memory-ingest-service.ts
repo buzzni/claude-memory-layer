@@ -1,3 +1,4 @@
+import { createSummaryDeriver, type SummaryDeriver } from '../derive/summary-deriver.js';
 import type { AppendResult, MemoryEvent, MemoryEventInput, ToolObservationPayload } from '../types.js';
 
 interface SessionRecord {
@@ -34,7 +35,8 @@ export class MemoryIngestService {
     private readonly initialize: () => Promise<void>,
     private readonly sessionStore: SessionUpsertStore,
     private readonly ingestEvent: (options: IngestEventOptions) => Promise<AppendResult>,
-    private readonly createToolEmbedding: (payload: ToolObservationPayload) => string
+    private readonly createToolEmbedding: (payload: ToolObservationPayload) => string,
+    private readonly summaryDeriver: SummaryDeriver = createSummaryDeriver()
   ) {}
 
   async startSession(sessionId: string, projectPath?: string): Promise<void> {
@@ -136,39 +138,10 @@ export class MemoryIngestService {
     await this.initialize();
 
     const events = await this.sessionStore.getSessionEvents(sessionId);
-    if (events.length < 3) return;
+    const summary = this.summaryDeriver.deriveSessionSummary(events);
+    if (!summary) return;
 
-    const hasSummary = events.some((event) => event.eventType === 'session_summary');
-    if (hasSummary) return;
-
-    const prompts = events.filter((event) => event.eventType === 'user_prompt');
-    const toolObservations = events.filter((event) => event.eventType === 'tool_observation');
-    const toolNames = Array.from(new Set(
-      toolObservations
-        .map((event) => (event.metadata as Record<string, unknown> | undefined)?.toolName as string | undefined)
-        .filter(Boolean)
-    ));
-    const errorObservations = toolObservations.filter((event) => {
-      const metadata = event.metadata as Record<string, unknown> | undefined;
-      return metadata?.exitCode !== undefined && metadata.exitCode !== 0;
-    });
-
-    const datePart = events[0].timestamp.toISOString().split('T')[0];
-    const parts: string[] = [`[${datePart}] ${prompts.length}턴 세션`];
-
-    if (prompts.length > 0) {
-      const firstPrompt = prompts[0].content.slice(0, 120).replace(/\n/g, ' ');
-      parts.push(`주요 작업: ${firstPrompt}`);
-    }
-    if (toolNames.length > 0) {
-      parts.push(`사용 툴: ${toolNames.slice(0, 6).join(', ')}`);
-    }
-    if (errorObservations.length > 0) {
-      parts.push(`오류 ${errorObservations.length}건 발생`);
-    }
-
-    const summary = parts.join('. ');
-    await this.storeSessionSummary(sessionId, summary, { generated: 'rule-based', eventCount: events.length });
+    await this.storeSessionSummary(sessionId, summary.text, summary.metadata);
   }
 
   async storeToolObservation(
