@@ -4,10 +4,12 @@
  */
 
 import type { Context } from 'hono';
-import * as path from 'path';
-import * as os from 'os';
-import { getReadOnlyMemoryService } from '../../services/memory-service.js';
-import { MemoryService } from '../../services/memory-service.js';
+import {
+  DISABLED_SHARED_STORE_CONFIG,
+  getReadOnlyMemoryService,
+  MemoryService
+} from '../../services/memory-service.js';
+import { resolveProjectStoragePath } from '../../core/registry/project-path.js';
 
 /**
  * Get the appropriate MemoryService based on the ?project= query parameter.
@@ -21,25 +23,13 @@ import { MemoryService } from '../../services/memory-service.js';
 export function getServiceFromQuery(c: Context): MemoryService {
   const project = c.req.query('project') || c.req.query('projectId');
   if (project) {
-    // Check if it's a hash (8 hex chars) or a path
-    const isHash = /^[a-f0-9]{8}$/.test(project);
-    let storagePath: string;
-
-    if (isHash) {
-      storagePath = path.join(os.homedir(), '.claude-code', 'memory', 'projects', project);
-    } else {
-      // Import hashProjectPath dynamically to compute the hash from path
-      const crypto = require('crypto');
-      const normalized = project.replace(/\/+$/, '') || '/';
-      const hash = crypto.createHash('sha256').update(normalized).digest('hex').slice(0, 8);
-      storagePath = path.join(os.homedir(), '.claude-code', 'memory', 'projects', hash);
-    }
+    const storagePath = resolveProjectStoragePath(project);
 
     return new MemoryService({
       storagePath,
       readOnly: true,
       analyticsEnabled: false,
-      sharedStoreConfig: { enabled: false }
+      sharedStoreConfig: DISABLED_SHARED_STORE_CONFIG
     });
   }
   return getReadOnlyMemoryService();

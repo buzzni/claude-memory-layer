@@ -11,14 +11,14 @@ import * as path from 'path';
 import * as os from 'os';
 import {
   getDefaultMemoryService,
-  getMemoryServiceForProject,
-  getProjectStoragePath
+  getMemoryServiceForProject
 } from '../services/memory-service.js';
+import { getProjectStoragePath } from '../core/registry/project-path.js';
 import { createSessionHistoryImporter, type ProgressEvent } from '../services/session-history-importer.js';
 import { bootstrapKnowledgeBase } from '../services/bootstrap-organizer.js';
 import { startServer, stopServer, isServerRunning } from '../server/index.js';
 import { SQLiteEventStore } from '../core/sqlite-event-store.js';
-import { MongoSyncWorker } from '../core/mongo-sync-worker.js';
+import { MongoSyncWorker, type MongoSyncDirection } from '../core/mongo-sync-worker.js';
 
 // ============================================================
 // Hook Installation Utilities
@@ -473,7 +473,7 @@ program
     const mongoUri = options.mongoUri || process.env.CLAUDE_MEMORY_MONGO_URI;
     const mongoDb = options.mongoDb || process.env.CLAUDE_MEMORY_MONGO_DB;
     const projectKey = options.mongoProject || process.env.CLAUDE_MEMORY_MONGO_PROJECT || path.basename(projectPath);
-    const direction = String(options.direction || 'both').toLowerCase();
+    const direction = String(options.direction || 'both').toLowerCase() as MongoSyncDirection;
 
     if (!mongoUri || !mongoDb) {
       console.error('\n❌ MongoDB sync is not configured.');

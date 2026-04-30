@@ -4,10 +4,8 @@
  * Called when a new Claude Code session starts
  */
 
-import {
-  getLightweightMemoryService,
-  registerSession
-} from '../services/memory-service.js';
+import { getLightweightMemoryService } from '../services/memory-service.js';
+import { registerSession } from '../core/registry/session-registry.js';
 import { ensureDaemonRunning } from './semantic-daemon-client.js';
 import type { SessionStartInput, SessionStartOutput } from '../core/types.js';
 

@@ -4,7 +4,9 @@ import * as fs from 'fs';
 import * as net from 'net';
 import * as os from 'os';
 import * as path from 'path';
-import { MemoryService, getProjectStoragePath, getSessionProject } from '../services/memory-service.js';
+import { DISABLED_SHARED_STORE_CONFIG, MemoryService } from '../services/memory-service.js';
+import { getProjectStoragePath } from '../core/registry/project-path.js';
+import { getSessionProject } from '../core/registry/session-registry.js';
 
 interface SemanticDaemonRequest {
   type?: 'retrieve';
@@ -98,7 +100,7 @@ function getServiceForSession(sessionId: string): MemoryService {
     readOnly: false,
     embeddingOnly: true,
     analyticsEnabled: false,
-    sharedStoreConfig: { enabled: false }
+    sharedStoreConfig: DISABLED_SHARED_STORE_CONFIG
   });
 
   serviceCache.set(key, service);

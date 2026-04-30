@@ -14,7 +14,7 @@ import { VectorStore } from '../core/vector-store.js';
 import { Embedder, getDefaultEmbedder } from '../core/embedder.js';
 import { VectorWorker, createVectorWorker } from '../core/vector-worker.js';
 import { Matcher, getDefaultMatcher } from '../core/matcher.js';
-import { Retriever, createRetriever, RetrievalResult, UnifiedRetrievalResult } from '../core/retriever.js';
+import { Retriever, createRetriever, RetrievalResult, UnifiedRetrievalResult, type RetrievalStrategy } from '../core/retriever.js';
 import { GraduationPipeline, createGraduationPipeline } from '../core/graduation.js';
 import { SharedEventStore, createSharedEventStore } from '../core/shared-event-store.js';
 import { SharedStore, createSharedStore } from '../core/shared-store.js';
@@ -24,16 +24,12 @@ import type {
   MemoryEventInput,
   AppendResult,
   MemoryEvent,
-  Config,
-  ConfigSchema,
   ToolObservationPayload,
   MemoryMode,
   EndlessModeConfig,
-  EndlessModeConfigSchema,
   WorkingSet,
   ConsolidatedMemory,
   EndlessModeStatus,
-  ContextSnapshot,
   ContinuityScore,
   SharedStoreConfig,
   Entry
@@ -51,6 +47,22 @@ import {
   mergeHierarchicalMetadata
 } from '../core/ingest-interceptor.js';
 import { normalizeTags } from '../core/tag-taxonomy.js';
+import { MemoryIngestService } from '../core/engine/memory-ingest-service.js';
+import { MemoryQueryService } from '../core/engine/memory-query-service.js';
+import {
+  getProjectStoragePath,
+  hashProjectPath
+} from '../core/registry/project-path.js';
+import { getSessionProject } from '../core/registry/session-registry.js';
+
+export { getProjectStoragePath, hashProjectPath } from '../core/registry/project-path.js';
+export {
+  getSessionProject,
+  registerSession,
+  type SessionRegistry,
+  type SessionRegistryEntry,
+  loadSessionRegistry
+} from '../core/registry/session-registry.js';
 
 export interface MemoryServiceConfig {
   storagePath: string;
@@ -64,119 +76,14 @@ export interface MemoryServiceConfig {
   embeddingOnly?: boolean;
 }
 
-// ============================================================
-// Project Path Utilities
-// ============================================================
-
-/**
- * Normalize and resolve a project path, handling symlinks
- */
-function normalizePath(projectPath: string): string {
-  const expanded = projectPath.startsWith('~')
-    ? path.join(os.homedir(), projectPath.slice(1))
-    : projectPath;
-
-  try {
-    // Resolve symlinks for consistent paths
-    return fs.realpathSync(expanded);
-  } catch {
-    // Path doesn't exist yet, just resolve it
-    return path.resolve(expanded);
-  }
-}
-
-/**
- * Generate a stable 8-character hash from a project path
- */
-export function hashProjectPath(projectPath: string): string {
-  const normalizedPath = normalizePath(projectPath);
-  return crypto.createHash('sha256')
-    .update(normalizedPath)
-    .digest('hex')
-    .slice(0, 8);
-}
-
-/**
- * Get the storage path for a specific project
- */
-export function getProjectStoragePath(projectPath: string): string {
-  const hash = hashProjectPath(projectPath);
-  return path.join(os.homedir(), '.claude-code', 'memory', 'projects', hash);
-}
-
-// ============================================================
-// Session Registry
-// ============================================================
-
-const REGISTRY_PATH = path.join(os.homedir(), '.claude-code', 'memory', 'session-registry.json');
 const SHARED_STORAGE_PATH = path.join(os.homedir(), '.claude-code', 'memory', 'shared');
-
-export interface SessionRegistryEntry {
-  projectPath: string;
-  projectHash: string;
-  registeredAt: string;
-}
-
-export interface SessionRegistry {
-  version: number;
-  sessions: Record<string, SessionRegistryEntry>;
-}
-
-export function loadSessionRegistry(): SessionRegistry {
-  try {
-    if (fs.existsSync(REGISTRY_PATH)) {
-      const data = fs.readFileSync(REGISTRY_PATH, 'utf-8');
-      return JSON.parse(data);
-    }
-  } catch (error) {
-    console.error('Failed to load session registry:', error);
-  }
-  return { version: 1, sessions: {} };
-}
-
-function saveSessionRegistry(registry: SessionRegistry): void {
-  const dir = path.dirname(REGISTRY_PATH);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-
-  // Atomic write using temp file
-  const tempPath = REGISTRY_PATH + '.tmp';
-  fs.writeFileSync(tempPath, JSON.stringify(registry, null, 2));
-  fs.renameSync(tempPath, REGISTRY_PATH);
-}
-
-/**
- * Register a session with its project path
- */
-export function registerSession(sessionId: string, projectPath: string): void {
-  const registry = loadSessionRegistry();
-
-  registry.sessions[sessionId] = {
-    projectPath: normalizePath(projectPath),
-    projectHash: hashProjectPath(projectPath),
-    registeredAt: new Date().toISOString()
-  };
-
-  // Clean up old sessions (keep last 1000)
-  const entries = Object.entries(registry.sessions);
-  if (entries.length > 1000) {
-    const sorted = entries.sort((a, b) =>
-      new Date(b[1].registeredAt).getTime() - new Date(a[1].registeredAt).getTime()
-    );
-    registry.sessions = Object.fromEntries(sorted.slice(0, 1000));
-  }
-
-  saveSessionRegistry(registry);
-}
-
-/**
- * Get the project path for a session
- */
-export function getSessionProject(sessionId: string): SessionRegistryEntry | null {
-  const registry = loadSessionRegistry();
-  return registry.sessions[sessionId] || null;
-}
+export const DISABLED_SHARED_STORE_CONFIG: SharedStoreConfig = {
+  enabled: false,
+  autoPromote: false,
+  searchShared: false,
+  minConfidenceForPromotion: 0.8,
+  sharedStoragePath: SHARED_STORAGE_PATH
+};
 
 export class MemoryService {
   // Primary store: SQLite (WAL mode) - for hooks, always available
@@ -213,6 +120,8 @@ export class MemoryService {
   private readonly embeddingOnly: boolean;
   private readonly mdMirror: MarkdownMirror;
   private readonly storagePath: string;
+  private readonly ingestService: MemoryIngestService;
+  private readonly queryService: MemoryQueryService;
 
   constructor(config: MemoryServiceConfig & { projectHash?: string; projectPath?: string; sharedStoreConfig?: SharedStoreConfig }) {
     const storagePath = this.expandPath(config.storagePath);
@@ -231,7 +140,13 @@ export class MemoryService {
     this.projectHash = config.projectHash || null;
     this.projectPath = config.projectPath || null;
     // Default: shared store enabled
-    this.sharedStoreConfig = config.sharedStoreConfig ?? { enabled: true };
+    this.sharedStoreConfig = config.sharedStoreConfig ?? {
+      enabled: true,
+      autoPromote: true,
+      searchShared: true,
+      minConfidenceForPromotion: 0.8,
+      sharedStoragePath: SHARED_STORAGE_PATH
+    };
 
     // Initialize PRIMARY store: SQLite (WAL mode)
     // This is always used for writes and is the source of truth
@@ -258,6 +173,29 @@ export class MemoryService {
     );
     this.retriever.setQueryRewriter((q) => this.rewriteQueryIntent(q));
     this.graduation = createGraduationPipeline(this.sqliteStore as unknown as EventStore);
+
+    this.ingestService = new MemoryIngestService(
+      () => this.initialize(),
+      this.sqliteStore,
+      ({ operation, input, embeddingContent }) => this.ingestWithInterceptors(
+        operation,
+        input,
+        embeddingContent
+          ? async (eventId) => {
+              await this.sqliteStore.enqueueForEmbedding(eventId, embeddingContent);
+            }
+          : undefined
+      ),
+      (payload) => createToolObservationEmbedding(
+        payload.toolName,
+        payload.metadata || {},
+        payload.success
+      )
+    );
+    this.queryService = new MemoryQueryService(
+      () => this.initialize(),
+      this.sqliteStore
+    );
   }
 
   /**
@@ -456,26 +394,14 @@ export class MemoryService {
    * Start a new session
    */
   async startSession(sessionId: string, projectPath?: string): Promise<void> {
-    await this.initialize();
-
-    await this.sqliteStore.upsertSession({
-      id: sessionId,
-      startedAt: new Date(),
-      projectPath
-    });
+    return this.ingestService.startSession(sessionId, projectPath);
   }
 
   /**
    * End a session
    */
   async endSession(sessionId: string, summary?: string): Promise<void> {
-    await this.initialize();
-
-    await this.sqliteStore.upsertSession({
-      id: sessionId,
-      endedAt: new Date(),
-      summary
-    });
+    return this.ingestService.endSession(sessionId, summary);
   }
 
   /**
@@ -486,21 +412,7 @@ export class MemoryService {
     content: string,
     metadata?: Record<string, unknown>
   ): Promise<AppendResult> {
-    await this.initialize();
-
-    return this.ingestWithInterceptors(
-      'user_prompt',
-      {
-        eventType: 'user_prompt',
-        sessionId,
-        timestamp: new Date(),
-        content,
-        metadata
-      },
-      async (eventId) => {
-        await this.sqliteStore.enqueueForEmbedding(eventId, content);
-      }
-    );
+    return this.ingestService.storeUserPrompt(sessionId, content, metadata);
   }
 
   /**
@@ -511,21 +423,7 @@ export class MemoryService {
     content: string,
     metadata?: Record<string, unknown>
   ): Promise<AppendResult> {
-    await this.initialize();
-
-    return this.ingestWithInterceptors(
-      'agent_response',
-      {
-        eventType: 'agent_response',
-        sessionId,
-        timestamp: new Date(),
-        content,
-        metadata
-      },
-      async (eventId) => {
-        await this.sqliteStore.enqueueForEmbedding(eventId, content);
-      }
-    );
+    return this.ingestService.storeAgentResponse(sessionId, content, metadata);
   }
 
   /**
@@ -536,21 +434,7 @@ export class MemoryService {
     summary: string,
     metadata?: Record<string, unknown>
   ): Promise<AppendResult> {
-    await this.initialize();
-
-    return this.ingestWithInterceptors(
-      'session_summary',
-      {
-        eventType: 'session_summary',
-        sessionId,
-        timestamp: new Date(),
-        content: summary,
-        metadata
-      },
-      async (eventId) => {
-        await this.sqliteStore.enqueueForEmbedding(eventId, summary);
-      }
-    );
+    return this.ingestService.storeSessionSummary(sessionId, summary, metadata);
   }
 
   /**
@@ -621,36 +505,7 @@ export class MemoryService {
     sessionId: string,
     payload: ToolObservationPayload
   ): Promise<AppendResult> {
-    await this.initialize();
-
-    // Create content for storage (JSON stringified payload)
-    const content = JSON.stringify(payload);
-
-    // Extract turnId from payload metadata if present (set by PostToolUse hook)
-    const turnId = payload.metadata?.turnId;
-
-    return this.ingestWithInterceptors(
-      'tool_observation',
-      {
-        eventType: 'tool_observation',
-        sessionId,
-        timestamp: new Date(),
-        content,
-        metadata: {
-          toolName: payload.toolName,
-          success: payload.success,
-          ...(turnId ? { turnId } : {})
-        }
-      },
-      async (eventId) => {
-        const embeddingContent = createToolObservationEmbedding(
-          payload.toolName,
-          payload.metadata || {},
-          payload.success
-        );
-        await this.sqliteStore.enqueueForEmbedding(eventId, embeddingContent);
-      }
-    );
+    return this.ingestService.storeToolObservation(sessionId, payload);
   }
 
   /**
@@ -667,6 +522,7 @@ export class MemoryService {
       intentRewrite?: boolean;
       projectScopeMode?: 'strict' | 'prefer' | 'global';
       allowedProjectHashes?: string[];
+      strategy?: RetrievalStrategy;
     }
   ): Promise<UnifiedRetrievalResult> {
     await this.initialize();
@@ -855,20 +711,7 @@ export class MemoryService {
     query: string,
     options?: { topK?: number; minScore?: number }
   ): Promise<Array<{event: MemoryEvent; score: number}>> {
-    await this.initialize();
-
-    const results = await this.sqliteStore.keywordSearch(query, options?.topK ?? 10);
-
-    // Normalize FTS5 rank to a score (0-1 range)
-    // FTS5 rank is negative (higher is worse), so we convert it
-    const maxRank = Math.min(...results.map(r => r.rank), -0.001);
-    const minRank = Math.max(...results.map(r => r.rank), -1000);
-    const rankRange = maxRank - minRank || 1;
-
-    return results.map(r => ({
-      event: r.event,
-      score: 1 - (r.rank - minRank) / rankRange  // Normalize to 0-1
-    })).filter(r => !options?.minScore || r.score >= options.minScore);
+    return this.queryService.keywordSearch(query, options);
   }
 
   /**
@@ -883,16 +726,14 @@ export class MemoryService {
    * Get session history
    */
   async getSessionHistory(sessionId: string): Promise<MemoryEvent[]> {
-    await this.initialize();
-    return this.sqliteStore.getSessionEvents(sessionId);
+    return this.queryService.getSessionHistory(sessionId);
   }
 
   /**
    * Get recent events
    */
   async getRecentEvents(limit: number = 100): Promise<MemoryEvent[]> {
-    await this.initialize();
-    return this.sqliteStore.getRecentEvents(limit);
+    return this.queryService.getRecentEvents(limit);
   }
 
   /**
@@ -1076,14 +917,14 @@ export class MemoryService {
   async initializeEndlessMode(): Promise<void> {
     const config = await this.getEndlessConfig();
 
-    this.workingSetStore = createWorkingSetStore(this.sqliteStore, config);
-    this.consolidatedStore = createConsolidatedStore(this.sqliteStore);
+    this.workingSetStore = createWorkingSetStore(this.sqliteStore as unknown as EventStore, config);
+    this.consolidatedStore = createConsolidatedStore(this.sqliteStore as unknown as EventStore);
     this.consolidationWorker = createConsolidationWorker(
       this.workingSetStore,
       this.consolidatedStore,
       config
     );
-    this.continuityManager = createContinuityManager(this.sqliteStore, config);
+    this.continuityManager = createContinuityManager(this.sqliteStore as unknown as EventStore, config);
 
     // Start consolidation worker
     this.consolidationWorker.start();
@@ -1220,9 +1061,6 @@ export class MemoryService {
     // Use SQLite event store if available
     if (this.sqliteStore) {
       await this.sqliteStore.incrementAccessCount(eventIds);
-    } else if (this.eventStore) {
-      // Fallback to regular event store (which has a stub implementation)
-      await this.eventStore.incrementAccessCount(eventIds);
     }
   }
 
@@ -1693,7 +1531,6 @@ export class MemoryService {
 // Instance cache: Map from project hash (or '__global__') to MemoryService
 const serviceCache = new Map<string, MemoryService>();
 const GLOBAL_KEY = '__global__';
-const GLOBAL_READONLY_KEY = '__global_readonly__';
 
 /**
  * Get the global memory service (backward compatibility)
@@ -1705,7 +1542,7 @@ export function getDefaultMemoryService(): MemoryService {
     serviceCache.set(GLOBAL_KEY, new MemoryService({
       storagePath: '~/.claude-code/memory',
       analyticsEnabled: false,  // Hooks don't need DuckDB
-      sharedStoreConfig: { enabled: false }  // Shared store uses DuckDB too
+      sharedStoreConfig: DISABLED_SHARED_STORE_CONFIG  // Shared store uses DuckDB too
     }));
   }
   return serviceCache.get(GLOBAL_KEY)!;
@@ -1725,7 +1562,7 @@ export function getReadOnlyMemoryService(): MemoryService {
     storagePath: '~/.claude-code/memory',
     readOnly: true,
     analyticsEnabled: false,  // Use SQLite for reads (WAL supports concurrent readers)
-    sharedStoreConfig: { enabled: false }  // Skip shared store for now
+    sharedStoreConfig: DISABLED_SHARED_STORE_CONFIG  // Skip shared store for now
   });
 }
 
@@ -1747,7 +1584,7 @@ export function getMemoryServiceForProject(
       projectHash: hash,
       projectPath,
       // Override shared store config - hooks don't need DuckDB
-      sharedStoreConfig: sharedStoreConfig ?? { enabled: false },
+      sharedStoreConfig: sharedStoreConfig ?? DISABLED_SHARED_STORE_CONFIG,
       analyticsEnabled: false  // Hooks don't need DuckDB
     }));
   }
@@ -1790,7 +1627,7 @@ export function getLightweightMemoryService(sessionId: string): MemoryService {
       projectPath: projectInfo?.projectPath,
       lightweightMode: true,  // Skip embedder/vector/workers
       analyticsEnabled: false,
-      sharedStoreConfig: { enabled: false }
+      sharedStoreConfig: DISABLED_SHARED_STORE_CONFIG
     }));
   }
 
