@@ -6,7 +6,7 @@
 import { EventStore } from './event-store.js';
 import { VectorStore } from './vector-store.js';
 import { Embedder } from './embedder.js';
-import type { OutboxItem, VectorRecord } from './types.js';
+import type { VectorRecord } from './types.js';
 
 export interface WorkerConfig {
   batchSize: number;

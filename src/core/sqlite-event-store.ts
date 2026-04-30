@@ -36,7 +36,7 @@ export class SQLiteEventStore {
   private readonly readOnly: boolean;
   private readonly markdownMirror: MarkdownMirror | null;
 
-  constructor(private dbPath: string, options?: SQLiteEventStoreOptions) {
+  constructor(dbPath: string, options?: SQLiteEventStoreOptions) {
     this.readOnly = options?.readonly ?? false;
     this.db = createSQLiteDatabase(dbPath, {
       readonly: this.readOnly,

@@ -3,7 +3,7 @@
  * AXIOMMIND Principle 7: Standard JSON format for vectors
  */
 
-import { pipeline, Pipeline } from '@huggingface/transformers';
+import { pipeline } from '@huggingface/transformers';
 
 export interface EmbeddingResult {
   vector: number[];
@@ -12,7 +12,7 @@ export interface EmbeddingResult {
 }
 
 export class Embedder {
-  private pipeline: Pipeline | null = null;
+  private pipeline: ((input: string, options?: Record<string, unknown>) => Promise<{ data: Float32Array }>) | null = null;
   private readonly modelName: string;
   private activeModelName: string;
   private initialized = false;
@@ -29,7 +29,7 @@ export class Embedder {
     if (this.initialized) return;
 
     try {
-      this.pipeline = await pipeline('feature-extraction', this.modelName);
+      this.pipeline = await pipeline('feature-extraction', this.modelName) as unknown as NonNullable<Embedder['pipeline']>;
       this.activeModelName = this.modelName;
       this.initialized = true;
       return;
@@ -40,7 +40,7 @@ export class Embedder {
       }
 
       console.warn(`[Embedder] Primary model failed (${this.modelName}). Falling back to ${fallbackModel}`);
-      this.pipeline = await pipeline('feature-extraction', fallbackModel);
+      this.pipeline = await pipeline('feature-extraction', fallbackModel) as unknown as NonNullable<Embedder['pipeline']>;
       this.activeModelName = fallbackModel;
       this.initialized = true;
     }
@@ -70,7 +70,7 @@ export class Embedder {
       max_length: 512
     });
 
-    const vector = Array.from(output.data as Float32Array);
+    const vector = Array.from(output.data);
 
     return {
       vector,
@@ -104,7 +104,7 @@ export class Embedder {
           max_length: 512
         });
 
-        const vector = Array.from(output.data as Float32Array);
+        const vector = Array.from(output.data);
 
         results.push({
           vector,

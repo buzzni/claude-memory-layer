@@ -212,8 +212,8 @@ export class EvidenceAligner {
    * Splits on sentence boundaries and filters short sentences
    */
   extractClaims(text: string): string[] {
-    // Split on sentence boundaries
-    const sentences = text.split(/[.!?]+/).map(s => s.trim()).filter(s => s.length > 0);
+    // Keep terminal punctuation while splitting so questions can be filtered reliably.
+    const sentences = text.match(/[^.!?]+[.!?]?/g)?.map(s => s.trim()).filter(s => s.length > 0) || [];
 
     // Filter out very short sentences and questions
     return sentences.filter(s => {

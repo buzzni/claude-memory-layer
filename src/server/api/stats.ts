@@ -218,11 +218,11 @@ statsRouter.get('/shared', async (c) => {
     await memoryService.initialize();
     const sharedStats = await memoryService.getSharedStoreStats();
     return c.json({
-      troubleshooting: sharedStats?.troubleshooting || 0,
-      bestPractices: sharedStats?.bestPractices || 0,
-      commonErrors: sharedStats?.commonErrors || 0,
+      troubleshooting: sharedStats?.total || 0,
+      bestPractices: 0,
+      commonErrors: 0,
       totalUsageCount: sharedStats?.totalUsageCount || 0,
-      lastUpdated: sharedStats?.lastUpdated || null
+      lastUpdated: null
     });
   } catch (error) {
     return c.json({
@@ -290,7 +290,6 @@ statsRouter.get('/levels/:level', async (c) => {
       // For now, add access count from SQLite if available
       const sqliteStore = (memoryService as any).sqliteEventStore;
       if (sqliteStore) {
-        const eventIds = events.map(e => e.id);
         const accessedEvents = await sqliteStore.getMostAccessed(1000);
         const accessMap = new Map(accessedEvents.map((e: any) => [e.id, e.access_count || 0]));
         events = events.map((e: any) => ({

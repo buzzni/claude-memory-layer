@@ -14,7 +14,6 @@ import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
 import * as path from 'path';
 import * as fs from 'fs';
-import type { Server } from 'http';
 
 import { apiRouter } from './api/index.js';
 
@@ -47,12 +46,12 @@ app.get('*', (c) => {
 
 export { app };
 
-let serverInstance: Server | null = null;
+let serverInstance: ReturnType<typeof serve> | null = null;
 
 /**
  * Start the HTTP server
  */
-export function startServer(port: number = 37777): Server {
+export function startServer(port: number = 37777): NonNullable<ReturnType<typeof serve>> {
   if (serverInstance) {
     return serverInstance;
   }

@@ -9,7 +9,6 @@ import type {
   Entity,
   TaskStatus,
   TaskPriority,
-  BlockerRef,
   BlockerMode
 } from '../types.js';
 import { makeEntityCanonicalKey, makeTaskEventDedupeKey } from '../canonical-key.js';

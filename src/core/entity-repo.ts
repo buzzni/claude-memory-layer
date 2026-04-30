@@ -9,9 +9,7 @@ import type {
   Entity,
   EntityType,
   EntityStage,
-  EntityStatus,
-  EntityAlias,
-  TaskCurrentJson
+  EntityStatus
 } from './types.js';
 import { makeEntityCanonicalKey } from './canonical-key.js';
 

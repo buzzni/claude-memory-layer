@@ -8,8 +8,7 @@ import { randomUUID } from 'crypto';
 import type {
   OutboxJob,
   OutboxStatus,
-  OutboxItemKind,
-  VALID_OUTBOX_TRANSITIONS
+  OutboxItemKind
 } from './types.js';
 
 export interface OutboxConfig {
@@ -189,14 +188,6 @@ export class VectorOutbox {
        WHERE status = 'failed'
        AND retry_count < ?`,
       [now.toISOString(), this.config.maxRetries]
-    );
-
-    // Get counts (DuckDB doesn't return affected rows easily)
-    const recoveredRows = await dbAll<{ count: number }>(
-      this.db,
-      `SELECT COUNT(*) as count FROM vector_outbox
-       WHERE status = 'pending' AND updated_at = ?`,
-      [now.toISOString()]
     );
 
     return {

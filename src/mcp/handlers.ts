@@ -5,11 +5,9 @@
 
 import { getDefaultMemoryService } from '../services/memory-service.js';
 import { generateCitationId } from '../core/citation-generator.js';
+import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 
-interface ToolResult {
-  content: Array<{ type: string; text: string }>;
-  isError?: boolean;
-}
+type ToolResult = CallToolResult;
 
 export async function handleToolCall(
   name: string,

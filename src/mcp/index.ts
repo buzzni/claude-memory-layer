@@ -10,6 +10,7 @@ import {
   ListToolsRequestSchema,
   CallToolRequestSchema
 } from '@modelcontextprotocol/sdk/types.js';
+import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 
 import { tools } from './tools.js';
 import { handleToolCall } from './handlers.js';
@@ -32,7 +33,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 });
 
 // Tool call handler
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
+server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToolResult> => {
   const { name, arguments: args } = request.params;
   return handleToolCall(name, args || {});
 });
