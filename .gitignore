@@ -4,3 +4,4 @@ dist/
 .history/
 test_access.js
 .omc/
+graphify-out/
