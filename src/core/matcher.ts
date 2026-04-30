@@ -4,11 +4,9 @@
  */
 
 import type {
-  MemoryEvent,
   MemoryMatch,
   MatchResult,
-  MatchConfidence,
-  MATCH_THRESHOLDS
+  MatchConfidence
 } from './types.js';
 import { SearchResult } from './vector-store.js';
 
@@ -120,7 +118,7 @@ export class Matcher {
       const ageDays = getEventAge(result.eventId);
       const combinedScore = this.calculateCombinedScore(
         result.score,
-        0, // FTS score - would need to be passed in
+        result.score, // Reuse the retrieval score as lexical/proxy score when no separate FTS score is provided.
         ageDays,
         true // Assume active
       );

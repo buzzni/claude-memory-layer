@@ -23,6 +23,8 @@ export interface RetrievalScope {
 
 export type RetrievalStrategy = 'auto' | 'fast' | 'deep';
 export type ProjectScopeMode = 'strict' | 'prefer' | 'global';
+type DecayPolicy = NonNullable<RetrievalOptions['decayPolicy']>;
+type GraphHopOptions = NonNullable<RetrievalOptions['graphHop']>;
 
 export interface RetrievalOptions {
   topK: number;
@@ -311,28 +313,21 @@ export class Retriever {
       minScore: number;
       sessionId?: string;
       scope?: RetrievalScope;
-      rerankWithKeyword: boolean;
+      rerankWithKeyword?: boolean;
       rerankWeights?: {
         semantic?: number;
         lexical?: number;
         recency?: number;
       };
-      decayPolicy?: {
-        enabled?: boolean;
-        windowDays?: number;
-        maxPenalty?: number;
-      };
+      decayPolicy?: DecayPolicy;
       intentRewrite?: boolean;
-      graphHop?: {
-        enabled?: boolean;
-        maxHops?: number;
-        hopPenalty?: number;
-      };
+      graphHop?: GraphHopOptions;
       projectScopeMode?: ProjectScopeMode;
       projectHash?: string;
       allowedProjectHashes?: string[];
     }
-  ): Promise<{ results: SearchResult[]; matchResult: MatchResult }> {
+  ): Promise<{ results: SearchResult[]; candidateResults: SearchResult[]; matchResult: MatchResult }> {
+    let rerankQuery = query;
     let initialResults = await this.searchByStrategy(query, {
       strategy: input.strategy,
       topK: input.topK,
@@ -343,6 +338,7 @@ export class Retriever {
     if (input.intentRewrite && input.strategy === 'deep' && this.queryRewriter) {
       const rewritten = (await this.queryRewriter(query))?.trim();
       if (rewritten && rewritten !== query) {
+        rerankQuery = `${query} ${rewritten}`;
         const rewrittenResults = await this.searchByStrategy(rewritten, {
           strategy: 'deep',
           topK: input.topK,
@@ -362,7 +358,7 @@ export class Retriever {
         });
 
     const rerankedResults = input.rerankWithKeyword
-      ? this.rerankByKeywordOverlap(expandedResults, query, input.rerankWeights, input.decayPolicy)
+      ? this.rerankByKeywordOverlap(expandedResults, rerankQuery, input.rerankWeights, input.decayPolicy)
       : expandedResults;
 
     const filtered = await this.applyScopeFilters(rerankedResults, {
