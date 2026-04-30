@@ -1,4 +1,4 @@
-import type { AppendResult, MemoryEventInput, ToolObservationPayload } from '../types.js';
+import type { AppendResult, MemoryEvent, MemoryEventInput, ToolObservationPayload } from '../types.js';
 
 interface SessionRecord {
   id: string;
@@ -10,6 +10,8 @@ interface SessionRecord {
 
 interface SessionUpsertStore {
   upsertSession(session: SessionRecord): Promise<void>;
+  getSessionEvents(sessionId: string): Promise<MemoryEvent[]>;
+  getSessionsWithoutSummary(currentSessionId: string, limit?: number): Promise<string[]>;
 }
 
 type IngestOperation = 'user_prompt' | 'agent_response' | 'session_summary' | 'tool_observation';
@@ -107,6 +109,66 @@ export class MemoryIngestService {
       },
       embeddingContent: summary
     });
+  }
+
+  /**
+   * Backfill session summaries for recent sessions that are missing them.
+   * Called from session-start hook to catch sessions that ended without Stop hook.
+   */
+  async backfillMissingSummaries(currentSessionId: string, limit = 5): Promise<void> {
+    await this.initialize();
+
+    const recentSessionIds = await this.sessionStore.getSessionsWithoutSummary(currentSessionId, limit);
+    for (const sessionId of recentSessionIds) {
+      try {
+        await this.generateSessionSummary(sessionId);
+      } catch {
+        // non-critical backfill path
+      }
+    }
+  }
+
+  /**
+   * Generate a rule-based session summary from stored events.
+   * Skips short sessions and sessions that already contain a summary event.
+   */
+  async generateSessionSummary(sessionId: string): Promise<void> {
+    await this.initialize();
+
+    const events = await this.sessionStore.getSessionEvents(sessionId);
+    if (events.length < 3) return;
+
+    const hasSummary = events.some((event) => event.eventType === 'session_summary');
+    if (hasSummary) return;
+
+    const prompts = events.filter((event) => event.eventType === 'user_prompt');
+    const toolObservations = events.filter((event) => event.eventType === 'tool_observation');
+    const toolNames = Array.from(new Set(
+      toolObservations
+        .map((event) => (event.metadata as Record<string, unknown> | undefined)?.toolName as string | undefined)
+        .filter(Boolean)
+    ));
+    const errorObservations = toolObservations.filter((event) => {
+      const metadata = event.metadata as Record<string, unknown> | undefined;
+      return metadata?.exitCode !== undefined && metadata.exitCode !== 0;
+    });
+
+    const datePart = events[0].timestamp.toISOString().split('T')[0];
+    const parts: string[] = [`[${datePart}] ${prompts.length}턴 세션`];
+
+    if (prompts.length > 0) {
+      const firstPrompt = prompts[0].content.slice(0, 120).replace(/\n/g, ' ');
+      parts.push(`주요 작업: ${firstPrompt}`);
+    }
+    if (toolNames.length > 0) {
+      parts.push(`사용 툴: ${toolNames.slice(0, 6).join(', ')}`);
+    }
+    if (errorObservations.length > 0) {
+      parts.push(`오류 ${errorObservations.length}건 발생`);
+    }
+
+    const summary = parts.join('. ');
+    await this.storeSessionSummary(sessionId, summary, { generated: 'rule-based', eventCount: events.length });
   }
 
   async storeToolObservation(
