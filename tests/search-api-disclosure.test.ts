@@ -86,7 +86,7 @@ describe('search disclosure API', () => {
 
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual(responseBody);
-    expect(mocks.service.initialize).toHaveBeenCalledTimes(1);
+    expect(mocks.service.initialize).not.toHaveBeenCalled();
     expect(mocks.service.expandDisclosure).toHaveBeenCalledWith('event:e1', { windowSize: 2 });
     expect(mocks.service.shutdown).toHaveBeenCalledTimes(1);
   });
@@ -104,7 +104,7 @@ describe('search disclosure API', () => {
 
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual(responseBody);
-    expect(mocks.service.initialize).toHaveBeenCalledTimes(1);
+    expect(mocks.service.initialize).not.toHaveBeenCalled();
     expect(mocks.service.sourceDisclosure).toHaveBeenCalledWith('event:e1');
     expect(mocks.service.shutdown).toHaveBeenCalledTimes(1);
   });
@@ -116,6 +116,7 @@ describe('search disclosure API', () => {
 
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ error: 'Source not found' });
+    expect(mocks.service.initialize).not.toHaveBeenCalled();
     expect(mocks.service.shutdown).toHaveBeenCalledTimes(1);
   });
 });

@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { RetrievalDisclosureService } from '../src/core/engine/retrieval-disclosure-service.js';
+import {
+  parseDisclosureResultId,
+  parseDisclosureResultRef,
+  RetrievalDisclosureService
+} from '../src/core/engine/retrieval-disclosure-service.js';
 import type { UnifiedRetrievalResult } from '../src/core/retriever.js';
 import type { MemoryEvent, SharedTroubleshootingEntry } from '../src/core/types.js';
 
@@ -53,20 +57,37 @@ function retrievalResult(sharedMemories: SharedTroubleshootingEntry[] = []): Uni
   };
 }
 
-function service(result: UnifiedRetrievalResult = retrievalResult()) {
+function service(
+  result: UnifiedRetrievalResult = retrievalResult(),
+  overrides: {
+    initialize?: () => Promise<void>;
+    getEvent?: (id: string) => Promise<MemoryEvent | null>;
+    getSessionEvents?: (sessionId: string) => Promise<MemoryEvent[]>;
+    sharedStore?: { get(entryId: string): Promise<SharedTroubleshootingEntry | null> };
+  } = {}
+) {
   return new RetrievalDisclosureService({
-    initialize: async () => {},
+    initialize: overrides.initialize ?? (async () => {}),
     retrievalOrchestrator: {
       retrieveMemories: async () => result
     },
     eventStore: {
-      getEvent: async (id: string) => timeline.find((item) => item.id === id) ?? null,
-      getSessionEvents: async (sessionId: string) => timeline.filter((item) => item.sessionId === sessionId)
-    }
+      getEvent: overrides.getEvent ?? (async (id: string) => timeline.find((item) => item.id === id) ?? null),
+      getSessionEvents: overrides.getSessionEvents ?? (async (sessionId: string) => timeline.filter((item) => item.sessionId === sessionId))
+    },
+    sharedStore: overrides.sharedStore
   });
 }
 
 describe('RetrievalDisclosureService', () => {
+  it('keeps the legacy event-id parser while exposing a discriminated result-ref parser', () => {
+    expect(parseDisclosureResultId('event:e2')).toBe('e2');
+    expect(parseDisclosureResultId('e2')).toBe('e2');
+    expect(parseDisclosureResultId('shared:shared-1')).toBe('shared:shared-1');
+    expect(parseDisclosureResultRef('event:e2')).toEqual({ kind: 'event', eventId: 'e2' });
+    expect(parseDisclosureResultRef('shared:shared-1')).toEqual({ kind: 'shared', entryId: 'shared-1' });
+  });
+
   it('search returns spec-aligned compact envelopes with reasons and source refs', async () => {
     const out = await service().search('checkout fix', { topK: 1, sessionId: 's1' });
 
@@ -158,8 +179,84 @@ describe('RetrievalDisclosureService', () => {
     expect(source?.rawEvents[0].metadata).toEqual({ filePath: 'src/e2.ts' });
   });
 
+  it('expand and source keep event drill-down lightweight without full retrieval initialization', async () => {
+    let initializeCalls = 0;
+    const disclosure = service(retrievalResult(), {
+      initialize: async () => {
+        initializeCalls += 1;
+        throw new Error('full initialization should not be called for drill-down reads');
+      }
+    });
+
+    await expect(disclosure.expand('event:e2')).resolves.toMatchObject({
+      target: { id: 'event:e2' }
+    });
+    await expect(disclosure.source('event:e2')).resolves.toMatchObject({
+      sourceRef: 'event:e2'
+    });
+    expect(initializeCalls).toBe(0);
+  });
+
+  it('expands shared disclosure results through the shared store without fake local events', async () => {
+    const lookedUpEventIds: string[] = [];
+    const expanded = await service(retrievalResult([sharedEntry]), {
+      getEvent: async (id: string) => {
+        lookedUpEventIds.push(id);
+        return timeline.find((item) => item.id === id) ?? null;
+      },
+      sharedStore: { get: async (entryId: string) => entryId === sharedEntry.entryId ? sharedEntry : null }
+    }).expand('shared:shared-1');
+
+    expect(expanded?.target).toMatchObject({
+      id: 'shared:shared-1',
+      resultType: 'rule',
+      title: 'Shared checkout troubleshooting',
+      metadata: {
+        sourceProjectHash: 'project-a',
+        sourceEntryId: 'e-shared'
+      }
+    });
+    expect(expanded?.relatedSources).toEqual([
+      {
+        sourceRef: 'shared:shared-1',
+        sourceType: 'shared_troubleshooting',
+        eventIds: [],
+        metadata: {
+          sourceProjectHash: 'project-a',
+          sourceEntryId: 'e-shared',
+          topics: ['checkout']
+        }
+      }
+    ]);
+    expect(expanded?.expandedContext).toContain('Root cause: stale cache');
+    expect(lookedUpEventIds).toEqual([]);
+  });
+
+  it('resolves shared disclosure sources without pretending they are local raw events', async () => {
+    const source = await service(retrievalResult([sharedEntry]), {
+      sharedStore: { get: async (entryId: string) => entryId === sharedEntry.entryId ? sharedEntry : null }
+    }).source('shared:shared-1');
+
+    expect(source).toMatchObject({
+      sourceRef: 'shared:shared-1',
+      sourceType: 'shared_troubleshooting',
+      eventIds: [],
+      rawEvents: [],
+      metadata: {
+        sourceProjectHash: 'project-a',
+        sourceEntryId: 'e-shared',
+        topics: ['checkout'],
+        rootCause: 'stale cache',
+        solution: 'clear cache and retry'
+      }
+    });
+    expect(source?.primaryEvent).toBeUndefined();
+  });
+
   it('returns null when expand/source cannot resolve the result id', async () => {
     await expect(service().expand('event:missing')).resolves.toBeNull();
     await expect(service().source('event:missing')).resolves.toBeNull();
+    await expect(service().expand('shared:missing')).resolves.toBeNull();
+    await expect(service().source('shared:missing')).resolves.toBeNull();
   });
 });

@@ -23,7 +23,8 @@ import {
 import {
   createRetrievalDisclosureService,
   type RetrievalDisclosureEventStore,
-  type RetrievalDisclosureService
+  type RetrievalDisclosureService,
+  type RetrievalDisclosureSharedStore
 } from './retrieval-disclosure-service.js';
 import {
   createRetrievalOrchestrator,
@@ -57,6 +58,7 @@ export interface RetrievalServicesDeps {
   matcher: Matcher;
   getProjectHash: () => string | null;
   hasSharedStore: () => boolean;
+  sharedStore?: RetrievalDisclosureSharedStore;
   createRetriever?: CreateRetrieverFn;
 }
 
@@ -86,7 +88,8 @@ export function createRetrievalServices(deps: RetrievalServicesDeps): RetrievalS
   const retrievalDisclosureService = createRetrievalDisclosureService({
     initialize: deps.initialize,
     retrievalOrchestrator,
-    eventStore: deps.eventStore
+    eventStore: deps.eventStore,
+    sharedStore: deps.sharedStore
   });
   const retrievalAnalyticsService = createRetrievalAnalyticsService({
     initialize: deps.initialize,
@@ -142,6 +145,7 @@ export {
   RetrievalDisclosureService,
   createRetrievalDisclosureService,
   parseDisclosureResultId,
+  parseDisclosureResultRef,
   toDisclosureResultId
 } from './retrieval-disclosure-service.js';
 export type {
@@ -154,6 +158,7 @@ export type {
   RetrievalDisclosureSearchOptions,
   RetrievalDisclosureSearchResponse,
   RetrievalDisclosureServiceDeps,
+  RetrievalDisclosureSharedStore,
   RetrievalDisclosureSource,
   RetrievalDisclosureSourceReference,
   RetrievalDisclosureSourceType

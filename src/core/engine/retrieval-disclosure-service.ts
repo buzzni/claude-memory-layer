@@ -15,7 +15,12 @@ import type { RetrieveMemoriesOptions } from './retrieval-orchestrator.js';
 export type RetrievalDisclosureResultType = RetrievalResultType;
 export type RetrievalDisclosureReason = RetrievalReason;
 export type RetrievalDisclosureEnvelope = RetrievalResultEnvelope;
-export type RetrievalDisclosureSourceType = 'raw_event' | 'transcript' | 'tool_output' | 'imported_history';
+export type RetrievalDisclosureSourceType =
+  | 'raw_event'
+  | 'transcript'
+  | 'tool_output'
+  | 'imported_history'
+  | 'shared_troubleshooting';
 
 export interface RetrievalDisclosureSearchResponse {
   results: RetrievalResultEnvelope[];
@@ -34,6 +39,7 @@ export interface RetrievalDisclosureSourceReference {
   sourceRef: string;
   sourceType: RetrievalDisclosureSourceType;
   eventIds: string[];
+  metadata?: Record<string, unknown>;
 }
 
 export interface RetrievalDisclosureExpansion {
@@ -67,10 +73,15 @@ export interface RetrievalDisclosureEventStore {
   getSessionEvents(sessionId: string): Promise<MemoryEvent[]>;
 }
 
+export interface RetrievalDisclosureSharedStore {
+  get(entryId: string): Promise<SharedTroubleshootingEntry | null>;
+}
+
 export interface RetrievalDisclosureServiceDeps {
   initialize: () => Promise<void>;
   retrievalOrchestrator: RetrievalDisclosureOrchestrator;
   eventStore: RetrievalDisclosureEventStore;
+  sharedStore?: RetrievalDisclosureSharedStore;
 }
 
 export class RetrievalDisclosureService {
@@ -108,10 +119,12 @@ export class RetrievalDisclosureService {
     resultId: string,
     options?: RetrievalDisclosureExpandOptions
   ): Promise<RetrievalDisclosureExpansion | null> {
-    await this.deps.initialize();
+    const parsedId = parseDisclosureResultRef(resultId);
+    if (parsedId.kind === 'shared') {
+      return this.expandShared(parsedId.entryId);
+    }
 
-    const eventId = parseDisclosureResultId(resultId);
-    const targetEvent = await this.deps.eventStore.getEvent(eventId);
+    const targetEvent = await this.deps.eventStore.getEvent(parsedId.eventId);
     if (!targetEvent) return null;
 
     const windowSize = Math.max(0, options?.windowSize ?? 3);
@@ -140,16 +153,51 @@ export class RetrievalDisclosureService {
   }
 
   async source(resultId: string): Promise<RetrievalDisclosureSource | null> {
-    await this.deps.initialize();
+    const parsedId = parseDisclosureResultRef(resultId);
+    if (parsedId.kind === 'shared') {
+      return this.sourceShared(parsedId.entryId);
+    }
 
-    const eventId = parseDisclosureResultId(resultId);
-    const rawEvent = await this.deps.eventStore.getEvent(eventId);
+    const rawEvent = await this.deps.eventStore.getEvent(parsedId.eventId);
     if (!rawEvent) return null;
 
     return {
       ...this.sourceReferenceForEvent(rawEvent),
       rawEvents: [rawEvent],
       primaryEvent: rawEvent
+    };
+  }
+
+  private async expandShared(entryId: string): Promise<RetrievalDisclosureExpansion | null> {
+    const entry = await this.deps.sharedStore?.get(entryId);
+    if (!entry) return null;
+
+    return {
+      target: this.sharedToEnvelope(entry),
+      surroundingFacts: [],
+      summaries: [],
+      relatedSources: [this.sourceReferenceForShared(entry)],
+      expandedContext: this.formatSharedContext(entry)
+    };
+  }
+
+  private async sourceShared(entryId: string): Promise<RetrievalDisclosureSource | null> {
+    const entry = await this.deps.sharedStore?.get(entryId);
+    if (!entry) return null;
+
+    const sourceReference = this.sourceReferenceForShared(entry);
+    return {
+      ...sourceReference,
+      rawEvents: [],
+      metadata: {
+        ...sourceReference.metadata,
+        symptoms: entry.symptoms,
+        rootCause: entry.rootCause,
+        solution: entry.solution,
+        technologies: entry.technologies,
+        confidence: entry.confidence,
+        usageCount: entry.usageCount
+      }
     };
   }
 
@@ -267,6 +315,19 @@ export class RetrievalDisclosureService {
     };
   }
 
+  private sourceReferenceForShared(entry: SharedTroubleshootingEntry): RetrievalDisclosureSourceReference {
+    return {
+      sourceRef: `shared:${entry.entryId}`,
+      sourceType: 'shared_troubleshooting',
+      eventIds: [],
+      metadata: {
+        sourceProjectHash: entry.sourceProjectHash,
+        sourceEntryId: entry.sourceEntryId,
+        topics: entry.topics
+      }
+    };
+  }
+
   private sourceTypeForEvent(event: MemoryEvent): RetrievalDisclosureSourceType {
     const metadata = event.metadata || {};
     if (event.eventType === 'tool_observation') return 'tool_output';
@@ -302,6 +363,16 @@ export class RetrievalDisclosureService {
       .join('\n\n');
   }
 
+  private formatSharedContext(entry: SharedTroubleshootingEntry): string {
+    return [
+      `[shared_troubleshooting] ${entry.title}`,
+      `Symptoms: ${entry.symptoms.join('; ')}`,
+      `Root cause: ${entry.rootCause}`,
+      `Solution: ${entry.solution}`,
+      `Topics: ${entry.topics.join(', ')}`
+    ].join('\n');
+  }
+
   private preview(content: string, maxLength: number): string {
     const normalized = content.replace(/\s+/g, ' ').trim();
     if (normalized.length <= maxLength) return normalized;
@@ -321,8 +392,22 @@ export function toDisclosureResultId(eventId: string): string {
   return eventId.startsWith('event:') ? eventId : `event:${eventId}`;
 }
 
+export type ParsedDisclosureResultId =
+  | { kind: 'event'; eventId: string }
+  | { kind: 'shared'; entryId: string };
+
 export function parseDisclosureResultId(resultId: string): string {
   return resultId.startsWith('event:') ? resultId.slice('event:'.length) : resultId;
+}
+
+export function parseDisclosureResultRef(resultId: string): ParsedDisclosureResultId {
+  if (resultId.startsWith('shared:')) {
+    return { kind: 'shared', entryId: resultId.slice('shared:'.length) };
+  }
+  return {
+    kind: 'event',
+    eventId: parseDisclosureResultId(resultId)
+  };
 }
 
 export function createRetrievalDisclosureService(

@@ -192,7 +192,10 @@ export class MemoryService {
       embedder: this.embedder,
       matcher: this.matcher,
       getProjectHash: () => this.projectHash,
-      hasSharedStore: () => this.sharedStore !== null
+      hasSharedStore: () => this.sharedStore !== null,
+      sharedStore: {
+        get: (entryId: string) => this.getSharedEntryForDisclosure(entryId)
+      }
     });
     this.retriever = retrievalServices.retriever;
     this.retrievalOrchestrator = retrievalServices.retrievalOrchestrator;
@@ -282,16 +285,19 @@ export class MemoryService {
     this.initialized = true;
   }
 
-  /**
-   * Initialize Shared Store components
-   */
-  private async initializeSharedStore(): Promise<void> {
-    const sharedPath = this.sharedStoreConfig?.sharedStoragePath
+  private getSharedStoragePath(): string {
+    return this.sharedStoreConfig?.sharedStoragePath
       ? this.expandPath(this.sharedStoreConfig.sharedStoragePath)
       : SHARED_STORAGE_PATH;
+  }
 
-    // Ensure shared directory exists
+  private async ensureSharedStoreForRead(): Promise<SharedStore | null> {
+    if (this.sharedStoreConfig?.enabled === false) return null;
+    if (this.sharedStore) return this.sharedStore;
+
+    const sharedPath = this.getSharedStoragePath();
     if (!fs.existsSync(sharedPath)) {
+      if (this.readOnly) return null;
       fs.mkdirSync(sharedPath, { recursive: true });
     }
 
@@ -299,8 +305,36 @@ export class MemoryService {
       path.join(sharedPath, 'shared.duckdb')
     );
     await this.sharedEventStore.initialize();
-
     this.sharedStore = createSharedStore(this.sharedEventStore);
+    return this.sharedStore;
+  }
+
+  private async getSharedEntryForDisclosure(entryId: string) {
+    const store = await this.ensureSharedStoreForRead();
+    return store?.get(entryId) ?? null;
+  }
+
+  /**
+   * Initialize Shared Store components
+   */
+  private async initializeSharedStore(): Promise<void> {
+    const sharedPath = this.getSharedStoragePath();
+
+    // Ensure shared directory exists
+    if (!fs.existsSync(sharedPath)) {
+      fs.mkdirSync(sharedPath, { recursive: true });
+    }
+
+    if (!this.sharedEventStore) {
+      this.sharedEventStore = createSharedEventStore(
+        path.join(sharedPath, 'shared.duckdb')
+      );
+      await this.sharedEventStore.initialize();
+    }
+
+    if (!this.sharedStore) {
+      this.sharedStore = createSharedStore(this.sharedEventStore);
+    }
     this.sharedVectorStore = createSharedVectorStore(
       path.join(sharedPath, 'vectors')
     );

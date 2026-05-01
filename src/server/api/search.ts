@@ -104,8 +104,6 @@ searchRouter.post('/disclosure', async (c) => {
 searchRouter.get('/disclosure/:resultId/expand', async (c) => {
   const memoryService = getServiceFromQuery(c);
   try {
-    await memoryService.initialize();
-
     const resultId = c.req.param('resultId');
     const rawWindowSize = c.req.query('windowSize');
     const windowSize = rawWindowSize ? parseInt(rawWindowSize, 10) : undefined;
@@ -130,8 +128,6 @@ searchRouter.get('/disclosure/:resultId/expand', async (c) => {
 searchRouter.get('/disclosure/:resultId/source', async (c) => {
   const memoryService = getServiceFromQuery(c);
   try {
-    await memoryService.initialize();
-
     const resultId = c.req.param('resultId');
     const result = await memoryService.sourceDisclosure(resultId);
 
