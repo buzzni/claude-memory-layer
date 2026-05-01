@@ -15,10 +15,11 @@ import type { Embedder } from '../core/embedder.js';
 import { VectorWorker, createVectorWorker } from '../core/vector-worker.js';
 import type { Retriever, RetrievalResult, UnifiedRetrievalResult } from '../core/retriever.js';
 import type { GraduationPipeline } from '../core/graduation.js';
-import { SharedEventStore, createSharedEventStore } from '../core/shared-event-store.js';
-import { SharedStore, createSharedStore } from '../core/shared-store.js';
-import { SharedVectorStore, createSharedVectorStore } from '../core/shared-vector-store.js';
-import { SharedPromoter, createSharedPromoter, PromotionResult } from '../core/shared-promoter.js';
+import type { PromotionResult } from '../core/shared-promoter.js';
+import {
+  createSharedMemoryServices,
+  type SharedMemoryServices
+} from '../core/engine/shared-memory-services.js';
 import type {
   MemoryEventInput,
   AppendResult,
@@ -129,11 +130,7 @@ export class MemoryService {
   private endlessMode: MemoryMode = 'session';
 
   // Shared Store components (cross-project knowledge)
-  private sharedEventStore: SharedEventStore | null = null;
-  private sharedStore: SharedStore | null = null;
-  private sharedVectorStore: SharedVectorStore | null = null;
-  private sharedPromoter: SharedPromoter | null = null;
-  private sharedStoreConfig: SharedStoreConfig | null = null;
+  private sharedMemoryServices!: SharedMemoryServices;
   private projectHash: string | null = null;
   private projectPath: string | null = null;
 
@@ -156,7 +153,7 @@ export class MemoryService {
     this.projectHash = config.projectHash || null;
     this.projectPath = config.projectPath || null;
     // Default: shared store enabled
-    this.sharedStoreConfig = config.sharedStoreConfig ?? {
+    const sharedStoreConfig = config.sharedStoreConfig ?? {
       enabled: true,
       autoPromote: true,
       searchShared: true,
@@ -171,7 +168,7 @@ export class MemoryService {
       cwd: process.cwd(),
       initialize: () => this.initialize(),
       getProjectHash: () => this.projectHash,
-      hasSharedStore: () => this.sharedStore !== null,
+      hasSharedStore: () => this.sharedMemoryServices?.isEnabled() ?? false,
       sharedStore: {
         get: (entryId: string) => this.getSharedEntryForDisclosure(entryId)
       },
@@ -202,6 +199,14 @@ export class MemoryService {
     this.mdMirror = engineServices.mdMirror;
     this.ingestService = engineServices.ingestService;
     this.queryService = engineServices.queryService;
+    this.sharedMemoryServices = createSharedMemoryServices({
+      config: sharedStoreConfig,
+      defaultSharedStoragePath: SHARED_STORAGE_PATH,
+      readOnly: this.readOnly,
+      expandPath: (targetPath) => this.expandPath(targetPath),
+      embedder: this.embedder,
+      retriever: this.retriever
+    });
   }
 
   /**
@@ -254,78 +259,21 @@ export class MemoryService {
       }
 
       // Initialize shared store (enabled by default)
-      if (this.sharedStoreConfig?.enabled !== false) {
-        await this.initializeSharedStore();
-      }
+      await this.initializeSharedStore();
     }
 
     this.initialized = true;
   }
 
-  private getSharedStoragePath(): string {
-    return this.sharedStoreConfig?.sharedStoragePath
-      ? this.expandPath(this.sharedStoreConfig.sharedStoragePath)
-      : SHARED_STORAGE_PATH;
-  }
-
-  private async ensureSharedStoreForRead(): Promise<SharedStore | null> {
-    if (this.sharedStoreConfig?.enabled === false) return null;
-    if (this.sharedStore) return this.sharedStore;
-
-    const sharedPath = this.getSharedStoragePath();
-    if (!fs.existsSync(sharedPath)) {
-      if (this.readOnly) return null;
-      fs.mkdirSync(sharedPath, { recursive: true });
-    }
-
-    this.sharedEventStore = createSharedEventStore(
-      path.join(sharedPath, 'shared.duckdb')
-    );
-    await this.sharedEventStore.initialize();
-    this.sharedStore = createSharedStore(this.sharedEventStore);
-    return this.sharedStore;
-  }
-
   private async getSharedEntryForDisclosure(entryId: string) {
-    const store = await this.ensureSharedStoreForRead();
-    return store?.get(entryId) ?? null;
+    return this.sharedMemoryServices.getEntryForDisclosure(entryId);
   }
 
   /**
    * Initialize Shared Store components
    */
   private async initializeSharedStore(): Promise<void> {
-    const sharedPath = this.getSharedStoragePath();
-
-    // Ensure shared directory exists
-    if (!fs.existsSync(sharedPath)) {
-      fs.mkdirSync(sharedPath, { recursive: true });
-    }
-
-    if (!this.sharedEventStore) {
-      this.sharedEventStore = createSharedEventStore(
-        path.join(sharedPath, 'shared.duckdb')
-      );
-      await this.sharedEventStore.initialize();
-    }
-
-    if (!this.sharedStore) {
-      this.sharedStore = createSharedStore(this.sharedEventStore);
-    }
-    this.sharedVectorStore = createSharedVectorStore(
-      path.join(sharedPath, 'vectors')
-    );
-    await this.sharedVectorStore.initialize();
-
-    this.sharedPromoter = createSharedPromoter(
-      this.sharedStore,
-      this.sharedVectorStore,
-      this.embedder,
-      this.sharedStoreConfig || undefined
-    );
-
-    // Connect shared stores to retriever
-    this.retriever.setSharedStores(this.sharedStore, this.sharedVectorStore);
+    await this.sharedMemoryServices.initialize();
   }
 
   registerIngestBefore(interceptor: IngestInterceptor): () => void {
@@ -650,21 +598,14 @@ export class MemoryService {
    * Check if shared store is enabled and initialized
    */
   isSharedStoreEnabled(): boolean {
-    return this.sharedStore !== null;
+    return this.sharedMemoryServices.isEnabled();
   }
 
   /**
    * Promote an entry to shared storage
    */
   async promoteToShared(entry: Entry): Promise<PromotionResult> {
-    if (!this.sharedPromoter || !this.projectHash) {
-      return {
-        success: false,
-        error: 'Shared store not initialized or project hash not set'
-      };
-    }
-
-    return this.sharedPromoter.promoteEntry(entry, this.projectHash);
+    return this.sharedMemoryServices.promoteToShared(entry, this.projectHash);
   }
 
   /**
@@ -676,8 +617,7 @@ export class MemoryService {
     topTopics: Array<{ topic: string; count: number }>;
     totalUsageCount: number;
   } | null> {
-    if (!this.sharedStore) return null;
-    return this.sharedStore.getStats();
+    return this.sharedMemoryServices.getStats();
   }
 
   /**
@@ -687,8 +627,7 @@ export class MemoryService {
     query: string,
     options?: { topK?: number; minConfidence?: number }
   ) {
-    if (!this.sharedStore) return [];
-    return this.sharedStore.search(query, options);
+    return this.sharedMemoryServices.search(query, options);
   }
 
   /**
@@ -1213,9 +1152,7 @@ export class MemoryService {
     }
 
     // Close shared store
-    if (this.sharedEventStore) {
-      await this.sharedEventStore.close();
-    }
+    await this.sharedMemoryServices.close();
 
     // Close primary store (SQLite)
     await this.sqliteStore.close();

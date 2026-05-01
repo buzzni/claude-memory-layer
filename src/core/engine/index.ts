@@ -4,6 +4,7 @@ export * from './memory-engine-services.js';
 export * from './retrieval-orchestrator.js';
 export * from './retrieval-disclosure-service.js';
 export * from './retrieval-analytics-service.js';
+export * from './shared-memory-services.js';
 export {
   createRetrievalServices
 } from './retrieval-services.js';
