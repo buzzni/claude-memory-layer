@@ -190,6 +190,7 @@ export class MemoryService {
       initialize: () => this.initialize(),
       retriever: this.retriever,
       traceStore: this.sqliteStore,
+      accessStore: this.sqliteStore,
       getProjectHash: () => this.projectHash,
       hasSharedStore: () => this.sharedStore !== null
     });
@@ -867,12 +868,7 @@ export class MemoryService {
    * Increment access count for memories that were used in prompts
    */
   async incrementMemoryAccess(eventIds: string[]): Promise<void> {
-    if (eventIds.length === 0) return;
-
-    // Use SQLite event store if available
-    if (this.sqliteStore) {
-      await this.sqliteStore.incrementAccessCount(eventIds);
-    }
+    return this.retrievalOrchestrator.incrementMemoryAccess(eventIds);
   }
 
   /**
@@ -917,8 +913,7 @@ export class MemoryService {
    * Record a memory retrieval for helpfulness tracking
    */
   async recordRetrieval(eventId: string, sessionId: string, score: number, query: string): Promise<void> {
-    await this.initialize();
-    await this.sqliteStore.recordRetrieval(eventId, sessionId, score, query);
+    return this.retrievalOrchestrator.recordRetrieval(eventId, sessionId, score, query);
   }
 
   /**

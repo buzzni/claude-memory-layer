@@ -74,10 +74,16 @@ export interface RetrievalTraceStore {
   }): Promise<void>;
 }
 
+export interface RetrievalAccessStore {
+  incrementAccessCount(eventIds: string[]): Promise<void>;
+  recordRetrieval(eventId: string, sessionId: string, score: number, query: string): Promise<void>;
+}
+
 export interface RetrievalOrchestratorDeps {
   initialize: () => Promise<void>;
   retriever: Retriever;
   traceStore: RetrievalTraceStore;
+  accessStore: RetrievalAccessStore;
   getProjectHash: () => string | null;
   hasSharedStore: () => boolean;
 }
@@ -166,6 +172,32 @@ export class RetrievalOrchestrator {
       selectedDetails: [],
       fallbackTrace: [],
     });
+  }
+
+  /**
+   * Increment access count for memories that were injected into prompts.
+   *
+   * Access count writes are intentionally store-scoped: the SQLite access store
+   * initializes itself and no-ops in read-only mode, so this avoids triggering
+   * the heavier retrieval/vector initialization path for prompt telemetry.
+   */
+  async incrementMemoryAccess(eventIds: string[]): Promise<void> {
+    if (eventIds.length === 0) return;
+
+    await this.deps.accessStore.incrementAccessCount(eventIds);
+  }
+
+  /**
+   * Record a selected retrieval for helpfulness analytics.
+   */
+  async recordRetrieval(
+    eventId: string,
+    sessionId: string,
+    score: number,
+    query: string
+  ): Promise<void> {
+    await this.deps.initialize();
+    await this.deps.accessStore.recordRetrieval(eventId, sessionId, score, query);
   }
 
   private async recordAutomaticTrace(

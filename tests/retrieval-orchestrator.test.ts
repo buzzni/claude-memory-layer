@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { RetrievalOrchestrator } from '../src/core/engine/retrieval-orchestrator.js';
+import { RetrievalOrchestrator, type RetrievalAccessStore } from '../src/core/engine/retrieval-orchestrator.js';
 import type { Retriever, UnifiedRetrievalResult } from '../src/core/retriever.js';
 import type { MemoryEvent } from '../src/core/types.js';
 
@@ -43,6 +43,13 @@ function stats() {
   };
 }
 
+function noopAccessStore(): RetrievalAccessStore {
+  return {
+    incrementAccessCount: async (_eventIds) => {},
+    recordRetrieval: async (_eventId, _sessionId, _score, _query) => {}
+  };
+}
+
 afterEach(() => {
   delete process.env.MEMORY_RERANK_WEIGHT_SEMANTIC;
   delete process.env.MEMORY_RERANK_WEIGHT_LEXICAL;
@@ -70,6 +77,7 @@ describe('RetrievalOrchestrator', () => {
         getHelpfulnessStats: async () => stats(),
         recordRetrievalTrace: async (input) => { traces.push(input); }
       },
+      accessStore: noopAccessStore(),
       getProjectHash: () => 'project-1',
       hasSharedStore: () => false
     });
@@ -115,6 +123,7 @@ describe('RetrievalOrchestrator', () => {
         getHelpfulnessStats: async () => stats(),
         recordRetrievalTrace: async () => {}
       },
+      accessStore: noopAccessStore(),
       getProjectHash: () => 'project-2',
       hasSharedStore: () => true
     });
@@ -146,10 +155,99 @@ describe('RetrievalOrchestrator', () => {
         getHelpfulnessStats: async () => stats(),
         recordRetrievalTrace: async () => {}
       },
+      accessStore: noopAccessStore(),
       getProjectHash: () => null,
       hasSharedStore: () => false
     });
 
     expect(orchestrator.formatAsContext(retrievalResult())).toContain('High-confidence memory match');
+  });
+
+  it('records prompt memory access through the orchestrator access port without full initialization', async () => {
+    let initialized = 0;
+    const accessCalls: string[][] = [];
+    const fakeRetriever = {
+      setQueryRewriter() {}
+    } as unknown as Retriever;
+
+    const orchestrator = new RetrievalOrchestrator({
+      initialize: async () => { initialized += 1; },
+      retriever: fakeRetriever,
+      traceStore: {
+        getHelpfulnessStats: async () => stats(),
+        recordRetrievalTrace: async () => {}
+      },
+      accessStore: {
+        incrementAccessCount: async (eventIds) => { accessCalls.push(eventIds); },
+        recordRetrieval: async () => {}
+      },
+      getProjectHash: () => null,
+      hasSharedStore: () => false
+    });
+
+    await orchestrator.incrementMemoryAccess(['e1', 'e2']);
+
+    expect(initialized).toBe(0);
+    expect(accessCalls).toEqual([['e1', 'e2']]);
+  });
+
+  it('skips prompt memory access tracking for empty event id lists', async () => {
+    let initialized = 0;
+    let accessCalls = 0;
+    const fakeRetriever = {
+      setQueryRewriter() {}
+    } as unknown as Retriever;
+
+    const orchestrator = new RetrievalOrchestrator({
+      initialize: async () => { initialized += 1; },
+      retriever: fakeRetriever,
+      traceStore: {
+        getHelpfulnessStats: async () => stats(),
+        recordRetrievalTrace: async () => {}
+      },
+      accessStore: {
+        incrementAccessCount: async () => { accessCalls += 1; },
+        recordRetrieval: async () => {}
+      },
+      getProjectHash: () => null,
+      hasSharedStore: () => false
+    });
+
+    await orchestrator.incrementMemoryAccess([]);
+
+    expect(initialized).toBe(0);
+    expect(accessCalls).toBe(0);
+  });
+
+  it('records retrieval helpfulness events through the orchestrator access port', async () => {
+    let initialized = 0;
+    const retrievalCalls: Array<{ eventId: string; sessionId: string; score: number; query: string }> = [];
+    const fakeRetriever = {
+      setQueryRewriter() {}
+    } as unknown as Retriever;
+
+    const orchestrator = new RetrievalOrchestrator({
+      initialize: async () => { initialized += 1; },
+      retriever: fakeRetriever,
+      traceStore: {
+        getHelpfulnessStats: async () => stats(),
+        recordRetrievalTrace: async () => {}
+      },
+      accessStore: {
+        incrementAccessCount: async () => {},
+        recordRetrieval: async (eventId, sessionId, score, query) => {
+          retrievalCalls.push({ eventId, sessionId, score, query });
+        }
+      },
+      getProjectHash: () => 'project-1',
+      hasSharedStore: () => false
+    });
+
+    await orchestrator.recordRetrieval('e1', 's1', 0.82, 'thin core');
+
+    expect(initialized).toBe(1);
+    expect(retrievalCalls).toEqual([
+      { eventId: 'e1', sessionId: 's1', score: 0.82, query: 'thin core' }
+    ]);
   });
 });
