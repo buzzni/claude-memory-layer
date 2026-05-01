@@ -22,7 +22,8 @@ import { MongoSyncWorker, type MongoSyncDirection } from '../core/mongo-sync-wor
 import {
   formatDisclosureExpansion,
   formatDisclosureSearch,
-  formatDisclosureSource
+  formatDisclosureSource,
+  formatPlainSearchResults
 } from './retrieval-disclosure-output.js';
 
 // ============================================================
@@ -311,22 +312,11 @@ program
       const result = await service.retrieveMemories(query, {
         topK: parseInt(options.topK),
         minScore: parseFloat(options.minScore),
-        sessionId: options.session
+        sessionId: options.session,
+        includeShared: options.includeShared === true
       });
 
-      console.log('\n📚 Search Results\n');
-      console.log(`Confidence: ${result.matchResult.confidence}`);
-      console.log(`Total memories found: ${result.memories.length}\n`);
-
-      for (const memory of result.memories) {
-        const date = memory.event.timestamp.toISOString().split('T')[0];
-        console.log(`---`);
-        console.log(`📌 ${memory.event.eventType} (${date})`);
-        console.log(`   Score: ${memory.score.toFixed(3)}`);
-        console.log(`   Session: ${memory.event.sessionId.slice(0, 8)}...`);
-        console.log(`   Content: ${memory.event.content.slice(0, 200)}${memory.event.content.length > 200 ? '...' : ''}`);
-        console.log('');
-      }
+      console.log(formatPlainSearchResults(result));
     } catch (error) {
       console.error('Search failed:', error);
       process.exitCode = 1;
