@@ -10,6 +10,13 @@
 현재 `claude-memory-layer`에 **도입하면 좋은 구조/기능/운영 패턴**을 정리하고,
 동시에 이 프로젝트가 너무 무거워지지 않도록 **더 가볍고 강력한 방향**을 제안하기 위한 문서다.
 
+관련 원문/스냅샷 문서:
+
+- [`PROJECT_STRUCTURE_ANALYSIS.md`](./PROJECT_STRUCTURE_ANALYSIS.md) — target repo 현재 구조
+- [`MEMSEARCH_PROJECT_STRUCTURE_ANALYSIS.md`](./MEMSEARCH_PROJECT_STRUCTURE_ANALYSIS.md) — memsearch 구조 분석 스냅샷
+- [`SUPERLOCALMEMORY_PROJECT_STRUCTURE_ANALYSIS.md`](./SUPERLOCALMEMORY_PROJECT_STRUCTURE_ANALYSIS.md) — superlocalmemory 구조 분석 스냅샷
+- [`REFERENCE_PROJECT_ANALYSES.md`](./REFERENCE_PROJECT_ANALYSES.md) — 비교 문서 인덱스
+
 ---
 
 # 1. 세 프로젝트를 한 문장으로 요약하면
