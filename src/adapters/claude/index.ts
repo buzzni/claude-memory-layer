@@ -1,9 +1,4 @@
-/**
- * Claude adapter surface.
- *
- * Hook implementations still live under src/hooks during the first thin-core
- * migration phase. This module establishes the target adapter boundary without
- * changing runtime entrypoints yet.
- */
+/** Claude adapter surface for Claude Code-specific integrations. */
 
-export {};
+export * from './hooks/index.js';
+export * from './transcript/index.js';
