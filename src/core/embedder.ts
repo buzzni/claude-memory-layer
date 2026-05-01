@@ -3,13 +3,16 @@
  * AXIOMMIND Principle 7: Standard JSON format for vectors
  */
 
-import { pipeline } from '@huggingface/transformers';
-
 export interface EmbeddingResult {
   vector: number[];
   model: string;
   dimensions: number;
 }
+
+type FeatureExtractionPipelineFactory = (
+  task: 'feature-extraction',
+  model: string
+) => Promise<NonNullable<Embedder['pipeline']>>;
 
 export class Embedder {
   private pipeline: ((input: string, options?: Record<string, unknown>) => Promise<{ data: Float32Array }>) | null = null;
@@ -28,8 +31,10 @@ export class Embedder {
   async initialize(): Promise<void> {
     if (this.initialized) return;
 
+    const pipeline = await loadTransformersPipeline();
+
     try {
-      this.pipeline = await pipeline('feature-extraction', this.modelName) as unknown as NonNullable<Embedder['pipeline']>;
+      this.pipeline = await pipeline('feature-extraction', this.modelName);
       this.activeModelName = this.modelName;
       this.initialized = true;
       return;
@@ -40,7 +45,7 @@ export class Embedder {
       }
 
       console.warn(`[Embedder] Primary model failed (${this.modelName}). Falling back to ${fallbackModel}`);
-      this.pipeline = await pipeline('feature-extraction', fallbackModel) as unknown as NonNullable<Embedder['pipeline']>;
+      this.pipeline = await pipeline('feature-extraction', fallbackModel);
       this.activeModelName = fallbackModel;
       this.initialized = true;
     }
@@ -149,4 +154,14 @@ export function getDefaultEmbedder(): Embedder {
     defaultEmbedder = new Embedder(envModel || undefined);
   }
   return defaultEmbedder;
+}
+
+async function loadTransformersPipeline(): Promise<FeatureExtractionPipelineFactory> {
+  // Keep @huggingface/transformers lazy so importing MemoryService or pure
+  // adapter helpers does not eagerly dlopen onnxruntime native bindings.
+  const dynamicImport = new Function('specifier', 'return import(specifier)') as (
+    specifier: string
+  ) => Promise<{ pipeline: unknown }>;
+  const transformers = await dynamicImport('@huggingface/transformers');
+  return transformers.pipeline as FeatureExtractionPipelineFactory;
 }

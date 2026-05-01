@@ -8,14 +8,13 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
 
-import { EventStore } from '../core/event-store.js';
-import { SQLiteEventStore } from '../core/sqlite-event-store.js';
-import { VectorStore } from '../core/vector-store.js';
-import { Embedder, getDefaultEmbedder } from '../core/embedder.js';
+import type { EventStore } from '../core/event-store.js';
+import type { SQLiteEventStore } from '../core/sqlite-event-store.js';
+import type { VectorStore } from '../core/vector-store.js';
+import type { Embedder } from '../core/embedder.js';
 import { VectorWorker, createVectorWorker } from '../core/vector-worker.js';
-import { Matcher, getDefaultMatcher } from '../core/matcher.js';
-import { Retriever, type RetrievalResult, type UnifiedRetrievalResult } from '../core/retriever.js';
-import { GraduationPipeline, createGraduationPipeline } from '../core/graduation.js';
+import type { Retriever, RetrievalResult, UnifiedRetrievalResult } from '../core/retriever.js';
+import type { GraduationPipeline } from '../core/graduation.js';
 import { SharedEventStore, createSharedEventStore } from '../core/shared-event-store.js';
 import { SharedStore, createSharedStore } from '../core/shared-store.js';
 import { SharedVectorStore, createSharedVectorStore } from '../core/shared-vector-store.js';
@@ -40,17 +39,20 @@ import { ConsolidatedStore, createConsolidatedStore } from '../core/consolidated
 import { ConsolidationWorker, createConsolidationWorker } from '../core/consolidation-worker.js';
 import { ContinuityManager, createContinuityManager } from '../core/continuity-manager.js';
 import { GraduationWorker, createGraduationWorker, GraduationRunResult } from '../core/graduation-worker.js';
-import { MarkdownMirror } from '../core/md-mirror.js';
+import type { MarkdownMirror } from '../core/md-mirror.js';
 import {
   IngestInterceptor,
   IngestInterceptorRegistry,
   mergeHierarchicalMetadata
 } from '../core/ingest-interceptor.js';
 import { normalizeTags } from '../core/tag-taxonomy.js';
-import { MemoryIngestService } from '../core/engine/memory-ingest-service.js';
-import { MemoryQueryService } from '../core/engine/memory-query-service.js';
+import type { MemoryIngestService } from '../core/engine/memory-ingest-service.js';
+import type { MemoryQueryService } from '../core/engine/memory-query-service.js';
 import {
-  createRetrievalServices,
+  createMemoryEngineServices,
+  type MemoryEngineIngestInput
+} from '../core/engine/memory-engine-services.js';
+import {
   type AccessedMemory,
   type HelpfulMemory,
   type HelpfulnessStats,
@@ -109,7 +111,6 @@ export class MemoryService {
 
   private readonly vectorStore: VectorStore;
   private readonly embedder: Embedder;
-  private readonly matcher: Matcher;
   private readonly retriever: Retriever;
   private readonly retrievalOrchestrator: RetrievalOrchestrator;
   private readonly retrievalDisclosureService: RetrievalDisclosureService;
@@ -150,12 +151,6 @@ export class MemoryService {
     this.readOnly = config.readOnly ?? false;
     this.lightweightMode = config.lightweightMode ?? false;
     this.embeddingOnly = config.embeddingOnly ?? false;
-    this.mdMirror = new MarkdownMirror(process.cwd());
-
-    // Ensure storage directory exists (only if not read-only)
-    if (!this.readOnly && !fs.existsSync(storagePath)) {
-      fs.mkdirSync(storagePath, { recursive: true });
-    }
 
     // Store project hash for shared store operations
     this.projectHash = config.projectHash || null;
@@ -169,44 +164,18 @@ export class MemoryService {
       sharedStoragePath: SHARED_STORAGE_PATH
     };
 
-    // Initialize PRIMARY store: SQLite (WAL mode)
-    // This is always used for writes and is the source of truth
-    this.sqliteStore = new SQLiteEventStore(
-      path.join(storagePath, 'events.sqlite'),
-      {
-        readonly: this.readOnly,
-        markdownMirrorRoot: storagePath
-      }
-    );
-
-    this.vectorStore = new VectorStore(path.join(storagePath, 'vectors'));
-    const embeddingModel = config.embeddingModel || process.env.CLAUDE_MEMORY_EMBEDDING_MODEL;
-    this.embedder = embeddingModel
-      ? new Embedder(embeddingModel)
-      : getDefaultEmbedder();
-    this.matcher = getDefaultMatcher();
-    const retrievalServices = createRetrievalServices({
+    const engineServices = createMemoryEngineServices({
+      storagePath,
+      readOnly: this.readOnly,
+      embeddingModel: config.embeddingModel,
+      cwd: process.cwd(),
       initialize: () => this.initialize(),
-      eventStore: this.sqliteStore,
-      vectorStore: this.vectorStore,
-      embedder: this.embedder,
-      matcher: this.matcher,
       getProjectHash: () => this.projectHash,
       hasSharedStore: () => this.sharedStore !== null,
       sharedStore: {
         get: (entryId: string) => this.getSharedEntryForDisclosure(entryId)
-      }
-    });
-    this.retriever = retrievalServices.retriever;
-    this.retrievalOrchestrator = retrievalServices.retrievalOrchestrator;
-    this.retrievalDisclosureService = retrievalServices.retrievalDisclosureService;
-    this.retrievalAnalyticsService = retrievalServices.retrievalAnalyticsService;
-    this.graduation = createGraduationPipeline(this.sqliteStore as unknown as EventStore);
-
-    this.ingestService = new MemoryIngestService(
-      () => this.initialize(),
-      this.sqliteStore,
-      ({ operation, input, embeddingContent }) => this.ingestWithInterceptors(
+      },
+      ingestEvent: ({ operation, input, embeddingContent }: MemoryEngineIngestInput) => this.ingestWithInterceptors(
         operation,
         input,
         embeddingContent
@@ -215,16 +184,24 @@ export class MemoryService {
             }
           : undefined
       ),
-      (payload) => createToolObservationEmbedding(
+      createToolObservationEmbedding: (payload) => createToolObservationEmbedding(
         payload.toolName,
         payload.metadata || {},
         payload.success
       )
-    );
-    this.queryService = new MemoryQueryService(
-      () => this.initialize(),
-      this.sqliteStore
-    );
+    });
+
+    this.sqliteStore = engineServices.sqliteStore;
+    this.vectorStore = engineServices.vectorStore;
+    this.embedder = engineServices.embedder;
+    this.retriever = engineServices.retriever;
+    this.retrievalOrchestrator = engineServices.retrievalOrchestrator;
+    this.retrievalDisclosureService = engineServices.retrievalDisclosureService;
+    this.retrievalAnalyticsService = engineServices.retrievalAnalyticsService;
+    this.graduation = engineServices.graduation;
+    this.mdMirror = engineServices.mdMirror;
+    this.ingestService = engineServices.ingestService;
+    this.queryService = engineServices.queryService;
   }
 
   /**
