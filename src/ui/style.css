@@ -1674,6 +1674,44 @@ body {
   flex-wrap: wrap;
 }
 
+.disclosure-source-ref {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.disclosure-provenance {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 5px 8px;
+  margin: 7px 0 9px;
+  padding: 8px;
+  border: 1px solid rgba(0, 240, 255, 0.12);
+  border-radius: 10px;
+  background: rgba(0, 240, 255, 0.035);
+}
+
+.disclosure-provenance-row {
+  min-width: 0;
+}
+
+.disclosure-provenance-key {
+  display: block;
+  color: var(--text-muted);
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  margin-bottom: 2px;
+}
+
+.disclosure-provenance-value {
+  display: block;
+  color: var(--text-secondary);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
 .disclosure-chip {
   font-size: 10px;
   color: var(--text-muted);

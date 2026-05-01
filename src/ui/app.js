@@ -2210,6 +2210,7 @@ function renderDisclosureResults() {
     const active = r.id === state.disclosureSelectedId ? ' active' : '';
     const score = Number(r.score || 0).toFixed(3);
     const reasons = (r.reasons || []).map(reason => `<span class="disclosure-chip">${escapeHtml(reason)}</span>`).join('');
+    const provenance = renderDisclosureProvenance(r.metadata, ['sourceProjectHash', 'sourceEntryId', 'topics']);
     return `
       <button class="disclosure-result${active}" data-result-id="${escapeHtml(r.id)}">
         <div class="disclosure-result-head">
@@ -2218,6 +2219,7 @@ function renderDisclosureResults() {
         </div>
         <div class="disclosure-title">${escapeHtml(r.title || r.sourceRef || r.id)}</div>
         <div class="disclosure-snippet">${escapeHtml(r.snippet || '(no snippet)')}</div>
+        ${provenance}
         <div class="disclosure-reasons">${reasons || '<span class="disclosure-chip">no_reason</span>'}</div>
       </button>`;
   }).join('');
@@ -2283,12 +2285,24 @@ function renderDisclosureDrilldown(isLoading = false, message = null, isError = 
     </div>`).join('') || '<div class="disclosure-empty compact">No surrounding facts.</div>';
 
   const related = (expansion.relatedSources || []).map(s => `
-    <span class="disclosure-chip">${escapeHtml(s.sourceRef)} · ${escapeHtml(s.sourceType || 'source')}</span>`).join('') || '<span class="disclosure-chip">no source refs</span>';
+    <div class="disclosure-source-ref">
+      <span class="disclosure-chip">${escapeHtml(s.sourceRef)} · ${escapeHtml(s.sourceType || 'source')}</span>
+      ${renderDisclosureProvenance(s.metadata, ['sourceProjectHash', 'sourceEntryId', 'topics'])}
+    </div>`).join('') || '<span class="disclosure-chip">no source refs</span>';
 
   const rawEvent = source?.primaryEvent || source?.rawEvents?.[0] || source?.rawEvent || source?.event || null;
+  const isSharedSource = source?.sourceType === 'shared_troubleshooting';
   const sourcePreview = rawEvent
     ? `${rawEvent.eventType || rawEvent.type || 'event'} · ${rawEvent.timestamp || ''}\n${rawEvent.content || rawEvent.preview || ''}`
-    : (source ? JSON.stringify(source, null, 2) : (message || 'Source layer returned no raw event.'));
+    : isSharedSource
+      ? 'No local raw events for this shared source.'
+      : (source ? JSON.stringify(source, null, 2) : (message || 'Source layer returned no raw event.'));
+  const sourceProvenance = source?.metadata
+    ? renderDisclosureProvenance(source.metadata, ['sourceProjectHash', 'sourceEntryId', 'topics', 'rootCause', 'solution', 'symptoms', 'confidence', 'usageCount'])
+    : '';
+  const sourceProvenanceBlock = sourceProvenance
+    ? `<div class="modal-section-title">${isSharedSource ? 'Shared source provenance' : 'Source metadata'}</div>${sourceProvenance}`
+    : '';
 
   container.innerHTML = `
     <div class="disclosure-layer">
@@ -2302,5 +2316,27 @@ function renderDisclosureDrilldown(isLoading = false, message = null, isError = 
     <div class="disclosure-layer">
       <div class="modal-section-title">Source layer</div>
       <div class="modal-content-block">${escapeHtml(sourcePreview)}</div>
+      ${sourceProvenanceBlock}
     </div>`;
+}
+
+function renderDisclosureProvenance(metadata, allowedKeys = null) {
+  if (!metadata) return '';
+  const entries = Object.entries(metadata)
+    .filter(([key, value]) => value !== undefined && value !== null && (!allowedKeys || allowedKeys.includes(key)));
+  if (!entries.length) return '';
+  return `
+    <div class="disclosure-provenance">
+      ${entries.map(([key, value]) => `
+        <div class="disclosure-provenance-row">
+          <span class="disclosure-provenance-key">${escapeHtml(key)}</span>
+          <span class="disclosure-provenance-value">${escapeHtml(formatDisclosureMetadataValue(value))}</span>
+        </div>`).join('')}
+    </div>`;
+}
+
+function formatDisclosureMetadataValue(value) {
+  if (Array.isArray(value)) return value.join(', ');
+  if (value && typeof value === 'object') return JSON.stringify(value);
+  return String(value);
 }
