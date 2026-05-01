@@ -55,6 +55,14 @@ import {
   type RetrieveMemoriesOptions
 } from '../core/engine/retrieval-orchestrator.js';
 import {
+  RetrievalAnalyticsService,
+  type AccessedMemory,
+  type HelpfulMemory,
+  type HelpfulnessStats,
+  type RetrievalTrace,
+  type RetrievalTraceStats
+} from '../core/engine/retrieval-analytics-service.js';
+import {
   RetrievalDisclosureService,
   type RetrievalDisclosureExpansion,
   type RetrievalDisclosureExpandOptions,
@@ -108,6 +116,7 @@ export class MemoryService {
   private readonly retriever: Retriever;
   private readonly retrievalOrchestrator: RetrievalOrchestrator;
   private readonly retrievalDisclosureService: RetrievalDisclosureService;
+  private readonly retrievalAnalyticsService: RetrievalAnalyticsService;
   private readonly graduation: GraduationPipeline;
   private vectorWorker: VectorWorker | null = null;
   private graduationWorker: GraduationWorker | null = null;
@@ -198,6 +207,10 @@ export class MemoryService {
       initialize: () => this.initialize(),
       retrievalOrchestrator: this.retrievalOrchestrator,
       eventStore: this.sqliteStore
+    });
+    this.retrievalAnalyticsService = new RetrievalAnalyticsService({
+      initialize: () => this.initialize(),
+      retrievalStore: this.sqliteStore
     });
     this.graduation = createGraduationPipeline(this.sqliteStore as unknown as EventStore);
 
@@ -573,19 +586,12 @@ export class MemoryService {
     return this.sqliteStore.getOutboxStats();
   }
 
-  async getRetrievalTraceStats(): Promise<{
-    totalQueries: number;
-    avgCandidateCount: number;
-    avgSelectedCount: number;
-    selectionRate: number;
-  }> {
-    await this.initialize();
-    return this.sqliteStore.getRetrievalTraceStats();
+  async getRetrievalTraceStats(): Promise<RetrievalTraceStats> {
+    return this.retrievalAnalyticsService.getRetrievalTraceStats();
   }
 
-  async getRecentRetrievalTraces(limit: number = 50) {
-    await this.initialize();
-    return this.sqliteStore.getRecentRetrievalTraces(limit);
+  async getRecentRetrievalTraces(limit: number = 50): Promise<RetrievalTrace[]> {
+    return this.retrievalAnalyticsService.getRecentRetrievalTraces(limit);
   }
 
   async getStats(): Promise<{
@@ -834,37 +840,6 @@ export class MemoryService {
   }
 
   /**
-   * Extract topic keywords from event content (markdown headings and key terms)
-   */
-  private extractTopicsFromContent(content: string): string[] {
-    const topics: Set<string> = new Set();
-
-    // Extract markdown headings (## heading)
-    const headings = content.match(/^#{1,3}\s+(.+)$/gm);
-    if (headings) {
-      for (const h of headings.slice(0, 5)) {
-        const text = h.replace(/^#+\s+/, '').replace(/[*_`#]/g, '').trim();
-        if (text.length > 2 && text.length < 50) {
-          topics.add(text);
-        }
-      }
-    }
-
-    // Extract bold terms (**term**)
-    const boldTerms = content.match(/\*\*([^*]+)\*\*/g);
-    if (boldTerms) {
-      for (const b of boldTerms.slice(0, 5)) {
-        const text = b.replace(/\*\*/g, '').trim();
-        if (text.length > 2 && text.length < 30) {
-          topics.add(text);
-        }
-      }
-    }
-
-    return Array.from(topics).slice(0, 5);
-  }
-
-  /**
    * Increment access count for memories that were used in prompts
    */
   async incrementMemoryAccess(eventIds: string[]): Promise<void> {
@@ -874,39 +849,8 @@ export class MemoryService {
   /**
    * Get most accessed memories from events
    */
-  async getMostAccessedMemories(limit: number = 10): Promise<any[]> {
-    console.log('[getMostAccessedMemories] sqliteStore available:', !!this.sqliteStore);
-
-    // Try to get from SQLite event store if available
-    if (this.sqliteStore) {
-      const events = await this.sqliteStore.getMostAccessed(limit);
-      console.log('[getMostAccessedMemories] Got events from SQLite:', events.length);
-      return events.map(event => ({
-        memoryId: event.id,
-        summary: event.content.substring(0, 200) + (event.content.length > 200 ? '...' : ''),
-        topics: this.extractTopicsFromContent(event.content),
-        accessCount: (event as any).access_count || 0,
-        lastAccessed: (event as any).last_accessed_at || null,
-        confidence: 1.0,
-        createdAt: event.timestamp
-      }));
-    }
-
-    // Fallback to consolidated store if available
-    if (this.consolidatedStore) {
-      const consolidated = await this.consolidatedStore.getMostAccessed(limit);
-      return consolidated.map(m => ({
-        memoryId: m.memoryId,
-        summary: m.summary,
-        topics: m.topics,
-        accessCount: m.accessCount,
-        lastAccessed: m.accessedAt,
-        confidence: m.confidence,
-        createdAt: m.createdAt
-      }));
-    }
-
-    return [];
+  async getMostAccessedMemories(limit: number = 10): Promise<AccessedMemory[]> {
+    return this.retrievalAnalyticsService.getMostAccessedMemories(limit);
   }
 
   /**
@@ -928,8 +872,7 @@ export class MemoryService {
    * Evaluate helpfulness of retrievals in a session (called at session end)
    */
   async evaluateSessionHelpfulness(sessionId: string): Promise<void> {
-    await this.initialize();
-    await this.sqliteStore.evaluateSessionHelpfulness(sessionId);
+    await this.retrievalAnalyticsService.evaluateSessionHelpfulness(sessionId);
   }
 
   /**
@@ -937,44 +880,21 @@ export class MemoryService {
    * Call on first turn of a new session to catch missed evaluations.
    */
   async evaluatePendingSessions(currentSessionId: string): Promise<void> {
-    await this.initialize();
-    const sessions = await this.sqliteStore.getUnevaluatedSessions(currentSessionId, 5);
-    for (const sid of sessions) {
-      try {
-        await this.sqliteStore.evaluateSessionHelpfulness(sid);
-      } catch {
-        // non-critical, skip failed
-      }
-    }
+    await this.retrievalAnalyticsService.evaluatePendingSessions(currentSessionId);
   }
 
   /**
    * Get most helpful memories ranked by helpfulness score
    */
-  async getHelpfulMemories(limit: number = 10): Promise<Array<{
-    eventId: string;
-    summary: string;
-    helpfulnessScore: number;
-    accessCount: number;
-    evaluationCount: number;
-  }>> {
-    await this.initialize();
-    return this.sqliteStore.getHelpfulMemories(limit);
+  async getHelpfulMemories(limit: number = 10): Promise<HelpfulMemory[]> {
+    return this.retrievalAnalyticsService.getHelpfulMemories(limit);
   }
 
   /**
    * Get helpfulness statistics for dashboard
    */
-  async getHelpfulnessStats(): Promise<{
-    avgScore: number;
-    totalEvaluated: number;
-    totalRetrievals: number;
-    helpful: number;
-    neutral: number;
-    unhelpful: number;
-  }> {
-    await this.initialize();
-    return this.sqliteStore.getHelpfulnessStats();
+  async getHelpfulnessStats(): Promise<HelpfulnessStats> {
+    return this.retrievalAnalyticsService.getHelpfulnessStats();
   }
 
   /**
