@@ -55,6 +55,14 @@ import {
   type RetrieveMemoriesOptions
 } from '../core/engine/retrieval-orchestrator.js';
 import {
+  RetrievalDisclosureService,
+  type RetrievalDisclosureExpansion,
+  type RetrievalDisclosureExpandOptions,
+  type RetrievalDisclosureSearchOptions,
+  type RetrievalDisclosureSearchResponse,
+  type RetrievalDisclosureSource
+} from '../core/engine/retrieval-disclosure-service.js';
+import {
   getProjectStoragePath,
   hashProjectPath
 } from '../core/registry/project-path.js';
@@ -99,6 +107,7 @@ export class MemoryService {
   private readonly matcher: Matcher;
   private readonly retriever: Retriever;
   private readonly retrievalOrchestrator: RetrievalOrchestrator;
+  private readonly retrievalDisclosureService: RetrievalDisclosureService;
   private readonly graduation: GraduationPipeline;
   private vectorWorker: VectorWorker | null = null;
   private graduationWorker: GraduationWorker | null = null;
@@ -183,6 +192,11 @@ export class MemoryService {
       traceStore: this.sqliteStore,
       getProjectHash: () => this.projectHash,
       hasSharedStore: () => this.sharedStore !== null
+    });
+    this.retrievalDisclosureService = new RetrievalDisclosureService({
+      initialize: () => this.initialize(),
+      retrievalOrchestrator: this.retrievalOrchestrator,
+      eventStore: this.sqliteStore
     });
     this.graduation = createGraduationPipeline(this.sqliteStore as unknown as EventStore);
 
@@ -484,6 +498,33 @@ export class MemoryService {
     options?: RetrieveMemoriesOptions
   ): Promise<UnifiedRetrievalResult> {
     return this.retrievalOrchestrator.retrieveMemories(query, options);
+  }
+
+  /**
+   * Layer 1 retrieval disclosure: lightweight search envelopes for UI/API/agent use.
+   */
+  async searchDisclosure(
+    query: string,
+    options?: RetrievalDisclosureSearchOptions
+  ): Promise<RetrievalDisclosureSearchResponse> {
+    return this.retrievalDisclosureService.search(query, options);
+  }
+
+  /**
+   * Layer 2 retrieval disclosure: expand a search result into surrounding timeline context.
+   */
+  async expandDisclosure(
+    resultId: string,
+    options?: RetrievalDisclosureExpandOptions
+  ): Promise<RetrievalDisclosureExpansion | null> {
+    return this.retrievalDisclosureService.expand(resultId, options);
+  }
+
+  /**
+   * Layer 3 retrieval disclosure: resolve a search result to its raw source event.
+   */
+  async sourceDisclosure(resultId: string): Promise<RetrievalDisclosureSource | null> {
+    return this.retrievalDisclosureService.source(resultId);
   }
 
   /**
