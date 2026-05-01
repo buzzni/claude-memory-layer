@@ -19,6 +19,11 @@ import { bootstrapKnowledgeBase } from '../services/bootstrap-organizer.js';
 import { startServer, stopServer, isServerRunning } from '../server/index.js';
 import { SQLiteEventStore } from '../core/sqlite-event-store.js';
 import { MongoSyncWorker, type MongoSyncDirection } from '../core/mongo-sync-worker.js';
+import {
+  formatDisclosureExpansion,
+  formatDisclosureSearch,
+  formatDisclosureSource
+} from './retrieval-disclosure-output.js';
 
 // ============================================================
 // Hook Installation Utilities
@@ -282,11 +287,27 @@ program
   .option('-s, --min-score <number>', 'Minimum similarity score', '0.7')
   .option('--session <id>', 'Filter by session ID')
   .option('-p, --project <path>', 'Project path (defaults to cwd)')
+  .option('--disclosure', 'Use progressive search -> expand -> source output')
+  .option('--include-shared', 'Include shared cross-project memory results')
+  .option('--strategy <mode>', 'Retrieval strategy: auto, fast, or deep', 'auto')
   .action(async (query: string, options) => {
     const projectPath = options.project || process.cwd();
     const service = getMemoryServiceForProject(projectPath);
 
     try {
+      if (options.disclosure) {
+        const result = await service.searchDisclosure(query, {
+          topK: parseInt(options.topK),
+          minScore: parseFloat(options.minScore),
+          sessionId: options.session,
+          includeShared: options.includeShared === true,
+          strategy: options.strategy
+        });
+
+        console.log(formatDisclosureSearch(result));
+        return;
+      }
+
       const result = await service.retrieveMemories(query, {
         topK: parseInt(options.topK),
         minScore: parseFloat(options.minScore),
@@ -306,11 +327,72 @@ program
         console.log(`   Content: ${memory.event.content.slice(0, 200)}${memory.event.content.length > 200 ? '...' : ''}`);
         console.log('');
       }
-
-      await service.shutdown();
     } catch (error) {
       console.error('Search failed:', error);
-      process.exit(1);
+      process.exitCode = 1;
+    } finally {
+      await service.shutdown();
+    }
+  });
+
+/**
+ * Expand command - progressive retrieval layer 2
+ */
+program
+  .command('expand <resultId>')
+  .description('Expand a progressive retrieval result with surrounding context')
+  .option('-w, --window-size <number>', 'Number of surrounding events on each side', '3')
+  .option('-p, --project <path>', 'Project path (defaults to cwd)')
+  .action(async (resultId: string, options) => {
+    const projectPath = options.project || process.cwd();
+    const service = getMemoryServiceForProject(projectPath);
+
+    try {
+      const expansion = await service.expandDisclosure(resultId, {
+        windowSize: parseInt(options.windowSize)
+      });
+
+      if (!expansion) {
+        console.error(`Expansion target not found: ${resultId}`);
+        process.exitCode = 1;
+        return;
+      }
+
+      console.log(formatDisclosureExpansion(expansion));
+    } catch (error) {
+      console.error('Expand failed:', error);
+      process.exitCode = 1;
+    } finally {
+      await service.shutdown();
+    }
+  });
+
+/**
+ * Source command - progressive retrieval layer 3
+ */
+program
+  .command('source <resultId>')
+  .description('Show raw source details for a progressive retrieval result')
+  .option('-p, --project <path>', 'Project path (defaults to cwd)')
+  .action(async (resultId: string, options) => {
+    const projectPath = options.project || process.cwd();
+    const service = getMemoryServiceForProject(projectPath);
+
+    try {
+      const source = await service.sourceDisclosure(resultId);
+
+      if (!source) {
+        console.error(`Source not found: ${resultId}`);
+        process.exitCode = 1;
+        return;
+      }
+
+      console.log(formatDisclosureSource(source));
+    } catch (error) {
+      console.error('Source failed:', error);
+      process.exitCode = 1;
+    } finally {
+      await service.shutdown();
     }
   });
 
