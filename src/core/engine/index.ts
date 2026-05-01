@@ -3,3 +3,12 @@ export * from './memory-query-service.js';
 export * from './retrieval-orchestrator.js';
 export * from './retrieval-disclosure-service.js';
 export * from './retrieval-analytics-service.js';
+export {
+  createRetrievalServices
+} from './retrieval-services.js';
+export type {
+  CreateRetrieverFn,
+  RetrievalEventStore,
+  RetrievalServices,
+  RetrievalServicesDeps
+} from './retrieval-services.js';

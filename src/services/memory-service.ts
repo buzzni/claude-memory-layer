@@ -14,7 +14,7 @@ import { VectorStore } from '../core/vector-store.js';
 import { Embedder, getDefaultEmbedder } from '../core/embedder.js';
 import { VectorWorker, createVectorWorker } from '../core/vector-worker.js';
 import { Matcher, getDefaultMatcher } from '../core/matcher.js';
-import { Retriever, createRetriever, type RetrievalResult, type UnifiedRetrievalResult } from '../core/retriever.js';
+import { Retriever, type RetrievalResult, type UnifiedRetrievalResult } from '../core/retriever.js';
 import { GraduationPipeline, createGraduationPipeline } from '../core/graduation.js';
 import { SharedEventStore, createSharedEventStore } from '../core/shared-event-store.js';
 import { SharedStore, createSharedStore } from '../core/shared-store.js';
@@ -50,26 +50,23 @@ import { normalizeTags } from '../core/tag-taxonomy.js';
 import { MemoryIngestService } from '../core/engine/memory-ingest-service.js';
 import { MemoryQueryService } from '../core/engine/memory-query-service.js';
 import {
-  RetrievalOrchestrator,
-  type RecordQueryTraceInput,
-  type RetrieveMemoriesOptions
-} from '../core/engine/retrieval-orchestrator.js';
-import {
-  RetrievalAnalyticsService,
+  createRetrievalServices,
   type AccessedMemory,
   type HelpfulMemory,
   type HelpfulnessStats,
-  type RetrievalTrace,
-  type RetrievalTraceStats
-} from '../core/engine/retrieval-analytics-service.js';
-import {
-  RetrievalDisclosureService,
+  type RecordQueryTraceInput,
+  type RetrievalAnalyticsService,
   type RetrievalDisclosureExpansion,
   type RetrievalDisclosureExpandOptions,
   type RetrievalDisclosureSearchOptions,
   type RetrievalDisclosureSearchResponse,
-  type RetrievalDisclosureSource
-} from '../core/engine/retrieval-disclosure-service.js';
+  type RetrievalDisclosureService,
+  type RetrievalDisclosureSource,
+  type RetrievalOrchestrator,
+  type RetrievalTrace,
+  type RetrievalTraceStats,
+  type RetrieveMemoriesOptions
+} from '../core/engine/retrieval-services.js';
 import {
   getProjectStoragePath,
   hashProjectPath
@@ -188,30 +185,19 @@ export class MemoryService {
       ? new Embedder(embeddingModel)
       : getDefaultEmbedder();
     this.matcher = getDefaultMatcher();
-    // Retriever uses SQLite as primary (always available)
-    this.retriever = createRetriever(
-      this.sqliteStore as unknown as EventStore, // Interface compatible
-      this.vectorStore,
-      this.embedder,
-      this.matcher
-    );
-    this.retrievalOrchestrator = new RetrievalOrchestrator({
+    const retrievalServices = createRetrievalServices({
       initialize: () => this.initialize(),
-      retriever: this.retriever,
-      traceStore: this.sqliteStore,
-      accessStore: this.sqliteStore,
+      eventStore: this.sqliteStore,
+      vectorStore: this.vectorStore,
+      embedder: this.embedder,
+      matcher: this.matcher,
       getProjectHash: () => this.projectHash,
       hasSharedStore: () => this.sharedStore !== null
     });
-    this.retrievalDisclosureService = new RetrievalDisclosureService({
-      initialize: () => this.initialize(),
-      retrievalOrchestrator: this.retrievalOrchestrator,
-      eventStore: this.sqliteStore
-    });
-    this.retrievalAnalyticsService = new RetrievalAnalyticsService({
-      initialize: () => this.initialize(),
-      retrievalStore: this.sqliteStore
-    });
+    this.retriever = retrievalServices.retriever;
+    this.retrievalOrchestrator = retrievalServices.retrievalOrchestrator;
+    this.retrievalDisclosureService = retrievalServices.retrievalDisclosureService;
+    this.retrievalAnalyticsService = retrievalServices.retrievalAnalyticsService;
     this.graduation = createGraduationPipeline(this.sqliteStore as unknown as EventStore);
 
     this.ingestService = new MemoryIngestService(
