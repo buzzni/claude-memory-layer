@@ -226,6 +226,42 @@
                </div>
             </div>
 
+
+            <!-- Progressive Disclosure Search -->
+            <div class="card disclosure-card">
+              <div class="card-header" style="align-items:flex-end;">
+                <div class="card-title">
+                  <i class="ri-search-eye-line"></i>
+                  <span>Progressive Retrieval Disclosure</span>
+                </div>
+                <div class="disclosure-controls">
+                  <label class="disclosure-toggle"><input type="checkbox" id="disclosure-include-shared"> Shared</label>
+                  <select id="disclosure-strategy" class="project-dropdown compact">
+                    <option value="auto">auto</option>
+                    <option value="fast">fast</option>
+                    <option value="deep">deep</option>
+                  </select>
+                  <input id="disclosure-topk" class="search-input compact" type="number" min="1" max="20" value="8" title="Top K">
+                </div>
+              </div>
+              <div class="disclosure-search-row">
+                <div class="search-wrapper disclosure-search-wrapper">
+                  <i class="ri-search-line"></i>
+                  <input type="text" id="disclosure-search-input" class="search-input" placeholder="Search memory with search → expand → source...">
+                </div>
+                <button id="disclosure-search-btn" class="btn btn-secondary"><i class="ri-search-eye-line"></i><span>Search</span></button>
+              </div>
+              <div id="disclosure-status" class="disclosure-status"></div>
+              <div class="disclosure-layout">
+                <div id="disclosure-results" class="disclosure-results">
+                  <div class="disclosure-empty">Search memory to inspect compact envelopes, expansion context, and raw sources.</div>
+                </div>
+                <div id="disclosure-drilldown" class="disclosure-drilldown">
+                  <div class="disclosure-empty">No result selected.</div>
+                </div>
+              </div>
+            </div>
+
             <!-- Activity Chart -->
             <div class="card">
                <div class="card-header">
