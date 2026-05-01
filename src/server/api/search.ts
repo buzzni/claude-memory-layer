@@ -18,6 +18,21 @@ interface SearchRequest {
   };
 }
 
+interface DisclosureSearchRequest {
+  query: string;
+  options?: {
+    topK?: number;
+    minScore?: number;
+    sessionId?: string;
+    includeShared?: boolean;
+    adaptiveRerank?: boolean;
+    intentRewrite?: boolean;
+    projectScopeMode?: 'strict' | 'prefer' | 'global';
+    allowedProjectHashes?: string[];
+    strategy?: 'auto' | 'fast' | 'deep';
+  };
+}
+
 // POST /api/search - Search memories
 searchRouter.post('/', async (c) => {
   const memoryService = getServiceFromQuery(c);
@@ -58,6 +73,73 @@ searchRouter.post('/', async (c) => {
         totalTokens: result.totalTokens
       }
     });
+  } catch (error) {
+    return c.json({ error: (error as Error).message }, 500);
+  } finally {
+    await memoryService.shutdown();
+  }
+});
+
+// POST /api/search/disclosure - Progressive disclosure search (Search layer)
+searchRouter.post('/disclosure', async (c) => {
+  const memoryService = getServiceFromQuery(c);
+  try {
+    const body = await c.req.json<DisclosureSearchRequest>();
+
+    if (!body.query) {
+      return c.json({ error: 'Query is required' }, 400);
+    }
+
+    await memoryService.initialize();
+    const result = await memoryService.searchDisclosure(body.query, body.options);
+    return c.json(result);
+  } catch (error) {
+    return c.json({ error: (error as Error).message }, 500);
+  } finally {
+    await memoryService.shutdown();
+  }
+});
+
+// GET /api/search/disclosure/:resultId/expand - Expand a disclosure search result
+searchRouter.get('/disclosure/:resultId/expand', async (c) => {
+  const memoryService = getServiceFromQuery(c);
+  try {
+    await memoryService.initialize();
+
+    const resultId = c.req.param('resultId');
+    const rawWindowSize = c.req.query('windowSize');
+    const windowSize = rawWindowSize ? parseInt(rawWindowSize, 10) : undefined;
+    const result = await memoryService.expandDisclosure(
+      resultId,
+      Number.isFinite(windowSize) ? { windowSize } : undefined
+    );
+
+    if (!result) {
+      return c.json({ error: 'Expansion target not found' }, 404);
+    }
+
+    return c.json(result);
+  } catch (error) {
+    return c.json({ error: (error as Error).message }, 500);
+  } finally {
+    await memoryService.shutdown();
+  }
+});
+
+// GET /api/search/disclosure/:resultId/source - Resolve source for a disclosure search result
+searchRouter.get('/disclosure/:resultId/source', async (c) => {
+  const memoryService = getServiceFromQuery(c);
+  try {
+    await memoryService.initialize();
+
+    const resultId = c.req.param('resultId');
+    const result = await memoryService.sourceDisclosure(resultId);
+
+    if (!result) {
+      return c.json({ error: 'Source not found' }, 404);
+    }
+
+    return c.json(result);
   } catch (error) {
     return c.json({ error: (error as Error).message }, 500);
   } finally {
