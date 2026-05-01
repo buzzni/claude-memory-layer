@@ -1,0 +1,155 @@
+import { describe, it, expect, afterEach } from 'vitest';
+import { RetrievalOrchestrator } from '../src/core/engine/retrieval-orchestrator.js';
+import type { Retriever, UnifiedRetrievalResult } from '../src/core/retriever.js';
+import type { MemoryEvent } from '../src/core/types.js';
+
+function event(id: string): MemoryEvent {
+  return {
+    id,
+    sessionId: 's1',
+    eventType: 'user_prompt',
+    content: 'remembered project context',
+    canonicalKey: `test/${id}`,
+    dedupeKey: `s1:${id}`,
+    timestamp: new Date('2026-02-24T00:00:00.000Z'),
+    metadata: {}
+  };
+}
+
+function retrievalResult(id = 'e1'): UnifiedRetrievalResult {
+  const memoryEvent = event(id);
+  return {
+    memories: [{ event: memoryEvent, score: 0.91 }],
+    matchResult: {
+      match: { event: memoryEvent, score: 0.91 },
+      confidence: 'high'
+    },
+    totalTokens: 12,
+    context: 'remembered project context',
+    fallbackTrace: ['stage:primary:fast'],
+    selectedDebug: [{ eventId: id, score: 0.91, semanticScore: 0.8, lexicalScore: 0.2, recencyScore: 0.1 }],
+    candidateDebug: [{ eventId: id, score: 0.91, semanticScore: 0.8, lexicalScore: 0.2, recencyScore: 0.1 }]
+  };
+}
+
+function stats() {
+  return {
+    avgScore: 0.8,
+    totalEvaluated: 30,
+    totalRetrievals: 40,
+    helpful: 20,
+    neutral: 5,
+    unhelpful: 5
+  };
+}
+
+afterEach(() => {
+  delete process.env.MEMORY_RERANK_WEIGHT_SEMANTIC;
+  delete process.env.MEMORY_RERANK_WEIGHT_LEXICAL;
+  delete process.env.MEMORY_RERANK_WEIGHT_RECENCY;
+});
+
+describe('RetrievalOrchestrator', () => {
+  it('delegates project retrieval with strict project scope and records a trace', async () => {
+    let initialized = 0;
+    let retrieveArgs: { query: string; options: Record<string, unknown> } | null = null;
+    const traces: Array<Record<string, unknown>> = [];
+
+    const fakeRetriever = {
+      setQueryRewriter() {},
+      async retrieve(query: string, options: Record<string, unknown>) {
+        retrieveArgs = { query, options };
+        return retrievalResult('e1');
+      }
+    } as unknown as Retriever;
+
+    const orchestrator = new RetrievalOrchestrator({
+      initialize: async () => { initialized += 1; },
+      retriever: fakeRetriever,
+      traceStore: {
+        getHelpfulnessStats: async () => stats(),
+        recordRetrievalTrace: async (input) => { traces.push(input); }
+      },
+      getProjectHash: () => 'project-1',
+      hasSharedStore: () => false
+    });
+
+    const out = await orchestrator.retrieveMemories('project query', { topK: 3, sessionId: 's1' });
+
+    expect(out.memories[0]?.event.id).toBe('e1');
+    expect(initialized).toBe(1);
+    expect(retrieveArgs?.query).toBe('project query');
+    expect(retrieveArgs?.options.projectHash).toBe('project-1');
+    expect(retrieveArgs?.options.projectScopeMode).toBe('strict');
+    expect(traces[0]).toMatchObject({
+      sessionId: 's1',
+      projectHash: 'project-1',
+      queryText: 'project query',
+      strategy: 'auto',
+      candidateEventIds: ['e1'],
+      selectedEventIds: ['e1'],
+      confidence: 'high',
+      fallbackTrace: ['stage:primary:fast']
+    });
+  });
+
+  it('uses unified retrieval and normalized configured rerank weights when shared search is enabled', async () => {
+    process.env.MEMORY_RERANK_WEIGHT_SEMANTIC = '3';
+    process.env.MEMORY_RERANK_WEIGHT_LEXICAL = '1';
+    process.env.MEMORY_RERANK_WEIGHT_RECENCY = '1';
+
+    let retrieveUnifiedArgs: { query: string; options: Record<string, unknown> } | null = null;
+
+    const fakeRetriever = {
+      setQueryRewriter() {},
+      async retrieveUnified(query: string, options: Record<string, unknown>) {
+        retrieveUnifiedArgs = { query, options };
+        return retrievalResult('shared-e1');
+      }
+    } as unknown as Retriever;
+
+    const orchestrator = new RetrievalOrchestrator({
+      initialize: async () => {},
+      retriever: fakeRetriever,
+      traceStore: {
+        getHelpfulnessStats: async () => stats(),
+        recordRetrievalTrace: async () => {}
+      },
+      getProjectHash: () => 'project-2',
+      hasSharedStore: () => true
+    });
+
+    await orchestrator.retrieveMemories('shared query', {
+      includeShared: true,
+      intentRewrite: true,
+      adaptiveRerank: true
+    });
+
+    expect(retrieveUnifiedArgs?.query).toBe('shared query');
+    expect(retrieveUnifiedArgs?.options.includeShared).toBe(true);
+    expect(retrieveUnifiedArgs?.options.intentRewrite).toBe(true);
+    expect(retrieveUnifiedArgs?.options.rerankWeights).toEqual({
+      semantic: 0.6,
+      lexical: 0.2,
+      recency: 0.2
+    });
+  });
+
+  it('formats high-confidence context through the orchestrator facade', () => {
+    const fakeRetriever = {
+      setQueryRewriter() {}
+    } as unknown as Retriever;
+    const orchestrator = new RetrievalOrchestrator({
+      initialize: async () => {},
+      retriever: fakeRetriever,
+      traceStore: {
+        getHelpfulnessStats: async () => stats(),
+        recordRetrievalTrace: async () => {}
+      },
+      getProjectHash: () => null,
+      hasSharedStore: () => false
+    });
+
+    expect(orchestrator.formatAsContext(retrievalResult())).toContain('High-confidence memory match');
+  });
+});

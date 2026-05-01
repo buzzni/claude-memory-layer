@@ -14,8 +14,8 @@ interface QueryStore {
 /**
  * Thin-core query service for lightweight read paths.
  *
- * Higher-level retrieval orchestration still lives in MemoryService for now;
- * this service extracts safe read responsibilities first.
+ * Higher-level retrieval orchestration lives in RetrievalOrchestrator;
+ * this service keeps lightweight read responsibilities separate.
  */
 export class MemoryQueryService {
   constructor(

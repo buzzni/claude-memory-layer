@@ -14,7 +14,7 @@ import { VectorStore } from '../core/vector-store.js';
 import { Embedder, getDefaultEmbedder } from '../core/embedder.js';
 import { VectorWorker, createVectorWorker } from '../core/vector-worker.js';
 import { Matcher, getDefaultMatcher } from '../core/matcher.js';
-import { Retriever, createRetriever, RetrievalResult, UnifiedRetrievalResult, type RetrievalStrategy } from '../core/retriever.js';
+import { Retriever, createRetriever, type RetrievalResult, type UnifiedRetrievalResult } from '../core/retriever.js';
 import { GraduationPipeline, createGraduationPipeline } from '../core/graduation.js';
 import { SharedEventStore, createSharedEventStore } from '../core/shared-event-store.js';
 import { SharedStore, createSharedStore } from '../core/shared-store.js';
@@ -49,6 +49,11 @@ import {
 import { normalizeTags } from '../core/tag-taxonomy.js';
 import { MemoryIngestService } from '../core/engine/memory-ingest-service.js';
 import { MemoryQueryService } from '../core/engine/memory-query-service.js';
+import {
+  RetrievalOrchestrator,
+  type RecordQueryTraceInput,
+  type RetrieveMemoriesOptions
+} from '../core/engine/retrieval-orchestrator.js';
 import {
   getProjectStoragePath,
   hashProjectPath
@@ -93,6 +98,7 @@ export class MemoryService {
   private readonly embedder: Embedder;
   private readonly matcher: Matcher;
   private readonly retriever: Retriever;
+  private readonly retrievalOrchestrator: RetrievalOrchestrator;
   private readonly graduation: GraduationPipeline;
   private vectorWorker: VectorWorker | null = null;
   private graduationWorker: GraduationWorker | null = null;
@@ -171,7 +177,13 @@ export class MemoryService {
       this.embedder,
       this.matcher
     );
-    this.retriever.setQueryRewriter((q) => this.rewriteQueryIntent(q));
+    this.retrievalOrchestrator = new RetrievalOrchestrator({
+      initialize: () => this.initialize(),
+      retriever: this.retriever,
+      traceStore: this.sqliteStore,
+      getProjectHash: () => this.projectHash,
+      hasSharedStore: () => this.sharedStore !== null
+    });
     this.graduation = createGraduationPipeline(this.sqliteStore as unknown as EventStore);
 
     this.ingestService = new MemoryIngestService(
@@ -469,194 +481,9 @@ export class MemoryService {
    */
   async retrieveMemories(
     query: string,
-    options?: {
-      topK?: number;
-      minScore?: number;
-      sessionId?: string;
-      includeShared?: boolean;
-      adaptiveRerank?: boolean;
-      intentRewrite?: boolean;
-      projectScopeMode?: 'strict' | 'prefer' | 'global';
-      allowedProjectHashes?: string[];
-      strategy?: RetrievalStrategy;
-    }
+    options?: RetrieveMemoriesOptions
   ): Promise<UnifiedRetrievalResult> {
-    await this.initialize();
-
-    // Note: Pending embeddings are processed by the background worker
-    // Don't block retrieval - search with whatever vectors are available
-
-    const rerankWeights = await this.getRerankWeights(options?.adaptiveRerank === true);
-
-    // Use unified retrieval if shared search is requested
-    let result: UnifiedRetrievalResult;
-
-    if (options?.includeShared && this.sharedStore) {
-      result = await this.retriever.retrieveUnified(query, {
-        ...options,
-        intentRewrite: options?.intentRewrite === true,
-        rerankWeights,
-        includeShared: true,
-        projectHash: this.projectHash || undefined,
-        projectScopeMode: options?.projectScopeMode ?? (this.projectHash ? 'strict' : 'global'),
-        allowedProjectHashes: options?.allowedProjectHashes
-      });
-    } else {
-      result = await this.retriever.retrieve(query, {
-        ...options,
-        intentRewrite: options?.intentRewrite === true,
-        rerankWeights,
-        projectHash: this.projectHash || undefined,
-        projectScopeMode: options?.projectScopeMode ?? (this.projectHash ? 'strict' : 'global'),
-        allowedProjectHashes: options?.allowedProjectHashes
-      });
-    }
-
-    try {
-      const selectedEventIds = result.memories.map((m) => m.event.id);
-      const selectedDetails = (result.selectedDebug || []).map((d) => ({
-        eventId: d.eventId,
-        score: d.score,
-        semanticScore: d.semanticScore,
-        lexicalScore: d.lexicalScore,
-        recencyScore: d.recencyScore,
-      }));
-      const candidateDetails = (result.candidateDebug || []).map((d) => ({
-        eventId: d.eventId,
-        score: d.score,
-        semanticScore: d.semanticScore,
-        lexicalScore: d.lexicalScore,
-        recencyScore: d.recencyScore,
-      }));
-      const candidateEventIds = candidateDetails.length > 0
-        ? candidateDetails.map((d) => d.eventId)
-        : selectedEventIds;
-      await this.sqliteStore.recordRetrievalTrace({
-        sessionId: options?.sessionId,
-        projectHash: this.projectHash || undefined,
-        queryText: query,
-        strategy: options?.strategy || 'auto',
-        candidateEventIds,
-        selectedEventIds,
-        candidateDetails,
-        selectedDetails,
-        confidence: result.matchResult.confidence,
-        fallbackTrace: result.fallbackTrace || []
-      });
-    } catch {
-      // non-blocking telemetry
-    }
-
-    return result;
-  }
-
-  private getConfiguredRerankWeights(): { semantic: number; lexical: number; recency: number } | undefined {
-    const semantic = Number(process.env.MEMORY_RERANK_WEIGHT_SEMANTIC ?? '');
-    const lexical = Number(process.env.MEMORY_RERANK_WEIGHT_LEXICAL ?? '');
-    const recency = Number(process.env.MEMORY_RERANK_WEIGHT_RECENCY ?? '');
-
-    const allFinite = [semantic, lexical, recency].every((v) => Number.isFinite(v));
-    if (!allFinite) return undefined;
-
-    const nonNegative = [semantic, lexical, recency].every((v) => v >= 0);
-    const total = semantic + lexical + recency;
-    if (!nonNegative || total <= 0) return undefined;
-
-    return {
-      semantic: semantic / total,
-      lexical: lexical / total,
-      recency: recency / total,
-    };
-  }
-
-  private async getRerankWeights(adaptive: boolean): Promise<{ semantic: number; lexical: number; recency: number } | undefined> {
-    const configured = this.getConfiguredRerankWeights();
-    if (configured) return configured;
-    if (adaptive) return this.getAdaptiveRerankWeights();
-    return undefined;
-  }
-
-  private async rewriteQueryIntent(query: string): Promise<string | null> {
-    if (process.env.MEMORY_INTENT_REWRITE_ENABLED !== '1') return null;
-
-    const apiUrl = process.env.COMPANY_STOCK_API_URL || process.env.COMPANY_INT_API_URL;
-    if (!apiUrl) return null;
-
-    const controller = new AbortController();
-    const timeoutMs = Number(process.env.MEMORY_INTENT_REWRITE_TIMEOUT_MS || 5000);
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
-
-    try {
-      const prompt = [
-        'Rewrite user query for memory retrieval intent expansion.',
-        'Return plain text only, one line, no markdown.',
-        `Query: ${query}`,
-      ].join('\n');
-
-      const res = await fetch(apiUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Accept: '*/*',
-          Origin: process.env.COMPANY_INT_ORIGIN || 'http://company-int.aplusai.ai',
-          Referer: process.env.COMPANY_INT_REFERER || 'http://company-int.aplusai.ai/',
-        },
-        body: JSON.stringify({
-          question: prompt,
-          company_name: null,
-          conversation_id: null,
-        }),
-        signal: controller.signal,
-      });
-
-      const text = (await res.text()).trim();
-      if (!text) return null;
-
-      const oneLine = text
-        .replace(/^data:\s*/gm, '')
-        .split(/\r?\n/)
-        .map((x) => x.trim())
-        .filter(Boolean)
-        .join(' ')
-        .slice(0, 240);
-
-      if (!oneLine || oneLine.toLowerCase() === query.toLowerCase()) return null;
-      return oneLine;
-    } catch {
-      return null;
-    } finally {
-      clearTimeout(timeout);
-    }
-  }
-
-  private async getAdaptiveRerankWeights(): Promise<{ semantic: number; lexical: number; recency: number } | undefined> {
-    try {
-      const s = await this.sqliteStore.getHelpfulnessStats();
-      if (s.totalEvaluated < 20) return undefined;
-
-      // base weights
-      let semantic = 0.7;
-      let lexical = 0.2;
-      let recency = 0.1;
-
-      if (s.avgScore < 0.45) {
-        semantic -= 0.1;
-        lexical += 0.1;
-      } else if (s.avgScore > 0.75) {
-        semantic += 0.05;
-        lexical -= 0.05;
-      }
-
-      if (s.unhelpful > s.helpful) {
-        recency += 0.05;
-        semantic -= 0.03;
-        lexical -= 0.02;
-      }
-
-      return { semantic, lexical, recency };
-    } catch {
-      return undefined;
-    }
+    return this.retrievalOrchestrator.retrieveMemories(query, options);
   }
 
   /**
@@ -767,20 +594,7 @@ export class MemoryService {
    * Format retrieval results as context for Claude
    */
   formatAsContext(result: RetrievalResult): string {
-    if (!result.context) {
-      return '';
-    }
-
-    const confidence = result.matchResult.confidence;
-    let header = '';
-
-    if (confidence === 'high') {
-      header = '🎯 **High-confidence memory match found:**\n\n';
-    } else if (confidence === 'suggested') {
-      header = '💡 **Suggested memories (may be relevant):**\n\n';
-    }
-
-    return header + result.context;
+    return this.retrievalOrchestrator.formatAsContext(result);
   }
 
   // ============================================================
@@ -1070,22 +884,8 @@ export class MemoryService {
    * Record a query-level retrieval trace (used by user-prompt-submit hook).
    * Feeds the retrieval_traces table that powers dashboard stats.
    */
-  async recordQueryTrace(input: {
-    sessionId: string;
-    queryText: string;
-    strategy: string;
-    candidateEventIds: string[];
-    selectedEventIds: string[];
-    confidence: string;
-  }): Promise<void> {
-    await this.initialize();
-    await this.sqliteStore.recordRetrievalTrace({
-      ...input,
-      projectHash: this.projectHash || undefined,
-      candidateDetails: [],
-      selectedDetails: [],
-      fallbackTrace: [],
-    });
+  async recordQueryTrace(input: RecordQueryTraceInput): Promise<void> {
+    return this.retrievalOrchestrator.recordQueryTrace(input);
   }
 
   /**
