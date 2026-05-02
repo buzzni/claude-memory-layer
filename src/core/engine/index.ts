@@ -7,6 +7,7 @@ export * from './retrieval-analytics-service.js';
 export * from './shared-memory-services.js';
 export * from './endless-memory-services.js';
 export * from './embedding-maintenance-service.js';
+export * from './memory-runtime-service.js';
 export {
   createRetrievalServices
 } from './retrieval-services.js';

@@ -10,7 +10,6 @@ import type { EventStore } from '../core/event-store.js';
 import type { SQLiteEventStore } from '../core/sqlite-event-store.js';
 import type { VectorStore } from '../core/vector-store.js';
 import type { Embedder } from '../core/embedder.js';
-import { VectorWorker, createVectorWorker } from '../core/vector-worker.js';
 import type { Retriever, RetrievalResult, UnifiedRetrievalResult } from '../core/retriever.js';
 import type { GraduationPipeline } from '../core/graduation.js';
 import type { PromotionResult } from '../core/shared-promoter.js';
@@ -43,7 +42,11 @@ import {
   type EmbeddingModelMaintenanceOptions,
   type EmbeddingModelMaintenanceResult
 } from '../core/engine/embedding-maintenance-service.js';
-import { GraduationWorker, createGraduationWorker, GraduationRunResult } from '../core/graduation-worker.js';
+import {
+  createMemoryRuntimeService,
+  type MemoryRuntimeService
+} from '../core/engine/memory-runtime-service.js';
+import type { GraduationRunResult } from '../core/graduation-worker.js';
 import type { MarkdownMirror } from '../core/md-mirror.js';
 import {
   IngestInterceptor,
@@ -121,10 +124,8 @@ export class MemoryService {
   private readonly retrievalDisclosureService: RetrievalDisclosureService;
   private readonly retrievalAnalyticsService: RetrievalAnalyticsService;
   private readonly embeddingMaintenanceService: EmbeddingMaintenanceService;
+  private readonly runtimeService: MemoryRuntimeService;
   private readonly graduation: GraduationPipeline;
-  private vectorWorker: VectorWorker | null = null;
-  private graduationWorker: GraduationWorker | null = null;
-  private initialized = false;
   private readonly ingestInterceptors = new IngestInterceptorRegistry();
 
   // Endless Mode components
@@ -194,23 +195,6 @@ export class MemoryService {
     this.retrievalOrchestrator = engineServices.retrievalOrchestrator;
     this.retrievalDisclosureService = engineServices.retrievalDisclosureService;
     this.retrievalAnalyticsService = engineServices.retrievalAnalyticsService;
-    this.embeddingMaintenanceService = createEmbeddingMaintenanceService({
-      storagePath,
-      initialize: () => this.initialize(),
-      getEmbeddingModelName: () => this.getEmbeddingModelName(),
-      vectorStore: this.vectorStore,
-      eventStore: {
-        clearEmbeddingOutbox: () => this.sqliteStore.clearEmbeddingOutbox(),
-        getEventsPage: async (limit, offset) => {
-          const events = await this.sqliteStore.getEventsPage(limit, offset);
-          return events.map((event) => ({ id: event.id, content: event.content }));
-        },
-        enqueueForEmbedding: async (eventId, content) => {
-          await this.sqliteStore.enqueueForEmbedding(eventId, content);
-        }
-      },
-      getVectorWorker: () => this.vectorWorker
-    });
     this.graduation = engineServices.graduation;
     this.mdMirror = engineServices.mdMirror;
     this.ingestService = engineServices.ingestService;
@@ -228,69 +212,47 @@ export class MemoryService {
       embedder: this.embedder,
       retriever: this.retriever
     });
+    this.runtimeService = createMemoryRuntimeService({
+      sqliteStore: this.sqliteStore,
+      eventStore: this.sqliteStore as unknown as EventStore,
+      vectorStore: this.vectorStore,
+      embedder: this.embedder,
+      retriever: this.retriever,
+      graduation: this.graduation,
+      endlessMemoryServices: this.endlessMemoryServices,
+      sharedMemoryServices: this.sharedMemoryServices,
+      readOnly: this.readOnly,
+      lightweightMode: this.lightweightMode,
+      embeddingOnly: this.embeddingOnly
+    });
+    this.embeddingMaintenanceService = createEmbeddingMaintenanceService({
+      storagePath,
+      initialize: () => this.initialize(),
+      getEmbeddingModelName: () => this.getEmbeddingModelName(),
+      vectorStore: this.vectorStore,
+      eventStore: {
+        clearEmbeddingOutbox: () => this.sqliteStore.clearEmbeddingOutbox(),
+        getEventsPage: async (limit, offset) => {
+          const events = await this.sqliteStore.getEventsPage(limit, offset);
+          return events.map((event) => ({ id: event.id, content: event.content }));
+        },
+        enqueueForEmbedding: async (eventId, content) => {
+          await this.sqliteStore.enqueueForEmbedding(eventId, content);
+        }
+      },
+      getVectorWorker: () => this.runtimeService.getVectorWorker()
+    });
   }
 
   /**
    * Initialize all components
    */
   async initialize(): Promise<void> {
-    if (this.initialized) return;
-
-    // Initialize PRIMARY store: SQLite (always)
-    await this.sqliteStore.initialize();
-
-    // Lightweight mode: only SQLite, no embedder/vector/workers
-    // Used for hooks that just need to store data quickly
-    if (this.lightweightMode) {
-      this.initialized = true;
-      return;
-    }
-
-    await this.vectorStore.initialize();
-    await this.embedder.initialize();
-
-    // Skip write-related workers in read-only mode
-    if (!this.readOnly) {
-      // Start vector worker (uses SQLite as source)
-      this.vectorWorker = createVectorWorker(
-        this.sqliteStore as unknown as EventStore,
-        this.vectorStore,
-        this.embedder
-      );
-      this.vectorWorker.start();
-
-      if (!this.embeddingOnly) {
-        // Connect graduation pipeline to retriever for access tracking
-        this.retriever.setGraduationPipeline(this.graduation);
-
-        // Start graduation worker for automatic level promotion
-        this.graduationWorker = createGraduationWorker(
-          this.sqliteStore as unknown as EventStore,
-          this.graduation
-        );
-        this.graduationWorker.start();
-
-      }
-
-      // Load endless mode setting
-      await this.endlessMemoryServices.initializeFromSavedMode();
-
-      // Initialize shared store (enabled by default)
-      await this.initializeSharedStore();
-    }
-
-    this.initialized = true;
+    await this.runtimeService.initialize();
   }
 
   private async getSharedEntryForDisclosure(entryId: string) {
     return this.sharedMemoryServices.getEntryForDisclosure(entryId);
-  }
-
-  /**
-   * Initialize Shared Store components
-   */
-  private async initializeSharedStore(): Promise<void> {
-    await this.sharedMemoryServices.initialize();
   }
 
   registerIngestBefore(interceptor: IngestInterceptor): () => void {
@@ -578,10 +540,7 @@ export class MemoryService {
    * Process pending embeddings
    */
   async processPendingEmbeddings(): Promise<number> {
-    if (this.vectorWorker) {
-      return this.vectorWorker.processAll();
-    }
-    return 0;
+    return this.runtimeService.processPendingEmbeddings();
   }
 
   /**
@@ -926,10 +885,7 @@ export class MemoryService {
    * Force a graduation evaluation run
    */
   async forceGraduation(): Promise<GraduationRunResult> {
-    if (!this.graduationWorker) {
-      return { evaluated: 0, graduated: 0, byLevel: {} };
-    }
-    return this.graduationWorker.forceRun();
+    return this.runtimeService.forceGraduation();
   }
 
   /**
@@ -964,24 +920,7 @@ export class MemoryService {
    * Shutdown service
    */
   async shutdown(): Promise<void> {
-    // Stop graduation worker
-    if (this.graduationWorker) {
-      this.graduationWorker.stop();
-    }
-
-    // Stop endless mode components
-    this.endlessMemoryServices.shutdown();
-
-    if (this.vectorWorker) {
-      this.vectorWorker.stop();
-    }
-
-    // Close shared store
-    await this.sharedMemoryServices.close();
-
-    // Close primary store (SQLite)
-    await this.sqliteStore.close();
-
+    await this.runtimeService.shutdown();
   }
 
   /**
