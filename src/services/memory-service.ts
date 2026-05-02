@@ -5,7 +5,6 @@
 
 import * as path from 'path';
 import * as os from 'os';
-import * as fs from 'fs';
 
 import type { EventStore } from '../core/event-store.js';
 import type { SQLiteEventStore } from '../core/sqlite-event-store.js';
@@ -38,6 +37,12 @@ import {
   createEndlessMemoryServices,
   type EndlessMemoryServices
 } from '../core/engine/endless-memory-services.js';
+import {
+  createEmbeddingMaintenanceService,
+  type EmbeddingMaintenanceService,
+  type EmbeddingModelMaintenanceOptions,
+  type EmbeddingModelMaintenanceResult
+} from '../core/engine/embedding-maintenance-service.js';
 import { GraduationWorker, createGraduationWorker, GraduationRunResult } from '../core/graduation-worker.js';
 import type { MarkdownMirror } from '../core/md-mirror.js';
 import {
@@ -115,6 +120,7 @@ export class MemoryService {
   private readonly retrievalOrchestrator: RetrievalOrchestrator;
   private readonly retrievalDisclosureService: RetrievalDisclosureService;
   private readonly retrievalAnalyticsService: RetrievalAnalyticsService;
+  private readonly embeddingMaintenanceService: EmbeddingMaintenanceService;
   private readonly graduation: GraduationPipeline;
   private vectorWorker: VectorWorker | null = null;
   private graduationWorker: GraduationWorker | null = null;
@@ -133,13 +139,11 @@ export class MemoryService {
   private readonly lightweightMode: boolean;
   private readonly embeddingOnly: boolean;
   private readonly mdMirror: MarkdownMirror;
-  private readonly storagePath: string;
   private readonly ingestService: MemoryIngestService;
   private readonly queryService: MemoryQueryService;
 
   constructor(config: MemoryServiceConfig & { projectHash?: string; projectPath?: string; sharedStoreConfig?: SharedStoreConfig }) {
     const storagePath = this.expandPath(config.storagePath);
-    this.storagePath = storagePath;
     this.readOnly = config.readOnly ?? false;
     this.lightweightMode = config.lightweightMode ?? false;
     this.embeddingOnly = config.embeddingOnly ?? false;
@@ -190,6 +194,23 @@ export class MemoryService {
     this.retrievalOrchestrator = engineServices.retrievalOrchestrator;
     this.retrievalDisclosureService = engineServices.retrievalDisclosureService;
     this.retrievalAnalyticsService = engineServices.retrievalAnalyticsService;
+    this.embeddingMaintenanceService = createEmbeddingMaintenanceService({
+      storagePath,
+      initialize: () => this.initialize(),
+      getEmbeddingModelName: () => this.getEmbeddingModelName(),
+      vectorStore: this.vectorStore,
+      eventStore: {
+        clearEmbeddingOutbox: () => this.sqliteStore.clearEmbeddingOutbox(),
+        getEventsPage: async (limit, offset) => {
+          const events = await this.sqliteStore.getEventsPage(limit, offset);
+          return events.map((event) => ({ id: event.id, content: event.content }));
+        },
+        enqueueForEmbedding: async (eventId, content) => {
+          await this.sqliteStore.enqueueForEmbedding(eventId, content);
+        }
+      },
+      getVectorWorker: () => this.vectorWorker
+    });
     this.graduation = engineServices.graduation;
     this.mdMirror = engineServices.mdMirror;
     this.ingestService = engineServices.ingestService;
@@ -926,103 +947,10 @@ export class MemoryService {
    * Ensure embedding model metadata is in sync and optionally migrate vectors.
    * Migration strategy: clear vector index + clear embedding outbox + re-enqueue all events.
    */
-  async ensureEmbeddingModelForImport(options?: { autoMigrate?: boolean }): Promise<{
-    changed: boolean;
-    previousModel: string | null;
-    currentModel: string;
-    enqueued: number;
-    reason?: string;
-  }> {
-    await this.initialize();
-
-    const currentModel = this.getEmbeddingModelName();
-    const metaPath = path.join(this.storagePath, 'embedding-meta.json');
-
-    let previousModel: string | null = null;
-    try {
-      if (fs.existsSync(metaPath)) {
-        const parsed = JSON.parse(fs.readFileSync(metaPath, 'utf-8')) as { model?: string };
-        previousModel = parsed?.model || null;
-      }
-    } catch {
-      previousModel = null;
-    }
-
-    const stats = await this.getStats();
-    const hasExistingVectors = (stats.vectorCount || 0) > 0;
-
-    // First-time metadata write (no migration needed unless legacy vectors exist)
-    if (!previousModel && !hasExistingVectors) {
-      fs.writeFileSync(metaPath, JSON.stringify({ model: currentModel, updatedAt: new Date().toISOString() }, null, 2));
-      return { changed: false, previousModel: null, currentModel, enqueued: 0, reason: 'initialized-meta' };
-    }
-
-    const modelChanged = previousModel !== currentModel;
-    const legacyUnknownButVectorsExist = !previousModel && hasExistingVectors;
-
-    if (!modelChanged && !legacyUnknownButVectorsExist) {
-      return { changed: false, previousModel, currentModel, enqueued: 0 };
-    }
-
-    if (options?.autoMigrate === false) {
-      return {
-        changed: true,
-        previousModel,
-        currentModel,
-        enqueued: 0,
-        reason: legacyUnknownButVectorsExist ? 'legacy-vectors-without-meta' : 'model-mismatch'
-      };
-    }
-
-    // Pause background vector processing while preparing migration
-    const wasRunning = this.vectorWorker?.isRunning() || false;
-    if (wasRunning) this.vectorWorker?.stop();
-
-    // Reset vector and outbox state
-    await this.vectorStore.clearAll();
-    await this.sqliteStore.clearEmbeddingOutbox();
-
-    // Re-enqueue all events for new embeddings
-    const pageSize = 1000;
-    let offset = 0;
-    let enqueued = 0;
-
-    while (true) {
-      const page = await this.sqliteStore.getEventsPage(pageSize, offset);
-      if (page.length === 0) break;
-
-      for (const event of page) {
-        await this.sqliteStore.enqueueForEmbedding(event.id, event.content);
-        enqueued += 1;
-      }
-
-      offset += page.length;
-      if (page.length < pageSize) break;
-    }
-
-    fs.writeFileSync(
-      metaPath,
-      JSON.stringify(
-        {
-          model: currentModel,
-          previousModel,
-          migratedAt: new Date().toISOString(),
-          enqueued
-        },
-        null,
-        2
-      )
-    );
-
-    if (wasRunning) this.vectorWorker?.start();
-
-    return {
-      changed: true,
-      previousModel,
-      currentModel,
-      enqueued,
-      reason: legacyUnknownButVectorsExist ? 'legacy-vectors-without-meta' : 'model-mismatch'
-    };
+  async ensureEmbeddingModelForImport(
+    options?: EmbeddingModelMaintenanceOptions
+  ): Promise<EmbeddingModelMaintenanceResult> {
+    return this.embeddingMaintenanceService.ensureEmbeddingModelForImport(options);
   }
 
   /**
