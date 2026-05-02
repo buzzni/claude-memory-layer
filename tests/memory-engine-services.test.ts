@@ -68,10 +68,16 @@ describe('createMemoryEngineServices', () => {
         unhelpful: 0
       }))
     };
-    const vectorStore = { marker: 'vector' };
+    const vectorStore = {
+      marker: 'vector',
+      count: vi.fn(async () => 5)
+    };
     const embedder = { marker: 'embedder' };
     const matcher = { marker: 'matcher' };
-    const graduation = { marker: 'graduation' };
+    const graduation = {
+      marker: 'graduation',
+      getStats: vi.fn(async () => [{ level: 'working', count: 2 }])
+    };
     const mdMirror = { marker: 'mirror' };
     const retrievalBundle = {
       retriever: { marker: 'retriever' },
@@ -168,6 +174,15 @@ describe('createMemoryEngineServices', () => {
 
       await services.queryService.getRecentEvents(3);
       expect(sqliteStore.getRecentEvents).toHaveBeenCalledWith(3);
+
+      await expect(services.queryService.getStats()).resolves.toEqual({
+        totalEvents: 1,
+        vectorCount: 5,
+        levelStats: [{ level: 'working', count: 2 }]
+      });
+      expect(sqliteStore.getRecentEvents).toHaveBeenCalledWith(10000);
+      expect(vectorStore.count).toHaveBeenCalledOnce();
+      expect(graduation.getStats).toHaveBeenCalledOnce();
     } finally {
       await rm(root, { recursive: true, force: true });
     }

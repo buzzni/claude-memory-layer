@@ -480,8 +480,7 @@ export class MemoryService {
    * Rebuild FTS index (call after database upgrade)
    */
   async rebuildFtsIndex(): Promise<number> {
-    await this.initialize();
-    return this.sqliteStore.rebuildFtsIndex();
+    return this.queryService.rebuildFtsIndex();
   }
 
   /**
@@ -506,8 +505,7 @@ export class MemoryService {
     embedding: { pending: number; processing: number; failed: number; total: number };
     vector: { pending: number; processing: number; failed: number; total: number };
   }> {
-    await this.initialize();
-    return this.sqliteStore.getOutboxStats();
+    return this.queryService.getOutboxStats();
   }
 
   async getRetrievalTraceStats(): Promise<RetrievalTraceStats> {
@@ -523,17 +521,7 @@ export class MemoryService {
     vectorCount: number;
     levelStats: Array<{ level: string; count: number }>;
   }> {
-    await this.initialize();
-
-    const recentEvents = await this.sqliteStore.getRecentEvents(10000);
-    const vectorCount = await this.vectorStore.count();
-    const levelStats = await this.graduation.getStats();
-
-    return {
-      totalEvents: recentEvents.length,
-      vectorCount,
-      levelStats
-    };
+    return this.queryService.getStats();
   }
 
   /**
@@ -547,16 +535,14 @@ export class MemoryService {
    * Get events by memory level
    */
   async getEventsByLevel(level: string, options?: { limit?: number; offset?: number }): Promise<MemoryEvent[]> {
-    await this.initialize();
-    return this.sqliteStore.getEventsByLevel(level, options);
+    return this.queryService.getEventsByLevel(level, options);
   }
 
   /**
    * Get memory level for a specific event
    */
   async getEventLevel(eventId: string): Promise<string | null> {
-    await this.initialize();
-    return this.sqliteStore.getEventLevel(eventId);
+    return this.queryService.getEventLevel(eventId);
   }
 
   /**
@@ -802,40 +788,35 @@ export class MemoryService {
     toolCount: number;
     hasResponse: boolean;
   }>> {
-    await this.initialize();
-    return this.sqliteStore.getSessionTurns(sessionId, options);
+    return this.queryService.getSessionTurns(sessionId, options);
   }
 
   /**
    * Get all events for a specific turn
    */
   async getEventsByTurn(turnId: string): Promise<MemoryEvent[]> {
-    await this.initialize();
-    return this.sqliteStore.getEventsByTurn(turnId);
+    return this.queryService.getEventsByTurn(turnId);
   }
 
   /**
    * Count total turns for a session
    */
   async countSessionTurns(sessionId: string): Promise<number> {
-    await this.initialize();
-    return this.sqliteStore.countSessionTurns(sessionId);
+    return this.queryService.countSessionTurns(sessionId);
   }
 
   /**
    * Backfill turn_ids from metadata for events stored before the migration
    */
   async backfillTurnIds(): Promise<number> {
-    await this.initialize();
-    return this.sqliteStore.backfillTurnIds();
+    return this.queryService.backfillTurnIds();
   }
 
   /**
    * Delete all events for a session (for force reimport)
    */
   async deleteSessionEvents(sessionId: string): Promise<number> {
-    await this.initialize();
-    return this.sqliteStore.deleteSessionEvents(sessionId);
+    return this.queryService.deleteSessionEvents(sessionId);
   }
 
   /**

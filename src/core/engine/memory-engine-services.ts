@@ -135,7 +135,8 @@ export function createMemoryEngineServices(options: MemoryEngineServicesOptions)
   );
   const queryService = new MemoryQueryService(
     options.initialize,
-    sqliteStore
+    sqliteStore,
+    { vectorStore, graduation }
   );
 
   return {
