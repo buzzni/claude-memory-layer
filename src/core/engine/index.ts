@@ -5,6 +5,7 @@ export * from './retrieval-orchestrator.js';
 export * from './retrieval-disclosure-service.js';
 export * from './retrieval-analytics-service.js';
 export * from './shared-memory-services.js';
+export * from './endless-memory-services.js';
 export {
   createRetrievalServices
 } from './retrieval-services.js';

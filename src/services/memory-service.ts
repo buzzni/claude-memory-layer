@@ -6,7 +6,6 @@
 import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs';
-import * as crypto from 'crypto';
 
 import type { EventStore } from '../core/event-store.js';
 import type { SQLiteEventStore } from '../core/sqlite-event-store.js';
@@ -35,10 +34,10 @@ import type {
   Entry
 } from '../core/types.js';
 import { createToolObservationEmbedding } from '../core/metadata-extractor.js';
-import { WorkingSetStore, createWorkingSetStore } from '../core/working-set-store.js';
-import { ConsolidatedStore, createConsolidatedStore } from '../core/consolidated-store.js';
-import { ConsolidationWorker, createConsolidationWorker } from '../core/consolidation-worker.js';
-import { ContinuityManager, createContinuityManager } from '../core/continuity-manager.js';
+import {
+  createEndlessMemoryServices,
+  type EndlessMemoryServices
+} from '../core/engine/endless-memory-services.js';
 import { GraduationWorker, createGraduationWorker, GraduationRunResult } from '../core/graduation-worker.js';
 import type { MarkdownMirror } from '../core/md-mirror.js';
 import {
@@ -123,11 +122,7 @@ export class MemoryService {
   private readonly ingestInterceptors = new IngestInterceptorRegistry();
 
   // Endless Mode components
-  private workingSetStore: WorkingSetStore | null = null;
-  private consolidatedStore: ConsolidatedStore | null = null;
-  private consolidationWorker: ConsolidationWorker | null = null;
-  private continuityManager: ContinuityManager | null = null;
-  private endlessMode: MemoryMode = 'session';
+  private readonly endlessMemoryServices: EndlessMemoryServices;
 
   // Shared Store components (cross-project knowledge)
   private sharedMemoryServices!: SharedMemoryServices;
@@ -199,6 +194,11 @@ export class MemoryService {
     this.mdMirror = engineServices.mdMirror;
     this.ingestService = engineServices.ingestService;
     this.queryService = engineServices.queryService;
+    this.endlessMemoryServices = createEndlessMemoryServices({
+      eventStore: this.sqliteStore as unknown as EventStore,
+      configStore: this.sqliteStore,
+      initialize: () => this.initialize()
+    });
     this.sharedMemoryServices = createSharedMemoryServices({
       config: sharedStoreConfig,
       defaultSharedStoragePath: SHARED_STORAGE_PATH,
@@ -252,11 +252,7 @@ export class MemoryService {
       }
 
       // Load endless mode setting
-      const savedMode = await this.sqliteStore.getEndlessConfig('mode') as MemoryMode | null;
-      if (savedMode === 'endless') {
-        this.endlessMode = 'endless';
-        await this.initializeEndlessMode();
-      }
+      await this.endlessMemoryServices.initializeFromSavedMode();
 
       // Initialize shared store (enabled by default)
       await this.initializeSharedStore();
@@ -642,118 +638,59 @@ export class MemoryService {
   // ============================================================
 
   /**
-   * Get the default endless mode config
-   */
-  private getDefaultEndlessConfig(): EndlessModeConfig {
-    return {
-      enabled: true,
-      workingSet: {
-        maxEvents: 100,
-        timeWindowHours: 24,
-        minRelevanceScore: 0.5
-      },
-      consolidation: {
-        triggerIntervalMs: 3600000, // 1 hour
-        triggerEventCount: 100,
-        triggerIdleMs: 1800000, // 30 minutes
-        useLLMSummarization: false
-      },
-      continuity: {
-        minScoreForSeamless: 0.7,
-        topicDecayHours: 48
-      }
-    };
-  }
-
-  /**
    * Initialize Endless Mode components
    */
   async initializeEndlessMode(): Promise<void> {
-    const config = await this.getEndlessConfig();
-
-    this.workingSetStore = createWorkingSetStore(this.sqliteStore as unknown as EventStore, config);
-    this.consolidatedStore = createConsolidatedStore(this.sqliteStore as unknown as EventStore);
-    this.consolidationWorker = createConsolidationWorker(
-      this.workingSetStore,
-      this.consolidatedStore,
-      config
-    );
-    this.continuityManager = createContinuityManager(this.sqliteStore as unknown as EventStore, config);
-
-    // Start consolidation worker
-    this.consolidationWorker.start();
+    return this.endlessMemoryServices.initializeEndlessMode();
   }
 
   /**
    * Get Endless Mode configuration
    */
   async getEndlessConfig(): Promise<EndlessModeConfig> {
-    const savedConfig = await this.sqliteStore.getEndlessConfig('config') as EndlessModeConfig | null;
-    return savedConfig || this.getDefaultEndlessConfig();
+    return this.endlessMemoryServices.getEndlessConfig();
   }
 
   /**
    * Set Endless Mode configuration
    */
   async setEndlessConfig(config: Partial<EndlessModeConfig>): Promise<void> {
-    const current = await this.getEndlessConfig();
-    const merged = { ...current, ...config };
-    await this.sqliteStore.setEndlessConfig('config', merged);
+    return this.endlessMemoryServices.setEndlessConfig(config);
   }
 
   /**
    * Set memory mode (session or endless)
    */
   async setMode(mode: MemoryMode): Promise<void> {
-    await this.initialize();
-
-    if (mode === this.endlessMode) return;
-
-    this.endlessMode = mode;
-    await this.sqliteStore.setEndlessConfig('mode', mode);
-
-    if (mode === 'endless') {
-      await this.initializeEndlessMode();
-    } else {
-      // Stop endless mode components
-      if (this.consolidationWorker) {
-        this.consolidationWorker.stop();
-        this.consolidationWorker = null;
-      }
-      this.workingSetStore = null;
-      this.consolidatedStore = null;
-      this.continuityManager = null;
-    }
+    return this.endlessMemoryServices.setMode(mode);
   }
 
   /**
    * Get current memory mode
    */
   getMode(): MemoryMode {
-    return this.endlessMode;
+    return this.endlessMemoryServices.getMode();
   }
 
   /**
    * Check if endless mode is active
    */
   isEndlessModeActive(): boolean {
-    return this.endlessMode === 'endless';
+    return this.endlessMemoryServices.isEndlessModeActive();
   }
 
   /**
    * Add event to Working Set (Endless Mode)
    */
   async addToWorkingSet(eventId: string, relevanceScore?: number): Promise<void> {
-    if (!this.workingSetStore) return;
-    await this.workingSetStore.add(eventId, relevanceScore);
+    return this.endlessMemoryServices.addToWorkingSet(eventId, relevanceScore);
   }
 
   /**
    * Get the current Working Set
    */
   async getWorkingSet(): Promise<WorkingSet | null> {
-    if (!this.workingSetStore) return null;
-    return this.workingSetStore.get();
+    return this.endlessMemoryServices.getWorkingSet();
   }
 
   /**
@@ -763,16 +700,14 @@ export class MemoryService {
     query: string,
     options?: { topK?: number }
   ): Promise<ConsolidatedMemory[]> {
-    if (!this.consolidatedStore) return [];
-    return this.consolidatedStore.search(query, options);
+    return this.endlessMemoryServices.searchConsolidated(query, options);
   }
 
   /**
    * Get all consolidated memories
    */
   async getConsolidatedMemories(limit?: number): Promise<ConsolidatedMemory[]> {
-    if (!this.consolidatedStore) return [];
-    return this.consolidatedStore.getAll({ limit });
+    return this.endlessMemoryServices.getConsolidatedMemories(limit);
   }
 
   /**
@@ -837,8 +772,7 @@ export class MemoryService {
    * Mark a consolidated memory as accessed
    */
   async markMemoryAccessed(memoryId: string): Promise<void> {
-    if (!this.consolidatedStore) return;
-    await this.consolidatedStore.markAccessed(memoryId);
+    return this.endlessMemoryServices.markMemoryAccessed(memoryId);
   }
 
   /**
@@ -848,63 +782,28 @@ export class MemoryService {
     content: string,
     metadata?: { files?: string[]; entities?: string[] }
   ): Promise<ContinuityScore | null> {
-    if (!this.continuityManager) return null;
-
-    const snapshot = this.continuityManager.createSnapshot(
-      crypto.randomUUID(),
-      content,
-      metadata
-    );
-
-    return this.continuityManager.calculateScore(snapshot);
+    return this.endlessMemoryServices.calculateContinuity(content, metadata);
   }
 
   /**
    * Record activity (for consolidation idle trigger)
    */
   recordActivity(): void {
-    if (this.consolidationWorker) {
-      this.consolidationWorker.recordActivity();
-    }
+    this.endlessMemoryServices.recordActivity();
   }
 
   /**
    * Force a consolidation run
    */
   async forceConsolidation(): Promise<number> {
-    if (!this.consolidationWorker) return 0;
-    return this.consolidationWorker.forceRun();
+    return this.endlessMemoryServices.forceConsolidation();
   }
 
   /**
    * Get Endless Mode status
    */
   async getEndlessModeStatus(): Promise<EndlessModeStatus> {
-    await this.initialize();
-
-    let workingSetSize = 0;
-    let continuityScore = 0.5;
-    let consolidatedCount = 0;
-    let lastConsolidation: Date | null = null;
-
-    if (this.workingSetStore) {
-      workingSetSize = await this.workingSetStore.count();
-      const workingSet = await this.workingSetStore.get();
-      continuityScore = workingSet.continuityScore;
-    }
-
-    if (this.consolidatedStore) {
-      consolidatedCount = await this.consolidatedStore.count();
-      lastConsolidation = await this.consolidatedStore.getLastConsolidationTime();
-    }
-
-    return {
-      mode: this.endlessMode,
-      workingSetSize,
-      continuityScore,
-      consolidatedCount,
-      lastConsolidation
-    };
+    return this.endlessMemoryServices.getEndlessModeStatus();
   }
 
   // ============================================================
@@ -1143,9 +1042,7 @@ export class MemoryService {
     }
 
     // Stop endless mode components
-    if (this.consolidationWorker) {
-      this.consolidationWorker.stop();
-    }
+    this.endlessMemoryServices.shutdown();
 
     if (this.vectorWorker) {
       this.vectorWorker.stop();
