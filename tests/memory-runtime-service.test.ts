@@ -19,7 +19,12 @@ function makeHarness(options?: { readOnly?: boolean; lightweightMode?: boolean; 
   const embedder = {
     initialize: async () => { calls.push('embedder.initialize'); }
   } as unknown as Embedder;
-  const graduation = { marker: 'graduation' } as unknown as GraduationPipeline;
+  const graduation = {
+    marker: 'graduation',
+    recordAccess: (eventId: string, sessionId: string, confidence: number = 1.0) => {
+      calls.push(`graduation.recordAccess:${eventId}:${sessionId}:${confidence}`);
+    }
+  } as unknown as GraduationPipeline;
   const retriever = {
     setGraduationPipeline: (pipeline: GraduationPipeline) => {
       calls.push(pipeline === graduation ? 'retriever.setGraduationPipeline' : 'retriever.setGraduationPipeline:unknown');
@@ -100,6 +105,15 @@ describe('createMemoryRuntimeService', () => {
     expect(harness.calls).toEqual(['sqlite.initialize']);
     await expect(harness.service.processPendingEmbeddings()).resolves.toBe(0);
     await expect(harness.service.forceGraduation()).resolves.toEqual({ evaluated: 0, graduated: 0, byLevel: {} });
+  });
+
+  it('records memory access through the graduation pipeline without initializing runtime workers', () => {
+    const harness = makeHarness();
+
+    harness.service.recordMemoryAccess('event-1', 'session-2', 0.42);
+
+    expect(harness.service.isInitialized()).toBe(false);
+    expect(harness.calls).toEqual(['graduation.recordAccess:event-1:session-2:0.42']);
   });
 
   it('starts vector and graduation workers plus writable lifecycle services by default', async () => {

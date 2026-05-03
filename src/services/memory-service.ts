@@ -729,7 +729,7 @@ export class MemoryService {
    * Record access to a memory event (for graduation scoring)
    */
   recordMemoryAccess(eventId: string, sessionId: string, confidence: number = 1.0): void {
-    this.graduation.recordAccess(eventId, sessionId, confidence);
+    this.runtimeService.recordMemoryAccess(eventId, sessionId, confidence);
   }
 
   getEmbeddingModelName(): string {

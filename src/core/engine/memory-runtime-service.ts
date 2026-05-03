@@ -59,6 +59,7 @@ export interface MemoryRuntimeService {
   shutdown(): Promise<void>;
   processPendingEmbeddings(): Promise<number>;
   forceGraduation(): Promise<GraduationRunResult>;
+  recordMemoryAccess(eventId: string, sessionId: string, confidence?: number): void;
   getVectorWorker(): VectorWorker | null;
   isInitialized(): boolean;
 }
@@ -144,6 +145,10 @@ export function createMemoryRuntimeService(deps: MemoryRuntimeServicesDeps): Mem
         return createEmptyGraduationResult();
       }
       return graduationWorker.forceRun();
+    },
+
+    recordMemoryAccess(eventId: string, sessionId: string, confidence: number = 1.0): void {
+      deps.graduation.recordAccess(eventId, sessionId, confidence);
     },
 
     getVectorWorker(): VectorWorker | null {
