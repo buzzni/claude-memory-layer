@@ -3,7 +3,6 @@
  * Coordinates EventStore, VectorStore, Retriever, and Graduation
  */
 
-import * as path from 'path';
 import * as os from 'os';
 
 import type { RetrievalResult, UnifiedRetrievalResult } from '../core/retriever.js';
@@ -35,6 +34,17 @@ import type { MemoryIngestService } from '../core/engine/memory-ingest-service.j
 import type { MemoryQueryService } from '../core/engine/memory-query-service.js';
 import { createMemoryServiceComposition } from '../core/engine/memory-service-composition.js';
 import {
+  getProjectStoragePath as defaultGetProjectStoragePath,
+  hashProjectPath as defaultHashProjectPath
+} from '../core/registry/project-path.js';
+import { getSessionProject as defaultGetSessionProject } from '../core/registry/session-registry.js';
+import {
+  DEFAULT_SHARED_STORAGE_PATH,
+  DISABLED_SHARED_STORE_CONFIG,
+  type MemoryServiceConfig
+} from './memory-service-config.js';
+import { createMemoryServiceRegistry } from './memory-service-registry.js';
+import {
   type AccessedMemory,
   type HelpfulMemory,
   type HelpfulnessStats,
@@ -51,12 +61,6 @@ import {
   type RetrievalTraceStats,
   type RetrieveMemoriesOptions
 } from '../core/engine/retrieval-services.js';
-import {
-  getProjectStoragePath,
-  hashProjectPath
-} from '../core/registry/project-path.js';
-import { getSessionProject } from '../core/registry/session-registry.js';
-
 export { getProjectStoragePath, hashProjectPath } from '../core/registry/project-path.js';
 export {
   getSessionProject,
@@ -66,26 +70,11 @@ export {
   loadSessionRegistry
 } from '../core/registry/session-registry.js';
 
-export interface MemoryServiceConfig {
-  storagePath: string;
-  embeddingModel?: string;
-  readOnly?: boolean;
-  /** Enable DuckDB analytics store (default: true for server, false for hooks) */
-  analyticsEnabled?: boolean;
-  /** Lightweight mode for hooks - skip heavy initialization (default: false) */
-  lightweightMode?: boolean;
-  /** Start only VectorWorker, skip GraduationWorker and SyncWorker (default: false) */
-  embeddingOnly?: boolean;
-}
-
-const SHARED_STORAGE_PATH = path.join(os.homedir(), '.claude-code', 'memory', 'shared');
-export const DISABLED_SHARED_STORE_CONFIG: SharedStoreConfig = {
-  enabled: false,
-  autoPromote: false,
-  searchShared: false,
-  minConfidenceForPromotion: 0.8,
-  sharedStoragePath: SHARED_STORAGE_PATH
-};
+export {
+  DEFAULT_SHARED_STORAGE_PATH,
+  DISABLED_SHARED_STORE_CONFIG,
+  type MemoryServiceConfig
+} from './memory-service-config.js';
 
 export class MemoryService {
   private readonly retrievalOrchestrator: RetrievalOrchestrator;
@@ -122,7 +111,7 @@ export class MemoryService {
       autoPromote: true,
       searchShared: true,
       minConfidenceForPromotion: 0.8,
-      sharedStoragePath: SHARED_STORAGE_PATH
+      sharedStoragePath: DEFAULT_SHARED_STORAGE_PATH
     };
 
     const composition = createMemoryServiceComposition({
@@ -134,13 +123,10 @@ export class MemoryService {
         embeddingOnly: this.embeddingOnly,
         sharedStoreConfig
       },
-      defaultSharedStoragePath: SHARED_STORAGE_PATH,
+      defaultSharedStoragePath: DEFAULT_SHARED_STORAGE_PATH,
       initialize: () => this.initialize(),
       getProjectHash: () => this.projectHash,
-      getProjectPath: () => this.projectPath,
-      factories: {
-        expandPath: (targetPath) => this.expandPath(targetPath)
-      }
+      getProjectPath: () => this.projectPath
     });
 
     this.retrievalOrchestrator = composition.retrievalOrchestrator;
@@ -686,128 +672,20 @@ export class MemoryService {
   async shutdown(): Promise<void> {
     await this.runtimeService.shutdown();
   }
-
-  /**
-   * Expand ~ to home directory
-   */
-  private expandPath(p: string): string {
-    if (p.startsWith('~')) {
-      return path.join(os.homedir(), p.slice(1));
-    }
-    return p;
-  }
 }
 
-// ============================================================
-// Service Instance Management
-// ============================================================
+const defaultRegistry = createMemoryServiceRegistry<MemoryService>({
+  createService: (config) => new MemoryService(config),
+  hashProjectPath: defaultHashProjectPath,
+  getProjectStoragePath: defaultGetProjectStoragePath,
+  getSessionProject: defaultGetSessionProject,
+  homedir: os.homedir,
+  disabledSharedStoreConfig: DISABLED_SHARED_STORE_CONFIG
+});
 
-// Instance cache: Map from project hash (or '__global__') to MemoryService
-const serviceCache = new Map<string, MemoryService>();
-const GLOBAL_KEY = '__global__';
-
-/**
- * Get the global memory service (backward compatibility)
- * Use this for operations not tied to a specific project
- * Note: analyticsEnabled=false and sharedStore disabled to avoid DuckDB lock conflicts
- */
-export function getDefaultMemoryService(): MemoryService {
-  if (!serviceCache.has(GLOBAL_KEY)) {
-    serviceCache.set(GLOBAL_KEY, new MemoryService({
-      storagePath: '~/.claude-code/memory',
-      analyticsEnabled: false,  // Hooks don't need DuckDB
-      sharedStoreConfig: DISABLED_SHARED_STORE_CONFIG  // Shared store uses DuckDB too
-    }));
-  }
-  return serviceCache.get(GLOBAL_KEY)!;
-}
-
-/**
- * Get a read-only global memory service
- * Use this for web server/dashboard that only needs to read data
- * Creates a fresh connection each time to avoid blocking the main writer process
- * Uses SQLite (WAL mode) which supports concurrent readers
- */
-export function getReadOnlyMemoryService(): MemoryService {
-  // Don't cache - create fresh instance each time to avoid holding locks
-  // The connection will be closed when the request completes
-  // Uses SQLite which supports concurrent readers via WAL mode
-  return new MemoryService({
-    storagePath: '~/.claude-code/memory',
-    readOnly: true,
-    analyticsEnabled: false,  // Use SQLite for reads (WAL supports concurrent readers)
-    sharedStoreConfig: DISABLED_SHARED_STORE_CONFIG  // Skip shared store for now
-  });
-}
-
-/**
- * Get memory service for a specific project path
- * Creates isolated storage at ~/.claude-code/memory/projects/{hash}/
- * Note: analyticsEnabled=false and sharedStore disabled to avoid DuckDB lock conflicts
- */
-export function getMemoryServiceForProject(
-  projectPath: string,
-  sharedStoreConfig?: SharedStoreConfig
-): MemoryService {
-  const hash = hashProjectPath(projectPath);
-
-  if (!serviceCache.has(hash)) {
-    const storagePath = getProjectStoragePath(projectPath);
-    serviceCache.set(hash, new MemoryService({
-      storagePath,
-      projectHash: hash,
-      projectPath,
-      // Override shared store config - hooks don't need DuckDB
-      sharedStoreConfig: sharedStoreConfig ?? DISABLED_SHARED_STORE_CONFIG,
-      analyticsEnabled: false  // Hooks don't need DuckDB
-    }));
-  }
-
-  return serviceCache.get(hash)!;
-}
-
-/**
- * Get memory service for a session by looking up its project
- * Falls back to global storage if session not found in registry
- */
-export function getMemoryServiceForSession(sessionId: string): MemoryService {
-  const projectInfo = getSessionProject(sessionId);
-
-  if (projectInfo) {
-    return getMemoryServiceForProject(projectInfo.projectPath);
-  }
-
-  // Fallback to global storage for unknown sessions (backward compat)
-  return getDefaultMemoryService();
-}
-
-/**
- * Get a lightweight memory service for hooks
- * Only initializes SQLite - no embedder, no vector store, no workers
- * This is FAST (<100ms) compared to full initialization (3-5s)
- */
-export function getLightweightMemoryService(sessionId: string): MemoryService {
-  const projectInfo = getSessionProject(sessionId);
-  const key = projectInfo ? `lightweight_${projectInfo.projectHash}` : 'lightweight_global';
-
-  if (!serviceCache.has(key)) {
-    const storagePath = projectInfo
-      ? getProjectStoragePath(projectInfo.projectPath)
-      : path.join(os.homedir(), '.claude-code', 'memory');
-
-    serviceCache.set(key, new MemoryService({
-      storagePath,
-      projectHash: projectInfo?.projectHash,
-      projectPath: projectInfo?.projectPath,
-      lightweightMode: true,  // Skip embedder/vector/workers
-      analyticsEnabled: false,
-      sharedStoreConfig: DISABLED_SHARED_STORE_CONFIG
-    }));
-  }
-
-  return serviceCache.get(key)!;
-}
-
-export function createMemoryService(config: MemoryServiceConfig): MemoryService {
-  return new MemoryService(config);
-}
+export const getDefaultMemoryService = defaultRegistry.getDefaultMemoryService;
+export const getReadOnlyMemoryService = defaultRegistry.getReadOnlyMemoryService;
+export const getMemoryServiceForProject = defaultRegistry.getMemoryServiceForProject;
+export const getMemoryServiceForSession = defaultRegistry.getMemoryServiceForSession;
+export const getLightweightMemoryService = defaultRegistry.getLightweightMemoryService;
+export const createMemoryService = defaultRegistry.createMemoryService;
