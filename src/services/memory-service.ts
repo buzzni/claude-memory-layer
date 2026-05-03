@@ -207,7 +207,7 @@ export class MemoryService {
     this.embeddingMaintenanceService = createEmbeddingMaintenanceService({
       storagePath,
       initialize: () => this.initialize(),
-      getEmbeddingModelName: () => this.getEmbeddingModelName(),
+      getEmbeddingModelName: () => this.embedder.getModelName(),
       vectorStore: this.vectorStore,
       eventStore: {
         clearEmbeddingOutbox: () => this.sqliteStore.clearEmbeddingOutbox(),
@@ -733,7 +733,7 @@ export class MemoryService {
   }
 
   getEmbeddingModelName(): string {
-    return this.embedder.getModelName();
+    return this.embeddingMaintenanceService.getEmbeddingModelName();
   }
 
   /**
