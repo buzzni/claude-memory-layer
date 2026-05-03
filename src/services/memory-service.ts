@@ -6,17 +6,9 @@
 import * as path from 'path';
 import * as os from 'os';
 
-import type { EventStore } from '../core/event-store.js';
-import type { SQLiteEventStore } from '../core/sqlite-event-store.js';
-import type { VectorStore } from '../core/vector-store.js';
-import type { Embedder } from '../core/embedder.js';
-import type { Retriever, RetrievalResult, UnifiedRetrievalResult } from '../core/retriever.js';
-import type { GraduationPipeline } from '../core/graduation.js';
+import type { RetrievalResult, UnifiedRetrievalResult } from '../core/retriever.js';
 import type { PromotionResult } from '../core/shared-promoter.js';
-import {
-  createSharedMemoryServices,
-  type SharedMemoryServices
-} from '../core/engine/shared-memory-services.js';
+import type { SharedMemoryServices } from '../core/engine/shared-memory-services.js';
 import type {
   AppendResult,
   MemoryEvent,
@@ -30,26 +22,18 @@ import type {
   SharedStoreConfig,
   Entry
 } from '../core/types.js';
-import { createToolObservationEmbedding } from '../core/metadata-extractor.js';
+import type { EndlessMemoryServices } from '../core/engine/endless-memory-services.js';
 import {
-  createEndlessMemoryServices,
-  type EndlessMemoryServices
-} from '../core/engine/endless-memory-services.js';
-import {
-  createEmbeddingMaintenanceService,
   type EmbeddingMaintenanceService,
   type EmbeddingModelMaintenanceOptions,
   type EmbeddingModelMaintenanceResult
 } from '../core/engine/embedding-maintenance-service.js';
-import {
-  createMemoryRuntimeService,
-  type MemoryRuntimeService
-} from '../core/engine/memory-runtime-service.js';
+import type { MemoryRuntimeService } from '../core/engine/memory-runtime-service.js';
 import type { GraduationRunResult } from '../core/graduation-worker.js';
 import type { IngestInterceptor } from '../core/ingest-interceptor.js';
 import type { MemoryIngestService } from '../core/engine/memory-ingest-service.js';
 import type { MemoryQueryService } from '../core/engine/memory-query-service.js';
-import { createMemoryEngineServices } from '../core/engine/memory-engine-services.js';
+import { createMemoryServiceComposition } from '../core/engine/memory-service-composition.js';
 import {
   type AccessedMemory,
   type HelpfulMemory,
@@ -104,18 +88,11 @@ export const DISABLED_SHARED_STORE_CONFIG: SharedStoreConfig = {
 };
 
 export class MemoryService {
-  // Primary store: SQLite (WAL mode) - for hooks, always available
-  private readonly sqliteStore: SQLiteEventStore;
-
-  private readonly vectorStore: VectorStore;
-  private readonly embedder: Embedder;
-  private readonly retriever: Retriever;
   private readonly retrievalOrchestrator: RetrievalOrchestrator;
   private readonly retrievalDisclosureService: RetrievalDisclosureService;
   private readonly retrievalAnalyticsService: RetrievalAnalyticsService;
   private readonly embeddingMaintenanceService: EmbeddingMaintenanceService;
   private readonly runtimeService: MemoryRuntimeService;
-  private readonly graduation: GraduationPipeline;
 
   // Endless Mode components
   private readonly endlessMemoryServices: EndlessMemoryServices;
@@ -132,7 +109,6 @@ export class MemoryService {
   private readonly queryService: MemoryQueryService;
 
   constructor(config: MemoryServiceConfig & { projectHash?: string; projectPath?: string; sharedStoreConfig?: SharedStoreConfig }) {
-    const storagePath = this.expandPath(config.storagePath);
     this.readOnly = config.readOnly ?? false;
     this.lightweightMode = config.lightweightMode ?? false;
     this.embeddingOnly = config.embeddingOnly ?? false;
@@ -149,78 +125,33 @@ export class MemoryService {
       sharedStoragePath: SHARED_STORAGE_PATH
     };
 
-    const engineServices = createMemoryEngineServices({
-      storagePath,
-      readOnly: this.readOnly,
-      embeddingModel: config.embeddingModel,
-      cwd: process.cwd(),
+    const composition = createMemoryServiceComposition({
+      config: {
+        ...config,
+        storagePath: config.storagePath,
+        readOnly: this.readOnly,
+        lightweightMode: this.lightweightMode,
+        embeddingOnly: this.embeddingOnly,
+        sharedStoreConfig
+      },
+      defaultSharedStoragePath: SHARED_STORAGE_PATH,
       initialize: () => this.initialize(),
       getProjectHash: () => this.projectHash,
       getProjectPath: () => this.projectPath,
-      hasSharedStore: () => this.sharedMemoryServices?.isEnabled() ?? false,
-      sharedStore: {
-        get: (entryId: string) => this.getSharedEntryForDisclosure(entryId)
-      },
-      createToolObservationEmbedding: (payload) => createToolObservationEmbedding(
-        payload.toolName,
-        payload.metadata || {},
-        payload.success
-      )
+      factories: {
+        expandPath: (targetPath) => this.expandPath(targetPath)
+      }
     });
 
-    this.sqliteStore = engineServices.sqliteStore;
-    this.vectorStore = engineServices.vectorStore;
-    this.embedder = engineServices.embedder;
-    this.retriever = engineServices.retriever;
-    this.retrievalOrchestrator = engineServices.retrievalOrchestrator;
-    this.retrievalDisclosureService = engineServices.retrievalDisclosureService;
-    this.retrievalAnalyticsService = engineServices.retrievalAnalyticsService;
-    this.graduation = engineServices.graduation;
-    this.ingestService = engineServices.ingestService;
-    this.queryService = engineServices.queryService;
-    this.endlessMemoryServices = createEndlessMemoryServices({
-      eventStore: this.sqliteStore as unknown as EventStore,
-      configStore: this.sqliteStore,
-      initialize: () => this.initialize()
-    });
-    this.sharedMemoryServices = createSharedMemoryServices({
-      config: sharedStoreConfig,
-      defaultSharedStoragePath: SHARED_STORAGE_PATH,
-      readOnly: this.readOnly,
-      expandPath: (targetPath) => this.expandPath(targetPath),
-      embedder: this.embedder,
-      retriever: this.retriever
-    });
-    this.runtimeService = createMemoryRuntimeService({
-      sqliteStore: this.sqliteStore,
-      eventStore: this.sqliteStore as unknown as EventStore,
-      vectorStore: this.vectorStore,
-      embedder: this.embedder,
-      retriever: this.retriever,
-      graduation: this.graduation,
-      endlessMemoryServices: this.endlessMemoryServices,
-      sharedMemoryServices: this.sharedMemoryServices,
-      readOnly: this.readOnly,
-      lightweightMode: this.lightweightMode,
-      embeddingOnly: this.embeddingOnly
-    });
-    this.embeddingMaintenanceService = createEmbeddingMaintenanceService({
-      storagePath,
-      initialize: () => this.initialize(),
-      getEmbeddingModelName: () => this.embedder.getModelName(),
-      vectorStore: this.vectorStore,
-      eventStore: {
-        clearEmbeddingOutbox: () => this.sqliteStore.clearEmbeddingOutbox(),
-        getEventsPage: async (limit, offset) => {
-          const events = await this.sqliteStore.getEventsPage(limit, offset);
-          return events.map((event) => ({ id: event.id, content: event.content }));
-        },
-        enqueueForEmbedding: async (eventId, content) => {
-          await this.sqliteStore.enqueueForEmbedding(eventId, content);
-        }
-      },
-      getVectorWorker: () => this.runtimeService.getVectorWorker()
-    });
+    this.retrievalOrchestrator = composition.retrievalOrchestrator;
+    this.retrievalDisclosureService = composition.retrievalDisclosureService;
+    this.retrievalAnalyticsService = composition.retrievalAnalyticsService;
+    this.ingestService = composition.ingestService;
+    this.queryService = composition.queryService;
+    this.endlessMemoryServices = composition.endlessMemoryServices;
+    this.sharedMemoryServices = composition.sharedMemoryServices;
+    this.runtimeService = composition.runtimeService;
+    this.embeddingMaintenanceService = composition.embeddingMaintenanceService;
   }
 
   /**
@@ -228,10 +159,6 @@ export class MemoryService {
    */
   async initialize(): Promise<void> {
     await this.runtimeService.initialize();
-  }
-
-  private async getSharedEntryForDisclosure(entryId: string) {
-    return this.sharedMemoryServices.getEntryForDisclosure(entryId);
   }
 
   registerIngestBefore(interceptor: IngestInterceptor): () => void {
