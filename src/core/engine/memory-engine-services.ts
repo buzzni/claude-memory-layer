@@ -15,7 +15,7 @@ import { getDefaultMatcher, type Matcher } from '../matcher.js';
 import { MarkdownMirror } from '../md-mirror.js';
 import type { Retriever } from '../retriever.js';
 import { SQLiteEventStore } from '../sqlite-event-store.js';
-import type { AppendResult, MemoryEventInput, ToolObservationPayload } from '../types.js';
+import type { ToolObservationPayload } from '../types.js';
 import { VectorStore } from '../vector-store.js';
 import { MemoryIngestService } from './memory-ingest-service.js';
 import { MemoryQueryService } from './memory-query-service.js';
@@ -30,18 +30,6 @@ import {
   type RetrievalServicesDeps
 } from './retrieval-services.js';
 
-export type MemoryIngestOperation =
-  | 'user_prompt'
-  | 'agent_response'
-  | 'session_summary'
-  | 'tool_observation';
-
-export interface MemoryEngineIngestInput {
-  operation: MemoryIngestOperation;
-  input: MemoryEventInput;
-  embeddingContent?: string;
-}
-
 export interface MemoryEngineServicesOptions {
   storagePath: string;
   readOnly: boolean;
@@ -49,9 +37,9 @@ export interface MemoryEngineServicesOptions {
   cwd?: string;
   initialize: () => Promise<void>;
   getProjectHash: () => string | null;
+  getProjectPath?: () => string | null;
   hasSharedStore: () => boolean;
   sharedStore?: RetrievalDisclosureSharedStore;
-  ingestEvent: (input: MemoryEngineIngestInput) => Promise<AppendResult>;
   createToolObservationEmbedding: (payload: ToolObservationPayload) => string;
   factories?: MemoryEngineServicesFactories;
 }
@@ -127,12 +115,14 @@ export function createMemoryEngineServices(options: MemoryEngineServicesOptions)
     sharedStore: options.sharedStore
   });
 
-  const ingestService = new MemoryIngestService(
-    options.initialize,
-    sqliteStore,
-    options.ingestEvent,
-    options.createToolObservationEmbedding
-  );
+  const ingestService = new MemoryIngestService({
+    initialize: options.initialize,
+    eventStore: sqliteStore,
+    markdownMirror: mdMirror,
+    createToolEmbedding: options.createToolObservationEmbedding,
+    getProjectHash: options.getProjectHash,
+    getProjectPath: options.getProjectPath
+  });
   const queryService = new MemoryQueryService(
     options.initialize,
     sqliteStore,

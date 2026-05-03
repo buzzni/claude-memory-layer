@@ -7,7 +7,7 @@ import {
   createMemoryEngineServices,
   type MemoryEngineServicesFactories
 } from '../src/core/engine/memory-engine-services.js';
-import type { AppendResult, MemoryEvent, MemoryEventInput, ToolObservationPayload } from '../src/core/types.js';
+import type { MemoryEvent, MemoryEventInput, ToolObservationPayload } from '../src/core/types.js';
 import type { RetrievalServicesDeps } from '../src/core/engine/retrieval-services.js';
 
 function event(id = 'e1'): MemoryEvent {
@@ -28,21 +28,20 @@ describe('createMemoryEngineServices', () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'memory-engine-services-'));
     const storagePath = path.join(root, 'memory');
     const initialize = vi.fn(async () => {});
-    const ingestEvent = vi.fn(async (options: {
-      operation: string;
-      input: MemoryEventInput;
-      embeddingContent?: string;
-    }): Promise<AppendResult> => ({
-      success: true,
-      eventId: `event:${options.operation}`,
-      isDuplicate: false
-    }));
     const createToolEmbedding = vi.fn((payload: ToolObservationPayload) => `${payload.toolName}:${payload.success}`);
     const enqueueForEmbedding = vi.fn(async (_eventId: string, _content: string) => {});
+    const append = vi.fn(async (_input: MemoryEventInput) => ({
+      success: true as const,
+      eventId: 'event:user_prompt',
+      isDuplicate: false as const
+    }));
     const sqliteStore = {
+      append,
       enqueueForEmbedding,
+      upsertSession: vi.fn(async () => {}),
       keywordSearch: vi.fn(async (_query: string, _topK: number) => [{ event: event('keyword'), rank: -0.1 }]),
       getSessionEvents: vi.fn(async (_sessionId: string) => [event('session')]),
+      getSessionsWithoutSummary: vi.fn(async () => []),
       getRecentEvents: vi.fn(async (_limit?: number) => [event('recent')]),
       getEvent: vi.fn(async (id: string) => event(id)),
       recordRetrievalTrace: vi.fn(async (_input: Record<string, unknown>) => {}),
@@ -78,7 +77,7 @@ describe('createMemoryEngineServices', () => {
       marker: 'graduation',
       getStats: vi.fn(async () => [{ level: 'working', count: 2 }])
     };
-    const mdMirror = { marker: 'mirror' };
+    const mdMirror = { marker: 'mirror', append: vi.fn(async (_input: MemoryEventInput, _eventId?: string) => {}) };
     const retrievalBundle = {
       retriever: { marker: 'retriever' },
       retrievalOrchestrator: { marker: 'orchestrator' },
@@ -127,9 +126,9 @@ describe('createMemoryEngineServices', () => {
         cwd: '/workspace/project',
         initialize,
         getProjectHash: () => 'project-1',
+        getProjectPath: () => '/workspace/project',
         hasSharedStore: () => false,
         sharedStore: { get: async () => null },
-        ingestEvent,
         createToolObservationEmbedding: createToolEmbedding,
         factories
       });
@@ -161,16 +160,19 @@ describe('createMemoryEngineServices', () => {
 
       await services.ingestService.storeUserPrompt('s1', 'remember factory wiring', { source: 'test' });
       expect(initialize).not.toHaveBeenCalled();
-      expect(ingestEvent).toHaveBeenCalledWith(expect.objectContaining({
-        operation: 'user_prompt',
-        embeddingContent: 'remember factory wiring',
-        input: expect.objectContaining({
-          eventType: 'user_prompt',
-          sessionId: 's1',
-          content: 'remember factory wiring',
-          metadata: { source: 'test' }
+      expect(sqliteStore.append).toHaveBeenCalledWith(expect.objectContaining({
+        eventType: 'user_prompt',
+        sessionId: 's1',
+        content: 'remember factory wiring',
+        metadata: expect.objectContaining({
+          source: 'test',
+          ingest: expect.objectContaining({ operation: 'user_prompt', pipeline: 'default' }),
+          scope: { project: { hash: 'project-1', path: '/workspace/project' } },
+          tags: ['proj:project-1']
         })
       }));
+      expect(sqliteStore.enqueueForEmbedding).toHaveBeenCalledWith('event:user_prompt', 'remember factory wiring');
+      expect(mdMirror.append).toHaveBeenCalledWith(expect.any(Object), 'event:user_prompt');
 
       await services.queryService.getRecentEvents(3);
       expect(sqliteStore.getRecentEvents).toHaveBeenCalledWith(3);
@@ -214,7 +216,6 @@ describe('createMemoryEngineServices', () => {
         initialize: async () => {},
         getProjectHash: () => null,
         hasSharedStore: () => false,
-        ingestEvent: async () => ({ success: true, eventId: 'e1', isDuplicate: false }),
         createToolObservationEmbedding: () => 'embedding',
         factories
       });

@@ -18,7 +18,6 @@ import {
   type SharedMemoryServices
 } from '../core/engine/shared-memory-services.js';
 import type {
-  MemoryEventInput,
   AppendResult,
   MemoryEvent,
   ToolObservationPayload,
@@ -47,19 +46,10 @@ import {
   type MemoryRuntimeService
 } from '../core/engine/memory-runtime-service.js';
 import type { GraduationRunResult } from '../core/graduation-worker.js';
-import type { MarkdownMirror } from '../core/md-mirror.js';
-import {
-  IngestInterceptor,
-  IngestInterceptorRegistry,
-  mergeHierarchicalMetadata
-} from '../core/ingest-interceptor.js';
-import { normalizeTags } from '../core/tag-taxonomy.js';
+import type { IngestInterceptor } from '../core/ingest-interceptor.js';
 import type { MemoryIngestService } from '../core/engine/memory-ingest-service.js';
 import type { MemoryQueryService } from '../core/engine/memory-query-service.js';
-import {
-  createMemoryEngineServices,
-  type MemoryEngineIngestInput
-} from '../core/engine/memory-engine-services.js';
+import { createMemoryEngineServices } from '../core/engine/memory-engine-services.js';
 import {
   type AccessedMemory,
   type HelpfulMemory,
@@ -126,7 +116,6 @@ export class MemoryService {
   private readonly embeddingMaintenanceService: EmbeddingMaintenanceService;
   private readonly runtimeService: MemoryRuntimeService;
   private readonly graduation: GraduationPipeline;
-  private readonly ingestInterceptors = new IngestInterceptorRegistry();
 
   // Endless Mode components
   private readonly endlessMemoryServices: EndlessMemoryServices;
@@ -139,7 +128,6 @@ export class MemoryService {
   private readonly readOnly: boolean;
   private readonly lightweightMode: boolean;
   private readonly embeddingOnly: boolean;
-  private readonly mdMirror: MarkdownMirror;
   private readonly ingestService: MemoryIngestService;
   private readonly queryService: MemoryQueryService;
 
@@ -168,19 +156,11 @@ export class MemoryService {
       cwd: process.cwd(),
       initialize: () => this.initialize(),
       getProjectHash: () => this.projectHash,
+      getProjectPath: () => this.projectPath,
       hasSharedStore: () => this.sharedMemoryServices?.isEnabled() ?? false,
       sharedStore: {
         get: (entryId: string) => this.getSharedEntryForDisclosure(entryId)
       },
-      ingestEvent: ({ operation, input, embeddingContent }: MemoryEngineIngestInput) => this.ingestWithInterceptors(
-        operation,
-        input,
-        embeddingContent
-          ? async (eventId) => {
-              await this.sqliteStore.enqueueForEmbedding(eventId, embeddingContent);
-            }
-          : undefined
-      ),
       createToolObservationEmbedding: (payload) => createToolObservationEmbedding(
         payload.toolName,
         payload.metadata || {},
@@ -196,7 +176,6 @@ export class MemoryService {
     this.retrievalDisclosureService = engineServices.retrievalDisclosureService;
     this.retrievalAnalyticsService = engineServices.retrievalAnalyticsService;
     this.graduation = engineServices.graduation;
-    this.mdMirror = engineServices.mdMirror;
     this.ingestService = engineServices.ingestService;
     this.queryService = engineServices.queryService;
     this.endlessMemoryServices = createEndlessMemoryServices({
@@ -256,102 +235,15 @@ export class MemoryService {
   }
 
   registerIngestBefore(interceptor: IngestInterceptor): () => void {
-    return this.ingestInterceptors.registerBefore(interceptor);
+    return this.ingestService.registerIngestBefore(interceptor);
   }
 
   registerIngestAfter(interceptor: IngestInterceptor): () => void {
-    return this.ingestInterceptors.registerAfter(interceptor);
+    return this.ingestService.registerIngestAfter(interceptor);
   }
 
   registerIngestOnError(interceptor: IngestInterceptor): () => void {
-    return this.ingestInterceptors.registerOnError(interceptor);
-  }
-
-  private async ingestWithInterceptors(
-    operation: 'user_prompt' | 'agent_response' | 'session_summary' | 'tool_observation',
-    input: MemoryEventInput,
-    onSuccess?: (eventId: string) => Promise<void>
-  ): Promise<AppendResult> {
-    const normalizedInput: MemoryEventInput = {
-      ...input,
-      metadata: mergeHierarchicalMetadata(
-        {
-          ingest: {
-            operation,
-            pipeline: 'default',
-            ts: new Date().toISOString()
-          },
-          ...(this.projectHash
-            ? {
-                scope: {
-                  project: {
-                    hash: this.projectHash,
-                    ...(this.projectPath ? { path: this.projectPath } : {})
-                  }
-                },
-                tags: [`proj:${this.projectHash}`]
-              }
-            : {})
-        },
-        input.metadata
-      )
-    };
-
-    if (this.projectHash && normalizedInput.metadata) {
-      const meta = normalizedInput.metadata as Record<string, unknown>;
-      const currentTags = Array.isArray(meta.tags)
-        ? meta.tags.filter((x): x is string => typeof x === 'string')
-        : [];
-      const projectTag = `proj:${this.projectHash}`;
-      if (!currentTags.includes(projectTag)) {
-        meta.tags = [...currentTags, projectTag];
-      }
-    }
-
-    if (normalizedInput.metadata) {
-      const meta = normalizedInput.metadata as Record<string, unknown>;
-      const normalizedTags = normalizeTags(meta.tags);
-      if (normalizedTags.length > 0) {
-        meta.tags = normalizedTags;
-      }
-    }
-
-    await this.ingestInterceptors.run('before', {
-      operation,
-      sessionId: normalizedInput.sessionId,
-      event: normalizedInput
-    });
-
-    try {
-      const result = await this.sqliteStore.append(normalizedInput);
-      if (result.success && !result.isDuplicate) {
-        if (onSuccess) {
-          await onSuccess(result.eventId);
-        }
-        try {
-          await this.mdMirror.append(normalizedInput, result.eventId);
-        } catch {
-          // non-breaking markdown mirror write
-        }
-      }
-
-      await this.ingestInterceptors.run('after', {
-        operation,
-        sessionId: normalizedInput.sessionId,
-        event: normalizedInput
-      });
-
-      return result;
-    } catch (error) {
-      const normalizedError = error instanceof Error ? error : new Error(String(error));
-      await this.ingestInterceptors.run('error', {
-        operation,
-        sessionId: normalizedInput.sessionId,
-        event: normalizedInput,
-        error: normalizedError
-      });
-      throw error;
-    }
+    return this.ingestService.registerIngestOnError(interceptor);
   }
 
   /**

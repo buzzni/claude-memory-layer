@@ -1,3 +1,9 @@
+import {
+  IngestInterceptor,
+  IngestInterceptorRegistry,
+  mergeHierarchicalMetadata
+} from '../ingest-interceptor.js';
+import { normalizeTags } from '../tag-taxonomy.js';
 import { createSummaryDeriver, type SummaryDeriver } from '../derive/summary-deriver.js';
 import type { AppendResult, MemoryEvent, MemoryEventInput, ToolObservationPayload } from '../types.js';
 
@@ -15,34 +21,70 @@ interface SessionUpsertStore {
   getSessionsWithoutSummary(currentSessionId: string, limit?: number): Promise<string[]>;
 }
 
-type IngestOperation = 'user_prompt' | 'agent_response' | 'session_summary' | 'tool_observation';
+interface IngestEventStore extends SessionUpsertStore {
+  append(input: MemoryEventInput): Promise<AppendResult>;
+  enqueueForEmbedding(eventId: string, content: string): Promise<unknown>;
+}
 
-interface IngestEventOptions {
-  operation: IngestOperation;
-  input: MemoryEventInput;
-  embeddingContent?: string;
+interface IngestMarkdownMirror {
+  append(event: MemoryEventInput, eventId?: string): Promise<void>;
+}
+
+export type IngestOperation = 'user_prompt' | 'agent_response' | 'session_summary' | 'tool_observation';
+
+export interface MemoryIngestServiceOptions {
+  initialize: () => Promise<void>;
+  eventStore: IngestEventStore;
+  markdownMirror: IngestMarkdownMirror;
+  createToolEmbedding: (payload: ToolObservationPayload) => string;
+  getProjectHash?: () => string | null;
+  getProjectPath?: () => string | null;
+  summaryDeriver?: SummaryDeriver;
 }
 
 /**
  * Thin-core ingest service for session lifecycle and event writes.
  *
- * This service owns public ingest-facing methods first, while delegating the
- * lower-level interceptor/append pipeline back to the current orchestration
- * layer during incremental migration.
+ * Owns the ingest normalization/interceptor/append pipeline so the public
+ * MemoryService facade can delegate ingest behavior without coordinating
+ * storage-side effects itself.
  */
 export class MemoryIngestService {
-  constructor(
-    private readonly initialize: () => Promise<void>,
-    private readonly sessionStore: SessionUpsertStore,
-    private readonly ingestEvent: (options: IngestEventOptions) => Promise<AppendResult>,
-    private readonly createToolEmbedding: (payload: ToolObservationPayload) => string,
-    private readonly summaryDeriver: SummaryDeriver = createSummaryDeriver()
-  ) {}
+  private readonly initialize: () => Promise<void>;
+  private readonly eventStore: IngestEventStore;
+  private readonly markdownMirror: IngestMarkdownMirror;
+  private readonly createToolEmbedding: (payload: ToolObservationPayload) => string;
+  private readonly getProjectHash: () => string | null;
+  private readonly getProjectPath: () => string | null;
+  private readonly summaryDeriver: SummaryDeriver;
+  private readonly ingestInterceptors = new IngestInterceptorRegistry();
+
+  constructor(options: MemoryIngestServiceOptions) {
+    this.initialize = options.initialize;
+    this.eventStore = options.eventStore;
+    this.markdownMirror = options.markdownMirror;
+    this.createToolEmbedding = options.createToolEmbedding;
+    this.getProjectHash = options.getProjectHash ?? (() => null);
+    this.getProjectPath = options.getProjectPath ?? (() => null);
+    this.summaryDeriver = options.summaryDeriver ?? createSummaryDeriver();
+  }
+
+  registerIngestBefore(interceptor: IngestInterceptor): () => void {
+    return this.ingestInterceptors.registerBefore(interceptor);
+  }
+
+  registerIngestAfter(interceptor: IngestInterceptor): () => void {
+    return this.ingestInterceptors.registerAfter(interceptor);
+  }
+
+  registerIngestOnError(interceptor: IngestInterceptor): () => void {
+    return this.ingestInterceptors.registerOnError(interceptor);
+  }
 
   async startSession(sessionId: string, projectPath?: string): Promise<void> {
     await this.initialize();
 
-    await this.sessionStore.upsertSession({
+    await this.eventStore.upsertSession({
       id: sessionId,
       startedAt: new Date(),
       projectPath
@@ -52,7 +94,7 @@ export class MemoryIngestService {
   async endSession(sessionId: string, summary?: string): Promise<void> {
     await this.initialize();
 
-    await this.sessionStore.upsertSession({
+    await this.eventStore.upsertSession({
       id: sessionId,
       endedAt: new Date(),
       summary
@@ -120,7 +162,7 @@ export class MemoryIngestService {
   async backfillMissingSummaries(currentSessionId: string, limit = 5): Promise<void> {
     await this.initialize();
 
-    const recentSessionIds = await this.sessionStore.getSessionsWithoutSummary(currentSessionId, limit);
+    const recentSessionIds = await this.eventStore.getSessionsWithoutSummary(currentSessionId, limit);
     for (const sessionId of recentSessionIds) {
       try {
         await this.generateSessionSummary(sessionId);
@@ -137,7 +179,7 @@ export class MemoryIngestService {
   async generateSessionSummary(sessionId: string): Promise<void> {
     await this.initialize();
 
-    const events = await this.sessionStore.getSessionEvents(sessionId);
+    const events = await this.eventStore.getSessionEvents(sessionId);
     const summary = this.summaryDeriver.deriveSessionSummary(events);
     if (!summary) return;
 
@@ -166,5 +208,110 @@ export class MemoryIngestService {
       },
       embeddingContent: this.createToolEmbedding(payload)
     });
+  }
+
+  private async ingestEvent(options: {
+    operation: IngestOperation;
+    input: MemoryEventInput;
+    embeddingContent?: string;
+  }): Promise<AppendResult> {
+    const normalizedInput = this.normalizeInput(options.operation, options.input);
+
+    await this.ingestInterceptors.run('before', {
+      operation: options.operation,
+      sessionId: normalizedInput.sessionId,
+      event: normalizedInput
+    });
+
+    try {
+      const result = await this.eventStore.append(normalizedInput);
+      if (result.success === false) {
+        await this.ingestInterceptors.run('error', {
+          operation: options.operation,
+          sessionId: normalizedInput.sessionId,
+          event: normalizedInput,
+          error: new Error(result.error)
+        });
+        return result;
+      }
+
+      if (!result.isDuplicate) {
+        if (options.embeddingContent) {
+          await this.eventStore.enqueueForEmbedding(result.eventId, options.embeddingContent);
+        }
+        try {
+          await this.markdownMirror.append(normalizedInput, result.eventId);
+        } catch {
+          // non-breaking markdown mirror write
+        }
+      }
+
+      await this.ingestInterceptors.run('after', {
+        operation: options.operation,
+        sessionId: normalizedInput.sessionId,
+        event: normalizedInput
+      });
+
+      return result;
+    } catch (error) {
+      const normalizedError = error instanceof Error ? error : new Error(String(error));
+      await this.ingestInterceptors.run('error', {
+        operation: options.operation,
+        sessionId: normalizedInput.sessionId,
+        event: normalizedInput,
+        error: normalizedError
+      });
+      throw error;
+    }
+  }
+
+  private normalizeInput(operation: IngestOperation, input: MemoryEventInput): MemoryEventInput {
+    const projectHash = this.getProjectHash();
+    const projectPath = this.getProjectPath();
+    const normalizedInput: MemoryEventInput = {
+      ...input,
+      metadata: mergeHierarchicalMetadata(
+        {
+          ingest: {
+            operation,
+            pipeline: 'default',
+            ts: new Date().toISOString()
+          },
+          ...(projectHash
+            ? {
+                scope: {
+                  project: {
+                    hash: projectHash,
+                    ...(projectPath ? { path: projectPath } : {})
+                  }
+                },
+                tags: [`proj:${projectHash}`]
+              }
+            : {})
+        },
+        input.metadata
+      )
+    };
+
+    if (projectHash && normalizedInput.metadata) {
+      const meta = normalizedInput.metadata as Record<string, unknown>;
+      const currentTags = Array.isArray(meta.tags)
+        ? meta.tags.filter((x): x is string => typeof x === 'string')
+        : [];
+      const projectTag = `proj:${projectHash}`;
+      if (!currentTags.includes(projectTag)) {
+        meta.tags = [...currentTags, projectTag];
+      }
+    }
+
+    if (normalizedInput.metadata) {
+      const meta = normalizedInput.metadata as Record<string, unknown>;
+      const normalizedTags = normalizeTags(meta.tags);
+      if (normalizedTags.length > 0) {
+        meta.tags = normalizedTags;
+      }
+    }
+
+    return normalizedInput;
   }
 }
