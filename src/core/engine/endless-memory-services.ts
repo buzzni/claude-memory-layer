@@ -100,6 +100,7 @@ export interface EndlessMemoryServices {
   recordActivity(): void;
   forceConsolidation(): Promise<number>;
   getEndlessModeStatus(): Promise<EndlessModeStatus>;
+  formatEndlessContext(query: string): Promise<string>;
   shutdown(): void;
 }
 
@@ -290,6 +291,43 @@ class DefaultEndlessMemoryServices implements EndlessMemoryServices {
       consolidatedCount,
       lastConsolidation
     };
+  }
+
+  async formatEndlessContext(query: string): Promise<string> {
+    if (!this.isEndlessModeActive()) {
+      return '';
+    }
+
+    const workingSet = await this.getWorkingSet();
+    const consolidated = await this.searchConsolidated(query, { topK: 3 });
+    const continuity = await this.calculateContinuity(query);
+
+    const parts: string[] = [];
+
+    if (continuity) {
+      const statusEmoji = continuity.transitionType === 'seamless' ? '🔗' :
+                          continuity.transitionType === 'topic_shift' ? '↪️' : '🆕';
+      parts.push(`${statusEmoji} Context: ${continuity.transitionType} (score: ${continuity.score.toFixed(2)})`);
+    }
+
+    if (workingSet && workingSet.recentEvents.length > 0) {
+      parts.push('\n## Recent Context (Working Set)');
+      const recent = workingSet.recentEvents.slice(0, 5);
+      for (const event of recent) {
+        const preview = event.content.slice(0, 80) + (event.content.length > 80 ? '...' : '');
+        const time = event.timestamp.toLocaleTimeString();
+        parts.push(`- ${time} [${event.eventType}] ${preview}`);
+      }
+    }
+
+    if (consolidated.length > 0) {
+      parts.push('\n## Related Knowledge (Consolidated)');
+      for (const memory of consolidated) {
+        parts.push(`- ${memory.topics.slice(0, 3).join(', ')}: ${memory.summary.slice(0, 100)}...`);
+      }
+    }
+
+    return parts.join('\n');
   }
 
   shutdown(): void {

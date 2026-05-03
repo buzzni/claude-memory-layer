@@ -185,6 +185,31 @@ describe('createEndlessMemoryServices', () => {
     await expect(harness.services.forceConsolidation()).resolves.toBe(0);
   });
 
+  it('formats no endless context while session mode is active', async () => {
+    await expect(makeHarness().services.formatEndlessContext('continue refactor')).resolves.toBe('');
+  });
+
+  it('formats endless context from continuity, working set, and consolidated memories', async () => {
+    const harness = makeHarness();
+    await harness.services.setMode('endless');
+    const initializeCallsAfterModeSwitch = harness.initializeCalls;
+
+    const formatted = await harness.services.formatEndlessContext('continue refactor');
+
+    expect(formatted).toContain('🔗 Context: seamless (score: 0.91)');
+    expect(formatted).toContain('## Recent Context (Working Set)');
+    expect(formatted).toContain('[agent_response] event event-1');
+    expect(formatted).toContain('## Related Knowledge (Consolidated)');
+    expect(formatted).toContain('thin-core: summary memory-1...');
+    expect(harness.searches).toEqual([
+      { query: 'continue refactor', options: { topK: 3 } }
+    ]);
+    expect(harness.snapshots).toEqual([
+      { id: 'snapshot-1', content: 'continue refactor', metadata: undefined }
+    ]);
+    expect(harness.initializeCalls).toBe(initializeCallsAfterModeSwitch);
+  });
+
   it('delegates config, continuity, activity, consolidation, and status operations', async () => {
     const harness = makeHarness();
 
