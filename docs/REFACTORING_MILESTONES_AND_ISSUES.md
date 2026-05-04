@@ -437,7 +437,7 @@ c58f50f fix(retrieval): keep disclosure drill-down lightweight
 - **Milestone 3 — Claude Adapter Isolation:** 큰 진전. hooks/transcript/semantic-daemon adapter boundary가 생겼다. capture policy 추가 분리는 후속 후보다.
 - **Milestone 4 — Storage & Index Simplification:** 부분 완료. SQLite canonical / vector derived 관점은 구현에 반영됐지만 vector extension namespace 이동은 남아 있다.
 - **Milestone 5 — Retrieval UX Productization:** 큰 진전. service/API/CLI/dashboard disclosure surface가 있다. helpfulness feedback loop의 제품화는 후속이다.
-- **Milestone 6 — Extensions Isolation:** 진행 중. shared memory service implementation은 `src/extensions/shared-memory/`로, endless memory service implementation은 `src/extensions/endless-memory/`로 이동했고 각각 `src/core/engine/*-services.ts` compatibility re-export를 남겼다. vector/MCP 물리 이동은 후속이다.
+- **Milestone 6 — Extensions Isolation:** 진행 중. shared memory service implementation은 `src/extensions/shared-memory/`로, endless memory service implementation은 `src/extensions/endless-memory/`로, MCP implementation은 `src/extensions/mcp/`로 이동했고 각각 기존 core/engine 또는 `src/mcp/*` compatibility shim을 남겼다. vector 물리 이동은 후속이다.
 - **Milestone 7~9:** 후속 hardening/release cleanup 단계.
 
 ## 통과한 검증
@@ -452,13 +452,13 @@ git diff --check
 # passed
 
 npm test -- --run
-# 37 files / 170 tests passed
+# 38 files / 171 tests passed
 
 npm run build
 # Build complete
 
 graphify update .
-# graphify-out updated: 1256 nodes, 2606 edges, 48 communities
+# graphify-out updated: 1260 nodes, 2611 edges, 49 communities
 ```
 
 ## 현재 known status
@@ -473,8 +473,9 @@ graphify update .
    - `MemoryService`에 남은 직접 상태는 `projectHash`, `projectPath`, mode flags, service field assignment 정도다.
    - 더 뺄 후보는 `session-history-importer`, `codex-session-history-importer`, `mcp/handlers`처럼 아직 `MemoryService`에 직접 붙어 있는 adapter/app callsite다.
 
-2. **Extension 물리 이동 여부 결정**
-   - shared/endless/vector/MCP를 실제 `src/extensions/*`로 옮길지, 현재 `src/core/engine/*` service boundary를 안정화한 뒤 이동할지 결정한다.
+2. **남은 extension 물리 이동 여부 결정**
+   - shared/endless/MCP는 `src/extensions/*`로 이동했고 compatibility shim을 남겼다.
+   - 다음 후보는 vector/embedder/worker 계층이며, retrieval/runtime과 얽혀 있어 별도 사전 조사 후 진행한다.
 
 3. **README / release docs refresh**
    - 현재 shipped feature와 experimental extension을 구분한다.
