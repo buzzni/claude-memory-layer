@@ -17,7 +17,7 @@ const mocks = vi.hoisted(() => {
   };
 });
 
-vi.mock('../src/server/api/utils.js', () => ({
+vi.mock('../src/apps/server/api/utils.js', () => ({
   getServiceFromQuery: mocks.getServiceFromQuery
 }));
 

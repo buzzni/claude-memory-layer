@@ -55,11 +55,11 @@ const __dirname = dirname(__filename);`
 async function build() {
   console.log('🔨 Building claude-memory-layer plugin...\n');
 
-  // Build CLI
+  // Build CLI app
   console.log('📦 Building CLI...');
   await esbuild.build({
     ...commonOptions,
-    entryPoints: ['src/cli/index.ts'],
+    entryPoints: ['src/apps/cli/index.ts'],
     outfile: 'dist/cli/index.js'
   });
 
@@ -110,7 +110,7 @@ async function build() {
   console.log('📦 Building server...');
   await esbuild.build({
     ...commonOptions,
-    entryPoints: ['src/server/index.ts'],
+    entryPoints: ['src/apps/server/index.ts'],
     outfile: 'dist/server/index.js',
     external: [...(commonOptions.external || []), 'hono']
   });
@@ -118,7 +118,7 @@ async function build() {
   // Build server API
   await esbuild.build({
     ...commonOptions,
-    entryPoints: ['src/server/api/index.ts'],
+    entryPoints: ['src/apps/server/api/index.ts'],
     outfile: 'dist/server/api/index.js',
     external: [...(commonOptions.external || []), 'hono']
   });

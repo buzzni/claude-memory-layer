@@ -116,7 +116,7 @@ npx claude-memory-layer search "배포 이슈"
 | LanceDB vector index / Embedder | Stable accelerator | `src/extensions/vector/embedder.ts`; VectorStore/VectorWorker는 아직 core compatibility path 유지 |
 | Progressive disclosure search/API/CLI/dashboard | Implemented | `search --disclosure`, `expand`, `source` mental model |
 | Shared memory / Endless mode | Experimental extension | 구현은 `src/extensions/shared-memory`, `src/extensions/endless-memory` 아래에 있고 기존 path는 shim 유지 |
-| MCP Desktop integration | Implemented / manual config | 구현은 `src/extensions/mcp`; package bin은 `claude-memory-layer-mcp`; 자동 `mcp install` 명령은 후속 |
+| MCP Desktop integration | Implemented | 구현은 `src/extensions/mcp`; package bin은 `claude-memory-layer-mcp`; `claude-memory-layer mcp install`로 Claude Desktop config 자동 등록 |
 | Mongo sync / Entity graph / Task entity | Experimental | 고급/운영 옵션으로 취급 |
 
 ## 설치 방법
@@ -386,30 +386,41 @@ claude-memory-layer endless status
 
 > 현재 상태: MCP server implementation은 `src/extensions/mcp/`로 이동되어 있고,
 > `src/mcp/*`는 compatibility shim입니다. package bin으로
-> `claude-memory-layer-mcp`가 제공됩니다. 다만 `claude-memory-layer mcp install`
-> 같은 자동 Claude Desktop 설정 명령은 아직 없습니다.
+> `claude-memory-layer-mcp`가 제공됩니다.
 
-Claude Desktop에서 MCP 서버를 수동 설정하려면:
+Claude Desktop 설정은 CLI로 자동 등록할 수 있습니다:
 
 ```bash
-# 수동 설정: ~/Library/Application Support/Claude/claude_desktop_config.json
+claude-memory-layer mcp install
+# Config: ~/Library/Application Support/Claude/claude_desktop_config.json (macOS)
+```
+
+이 명령은 Claude Desktop config의 기존 값을 보존하면서 다음 MCP server entry를 추가/갱신합니다:
+
+```json
 {
   "mcpServers": {
     "claude-memory-layer": {
-      "command": "npx",
-      "args": ["claude-memory-layer-mcp"]
+      "command": "claude-memory-layer-mcp",
+      "args": []
     }
   }
 }
 ```
 
-로컬 checkout에서 바로 테스트하려면 `npm run build` 후 다음처럼 직접 실행할 수도 있습니다:
+옵션:
+
+```bash
+claude-memory-layer mcp install --dry-run
+claude-memory-layer mcp install --config-path /path/to/claude_desktop_config.json
+claude-memory-layer mcp install --server-name claude-memory-layer --command claude-memory-layer-mcp
+```
+
+설정 후 Claude Desktop을 재시작하면 MCP 서버가 로드됩니다. 로컬 checkout에서 서버만 바로 테스트하려면 `npm run build` 후 다음처럼 직접 실행할 수도 있습니다:
 
 ```bash
 node dist/mcp/index.js
 ```
-
-자동 `mcp install` command는 후속 packaging 작업에서 추가해야 합니다.
 
 ### 제공되는 MCP 도구
 

@@ -10,7 +10,7 @@
   "type": "module",
   "scripts": {
     "build": "tsx scripts/build.ts",
-    "dev": "tsx src/cli/index.ts",
+    "dev": "tsx src/apps/cli/index.ts",
     "test": "vitest",
     "test:coverage": "vitest --coverage",
     "lint": "eslint src/**/*.ts",
