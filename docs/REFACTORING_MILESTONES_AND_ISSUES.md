@@ -386,80 +386,102 @@ full code graph 대신 가벼운 code-aware memory를 도입한다.
 
 ---
 
-# 현재 구현/검증 상태 (2026-04-30 22:58 KST)
+# 현재 구현/검증 상태 (2026-05-04 KST)
 
-## 이번 thin-core bootstrap에서 반영된 항목
-- `src/core/registry/`로 project path/hash/session registry 책임을 분리했다.
+## 이번 thin-core refactor에서 반영된 주요 항목
+- `src/core/registry/`와 `src/services/memory-service-registry.ts`로 project path/hash/session/default/lightweight service-locator 책임을 분리했다.
+- `src/services/memory-service-config.ts`가 disabled/enabled shared-store 기본값을 소유하고, `memory-service.ts`는 public compatibility export만 보존한다.
 - `src/core/model/`에 raw/fact/summary/rule/retrieval result 계층 타입을 추가했다.
-- `src/core/derive/fact-deriver.ts`로 deterministic fact derivation의 첫 slice를 분리했다.
-- `src/core/engine/`에 lightweight ingest/query service boundary를 만들고 `MemoryService`가 일부 경로를 위임하도록 했다.
-- `src/adapters/`, `src/extensions/`, `src/apps/`, `src/compat/` skeleton을 추가해 이후 strangler migration의 landing zone을 만들었다.
+- `src/core/derive/fact-deriver.ts`와 summary derivation 흐름으로 deterministic derivation의 첫 slice를 분리했다.
+- `src/core/engine/` 아래로 `MemoryService`의 주요 책임을 분리했다.
+  - `memory-engine-services.ts`: SQLite/vector/embedder/retrieval/ingest/query bundle construction
+  - `retrieval-orchestrator.ts`, `retrieval-disclosure-service.ts`, `retrieval-analytics-service.ts`, `retrieval-services.ts`
+  - `memory-ingest-service.ts`, `memory-query-service.ts`, `memory-runtime-service.ts`
+  - `embedding-maintenance-service.ts`, `endless-memory-services.ts`, `shared-memory-services.ts`
+  - `memory-service-composition.ts`: constructor-time service graph wiring
+- `MemoryService`는 현재 대부분 public compatibility facade + project state + composition assignment + service delegation 역할만 남겼다.
+- Claude hook 구현은 `src/adapters/claude/hooks/`로 이동했고, `src/hooks/*`는 compatibility wrapper로 축소했다.
+- Progressive retrieval disclosure는 service/API/CLI/dashboard까지 `search -> expand -> source` mental model로 연결했다.
+- Shared disclosure drill-down은 `shared:<entryId>`를 local raw event처럼 위장하지 않고 shared provenance를 명시한다.
 - `Retriever`에 deep retrieval 품질 개선용 intent rewrite merge, keyword rerank, graph-hop expansion, project scope filtering을 추가했다.
 - `@modelcontextprotocol/sdk@1.29.0` 기준으로 MCP `CallToolResult` 타입을 명시해 full typecheck를 복구했다.
 
+## 최근 완료 commit checkpoint
+```text
+2bd32b5 refactor(memory): centralize shared store defaults
+4f6ccc8 test(memory): document project registry shared config caching
+099dad1 [verified] Extract memory service registry
+ddea95e refactor(memory): extract service composition wiring
+54c360e refactor(memory): route embedding model facade through maintenance service
+e776d57 refactor(memory): delegate graduation access through runtime service
+36313a6 refactor(memory): move endless context formatting
+28e144d refactor(memory): move ingest pipeline to ingest service
+265899a refactor(memory): extract query service facades
+53354e3 refactor(memory): extract memory runtime service
+0b5bde4 refactor(memory): extract embedding maintenance service
+95d2075 Extract endless memory services
+6da4ddb refactor(memory): extract shared memory services
+c19757d refactor(memory): bundle engine service construction
+e186ee4 refactor(claude): move semantic daemon behind adapter boundary
+8071313 refactor(claude): move hook implementations behind adapter boundary
+50ff74e feat(dashboard): show shared retrieval provenance
+518bdda feat(cli): show shared retrieval results
+c58f50f fix(retrieval): keep disclosure drill-down lightweight
+81bbf70 refactor(retrieval): bundle retrieval services
+```
+
+## 현재 milestone status
+- **Milestone 0 — Architecture Alignment:** 부분 완료. 계획/비교 문서는 존재하지만 README drift와 extension stability 표시는 추가 정리가 필요하다.
+- **Milestone 1 — Domain Model Separation:** 부분 완료. raw/fact/summary/retrieval result 타입과 일부 derivation은 분리됐지만 fact/summary 저장 모델의 제품화는 남아 있다.
+- **Milestone 2 — Core Engine Extraction:** 큰 진전. `MemoryService`의 retrieval/ingest/query/runtime/shared/endless/embedding/composition/registry 책임이 대부분 별도 서비스로 이동했다.
+- **Milestone 3 — Claude Adapter Isolation:** 큰 진전. hooks/transcript/semantic-daemon adapter boundary가 생겼다. capture policy 추가 분리는 후속 후보다.
+- **Milestone 4 — Storage & Index Simplification:** 부분 완료. SQLite canonical / vector derived 관점은 구현에 반영됐지만 vector extension namespace 이동은 남아 있다.
+- **Milestone 5 — Retrieval UX Productization:** 큰 진전. service/API/CLI/dashboard disclosure surface가 있다. helpfulness feedback loop의 제품화는 후속이다.
+- **Milestone 6 — Extensions Isolation:** 부분 완료. shared/endless는 service boundary가 생겼지만 아직 `src/extensions/*` 물리 이동은 하지 않았다.
+- **Milestone 7~9:** 후속 hardening/release cleanup 단계.
+
 ## 통과한 검증
 ```bash
-npm run typecheck
+npm test -- --run tests/memory-service-config.test.ts tests/memory-service-registry.test.ts tests/memory-service-composition.test.ts
+# 3 files / 12 tests passed
+
+npm run typecheck -- --pretty false
 # passed
 
-npm test -- --run tests/fact-deriver.test.ts tests/project-registry.test.ts
-# 2 files / 6 tests passed
+git diff --check
+# passed
 
 npm test -- --run
-# 14 files / 68 tests passed
+# 35 files / 168 tests passed
 
 npm run build
 # Build complete
 
 graphify update .
-# graphify-out updated: 1023 nodes, 2122 edges, 53 communities
+# graphify-out updated: 1250 nodes, 2602 edges, 49 communities
 ```
 
 ## 현재 known status
 - full typecheck, full vitest suite, build가 모두 통과한다.
 - full test에서 새 regressions는 발견되지 않았다.
-- `patch` 도구의 파일 단위 자동 lint는 tsconfig project mode가 아니라 단일 파일 컴파일 방식으로 동작해 `node_modules`/target 관련 false positive를 출력할 수 있다. authoritative check는 `npm run typecheck`로 본다.
+- `graphify-out/`는 현재 `git status --short`에 tracked 변경으로 나타나지 않는다.
+- `patch` 도구의 파일 단위 자동 lint는 tsconfig project mode가 아니라 단일 파일 컴파일 방식으로 동작해 `node_modules`/target 관련 false positive를 출력할 수 있다. authoritative check는 `npm run typecheck -- --pretty false`로 본다.
 
-## 권장 commit/review slice
+## 다음 권장 slice
 
-현재 변경 폭이 크기 때문에 한 번에 리뷰/커밋하기보다 아래 순서로 나누는 것을 권장한다.
+1. **MemoryService facade audit 마무리**
+   - `MemoryService`에 남은 직접 상태는 `projectHash`, `projectPath`, mode flags, service field assignment 정도다.
+   - 더 뺄 후보는 `session-history-importer`, `codex-session-history-importer`, `mcp/handlers`처럼 아직 `MemoryService`에 직접 붙어 있는 adapter/app callsite다.
 
-1. **Architecture docs/specs**
-   - `docs/PROJECT_STRUCTURE_ANALYSIS.md`
-   - `docs/ARCHITECTURE_COMPARISON_AND_RECOMMENDATIONS.md`
-   - `docs/TARGET_ARCHITECTURE_AND_FOLDER_STRUCTURE.md`
-   - `docs/REFACTORING_PLAN_THIN_CORE.md`
-   - `docs/REFACTORING_MILESTONES_AND_ISSUES.md`
-   - `specs/thin-core-refactor/`
+2. **Extension 물리 이동 여부 결정**
+   - shared/endless/vector/MCP를 실제 `src/extensions/*`로 옮길지, 현재 `src/core/engine/*` service boundary를 안정화한 뒤 이동할지 결정한다.
 
-2. **Thin-core boundaries and domain model**
-   - `src/core/model/`
-   - `src/adapters/`
-   - `src/extensions/`
-   - `src/apps/`
-   - `src/compat/`
-   - `src/core/index.ts` exports
+3. **README / release docs refresh**
+   - 현재 shipped feature와 experimental extension을 구분한다.
+   - shared store, endless mode, disclosure API/CLI/dashboard 상태를 문서화한다.
 
-3. **Registry and engine extraction**
-   - `src/core/registry/`
-   - `src/core/engine/`
-   - `src/services/memory-service.ts` delegation/re-export changes
-   - `src/cli/index.ts`, hooks, server/importer callsite migrations
-
-4. **Retrieval quality slice**
-   - `src/core/retriever.ts`
-   - related retriever/core type tweaks
-   - existing retriever tests plus fallback/scope tests
-
-5. **MCP dependency/type compatibility**
-   - `package.json`
-   - `package-lock.json`
-   - `src/mcp/index.ts`
-   - `src/mcp/handlers.ts`
-
-6. **Generated graph/code-map artifact**
-   - `graphify-out/`
-   - include only if the repository intentionally versions graphify outputs; otherwise add it to `.gitignore` later.
+4. **Generated graph/code-map artifact 정책 결정**
+   - `graphify-out/`를 버전 관리할지, 생성물로 유지할지 명확히 한다.
 
 ---
 

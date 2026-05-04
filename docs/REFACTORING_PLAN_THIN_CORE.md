@@ -4,6 +4,30 @@
 
 ---
 
+## 0. 현재 진행 상태 요약 (2026-05-04)
+
+현재 refactor branch에서는 초안 계획의 핵심인 “`MemoryService` 얇게 만들기”가 상당 부분 구현됐다.
+
+완료/진행된 축:
+
+- `MemoryService`는 대부분 compatibility facade가 되었고, 주요 책임은 `src/core/engine/*` 서비스로 이동했다.
+- Registry/service-locator 책임은 `src/services/memory-service-registry.ts`로 분리됐다.
+- Shared-store 기본 설정은 `src/services/memory-service-config.ts`가 소유한다.
+- Retrieval은 `RetrievalOrchestrator`, `RetrievalDisclosureService`, `RetrievalAnalyticsService`, `createRetrievalServices(...)`로 분리됐다.
+- Ingest/query/runtime/embedding/endless/shared/composition 책임은 각각 별도 서비스로 분리됐다.
+- Claude hooks는 `src/adapters/claude/hooks/*`로 이동했고, 기존 `src/hooks/*`는 wrapper로 남았다.
+- Progressive disclosure UX는 service/API/CLI/dashboard까지 `search -> expand -> source` 형태로 연결됐다.
+
+남은 큰 판단:
+
+- shared/endless/vector/MCP를 실제 `src/extensions/*`로 물리 이동할지 여부
+- README/release 문서에서 shipped/stable/experimental feature를 어떻게 표시할지
+- `session-history-importer`, `codex-session-history-importer`, `mcp/handlers` 같은 app/adapter callsite를 `MemoryService` facade에서 더 멀리 떼어낼지
+
+상세 commit checkpoint와 검증 결과는 `docs/REFACTORING_MILESTONES_AND_ISSUES.md`의 “현재 구현/검증 상태”를 기준으로 본다.
+
+---
+
 ## 1. 왜 이 리팩터링이 필요한가
 
 현재 구조는 기능적으로 강하다. 하지만 다음 문제가 보인다.
