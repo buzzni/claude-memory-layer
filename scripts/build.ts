@@ -127,10 +127,11 @@ async function build() {
   console.log('📋 Copying plugin files...');
   fs.cpSync('.claude-plugin', path.join(outdir, '.claude-plugin'), { recursive: true });
 
-  // Copy UI files
-  console.log('📋 Copying UI files...');
-  if (fs.existsSync('src/ui')) {
-    fs.cpSync('src/ui', path.join(outdir, 'ui'), { recursive: true });
+  // Copy dashboard static files
+  console.log('📋 Copying dashboard files...');
+  const dashboardPath = 'src/apps/dashboard';
+  if (fs.existsSync(dashboardPath)) {
+    fs.cpSync(dashboardPath, path.join(outdir, 'ui'), { recursive: true });
   }
 
   console.log('\n✅ Build complete!');

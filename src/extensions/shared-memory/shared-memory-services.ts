@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import type { Embedder } from '../../core/embedder.js';
+import type { Embedder } from '../vector/index.js';
 import { createSharedEventStore, type SharedEventStore } from '../../core/shared-event-store.js';
 import { createSharedPromoter, type PromotionResult, type SharedPromoter } from '../../core/shared-promoter.js';
 import { createSharedStore, type SharedStore } from '../../core/shared-store.js';

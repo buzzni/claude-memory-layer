@@ -7,7 +7,7 @@ import * as os from 'os';
 
 import type { RetrievalResult, UnifiedRetrievalResult } from '../core/retriever.js';
 import type { PromotionResult } from '../core/shared-promoter.js';
-import type { SharedMemoryServices } from '../core/engine/shared-memory-services.js';
+import type { SharedMemoryServices } from '../extensions/shared-memory/index.js';
 import type {
   AppendResult,
   MemoryEvent,
@@ -21,7 +21,7 @@ import type {
   SharedStoreConfig,
   Entry
 } from '../core/types.js';
-import type { EndlessMemoryServices } from '../core/engine/endless-memory-services.js';
+import type { EndlessMemoryServices } from '../extensions/endless-memory/index.js';
 import {
   type EmbeddingMaintenanceService,
   type EmbeddingModelMaintenanceOptions,

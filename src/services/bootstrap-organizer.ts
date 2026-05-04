@@ -103,37 +103,52 @@ function runGit(repoPath: string, command: string): string {
   return execSync(`git -C ${JSON.stringify(repoPath)} ${command}`, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
 }
 
+function parseGitLog(raw: string): CommitInfo[] {
+  const lines = raw.split(/\r?\n/);
+  const commits: CommitInfo[] = [];
+  let current: CommitInfo | null = null;
+
+  for (const line of lines) {
+    if (!line.trim()) {
+      if (current) {
+        commits.push(current);
+        current = null;
+      }
+      continue;
+    }
+
+    if (line.includes('\t') && line.split('\t').length >= 4) {
+      if (current) commits.push(current);
+      const [hash, date, author, ...subjectRest] = line.split('\t');
+      current = { hash, date, author, subject: subjectRest.join('\t').trim(), files: [] };
+    } else if (current) {
+      current.files.push(line.trim());
+    }
+  }
+
+  if (current) commits.push(current);
+  return commits;
+}
+
 function getGitCommits(repoPath: string, since = '180 days ago', maxCommits = 1000): CommitInfo[] {
   try {
     const raw = runGit(
       repoPath,
       `log --since=${JSON.stringify(since)} -n ${Math.max(1, maxCommits)} --date=short --pretty=format:%H%x09%ad%x09%an%x09%s --name-only --reverse`
     );
+    return parseGitLog(raw);
+  } catch {
+    return [];
+  }
+}
 
-    const lines = raw.split(/\r?\n/);
-    const commits: CommitInfo[] = [];
-    let current: CommitInfo | null = null;
-
-    for (const line of lines) {
-      if (!line.trim()) {
-        if (current) {
-          commits.push(current);
-          current = null;
-        }
-        continue;
-      }
-
-      if (line.includes('\t') && line.split('\t').length >= 4) {
-        if (current) commits.push(current);
-        const [hash, date, author, ...subjectRest] = line.split('\t');
-        current = { hash, date, author, subject: subjectRest.join('\t').trim(), files: [] };
-      } else if (current) {
-        current.files.push(line.trim());
-      }
-    }
-
-    if (current) commits.push(current);
-    return commits;
+function getGitCommitsAfterHash(repoPath: string, hash: string, maxCommits = 1000): CommitInfo[] {
+  try {
+    const raw = runGit(
+      repoPath,
+      `log ${JSON.stringify(`${hash}..HEAD`)} -n ${Math.max(1, maxCommits)} --date=short --pretty=format:%H%x09%ad%x09%an%x09%s --name-only --reverse`
+    );
+    return parseGitLog(raw);
   } catch {
     return [];
   }
@@ -194,6 +209,7 @@ function sourceLine(source: string): string {
 interface ExistingManifest {
   generatedAt?: string;
   lastCommitDate?: string;
+  lastCommitHash?: string;
 }
 
 function loadExistingManifest(outDir: string): ExistingManifest | null {
@@ -238,7 +254,9 @@ export async function bootstrapKnowledgeBase(options: BootstrapKnowledgeOptions)
 
   const codeFiles = walkCodeFiles(repoPath);
   const modules = summarizeModules(repoPath, codeFiles);
-  const commits = getGitCommits(repoPath, since, maxCommits);
+  const commits = options.incremental && existingManifest?.lastCommitHash
+    ? getGitCommitsAfterHash(repoPath, existingManifest.lastCommitHash, maxCommits)
+    : getGitCommits(repoPath, since, maxCommits);
   const decisions = extractDecisions(commits);
   const timeline = buildTimeline(commits);
   const glossary = buildGlossary(codeFiles);
@@ -390,7 +408,8 @@ export async function bootstrapKnowledgeBase(options: BootstrapKnowledgeOptions)
     ...commits.slice(0, 400).map((c) => ({ type: 'commit', ref: c.hash, date: c.date, subject: c.subject }))
   ];
 
-  const latestCommitDate = commits.length > 0 ? commits[commits.length - 1].date : undefined;
+  const latestCommitDate = commits.length > 0 ? commits[commits.length - 1].date : existingManifest?.lastCommitDate;
+  const latestCommitHash = commits.length > 0 ? commits[commits.length - 1].hash : existingManifest?.lastCommitHash;
   const manifest = {
     generatedAt: new Date().toISOString(),
     deterministicPipeline: true,
@@ -406,6 +425,7 @@ export async function bootstrapKnowledgeBase(options: BootstrapKnowledgeOptions)
       glossaryTerms: glossary.length
     },
     lastCommitDate: latestCommitDate,
+    lastCommitHash: latestCommitHash,
     outputs,
     allOutputs,
     sources: sourceItems
