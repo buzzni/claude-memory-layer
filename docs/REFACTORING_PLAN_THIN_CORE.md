@@ -21,7 +21,7 @@
 남은 큰 판단:
 
 - shared memory service는 `src/extensions/shared-memory/`로, endless memory service는 `src/extensions/endless-memory/`로, MCP implementation은 `src/extensions/mcp/`로, Embedder implementation은 `src/extensions/vector/`로 이동 완료. VectorStore/VectorWorker를 추가 물리 이동할지 여부
-- README/release 문서에서 shipped/stable/experimental feature를 어떻게 표시할지
+- README에서 shipped/stable/experimental feature 상태는 1차 정리 완료. 남은 것은 MCP package bin / install command를 실제로 추가할지 결정하는 것
 - `session-history-importer`, `codex-session-history-importer`, `mcp/handlers` 같은 app/adapter callsite를 `MemoryService` facade에서 더 멀리 떼어낼지
 
 상세 commit checkpoint와 검증 결과는 `docs/REFACTORING_MILESTONES_AND_ISSUES.md`의 “현재 구현/검증 상태”를 기준으로 본다.

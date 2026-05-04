@@ -478,8 +478,9 @@ graphify update .
    - 다음 후보는 VectorStore/VectorWorker 계층이며, retrieval/runtime/LanceDB와 얽혀 있어 별도 사전 조사 후 진행한다.
 
 3. **README / release docs refresh**
-   - 현재 shipped feature와 experimental extension을 구분한다.
-   - shared store, endless mode, disclosure API/CLI/dashboard 상태를 문서화한다.
+   - 현재 shipped feature와 experimental extension을 구분했다.
+   - shared store, endless mode, MCP, disclosure API/CLI/dashboard, Embedder extension 상태를 README에 반영했다.
+   - 남은 후속: 정식 MCP package bin / `mcp install` command wiring 여부 결정.
 
 4. **Generated graph/code-map artifact 정책 결정**
    - `graphify-out/`를 버전 관리할지, 생성물로 유지할지 명확히 한다.
