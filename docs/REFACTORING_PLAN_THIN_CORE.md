@@ -20,7 +20,7 @@
 
 남은 큰 판단:
 
-- shared memory service는 `src/extensions/shared-memory/`로 이동 완료. endless/vector/MCP를 실제 `src/extensions/*`로 추가 물리 이동할지 여부
+- shared memory service는 `src/extensions/shared-memory/`로, endless memory service는 `src/extensions/endless-memory/`로 이동 완료. vector/MCP를 실제 `src/extensions/*`로 추가 물리 이동할지 여부
 - README/release 문서에서 shipped/stable/experimental feature를 어떻게 표시할지
 - `session-history-importer`, `codex-session-history-importer`, `mcp/handlers` 같은 app/adapter callsite를 `MemoryService` facade에서 더 멀리 떼어낼지
 

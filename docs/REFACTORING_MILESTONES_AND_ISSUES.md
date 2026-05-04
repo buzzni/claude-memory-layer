@@ -397,7 +397,7 @@ full code graph 대신 가벼운 code-aware memory를 도입한다.
   - `memory-engine-services.ts`: SQLite/vector/embedder/retrieval/ingest/query bundle construction
   - `retrieval-orchestrator.ts`, `retrieval-disclosure-service.ts`, `retrieval-analytics-service.ts`, `retrieval-services.ts`
   - `memory-ingest-service.ts`, `memory-query-service.ts`, `memory-runtime-service.ts`
-  - `embedding-maintenance-service.ts`, `endless-memory-services.ts`, `shared-memory-services.ts`
+  - `embedding-maintenance-service.ts`; `endless-memory-services.ts`와 `shared-memory-services.ts`는 현재 `src/extensions/*` 구현을 가리키는 compatibility shim
   - `memory-service-composition.ts`: constructor-time service graph wiring
 - `MemoryService`는 현재 대부분 public compatibility facade + project state + composition assignment + service delegation 역할만 남겼다.
 - Claude hook 구현은 `src/adapters/claude/hooks/`로 이동했고, `src/hooks/*`는 compatibility wrapper로 축소했다.
@@ -437,7 +437,7 @@ c58f50f fix(retrieval): keep disclosure drill-down lightweight
 - **Milestone 3 — Claude Adapter Isolation:** 큰 진전. hooks/transcript/semantic-daemon adapter boundary가 생겼다. capture policy 추가 분리는 후속 후보다.
 - **Milestone 4 — Storage & Index Simplification:** 부분 완료. SQLite canonical / vector derived 관점은 구현에 반영됐지만 vector extension namespace 이동은 남아 있다.
 - **Milestone 5 — Retrieval UX Productization:** 큰 진전. service/API/CLI/dashboard disclosure surface가 있다. helpfulness feedback loop의 제품화는 후속이다.
-- **Milestone 6 — Extensions Isolation:** 시작됨. shared memory service implementation은 `src/extensions/shared-memory/`로 이동했고 `src/core/engine/shared-memory-services.ts`는 compatibility re-export로 남겼다. endless/vector/MCP 물리 이동은 후속이다.
+- **Milestone 6 — Extensions Isolation:** 진행 중. shared memory service implementation은 `src/extensions/shared-memory/`로, endless memory service implementation은 `src/extensions/endless-memory/`로 이동했고 각각 `src/core/engine/*-services.ts` compatibility re-export를 남겼다. vector/MCP 물리 이동은 후속이다.
 - **Milestone 7~9:** 후속 hardening/release cleanup 단계.
 
 ## 통과한 검증
@@ -452,13 +452,13 @@ git diff --check
 # passed
 
 npm test -- --run
-# 35 files / 168 tests passed
+# 37 files / 170 tests passed
 
 npm run build
 # Build complete
 
 graphify update .
-# graphify-out updated: 1250 nodes, 2602 edges, 49 communities
+# graphify-out updated: 1256 nodes, 2606 edges, 48 communities
 ```
 
 ## 현재 known status
