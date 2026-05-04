@@ -39,6 +39,7 @@ import {
 } from '../core/registry/project-path.js';
 import { getSessionProject as defaultGetSessionProject } from '../core/registry/session-registry.js';
 import {
+  DEFAULT_ENABLED_SHARED_STORE_CONFIG,
   DEFAULT_SHARED_STORAGE_PATH,
   DISABLED_SHARED_STORE_CONFIG,
   type MemoryServiceConfig
@@ -71,6 +72,7 @@ export {
 } from '../core/registry/session-registry.js';
 
 export {
+  DEFAULT_ENABLED_SHARED_STORE_CONFIG,
   DEFAULT_SHARED_STORAGE_PATH,
   DISABLED_SHARED_STORE_CONFIG,
   type MemoryServiceConfig
@@ -105,14 +107,7 @@ export class MemoryService {
     // Store project hash for shared store operations
     this.projectHash = config.projectHash || null;
     this.projectPath = config.projectPath || null;
-    // Default: shared store enabled
-    const sharedStoreConfig = config.sharedStoreConfig ?? {
-      enabled: true,
-      autoPromote: true,
-      searchShared: true,
-      minConfidenceForPromotion: 0.8,
-      sharedStoragePath: DEFAULT_SHARED_STORAGE_PATH
-    };
+    const sharedStoreConfig = config.sharedStoreConfig ?? DEFAULT_ENABLED_SHARED_STORE_CONFIG;
 
     const composition = createMemoryServiceComposition({
       config: {
@@ -124,6 +119,7 @@ export class MemoryService {
         sharedStoreConfig
       },
       defaultSharedStoragePath: DEFAULT_SHARED_STORAGE_PATH,
+      defaultSharedStoreConfig: DEFAULT_ENABLED_SHARED_STORE_CONFIG,
       initialize: () => this.initialize(),
       getProjectHash: () => this.projectHash,
       getProjectPath: () => this.projectPath

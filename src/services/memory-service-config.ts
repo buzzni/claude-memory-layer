@@ -25,4 +25,12 @@ export const DISABLED_SHARED_STORE_CONFIG: SharedStoreConfig = {
   sharedStoragePath: SHARED_STORAGE_PATH
 };
 
+export const DEFAULT_ENABLED_SHARED_STORE_CONFIG: SharedStoreConfig = {
+  enabled: true,
+  autoPromote: true,
+  searchShared: true,
+  minConfidenceForPromotion: 0.8,
+  sharedStoragePath: SHARED_STORAGE_PATH
+};
+
 export const DEFAULT_SHARED_STORAGE_PATH = SHARED_STORAGE_PATH;
