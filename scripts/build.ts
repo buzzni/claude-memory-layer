@@ -63,6 +63,14 @@ async function build() {
     outfile: 'dist/cli/index.js'
   });
 
+  // Build MCP stdio server bin
+  console.log('📦 Building MCP server...');
+  await esbuild.build({
+    ...commonOptions,
+    entryPoints: ['src/mcp/index.ts'],
+    outfile: 'dist/mcp/index.js'
+  });
+
   // Build hooks
   console.log('📦 Building hooks...');
   const hooks = [
@@ -128,6 +136,7 @@ async function build() {
   console.log('\n✅ Build complete!');
   console.log(`\nOutput: ${outdir}/`);
   console.log('  - cli/index.js');
+  console.log('  - mcp/index.js');
   console.log('  - hooks/*.js');
   console.log('  - core/index.js');
   console.log('  - services/memory-service.js');

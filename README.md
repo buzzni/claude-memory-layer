@@ -96,7 +96,7 @@ npx claude-memory-layer search "배포 이슈"
 - **Endless Mode**: 세션 경계 없는 연속적 메모리 스트림, Biomimetic Memory Architecture 기반 *(experimental extension)*
 - **Entity-Edge Model**: entries/entities/edges 3-layer 모델로 데이터 관계 명시적 모델링
 - **Evidence Aligner V2**: Quote 기반 3단계 정렬 (exact → normalized → fuzzy)
-- **MCP Desktop Integration**: Claude Desktop용 MCP 서버로 CLI와 동일한 메모리 공유 *(implementation exists under `src/extensions/mcp`, package/bin wiring is experimental)*
+- **MCP Desktop Integration**: Claude Desktop용 MCP 서버로 CLI와 동일한 메모리 공유 *(stdio server bin: `claude-memory-layer-mcp`)*
 - **PostToolUse Hook**: 도구 실행 결과 (Read, Write, Bash 등) 캡처 및 저장
 - **Private Tags**: `<private>` 태그로 민감 정보를 명시적으로 제외
 - **Progressive Disclosure**: 3-Layer 검색 (인덱스 → 타임라인 → 상세)으로 토큰 효율화
@@ -116,7 +116,7 @@ npx claude-memory-layer search "배포 이슈"
 | LanceDB vector index / Embedder | Stable accelerator | `src/extensions/vector/embedder.ts`; VectorStore/VectorWorker는 아직 core compatibility path 유지 |
 | Progressive disclosure search/API/CLI/dashboard | Implemented | `search --disclosure`, `expand`, `source` mental model |
 | Shared memory / Endless mode | Experimental extension | 구현은 `src/extensions/shared-memory`, `src/extensions/endless-memory` 아래에 있고 기존 path는 shim 유지 |
-| MCP Desktop integration | Experimental/source-level | 구현은 `src/extensions/mcp`; npm package bin / `mcp install` 명령은 아직 정식 wiring 전 |
+| MCP Desktop integration | Implemented / manual config | 구현은 `src/extensions/mcp`; package bin은 `claude-memory-layer-mcp`; 자동 `mcp install` 명령은 후속 |
 | Mongo sync / Entity graph / Task entity | Experimental | 고급/운영 옵션으로 취급 |
 
 ## 설치 방법
@@ -385,11 +385,11 @@ claude-memory-layer endless status
 ## MCP Desktop Integration
 
 > 현재 상태: MCP server implementation은 `src/extensions/mcp/`로 이동되어 있고,
-> `src/mcp/*`는 compatibility shim입니다. 다만 npm package에 별도
-> `claude-memory-layer-mcp` bin이나 `claude-memory-layer mcp install` CLI는 아직
-> 정식 wiring되어 있지 않습니다. 아래 설정은 **로컬 개발 checkout 기준의 experimental 설정**입니다.
+> `src/mcp/*`는 compatibility shim입니다. package bin으로
+> `claude-memory-layer-mcp`가 제공됩니다. 다만 `claude-memory-layer mcp install`
+> 같은 자동 Claude Desktop 설정 명령은 아직 없습니다.
 
-Claude Desktop에서 로컬 checkout의 MCP 서버를 직접 실행하려면:
+Claude Desktop에서 MCP 서버를 수동 설정하려면:
 
 ```bash
 # 수동 설정: ~/Library/Application Support/Claude/claude_desktop_config.json
@@ -397,14 +397,19 @@ Claude Desktop에서 로컬 checkout의 MCP 서버를 직접 실행하려면:
   "mcpServers": {
     "claude-memory-layer": {
       "command": "npx",
-      "args": ["tsx", "/absolute/path/to/claude-memory-layer/src/mcp/index.ts"],
-      "cwd": "/absolute/path/to/claude-memory-layer"
+      "args": ["claude-memory-layer-mcp"]
     }
   }
 }
 ```
 
-정식 배포용 MCP bin / 자동 install command는 후속 packaging 작업에서 추가해야 합니다.
+로컬 checkout에서 바로 테스트하려면 `npm run build` 후 다음처럼 직접 실행할 수도 있습니다:
+
+```bash
+node dist/mcp/index.js
+```
+
+자동 `mcp install` command는 후속 packaging 작업에서 추가해야 합니다.
 
 ### 제공되는 MCP 도구
 
@@ -655,7 +660,7 @@ npm run dev
 - **TypeScript**: 타입 안전한 코드
 - **Node.js + Hono**: HTTP 서버 / Web Viewer
 - **Hono**: 경량 라우터
-- **MCP SDK**: Claude Desktop 통합 (experimental packaging)
+- **MCP SDK**: Claude Desktop 통합 (`claude-memory-layer-mcp` stdio server)
 
 ## Specification Documents
 
@@ -692,7 +697,7 @@ npm run dev
 - [x] Private Tags
 
 ### Phase 3: Integration
-- [ ] MCP Desktop Integration *(source-level implementation exists; packaging/bin wiring pending)*
+- [x] MCP Desktop Integration *(stdio server bin exists; auto install command pending)*
 - [x] Web Viewer UI
 - [x] PostToolUse Hook
 - [x] Progressive Disclosure
