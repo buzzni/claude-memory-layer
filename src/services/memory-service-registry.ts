@@ -77,6 +77,10 @@ export function createMemoryServiceRegistry<TService>(
       }));
     }
 
+    // Project services are keyed only by project hash. This intentionally means
+    // the first sharedStoreConfig used for a project wins; later calls for the
+    // same project reuse the cached instance to preserve historical lock/cache
+    // semantics instead of replacing the service graph under existing callers.
     return serviceCache.get(hash)!;
   };
 

@@ -89,6 +89,30 @@ describe('createMemoryServiceRegistry', () => {
     });
   });
 
+  it('preserves the first shared store config for cached project services', () => {
+    const { registry, createdConfigs } = createRegistry();
+    const firstSharedConfig: SharedStoreConfig = {
+      ...disabledSharedStoreConfig,
+      enabled: true,
+      searchShared: true,
+      sharedStoragePath: '/shared/first'
+    };
+    const laterSharedConfig: SharedStoreConfig = {
+      ...disabledSharedStoreConfig,
+      enabled: true,
+      autoPromote: true,
+      sharedStoragePath: '/shared/later'
+    };
+
+    const first = registry.getMemoryServiceForProject('/workspace/app', firstSharedConfig);
+    const second = registry.getMemoryServiceForProject('/workspace/app', laterSharedConfig);
+
+    expect(second).toBe(first);
+    expect(createdConfigs).toHaveLength(1);
+    expect(first.config.sharedStoreConfig).toBe(firstSharedConfig);
+    expect(first.config.sharedStoreConfig).not.toBe(laterSharedConfig);
+  });
+
   it('resolves session services from the session registry and falls back to global service', () => {
     const { registry } = createRegistry({
       projectHash: 'registered-hash',
