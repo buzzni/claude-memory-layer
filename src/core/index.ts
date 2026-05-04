@@ -5,6 +5,21 @@
 
 // Types
 export * from './types.js';
+export * from './model/raw-event.js';
+export * from './model/memory-fact.js';
+export * from './model/memory-summary.js';
+export * from './model/memory-rule.js';
+export * from './model/retrieval-result.js';
+
+// Registry
+export * from './registry/project-path.js';
+export * from './registry/session-registry.js';
+
+// Engine
+export * from './engine/index.js';
+
+// Derivation
+export * from './derive/index.js';
 
 // Canonical Key (identity)
 export * from './canonical-key.js';

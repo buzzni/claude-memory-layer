@@ -23,7 +23,7 @@ export class EventStore {
   private initialized = false;
   private readonly readOnly: boolean;
 
-  constructor(private dbPath: string, options?: EventStoreOptions) {
+  constructor(dbPath: string, options?: EventStoreOptions) {
     this.readOnly = options?.readOnly ?? false;
     this.db = createDatabase(dbPath, { readOnly: this.readOnly });
   }
@@ -739,7 +739,7 @@ export class EventStore {
   /**
    * Increment access count for events (stub for compatibility)
    */
-  async incrementAccessCount(eventIds: string[]): Promise<void> {
+  async incrementAccessCount(_eventIds: string[]): Promise<void> {
     // This is a stub method for compatibility
     // Actual implementation is in SQLiteEventStore
     return Promise.resolve();
@@ -748,7 +748,7 @@ export class EventStore {
   /**
    * Get most accessed memories (stub for compatibility)
    */
-  async getMostAccessed(limit: number = 10): Promise<MemoryEvent[]> {
+  async getMostAccessed(_limit: number = 10): Promise<MemoryEvent[]> {
     // This is a stub method for compatibility
     // Actual implementation is in SQLiteEventStore
     return [];

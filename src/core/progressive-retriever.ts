@@ -12,8 +12,7 @@ import type {
   FullDetail,
   ProgressiveSearchResult,
   ProgressiveDisclosureConfig,
-  MemoryEvent,
-  Citation
+  MemoryEvent
 } from './types.js';
 import { generateCitationId } from './citation-generator.js';
 

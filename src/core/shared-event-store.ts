@@ -14,7 +14,7 @@ export class SharedEventStore {
   private db: Database;
   private initialized = false;
 
-  constructor(private dbPath: string) {
+  constructor(dbPath: string) {
     this.db = createDatabase(dbPath);
   }
 

@@ -5,7 +5,7 @@
 
 import { dbRun, dbAll, type Database } from '../db-wrapper.js';
 import { randomUUID } from 'crypto';
-import type { BlockerRef, BlockerKind, Entity } from '../types.js';
+import type { BlockerRef, Entity } from '../types.js';
 import { makeEntityCanonicalKey, makeArtifactKey } from '../canonical-key.js';
 import { TaskMatcher } from './task-matcher.js';
 
@@ -39,7 +39,7 @@ export class BlockerResolver {
    */
   async resolveBlocker(
     text: string,
-    sourceEntryId?: string
+    _sourceEntryId?: string
   ): Promise<BlockerRef> {
     const trimmedText = text.trim();
 

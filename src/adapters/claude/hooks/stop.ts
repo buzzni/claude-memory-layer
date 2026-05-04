@@ -1,0 +1,128 @@
+/**
+ * Stop Hook
+ * Called when agent stops - reads transcript and stores assistant responses
+ *
+ * Actual Claude Code input format:
+ * {
+ *   session_id, transcript_path, cwd, permission_mode,
+ *   hook_event_name: "Stop", stop_hook_active
+ * }
+ *
+ * NOTE: Claude Code does NOT send messages in the Stop hook.
+ * We read them from the transcript JSONL file instead.
+ */
+
+import { getLightweightMemoryService } from '../../../services/memory-service.js';
+import { applyPrivacyFilter } from '../../../core/privacy/index.js';
+import { readTurnState, clearTurnState, writeLastAssistantSnippet } from '../../../core/turn-state.js';
+import type { StopInput, Config } from '../../../core/types.js';
+import { extractAssistantMessages } from '../transcript/turn-reconstructor.js';
+
+// Default privacy config
+const DEFAULT_PRIVACY_CONFIG: Config['privacy'] = {
+  excludePatterns: ['password', 'secret', 'api_key', 'token', 'bearer'],
+  anonymize: false,
+  privateTags: {
+    enabled: true,
+    marker: '[PRIVATE]',
+    preserveLineCount: false,
+    supportedFormats: ['xml']
+  }
+};
+
+export async function main(): Promise<void> {
+  // Read input from stdin
+  const inputData = await readStdin();
+  const input: StopInput = JSON.parse(inputData);
+
+  // Use lightweight service (SQLite only, no embedder/vector - FAST!)
+  const memoryService = getLightweightMemoryService(input.session_id);
+
+  try {
+    // Read current turn_id from state file
+    const turnId = readTurnState(input.session_id);
+
+    // Read assistant messages from transcript
+    const assistantMessages = await extractAssistantMessages(input.transcript_path);
+
+    const MIN_AGENT_RESPONSE_LEN = parseInt(
+      process.env.CLAUDE_MEMORY_AGENT_RESPONSE_MIN_LEN || '150'
+    );
+    const lastIdx = assistantMessages.length - 1;
+
+    // Store each assistant response
+    for (let i = 0; i < assistantMessages.length; i++) {
+      const text = assistantMessages[i];
+      const isLast = i === lastIdx;
+
+      // Apply privacy filter
+      const filterResult = applyPrivacyFilter(text, DEFAULT_PRIVACY_CONFIG);
+      let content = filterResult.content;
+
+      // Truncate very long responses
+      if (content.length > 5000) {
+        content = content.slice(0, 5000) + '...[truncated]';
+      }
+
+      // Skip very short responses (likely just tool calls or transition messages)
+      // Always store the last message (may be the final answer)
+      if (!isLast && content.trim().length < MIN_AGENT_RESPONSE_LEN) continue;
+
+      await memoryService.storeAgentResponse(
+        input.session_id,
+        content,
+        {
+          privacy: filterResult.metadata,
+          ...(turnId ? { turnId } : {})
+        }
+      );
+    }
+
+    // Save last assistant response snippet for next-turn retrieval context enrichment
+    if (assistantMessages.length > 0) {
+      const lastMessage = assistantMessages[assistantMessages.length - 1];
+      writeLastAssistantSnippet(input.session_id, lastMessage);
+    }
+
+    // Clean up turn state file after processing
+    clearTurnState(input.session_id);
+
+    // Evaluate helpfulness of retrieved memories for this session
+    try {
+      await memoryService.evaluateSessionHelpfulness(input.session_id);
+    } catch {
+      // non-critical
+    }
+
+    // Generate session summary from recent events (rule-based, no LLM needed)
+    try {
+      await memoryService.generateSessionSummary(input.session_id);
+    } catch {
+      // non-critical
+    }
+
+    // Embeddings enqueued in SQLite - will be processed by vector worker when server runs
+    await memoryService.processPendingEmbeddings();
+
+    // Output empty (stop hook doesn't return context)
+    console.log(JSON.stringify({}));
+  } catch (error) {
+    if (process.env.CLAUDE_MEMORY_DEBUG) {
+      console.error('Stop hook error:', error);
+    }
+    console.log(JSON.stringify({}));
+  }
+}
+
+function readStdin(): Promise<string> {
+  return new Promise((resolve) => {
+    let data = '';
+    process.stdin.setEncoding('utf8');
+    process.stdin.on('data', (chunk) => {
+      data += chunk;
+    });
+    process.stdin.on('end', () => {
+      resolve(data);
+    });
+  });
+}

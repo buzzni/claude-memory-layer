@@ -11,7 +11,8 @@ import * as path from 'path';
 import * as os from 'os';
 import * as readline from 'readline';
 import { randomUUID } from 'crypto';
-import { MemoryService, registerSession } from './memory-service.js';
+import { MemoryService } from './memory-service.js';
+import { registerSession } from '../core/registry/session-registry.js';
 
 export type ProgressEvent =
   | { phase: 'scan'; message: string }
@@ -270,7 +271,7 @@ export class SessionHistoryImporter {
         { importedFrom: filePath, originalTimestamp: lastTimestamp, turnId: currentTurnId }
       );
 
-      if (appendResult.isDuplicate) {
+      if (appendResult.success && appendResult.isDuplicate) {
         result.skippedDuplicates++;
       } else {
         result.importedResponses++;
@@ -310,7 +311,7 @@ export class SessionHistoryImporter {
             { importedFrom: filePath, originalTimestamp: entry.timestamp, turnId: currentTurnId }
           );
 
-          if (appendResult.isDuplicate) {
+          if (appendResult.success && appendResult.isDuplicate) {
             result.skippedDuplicates++;
           } else {
             result.importedPrompts++;

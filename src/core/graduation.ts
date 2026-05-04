@@ -13,8 +13,7 @@ import type {
   MemoryEvent,
   MemoryLevel,
   GraduationResult,
-  Insight,
-  InsightType
+  Insight
 } from './types.js';
 
 export interface GraduationCriteria {
@@ -177,7 +176,7 @@ export class GraduationPipeline {
   async graduateBatch(level: MemoryLevel): Promise<GraduationResult[]> {
     const results: GraduationResult[] = [];
 
-    for (const [eventId, metrics] of this.metrics) {
+    for (const eventId of this.metrics.keys()) {
       const result = await this.evaluateGraduation(eventId, level);
       results.push(result);
     }

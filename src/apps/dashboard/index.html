@@ -1,0 +1,543 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Code Memory | Deep Space Dashboard</title>
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+
+  <!-- Icons -->
+  <link href="https://cdn.jsdelivr.net/npm/remixicon@3.5.0/fonts/remixicon.css" rel="stylesheet">
+
+  <!-- Styles -->
+  <link rel="stylesheet" href="style.css">
+
+  <!-- Charts -->
+  <script src="https://cdn.jsdelivr.net/npm/apexcharts"></script>
+</head>
+<body>
+
+  <div class="app-container">
+
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="logo-area">
+        <div class="logo-icon">🧠</div>
+        <div class="logo-text">CodeMemory</div>
+      </div>
+
+      <div class="project-selector">
+        <label class="project-label"><i class="ri-folder-line"></i> Project</label>
+        <select id="project-select" class="project-dropdown">
+          <option value="">All (Global)</option>
+        </select>
+      </div>
+
+      <nav>
+        <ul class="nav-menu">
+          <li class="nav-item active" data-nav="overview">
+            <i class="ri-dashboard-line"></i>
+            <span>Overview</span>
+          </li>
+          <li class="nav-item" data-nav="knowledge-graph">
+            <i class="ri-database-2-line"></i>
+            <span>Knowledge Graph</span>
+          </li>
+          <li class="nav-item" data-nav="memory-banks">
+            <i class="ri-brain-line"></i>
+            <span>Memory Banks</span>
+          </li>
+          <li class="nav-item" data-nav="user-prompts">
+            <i class="ri-message-2-line"></i>
+            <span>User Prompts</span>
+          </li>
+          <li class="nav-item" data-nav="configuration">
+            <i class="ri-settings-4-line"></i>
+            <span>Configuration</span>
+          </li>
+        </ul>
+      </nav>
+
+      <div class="sidebar-bottom">
+        <button id="chat-toggle-btn" class="chat-toggle-btn">
+          <i class="ri-chat-ai-line"></i>
+          <span>Ask Memory</span>
+        </button>
+      </div>
+    </aside>
+
+    <!-- Main Content -->
+    <main class="main-content">
+
+      <!-- ========== VIEW: Overview (default) ========== -->
+      <div id="view-overview" class="page-view active">
+
+        <!-- Header -->
+        <header class="top-header">
+          <div class="page-title">
+            <h1>Dashboard</h1>
+            <p>Real-time memory visualization & management</p>
+          </div>
+
+          <div class="header-actions">
+            <div class="search-wrapper">
+              <i class="ri-search-line"></i>
+              <input type="text" id="search-input" class="search-input" placeholder="Search memories...">
+            </div>
+
+            <button id="refresh-btn" class="btn btn-secondary">
+              <i class="ri-refresh-line"></i>
+              <span>Refresh</span>
+            </button>
+          </div>
+        </header>
+
+        <!-- Stats Grid -->
+        <div class="stats-grid">
+          <div class="stat-card" data-stat="events">
+            <div class="stat-value" id="stat-events">0</div>
+            <div class="stat-label">
+              <i class="ri-file-list-3-line"></i> Total Events
+            </div>
+          </div>
+          <div class="stat-card" data-stat="sessions">
+            <div class="stat-value" id="stat-sessions">0</div>
+            <div class="stat-label">
+              <i class="ri-discuss-line"></i> Active Sessions
+            </div>
+          </div>
+          <div class="stat-card" data-stat="retrieval">
+            <div class="stat-value" id="stat-retrieval-queries">0</div>
+            <div class="stat-label">
+              <i class="ri-search-eye-line"></i> Retrieval Queries
+            </div>
+            <div id="stat-retrieval-rate" style="font-size:11px; color:var(--text-muted); margin-top:2px;">-</div>
+          </div>
+          <div class="stat-card" data-stat="vectors">
+            <div class="stat-value" id="stat-vectors">0</div>
+            <div class="stat-label">
+              <i class="ri-node-tree"></i> Vector Nodes
+            </div>
+          </div>
+        </div>
+
+        <!-- KPI Cards -->
+        <div class="stats-grid kpi-grid" style="margin-top:-4px;">
+          <div class="stat-card kpi-card">
+            <div class="stat-value" id="kpi-useful-recall">-</div>
+            <div class="kpi-delta" id="kpi-useful-recall-delta">-</div>
+            <div class="stat-label"><i class="ri-thumb-up-line"></i> Useful Recall Rate</div>
+          </div>
+          <div class="stat-card kpi-card">
+            <div class="stat-value" id="kpi-completion-turns">-</div>
+            <div class="kpi-delta" id="kpi-completion-turns-delta">-</div>
+            <div class="stat-label"><i class="ri-repeat-line"></i> Avg Completion Turns</div>
+          </div>
+          <div class="stat-card kpi-card">
+            <div class="stat-value" id="kpi-rework-rate">-</div>
+            <div class="kpi-delta" id="kpi-rework-rate-delta">-</div>
+            <div class="stat-label"><i class="ri-hammer-line"></i> Rework Rate</div>
+          </div>
+          <div class="stat-card kpi-card">
+            <div class="stat-value" id="kpi-failure-rate">-</div>
+            <div class="kpi-delta" id="kpi-failure-rate-delta">-</div>
+            <div class="stat-label"><i class="ri-error-warning-line"></i> Post-change Failure</div>
+          </div>
+        </div>
+
+        <div class="card" style="margin-bottom:24px;">
+          <div class="card-header">
+            <div class="card-title">
+              <i class="ri-line-chart-line"></i>
+              <span>KPI Trend</span>
+            </div>
+            <div style="display:flex; gap:8px;">
+              <button class="sort-btn active" data-kpi-window="7d">7d</button>
+              <button class="sort-btn" data-kpi-window="30d">30d</button>
+            </div>
+          </div>
+          <div id="kpi-alerts" style="font-size:12px; color:var(--text-muted); margin-bottom:10px;">Loading...</div>
+          <div id="kpi-trend-chart" style="height:240px;"></div>
+        </div>
+
+        <!-- Main Grid -->
+        <div class="dashboard-grid">
+
+          <!-- Left Column -->
+          <div class="left-col">
+
+            <!-- Memory Pipeline -->
+            <div class="card">
+              <div class="card-header">
+                <div class="card-title">
+                  <i class="ri-flow-chart"></i>
+                  <span>Memory Pipeline</span>
+                </div>
+              </div>
+
+               <!-- Pipeline Steps (Tabs) -->
+               <div class="pipeline-container">
+                 <div class="pipeline-steps">
+                   <div class="p-step active" data-level="L0">
+                     <span class="p-step-name">Raw Events</span>
+                     <span class="p-step-count">0</span>
+                   </div>
+                   <div class="p-step" data-level="L1">
+                     <span class="p-step-name">Structured</span>
+                     <span class="p-step-count">0</span>
+                   </div>
+                   <div class="p-step" data-level="L2">
+                     <span class="p-step-name">Validated</span>
+                     <span class="p-step-count">0</span>
+                   </div>
+                   <div class="p-step" data-level="L3">
+                     <span class="p-step-name">Verified</span>
+                     <span class="p-step-count">0</span>
+                   </div>
+                   <div class="p-step" data-level="L4">
+                     <span class="p-step-name">Active</span>
+                     <span class="p-step-count">0</span>
+                   </div>
+                 </div>
+               </div>
+
+               <!-- Sort Controls -->
+               <div class="sort-controls">
+                 <span class="sort-label">Sort:</span>
+                 <button class="sort-btn active" data-sort="recent">Latest</button>
+                 <button class="sort-btn" data-sort="accessed">Recently Used</button>
+                 <button class="sort-btn" data-sort="most-accessed">Most Used</button>
+               </div>
+
+               <!-- Events List -->
+               <div id="event-list-container" class="event-list">
+                 <!-- Events injected by JS -->
+                 <div class="event-item">
+                   <div class="event-header">
+                     <span class="event-type-badge type-system">System</span>
+                     <span class="event-time">Just now</span>
+                   </div>
+                   <div class="event-content">Initializing dashboard interface...</div>
+                 </div>
+               </div>
+            </div>
+
+
+            <!-- Progressive Disclosure Search -->
+            <div class="card disclosure-card">
+              <div class="card-header" style="align-items:flex-end;">
+                <div class="card-title">
+                  <i class="ri-search-eye-line"></i>
+                  <span>Progressive Retrieval Disclosure</span>
+                </div>
+                <div class="disclosure-controls">
+                  <label class="disclosure-toggle"><input type="checkbox" id="disclosure-include-shared"> Shared</label>
+                  <select id="disclosure-strategy" class="project-dropdown compact">
+                    <option value="auto">auto</option>
+                    <option value="fast">fast</option>
+                    <option value="deep">deep</option>
+                  </select>
+                  <input id="disclosure-topk" class="search-input compact" type="number" min="1" max="20" value="8" title="Top K">
+                </div>
+              </div>
+              <div class="disclosure-search-row">
+                <div class="search-wrapper disclosure-search-wrapper">
+                  <i class="ri-search-line"></i>
+                  <input type="text" id="disclosure-search-input" class="search-input" placeholder="Search memory with search → expand → source...">
+                </div>
+                <button id="disclosure-search-btn" class="btn btn-secondary"><i class="ri-search-eye-line"></i><span>Search</span></button>
+              </div>
+              <div id="disclosure-status" class="disclosure-status"></div>
+              <div class="disclosure-layout">
+                <div id="disclosure-results" class="disclosure-results">
+                  <div class="disclosure-empty">Search memory to inspect compact envelopes, expansion context, and raw sources.</div>
+                </div>
+                <div id="disclosure-drilldown" class="disclosure-drilldown">
+                  <div class="disclosure-empty">No result selected.</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Activity Chart -->
+            <div class="card">
+               <div class="card-header">
+                <div class="card-title">
+                  <i class="ri-bar-chart-grouped-line"></i>
+                  <span>Activity Persistence</span>
+                </div>
+              </div>
+              <div id="activity-chart"></div>
+            </div>
+
+          </div>
+
+          <!-- Right Column -->
+          <div class="right-col">
+
+            <!-- Endless Mode Status -->
+            <div class="card endless-card">
+              <div class="card-header">
+                <div class="card-title">
+                  <i class="ri-infinite-loop-line"></i>
+                  <span>Endless Mode</span>
+                </div>
+              </div>
+              <div style="display:flex; align-items:center; gap:12px; margin-top:10px;">
+                <div id="status-dot" class="status-dot"></div>
+                <span id="status-text" style="color:var(--text-muted); font-weight:500;">Idle</span>
+              </div>
+            </div>
+
+            <!-- Shared Knowledge -->
+            <div class="card">
+              <div class="card-header">
+                <div class="card-title">
+                  <i class="ri-global-line"></i>
+                  <span>Global Knowledge</span>
+                </div>
+              </div>
+
+              <div class="shared-list">
+                <div class="shared-item">
+                  <div class="shared-info">
+                    <div class="shared-icon">🔧</div>
+                    <span>Troubleshooting</span>
+                  </div>
+                  <div class="shared-count" id="shared-troubleshooting">0</div>
+                </div>
+                <div class="shared-item">
+                  <div class="shared-info">
+                    <div class="shared-icon">✨</div>
+                    <span>Best Practices</span>
+                  </div>
+                  <div class="shared-count" id="shared-best-practices">0</div>
+                </div>
+                <div class="shared-item">
+                  <div class="shared-info">
+                    <div class="shared-icon">⚠️</div>
+                    <span>Common Errors</span>
+                  </div>
+                  <div class="shared-count" id="shared-errors">0</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Memory Usage -->
+            <div class="card">
+              <div class="card-header">
+                <div class="card-title">
+                  <i class="ri-bar-chart-box-line"></i>
+                  <span>Memory Usage</span>
+                </div>
+              </div>
+
+              <div class="graduation-stats">
+                <div class="section-label">Graduation Distribution</div>
+                <div id="graduation-bars"></div>
+              </div>
+
+              <div style="margin-top:20px;">
+                <div class="section-label">Helpfulness</div>
+                <div id="helpfulness-summary" style="padding:8px 0; font-size:13px; color:var(--text-muted);">Loading...</div>
+              </div>
+
+              <div style="margin-top:20px;">
+                <div class="section-label">Most Helpful Memories</div>
+                <div id="most-helpful-list" class="shared-list">
+                  <div style="padding:12px; text-align:center; color:var(--text-muted); font-size:13px;">Loading...</div>
+                </div>
+              </div>
+
+              <div style="margin-top:20px;">
+                <div class="section-label" style="display:flex; justify-content:space-between; align-items:center;">
+                  <span>Adherence Reasons</span>
+                  <span id="adherence-window-controls" style="display:flex; gap:6px;">
+                    <button class="sort-btn active" data-adh-window="24h">24h</button>
+                    <button class="sort-btn" data-adh-window="7d">7d</button>
+                    <button class="sort-btn" data-adh-window="30d">30d</button>
+                  </span>
+                </div>
+                <div id="adherence-summary" style="padding:8px 0; font-size:13px; color:var(--text-muted);">Loading...</div>
+              </div>
+
+              <div style="margin-top:20px;">
+                <div class="section-label">Top Accessed Events</div>
+                <div id="top-accessed-events-list" class="shared-list">
+                  <div style="padding:12px; text-align:center; color:var(--text-muted); font-size:13px;">Loading...</div>
+                </div>
+              </div>
+
+              <div style="margin-top:20px;">
+                <div class="section-label">Retrieval Trace (1:1)</div>
+                <div id="retrieval-trace-summary" style="padding:8px 0; font-size:13px; color:var(--text-muted);">Loading...</div>
+                <div id="retrieval-trace-list" class="shared-list">
+                  <div style="padding:12px; text-align:center; color:var(--text-muted); font-size:13px;">Loading...</div>
+                </div>
+              </div>
+            </div>
+
+          </div>
+
+        </div>
+      </div>
+
+      <!-- ========== VIEW: Knowledge Graph ========== -->
+      <div id="view-knowledge-graph" class="page-view">
+        <header class="top-header">
+          <div class="page-title">
+            <h1>Knowledge Graph</h1>
+            <p>Most accessed memories and topic distribution</p>
+          </div>
+        </header>
+        <div id="kg-content">
+          <div style="text-align:center; padding:60px; color:var(--text-muted);">Loading...</div>
+        </div>
+      </div>
+
+      <!-- ========== VIEW: Memory Banks ========== -->
+      <div id="view-memory-banks" class="page-view">
+        <header class="top-header">
+          <div class="page-title">
+            <h1>Memory Banks</h1>
+            <p>Memory levels and graduation pipeline</p>
+          </div>
+        </header>
+        <div id="mb-content">
+          <div style="text-align:center; padding:60px; color:var(--text-muted);">Loading...</div>
+        </div>
+      </div>
+
+      <!-- ========== VIEW: User Prompts ========== -->
+      <div id="view-user-prompts" class="page-view">
+        <header class="top-header">
+          <div class="page-title">
+            <h1>User Prompts</h1>
+            <p>Search and browse recent user prompts</p>
+          </div>
+        </header>
+        <div class="card" style="margin-bottom:16px;">
+          <div style="display:flex; gap:10px; align-items:center;">
+            <div class="search-wrapper" style="width:420px; max-width:100%;">
+              <i class="ri-search-line"></i>
+              <input type="text" id="user-prompt-search" class="search-input" placeholder="Search user prompts...">
+            </div>
+            <button id="user-prompt-refresh" class="btn btn-secondary"><i class="ri-refresh-line"></i><span>Refresh</span></button>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header" style="align-items:flex-end;">
+            <div>
+              <div class="card-title"><i class="ri-history-line"></i><span>Latest User Prompt History</span></div>
+              <div id="user-prompt-meta" style="font-size:12px; color:var(--text-muted); margin-top:6px;"></div>
+            </div>
+            <div style="display:flex; gap:8px; align-items:center;">
+              <button id="user-prompt-prev" class="sort-btn">Prev</button>
+              <span id="user-prompt-page" style="font-size:12px; color:var(--text-muted);">1 / 1</span>
+              <button id="user-prompt-next" class="sort-btn">Next</button>
+            </div>
+          </div>
+          <div id="user-prompt-list" class="event-list">
+            <div style="padding:20px; text-align:center; color:var(--text-muted);">Loading...</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ========== VIEW: Configuration ========== -->
+      <div id="view-configuration" class="page-view">
+        <header class="top-header">
+          <div class="page-title">
+            <h1>Configuration</h1>
+            <p>System settings and graduation criteria</p>
+          </div>
+        </header>
+        <div id="cfg-content">
+          <div style="text-align:center; padding:60px; color:var(--text-muted);">Loading...</div>
+        </div>
+      </div>
+
+    </main>
+  </div>
+
+  <!-- Chat Panel (slide-out) -->
+  <div id="chat-panel" class="chat-panel">
+    <div class="chat-header">
+      <div class="chat-title">
+        <i class="ri-chat-ai-line"></i>
+        <span>Ask Memory</span>
+      </div>
+      <div class="chat-header-tabs">
+        <button class="chat-header-tab active" data-chat-tab="chat">Chat</button>
+        <button class="chat-header-tab" data-chat-tab="history">History</button>
+        <button id="chat-new-btn" class="chat-new-btn" title="New conversation"><i class="ri-add-line"></i></button>
+      </div>
+      <button id="chat-close-btn" class="modal-close-btn"><i class="ri-close-line"></i></button>
+    </div>
+
+    <div id="chat-messages" class="chat-messages">
+      <div class="chat-welcome">
+        <div class="chat-welcome-icon">🧠</div>
+        <div class="chat-welcome-title">Ask about your memories</div>
+        <div class="chat-welcome-text">
+          I can search through your coding sessions, tool usage, and stored knowledge to answer questions.
+        </div>
+      </div>
+    </div>
+
+    <div id="chat-history-view" class="chat-history-view">
+      <div class="chat-history-empty">No conversation history yet.</div>
+    </div>
+
+    <div class="chat-input-area">
+      <div class="chat-input-wrapper">
+        <textarea id="chat-input" class="chat-input"
+                  placeholder="Ask about your code memories..."
+                  rows="1"></textarea>
+        <button id="chat-send-btn" class="chat-send-btn" disabled>
+          <i class="ri-send-plane-2-fill"></i>
+        </button>
+      </div>
+      <div class="chat-input-hint">
+        <span id="chat-project-scope"></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Detail Modal -->
+  <div id="detail-modal" class="modal-overlay" style="display:none;">
+    <div class="modal-container">
+      <div class="modal-header">
+        <div class="modal-title">Event Detail</div>
+        <button class="modal-close-btn" data-modal="detail-modal"><i class="ri-close-line"></i></button>
+      </div>
+      <div class="modal-body" id="detail-modal-body">
+        <div style="text-align:center; padding:40px; color:var(--text-muted);">Loading...</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- List Modal -->
+  <div id="list-modal" class="modal-overlay" style="display:none;">
+    <div class="modal-container modal-lg">
+      <div class="modal-header">
+        <div class="modal-title" id="list-modal-title">List</div>
+        <button class="modal-close-btn" data-modal="list-modal"><i class="ri-close-line"></i></button>
+      </div>
+      <div class="modal-body" id="list-modal-body">
+        <div style="text-align:center; padding:40px; color:var(--text-muted);">Loading...</div>
+      </div>
+    </div>
+  </div>
+
+  <script src="assets/js/state.js"></script>
+  <script src="assets/js/bootstrap.js"></script>
+  <script src="assets/js/overview.js"></script>
+  <script src="assets/js/modals.js"></script>
+  <script src="assets/js/views.js"></script>
+  <script src="assets/js/chat.js"></script>
+  <script src="assets/js/disclosure.js"></script>
+</body>
+</html>

@@ -55,12 +55,20 @@ const __dirname = dirname(__filename);`
 async function build() {
   console.log('🔨 Building claude-memory-layer plugin...\n');
 
-  // Build CLI
+  // Build CLI app
   console.log('📦 Building CLI...');
   await esbuild.build({
     ...commonOptions,
-    entryPoints: ['src/cli/index.ts'],
+    entryPoints: ['src/apps/cli/index.ts'],
     outfile: 'dist/cli/index.js'
+  });
+
+  // Build MCP stdio server bin
+  console.log('📦 Building MCP server...');
+  await esbuild.build({
+    ...commonOptions,
+    entryPoints: ['src/mcp/index.ts'],
+    outfile: 'dist/mcp/index.js'
   });
 
   // Build hooks
@@ -102,7 +110,7 @@ async function build() {
   console.log('📦 Building server...');
   await esbuild.build({
     ...commonOptions,
-    entryPoints: ['src/server/index.ts'],
+    entryPoints: ['src/apps/server/index.ts'],
     outfile: 'dist/server/index.js',
     external: [...(commonOptions.external || []), 'hono']
   });
@@ -110,7 +118,7 @@ async function build() {
   // Build server API
   await esbuild.build({
     ...commonOptions,
-    entryPoints: ['src/server/api/index.ts'],
+    entryPoints: ['src/apps/server/api/index.ts'],
     outfile: 'dist/server/api/index.js',
     external: [...(commonOptions.external || []), 'hono']
   });
@@ -119,15 +127,17 @@ async function build() {
   console.log('📋 Copying plugin files...');
   fs.cpSync('.claude-plugin', path.join(outdir, '.claude-plugin'), { recursive: true });
 
-  // Copy UI files
-  console.log('📋 Copying UI files...');
-  if (fs.existsSync('src/ui')) {
-    fs.cpSync('src/ui', path.join(outdir, 'ui'), { recursive: true });
+  // Copy dashboard static files
+  console.log('📋 Copying dashboard files...');
+  const dashboardPath = 'src/apps/dashboard';
+  if (fs.existsSync(dashboardPath)) {
+    fs.cpSync(dashboardPath, path.join(outdir, 'ui'), { recursive: true });
   }
 
   console.log('\n✅ Build complete!');
   console.log(`\nOutput: ${outdir}/`);
   console.log('  - cli/index.js');
+  console.log('  - mcp/index.js');
   console.log('  - hooks/*.js');
   console.log('  - core/index.js');
   console.log('  - services/memory-service.js');

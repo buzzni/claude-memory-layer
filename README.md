@@ -93,10 +93,10 @@ npx claude-memory-layer search "배포 이슈"
 ### Advanced Features
 
 - **Citations System**: 메모리 출처 추적 (`[mem:abc123]` 형식)으로 검색 결과의 원본 확인 가능
-- **Endless Mode**: 세션 경계 없는 연속적 메모리 스트림, Biomimetic Memory Architecture 기반
+- **Endless Mode**: 세션 경계 없는 연속적 메모리 스트림, Biomimetic Memory Architecture 기반 *(experimental extension)*
 - **Entity-Edge Model**: entries/entities/edges 3-layer 모델로 데이터 관계 명시적 모델링
 - **Evidence Aligner V2**: Quote 기반 3단계 정렬 (exact → normalized → fuzzy)
-- **MCP Desktop Integration**: Claude Desktop용 MCP 서버로 CLI와 동일한 메모리 공유
+- **MCP Desktop Integration**: Claude Desktop용 MCP 서버로 CLI와 동일한 메모리 공유 *(stdio server bin: `claude-memory-layer-mcp`)*
 - **PostToolUse Hook**: 도구 실행 결과 (Read, Write, Bash 등) 캡처 및 저장
 - **Private Tags**: `<private>` 태그로 민감 정보를 명시적으로 제외
 - **Progressive Disclosure**: 3-Layer 검색 (인덱스 → 타임라인 → 상세)으로 토큰 효율화
@@ -104,8 +104,20 @@ npx claude-memory-layer search "배포 이슈"
 - **Append-only Markdown Mirror**: 저장 이벤트를 `memory/<namespace>/<category...>/YYYY-MM-DD.md`에도 동기 append (기본값: `namespace=default`, `category=uncategorized`, 경로 세그먼트 sanitize)
   - `memory/_index.md` 인덱스를 자동 갱신
 - **Task Entity System**: Task를 Entity로 승격하여 세션 간 상태 추적
-- **Vector Outbox V2**: Transactional Outbox 패턴으로 DuckDB-LanceDB 정합성 보장
+- **Vector Outbox V2**: Transactional Outbox 패턴으로 SQLite-LanceDB 정합성 보장
 - **Web Viewer UI**: localhost:37777 대시보드로 실시간 메모리 모니터링
+
+### 현재 feature status
+
+| 영역 | 상태 | 비고 |
+|------|------|------|
+| Claude Code hooks / CLI / Dashboard | Stable | `install`, `search`, `import`, `stats`, `dashboard` 중심 |
+| SQLite event store / project registry | Stable | canonical source of truth |
+| LanceDB vector index / Embedder | Stable accelerator | `src/extensions/vector/embedder.ts`; VectorStore/VectorWorker는 아직 core compatibility path 유지 |
+| Progressive disclosure search/API/CLI/dashboard | Implemented | `search --disclosure`, `expand`, `source` mental model |
+| Shared memory / Endless mode | Experimental extension | 구현은 `src/extensions/shared-memory`, `src/extensions/endless-memory` 아래에 있고 기존 path는 shim 유지 |
+| MCP Desktop integration | Implemented | 구현은 `src/extensions/mcp`; package bin은 `claude-memory-layer-mcp`; `claude-memory-layer mcp install`로 Claude Desktop config 자동 등록 |
+| Mongo sync / Entity graph / Task entity | Experimental | 고급/운영 옵션으로 취급 |
 
 ## 설치 방법
 
@@ -124,12 +136,13 @@ npm run build
 
 ### 3. Claude Code에 플러그인 등록
 
-빌드된 플러그인을 Claude Code 설정에 추가합니다:
+Claude Code hook 설정은 CLI가 등록합니다:
 
 ```bash
-# Claude Code 설정 디렉토리에 플러그인 복사
-cp -r dist/.claude-plugin ~/.claude/plugins/claude-memory-layer/
+npx claude-memory-layer install
 ```
+
+> 주의: `install` / `uninstall`은 `~/.claude/settings.json`을 수정합니다. 자동 테스트나 임의 실행 대신, 실제 사용자가 설치/해제를 원할 때만 실행하세요.
 
 ## 사용 방법
 
@@ -334,7 +347,7 @@ SECRET_TOKEN=abc123
 🔍 Search Results:
 
 #1 [mem:a7Bc3x] (score: 0.94)
-   "DuckDB를 사용하여 이벤트 소싱 패턴을..."
+   "SQLite/WAL을 사용하여 이벤트 소싱 패턴을..."
    📅 2026-01-30 | 🔗 Session abc123
 ```
 
@@ -349,10 +362,10 @@ claude-memory-layer show mem:a7Bc3x
 
 ```bash
 # Endless Mode 활성화
-claude-memory-layer config set mode endless
+claude-memory-layer endless enable
 
 # 상태 확인
-claude-memory-layer status
+claude-memory-layer endless status
 
 # 출력 예시:
 # Mode: Endless
@@ -371,21 +384,42 @@ claude-memory-layer status
 
 ## MCP Desktop Integration
 
-Claude Desktop에서 메모리 검색을 사용하려면:
+> 현재 상태: MCP server implementation은 `src/extensions/mcp/`로 이동되어 있고,
+> `src/mcp/*`는 compatibility shim입니다. package bin으로
+> `claude-memory-layer-mcp`가 제공됩니다.
+
+Claude Desktop 설정은 CLI로 자동 등록할 수 있습니다:
 
 ```bash
-# MCP 서버 설치
 claude-memory-layer mcp install
+# Config: ~/Library/Application Support/Claude/claude_desktop_config.json (macOS)
+```
 
-# 또는 수동 설정: ~/Library/Application Support/Claude/claude_desktop_config.json
+이 명령은 Claude Desktop config의 기존 값을 보존하면서 다음 MCP server entry를 추가/갱신합니다:
+
+```json
 {
   "mcpServers": {
     "claude-memory-layer": {
-      "command": "npx",
-      "args": ["claude-memory-layer-mcp"]
+      "command": "claude-memory-layer-mcp",
+      "args": []
     }
   }
 }
+```
+
+옵션:
+
+```bash
+claude-memory-layer mcp install --dry-run
+claude-memory-layer mcp install --config-path /path/to/claude_desktop_config.json
+claude-memory-layer mcp install --server-name claude-memory-layer --command claude-memory-layer-mcp
+```
+
+설정 후 Claude Desktop을 재시작하면 MCP 서버가 로드됩니다. 로컬 checkout에서 서버만 바로 테스트하려면 `npm run build` 후 다음처럼 직접 실행할 수도 있습니다:
+
+```bash
+node dist/mcp/index.js
 ```
 
 ### 제공되는 MCP 도구
@@ -462,7 +496,7 @@ Embeddings processed: 342
 ```
 사용자 프롬프트 입력
         ↓
-    EventStore에 저장 (DuckDB, append-only)
+    EventStore에 저장 (SQLite/WAL, append-only)
         ↓
     Outbox에 임베딩 요청 등록
         ↓
@@ -530,7 +564,7 @@ Embeddings processed: 342
         ▼                                      ▼
 ┌───────────────┐                    ┌───────────────┐
 │  EventStore   │ ──── Outbox ────▶ │  VectorStore  │
-│   (DuckDB)    │    (V2 Pattern)   │   (LanceDB)   │
+│ (SQLite/WAL)  │    (V2 Pattern)   │   (LanceDB)   │
 └───────────────┘                    └───────────────┘
 ```
 
@@ -583,12 +617,12 @@ Layer 1: Search Index (~50-100 tokens/result)
 
 ## AXIOMMIND 7 원칙
 
-1. **Single Source of Truth**: DuckDB EventStore가 유일한 진실의 원천
+1. **Single Source of Truth**: SQLite/WAL EventStore가 유일한 진실의 원천
 2. **Append-Only**: 이벤트는 수정/삭제 없이 추가만
 3. **Idempotency**: dedupe_key로 중복 이벤트 감지
 4. **Evidence Alignment**: 주장이 실제 소스에 기반했는지 검증
 5. **Entity-Based Tasks**: canonical_key로 일관된 엔티티 식별
-6. **Vector Store Consistency**: DuckDB → LanceDB 단방향 흐름
+6. **Vector Store Consistency**: SQLite outbox → LanceDB 단방향 흐름
 7. **Standard JSON**: 모든 데이터는 이식 가능한 JSON 형식
 
 ## 저장 위치
@@ -629,15 +663,15 @@ npm run dev
 
 ## 기술 스택
 
-- **DuckDB**: 이벤트 저장소 (append-only SQL)
-- **LanceDB**: 벡터 저장소 (고성능 벡터 검색)
-- **@xenova/transformers**: 로컬 임베딩 생성
+- **SQLite / WAL**: 이벤트 저장소 (canonical append/read model)
+- **LanceDB**: 벡터 저장소 (derived acceleration index)
+- **@huggingface/transformers**: 로컬 임베딩 생성 (lazy import; Embedder는 `src/extensions/vector/`)
 - **Zod**: 런타임 타입 검증
 - **Commander**: CLI 인터페이스
 - **TypeScript**: 타입 안전한 코드
-- **Bun**: HTTP 서버 (Web Viewer)
+- **Node.js + Hono**: HTTP 서버 / Web Viewer
 - **Hono**: 경량 라우터
-- **MCP SDK**: Claude Desktop 통합
+- **MCP SDK**: Claude Desktop 통합 (`claude-memory-layer-mcp` stdio server)
 
 ## Specification Documents
 
@@ -660,28 +694,30 @@ npm run dev
 ## Roadmap
 
 ### Phase 1: Core (완료)
-- [x] Event Store (DuckDB)
+- [x] Event Store (SQLite/WAL)
 - [x] Vector Store (LanceDB)
 - [x] Memory Graduation (L0→L4)
 - [x] Evidence Alignment
 - [x] History Import
 
 ### Phase 2: Advanced Features (진행 중)
-- [ ] Citations System
-- [ ] Endless Mode
-- [ ] Entity-Edge Model
-- [ ] Evidence Aligner V2
-- [ ] Private Tags
+- [x] Citations System
+- [x] Endless Mode service boundary *(experimental extension)*
+- [ ] Entity-Edge Model productization
+- [x] Evidence Aligner V2
+- [x] Private Tags
 
 ### Phase 3: Integration
-- [ ] MCP Desktop Integration
-- [ ] Web Viewer UI
-- [ ] PostToolUse Hook
-- [ ] Progressive Disclosure
+- [x] MCP Desktop Integration *(stdio server bin exists; auto install command pending)*
+- [x] Web Viewer UI
+- [x] PostToolUse Hook
+- [x] Progressive Disclosure
 
-### Phase 4: Optimization
-- [ ] Vector Outbox V2
-- [ ] Task Entity System
+### Phase 4: Optimization / Extension Isolation
+- [x] Vector Outbox V2
+- [x] Embedder extension boundary
+- [ ] VectorStore / VectorWorker extension boundary
+- [ ] Task Entity System productization
 - [ ] Performance Tuning
 
 ## License
