@@ -437,7 +437,7 @@ c58f50f fix(retrieval): keep disclosure drill-down lightweight
 - **Milestone 3 — Claude Adapter Isolation:** 큰 진전. hooks/transcript/semantic-daemon adapter boundary가 생겼다. capture policy 추가 분리는 후속 후보다.
 - **Milestone 4 — Storage & Index Simplification:** 부분 완료. SQLite canonical / vector derived 관점은 구현에 반영됐지만 vector extension namespace 이동은 남아 있다.
 - **Milestone 5 — Retrieval UX Productization:** 큰 진전. service/API/CLI/dashboard disclosure surface가 있다. helpfulness feedback loop의 제품화는 후속이다.
-- **Milestone 6 — Extensions Isolation:** 부분 완료. shared/endless는 service boundary가 생겼지만 아직 `src/extensions/*` 물리 이동은 하지 않았다.
+- **Milestone 6 — Extensions Isolation:** 시작됨. shared memory service implementation은 `src/extensions/shared-memory/`로 이동했고 `src/core/engine/shared-memory-services.ts`는 compatibility re-export로 남겼다. endless/vector/MCP 물리 이동은 후속이다.
 - **Milestone 7~9:** 후속 hardening/release cleanup 단계.
 
 ## 통과한 검증
