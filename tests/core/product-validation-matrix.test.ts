@@ -16,6 +16,9 @@ const requiredSurfaces = [
   'hermes.adapter.scan',
   'hermes.adapter.import',
   'hermes.adapter.replay',
+  'mcp.context.pack',
+  'mcp.project.timeline',
+  'mcp.source.ref',
   'cli.api.reporting',
   'safety.dryRun'
 ];
@@ -41,6 +44,7 @@ describe('product validation matrix', () => {
     expect(summary.totalSurfaces).toBeGreaterThanOrEqual(requiredSurfaces.length);
     expect(summary.surfacesByArea.codex).toBeGreaterThanOrEqual(3);
     expect(summary.surfacesByArea.hermes).toBeGreaterThanOrEqual(3);
+    expect(summary.surfacesByArea.mcp).toBeGreaterThanOrEqual(3);
     expect(summary.surfacesByArea.claude).toBeGreaterThanOrEqual(3);
     expect(summary.evidenceCount).toBeGreaterThanOrEqual(requiredSurfaces.length);
 
@@ -48,6 +52,8 @@ describe('product validation matrix', () => {
     expect(markdown).toContain('# Product Validation Matrix');
     expect(markdown).toContain('Codex adapter replay');
     expect(markdown).toContain('Hermes adapter replay');
+    expect(markdown).toContain('MCP context pack');
+    expect(markdown).toContain('MCP source reference');
     expect(markdown).toContain('Safety / dry-run');
     expect(markdown).toContain('tests/core/codex-session-history-importer-validation.test.ts');
     expect(markdown).toContain('tests/core/hermes-session-history-importer-validation.test.ts');

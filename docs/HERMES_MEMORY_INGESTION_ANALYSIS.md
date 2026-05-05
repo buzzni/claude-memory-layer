@@ -14,7 +14,7 @@
    - Hermes의 원본 transcript source-of-truth는 `~/.hermes/state.db`로 둔다.
    - claude-memory-layer는 선택된 Hermes 세션을 project-scoped memory store로 복제/파생한다.
    - 현재 CLI는 `--project`, `--session`, `--all`, `--state-db`, `--limit`, `--force`를 제공한다.
-2. 그 다음 **“최근 맥락/주제 지도 + wiki-link식 상세 ref 읽기” MCP read-only tool**을 만든다.
+2. 그 다음 **“최근 맥락/주제 지도 + wiki-link식 상세 ref 읽기” MCP read-only tool**을 만든다. *(2차 구현 완료: `mem-context-pack`, `mem-project-timeline`, `mem-source-ref`)*
    - 이 기능은 Hermes의 `session_search`와 겹치지만 완전 중복은 아니다.
    - 특히 Claude Code/Codex/Hermes가 같은 프로젝트 memory backend를 공유하려면 의미가 있다.
 3. 마지막으로 필요성이 검증되면 **Hermes external memory provider plugin 방식의 opt-in live sync**를 추가한다.
@@ -154,8 +154,11 @@ Installed plugins: byterover, hindsight, holographic, honcho, mem0, openviking, 
 - `mem-timeline`
 - `mem-details`
 - `mem-stats`
+- `mem-context-pack`
+- `mem-project-timeline`
+- `mem-source-ref`
 
-`projectPath`가 있으면 project store를 조회하고, 없으면 default store를 조회한다.
+`projectPath`가 있으면 project store를 조회하고, 없으면 default store를 조회한다. 특히 context navigator 계열(`mem-context-pack`, `mem-project-timeline`, `mem-source-ref`)은 Hermes/Codex가 작업 시작 전에 project-scoped memory를 빠르게 회수하고, 필요한 근거만 citation/ref로 따라가도록 설계됐다.
 
 ### 2.3 Claude/Codex ingestion
 
@@ -317,45 +320,45 @@ TDD:
 - privacy redaction 검증
 - source/project/session filters 검증
 
-### Phase 2 — topic map + recent context + wiki-link MCP tools
+### Phase 2 — context pack + project timeline + source-ref MCP tools
 
 목표: CML이 “검색 결과 목록”에서 “현재 작업 맥락을 이어주는 context navigator”로 발전.
 
-신규 MCP tools 후보:
+2차 구현 범위:
 
 1. `mem-context-pack`
-   - input: `projectPath`, `query?`, `sessionId?`, `recentHours?`, `topK?`
+   - input: `projectPath`, `query?`, `sessionId?`, `topK?`, `recentLimit?`, `sessionLimit?`
    - output:
-     - 최근 맥락 요약
-     - 주요 topic/decision/open task/code context
-     - 근거 event/session refs
-     - 더 자세히 볼 수 있는 refs
+     - query 관련 memory citations
+     - 최근 project timeline/session summary
+     - follow-up `mem-source-ref` lookup hints
 
-2. `mem-session-topics`
-   - input: `projectPath`, `sessionId`
+2. `mem-project-timeline`
+   - input: `projectPath`, `limit?`, `sessionLimit?`
    - output:
-     - chronological topic segments
-     - 각 segment의 핵심 질문/결론/파일/툴
-     - `memory://project/<hash>/session/<id>/segment/<n>` refs
+     - session별 window, source agent/import source, event counts
+     - privacy-filtered last preview
 
-3. `mem-read-ref`
-   - input: `ref`
+3. `mem-source-ref`
+   - input: `ids`, `projectPath?`, `maxContentChars?`, `lookupLimit?`
+   - 지원 ID 형식: full event ID, `event:<id>`, `mem:<citation>`, bare citation, `[mem:<citation>]`
    - output:
-     - 해당 event/timeline/segment/session detail
-     - 원문은 필요한 만큼만, secrets redacted
+     - source ref, session/type/timestamp
+     - allowlisted metadata only
+     - redacted preview only
 
 예상 UX:
 
 ```text
 최근 claude-memory-layer 맥락:
 1. Codex/Hermes MCP 등록과 projectPath 지원을 구현/검증했다.
-   refs: memory://project/.../session/.../segment/1
-2. Codex import CLI를 TDD로 추가하고 full test 통과했다.
-   refs: memory://project/.../session/.../segment/2
-3. 남은 이슈: eslint missing, generated memory/ untracked, Hermes ingestion 설계.
-   refs: memory://project/.../session/.../segment/3
+   refs: mem:abc123
+2. Hermes explicit import/validate/replay CLI를 TDD로 추가했다.
+   refs: mem:def456
+3. 남은 이슈: eslint missing, privacy hardening, optional live provider.
+   refs: mem:789abc
 
-더 자세히 필요하면 mem-read-ref로 ref를 열어라.
+더 자세히 필요하면 mem-source-ref로 ref를 열어라.
 ```
 
 이 기능은 Hermes `session_search`와 다르다.
@@ -407,10 +410,10 @@ Provider responsibilities:
 
 2. **CML context navigator MCP tools**
    - `mem-context-pack`
-   - `mem-session-topics`
-   - `mem-read-ref`
+   - `mem-project-timeline`
+   - `mem-source-ref`
 
-이 두 가지는 사용자가 말한 “최근 맥락 중심 context + wiki link처럼 더 깊은 memory file/detail 읽기” 니즈에 직접 대응한다.
+이 두 가지는 사용자가 말한 “최근 맥락 중심 context + wiki link처럼 더 깊은 memory file/detail 읽기” 니즈에 직접 대응한다. Phase 2 도구는 raw transcript dumping 대신 citation/ref 기반 follow-up과 redacted preview를 기본으로 한다.
 
 ### 지금 만들지 말 것
 

@@ -32,6 +32,15 @@ const SENSITIVE_PATTERNS = [
   /sk-[a-zA-Z0-9]{48}/g,   // OpenAI API Key
 ];
 
+function maskSensitiveString(value: string): string {
+  let filtered = value;
+  for (const pattern of SENSITIVE_PATTERNS) {
+    pattern.lastIndex = 0;
+    filtered = filtered.replace(pattern, '[REDACTED]');
+  }
+  return filtered;
+}
+
 /**
  * Apply privacy filter to content
  */
@@ -118,20 +127,18 @@ export function maskSensitiveInput(
       result[key] = '[REDACTED]';
     } else if (typeof value === 'string') {
       // Apply pattern filtering to string values
-      let filtered = value;
-      for (const pattern of SENSITIVE_PATTERNS) {
-        pattern.lastIndex = 0;
-        filtered = filtered.replace(pattern, '[REDACTED]');
-      }
-      result[key] = filtered;
+      result[key] = maskSensitiveString(value);
     } else if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
       result[key] = maskSensitiveInput(value as Record<string, unknown>);
     } else if (Array.isArray(value)) {
-      result[key] = value.map(item =>
-        typeof item === 'object' && item !== null
+      result[key] = value.map(item => {
+        if (typeof item === 'string') {
+          return isSensitiveKey ? '[REDACTED]' : maskSensitiveString(item);
+        }
+        return typeof item === 'object' && item !== null
           ? maskSensitiveInput(item as Record<string, unknown>)
-          : item
-      );
+          : item;
+      });
     } else {
       result[key] = value;
     }

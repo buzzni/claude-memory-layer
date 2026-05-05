@@ -101,6 +101,35 @@ describe('RetrievalOrchestrator', () => {
     });
   });
 
+  it('can skip automatic trace recording for read-only retrieval callers', async () => {
+    const traces: Array<Record<string, unknown>> = [];
+    const fakeRetriever = {
+      setQueryRewriter() {},
+      async retrieve() {
+        return retrievalResult('readonly-e1');
+      }
+    } as unknown as Retriever;
+
+    const orchestrator = new RetrievalOrchestrator({
+      initialize: async () => {},
+      retriever: fakeRetriever,
+      traceStore: {
+        getHelpfulnessStats: async () => stats(),
+        recordRetrievalTrace: async (input) => { traces.push(input); }
+      },
+      accessStore: noopAccessStore(),
+      getProjectHash: () => 'project-readonly',
+      hasSharedStore: () => false
+    });
+
+    await orchestrator.retrieveMemories('secret-bearing read-only query', {
+      topK: 3,
+      recordTrace: false
+    });
+
+    expect(traces).toEqual([]);
+  });
+
   it('does not run full runtime initialization for local fast retrieval', async () => {
     let initialized = 0;
     let statsReads = 0;
