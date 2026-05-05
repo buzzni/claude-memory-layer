@@ -3,10 +3,6 @@
  * Provides REST API and serves static UI files
  */
 
-// These are injected by the esbuild banner
-declare const __dirname: string;
-declare const __filename: string;
-
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { logger } from 'hono/logger';
@@ -14,10 +10,12 @@ import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
 import * as path from 'path';
 import * as fs from 'fs';
+import { fileURLToPath } from 'url';
 
 import { apiRouter } from './api/index.js';
 
 const app = new Hono();
+const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
 // Middleware
 app.use('/*', cors());
@@ -29,8 +27,22 @@ app.route('/api', apiRouter);
 // Health check
 app.get('/health', (c) => c.json({ status: 'ok', timestamp: new Date().toISOString() }));
 
+function resolveUiPath(): string {
+  const candidates = [
+    // Built server: dist/server/index.js -> dist/ui
+    path.resolve(moduleDir, '../ui'),
+    // Source/dev server: src/apps/server/index.ts -> src/apps/dashboard
+    path.resolve(moduleDir, '../dashboard'),
+    // Fallback when running from a repository root.
+    path.resolve(process.cwd(), 'dist/ui'),
+    path.resolve(process.cwd(), 'src/apps/dashboard')
+  ];
+
+  return candidates.find((candidate) => fs.existsSync(path.join(candidate, 'index.html'))) ?? candidates[0];
+}
+
 // Static files (UI)
-const uiPath = path.join(__dirname, '../../dist/ui');
+const uiPath = resolveUiPath();
 if (fs.existsSync(uiPath)) {
   app.use('/*', serveStatic({ root: uiPath }));
 }

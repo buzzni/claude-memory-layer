@@ -94,6 +94,12 @@ async function build() {
   console.log('📦 Building core modules...');
   await esbuild.build({
     ...commonOptions,
+    entryPoints: ['src/index.ts'],
+    outfile: 'dist/index.js'
+  });
+
+  await esbuild.build({
+    ...commonOptions,
     entryPoints: ['src/core/index.ts'],
     outfile: 'dist/core/index.js'
   });
@@ -138,6 +144,7 @@ async function build() {
   console.log(`\nOutput: ${outdir}/`);
   console.log('  - cli/index.js');
   console.log('  - mcp/index.js');
+  console.log('  - index.js');
   console.log('  - hooks/*.js');
   console.log('  - core/index.js');
   console.log('  - services/memory-service.js');

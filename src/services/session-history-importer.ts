@@ -64,8 +64,18 @@ export interface ClaudeMessage {
  * Filter trivial user inputs that aren't worth storing.
  * Mirrors the shouldStorePrompt() logic from user-prompt-submit.ts.
  */
-function isWorthStoringPrompt(content: string): boolean {
+export function isClaudeLocalCommandArtifact(content: string): boolean {
   const trimmed = content.trim();
+  return (
+    /^<local-command-(stdout|stderr)>/.test(trimmed) ||
+    /^<command-(name|message)>/.test(trimmed) ||
+    (trimmed.includes('<command-name>') && trimmed.includes('<local-command-stdout>'))
+  );
+}
+
+export function isWorthStoringPrompt(content: string): boolean {
+  const trimmed = content.trim();
+  if (isClaudeLocalCommandArtifact(trimmed)) return false;
   if (trimmed.startsWith('/')) return false;
   if (trimmed.length < 15) return false;
   if (!/[a-zA-Z가-힣]{2,}/.test(trimmed)) return false;

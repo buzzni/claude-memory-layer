@@ -119,6 +119,7 @@ export function createMemoryServiceComposition(
   const createToolEmbedding = factories.createToolObservationEmbedding ?? defaultCreateToolObservationEmbedding;
 
   const storagePath = expandPath(options.config.storagePath);
+  const projectPathForMirror = options.getProjectPath?.() ?? options.config.projectPath ?? process.cwd();
   const readOnly = options.config.readOnly ?? false;
   const lightweightMode = options.config.lightweightMode ?? false;
   const embeddingOnly = options.config.embeddingOnly ?? false;
@@ -136,7 +137,7 @@ export function createMemoryServiceComposition(
     storagePath,
     readOnly,
     embeddingModel: options.config.embeddingModel,
-    cwd: process.cwd(),
+    cwd: projectPathForMirror,
     initialize: options.initialize,
     getProjectHash: options.getProjectHash,
     getProjectPath: options.getProjectPath,

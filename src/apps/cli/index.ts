@@ -26,6 +26,13 @@ import {
   formatPlainSearchResults
 } from './retrieval-disclosure-output.js';
 import { installMcpServer } from './mcp-install.js';
+import {
+  hasHook,
+  mergePluginHooksIntoSettings,
+  removePluginHooksFromSettings,
+  REQUIRED_HOOK_FILES,
+  type ClaudeSettingsWithHooks
+} from './claude-settings-hooks.js';
 
 // ============================================================
 // Hook Installation Utilities
@@ -33,16 +40,7 @@ import { installMcpServer } from './mcp-install.js';
 
 const CLAUDE_SETTINGS_PATH = path.join(os.homedir(), '.claude', 'settings.json');
 
-interface ClaudeSettings {
-  hooks?: {
-    UserPromptSubmit?: Array<{ matcher: string; hooks: Array<{ type: string; command: string }> }>;
-    PostToolUse?: Array<{ matcher: string; hooks: Array<{ type: string; command: string }> }>;
-    SessionStart?: Array<{ matcher: string; hooks: Array<{ type: string; command: string }> }>;
-    Stop?: Array<{ matcher: string; hooks: Array<{ type: string; command: string }> }>;
-    SessionEnd?: Array<{ matcher: string; hooks: Array<{ type: string; command: string }> }>;
-  };
-  [key: string]: unknown;
-}
+type ClaudeSettings = ClaudeSettingsWithHooks;
 
 function getPluginPath(): string {
   // Try to find the dist directory
@@ -87,42 +85,6 @@ function saveClaudeSettings(settings: ClaudeSettings): void {
   fs.renameSync(tempPath, CLAUDE_SETTINGS_PATH);
 }
 
-const REQUIRED_HOOK_FILES = [
-  'user-prompt-submit.js',
-  'post-tool-use.js',
-  'session-start.js',
-  'stop.js',
-  'session-end.js'
-] as const;
-
-function hasHook(settings: ClaudeSettings, hookName: keyof NonNullable<ClaudeSettings['hooks']>, commandFragment: string): boolean {
-  const hookEntries = settings.hooks?.[hookName];
-  if (!hookEntries) return false;
-  return hookEntries.some((entry) => entry.hooks?.some((hook) => hook.command?.includes(commandFragment)));
-}
-
-function getHooksConfig(pluginPath: string): ClaudeSettings['hooks'] {
-  const makeHook = (fileName: string) => [
-    {
-      matcher: '',
-      hooks: [
-        {
-          type: 'command',
-          command: `node ${path.join(pluginPath, 'hooks', fileName)}`
-        }
-      ]
-    }
-  ];
-
-  return {
-    SessionStart: makeHook('session-start.js'),
-    UserPromptSubmit: makeHook('user-prompt-submit.js'),
-    PostToolUse: makeHook('post-tool-use.js'),
-    Stop: makeHook('stop.js'),
-    SessionEnd: makeHook('session-end.js')
-  };
-}
-
 const program = new Command();
 
 program
@@ -159,15 +121,11 @@ program
       // Load existing settings
       const settings = loadClaudeSettings();
 
-      // Add hooks (merge with existing)
-      const newHooks = getHooksConfig(pluginPath);
-      settings.hooks = {
-        ...settings.hooks,
-        ...newHooks
-      };
+      // Add hooks while preserving unrelated Claude Code hooks in the same categories.
+      const nextSettings = mergePluginHooksIntoSettings(settings, pluginPath);
 
       // Save settings
-      saveClaudeSettings(settings);
+      saveClaudeSettings(nextSettings);
 
       console.log('\n✅ Claude Memory Layer installed!\n');
       console.log('Hooks registered:');
@@ -205,20 +163,10 @@ program
         return;
       }
 
-      // Remove our hooks
-      delete settings.hooks.SessionStart;
-      delete settings.hooks.UserPromptSubmit;
-      delete settings.hooks.PostToolUse;
-      delete settings.hooks.Stop;
-      delete settings.hooks.SessionEnd;
-
-      // Clean up empty hooks object
-      if (Object.keys(settings.hooks).length === 0) {
-        delete settings.hooks;
-      }
+      const nextSettings = removePluginHooksFromSettings(settings, getPluginPath());
 
       // Save settings
-      saveClaudeSettings(settings);
+      saveClaudeSettings(nextSettings);
 
       console.log('\n✅ Claude Memory Layer uninstalled!\n');
       console.log('Hooks removed from Claude Code settings.');

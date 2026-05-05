@@ -346,8 +346,7 @@ export class SQLiteEventStore {
       CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(
         content,
         event_id UNINDEXED,
-        content='events',
-        content_rowid='rowid'
+        tokenize='porter unicode61'
       );
 
       -- Triggers to keep FTS in sync with events table
@@ -356,11 +355,11 @@ export class SQLiteEventStore {
       END;
 
       CREATE TRIGGER IF NOT EXISTS events_fts_delete AFTER DELETE ON events BEGIN
-        INSERT INTO events_fts(events_fts, rowid, content, event_id) VALUES('delete', OLD.rowid, OLD.content, OLD.id);
+        DELETE FROM events_fts WHERE rowid = OLD.rowid;
       END;
 
       CREATE TRIGGER IF NOT EXISTS events_fts_update AFTER UPDATE ON events BEGIN
-        INSERT INTO events_fts(events_fts, rowid, content, event_id) VALUES('delete', OLD.rowid, OLD.content, OLD.id);
+        DELETE FROM events_fts WHERE rowid = OLD.rowid;
         INSERT INTO events_fts(rowid, content, event_id) VALUES (NEW.rowid, NEW.content, NEW.id);
       END;
     `);
@@ -1422,11 +1421,36 @@ export class SQLiteEventStore {
     const countRow = sqliteGet<{count: number}>(this.db, 'SELECT COUNT(*) as count FROM events', []);
     const totalEvents = countRow?.count ?? 0;
 
-    // Clear and rebuild FTS index
+    // Clear and rebuild FTS index. Recreate the virtual table instead of
+    // issuing DELETE against it: older migrated FTS5 tables/triggers can fail
+    // with `no such column: T.event_id` when processing synthetic deletes.
     sqliteExec(this.db, `
-      DELETE FROM events_fts;
+      DROP TRIGGER IF EXISTS events_fts_insert;
+      DROP TRIGGER IF EXISTS events_fts_delete;
+      DROP TRIGGER IF EXISTS events_fts_update;
+      DROP TABLE IF EXISTS events_fts;
+
+      CREATE VIRTUAL TABLE events_fts USING fts5(
+        content,
+        event_id UNINDEXED,
+        tokenize='porter unicode61'
+      );
+
       INSERT INTO events_fts(rowid, content, event_id)
       SELECT rowid, content, id FROM events;
+
+      CREATE TRIGGER events_fts_insert AFTER INSERT ON events BEGIN
+        INSERT INTO events_fts(rowid, content, event_id) VALUES (NEW.rowid, NEW.content, NEW.id);
+      END;
+
+      CREATE TRIGGER events_fts_delete AFTER DELETE ON events BEGIN
+        DELETE FROM events_fts WHERE rowid = OLD.rowid;
+      END;
+
+      CREATE TRIGGER events_fts_update AFTER UPDATE ON events BEGIN
+        DELETE FROM events_fts WHERE rowid = OLD.rowid;
+        INSERT INTO events_fts(rowid, content, event_id) VALUES (NEW.rowid, NEW.content, NEW.id);
+      END;
     `);
 
     return totalEvents;
@@ -1773,14 +1797,14 @@ export class SQLiteEventStore {
 
         // Recreate triggers
         sqliteRun(this.db, `CREATE TRIGGER IF NOT EXISTS events_fts_insert AFTER INSERT ON events BEGIN
-          INSERT INTO events_fts(rowid, content) VALUES (NEW.rowid, NEW.content);
+          INSERT INTO events_fts(rowid, content, event_id) VALUES (NEW.rowid, NEW.content, NEW.id);
         END`);
         sqliteRun(this.db, `CREATE TRIGGER IF NOT EXISTS events_fts_delete AFTER DELETE ON events BEGIN
-          INSERT INTO events_fts(events_fts, rowid, content) VALUES('delete', OLD.rowid, OLD.content);
+          DELETE FROM events_fts WHERE rowid = OLD.rowid;
         END`);
         sqliteRun(this.db, `CREATE TRIGGER IF NOT EXISTS events_fts_update AFTER UPDATE ON events BEGIN
-          INSERT INTO events_fts(events_fts, rowid, content) VALUES('delete', OLD.rowid, OLD.content);
-          INSERT INTO events_fts(rowid, content) VALUES (NEW.rowid, NEW.content);
+          DELETE FROM events_fts WHERE rowid = OLD.rowid;
+          INSERT INTO events_fts(rowid, content, event_id) VALUES (NEW.rowid, NEW.content, NEW.id);
         END`);
       } catch {
         // FTS rebuild failed - non-critical, will be rebuilt on next initialize

@@ -88,5 +88,40 @@ describe('SQLiteEventStore replication helpers', () => {
     expect(dup.isDuplicate).toBe(true);
     expect(dup.eventId).toBe(sourceEvent!.id);
   });
+
+  it('keeps FTS event_id populated after deleteSessionEvents recreates triggers', async () => {
+    await storeA.append({ eventType: 'user_prompt', sessionId: 'delete-me', timestamp: new Date(), content: 'temporary kiwi memory' });
+    await storeA.append({ eventType: 'user_prompt', sessionId: 'keep-me', timestamp: new Date(), content: 'persistent pineapple memory' });
+
+    await expect(storeA.deleteSessionEvents('delete-me')).resolves.toBe(1);
+
+    const appendAfterTriggerRecreation = await storeA.append({
+      eventType: 'user_prompt',
+      sessionId: 'keep-me',
+      timestamp: new Date(),
+      content: 'fresh dragonfruit memory'
+    });
+    expect(appendAfterTriggerRecreation.success).toBe(true);
+
+    await expect(storeA.rebuildFtsIndex()).resolves.toBe(2);
+    const results = await storeA.keywordSearch('dragonfruit', 5);
+
+    expect(results.map((result) => result.event.content)).toEqual(['fresh dragonfruit memory']);
+  });
+
+  it('supports event updates and deletes on a fresh FTS table before manual rebuild', async () => {
+    const appendResult = await storeA.append({
+      eventType: 'user_prompt',
+      sessionId: 'mutable-session',
+      timestamp: new Date(),
+      content: 'mutable mango memory'
+    });
+    expect(appendResult.success).toBe(true);
+    if (!appendResult.success) return;
+
+    await expect(storeA.incrementAccessCount([appendResult.eventId])).resolves.toBeUndefined();
+    await expect(storeA.deleteSessionEvents('mutable-session')).resolves.toBe(1);
+    await expect(storeA.keywordSearch('mango', 5)).resolves.toEqual([]);
+  });
 });
 
