@@ -284,13 +284,16 @@ export class RetrievalDisclosureService {
   ): RetrievalDisclosureReason[] {
     const reasons = new Set<RetrievalDisclosureReason>();
 
-    if ((debug?.semanticScore ?? 0) > 0) reasons.add('semantic_match');
-    if ((debug?.lexicalScore ?? 0) > 0) reasons.add('keyword_match');
+    const usedVector = this.usedVector(result);
+    const usedKeyword = this.usedKeyword(result);
+
+    if (usedVector && (debug?.semanticScore ?? 0) > 0) reasons.add('semantic_match');
+    if ((debug?.lexicalScore ?? 0) > 0 || usedKeyword) reasons.add('keyword_match');
     if ((debug?.recencyScore ?? 0) > 0) reasons.add('recent_relevance');
     if ((result.fallbackTrace || []).some((step) => step === 'fallback:summary')) reasons.add('summary_fallback');
     if (memory.sessionContext) reasons.add('continuity_link');
     if (memory.event.eventType === 'tool_observation') reasons.add('tool_followup');
-    if (reasons.size === 0) reasons.add('semantic_match');
+    if (reasons.size === 0) reasons.add(usedVector ? 'semantic_match' : 'keyword_match');
 
     return Array.from(reasons);
   }

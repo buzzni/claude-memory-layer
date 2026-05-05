@@ -31,10 +31,10 @@ export class Embedder {
   async initialize(): Promise<void> {
     if (this.initialized) return;
 
-    const pipeline = await loadTransformersPipeline();
+    const pipeline = await withSuppressedKnownTransformersWarnings(() => loadTransformersPipeline());
 
     try {
-      this.pipeline = await pipeline('feature-extraction', this.modelName);
+      this.pipeline = await withSuppressedKnownTransformersWarnings(() => pipeline('feature-extraction', this.modelName));
       this.activeModelName = this.modelName;
       this.initialized = true;
       return;
@@ -45,7 +45,7 @@ export class Embedder {
       }
 
       console.warn(`[Embedder] Primary model failed (${this.modelName}). Falling back to ${fallbackModel}`);
-      this.pipeline = await pipeline('feature-extraction', fallbackModel);
+      this.pipeline = await withSuppressedKnownTransformersWarnings(() => pipeline('feature-extraction', fallbackModel));
       this.activeModelName = fallbackModel;
       this.initialized = true;
     }
@@ -154,6 +154,36 @@ export function getDefaultEmbedder(): Embedder {
     defaultEmbedder = new Embedder(envModel || undefined);
   }
   return defaultEmbedder;
+}
+
+let transformersWarningSuppressionDepth = 0;
+let originalConsoleWarn: typeof console.warn | null = null;
+
+export async function withSuppressedKnownTransformersWarnings<T>(fn: () => Promise<T>): Promise<T> {
+  if (transformersWarningSuppressionDepth === 0) {
+    originalConsoleWarn = console.warn;
+    console.warn = (...args: unknown[]) => {
+      const message = args.map(String).join(' ');
+      if (isKnownBenignTransformersWarning(message)) return;
+      (originalConsoleWarn ?? console.warn)(...args);
+    };
+  }
+  transformersWarningSuppressionDepth += 1;
+
+  try {
+    return await fn();
+  } finally {
+    transformersWarningSuppressionDepth -= 1;
+    if (transformersWarningSuppressionDepth === 0 && originalConsoleWarn) {
+      console.warn = originalConsoleWarn;
+      originalConsoleWarn = null;
+    }
+  }
+}
+
+export function isKnownBenignTransformersWarning(message: string): boolean {
+  return message.includes('Unknown model class "eurobert"') ||
+    message.includes('dtype not specified for "model"');
 }
 
 async function loadTransformersPipeline(): Promise<FeatureExtractionPipelineFactory> {

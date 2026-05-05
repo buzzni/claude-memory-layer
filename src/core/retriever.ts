@@ -10,6 +10,11 @@ import { Matcher } from './matcher.js';
 import { SharedStore } from './shared-store.js';
 import { SharedVectorStore } from './shared-vector-store.js';
 import { GraduationPipeline } from './graduation.js';
+import {
+  hasTechnicalTermOverlap,
+  isCommandArtifactQuery,
+  shouldApplyTechnicalGuard
+} from './retrieval-quality.js';
 import type { MemoryEvent, MatchResult, SharedTroubleshootingEntry } from './types.js';
 
 export interface RetrievalScope {
@@ -167,6 +172,20 @@ export class Retriever {
     const opts = { ...DEFAULT_OPTIONS, ...options };
     const sessionFilter = opts.scope?.sessionId ?? opts.sessionId;
     const fallbackTrace: string[] = [];
+
+    if (isCommandArtifactQuery(query)) {
+      fallbackTrace.push('guard:command-artifact-query');
+      const emptyMatch = this.matcher.matchSearchResults([], () => 0);
+      return {
+        memories: [],
+        matchResult: emptyMatch,
+        totalTokens: 0,
+        context: '',
+        fallbackTrace,
+        selectedDebug: [],
+        candidateDebug: []
+      };
+    }
 
     const fallbackEnabled = (opts.strategy ?? 'auto') === 'auto';
 
@@ -367,10 +386,33 @@ export class Retriever {
       projectHash: input.projectHash,
       allowedProjectHashes: input.allowedProjectHashes
     });
-    const top = filtered.slice(0, input.topK);
+    const qualityFiltered = this.applyQualityFilters(filtered, {
+      query,
+      minScore: input.minScore
+    });
+    const top = qualityFiltered.slice(0, input.topK);
     const matchResult = this.matcher.matchSearchResults(top, () => 0);
 
-    return { results: top, candidateResults: filtered, matchResult };
+    return { results: top, candidateResults: qualityFiltered, matchResult };
+  }
+
+  private applyQualityFilters(
+    results: Array<SearchResult & { semanticScore?: number; lexicalScore?: number; recencyScore?: number }>,
+    options: { query: string; minScore: number }
+  ): Array<SearchResult & { semanticScore?: number; lexicalScore?: number; recencyScore?: number }> {
+    let filtered = [...results];
+
+    if (shouldApplyTechnicalGuard(options.query)) {
+      filtered = filtered.filter((result) => hasTechnicalTermOverlap(options.query, result.content));
+    }
+
+    if (filtered.length <= 2) return filtered;
+
+    const topScore = filtered[0].score;
+    if (topScore < 0.8) return filtered;
+
+    const cliffThreshold = Math.max(options.minScore, topScore - 0.25);
+    return filtered.filter((result) => result.score >= cliffThreshold);
   }
 
   private mergeResults(primary: SearchResult[], secondary: SearchResult[], limit: number): SearchResult[] {

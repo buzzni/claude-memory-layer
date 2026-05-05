@@ -94,4 +94,71 @@ describe('Retriever strategy/scope', () => {
     expect(out.memories.length).toBe(1);
     expect(out.memories[0].event.id).toBe('e1');
   });
+
+  it('returns no memories for command-artifact queries instead of semantic false positives', async () => {
+    const retriever = new Retriever(fakeEventStore as any, fakeVectorStore as any, fakeEmbedder as any, new Matcher());
+
+    const out = await retriever.retrieve('local-command-stdout command-name opus', {
+      strategy: 'deep',
+      topK: 5,
+      minScore: 0.1,
+      includeSessionContext: false
+    });
+
+    expect(out.memories).toEqual([]);
+    expect(out.fallbackTrace).toContain('guard:command-artifact-query');
+  });
+
+  it('filters technical identifier queries when candidates have no exact technical overlap', async () => {
+    const retriever = new Retriever(fakeEventStore as any, fakeVectorStore as any, fakeEmbedder as any, new Matcher());
+
+    const out = await retriever.retrieve('DuckDB legacy storage migrate', {
+      strategy: 'deep',
+      topK: 5,
+      minScore: 0.1,
+      includeSessionContext: false
+    });
+
+    expect(out.memories).toEqual([]);
+  });
+
+  it('keeps technical identifier matches when candidate content contains the identifier', async () => {
+    const technical = ev(
+      'e3',
+      'agent:main:alpha',
+      'agent_response',
+      'SQLite FTS failure no such column T.event_id is fixed with event_id UNINDEXED.',
+      'fix/sqlite/fts'
+    );
+    const eventStore = {
+      ...fakeEventStore,
+      async getEvent(id: string) {
+        if (id === 'e3') return technical;
+        return fakeEventStore.getEvent(id);
+      }
+    };
+    const vectorStore = {
+      async search() {
+        return [{
+          id: 'v3',
+          eventId: 'e3',
+          content: technical.content,
+          score: 0.93,
+          sessionId: technical.sessionId,
+          eventType: technical.eventType,
+          timestamp: technical.timestamp.toISOString()
+        }];
+      }
+    };
+    const retriever = new Retriever(eventStore as any, vectorStore as any, fakeEmbedder as any, new Matcher());
+
+    const out = await retriever.retrieve('T.event_id FTS rebuild', {
+      strategy: 'deep',
+      topK: 5,
+      minScore: 0.1,
+      includeSessionContext: false
+    });
+
+    expect(out.memories.map((memory) => memory.event.id)).toEqual(['e3']);
+  });
 });

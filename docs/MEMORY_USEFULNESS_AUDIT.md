@@ -5,6 +5,24 @@ Target: `claude-memory-layer` built CLI (`dist/cli/index.js`)
 Isolation: temporary `HOME` and temporary project directories; no real `~/.claude` or `~/.claude-code/memory` was touched.
 Raw evidence: [`MEMORY_USEFULNESS_AUDIT_RAW.json`](./MEMORY_USEFULNESS_AUDIT_RAW.json)
 
+## 0. Follow-up improvements applied and re-verified
+
+After the first audit exposed precision/UX issues, the following improvements were implemented and the same real scenario was rerun:
+
+1. Query-time command artifact guard
+   - Queries such as `local-command-stdout command-name opus` now return zero memories.
+2. Technical identifier lexical guard
+   - Out-of-domain project-scoped queries such as `DuckDB legacy storage migrate` in the alpha project now return zero memories instead of loosely related semantic matches.
+   - The same query in the beta project still returns the beta DuckDB memory, proving useful exact matches are preserved.
+3. Score cliff cutoff
+   - The FTS query now returns the two actually relevant memories instead of including an unrelated dashboard provenance third result.
+4. Transformer warning suppression
+   - Known benign HuggingFace warnings (`Unknown model class "eurobert"`, `dtype not specified`) no longer appear in CLI import/stats/search output.
+5. Disclosure reason taxonomy cleanup
+   - Keyword-only disclosure now reports `keyword_match` without `semantic_match` when `vector=no`.
+
+The raw evidence file was regenerated after these improvements.
+
 ## 1. Test goal
 
 This audit tested whether the memory layer is useful in the way a coding assistant actually needs it:
@@ -147,7 +165,7 @@ This is excellent for product/UX decision recall.
 
 ### 4.5 Project scoping works for cross-project conflict
 
-Alpha query for `DuckDB legacy storage migrate` did **not** return the beta DuckDB memory. It returned only alpha-project memories.
+Alpha query for `DuckDB legacy storage migrate` did **not** return the beta DuckDB memory and, after the technical-identifier guard, returned **zero** alpha-project false positives.
 
 Beta query for the same phrase returned the beta DuckDB prompt/answer with high scores:
 
@@ -165,7 +183,7 @@ Meta: total=2 vector=no keyword=yes fallback=no
 1. [source] Agent response
    id: event:<uuid>
    score: 1.000
-   reasons: semantic_match, keyword_match, recent_relevance, continuity_link
+   reasons: keyword_match, recent_relevance, continuity_link
 ```
 
 `expand` on the first result returned surrounding turn context:
@@ -213,23 +231,19 @@ Verification:
 - `node dist/cli/index.js --help`
 - full memory audit rerun successfully.
 
-### P1 — HuggingFace/transformer warnings are noisy in normal CLI flows
+### P1 — HuggingFace/transformer warnings were noisy in normal CLI flows — fixed
 
-Every import/stats/search emitted:
+The first run emitted known benign transformer warnings on import/stats/search. The improved run no longer shows these warnings in the raw CLI outputs.
 
-```text
-Unknown model class "eurobert", attempting to construct from base class.
-dtype not specified for "model". Using the default dtype (fp32) for this device (cpu).
-```
+Implemented:
 
-Functionally this did not fail. Import and search worked. But the warnings appear on every user-facing command, including read-only-looking commands like `stats` and `search`, which makes the product feel unstable.
+- Known benign warnings are suppressed around lazy `@huggingface/transformers` pipeline loading/initialization.
 
-Recommendation:
+Remaining recommendation:
 
-- Suppress or de-duplicate known benign transformer warnings in CLI output.
-- Consider initializing the embedder only when vector search / embedding maintenance is actually needed; stats should not need to instantiate the HF model just to report counts.
+- Consider further reducing embedder initialization on pure stats/read paths, but the user-facing warning noise is fixed.
 
-### P1 — Search can return semantically plausible but irrelevant results on no-match queries
+### P1 — Search returned plausible but irrelevant results on no-match artifact queries — fixed
 
 Noise query:
 
@@ -237,127 +251,109 @@ Noise query:
 search "local-command-stdout command-name opus" --project alpha --top-k 5 --min-score 0.1
 ```
 
-Expected:
+Improved result:
 
-- No results, because the command artifact was filtered from import.
+- `Confidence: none`
+- `Total local memories found: 0`
 
-Actual:
+Implemented:
 
-- One unrelated dashboard provenance memory, score `0.833`, confidence `suggested`.
+- Query-time command artifact guard for `local-command-stdout`, `local-command-stderr`, `command-name`, and `command-message` patterns.
+- Regression coverage in `tests/core/retriever-strategy-scope.test.ts`.
 
-This means imported noise is filtered, but query-time artifact/noise strings can still produce vector false positives.
-
-Recommendation:
-
-- Add query-time artifact detection using the same `isClaudeLocalCommandArtifact()` style logic.
-- For queries dominated by XML-ish command tags, either return no results or force keyword-only retrieval.
-- Add a regression test: artifact query against a clean project with no artifact memories should return zero results.
-
-### P1 — Out-of-domain project-scoped queries return irrelevant in-project memories
+### P1 — Out-of-domain project-scoped queries returned irrelevant in-project memories — fixed
 
 Alpha query:
 
 ```bash
-search "DuckDB legacy storage migrate" --project alpha --top-k 5 --min-score 0.1
+search "DuckDB legacy storage migrate" --project alpha
 ```
 
-Good:
+Improved result:
 
-- It did not leak beta memory. Project scoping works.
+- `Confidence: none`
+- `Total local memories found: 0`
 
-Bad:
+Beta query for the same phrase still returns the correct beta DuckDB memory, so the guard improves precision without breaking positive technical-identifier recall.
 
-- It returned five alpha memories, none actually about DuckDB.
-- Highest score was `0.744`, so even default `minScore=0.7` could still return at least one irrelevant result.
+Implemented:
 
-Recommendation:
+- Technical identifier lexical guard for terms such as `DuckDB`, `T.event_id`, and `sourceProjectHash`.
+- Regression coverage proving false positives are filtered while exact technical matches are preserved.
 
-- Add a lexical-overlap or technical-token guard for high-specificity queries.
-- If a query contains exact technical identifiers (`DuckDB`, `T.event_id`, `sourceProjectHash`), require at least one exact/keyword match for high confidence unless vector score is extremely high and corroborated.
-- Calibrate default confidence/threshold so no-match queries become “no relevant memories found” rather than forced suggestions.
+### P2 — Top-k included adjacent but not always relevant memories — improved
 
-### P2 — Top-k includes adjacent but not always relevant memories
+For the FTS query, top 1 and top 2 were excellent, but the first run included an unrelated dashboard provenance third result.
 
-For the FTS query, top 1 and top 2 were excellent, but top 3 included dashboard provenance because it had general architecture/token similarity.
+Improved result:
 
-Recommendation:
+- The same FTS query now returns only the two directly relevant memories.
 
-- Keep top-k small by default for prompt injection.
-- Consider MMR/diversity plus a score cliff cutoff: if score drops significantly after top results, stop returning additional memories.
-- For prompt injection, prefer `confidence=high` results only, with suggested results separated from injected context.
+Implemented:
 
-### P2 — Progressive disclosure reason labels are slightly misleading in keyword-only mode
+- A conservative score-cliff cutoff after reranking/scope filtering.
 
-Disclosure meta said:
+Remaining recommendation:
+
+- For prompt injection, continue to prefer `confidence=high` results and keep suggested results separated from injected context.
+
+### P2 — Progressive disclosure reason labels were misleading in keyword-only mode — fixed
+
+Disclosure meta says:
 
 ```text
 vector=no keyword=yes
 ```
 
-But result reasons included:
+Improved result reasons now say:
 
 ```text
-semantic_match, keyword_match, recent_relevance, continuity_link
+keyword_match, recent_relevance, continuity_link
 ```
 
-When vector is not used, `semantic_match` can confuse users/developers.
+Implemented:
 
-Recommendation:
+- Disclosure reason mapping omits `semantic_match` when vector/deep retrieval was not used.
+- Regression coverage in `tests/core/retrieval-disclosure-service.test.ts`.
 
-- In disclosure reason mapping, omit `semantic_match` when `meta.usedVector === false` or when the retrieval trace shows fast keyword mode only.
-- Preserve `keyword_match` and `continuity_link`.
+## 6. Remaining next improvements, prioritized
 
-## 6. Suggested next improvements, prioritized
+The originally identified precision/UX items have mostly been addressed in this slice. Remaining useful follow-ups:
 
-### Priority 1 — Query-time noise/out-of-domain guard
+### Priority 1 — Further reduce unnecessary embedder initialization
 
-Implement a small guard before vector retrieval:
-
-- If query matches local-command artifacts, return empty result or force exact keyword search.
-- If query contains high-specificity identifiers and keyword overlap is zero, avoid high-confidence semantic-only results.
-
-Expected impact:
-
-- Less irrelevant prompt injection.
-- Better trust in memory suggestions.
-
-### Priority 2 — Lightweight stats/search initialization
-
-Current CLI read commands instantiate the embedder and print transformer warnings.
+Known warning noise is now suppressed, but read paths may still initialize the embedder.
 
 Improve:
 
-- `stats` should use lightweight/read-only service path when possible.
-- `search --strategy fast` or keyword-first paths should avoid embedder initialization until vector search is actually needed.
-- Suppress known benign model warnings if initialization is unavoidable.
+- `stats` should use a lightweight/read-only service path when possible.
+- `search --strategy fast` should avoid embedder initialization until deep/vector search is actually needed.
 
 Expected impact:
 
-- Faster and cleaner CLI/dashboard use.
-- Less user anxiety about broken model loading.
+- Faster stats/search commands.
+- Lower CPU/model-load overhead.
 
-### Priority 3 — Disclosure reason taxonomy cleanup
+### Priority 2 — Make prompt-injection policy stricter than CLI search
 
-Make reasons match actual retrieval mechanics:
+CLI search can show suggested results, but prompt injection should be more conservative.
 
-- `semantic_match` only when vector/semantic retrieval was actually used.
-- `keyword_match` for FTS/fast mode.
-- Consider showing `trace: fast keyword` or `trace: vector + keyword` in CLI output.
+Improve:
 
-Expected impact:
-
-- More trustworthy provenance and debugging.
-
-### Priority 4 — No-match calibration / score cliff cutoff
-
-Add score calibration:
-
-- Default no-match queries should return zero or low-confidence results, not several loosely related memories.
-- Apply score cliff cutoff for prompt injection and CLI display.
+- Inject only high-confidence memories by default.
+- Keep suggested results visible in CLI/dashboard but separate from automatic context injection.
 
 Expected impact:
 
-- Higher precision, lower memory hallucination risk.
+- Lower memory hallucination risk in real Claude hooks.
+
+### Priority 3 — Add more real-world benchmark scenarios
+
+This audit used crafted sessions. Add broader replay suites:
+
+- 20-50 actual anonymized coding sessions.
+- Known-answer queries and negative/no-match queries.
+- Precision@k / recall@k tracking across refactors.
 
 ## 7. Overall verdict
 
@@ -368,8 +364,8 @@ The memory layer is already useful for durable engineering recall:
 - Project scoping prevented a deliberately conflicting beta project memory from leaking into alpha search.
 - Progressive disclosure gave enough context and raw source provenance to trust a retrieved memory.
 
-The biggest remaining quality issue is not storage or basic retrieval. It is **precision control**:
+After the follow-up fixes, the biggest remaining quality issue is no longer basic precision; it is **operational efficiency and broader benchmarking**:
 
-- Avoid returning unrelated vector matches for command artifacts or out-of-domain technical queries.
-- Make read/search paths less noisy and less eager to initialize embeddings.
-- Make disclosure reasons reflect actual retrieval mode.
+- Avoid unnecessary embedder/model initialization on pure read paths where possible.
+- Keep automatic prompt injection stricter than exploratory CLI/dashboard search.
+- Expand the benchmark from crafted scenarios to larger anonymized real-session replay suites.

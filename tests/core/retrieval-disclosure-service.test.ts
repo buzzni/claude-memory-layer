@@ -133,6 +133,8 @@ describe('RetrievalDisclosureService', () => {
       usedKeyword: true,
       fallbackApplied: false
     });
+    expect(out.results[0].reasons).toContain('keyword_match');
+    expect(out.results[0].reasons).not.toContain('semantic_match');
     expect(out.results[0].reasons).not.toContain('summary_fallback');
   });
 
