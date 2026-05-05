@@ -416,7 +416,17 @@ claude-memory-layer mcp install --config-path /path/to/claude_desktop_config.jso
 claude-memory-layer mcp install --server-name claude-memory-layer --command claude-memory-layer-mcp
 ```
 
-설정 후 Claude Desktop을 재시작하면 MCP 서버가 로드됩니다. 로컬 checkout에서 서버만 바로 테스트하려면 `npm run build` 후 다음처럼 직접 실행할 수도 있습니다:
+설정 후 Claude Desktop을 재시작하면 MCP 서버가 로드됩니다. Codex/Hermes처럼 MCP client가 있는 다른 agent에는 로컬 checkout의 built server를 직접 등록할 수 있습니다:
+
+```bash
+# Codex
+codex mcp add claude-memory-layer -- node /path/to/claude-memory-layer/dist/mcp/index.js
+
+# Hermes
+hermes mcp add claude-memory-layer --command node --args /path/to/claude-memory-layer/dist/mcp/index.js
+```
+
+로컬 checkout에서 서버만 바로 테스트하려면 `npm run build` 후 다음처럼 직접 실행할 수도 있습니다:
 
 ```bash
 node dist/mcp/index.js
@@ -426,10 +436,10 @@ node dist/mcp/index.js
 
 | 도구 | 설명 |
 |------|------|
-| `mem-search` | 메모리 검색 |
-| `mem-timeline` | 타임라인 조회 |
-| `mem-details` | 상세 정보 조회 |
-| `mem-stats` | 통계 조회 |
+| `mem-search` | 메모리 검색 (`projectPath`를 주면 프로젝트별 저장소 검색) |
+| `mem-timeline` | 타임라인 조회 (`projectPath` 지원) |
+| `mem-details` | 상세 정보 조회 (`projectPath` 지원) |
+| `mem-stats` | 통계 조회 (`projectPath` 지원) |
 
 ## Web Viewer
 
@@ -484,6 +494,27 @@ Imported responses: 186
 Skipped duplicates: 0
 Embeddings processed: 342
 ```
+
+### Codex 세션 임포트
+
+Codex CLI 기록(`~/.codex/sessions`)은 기본적으로 read-only validate/replay로 먼저 확인하고, 명시적 import 명령으로만 메모리에 저장합니다:
+
+```bash
+# 읽기 전용 검증/리포트
+npx claude-memory-layer codex validate --project /path/to/project --format markdown
+
+# 현재 프로젝트 Codex 세션을 프로젝트별 메모리로 import
+cd /path/to/project
+npx claude-memory-layer codex import
+
+# 특정 세션만 import
+npx claude-memory-layer codex import --project /path/to/project --session /path/to/session.jsonl
+
+# 모든 Codex 세션 import (전역 저장소 사용; 필요할 때만)
+npx claude-memory-layer codex import --all --verbose
+```
+
+옵션: `--sessions-dir`, `--limit`, `--force`, `--no-process-embeddings`.
 
 ### 중복 처리
 

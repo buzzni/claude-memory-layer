@@ -3,32 +3,46 @@
  * Implementation of tool calls
  */
 
-import { getDefaultMemoryService } from '../../services/memory-service.js';
+import {
+  getDefaultMemoryService,
+  getMemoryServiceForProject,
+  type MemoryService
+} from '../../services/memory-service.js';
 import { generateCitationId } from '../../core/citation-generator.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 
 type ToolResult = CallToolResult;
+
+type MemoryToolArgs = Record<string, unknown>;
+
+function resolveMemoryService(args: MemoryToolArgs): MemoryService {
+  const projectPath = typeof args.projectPath === 'string' ? args.projectPath.trim() : '';
+  if (projectPath.length > 0) {
+    return getMemoryServiceForProject(projectPath);
+  }
+  return getDefaultMemoryService();
+}
 
 export async function handleToolCall(
   name: string,
   args: Record<string, unknown>
 ): Promise<ToolResult> {
   try {
-    const memoryService = getDefaultMemoryService();
+    const memoryService = resolveMemoryService(args);
     await memoryService.initialize();
 
     switch (name) {
       case 'mem-search':
-        return await handleMemSearch(args);
+        return await handleMemSearch(memoryService, args);
 
       case 'mem-timeline':
-        return await handleMemTimeline(args);
+        return await handleMemTimeline(memoryService, args);
 
       case 'mem-details':
-        return await handleMemDetails(args);
+        return await handleMemDetails(memoryService, args);
 
       case 'mem-stats':
-        return await handleMemStats();
+        return await handleMemStats(memoryService);
 
       default:
         return {
@@ -44,11 +58,10 @@ export async function handleToolCall(
   }
 }
 
-async function handleMemSearch(args: Record<string, unknown>): Promise<ToolResult> {
+async function handleMemSearch(memoryService: MemoryService, args: Record<string, unknown>): Promise<ToolResult> {
   const query = args.query as string;
   const topK = Math.min((args.topK as number) || 5, 20);
 
-  const memoryService = getDefaultMemoryService();
   const result = await memoryService.retrieveMemories(query, {
     topK,
     sessionId: args.sessionId as string
@@ -81,11 +94,10 @@ async function handleMemSearch(args: Record<string, unknown>): Promise<ToolResul
   };
 }
 
-async function handleMemTimeline(args: Record<string, unknown>): Promise<ToolResult> {
+async function handleMemTimeline(memoryService: MemoryService, args: Record<string, unknown>): Promise<ToolResult> {
   const ids = args.ids as string[];
   const windowSize = (args.windowSize as number) || 3;
 
-  const memoryService = getDefaultMemoryService();
   const recentEvents = await memoryService.getRecentEvents(10000);
 
   const lines: string[] = [
@@ -135,10 +147,9 @@ async function handleMemTimeline(args: Record<string, unknown>): Promise<ToolRes
   };
 }
 
-async function handleMemDetails(args: Record<string, unknown>): Promise<ToolResult> {
+async function handleMemDetails(memoryService: MemoryService, args: Record<string, unknown>): Promise<ToolResult> {
   const ids = args.ids as string[];
 
-  const memoryService = getDefaultMemoryService();
   const recentEvents = await memoryService.getRecentEvents(10000);
 
   const lines: string[] = [];
@@ -177,8 +188,7 @@ async function handleMemDetails(args: Record<string, unknown>): Promise<ToolResu
   };
 }
 
-async function handleMemStats(): Promise<ToolResult> {
-  const memoryService = getDefaultMemoryService();
+async function handleMemStats(memoryService: MemoryService): Promise<ToolResult> {
   const stats = await memoryService.getStats();
   const recentEvents = await memoryService.getRecentEvents(10000);
 

@@ -96,12 +96,15 @@ export const productValidationMatrix: readonly ProductValidationSurface[] = [
     id: 'codex.adapter.import',
     area: 'codex',
     title: 'Codex adapter import',
-    status: 'partial',
+    status: 'covered',
     requirements: [
       'Import explicit Codex session files/project sessions into memory only through import APIs.',
+      'Expose a user-facing codex import command for project, session, and all-session imports.',
       'Preserve turn grouping and truncate oversized assistant content before storage.'
     ],
     evidence: [
+      { kind: 'test', ref: 'tests/apps/codex-import-runner.test.ts', note: 'Asserts project-scoped, session, and explicit global all-session import routing.' },
+      { kind: 'source', ref: 'src/apps/cli/codex-import-runner.ts', note: 'Safe Codex import command runner with project/default/global storage decisions.' },
       { kind: 'source', ref: 'src/services/codex-session-history-importer.ts', note: 'CodexSessionHistoryImporter importProject/importAll/importSessionFile.' },
       { kind: 'doc', ref: 'docs/PRODUCT_VALIDATION_MATRIX.md', note: 'Documents that validation/replay is read-only; mutation remains explicit import-only.' }
     ]
@@ -128,12 +131,15 @@ export const productValidationMatrix: readonly ProductValidationSurface[] = [
     status: 'ready',
     requirements: [
       'Expose user-facing Codex validation commands with --project, --sessions-dir, --limit, --format, --output, and --dry-run options.',
+      'Expose explicit Codex import commands with --project, --session, --all, --sessions-dir, --limit, --force, and --no-process-embeddings options.',
       'Render JSON and Markdown reports with totals, warnings, top projects, and source paths.'
     ],
     evidence: [
       { kind: 'test', ref: 'tests/apps/codex-validation-output.test.ts', note: 'JSON/Markdown report formatting.' },
-      { kind: 'source', ref: 'src/apps/cli/index.ts', note: 'codex validate/replay commands.' },
-      { kind: 'source', ref: 'src/apps/cli/codex-validation-output.ts', note: 'Report output helpers.' }
+      { kind: 'test', ref: 'tests/apps/codex-import-runner.test.ts', note: 'Codex import CLI runner behavior and storage-scope routing.' },
+      { kind: 'source', ref: 'src/apps/cli/index.ts', note: 'codex validate/replay/import commands.' },
+      { kind: 'source', ref: 'src/apps/cli/codex-validation-output.ts', note: 'Report output helpers.' },
+      { kind: 'source', ref: 'src/apps/cli/codex-import-runner.ts', note: 'Codex import runner.' }
     ]
   },
   {

@@ -5,6 +5,11 @@
 
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 
+const projectPathProperty = {
+  type: 'string',
+  description: 'Optional: absolute project path to search a project-scoped claude-memory-layer store instead of the global store'
+} as const;
+
 export const tools: Tool[] = [
   {
     name: 'mem-search',
@@ -24,6 +29,7 @@ export const tools: Tool[] = [
           type: 'string',
           description: 'Optional: filter by specific session ID'
         },
+        projectPath: projectPathProperty,
         eventType: {
           type: 'string',
           enum: ['user_prompt', 'agent_response', 'tool_observation', 'session_summary'],
@@ -47,7 +53,8 @@ export const tools: Tool[] = [
         windowSize: {
           type: 'number',
           description: 'Number of items before/after each ID (default: 3)'
-        }
+        },
+        projectPath: projectPathProperty
       },
       required: ['ids']
     }
@@ -62,7 +69,8 @@ export const tools: Tool[] = [
           type: 'array',
           items: { type: 'string' },
           description: 'Memory IDs to fetch full details for'
-        }
+        },
+        projectPath: projectPathProperty
       },
       required: ['ids']
     }
@@ -72,7 +80,9 @@ export const tools: Tool[] = [
     description: 'Get statistics about the memory storage (total events, sessions, etc.)',
     inputSchema: {
       type: 'object',
-      properties: {}
+      properties: {
+        projectPath: projectPathProperty
+      }
     }
   }
 ];

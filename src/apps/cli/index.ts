@@ -16,7 +16,10 @@ import {
 } from '../../services/memory-service.js';
 import { getProjectStoragePath } from '../../core/registry/project-path.js';
 import { createSessionHistoryImporter, type ProgressEvent } from '../../services/session-history-importer.js';
-import { validateCodexSessions } from '../../services/codex-session-history-importer.js';
+import {
+  createCodexSessionHistoryImporter,
+  validateCodexSessions
+} from '../../services/codex-session-history-importer.js';
 import { bootstrapKnowledgeBase } from '../../services/bootstrap-organizer.js';
 import { startServer, stopServer, isServerRunning } from '../server/index.js';
 import { SQLiteEventStore } from '../../core/sqlite-event-store.js';
@@ -40,6 +43,7 @@ import {
   writeCodexValidationReport,
   type CodexValidationReportFormat
 } from './codex-validation-output.js';
+import { runCodexImportOnce } from './codex-import-runner.js';
 
 // ============================================================
 // Hook Installation Utilities
@@ -1084,6 +1088,44 @@ codexCmd
       await runCodexValidationCommand(options);
     } catch (error) {
       console.error('Codex replay failed:', error instanceof Error ? error.message : error);
+      process.exit(1);
+    }
+  });
+
+codexCmd
+  .command('import')
+  .description('Explicitly import Codex JSONL sessions into claude-memory-layer memory (mutates memory)')
+  .option('-p, --project <path>', 'Import sessions whose session_meta.payload.cwd matches this project (default: cwd)')
+  .option('-s, --session <file>', 'Import one Codex session JSONL file')
+  .option('-a, --all', 'Import all Codex sessions into global memory unless --project is supplied')
+  .option('--sessions-dir <path>', 'Codex sessions directory (default: ~/.codex/sessions)')
+  .option('-l, --limit <number>', 'Limit messages imported per session')
+  .option('-f, --force', 'Delete existing events for each imported session before reimporting')
+  .option('-v, --verbose', 'Show detailed progress')
+  .option('--no-process-embeddings', 'Skip processing pending embeddings after import')
+  .action(async (options) => {
+    const startTime = Date.now();
+    try {
+      if (options.all && !options.project && !options.session) {
+        console.log('\n📥 Importing all Codex sessions into global memory');
+        console.log('   ⚠️  Use --project to keep memory scoped to one project.\n');
+      } else {
+        console.log(`\n📥 Importing Codex sessions for: ${options.project || process.cwd()}\n`);
+      }
+
+      const outcome = await runCodexImportOnce(options, {
+        cwd: () => process.cwd(),
+        getDefaultMemoryService,
+        getMemoryServiceForProject,
+        createImporter: createCodexSessionHistoryImporter,
+        onProgress: renderProgress
+      });
+
+      printImportSummary(outcome.result, outcome.embedCount);
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+      console.log(`\n⏱️  Codex import completed in ${elapsed}s (${outcome.mode}, ${outcome.storageScope} storage)`);
+    } catch (error) {
+      console.error('Codex import failed:', error instanceof Error ? error.message : error);
       process.exit(1);
     }
   });
