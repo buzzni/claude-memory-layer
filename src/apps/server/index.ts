@@ -10,12 +10,12 @@ import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
 import * as path from 'path';
 import * as fs from 'fs';
-import { fileURLToPath } from 'url';
+import { fileURLToPath as fileUrlToPath } from 'url';
 
 import { apiRouter } from './api/index.js';
 
 const app = new Hono();
-const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+const moduleDir = path.dirname(fileUrlToPath(import.meta.url));
 
 // Middleware
 app.use('/*', cors());
