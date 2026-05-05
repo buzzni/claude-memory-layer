@@ -106,6 +106,57 @@ describe('session qrels fixture generation', () => {
     ]);
   });
 
+  it('adds known-answer labels and explicit no-match qrels', () => {
+    const jsonl = [
+      JSON.stringify({
+        type: 'user',
+        sessionId: 's-known',
+        message: { role: 'user', content: 'how should replay qrels record known answer fixtures' }
+      }),
+      JSON.stringify({
+        type: 'assistant',
+        sessionId: 's-known',
+        message: { role: 'assistant', content: 'Known-answer qrels should keep the expected assistant answer tied to the expected memory id.' }
+      })
+    ].join('\n');
+
+    const fixture = buildSessionQrelsFixtureFromJsonl(jsonl, {
+      noMatchQueries: [
+        {
+          queryId: 'q-negative-empty-result',
+          query: 'unanswered moon cheese deployment question',
+          forbiddenIds: ['m-s-known-1'],
+          sourceSessionId: 's-known'
+        }
+      ]
+    });
+
+    expect(fixture.queries).toHaveLength(2);
+    expect(fixture.queries[0]).toMatchObject({
+      queryId: 'q-s-known-1',
+      expectation: 'match',
+      expectedIds: ['m-s-known-1'],
+      knownAnswer: 'Known-answer qrels should keep the expected assistant answer tied to the expected memory id.'
+    });
+    expect(fixture.queries[1]).toMatchObject({
+      queryId: 'q-negative-empty-result',
+      query: 'unanswered moon cheese deployment question',
+      expectation: 'no_match',
+      expectedIds: [],
+      expectedRelevance: {},
+      forbiddenIds: ['m-s-known-1'],
+      sourceSessionId: 's-known'
+    });
+
+    const summary = summarizeSessionQrelsFixture(fixture);
+    expect(summary).toMatchObject({
+      queryCount: 2,
+      positiveQueryCount: 1,
+      noMatchQueryCount: 1,
+      knownAnswerCount: 1
+    });
+  });
+
   it('can redact raw session text when generating shareable qrels metadata', () => {
     const jsonl = [
       JSON.stringify({

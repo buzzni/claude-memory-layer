@@ -5,7 +5,8 @@ import * as path from 'node:path';
 import {
   buildSessionQrelsFixtureFromJsonl,
   collectClaudeSessionJsonlFiles,
-  summarizeSessionQrelsFixture
+  summarizeSessionQrelsFixture,
+  type SessionQrelsNoMatchQueryInput
 } from '../src/core/session-qrels.js';
 
 const args = process.argv.slice(2);
@@ -24,6 +25,7 @@ async function main(argv: string[]): Promise<void> {
   let minBytes = 0;
   let redactContent = false;
   let includeSubagents = false;
+  const noMatchQueries: SessionQrelsNoMatchQueryInput[] = [];
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -54,6 +56,14 @@ async function main(argv: string[]): Promise<void> {
       redactContent = true;
     } else if (arg === '--include-subagents') {
       includeSubagents = true;
+    } else if (arg === '--no-match-query' || arg === '--negative-query') {
+      const query = argv[++i];
+      if (query) noMatchQueries.push({ query });
+    } else if (arg === '--no-match-forbidden-ids' || arg === '--negative-forbidden-ids') {
+      const value = argv[++i] ?? '';
+      const forbiddenIds = value.split(',').map((id) => id.trim()).filter(Boolean);
+      const last = noMatchQueries[noMatchQueries.length - 1];
+      if (last) last.forbiddenIds = forbiddenIds;
     } else if (!arg.startsWith('--')) {
       sessions.push(arg);
     }
@@ -71,7 +81,7 @@ async function main(argv: string[]): Promise<void> {
   const uniqueSessions = Array.from(new Set(sessions.map(expandUserPath)));
 
   if (uniqueSessions.length === 0) {
-    console.error('Usage: tsx scripts/generate-session-qrels.ts --session <claude.jsonl> [--session <more.jsonl>] [--sessions-dir ~/.claude/projects] [--max-files 50] [--out fixture.json] [--summary-out summary.json] [--ks 1,3,5] [--redact-content]');
+    console.error('Usage: tsx scripts/generate-session-qrels.ts --session <claude.jsonl> [--session <more.jsonl>] [--sessions-dir ~/.claude/projects] [--max-files 50] [--out fixture.json] [--summary-out summary.json] [--ks 1,3,5] [--redact-content] [--no-match-query "query" --no-match-forbidden-ids id1,id2]');
     process.exit(2);
   }
 
@@ -88,7 +98,8 @@ async function main(argv: string[]): Promise<void> {
     redactContent,
     sourceFileCount: uniqueSessions.length,
     rawContentIncluded: !redactContent,
-    generatedAt
+    generatedAt,
+    noMatchQueries
   });
   const output = `${JSON.stringify(fixture, null, 2)}\n`;
   const summary = summarizeSessionQrelsFixture(fixture);

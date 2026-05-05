@@ -9,6 +9,8 @@ export interface SessionQrelsMemory {
   timestamp?: string;
 }
 
+export type SessionQrelsExpectation = 'match' | 'no_match';
+
 export interface SessionQrelsQuery {
   queryId: string;
   query: string;
@@ -16,6 +18,9 @@ export interface SessionQrelsQuery {
   expectedRelevance: Record<string, number>;
   sourceSessionId: string;
   sourceTurnIndex: number;
+  expectation?: SessionQrelsExpectation;
+  forbiddenIds?: string[];
+  knownAnswer?: string;
 }
 
 export interface SessionQrelsFixtureMetadata {
@@ -33,6 +38,14 @@ export interface SessionQrelsFixture {
   metadata?: SessionQrelsFixtureMetadata;
 }
 
+export interface SessionQrelsNoMatchQueryInput {
+  queryId?: string;
+  query: string;
+  forbiddenIds?: string[];
+  sourceSessionId?: string;
+  sourceTurnIndex?: number;
+}
+
 export interface SessionQrelsOptions {
   name?: string;
   description?: string;
@@ -42,6 +55,7 @@ export interface SessionQrelsOptions {
   sourceFileCount?: number;
   rawContentIncluded?: boolean;
   generatedAt?: string;
+  noMatchQueries?: SessionQrelsNoMatchQueryInput[];
 }
 
 export interface SessionQrelsFileCollectionOptions {
@@ -63,6 +77,9 @@ export interface SessionQrelsSummary {
   description: string;
   ks: number[];
   queryCount: number;
+  positiveQueryCount: number;
+  noMatchQueryCount: number;
+  knownAnswerCount: number;
   memoryCount: number;
   sourceSessionCount: number;
   sourceFileCount?: number;
@@ -132,9 +149,10 @@ export function buildSessionQrelsFixtureFromJsonl(
       const idSuffix = `${pending.sessionId}-${pending.turnIndex}`;
       const memoryId = `m-${idSuffix}`;
       const queryId = `q-${idSuffix}`;
+      const memoryContent = options.redactContent ? `[redacted memory ${memoryId}]` : answer;
       memories.push({
         id: memoryId,
-        content: options.redactContent ? `[redacted memory ${memoryId}]` : answer,
+        content: memoryContent,
         sourceSessionId: pending.sessionId,
         sourceTurnIndex: pending.turnIndex,
         timestamp: entry.timestamp ?? pending.timestamp
@@ -145,11 +163,15 @@ export function buildSessionQrelsFixtureFromJsonl(
         expectedIds: [memoryId],
         expectedRelevance: { [memoryId]: 2 },
         sourceSessionId: pending.sessionId,
-        sourceTurnIndex: pending.turnIndex
+        sourceTurnIndex: pending.turnIndex,
+        expectation: 'match',
+        knownAnswer: memoryContent
       });
       pendingBySession.delete(sessionId);
     }
   }
+
+  appendExplicitNoMatchQueries(queries, options);
 
   const redactContent = options.redactContent === true;
   const rawContentIncluded = options.rawContentIncluded ?? !redactContent;
@@ -244,17 +266,55 @@ export function summarizeSessionQrelsFixture(fixture: SessionQrelsFixture): Sess
 
   const perSession = Array.from(bySession.values()).sort((a, b) => a.sourceSessionId.localeCompare(b.sourceSessionId));
 
+  const positiveQueryCount = fixture.queries.filter((query) => getQueryExpectation(query) === 'match').length;
+  const noMatchQueryCount = fixture.queries.filter((query) => getQueryExpectation(query) === 'no_match').length;
+  const knownAnswerCount = fixture.queries.filter((query) => typeof query.knownAnswer === 'string' && query.knownAnswer.length > 0).length;
+
   return {
     name: fixture.name,
     description: fixture.description,
     ks: fixture.ks,
     queryCount: fixture.queries.length,
+    positiveQueryCount,
+    noMatchQueryCount,
+    knownAnswerCount,
     memoryCount: fixture.memories.length,
     sourceSessionCount: perSession.length,
     sourceFileCount: fixture.metadata?.sourceFileCount,
     rawContentIncluded: fixture.metadata?.rawContentIncluded ?? true,
     perSession
   };
+}
+
+function appendExplicitNoMatchQueries(
+  queries: SessionQrelsQuery[],
+  options: SessionQrelsOptions
+): void {
+  const inputs = options.noMatchQueries ?? [];
+  if (inputs.length === 0) return;
+
+  const remaining = options.maxQueries === undefined
+    ? Number.POSITIVE_INFINITY
+    : Math.max(0, options.maxQueries - queries.length);
+
+  const startIndex = queries.length;
+  inputs.slice(0, remaining).forEach((input, index) => {
+    const queryId = input.queryId ?? `q-no-match-${startIndex + index + 1}`;
+    queries.push({
+      queryId,
+      query: options.redactContent ? `[redacted query ${queryId}]` : input.query,
+      expectedIds: [],
+      expectedRelevance: {},
+      sourceSessionId: input.sourceSessionId ?? 'no-match',
+      sourceTurnIndex: input.sourceTurnIndex ?? 0,
+      expectation: 'no_match',
+      forbiddenIds: [...(input.forbiddenIds ?? [])]
+    });
+  });
+}
+
+function getQueryExpectation(query: SessionQrelsQuery): SessionQrelsExpectation {
+  return query.expectation ?? (query.expectedIds.length === 0 ? 'no_match' : 'match');
 }
 
 function parseEntry(line: string): ClaudeJsonlEntry | null {
