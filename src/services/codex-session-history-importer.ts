@@ -507,17 +507,23 @@ export async function validateCodexSessions(options: CodexValidationOptions = {}
   return report;
 }
 
+export interface CodexSessionHistoryImporterOptions {
+  sessionsDir?: string;
+}
+
 export class CodexSessionHistoryImporter {
   private readonly memoryService: MemoryService;
-  private readonly codexDir: string;
+  private readonly sessionsRoot: string;
 
-  constructor(memoryService: MemoryService) {
+  constructor(memoryService: MemoryService, options: CodexSessionHistoryImporterOptions = {}) {
     this.memoryService = memoryService;
-    this.codexDir = path.join(os.homedir(), '.codex');
+    this.sessionsRoot = options.sessionsDir
+      ? path.resolve(options.sessionsDir)
+      : path.join(os.homedir(), '.codex', 'sessions');
   }
 
   private getSessionsRoot(): string {
-    return path.join(this.codexDir, 'sessions');
+    return this.sessionsRoot;
   }
 
   private listSessionFilesRecursive(rootDir: string): string[] {
@@ -911,6 +917,9 @@ export class CodexSessionHistoryImporter {
   }
 }
 
-export function createCodexSessionHistoryImporter(memoryService: MemoryService): CodexSessionHistoryImporter {
-  return new CodexSessionHistoryImporter(memoryService);
+export function createCodexSessionHistoryImporter(
+  memoryService: MemoryService,
+  options: CodexSessionHistoryImporterOptions = {}
+): CodexSessionHistoryImporter {
+  return new CodexSessionHistoryImporter(memoryService, options);
 }

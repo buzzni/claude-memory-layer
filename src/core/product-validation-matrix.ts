@@ -5,7 +5,7 @@
  * same surface -> requirement -> evidence map that tests assert stays covered.
  */
 
-export type ProductValidationArea = 'claude' | 'codex' | 'cli' | 'safety';
+export type ProductValidationArea = 'claude' | 'codex' | 'hermes' | 'cli' | 'safety';
 export type ProductValidationStatus = 'ready' | 'covered' | 'partial' | 'planned';
 export type ProductValidationEvidenceKind = 'test' | 'source' | 'command' | 'doc';
 
@@ -96,12 +96,15 @@ export const productValidationMatrix: readonly ProductValidationSurface[] = [
     id: 'codex.adapter.import',
     area: 'codex',
     title: 'Codex adapter import',
-    status: 'partial',
+    status: 'covered',
     requirements: [
       'Import explicit Codex session files/project sessions into memory only through import APIs.',
+      'Expose a user-facing codex import command for project, session, and all-session imports.',
       'Preserve turn grouping and truncate oversized assistant content before storage.'
     ],
     evidence: [
+      { kind: 'test', ref: 'tests/apps/codex-import-runner.test.ts', note: 'Asserts project-scoped, session, and explicit global all-session import routing.' },
+      { kind: 'source', ref: 'src/apps/cli/codex-import-runner.ts', note: 'Safe Codex import command runner with project/default/global storage decisions.' },
       { kind: 'source', ref: 'src/services/codex-session-history-importer.ts', note: 'CodexSessionHistoryImporter importProject/importAll/importSessionFile.' },
       { kind: 'doc', ref: 'docs/PRODUCT_VALIDATION_MATRIX.md', note: 'Documents that validation/replay is read-only; mutation remains explicit import-only.' }
     ]
@@ -122,18 +125,73 @@ export const productValidationMatrix: readonly ProductValidationSurface[] = [
     ]
   },
   {
+    id: 'hermes.adapter.scan',
+    area: 'hermes',
+    title: 'Hermes adapter scan',
+    status: 'ready',
+    requirements: [
+      'Read Hermes ~/.hermes/state.db in read-only mode by default.',
+      'Match sessions to a project via Hermes session context/title when available.',
+      'Count unsupported/tool messages, empty assistant messages, missing project context, and truncated content without exposing transcript text.'
+    ],
+    evidence: [
+      { kind: 'test', ref: 'tests/core/hermes-session-history-importer-validation.test.ts', note: 'Dry-run SessionDB fixture covers project matching, unsupported/tool skipping, empty assistant messages, and transcript exclusion.' },
+      { kind: 'source', ref: 'src/services/hermes-session-history-importer.ts', note: 'validateHermesSessions reads SessionDB and emits aggregate replay reports.' }
+    ]
+  },
+  {
+    id: 'hermes.adapter.import',
+    area: 'hermes',
+    title: 'Hermes adapter import',
+    status: 'covered',
+    requirements: [
+      'Import explicit Hermes SessionDB project/session/all selections into memory only through import APIs.',
+      'Default to project-scoped memory for current-project imports and require --all for intentional global imports.',
+      'Skip tool/system records and redact sensitive user/assistant content before storage.'
+    ],
+    evidence: [
+      { kind: 'test', ref: 'tests/core/hermes-session-history-importer-validation.test.ts', note: 'Imports only matched user/assistant turns, redacts secrets, and skips tool messages.' },
+      { kind: 'test', ref: 'tests/apps/hermes-import-runner.test.ts', note: 'Asserts project-scoped, session, and explicit global all-session import routing.' },
+      { kind: 'source', ref: 'src/apps/cli/hermes-import-runner.ts', note: 'Safe Hermes import command runner with project/default/global storage decisions.' },
+      { kind: 'source', ref: 'src/services/hermes-session-history-importer.ts', note: 'HermesSessionHistoryImporter importProject/importAll/importSession.' }
+    ]
+  },
+  {
+    id: 'hermes.adapter.replay',
+    area: 'hermes',
+    title: 'Hermes adapter replay',
+    status: 'ready',
+    requirements: [
+      'Normalize Hermes SessionDB user/assistant rows into aggregate replay counts.',
+      'Keep Hermes raw transcript source-of-truth in SessionDB and treat CML as explicit derived memory.',
+      'Emit validation reports without transcript content or secrets.'
+    ],
+    evidence: [
+      { kind: 'test', ref: 'tests/core/hermes-session-history-importer-validation.test.ts', note: 'Validation report excludes prompt/response text and synthetic secrets.' },
+      { kind: 'source', ref: 'src/apps/cli/hermes-validation-output.ts', note: 'JSON/Markdown report output helpers for Hermes aggregate replay.' },
+      { kind: 'doc', ref: 'docs/HERMES_MEMORY_INGESTION_ANALYSIS.md', note: 'Documents explicit import first; live sync later if needed.' }
+    ]
+  },
+  {
     id: 'cli.api.reporting',
     area: 'cli',
     title: 'CLI / API / reporting',
     status: 'ready',
     requirements: [
       'Expose user-facing Codex validation commands with --project, --sessions-dir, --limit, --format, --output, and --dry-run options.',
-      'Render JSON and Markdown reports with totals, warnings, top projects, and source paths.'
+      'Expose user-facing Hermes validation commands with --project, --state-db, --limit, --format, --output, and --dry-run options.',
+      'Expose explicit Codex and Hermes import commands with project, session, all-session, limit, force, and no-process-embeddings options.',
+      'Render JSON and Markdown reports with totals, warnings, top projects/sources, and source paths.'
     ],
     evidence: [
-      { kind: 'test', ref: 'tests/apps/codex-validation-output.test.ts', note: 'JSON/Markdown report formatting.' },
-      { kind: 'source', ref: 'src/apps/cli/index.ts', note: 'codex validate/replay commands.' },
-      { kind: 'source', ref: 'src/apps/cli/codex-validation-output.ts', note: 'Report output helpers.' }
+      { kind: 'test', ref: 'tests/apps/codex-validation-output.test.ts', note: 'Codex JSON/Markdown report formatting.' },
+      { kind: 'test', ref: 'tests/apps/codex-import-runner.test.ts', note: 'Codex import CLI runner behavior and storage-scope routing.' },
+      { kind: 'test', ref: 'tests/apps/hermes-import-runner.test.ts', note: 'Hermes import CLI runner behavior and storage-scope routing.' },
+      { kind: 'source', ref: 'src/apps/cli/index.ts', note: 'codex and hermes validate/replay/import commands.' },
+      { kind: 'source', ref: 'src/apps/cli/codex-validation-output.ts', note: 'Codex report output helpers.' },
+      { kind: 'source', ref: 'src/apps/cli/hermes-validation-output.ts', note: 'Hermes report output helpers.' },
+      { kind: 'source', ref: 'src/apps/cli/codex-import-runner.ts', note: 'Codex import runner.' },
+      { kind: 'source', ref: 'src/apps/cli/hermes-import-runner.ts', note: 'Hermes import runner.' }
     ]
   },
   {
@@ -154,7 +212,7 @@ export const productValidationMatrix: readonly ProductValidationSurface[] = [
 ];
 
 function emptyAreaCounts(): Record<ProductValidationArea, number> {
-  return { claude: 0, codex: 0, cli: 0, safety: 0 };
+  return { claude: 0, codex: 0, hermes: 0, cli: 0, safety: 0 };
 }
 
 function emptyStatusCounts(): Record<ProductValidationStatus, number> {

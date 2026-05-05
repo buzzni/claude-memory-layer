@@ -1,6 +1,7 @@
 node_modules
 dist/
 .claude-memory/
+memory/
 .history/
 test_access.js
 .omc/
