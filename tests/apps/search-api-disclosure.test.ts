@@ -11,14 +11,23 @@ const mocks = vi.hoisted(() => {
     sourceDisclosure: vi.fn()
   };
 
+  const lightweightService = {
+    initialize: vi.fn(),
+    shutdown: vi.fn(),
+    searchDisclosure: vi.fn()
+  };
+
   return {
     service,
-    getServiceFromQuery: vi.fn(() => service)
+    lightweightService,
+    getServiceFromQuery: vi.fn(() => service),
+    getLightweightServiceFromQuery: vi.fn(() => lightweightService)
   };
 });
 
 vi.mock('../../src/apps/server/api/utils.js', () => ({
-  getServiceFromQuery: mocks.getServiceFromQuery
+  getServiceFromQuery: mocks.getServiceFromQuery,
+  getLightweightServiceFromQuery: mocks.getLightweightServiceFromQuery
 }));
 
 const { searchRouter } = await import('../../src/server/api/search.js');
@@ -37,7 +46,11 @@ describe('search disclosure API', () => {
     mocks.service.searchDisclosure.mockReset();
     mocks.service.expandDisclosure.mockReset();
     mocks.service.sourceDisclosure.mockReset();
+    mocks.lightweightService.initialize.mockReset().mockResolvedValue(undefined);
+    mocks.lightweightService.shutdown.mockReset().mockResolvedValue(undefined);
+    mocks.lightweightService.searchDisclosure.mockReset();
     mocks.getServiceFromQuery.mockClear();
+    mocks.getLightweightServiceFromQuery.mockClear();
   });
 
   it('POST /api/search/disclosure delegates to MemoryService.searchDisclosure', async () => {
@@ -61,6 +74,31 @@ describe('search disclosure API', () => {
     expect(mocks.service.shutdown).toHaveBeenCalledTimes(1);
   });
 
+
+  it('POST /api/search/disclosure uses lightweight service for explicit fast search', async () => {
+    const responseBody = {
+      results: [{ id: 'event:e1', resultType: 'source', snippet: 'checkout fix', score: 0.91, reasons: ['keyword_match'], sourceRef: 'event:e1' }],
+      meta: { total: 1, usedVector: false, usedKeyword: true, fallbackApplied: false }
+    };
+    mocks.lightweightService.searchDisclosure.mockResolvedValue(responseBody);
+
+    const res = await createApp().request('/api/search/disclosure?project=abc12345', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query: 'checkout fix', options: { topK: 3, strategy: 'fast', includeShared: true } })
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual(responseBody);
+    expect(mocks.getLightweightServiceFromQuery).toHaveBeenCalledTimes(1);
+    expect(mocks.getServiceFromQuery).not.toHaveBeenCalled();
+    expect(mocks.lightweightService.initialize).toHaveBeenCalledTimes(1);
+    expect(mocks.lightweightService.searchDisclosure).toHaveBeenCalledWith('checkout fix', { topK: 3, strategy: 'fast', includeShared: true });
+    expect(mocks.lightweightService.shutdown).toHaveBeenCalledTimes(1);
+    expect(mocks.service.initialize).not.toHaveBeenCalled();
+    expect(mocks.service.searchDisclosure).not.toHaveBeenCalled();
+  });
+
   it('POST /api/search/disclosure rejects missing query', async () => {
     const res = await createApp().request('/api/search/disclosure', {
       method: 'POST',
@@ -70,8 +108,10 @@ describe('search disclosure API', () => {
 
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: 'Query is required' });
+    expect(mocks.getServiceFromQuery).not.toHaveBeenCalled();
+    expect(mocks.getLightweightServiceFromQuery).not.toHaveBeenCalled();
     expect(mocks.service.searchDisclosure).not.toHaveBeenCalled();
-    expect(mocks.service.shutdown).toHaveBeenCalledTimes(1);
+    expect(mocks.service.shutdown).not.toHaveBeenCalled();
   });
 
   it('GET /api/search/disclosure/:resultId/expand expands a disclosure result', async () => {

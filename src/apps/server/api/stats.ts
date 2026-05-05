@@ -7,7 +7,7 @@ import { Hono } from 'hono';
 import * as fs from 'fs';
 import * as path from 'path';
 import { getMemoryServiceForProject } from '../../../services/memory-service.js';
-import { getServiceFromQuery } from './utils.js';
+import { getLightweightServiceFromQuery, getServiceFromQuery } from './utils.js';
 import type { MemoryEvent } from '../../../core/types.js';
 
 export const statsRouter = new Hono();
@@ -333,7 +333,7 @@ statsRouter.get('/levels/:level', async (c) => {
 
 // GET /api/stats - Get overall statistics
 statsRouter.get('/', async (c) => {
-  const memoryService = getServiceFromQuery(c);
+  const memoryService = getLightweightServiceFromQuery(c);
   try {
     await memoryService.initialize();
     const stats = await memoryService.getStats();

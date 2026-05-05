@@ -34,3 +34,32 @@ export function getServiceFromQuery(c: Context): MemoryService {
   }
   return getReadOnlyMemoryService();
 }
+
+
+/**
+ * Read-only lightweight service for API paths that only need sqlite/keyword reads.
+ * This avoids per-request vector/embedder/shared-store initialization for stats and
+ * explicit fast searches while preserving the same project query resolution rules.
+ */
+export function getLightweightServiceFromQuery(c: Context): MemoryService {
+  const project = c.req.query('project') || c.req.query('projectId');
+  if (project) {
+    const storagePath = resolveProjectStoragePath(project);
+
+    return new MemoryService({
+      storagePath,
+      readOnly: true,
+      lightweightMode: true,
+      analyticsEnabled: false,
+      sharedStoreConfig: DISABLED_SHARED_STORE_CONFIG
+    });
+  }
+
+  return new MemoryService({
+    storagePath: '~/.claude-code/memory',
+    readOnly: true,
+    lightweightMode: true,
+    analyticsEnabled: false,
+    sharedStoreConfig: DISABLED_SHARED_STORE_CONFIG
+  });
+}

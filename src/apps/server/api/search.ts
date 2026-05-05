@@ -4,7 +4,7 @@
  */
 
 import { Hono } from 'hono';
-import { getServiceFromQuery } from './utils.js';
+import { getLightweightServiceFromQuery, getServiceFromQuery } from './utils.js';
 
 export const searchRouter = new Hono();
 
@@ -82,7 +82,7 @@ searchRouter.post('/', async (c) => {
 
 // POST /api/search/disclosure - Progressive disclosure search (Search layer)
 searchRouter.post('/disclosure', async (c) => {
-  const memoryService = getServiceFromQuery(c);
+  let memoryService: ReturnType<typeof getServiceFromQuery> | undefined;
   try {
     const body = await c.req.json<DisclosureSearchRequest>();
 
@@ -90,13 +90,17 @@ searchRouter.post('/disclosure', async (c) => {
       return c.json({ error: 'Query is required' }, 400);
     }
 
+    memoryService = body.options?.strategy === 'fast'
+      ? getLightweightServiceFromQuery(c)
+      : getServiceFromQuery(c);
+
     await memoryService.initialize();
     const result = await memoryService.searchDisclosure(body.query, body.options);
     return c.json(result);
   } catch (error) {
     return c.json({ error: (error as Error).message }, 500);
   } finally {
-    await memoryService.shutdown();
+    await memoryService?.shutdown();
   }
 });
 
