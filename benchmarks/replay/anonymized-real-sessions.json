@@ -1,11 +1,40 @@
 {
   "name": "anonymized-real-session-replay-v1",
-  "description": "Anonymized real-session-style retrieval replay fixture for Precision@k / Recall@k checks.",
+  "description": "Anonymized real-session-style retrieval replay fixture for Precision@k / Recall@k / nDCG@k / no-match checks.",
   "ks": [1, 3, 5],
   "queries": [
-    { "queryId": "q-cli-fast", "query": "fast search should avoid embedding startup", "expectedIds": ["m-cli-fast", "m-runtime-light"] },
-    { "queryId": "q-hook-policy", "query": "hook should not inject weak keyword rescue", "expectedIds": ["m-hook-policy", "m-hook-threshold"] },
-    { "queryId": "q-replay-bench", "query": "precision recall replay benchmark output", "expectedIds": ["m-benchmark", "m-metrics"] }
+    {
+      "queryId": "q-cli-fast",
+      "query": "fast search should avoid embedding startup",
+      "expectation": "match",
+      "expectedIds": ["m-cli-fast", "m-runtime-light"],
+      "expectedRelevance": { "m-cli-fast": 3, "m-runtime-light": 2 },
+      "knownAnswer": "CLI search --strategy fast uses keyword retrieval and should not start embedding model initialization."
+    },
+    {
+      "queryId": "q-hook-policy",
+      "query": "hook should not inject weak keyword rescue",
+      "expectation": "match",
+      "expectedIds": ["m-hook-policy", "m-hook-threshold"],
+      "expectedRelevance": { "m-hook-policy": 3, "m-hook-threshold": 2 },
+      "knownAnswer": "Claude hook prompt injection has a separate conservative policy for high-confidence memories."
+    },
+    {
+      "queryId": "q-replay-bench",
+      "query": "precision recall replay benchmark output",
+      "expectation": "match",
+      "expectedIds": ["m-benchmark", "m-metrics"],
+      "expectedRelevance": { "m-benchmark": 3, "m-metrics": 2 },
+      "knownAnswer": "Replay benchmark reports Precision@k and Recall@k over anonymized session queries."
+    },
+    {
+      "queryId": "q-no-match-command-artifact",
+      "query": "local-command-stdout command-name opus",
+      "expectation": "no_match",
+      "expectedIds": [],
+      "expectedRelevance": {},
+      "forbiddenIds": ["m-cli-fast", "m-hook-policy", "m-benchmark"]
+    }
   ],
   "memories": [
     { "id": "m-cli-fast", "content": "CLI search --strategy fast uses keyword retrieval and should not start embedding model initialization." },

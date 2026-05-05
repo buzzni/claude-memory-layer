@@ -22,7 +22,8 @@
     "ops:heartbeat": "bash scripts/heartbeat-memory-orchestrator.sh",
     "ops:health": "npm run ops:sync-gap:report && npm run ops:sync-gap:heal && npm run ops:review:resolve",
     "ops:projects:clean-unknown": "node scripts/delete-unknown-projects.js",
-    "benchmark:replay": "tsx scripts/replay-retrieval-benchmark.ts"
+    "benchmark:replay": "tsx scripts/replay-retrieval-benchmark.ts",
+    "benchmark:qrels": "tsx scripts/generate-session-qrels.ts"
   },
   "keywords": [
     "claude-code",
