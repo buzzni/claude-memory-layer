@@ -516,6 +516,29 @@ npx claude-memory-layer codex import --all --verbose
 
 옵션: `--sessions-dir`, `--limit`, `--force`, `--no-process-embeddings`.
 
+### Hermes 세션 임포트
+
+Hermes Agent 기록(`~/.hermes/state.db`)도 원본 DB를 read-only validate/replay로 먼저 확인하고, 명시적 import 명령으로만 프로젝트별 메모리에 저장합니다. 기본 전략은 live sync가 아니라 **SessionDB → CML explicit derived import**입니다:
+
+```bash
+# 읽기 전용 검증/리포트
+npx claude-memory-layer hermes validate --project /path/to/project --format markdown
+
+# 현재 프로젝트 Hermes 세션을 프로젝트별 메모리로 import
+cd /path/to/project
+npx claude-memory-layer hermes import
+
+# 특정 Hermes session id만 import
+npx claude-memory-layer hermes import --project /path/to/project --session 20260505_010203_abcd1234
+
+# 모든 Hermes 세션 import (전역 저장소 사용; 필요할 때만)
+npx claude-memory-layer hermes import --all --verbose
+```
+
+옵션: `--state-db`, `--limit`, `--force`, `--no-process-embeddings`.
+
+Hermes import는 user/assistant turn만 저장하고 tool/system 메시지는 건너뜁니다. 검증 리포트에는 aggregate count만 포함되며 transcript 본문은 포함하지 않습니다.
+
 ### 중복 처리
 
 임포트는 콘텐츠 해시 기반으로 중복을 자동 감지합니다. 여러 번 실행해도 같은 내용이 중복 저장되지 않습니다.

@@ -20,6 +20,10 @@ import {
   createCodexSessionHistoryImporter,
   validateCodexSessions
 } from '../../services/codex-session-history-importer.js';
+import {
+  createHermesSessionHistoryImporter,
+  validateHermesSessions
+} from '../../services/hermes-session-history-importer.js';
 import { bootstrapKnowledgeBase } from '../../services/bootstrap-organizer.js';
 import { startServer, stopServer, isServerRunning } from '../server/index.js';
 import { SQLiteEventStore } from '../../core/sqlite-event-store.js';
@@ -43,7 +47,13 @@ import {
   writeCodexValidationReport,
   type CodexValidationReportFormat
 } from './codex-validation-output.js';
+import {
+  formatHermesValidationReport,
+  writeHermesValidationReport,
+  type HermesValidationReportFormat
+} from './hermes-validation-output.js';
 import { runCodexImportOnce } from './codex-import-runner.js';
+import { runHermesImportOnce } from './hermes-import-runner.js';
 
 // ============================================================
 // Hook Installation Utilities
@@ -106,6 +116,15 @@ type CodexValidateCommandOptions = {
   anonymizeProjects?: boolean;
 };
 
+type HermesValidateCommandOptions = {
+  project?: string;
+  stateDb?: string;
+  limit?: string;
+  format?: string;
+  output?: string;
+  dryRun?: boolean;
+};
+
 function parsePositiveIntegerOption(value: string | undefined, optionName: string): number | undefined {
   if (!value) return undefined;
   const parsed = Number.parseInt(value, 10);
@@ -116,6 +135,14 @@ function parsePositiveIntegerOption(value: string | undefined, optionName: strin
 }
 
 function parseCodexValidationReportFormat(value: string | undefined): CodexValidationReportFormat {
+  const normalized = (value ?? 'markdown').toLowerCase();
+  if (normalized !== 'json' && normalized !== 'markdown') {
+    throw new Error('Invalid --format: expected json or markdown');
+  }
+  return normalized;
+}
+
+function parseHermesValidationReportFormat(value: string | undefined): HermesValidationReportFormat {
   const normalized = (value ?? 'markdown').toLowerCase();
   if (normalized !== 'json' && normalized !== 'markdown') {
     throw new Error('Invalid --format: expected json or markdown');
@@ -142,6 +169,28 @@ async function runCodexValidationCommand(options: CodexValidateCommandOptions): 
   if (options.output) {
     const outputPath = path.resolve(options.output);
     writeCodexValidationReport(outputPath, report, format);
+    console.log(`\nReport written to ${outputPath}`);
+  }
+}
+
+async function runHermesValidationCommand(options: HermesValidateCommandOptions): Promise<void> {
+  if (options.dryRun === false) {
+    throw new Error('Hermes validation is read-only; use explicit import commands for mutation');
+  }
+
+  const format = parseHermesValidationReportFormat(options.format);
+  const report = await validateHermesSessions({
+    stateDbPath: options.stateDb,
+    projectPath: options.project,
+    limit: parsePositiveIntegerOption(options.limit, 'limit')
+  });
+
+  const rendered = formatHermesValidationReport(report, format);
+  process.stdout.write(rendered.endsWith('\n') ? rendered : `${rendered}\n`);
+
+  if (options.output) {
+    const outputPath = path.resolve(options.output);
+    writeHermesValidationReport(outputPath, report, format);
     console.log(`\nReport written to ${outputPath}`);
   }
 }
@@ -1126,6 +1175,88 @@ codexCmd
       console.log(`\n⏱️  Codex import completed in ${elapsed}s (${outcome.mode}, ${outcome.storageScope} storage)`);
     } catch (error) {
       console.error('Codex import failed:', error instanceof Error ? error.message : error);
+      process.exit(1);
+    }
+  });
+
+// ============================================================
+// Hermes Validation Commands
+// ============================================================
+
+const hermesCmd = program
+  .command('hermes')
+  .description('Read-only Hermes SessionDB scan/replay validation and explicit import');
+
+hermesCmd
+  .command('validate')
+  .description('Dry-run validate Hermes ~/.hermes/state.db sessions without importing or mutating memory')
+  .option('-p, --project <path>', 'Filter sessions by project path in Hermes session context')
+  .option('--state-db <path>', 'Hermes state database path (default: ~/.hermes/state.db)')
+  .option('-l, --limit <number>', 'Limit number of matching sessions to scan')
+  .option('--format <format>', 'Report format: json or markdown', 'markdown')
+  .option('-o, --output <path>', 'Write report to file')
+  .option('--dry-run', 'Read-only validation mode (default; no imports or writes)', true)
+  .action(async (options: HermesValidateCommandOptions) => {
+    try {
+      await runHermesValidationCommand(options);
+    } catch (error) {
+      console.error('Hermes validation failed:', error instanceof Error ? error.message : error);
+      process.exit(1);
+    }
+  });
+
+hermesCmd
+  .command('replay')
+  .description('Alias for read-only Hermes SessionDB validation/replay report')
+  .option('-p, --project <path>', 'Filter sessions by project path in Hermes session context')
+  .option('--state-db <path>', 'Hermes state database path (default: ~/.hermes/state.db)')
+  .option('-l, --limit <number>', 'Limit number of matching sessions to scan')
+  .option('--format <format>', 'Report format: json or markdown', 'markdown')
+  .option('-o, --output <path>', 'Write report to file')
+  .option('--dry-run', 'Read-only validation mode (default; no imports or writes)', true)
+  .action(async (options: HermesValidateCommandOptions) => {
+    try {
+      await runHermesValidationCommand(options);
+    } catch (error) {
+      console.error('Hermes replay failed:', error instanceof Error ? error.message : error);
+      process.exit(1);
+    }
+  });
+
+hermesCmd
+  .command('import')
+  .description('Explicitly import Hermes SessionDB sessions into claude-memory-layer memory (mutates memory)')
+  .option('-p, --project <path>', 'Import sessions whose Hermes context matches this project (default: cwd)')
+  .option('-s, --session <id>', 'Import one Hermes session id')
+  .option('-a, --all', 'Import all Hermes sessions into global memory unless --project is supplied')
+  .option('--state-db <path>', 'Hermes state database path (default: ~/.hermes/state.db)')
+  .option('-l, --limit <number>', 'Limit memories imported across matching sessions')
+  .option('-f, --force', 'Delete existing events for each imported session before reimporting')
+  .option('-v, --verbose', 'Show detailed progress')
+  .option('--no-process-embeddings', 'Skip processing pending embeddings after import')
+  .action(async (options) => {
+    const startTime = Date.now();
+    try {
+      if (options.all && !options.project && !options.session) {
+        console.log('\n📥 Importing all Hermes sessions into global memory');
+        console.log('   ⚠️  Use --project to keep memory scoped to one project.\n');
+      } else {
+        console.log(`\n📥 Importing Hermes sessions for: ${options.project || process.cwd()}\n`);
+      }
+
+      const outcome = await runHermesImportOnce(options, {
+        cwd: () => process.cwd(),
+        getDefaultMemoryService,
+        getMemoryServiceForProject,
+        createImporter: createHermesSessionHistoryImporter,
+        onProgress: renderProgress
+      });
+
+      printImportSummary(outcome.result, outcome.embedCount);
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+      console.log(`\n⏱️  Hermes import completed in ${elapsed}s (${outcome.mode}, ${outcome.storageScope} storage)`);
+    } catch (error) {
+      console.error('Hermes import failed:', error instanceof Error ? error.message : error);
       process.exit(1);
     }
   });
