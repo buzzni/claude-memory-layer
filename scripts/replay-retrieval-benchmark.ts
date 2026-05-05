@@ -1,43 +1,49 @@
 #!/usr/bin/env tsx
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
-import { computePrecisionRecallAtK, summarizeReplayMetrics } from '../src/core/retrieval-benchmark.js';
+import {
+  evaluateReplayFixture,
+  formatReplayEvaluationMarkdown,
+  type ReplayEvaluationFixture
+} from '../src/core/replay-evaluator.js';
 
-interface Fixture {
-  name: string;
-  description: string;
-  ks: number[];
-  queries: Array<{ queryId: string; query: string; expectedIds: string[]; expectedRelevance?: Record<string, number> }>;
-  memories: Array<{ id: string; content: string }>;
-}
+const args = process.argv.slice(2);
 
-const fixturePath = process.argv[2] || path.join('benchmarks', 'replay', 'anonymized-real-sessions.json');
-const fixture = JSON.parse(await readFile(fixturePath, 'utf8')) as Fixture;
-const inputs = fixture.queries.map((query) => ({
-  queryId: query.queryId,
-  expectedIds: query.expectedIds,
-  expectedRelevance: query.expectedRelevance,
-  retrievedIds: rankByTokenOverlap(query.query, fixture.memories).map((memory) => memory.id)
-}));
-const perQuery = computePrecisionRecallAtK(inputs, fixture.ks);
-const summary = summarizeReplayMetrics(perQuery, fixture.ks);
+void main(args);
 
-console.log(JSON.stringify({ name: fixture.name, description: fixture.description, summary, perQuery }, null, 2));
+async function main(argv: string[]): Promise<void> {
+  let fixturePath = path.join('benchmarks', 'replay', 'anonymized-real-sessions.json');
+  let outPath = '';
+  let format: 'json' | 'markdown' = 'json';
+  let includePerQuery = true;
+  let positionalFixtureConsumed = false;
 
-function rankByTokenOverlap(query: string, memories: Fixture['memories']): Fixture['memories'] {
-  const queryTokens = tokenize(query);
-  return [...memories]
-    .map((memory) => ({ memory, score: overlap(queryTokens, tokenize(memory.content)) }))
-    .sort((a, b) => b.score - a.score || a.memory.id.localeCompare(b.memory.id))
-    .map((row) => row.memory);
-}
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (arg === '--fixture') {
+      fixturePath = argv[++i] ?? fixturePath;
+    } else if (arg === '--out' || arg === '--report-out') {
+      outPath = argv[++i] ?? '';
+    } else if (arg === '--format') {
+      const parsed = argv[++i];
+      if (parsed === 'markdown' || parsed === 'json') format = parsed;
+    } else if (arg === '--no-per-query') {
+      includePerQuery = false;
+    } else if (!arg.startsWith('--') && !positionalFixtureConsumed) {
+      fixturePath = arg;
+      positionalFixtureConsumed = true;
+    }
+  }
 
-function tokenize(text: string): Set<string> {
-  return new Set(text.toLowerCase().replace(/[^a-z0-9가-힣\s]/g, ' ').split(/\s+/).filter((token) => token.length >= 2));
-}
+  const fixture = JSON.parse(await readFile(fixturePath, 'utf8')) as ReplayEvaluationFixture;
+  const report = evaluateReplayFixture(fixture, { includePerQuery });
+  const output = format === 'markdown'
+    ? formatReplayEvaluationMarkdown(report, { qrelsPath: fixturePath })
+    : `${JSON.stringify(report, null, 2)}\n`;
 
-function overlap(a: Set<string>, b: Set<string>): number {
-  let hits = 0;
-  for (const token of a) if (b.has(token)) hits += 1;
-  return hits;
+  if (outPath) {
+    await writeFile(outPath, output, 'utf8');
+  } else {
+    process.stdout.write(output);
+  }
 }

@@ -1,6 +1,14 @@
+import { mkdir, writeFile } from 'node:fs/promises';
+import * as path from 'node:path';
+import { tmpdir } from 'node:os';
+
 import { describe, expect, it } from 'vitest';
 
-import { buildSessionQrelsFixtureFromJsonl } from '../../src/core/session-qrels.js';
+import {
+  buildSessionQrelsFixtureFromJsonl,
+  collectClaudeSessionJsonlFiles,
+  summarizeSessionQrelsFixture
+} from '../../src/core/session-qrels.js';
 
 describe('session qrels fixture generation', () => {
   it('turns Claude-style user/assistant session turns into replay qrels', () => {
@@ -125,5 +133,67 @@ describe('session qrels fixture generation', () => {
       id: 'm-sensitive-1',
       content: '[redacted memory m-sensitive-1]'
     });
+  });
+
+  it('summarizes generated qrels without leaking raw prompt or memory content', () => {
+    const jsonl = [
+      JSON.stringify({
+        type: 'user',
+        sessionId: 'sensitive',
+        message: { role: 'user', content: 'SECRET customer retrieval question with enough words' }
+      }),
+      JSON.stringify({
+        type: 'assistant',
+        sessionId: 'sensitive',
+        message: { role: 'assistant', content: 'SECRET assistant answer that should stay out of reports' }
+      })
+    ].join('\n');
+    const fixture = buildSessionQrelsFixtureFromJsonl(jsonl, {
+      name: 'private-real-session-qrels',
+      ks: [1, 3, 10],
+      sourceFileCount: 2,
+      rawContentIncluded: true
+    });
+
+    const summary = summarizeSessionQrelsFixture(fixture);
+    const serialized = JSON.stringify(summary);
+
+    expect(summary).toMatchObject({
+      name: 'private-real-session-qrels',
+      queryCount: 1,
+      memoryCount: 1,
+      sourceSessionCount: 1,
+      sourceFileCount: 2,
+      rawContentIncluded: true,
+      ks: [1, 3, 10]
+    });
+    expect(summary.perSession).toEqual([
+      {
+        sourceSessionId: 'sensitive',
+        queryCount: 1,
+        memoryCount: 1,
+        firstTurnIndex: 1,
+        lastTurnIndex: 1
+      }
+    ]);
+    expect(serialized).not.toContain('SECRET');
+  });
+
+  it('collects Claude JSONL sessions recursively while excluding subagents by default', async () => {
+    const root = path.join(tmpdir(), `session-qrels-${process.pid}-${Date.now()}`);
+    const projectDir = path.join(root, 'project-a');
+    const subagentDir = path.join(projectDir, 'subagents');
+    await mkdir(subagentDir, { recursive: true });
+    await writeFile(path.join(projectDir, 'top.jsonl'), '{}\n', 'utf8');
+    await writeFile(path.join(subagentDir, 'agent.jsonl'), '{}\n', 'utf8');
+    await writeFile(path.join(projectDir, 'notes.txt'), 'ignore', 'utf8');
+
+    await expect(collectClaudeSessionJsonlFiles(root)).resolves.toEqual([
+      path.join(projectDir, 'top.jsonl')
+    ]);
+    await expect(collectClaudeSessionJsonlFiles(root, { includeSubagents: true })).resolves.toEqual([
+      path.join(subagentDir, 'agent.jsonl'),
+      path.join(projectDir, 'top.jsonl')
+    ]);
   });
 });

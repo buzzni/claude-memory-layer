@@ -1,3 +1,6 @@
+import { readdir, stat } from 'node:fs/promises';
+import * as path from 'node:path';
+
 export interface SessionQrelsMemory {
   id: string;
   content: string;
@@ -15,12 +18,19 @@ export interface SessionQrelsQuery {
   sourceTurnIndex: number;
 }
 
+export interface SessionQrelsFixtureMetadata {
+  sourceFileCount?: number;
+  rawContentIncluded: boolean;
+  generatedAt?: string;
+}
+
 export interface SessionQrelsFixture {
   name: string;
   description: string;
   ks: number[];
   queries: SessionQrelsQuery[];
   memories: SessionQrelsMemory[];
+  metadata?: SessionQrelsFixtureMetadata;
 }
 
 export interface SessionQrelsOptions {
@@ -29,6 +39,35 @@ export interface SessionQrelsOptions {
   ks?: number[];
   maxQueries?: number;
   redactContent?: boolean;
+  sourceFileCount?: number;
+  rawContentIncluded?: boolean;
+  generatedAt?: string;
+}
+
+export interface SessionQrelsFileCollectionOptions {
+  includeSubagents?: boolean;
+  maxFiles?: number;
+  minBytes?: number;
+}
+
+export interface SessionQrelsPerSessionSummary {
+  sourceSessionId: string;
+  queryCount: number;
+  memoryCount: number;
+  firstTurnIndex: number;
+  lastTurnIndex: number;
+}
+
+export interface SessionQrelsSummary {
+  name: string;
+  description: string;
+  ks: number[];
+  queryCount: number;
+  memoryCount: number;
+  sourceSessionCount: number;
+  sourceFileCount?: number;
+  rawContentIncluded: boolean;
+  perSession: SessionQrelsPerSessionSummary[];
 }
 
 interface ClaudeContentBlock {
@@ -112,12 +151,109 @@ export function buildSessionQrelsFixtureFromJsonl(
     }
   }
 
+  const redactContent = options.redactContent === true;
+  const rawContentIncluded = options.rawContentIncluded ?? !redactContent;
+
   return {
     name: options.name ?? 'session-qrels-fixture',
     description: options.description ?? 'Session-derived qrels fixture generated from Claude JSONL user/assistant turns.',
     ks: options.ks ?? [1, 3, 5],
     queries,
-    memories
+    memories,
+    metadata: {
+      sourceFileCount: options.sourceFileCount,
+      rawContentIncluded,
+      generatedAt: options.generatedAt
+    }
+  };
+}
+
+export async function collectClaudeSessionJsonlFiles(
+  rootDir: string,
+  options: SessionQrelsFileCollectionOptions = {}
+): Promise<string[]> {
+  const maxFiles = options.maxFiles ?? Number.POSITIVE_INFINITY;
+  const minBytes = options.minBytes ?? 0;
+  const files: string[] = [];
+
+  async function walk(dir: string): Promise<void> {
+    if (files.length >= maxFiles) return;
+
+    let entries;
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+
+    for (const entry of entries) {
+      if (files.length >= maxFiles) return;
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (!options.includeSubagents && entry.name.toLowerCase() === 'subagents') continue;
+        await walk(fullPath);
+        continue;
+      }
+
+      if (!entry.isFile() || !entry.name.endsWith('.jsonl')) continue;
+      if (minBytes > 0) {
+        try {
+          const info = await stat(fullPath);
+          if (info.size < minBytes) continue;
+        } catch {
+          continue;
+        }
+      }
+      files.push(fullPath);
+    }
+  }
+
+  await walk(rootDir);
+  return files;
+}
+
+export function summarizeSessionQrelsFixture(fixture: SessionQrelsFixture): SessionQrelsSummary {
+  const bySession = new Map<string, SessionQrelsPerSessionSummary>();
+
+  function ensureSession(sourceSessionId: string, turnIndex: number): SessionQrelsPerSessionSummary {
+    const existing = bySession.get(sourceSessionId);
+    if (existing) {
+      existing.firstTurnIndex = Math.min(existing.firstTurnIndex, turnIndex);
+      existing.lastTurnIndex = Math.max(existing.lastTurnIndex, turnIndex);
+      return existing;
+    }
+    const created: SessionQrelsPerSessionSummary = {
+      sourceSessionId,
+      queryCount: 0,
+      memoryCount: 0,
+      firstTurnIndex: turnIndex,
+      lastTurnIndex: turnIndex
+    };
+    bySession.set(sourceSessionId, created);
+    return created;
+  }
+
+  for (const query of fixture.queries) {
+    ensureSession(query.sourceSessionId, query.sourceTurnIndex).queryCount += 1;
+  }
+  for (const memory of fixture.memories) {
+    ensureSession(memory.sourceSessionId, memory.sourceTurnIndex).memoryCount += 1;
+  }
+
+  const perSession = Array.from(bySession.values()).sort((a, b) => a.sourceSessionId.localeCompare(b.sourceSessionId));
+
+  return {
+    name: fixture.name,
+    description: fixture.description,
+    ks: fixture.ks,
+    queryCount: fixture.queries.length,
+    memoryCount: fixture.memories.length,
+    sourceSessionCount: perSession.length,
+    sourceFileCount: fixture.metadata?.sourceFileCount,
+    rawContentIncluded: fixture.metadata?.rawContentIncluded ?? true,
+    perSession
   };
 }
 
