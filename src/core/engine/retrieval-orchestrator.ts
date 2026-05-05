@@ -245,8 +245,10 @@ export class RetrievalOrchestrator {
   }
 
   private isLightweightFastRead(options: RetrieveMemoriesOptions | undefined): boolean {
+    const requiresSharedRuntime = options?.includeShared === true && this.deps.hasSharedStore();
+
     return options?.strategy === 'fast'
-      && options.includeShared !== true
+      && !requiresSharedRuntime
       && options.adaptiveRerank !== true;
   }
 

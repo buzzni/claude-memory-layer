@@ -103,6 +103,7 @@ describe('RetrievalOrchestrator', () => {
 
   it('does not run full runtime initialization for local fast retrieval', async () => {
     let initialized = 0;
+    let statsReads = 0;
     let retrieveArgs: { query: string; options: Record<string, unknown> } | null = null;
     const traces: Array<Record<string, unknown>> = [];
 
@@ -118,7 +119,7 @@ describe('RetrievalOrchestrator', () => {
       initialize: async () => { initialized += 1; },
       retriever: fakeRetriever,
       traceStore: {
-        getHelpfulnessStats: async () => stats(),
+        getHelpfulnessStats: async () => { statsReads += 1; return stats(); },
         recordRetrievalTrace: async (input) => { traces.push(input); }
       },
       accessStore: noopAccessStore(),
@@ -133,6 +134,7 @@ describe('RetrievalOrchestrator', () => {
     });
 
     expect(initialized).toBe(0);
+    expect(statsReads).toBe(0);
     expect(retrieveArgs?.options.strategy).toBe('fast');
     expect(retrieveArgs?.options.projectHash).toBe('project-fast');
     expect(traces[0]).toMatchObject({
@@ -140,6 +142,84 @@ describe('RetrievalOrchestrator', () => {
       candidateEventIds: ['fast-e1'],
       selectedEventIds: ['fast-e1']
     });
+  });
+
+  it('keeps fast retrieval lightweight when shared search is requested but unavailable', async () => {
+    let initialized = 0;
+    let localRetrieveCalls = 0;
+    let unifiedRetrieveCalls = 0;
+
+    const fakeRetriever = {
+      setQueryRewriter() {},
+      async retrieve(_query: string, options: Record<string, unknown>) {
+        localRetrieveCalls += 1;
+        expect(options.includeShared).toBe(true);
+        expect(options.strategy).toBe('fast');
+        return retrievalResult('local-fast-shared-request');
+      },
+      async retrieveUnified() {
+        unifiedRetrieveCalls += 1;
+        return retrievalResult('unexpected-unified');
+      }
+    } as unknown as Retriever;
+
+    const orchestrator = new RetrievalOrchestrator({
+      initialize: async () => { initialized += 1; },
+      retriever: fakeRetriever,
+      traceStore: {
+        getHelpfulnessStats: async () => stats(),
+        recordRetrievalTrace: async () => {}
+      },
+      accessStore: noopAccessStore(),
+      getProjectHash: () => 'project-fast',
+      hasSharedStore: () => false
+    });
+
+    const out = await orchestrator.retrieveMemories('fast query without shared store', {
+      strategy: 'fast',
+      includeShared: true,
+      topK: 3
+    });
+
+    expect(out.memories[0]?.event.id).toBe('local-fast-shared-request');
+    expect(initialized).toBe(0);
+    expect(localRetrieveCalls).toBe(1);
+    expect(unifiedRetrieveCalls).toBe(0);
+  });
+
+  it('initializes the full runtime for fast retrieval when an actual shared store is available', async () => {
+    let initialized = 0;
+    let retrieveUnifiedArgs: { query: string; options: Record<string, unknown> } | null = null;
+
+    const fakeRetriever = {
+      setQueryRewriter() {},
+      async retrieveUnified(query: string, options: Record<string, unknown>) {
+        retrieveUnifiedArgs = { query, options };
+        return retrievalResult('shared-fast');
+      }
+    } as unknown as Retriever;
+
+    const orchestrator = new RetrievalOrchestrator({
+      initialize: async () => { initialized += 1; },
+      retriever: fakeRetriever,
+      traceStore: {
+        getHelpfulnessStats: async () => stats(),
+        recordRetrievalTrace: async () => {}
+      },
+      accessStore: noopAccessStore(),
+      getProjectHash: () => 'project-fast',
+      hasSharedStore: () => true
+    });
+
+    await orchestrator.retrieveMemories('fast shared query', {
+      strategy: 'fast',
+      includeShared: true,
+      topK: 3
+    });
+
+    expect(initialized).toBe(1);
+    expect(retrieveUnifiedArgs?.query).toBe('fast shared query');
+    expect(retrieveUnifiedArgs?.options.includeShared).toBe(true);
   });
 
   it('uses unified retrieval and normalized configured rerank weights when shared search is enabled', async () => {

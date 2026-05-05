@@ -32,7 +32,7 @@ export function computePrecisionRecallAtK(
 
     for (const k of normalizedKs) {
       const retrieved = input.retrievedIds.slice(0, k);
-      const hits = retrieved.filter((id) => expected.has(id)).length;
+      const hits = new Set(retrieved.filter((id) => expected.has(id))).size;
       at[k] = {
         precision: k === 0 ? 0 : hits / k,
         recall: expected.size === 0 ? 0 : hits / expected.size,
@@ -61,7 +61,17 @@ export function summarizeReplayMetrics(
 }
 
 function normalizeKs(ks: number[]): number[] {
-  return [...new Set(ks.map((k) => Math.max(0, Math.floor(k))))].sort((a, b) => a - b);
+  const seen = new Set<number>();
+  const normalized: number[] = [];
+
+  for (const rawK of ks) {
+    const k = Math.max(0, Math.floor(rawK));
+    if (seen.has(k)) continue;
+    seen.add(k);
+    normalized.push(k);
+  }
+
+  return normalized.sort((a, b) => a - b);
 }
 
 function average(values: number[]): number {

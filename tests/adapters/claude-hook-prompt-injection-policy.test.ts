@@ -39,6 +39,40 @@ describe('Claude hook prompt injection policy', () => {
     expect(summarizeHookInjectionConfidence([])).toBe('none');
   });
 
+  it('limits injected hook memories by highest confidence rather than first passing candidate', () => {
+    const candidates: HookMemoryCandidate[] = [
+      { id: 'medium-first', type: 'session_summary', content: 'passes but weaker', score: 0.67, source: 'semantic' },
+      { id: 'best-later', type: 'user_prompt', content: 'best exact keyword', score: 0.93, source: 'keyword' },
+      { id: 'second-best-later', type: 'agent_response', content: 'strong semantic match', score: 0.88, source: 'semantic' }
+    ];
+
+    expect(filterHookInjectableMemories(candidates, { ...getHookInjectionPolicy(), maxMemories: 2 }))
+      .toEqual([candidates[1], candidates[2]]);
+  });
+
+  it('uses bounded hook policy thresholds so unsafe env overrides cannot inject weak memories', () => {
+    const policy = getHookInjectionPolicy({
+      CLAUDE_MEMORY_HOOK_INJECTION_MIN_SCORE: '-1',
+      CLAUDE_MEMORY_HOOK_SEMANTIC_MIN_SCORE: '2',
+      CLAUDE_MEMORY_HOOK_KEYWORD_MIN_SCORE: 'not-a-number',
+      CLAUDE_MEMORY_HOOK_FALLBACK_KEYWORD_MIN_SCORE: '-0.2',
+      CLAUDE_MEMORY_HOOK_MAX_INJECTED: '2'
+    } as NodeJS.ProcessEnv);
+
+    expect(policy).toEqual({
+      minScore: 0.65,
+      semanticMinScore: 0.65,
+      keywordMinScore: 0.7,
+      fallbackKeywordMinScore: 0.8,
+      maxMemories: 2
+    });
+
+    expect(filterHookInjectableMemories([
+      { id: 'weak-unknown', type: 'user_prompt', content: 'weak unknown source', score: 0.1, source: 'unknown' },
+      { id: 'fallback-too-weak', type: 'user_prompt', content: 'weak fallback', score: 0.79, source: 'keyword', fallback: true }
+    ], policy)).toEqual([]);
+  });
+
   it('keeps regular CLI/query search behavior independent from hook injection policy', async () => {
     const memory = event('regular-low');
     const service = new MemoryQueryService(
