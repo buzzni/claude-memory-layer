@@ -16,6 +16,7 @@ import {
 } from '../../services/memory-service.js';
 import { getProjectStoragePath } from '../../core/registry/project-path.js';
 import { createSessionHistoryImporter, type ProgressEvent } from '../../services/session-history-importer.js';
+import { validateCodexSessions } from '../../services/codex-session-history-importer.js';
 import { bootstrapKnowledgeBase } from '../../services/bootstrap-organizer.js';
 import { startServer, stopServer, isServerRunning } from '../server/index.js';
 import { SQLiteEventStore } from '../../core/sqlite-event-store.js';
@@ -34,6 +35,11 @@ import {
   REQUIRED_HOOK_FILES,
   type ClaudeSettingsWithHooks
 } from './claude-settings-hooks.js';
+import {
+  formatCodexValidationReport,
+  writeCodexValidationReport,
+  type CodexValidationReportFormat
+} from './codex-validation-output.js';
 
 // ============================================================
 // Hook Installation Utilities
@@ -84,6 +90,56 @@ function saveClaudeSettings(settings: ClaudeSettings): void {
   const tempPath = CLAUDE_SETTINGS_PATH + '.tmp';
   fs.writeFileSync(tempPath, JSON.stringify(settings, null, 2));
   fs.renameSync(tempPath, CLAUDE_SETTINGS_PATH);
+}
+
+type CodexValidateCommandOptions = {
+  project?: string;
+  sessionsDir?: string;
+  limit?: string;
+  format?: string;
+  output?: string;
+  dryRun?: boolean;
+  anonymizeProjects?: boolean;
+};
+
+function parsePositiveIntegerOption(value: string | undefined, optionName: string): number | undefined {
+  if (!value) return undefined;
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error(`Invalid --${optionName}: expected a positive integer`);
+  }
+  return parsed;
+}
+
+function parseCodexValidationReportFormat(value: string | undefined): CodexValidationReportFormat {
+  const normalized = (value ?? 'markdown').toLowerCase();
+  if (normalized !== 'json' && normalized !== 'markdown') {
+    throw new Error('Invalid --format: expected json or markdown');
+  }
+  return normalized;
+}
+
+async function runCodexValidationCommand(options: CodexValidateCommandOptions): Promise<void> {
+  if (options.dryRun === false) {
+    throw new Error('Codex validation is read-only; use explicit import commands for mutation');
+  }
+
+  const format = parseCodexValidationReportFormat(options.format);
+  const report = await validateCodexSessions({
+    sessionsDir: options.sessionsDir,
+    projectPath: options.project,
+    limit: parsePositiveIntegerOption(options.limit, 'limit'),
+    anonymizeProjects: options.anonymizeProjects === true
+  });
+
+  const rendered = formatCodexValidationReport(report, format);
+  process.stdout.write(rendered.endsWith('\n') ? rendered : `${rendered}\n`);
+
+  if (options.output) {
+    const outputPath = path.resolve(options.output);
+    writeCodexValidationReport(outputPath, report, format);
+    console.log(`\nReport written to ${outputPath}`);
+  }
 }
 
 const program = new Command();
@@ -982,6 +1038,52 @@ program
       console.log('\nUse "claude-memory-layer import --session <path>" to import a specific session');
     } catch (error) {
       console.error('List failed:', error);
+      process.exit(1);
+    }
+  });
+
+// ============================================================
+// Codex Validation Commands
+// ============================================================
+
+const codexCmd = program
+  .command('codex')
+  .description('Read-only Codex session scan/replay validation');
+
+codexCmd
+  .command('validate')
+  .description('Dry-run validate Codex JSONL sessions without importing or mutating memory')
+  .option('-p, --project <path>', 'Filter sessions by session_meta.payload.cwd')
+  .option('--sessions-dir <path>', 'Codex sessions directory (default: ~/.codex/sessions)')
+  .option('-l, --limit <number>', 'Limit number of session files to scan')
+  .option('--format <format>', 'Report format: json or markdown', 'markdown')
+  .option('-o, --output <path>', 'Write report to file')
+  .option('--dry-run', 'Read-only validation mode (default; no imports or writes)', true)
+  .option('--anonymize-projects', 'Show hashed project labels instead of raw cwd paths')
+  .action(async (options: CodexValidateCommandOptions) => {
+    try {
+      await runCodexValidationCommand(options);
+    } catch (error) {
+      console.error('Codex validation failed:', error instanceof Error ? error.message : error);
+      process.exit(1);
+    }
+  });
+
+codexCmd
+  .command('replay')
+  .description('Alias for read-only Codex validation/replay report')
+  .option('-p, --project <path>', 'Filter sessions by session_meta.payload.cwd')
+  .option('--sessions-dir <path>', 'Codex sessions directory (default: ~/.codex/sessions)')
+  .option('-l, --limit <number>', 'Limit number of session files to scan')
+  .option('--format <format>', 'Report format: json or markdown', 'markdown')
+  .option('-o, --output <path>', 'Write report to file')
+  .option('--dry-run', 'Read-only validation mode (default; no imports or writes)', true)
+  .option('--anonymize-projects', 'Show hashed project labels instead of raw cwd paths')
+  .action(async (options: CodexValidateCommandOptions) => {
+    try {
+      await runCodexValidationCommand(options);
+    } catch (error) {
+      console.error('Codex replay failed:', error instanceof Error ? error.message : error);
       process.exit(1);
     }
   });

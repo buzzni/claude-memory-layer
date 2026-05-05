@@ -1,0 +1,209 @@
+/**
+ * Product-level validation matrix for claude-memory-layer.
+ *
+ * This module is intentionally data-first so CLI/reporting/docs can reuse the
+ * same surface -> requirement -> evidence map that tests assert stays covered.
+ */
+
+export type ProductValidationArea = 'claude' | 'codex' | 'cli' | 'safety';
+export type ProductValidationStatus = 'ready' | 'covered' | 'partial' | 'planned';
+export type ProductValidationEvidenceKind = 'test' | 'source' | 'command' | 'doc';
+
+export interface ProductValidationEvidence {
+  kind: ProductValidationEvidenceKind;
+  ref: string;
+  note: string;
+}
+
+export interface ProductValidationSurface {
+  id: string;
+  area: ProductValidationArea;
+  title: string;
+  status: ProductValidationStatus;
+  requirements: string[];
+  evidence: ProductValidationEvidence[];
+}
+
+export interface ProductValidationMatrixSummary {
+  totalSurfaces: number;
+  requirementCount: number;
+  evidenceCount: number;
+  surfacesByArea: Record<ProductValidationArea, number>;
+  statusCounts: Record<ProductValidationStatus, number>;
+}
+
+export const productValidationMatrix: readonly ProductValidationSurface[] = [
+  {
+    id: 'claude.adapter.import',
+    area: 'claude',
+    title: 'Claude adapter import',
+    status: 'covered',
+    requirements: [
+      'Import Claude Code JSONL transcripts without storing tool-result noise as user prompts.',
+      'Preserve session/project mapping and turn grouping for retrieval continuity.'
+    ],
+    evidence: [
+      { kind: 'test', ref: 'tests/core/session-history-importer-filter.test.ts', note: 'Filters local-command artifacts and keeps substantive prompts.' },
+      { kind: 'source', ref: 'src/services/session-history-importer.ts', note: 'Claude JSONL import pipeline and project/session registration.' }
+    ]
+  },
+  {
+    id: 'claude.adapter.search',
+    area: 'claude',
+    title: 'Claude adapter search',
+    status: 'covered',
+    requirements: [
+      'Expose semantic memory search with project/session scoping and fast/deep strategies.',
+      'Return plain and disclosure-aware search output without mutating memory.'
+    ],
+    evidence: [
+      { kind: 'test', ref: 'tests/core/retrieval-services.test.ts', note: 'Core retrieval service behavior.' },
+      { kind: 'test', ref: 'tests/apps/cli-disclosure-output.test.ts', note: 'CLI disclosure output formatting.' },
+      { kind: 'source', ref: 'src/apps/cli/index.ts', note: 'search command supports disclosure, scope, and strategy flags.' }
+    ]
+  },
+  {
+    id: 'claude.adapter.disclosure',
+    area: 'claude',
+    title: 'Claude adapter disclosure',
+    status: 'covered',
+    requirements: [
+      'Support progressive search -> expand -> source disclosure flow.',
+      'Render source/citation evidence for retrieved memories.'
+    ],
+    evidence: [
+      { kind: 'test', ref: 'tests/core/retrieval-disclosure-service.test.ts', note: 'Disclosure service search/expand/source flow.' },
+      { kind: 'test', ref: 'tests/apps/ui-disclosure-output.test.ts', note: 'Dashboard disclosure formatting.' },
+      { kind: 'source', ref: 'src/core/engine/retrieval-disclosure-service.ts', note: 'Core disclosure orchestration.' }
+    ]
+  },
+  {
+    id: 'codex.adapter.scan',
+    area: 'codex',
+    title: 'Codex adapter scan',
+    status: 'ready',
+    requirements: [
+      'Read ~/.codex/sessions recursively without writes by default.',
+      'Match sessions to a project via session_meta.payload.cwd when available and summarize all sessions otherwise.',
+      'Count missing cwd, malformed JSONL lines, and unsupported/tool-ish records.'
+    ],
+    evidence: [
+      { kind: 'test', ref: 'tests/core/codex-session-history-importer-validation.test.ts', note: 'Dry-run scan, cwd matching, missing cwd, malformed and unsupported counts.' },
+      { kind: 'source', ref: 'src/services/codex-session-history-importer.ts', note: 'validateCodexSessions and normalizeCodexSessionFile.' }
+    ]
+  },
+  {
+    id: 'codex.adapter.import',
+    area: 'codex',
+    title: 'Codex adapter import',
+    status: 'partial',
+    requirements: [
+      'Import explicit Codex session files/project sessions into memory only through import APIs.',
+      'Preserve turn grouping and truncate oversized assistant content before storage.'
+    ],
+    evidence: [
+      { kind: 'source', ref: 'src/services/codex-session-history-importer.ts', note: 'CodexSessionHistoryImporter importProject/importAll/importSessionFile.' },
+      { kind: 'doc', ref: 'docs/PRODUCT_VALIDATION_MATRIX.md', note: 'Documents that validation/replay is read-only; mutation remains explicit import-only.' }
+    ]
+  },
+  {
+    id: 'codex.adapter.replay',
+    area: 'codex',
+    title: 'Codex adapter replay',
+    status: 'ready',
+    requirements: [
+      'Normalize response_item message records with user/assistant roles and text/input_text/output_text blocks.',
+      'Handle string content, empty assistant turns, large/truncated content, malformed lines, and tool-ish records robustly.',
+      'Emit aggregate replay counts without transcript content.'
+    ],
+    evidence: [
+      { kind: 'test', ref: 'tests/core/codex-session-history-importer-validation.test.ts', note: 'Realistic fixture replay covers supported and malformed Codex JSONL shapes.' },
+      { kind: 'source', ref: 'src/services/codex-session-history-importer.ts', note: 'normalizeCodexSessionFile parses and counts replay records.' }
+    ]
+  },
+  {
+    id: 'cli.api.reporting',
+    area: 'cli',
+    title: 'CLI / API / reporting',
+    status: 'ready',
+    requirements: [
+      'Expose user-facing Codex validation commands with --project, --sessions-dir, --limit, --format, --output, and --dry-run options.',
+      'Render JSON and Markdown reports with totals, warnings, top projects, and source paths.'
+    ],
+    evidence: [
+      { kind: 'test', ref: 'tests/apps/codex-validation-output.test.ts', note: 'JSON/Markdown report formatting.' },
+      { kind: 'source', ref: 'src/apps/cli/index.ts', note: 'codex validate/replay commands.' },
+      { kind: 'source', ref: 'src/apps/cli/codex-validation-output.ts', note: 'Report output helpers.' }
+    ]
+  },
+  {
+    id: 'safety.dryRun',
+    area: 'safety',
+    title: 'Safety / dry-run',
+    status: 'ready',
+    requirements: [
+      'Codex validation/replay is read-only by default and never initializes memory storage or changes Claude settings.',
+      'Reports exclude transcript content and can anonymize project paths for real-data validation artifacts.'
+    ],
+    evidence: [
+      { kind: 'test', ref: 'tests/core/codex-session-history-importer-validation.test.ts', note: 'Asserts dryRun=true, willMutate=false, and no transcript content in reports.' },
+      { kind: 'command', ref: 'claude-memory-layer codex validate --dry-run', note: 'User-facing dry-run validation command.' },
+      { kind: 'doc', ref: 'docs/PRODUCT_VALIDATION_MATRIX.md', note: 'Documents safety expectations and read-only validation scope.' }
+    ]
+  }
+];
+
+function emptyAreaCounts(): Record<ProductValidationArea, number> {
+  return { claude: 0, codex: 0, cli: 0, safety: 0 };
+}
+
+function emptyStatusCounts(): Record<ProductValidationStatus, number> {
+  return { ready: 0, covered: 0, partial: 0, planned: 0 };
+}
+
+export function getProductValidationMatrixSummary(
+  matrix: readonly ProductValidationSurface[] = productValidationMatrix
+): ProductValidationMatrixSummary {
+  const summary: ProductValidationMatrixSummary = {
+    totalSurfaces: matrix.length,
+    requirementCount: 0,
+    evidenceCount: 0,
+    surfacesByArea: emptyAreaCounts(),
+    statusCounts: emptyStatusCounts()
+  };
+
+  for (const surface of matrix) {
+    summary.surfacesByArea[surface.area] += 1;
+    summary.statusCounts[surface.status] += 1;
+    summary.requirementCount += surface.requirements.length;
+    summary.evidenceCount += surface.evidence.length;
+  }
+
+  return summary;
+}
+
+export function renderProductValidationMatrixMarkdown(
+  matrix: readonly ProductValidationSurface[] = productValidationMatrix
+): string {
+  const summary = getProductValidationMatrixSummary(matrix);
+  const lines: string[] = [
+    '# Product Validation Matrix',
+    '',
+    `Surfaces: ${summary.totalSurfaces}`,
+    `Requirements: ${summary.requirementCount}`,
+    `Evidence items: ${summary.evidenceCount}`,
+    '',
+    '| Area | Surface | Status | Requirements | Evidence |',
+    '| --- | --- | --- | --- | --- |'
+  ];
+
+  for (const surface of matrix) {
+    const requirements = surface.requirements.map((requirement) => requirement.replace(/\|/g, '\\|')).join('<br>');
+    const evidence = surface.evidence
+      .map((item) => `${item.kind}: ${item.ref}`.replace(/\|/g, '\\|'))
+      .join('<br>');
+    lines.push(`| ${surface.area} | ${surface.title} | ${surface.status} | ${requirements} | ${evidence} |`);
+  }
+
+  return `${lines.join('\n')}\n`;
+}

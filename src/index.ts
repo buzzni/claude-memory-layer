@@ -10,3 +10,4 @@ export * from './core/index.js';
 export * from './services/memory-service.js';
 export * from './services/memory-service-config.js';
 export * from './services/memory-service-registry.js';
+export * from './services/codex-session-history-importer.js';

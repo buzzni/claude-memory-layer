@@ -10,7 +10,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as readline from 'readline';
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { MemoryService } from './memory-service.js';
 import { registerSession } from '../core/registry/session-registry.js';
 import type { ImportOptions, ImportResult } from './session-history-importer.js';
@@ -38,6 +38,96 @@ type CodexContentBlock = {
   text?: unknown;
 };
 
+export const CODEX_VALIDATION_DEFAULT_MAX_CONTENT_CHARS = 10_000;
+
+export interface CodexSessionMeta {
+  sessionId: string | null;
+  cwd: string | null;
+}
+
+export interface CodexValidationOptions {
+  sessionsDir?: string;
+  projectPath?: string;
+  limit?: number;
+  maxContentChars?: number;
+  anonymizeProjects?: boolean;
+  now?: Date;
+}
+
+export interface CodexValidationSource {
+  sessionsDir: string;
+  projectPath?: string;
+  projectFilterApplied: boolean;
+  sourcePaths: string[];
+}
+
+export interface CodexValidationLimits {
+  sessionLimit?: number;
+  maxContentChars: number;
+}
+
+export interface CodexValidationTotals {
+  sessionsScanned: number;
+  sessionsMatched: number;
+  filesRead: number;
+  recordsRead: number;
+  messagesNormalized: number;
+  turnsNormalized: number;
+  userMessages: number;
+  assistantMessages: number;
+  malformedLines: number;
+  skippedUnsupportedRecords: number;
+  emptyAssistantMessages: number;
+  truncatedMessages: number;
+  missingProjectCwd: number;
+  warnings: number;
+}
+
+export interface CodexProjectSummary {
+  projectHash: string;
+  pathLabel: string;
+  sessions: number;
+  messagesNormalized: number;
+  turnsNormalized: number;
+  userMessages: number;
+  assistantMessages: number;
+  malformedLines: number;
+  skippedUnsupportedRecords: number;
+  truncatedMessages: number;
+  emptyAssistantMessages: number;
+}
+
+export interface CodexSessionReplaySummary {
+  sessionId: string;
+  filePath: string;
+  projectHash: string;
+  pathLabel: string;
+  matched: boolean;
+  recordsRead: number;
+  messagesNormalized: number;
+  turnsNormalized: number;
+  userMessages: number;
+  assistantMessages: number;
+  malformedLines: number;
+  skippedUnsupportedRecords: number;
+  emptyAssistantMessages: number;
+  truncatedMessages: number;
+  missingProjectCwd: boolean;
+  warnings: string[];
+}
+
+export interface CodexSessionValidationReport {
+  generatedAt: string;
+  dryRun: true;
+  willMutate: false;
+  source: CodexValidationSource;
+  limits: CodexValidationLimits;
+  totals: CodexValidationTotals;
+  topProjects: CodexProjectSummary[];
+  sessions: CodexSessionReplaySummary[];
+  warnings: string[];
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
@@ -50,20 +140,371 @@ function normalizeMaybeRealpath(p: string): string {
   }
 }
 
-function extractTextFromContent(content: unknown): string | null {
-  if (!Array.isArray(content)) return null;
+interface CodexExtractedContent {
+  text: string | null;
+  originalLength: number;
+  truncated: boolean;
+}
+
+function extractCodexContentText(
+  content: unknown,
+  maxContentChars = CODEX_VALIDATION_DEFAULT_MAX_CONTENT_CHARS
+): CodexExtractedContent {
   const texts: string[] = [];
-  for (const block of content) {
-    if (!isRecord(block)) continue;
-    const b = block as CodexContentBlock;
-    const t = typeof b.type === 'string' ? b.type : '';
-    if (t !== 'input_text' && t !== 'output_text' && t !== 'text') continue;
-    if (typeof b.text === 'string' && b.text.length > 0) {
-      texts.push(b.text);
+
+  if (typeof content === 'string') {
+    if (content.length > 0) texts.push(content);
+  } else if (Array.isArray(content)) {
+    for (const block of content) {
+      if (!isRecord(block)) continue;
+      const b = block as CodexContentBlock;
+      const t = typeof b.type === 'string' ? b.type : '';
+      if (t !== 'input_text' && t !== 'output_text' && t !== 'text') continue;
+      if (typeof b.text === 'string' && b.text.length > 0) {
+        texts.push(b.text);
+      }
     }
   }
-  if (texts.length === 0) return null;
-  return texts.join('\n');
+
+  if (texts.length === 0) {
+    return { text: null, originalLength: 0, truncated: false };
+  }
+
+  const merged = texts.join('\n');
+  const truncated = merged.length > maxContentChars;
+  return {
+    text: truncated ? `${merged.slice(0, maxContentChars)}...[truncated]` : merged,
+    originalLength: merged.length,
+    truncated
+  };
+}
+
+function extractTextFromContent(content: unknown): string | null {
+  return extractCodexContentText(content).text;
+}
+
+export function getDefaultCodexSessionsDir(): string {
+  return path.join(os.homedir(), '.codex', 'sessions');
+}
+
+export function listCodexSessionFilesRecursive(rootDir: string): string[] {
+  if (!fs.existsSync(rootDir)) return [];
+  const out: string[] = [];
+  const stack: string[] = [rootDir];
+
+  while (stack.length > 0) {
+    const dir = stack.pop()!;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const ent of entries) {
+      const fullPath = path.join(dir, ent.name);
+      if (ent.isDirectory()) {
+        stack.push(fullPath);
+      } else if (ent.isFile() && ent.name.endsWith('.jsonl')) {
+        out.push(fullPath);
+      }
+    }
+  }
+
+  return out.sort();
+}
+
+export async function readCodexSessionMeta(filePath: string): Promise<CodexSessionMeta> {
+  const fileStream = fs.createReadStream(filePath, { encoding: 'utf-8' });
+  const rl = readline.createInterface({ input: fileStream, crlfDelay: Infinity });
+
+  try {
+    let linesRead = 0;
+    for await (const line of rl) {
+      linesRead++;
+      if (!line.trim()) continue;
+      try {
+        const obj = JSON.parse(line) as CodexLogLine;
+        if (obj.type !== 'session_meta') continue;
+        if (!isRecord(obj.payload)) break;
+        const payload = obj.payload as CodexSessionMetaPayload;
+        const sessionId = typeof payload.id === 'string' ? payload.id : null;
+        const cwd = typeof payload.cwd === 'string' ? payload.cwd : null;
+        return { sessionId, cwd };
+      } catch {
+        // Ignore malformed preamble lines while looking for session_meta.
+      }
+
+      // session_meta is expected near the top; do not scan huge transcripts twice.
+      if (linesRead >= 25) break;
+    }
+  } finally {
+    rl.close();
+    fileStream.close();
+  }
+
+  return { sessionId: null, cwd: null };
+}
+
+export function deriveCodexSessionIdFromFileName(filePath: string): string | null {
+  const base = path.basename(filePath, '.jsonl');
+  // Common: rollout-<date>-<uuid>
+  const m = base.match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i);
+  if (m?.[1]) return m[1];
+  return base.length > 0 ? base : null;
+}
+
+function createEmptyCodexValidationTotals(): CodexValidationTotals {
+  return {
+    sessionsScanned: 0,
+    sessionsMatched: 0,
+    filesRead: 0,
+    recordsRead: 0,
+    messagesNormalized: 0,
+    turnsNormalized: 0,
+    userMessages: 0,
+    assistantMessages: 0,
+    malformedLines: 0,
+    skippedUnsupportedRecords: 0,
+    emptyAssistantMessages: 0,
+    truncatedMessages: 0,
+    missingProjectCwd: 0,
+    warnings: 0
+  };
+}
+
+function projectHashFor(cwd: string | null): string {
+  return createHash('sha256').update(cwd ?? '(missing cwd)').digest('hex').slice(0, 12);
+}
+
+function projectPathLabel(cwd: string | null, anonymizeProjects: boolean): string {
+  const hash = projectHashFor(cwd);
+  if (anonymizeProjects) return cwd ? `project:${hash}` : `project:${hash}:missing-cwd`;
+  return cwd ?? '(missing cwd)';
+}
+
+function isProjectMatch(cwd: string | null, projectPath?: string): boolean {
+  if (!projectPath) return true;
+  if (!cwd) return false;
+  return normalizeMaybeRealpath(cwd) === normalizeMaybeRealpath(projectPath);
+}
+
+function addSessionToProject(projects: Map<string, CodexProjectSummary>, session: CodexSessionReplaySummary): void {
+  const existing = projects.get(session.projectHash) ?? {
+    projectHash: session.projectHash,
+    pathLabel: session.pathLabel,
+    sessions: 0,
+    messagesNormalized: 0,
+    turnsNormalized: 0,
+    userMessages: 0,
+    assistantMessages: 0,
+    malformedLines: 0,
+    skippedUnsupportedRecords: 0,
+    truncatedMessages: 0,
+    emptyAssistantMessages: 0
+  };
+
+  existing.sessions += 1;
+  existing.messagesNormalized += session.messagesNormalized;
+  existing.turnsNormalized += session.turnsNormalized;
+  existing.userMessages += session.userMessages;
+  existing.assistantMessages += session.assistantMessages;
+  existing.malformedLines += session.malformedLines;
+  existing.skippedUnsupportedRecords += session.skippedUnsupportedRecords;
+  existing.truncatedMessages += session.truncatedMessages;
+  existing.emptyAssistantMessages += session.emptyAssistantMessages;
+  projects.set(session.projectHash, existing);
+}
+
+function addSessionToTotals(totals: CodexValidationTotals, session: CodexSessionReplaySummary): void {
+  totals.filesRead += 1;
+  totals.recordsRead += session.recordsRead;
+  totals.messagesNormalized += session.messagesNormalized;
+  totals.turnsNormalized += session.turnsNormalized;
+  totals.userMessages += session.userMessages;
+  totals.assistantMessages += session.assistantMessages;
+  totals.malformedLines += session.malformedLines;
+  totals.skippedUnsupportedRecords += session.skippedUnsupportedRecords;
+  totals.emptyAssistantMessages += session.emptyAssistantMessages;
+  totals.truncatedMessages += session.truncatedMessages;
+}
+
+export async function normalizeCodexSessionFile(
+  filePath: string,
+  options: {
+    meta?: CodexSessionMeta;
+    matched?: boolean;
+    maxContentChars?: number;
+    anonymizeProjects?: boolean;
+  } = {}
+): Promise<CodexSessionReplaySummary> {
+  const meta = options.meta ?? await readCodexSessionMeta(filePath);
+  const sessionId = meta.sessionId ?? deriveCodexSessionIdFromFileName(filePath) ?? path.basename(filePath, '.jsonl');
+  const projectHash = projectHashFor(meta.cwd);
+  const pathLabel = projectPathLabel(meta.cwd, options.anonymizeProjects === true);
+  const summary: CodexSessionReplaySummary = {
+    sessionId,
+    filePath,
+    projectHash,
+    pathLabel,
+    matched: options.matched ?? true,
+    recordsRead: 0,
+    messagesNormalized: 0,
+    turnsNormalized: 0,
+    userMessages: 0,
+    assistantMessages: 0,
+    malformedLines: 0,
+    skippedUnsupportedRecords: 0,
+    emptyAssistantMessages: 0,
+    truncatedMessages: 0,
+    missingProjectCwd: !meta.cwd,
+    warnings: []
+  };
+
+  if (!meta.cwd) {
+    summary.warnings.push('session_meta missing cwd; project matching is unavailable for this session');
+  }
+
+  const maxContentChars = options.maxContentChars ?? CODEX_VALIDATION_DEFAULT_MAX_CONTENT_CHARS;
+  const fileStream = fs.createReadStream(filePath, { encoding: 'utf-8' });
+  const rl = readline.createInterface({ input: fileStream, crlfDelay: Infinity });
+
+  try {
+    for await (const line of rl) {
+      if (!line.trim()) continue;
+      summary.recordsRead += 1;
+
+      let entry: CodexLogLine;
+      try {
+        entry = JSON.parse(line) as CodexLogLine;
+      } catch {
+        summary.malformedLines += 1;
+        continue;
+      }
+
+      if (entry.type === 'session_meta') continue;
+      if (entry.type !== 'response_item' || !isRecord(entry.payload)) {
+        summary.skippedUnsupportedRecords += 1;
+        continue;
+      }
+
+      const payload = entry.payload as CodexResponseItemMessagePayload;
+      if (payload.type !== 'message') {
+        summary.skippedUnsupportedRecords += 1;
+        continue;
+      }
+
+      const role = typeof payload.role === 'string' ? payload.role : null;
+      if (role !== 'user' && role !== 'assistant') {
+        summary.skippedUnsupportedRecords += 1;
+        continue;
+      }
+
+      const extracted = extractCodexContentText(payload.content, maxContentChars);
+      if (!extracted.text) {
+        if (role === 'assistant') {
+          summary.emptyAssistantMessages += 1;
+        } else {
+          summary.skippedUnsupportedRecords += 1;
+        }
+        continue;
+      }
+
+      if (extracted.truncated) {
+        summary.truncatedMessages += 1;
+      }
+
+      summary.messagesNormalized += 1;
+      if (role === 'user') {
+        summary.userMessages += 1;
+        summary.turnsNormalized += 1;
+      } else {
+        summary.assistantMessages += 1;
+      }
+    }
+  } finally {
+    rl.close();
+    fileStream.close();
+  }
+
+  return summary;
+}
+
+export async function validateCodexSessions(options: CodexValidationOptions = {}): Promise<CodexSessionValidationReport> {
+  const sessionsDir = path.resolve(options.sessionsDir ?? getDefaultCodexSessionsDir());
+  const maxContentChars = options.maxContentChars ?? CODEX_VALIDATION_DEFAULT_MAX_CONTENT_CHARS;
+  const report: CodexSessionValidationReport = {
+    generatedAt: (options.now ?? new Date()).toISOString(),
+    dryRun: true,
+    willMutate: false,
+    source: {
+      sessionsDir,
+      projectPath: options.projectPath,
+      projectFilterApplied: Boolean(options.projectPath),
+      sourcePaths: [sessionsDir]
+    },
+    limits: {
+      sessionLimit: options.limit,
+      maxContentChars
+    },
+    totals: createEmptyCodexValidationTotals(),
+    topProjects: [],
+    sessions: [],
+    warnings: []
+  };
+
+  if (!fs.existsSync(sessionsDir)) {
+    report.warnings.push(`Codex sessions directory not found: ${sessionsDir}`);
+    report.totals.warnings = report.warnings.length;
+    return report;
+  }
+
+  const sessionFiles = listCodexSessionFilesRecursive(sessionsDir);
+  const limitedFiles = typeof options.limit === 'number' && Number.isFinite(options.limit) && options.limit > 0
+    ? sessionFiles.slice(0, Math.floor(options.limit))
+    : sessionFiles;
+  const projects = new Map<string, CodexProjectSummary>();
+
+  for (const filePath of limitedFiles) {
+    const meta = await readCodexSessionMeta(filePath);
+    report.totals.sessionsScanned += 1;
+    if (!meta.cwd) {
+      report.totals.missingProjectCwd += 1;
+    }
+
+    const matched = isProjectMatch(meta.cwd, options.projectPath);
+    if (!matched) continue;
+
+    report.totals.sessionsMatched += 1;
+    const sessionSummary = await normalizeCodexSessionFile(filePath, {
+      meta,
+      matched,
+      maxContentChars,
+      anonymizeProjects: options.anonymizeProjects
+    });
+    report.sessions.push(sessionSummary);
+    addSessionToTotals(report.totals, sessionSummary);
+    addSessionToProject(projects, sessionSummary);
+  }
+
+  report.topProjects = [...projects.values()].sort((a, b) => {
+    const byMessages = b.messagesNormalized - a.messagesNormalized;
+    if (byMessages !== 0) return byMessages;
+    return b.sessions - a.sessions;
+  }).slice(0, 10);
+
+  if (report.totals.missingProjectCwd > 0) {
+    report.warnings.push(`${report.totals.missingProjectCwd} session(s) missing cwd; project matching only uses sessions with cwd`);
+  }
+  if (report.totals.malformedLines > 0) {
+    report.warnings.push(`${report.totals.malformedLines} malformed JSONL line(s) skipped`);
+  }
+  if (options.projectPath && report.totals.sessionsMatched === 0) {
+    report.warnings.push(`No Codex sessions matched project cwd: ${options.projectPath}`);
+  }
+  report.totals.warnings = report.warnings.length;
+
+  return report;
 }
 
 export class CodexSessionHistoryImporter {

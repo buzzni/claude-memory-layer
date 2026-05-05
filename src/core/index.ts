@@ -39,6 +39,9 @@ export * from './embedder.js';
 export * from './vector-worker.js';
 export * from './vector-outbox.js';
 
+// Product validation
+export * from './product-validation-matrix.js';
+
 // Matching & Alignment
 export * from './matcher.js';
 export * from './evidence-aligner.js';
