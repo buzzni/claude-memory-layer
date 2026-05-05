@@ -21,7 +21,8 @@
     "ops:review:resolve": "node scripts/review-queue-auto-resolve.js",
     "ops:heartbeat": "bash scripts/heartbeat-memory-orchestrator.sh",
     "ops:health": "npm run ops:sync-gap:report && npm run ops:sync-gap:heal && npm run ops:review:resolve",
-    "ops:projects:clean-unknown": "node scripts/delete-unknown-projects.js"
+    "ops:projects:clean-unknown": "node scripts/delete-unknown-projects.js",
+    "benchmark:replay": "tsx scripts/replay-retrieval-benchmark.ts"
   },
   "keywords": [
     "claude-code",

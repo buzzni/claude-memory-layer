@@ -684,4 +684,5 @@ export const getReadOnlyMemoryService = defaultRegistry.getReadOnlyMemoryService
 export const getMemoryServiceForProject = defaultRegistry.getMemoryServiceForProject;
 export const getMemoryServiceForSession = defaultRegistry.getMemoryServiceForSession;
 export const getLightweightMemoryService = defaultRegistry.getLightweightMemoryService;
+export const getLightweightMemoryServiceForProject = defaultRegistry.getLightweightMemoryServiceForProject;
 export const createMemoryService = defaultRegistry.createMemoryService;

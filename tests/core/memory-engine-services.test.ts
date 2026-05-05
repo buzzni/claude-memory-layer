@@ -36,6 +36,7 @@ describe('createMemoryEngineServices', () => {
       isDuplicate: false as const
     }));
     const sqliteStore = {
+      initialize: vi.fn(async () => {}),
       append,
       enqueueForEmbedding,
       upsertSession: vi.fn(async () => {}),
@@ -176,6 +177,8 @@ describe('createMemoryEngineServices', () => {
 
       await services.queryService.getRecentEvents(3);
       expect(sqliteStore.getRecentEvents).toHaveBeenCalledWith(3);
+      expect(sqliteStore.initialize).toHaveBeenCalledTimes(1);
+      expect(initialize).not.toHaveBeenCalled();
 
       await expect(services.queryService.getStats()).resolves.toEqual({
         totalEvents: 1,
@@ -183,6 +186,8 @@ describe('createMemoryEngineServices', () => {
         levelStats: [{ level: 'working', count: 2 }]
       });
       expect(sqliteStore.getRecentEvents).toHaveBeenCalledWith(10000);
+      expect(sqliteStore.initialize).toHaveBeenCalledTimes(2);
+      expect(initialize).not.toHaveBeenCalled();
       expect(vectorStore.count).toHaveBeenCalledOnce();
       expect(graduation.getStats).toHaveBeenCalledOnce();
     } finally {

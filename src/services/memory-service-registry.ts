@@ -33,6 +33,7 @@ export interface MemoryServiceRegistry<TService> {
   getMemoryServiceForProject(projectPath: string, sharedStoreConfig?: SharedStoreConfig): TService;
   getMemoryServiceForSession(sessionId: string): TService;
   getLightweightMemoryService(sessionId: string): TService;
+  getLightweightMemoryServiceForProject(projectPath: string): TService;
   createMemoryService(config: MemoryServiceConfig): TService;
 }
 
@@ -94,19 +95,16 @@ export function createMemoryServiceRegistry<TService>(
     return getDefaultMemoryService();
   };
 
-  const getLightweightMemoryService = (sessionId: string): TService => {
-    const projectInfo = deps.getSessionProject(sessionId);
-    const key = projectInfo ? `lightweight_${projectInfo.projectHash}` : 'lightweight_global';
-
+  const getOrCreateLightweightProjectService = (
+    projectHash: string,
+    projectPath: string
+  ): TService => {
+    const key = `lightweight_${projectHash}`;
     if (!serviceCache.has(key)) {
-      const storagePath = projectInfo
-        ? deps.getProjectStoragePath(projectInfo.projectPath)
-        : path.join(deps.homedir(), '.claude-code', 'memory');
-
       serviceCache.set(key, deps.createService({
-        storagePath,
-        projectHash: projectInfo?.projectHash,
-        projectPath: projectInfo?.projectPath,
+        storagePath: deps.getProjectStoragePath(projectPath),
+        projectHash,
+        projectPath,
         lightweightMode: true,
         analyticsEnabled: false,
         sharedStoreConfig: deps.disabledSharedStoreConfig
@@ -116,12 +114,37 @@ export function createMemoryServiceRegistry<TService>(
     return serviceCache.get(key)!;
   };
 
+  const getLightweightMemoryService = (sessionId: string): TService => {
+    const projectInfo = deps.getSessionProject(sessionId);
+    if (projectInfo) {
+      return getOrCreateLightweightProjectService(projectInfo.projectHash, projectInfo.projectPath);
+    }
+
+    const key = 'lightweight_global';
+    if (!serviceCache.has(key)) {
+      serviceCache.set(key, deps.createService({
+        storagePath: path.join(deps.homedir(), '.claude-code', 'memory'),
+        lightweightMode: true,
+        analyticsEnabled: false,
+        sharedStoreConfig: deps.disabledSharedStoreConfig
+      }));
+    }
+
+    return serviceCache.get(key)!;
+  };
+
+  const getLightweightMemoryServiceForProject = (projectPath: string): TService => {
+    const projectHash = deps.hashProjectPath(projectPath);
+    return getOrCreateLightweightProjectService(projectHash, projectPath);
+  };
+
   return {
     getDefaultMemoryService,
     getReadOnlyMemoryService,
     getMemoryServiceForProject,
     getMemoryServiceForSession,
     getLightweightMemoryService,
+    getLightweightMemoryServiceForProject,
     createMemoryService: (config: MemoryServiceConfig): TService => deps.createService(config)
   };
 }

@@ -100,11 +100,16 @@ export class RetrievalOrchestrator {
     query: string,
     options?: RetrieveMemoriesOptions
   ): Promise<UnifiedRetrievalResult> {
-    await this.deps.initialize();
+    const lightweightFastRead = this.isLightweightFastRead(options);
+    if (!lightweightFastRead) {
+      await this.deps.initialize();
+    }
 
     // Note: Pending embeddings are processed by the background worker.
     // Don't block retrieval - search with whatever vectors are available.
-    const rerankWeights = await this.getRerankWeights(options?.adaptiveRerank === true);
+    const rerankWeights = lightweightFastRead
+      ? undefined
+      : await this.getRerankWeights(options?.adaptiveRerank === true);
     const projectHash = this.deps.getProjectHash();
     const projectScopeMode = options?.projectScopeMode ?? (projectHash ? 'strict' : 'global');
 
@@ -237,6 +242,12 @@ export class RetrievalOrchestrator {
       confidence: result.matchResult.confidence,
       fallbackTrace: result.fallbackTrace || []
     });
+  }
+
+  private isLightweightFastRead(options: RetrieveMemoriesOptions | undefined): boolean {
+    return options?.strategy === 'fast'
+      && options.includeShared !== true
+      && options.adaptiveRerank !== true;
   }
 
   private getConfiguredRerankWeights(): RerankWeights | undefined {

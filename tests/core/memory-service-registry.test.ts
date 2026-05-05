@@ -174,6 +174,26 @@ describe('createMemoryServiceRegistry', () => {
     });
   });
 
+  it('caches lightweight project services for CLI read paths without reusing the full project service', () => {
+    const { registry, createdConfigs } = createRegistry();
+
+    const fullProjectService = registry.getMemoryServiceForProject('/workspace/app');
+    const lightweightProjectService = registry.getLightweightMemoryServiceForProject('/workspace/app');
+    const sameLightweightProjectService = registry.getLightweightMemoryServiceForProject('/workspace/app');
+
+    expect(lightweightProjectService).toBe(sameLightweightProjectService);
+    expect(lightweightProjectService).not.toBe(fullProjectService);
+    expect(createdConfigs).toHaveLength(2);
+    expect(lightweightProjectService.config).toMatchObject({
+      storagePath: '/storage//workspace/app',
+      projectHash: 'hash:/workspace/app',
+      projectPath: '/workspace/app',
+      lightweightMode: true,
+      analyticsEnabled: false,
+      sharedStoreConfig: disabledSharedStoreConfig
+    });
+  });
+
   it('creates uncached services through the explicit factory facade', () => {
     const { registry } = createRegistry();
 

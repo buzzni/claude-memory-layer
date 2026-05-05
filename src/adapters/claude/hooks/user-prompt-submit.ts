@@ -21,6 +21,12 @@ import * as os from 'os';
 import { getLightweightMemoryService } from '../../../services/memory-service.js';
 import { writeTurnState, readLastAssistantSnippet } from '../../../core/turn-state.js';
 import { retrieveSemanticMemories } from './semantic-daemon-client.js';
+import {
+  filterHookInjectableMemories,
+  getHookInjectionPolicy,
+  summarizeHookInjectionConfidence,
+  type HookMemoryCandidate
+} from './prompt-injection-policy.js';
 import type { UserPromptSubmitInput, UserPromptSubmitOutput } from '../../../core/types.js';
 
 // Configuration
@@ -213,7 +219,7 @@ export async function main(): Promise<void> {
     const isSlashCommand = input.prompt.trimStart().startsWith('/');
     if (ENABLE_SEARCH && !isSlashCommand && input.prompt.length > 10 && adherenceDecision.run) {
       const minScore = getDynamicMinScore(input.prompt);
-      let mergedMemories: Array<{ type: string; content: string; id?: string; score?: number }> = [];
+      let mergedMemories: HookMemoryCandidate[] = [];
 
       // On turn 2+, enrich the retrieval query with the previous assistant response
       // so short/ambiguous follow-ups ("그거 고쳐줘") resolve correctly.
@@ -225,7 +231,7 @@ export async function main(): Promise<void> {
       const canUseSemantic = RETRIEVAL_MODE === 'semantic' || RETRIEVAL_MODE === 'hybrid';
       if (canUseSemantic) {
         try {
-          mergedMemories = await retrieveSemanticMemories(
+          const semanticMemories = await retrieveSemanticMemories(
             {
               sessionId: input.session_id,
               prompt: retrievalQuery,
@@ -234,6 +240,10 @@ export async function main(): Promise<void> {
             },
             SEMANTIC_TIMEOUT_MS
           );
+          mergedMemories = semanticMemories.map((memory) => ({
+            ...memory,
+            source: 'semantic'
+          }));
         } catch {
           // Semantic retrieval is best-effort; fallback below handles the rest
         }
@@ -245,6 +255,7 @@ export async function main(): Promise<void> {
         mergedMemories.length === 0;
 
       if (shouldUseKeywordFallback && mergedMemories.length < MAX_MEMORIES) {
+        let usedFallbackFloor = false;
         let results = await memoryService.keywordSearch(retrievalQuery, {
           topK: MAX_MEMORIES,
           minScore
@@ -252,6 +263,7 @@ export async function main(): Promise<void> {
 
         // recall rescue: if nothing found at tuned threshold, retry with fallback floor
         if (results.length === 0 && FALLBACK_MIN_SCORE < minScore) {
+          usedFallbackFloor = true;
           results = await memoryService.keywordSearch(retrievalQuery, {
             topK: MAX_MEMORIES,
             minScore: FALLBACK_MIN_SCORE
@@ -265,21 +277,28 @@ export async function main(): Promise<void> {
             type: r.event.eventType,
             content: r.event.content,
             id: r.event.id,
-            score: r.score
+            score: r.score,
+            source: 'keyword',
+            fallback: usedFallbackFloor
           });
           if (mergedMemories.length >= MAX_MEMORIES) break;
         }
       }
 
-      if (mergedMemories.length > 0) {
-        // Increment access count for found memories
-        const eventIds = mergedMemories.map((m) => m.id).filter((v): v is string => Boolean(v));
+      const injectableMemories = filterHookInjectableMemories(
+        mergedMemories,
+        getHookInjectionPolicy()
+      );
+
+      if (injectableMemories.length > 0) {
+        // Increment access count only for high-confidence memories injected into the prompt.
+        const eventIds = injectableMemories.map((m) => m.id).filter((v): v is string => Boolean(v));
         if (eventIds.length > 0) {
           await memoryService.incrementMemoryAccess(eventIds);
         }
 
-        // Record each retrieval for helpfulness tracking
-        for (const m of mergedMemories) {
+        // Record each injected retrieval for helpfulness tracking.
+        for (const m of injectableMemories) {
           if (!m.id) continue;
           try {
             await memoryService.recordRetrieval(
@@ -291,19 +310,20 @@ export async function main(): Promise<void> {
           } catch { /* non-critical */ }
         }
 
-        context = formatMemoryContext(mergedMemories);
+        context = formatMemoryContext(injectableMemories);
       }
 
       // Record query-level trace for dashboard stats (retrieval_traces table)
       const allCandidateIds = mergedMemories.map((m) => m.id).filter((v): v is string => Boolean(v));
+      const selectedIds = injectableMemories.map((m) => m.id).filter((v): v is string => Boolean(v));
       try {
         await memoryService.recordQueryTrace({
           sessionId: input.session_id,
           queryText: retrievalQuery,
           strategy: RETRIEVAL_MODE,
           candidateEventIds: allCandidateIds,
-          selectedEventIds: allCandidateIds,
-          confidence: mergedMemories.length > 0 ? 'medium' : 'none'
+          selectedEventIds: selectedIds,
+          confidence: summarizeHookInjectionConfidence(injectableMemories)
         });
       } catch { /* non-critical */ }
     }

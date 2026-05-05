@@ -11,7 +11,8 @@ import * as path from 'path';
 import * as os from 'os';
 import {
   getDefaultMemoryService,
-  getMemoryServiceForProject
+  getMemoryServiceForProject,
+  getLightweightMemoryServiceForProject
 } from '../../services/memory-service.js';
 import { getProjectStoragePath } from '../../core/registry/project-path.js';
 import { createSessionHistoryImporter, type ProgressEvent } from '../../services/session-history-importer.js';
@@ -242,7 +243,10 @@ program
   .option('--strategy <mode>', 'Retrieval strategy: auto, fast, or deep', 'auto')
   .action(async (query: string, options) => {
     const projectPath = options.project || process.cwd();
-    const service = getMemoryServiceForProject(projectPath);
+    const useLightweightRead = options.strategy === 'fast' && options.includeShared !== true;
+    const service = useLightweightRead
+      ? getLightweightMemoryServiceForProject(projectPath)
+      : getMemoryServiceForProject(projectPath);
 
     try {
       if (options.disclosure) {
@@ -262,7 +266,8 @@ program
         topK: parseInt(options.topK),
         minScore: parseFloat(options.minScore),
         sessionId: options.session,
-        includeShared: options.includeShared === true
+        includeShared: options.includeShared === true,
+        strategy: options.strategy
       });
 
       console.log(formatPlainSearchResults(result));
@@ -392,7 +397,7 @@ program
   .option('-p, --project <path>', 'Project path (defaults to cwd)')
   .action(async (options) => {
     const projectPath = options.project || process.cwd();
-    const service = getMemoryServiceForProject(projectPath);
+    const service = getLightweightMemoryServiceForProject(projectPath);
 
     try {
       const stats = await service.getStats();

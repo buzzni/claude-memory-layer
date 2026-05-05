@@ -1,0 +1,19 @@
+{
+  "name": "anonymized-real-session-replay-v1",
+  "description": "Anonymized real-session-style retrieval replay fixture for Precision@k / Recall@k checks.",
+  "ks": [1, 3, 5],
+  "queries": [
+    { "queryId": "q-cli-fast", "query": "fast search should avoid embedding startup", "expectedIds": ["m-cli-fast", "m-runtime-light"] },
+    { "queryId": "q-hook-policy", "query": "hook should not inject weak keyword rescue", "expectedIds": ["m-hook-policy", "m-hook-threshold"] },
+    { "queryId": "q-replay-bench", "query": "precision recall replay benchmark output", "expectedIds": ["m-benchmark", "m-metrics"] }
+  ],
+  "memories": [
+    { "id": "m-cli-fast", "content": "CLI search --strategy fast uses keyword retrieval and should not start embedding model initialization." },
+    { "id": "m-runtime-light", "content": "Lightweight read paths initialize SQLite event-store only and avoid vector/embedder workers." },
+    { "id": "m-hook-policy", "content": "Claude hook prompt injection has a separate conservative policy for high-confidence memories." },
+    { "id": "m-hook-threshold", "content": "Low-confidence keyword fallback can remain searchable but should not be injected into prompts." },
+    { "id": "m-benchmark", "content": "Replay benchmark reports Precision@k and Recall@k over anonymized session queries." },
+    { "id": "m-metrics", "content": "Metric summaries average per-query precision and recall for k values one three and five." },
+    { "id": "m-noise", "content": "Unrelated dashboard styling note for visual spacing." }
+  ]
+}

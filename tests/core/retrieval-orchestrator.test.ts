@@ -101,6 +101,47 @@ describe('RetrievalOrchestrator', () => {
     });
   });
 
+  it('does not run full runtime initialization for local fast retrieval', async () => {
+    let initialized = 0;
+    let retrieveArgs: { query: string; options: Record<string, unknown> } | null = null;
+    const traces: Array<Record<string, unknown>> = [];
+
+    const fakeRetriever = {
+      setQueryRewriter() {},
+      async retrieve(query: string, options: Record<string, unknown>) {
+        retrieveArgs = { query, options };
+        return retrievalResult('fast-e1');
+      }
+    } as unknown as Retriever;
+
+    const orchestrator = new RetrievalOrchestrator({
+      initialize: async () => { initialized += 1; },
+      retriever: fakeRetriever,
+      traceStore: {
+        getHelpfulnessStats: async () => stats(),
+        recordRetrievalTrace: async (input) => { traces.push(input); }
+      },
+      accessStore: noopAccessStore(),
+      getProjectHash: () => 'project-fast',
+      hasSharedStore: () => false
+    });
+
+    await orchestrator.retrieveMemories('fast keyword query', {
+      strategy: 'fast',
+      topK: 3,
+      minScore: 0.2
+    });
+
+    expect(initialized).toBe(0);
+    expect(retrieveArgs?.options.strategy).toBe('fast');
+    expect(retrieveArgs?.options.projectHash).toBe('project-fast');
+    expect(traces[0]).toMatchObject({
+      strategy: 'fast',
+      candidateEventIds: ['fast-e1'],
+      selectedEventIds: ['fast-e1']
+    });
+  });
+
   it('uses unified retrieval and normalized configured rerank weights when shared search is enabled', async () => {
     process.env.MEMORY_RERANK_WEIGHT_SEMANTIC = '3';
     process.env.MEMORY_RERANK_WEIGHT_LEXICAL = '1';
