@@ -7,7 +7,7 @@ interface Fixture {
   name: string;
   description: string;
   ks: number[];
-  queries: Array<{ queryId: string; query: string; expectedIds: string[] }>;
+  queries: Array<{ queryId: string; query: string; expectedIds: string[]; expectedRelevance?: Record<string, number> }>;
   memories: Array<{ id: string; content: string }>;
 }
 
@@ -16,6 +16,7 @@ const fixture = JSON.parse(await readFile(fixturePath, 'utf8')) as Fixture;
 const inputs = fixture.queries.map((query) => ({
   queryId: query.queryId,
   expectedIds: query.expectedIds,
+  expectedRelevance: query.expectedRelevance,
   retrievedIds: rankByTokenOverlap(query.query, fixture.memories).map((memory) => memory.id)
 }));
 const perQuery = computePrecisionRecallAtK(inputs, fixture.ks);

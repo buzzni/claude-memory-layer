@@ -1,11 +1,26 @@
 {
   "name": "anonymized-real-session-replay-v1",
-  "description": "Anonymized real-session-style retrieval replay fixture for Precision@k / Recall@k checks.",
+  "description": "Anonymized real-session-style retrieval replay fixture for Precision@k / Recall@k / nDCG@k checks.",
   "ks": [1, 3, 5],
   "queries": [
-    { "queryId": "q-cli-fast", "query": "fast search should avoid embedding startup", "expectedIds": ["m-cli-fast", "m-runtime-light"] },
-    { "queryId": "q-hook-policy", "query": "hook should not inject weak keyword rescue", "expectedIds": ["m-hook-policy", "m-hook-threshold"] },
-    { "queryId": "q-replay-bench", "query": "precision recall replay benchmark output", "expectedIds": ["m-benchmark", "m-metrics"] }
+    {
+      "queryId": "q-cli-fast",
+      "query": "fast search should avoid embedding startup",
+      "expectedIds": ["m-cli-fast", "m-runtime-light"],
+      "expectedRelevance": { "m-cli-fast": 3, "m-runtime-light": 2 }
+    },
+    {
+      "queryId": "q-hook-policy",
+      "query": "hook should not inject weak keyword rescue",
+      "expectedIds": ["m-hook-policy", "m-hook-threshold"],
+      "expectedRelevance": { "m-hook-policy": 3, "m-hook-threshold": 2 }
+    },
+    {
+      "queryId": "q-replay-bench",
+      "query": "precision recall replay benchmark output",
+      "expectedIds": ["m-benchmark", "m-metrics"],
+      "expectedRelevance": { "m-benchmark": 3, "m-metrics": 2 }
+    }
   ],
   "memories": [
     { "id": "m-cli-fast", "content": "CLI search --strategy fast uses keyword retrieval and should not start embedding model initialization." },
