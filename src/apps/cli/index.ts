@@ -54,6 +54,11 @@ import {
 } from './hermes-validation-output.js';
 import { runCodexImportOnce } from './codex-import-runner.js';
 import { runHermesImportOnce } from './hermes-import-runner.js';
+import {
+  fetchExternalMarketContext,
+  renderExternalMarketContextReport,
+  type ExternalMarketProvider
+} from '../../core/external-market-context.js';
 
 // ============================================================
 // Hook Installation Utilities
@@ -124,6 +129,35 @@ type HermesValidateCommandOptions = {
   output?: string;
   dryRun?: boolean;
 };
+
+type MarketContextCommandOptions = {
+  company?: string;
+  dartCorpCode?: string;
+  symbol?: string;
+  providers?: string;
+  fredSeries?: string;
+  json?: boolean;
+  snapshot?: boolean;
+};
+
+function parseCommaList(value: string | undefined): string[] | undefined {
+  if (!value) return undefined;
+  const selected = value.split(',').map((item) => item.trim()).filter(Boolean);
+  return selected.length > 0 ? Array.from(new Set(selected)) : undefined;
+}
+
+function parseMarketProviders(value: string | undefined): ExternalMarketProvider[] | undefined {
+  const entries = parseCommaList(value);
+  if (!entries) return undefined;
+  const allowed = new Set<ExternalMarketProvider>(['dart', 'fred', 'finnhub']);
+  const selected: ExternalMarketProvider[] = [];
+  for (const entry of entries) {
+    const normalized = entry.toLowerCase() as ExternalMarketProvider;
+    if (!allowed.has(normalized)) throw new Error('Invalid --providers: expected comma-separated dart,fred,finnhub');
+    if (!selected.includes(normalized)) selected.push(normalized);
+  }
+  return selected;
+}
 
 function parsePositiveIntegerOption(value: string | undefined, optionName: string): number | undefined {
   if (value === undefined) return undefined;
@@ -199,12 +233,48 @@ async function runHermesValidationCommand(options: HermesValidateCommandOptions)
   }
 }
 
+async function runMarketContextCommand(options: MarketContextCommandOptions): Promise<void> {
+  const report = await fetchExternalMarketContext({
+    company: options.company,
+    dartCorpCode: options.dartCorpCode,
+    symbol: options.symbol,
+    providers: parseMarketProviders(options.providers),
+    fredSeries: parseCommaList(options.fredSeries),
+    includeSnapshot: options.snapshot !== false
+  });
+
+  if (options.json) {
+    process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+  } else {
+    process.stdout.write(`${renderExternalMarketContextReport(report)}\n`);
+  }
+}
+
 const program = new Command();
 
 program
   .name('claude-memory-layer')
   .description('Claude Code Memory Plugin CLI')
   .version(process.env.CLAUDE_MEMORY_LAYER_VERSION || '0.0.0');
+
+program
+  .command('market-context')
+  .description('Fetch read-only DART/FRED/Finnhub context with structured MarketContextSnapshot bull/bear/risk/catalyst analysis')
+  .option('--company <name>', 'Company name for DART fallback search and report subject')
+  .option('--dart-corp-code <code>', 'Exact DART corp_code for issuer-specific filings')
+  .option('--symbol <ticker>', 'Listed ticker for Finnhub company profile')
+  .option('--providers <list>', 'Comma-separated providers: dart,fred,finnhub')
+  .option('--fred-series <list>', 'Comma-separated FRED series IDs')
+  .option('--json', 'Print structured JSON including analysis.marketSnapshot')
+  .option('--no-snapshot', 'Disable MarketContextSnapshot and DART company snapshot analysis')
+  .action(async (options: MarketContextCommandOptions) => {
+    try {
+      await runMarketContextCommand(options);
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error));
+      process.exit(1);
+    }
+  });
 
 // ============================================================
 // Install / Uninstall Commands

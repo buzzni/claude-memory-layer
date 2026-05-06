@@ -59,3 +59,6 @@ export * from './shared-event-store.js';
 export * from './shared-store.js';
 export * from './shared-vector-store.js';
 export * from './shared-promoter.js';
+
+// External read-only market context
+export * from './external-market-context.js';

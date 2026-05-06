@@ -26,6 +26,8 @@ const mocks = vi.hoisted(() => {
     claudeImporter,
     codexImporter,
     hermesImporter,
+    fetchExternalMarketContext: vi.fn(),
+    renderExternalMarketContextReport: vi.fn(),
     getDefaultMemoryService: vi.fn(() => defaultService),
     getMemoryServiceForProject: vi.fn(() => projectService),
     createSessionHistoryImporter: vi.fn(() => claudeImporter),
@@ -49,6 +51,11 @@ vi.mock('../../src/services/codex-session-history-importer.js', () => ({
 
 vi.mock('../../src/services/hermes-session-history-importer.js', () => ({
   createHermesSessionHistoryImporter: mocks.createHermesSessionHistoryImporter
+}));
+
+vi.mock('../../src/core/external-market-context.js', () => ({
+  fetchExternalMarketContext: mocks.fetchExternalMarketContext,
+  renderExternalMarketContextReport: mocks.renderExternalMarketContextReport
 }));
 
 const { handleToolCall } = await import('../../src/extensions/mcp/handlers.js');
@@ -103,12 +110,14 @@ describe('MCP project context tools', () => {
     mocks.createSessionHistoryImporter.mockClear();
     mocks.createCodexSessionHistoryImporter.mockClear();
     mocks.createHermesSessionHistoryImporter.mockClear();
+    mocks.fetchExternalMarketContext.mockReset().mockResolvedValue({ analysis: { marketSnapshot: { schemaVersion: 'market-context-snapshot.v1' } } });
+    mocks.renderExternalMarketContextReport.mockReset().mockReturnValue('### MarketContextSnapshot\n**Bull case**\n**Bear case**\n**Risks**\n**Catalysts**');
   });
 
   it('advertises context-pack, import-latest, project-timeline, and source-ref tools with projectPath support', () => {
     const byName = new Map(tools.map((tool) => [tool.name, tool]));
 
-    for (const name of ['mem-context-pack', 'mem-import-latest', 'mem-project-timeline', 'mem-source-ref']) {
+    for (const name of ['mem-context-pack', 'mem-import-latest', 'mem-project-timeline', 'mem-source-ref', 'external-market-context']) {
       const tool = byName.get(name);
       expect(tool).toBeDefined();
       expect(tool?.inputSchema).toMatchObject({ type: 'object' });
@@ -124,9 +133,48 @@ describe('MCP project context tools', () => {
       type: 'boolean',
       description: expect.stringContaining('Explicit opt-in')
     });
-    expect(contextPackProperties.refreshSources).toMatchObject({
-      type: 'array'
+    const marketContextProperties = byName.get('external-market-context')?.inputSchema.properties as Record<string, unknown>;
+    expect(marketContextProperties.projectPath).toMatchObject({ type: 'string' });
+    expect(marketContextProperties.includeSnapshot).toMatchObject({ type: 'boolean' });
+  });
+
+  it('handles external-market-context before memory service initialization and renders a read-only report', async () => {
+    const result = await handleToolCall('external-market-context', {
+      company: '삼성전자',
+      dartCorpCode: '00126380',
+      symbol: '005930.KS',
+      providers: ['dart', 'fred', 'finnhub'],
+      fredSeries: ['FEDFUNDS'],
+      includeSnapshot: true,
+      projectPath: '/repo/app'
     });
+
+    expect(result.isError).not.toBe(true);
+    expect(textOf(result)).toContain('MarketContextSnapshot');
+    expect(mocks.defaultService.initialize).not.toHaveBeenCalled();
+    expect(mocks.projectService.initialize).not.toHaveBeenCalled();
+    expect(mocks.getMemoryServiceForProject).not.toHaveBeenCalled();
+    expect(mocks.fetchExternalMarketContext).toHaveBeenCalledWith(expect.objectContaining({
+      company: '삼성전자',
+      dartCorpCode: '00126380',
+      symbol: '005930.KS',
+      providers: ['dart', 'fred', 'finnhub'],
+      fredSeries: ['FEDFUNDS'],
+      includeSnapshot: true
+    }));
+  });
+
+  it('rejects invalid external-market-context providers before external fetch or memory initialization', async () => {
+    const result = await handleToolCall('external-market-context', {
+      company: '삼성전자',
+      providers: ['dart', 'bogus']
+    });
+
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toContain('Invalid providers');
+    expect(mocks.fetchExternalMarketContext).not.toHaveBeenCalled();
+    expect(mocks.defaultService.initialize).not.toHaveBeenCalled();
+    expect(mocks.getMemoryServiceForProject).not.toHaveBeenCalled();
   });
 
   it('imports the latest selected project sessions through a privacy-safe MCP freshness tool', async () => {
