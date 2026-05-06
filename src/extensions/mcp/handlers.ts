@@ -219,11 +219,11 @@ async function handleMemContextPack(memoryService: MemoryService, args: Record<s
     memoryService.getRecentEvents(recentLimit)
   ]);
 
-  const timelineEvents = recentEvents.filter((event) => shouldShowContextPackTimelineEvent(
-    event,
+  const timelineEvents = selectContextPackTimelineEvents(
+    recentEvents,
     projectPath,
     genericContinuationQuery
-  ));
+  );
   const sessions = summarizeSessions(timelineEvents, sessionLimit);
   const recentSessionIds = new Set(sessions.map((session) => session.sessionId));
   const relevantMemories = selectContextPackMemories(searchResult.memories, {
@@ -351,6 +351,12 @@ interface ContextPackSelectionOptions {
   projectPath?: string;
 }
 
+const GENERIC_RELEVANT_MEMORY_LIMIT = 2;
+const GENERIC_RECENT_MEMORY_MIN_SCORE = 0.7;
+const GENERIC_STALE_MEMORY_MIN_SCORE = 0.8;
+const GENERIC_SESSION_SUMMARY_MIN_SCORE = 0.7;
+const GENERIC_TIMELINE_FRESHNESS_WINDOW_MS = 12 * 60 * 60 * 1000;
+
 interface SessionSummary {
   sessionId: string;
   firstAt: Date;
@@ -397,7 +403,24 @@ function selectContextPackMemories(
   return selected
     .slice()
     .sort((a, b) => contextPackMemoryPriority(b, options) - contextPackMemoryPriority(a, options))
-    .slice(0, options.topK);
+    .slice(0, Math.min(options.topK, GENERIC_RELEVANT_MEMORY_LIMIT));
+}
+
+function selectContextPackTimelineEvents(
+  events: MemoryEvent[],
+  projectPath: string | undefined,
+  genericContinuationQuery: boolean
+): MemoryEvent[] {
+  const filtered = events.filter((event) => shouldShowContextPackTimelineEvent(
+    event,
+    projectPath,
+    genericContinuationQuery
+  ));
+  if (!genericContinuationQuery || filtered.length === 0) return filtered;
+
+  const newestTimestamp = Math.max(...filtered.map((event) => event.timestamp.getTime()));
+  const freshEvents = filtered.filter((event) => newestTimestamp - event.timestamp.getTime() <= GENERIC_TIMELINE_FRESHNESS_WINDOW_MS);
+  return freshEvents.length > 0 ? freshEvents : filtered;
 }
 
 function shouldShowContextPackTimelineEvent(
@@ -421,9 +444,9 @@ function shouldShowContextPackMemory(memory: ContextPackMemory, options: Context
   if (!options.genericContinuationQuery) return true;
 
   if (isGenericContinuationQuery(content)) return false;
-  if (options.recentSessionIds.has(memory.event.sessionId)) return true;
-  if (memory.event.eventType === 'session_summary') return memory.score >= 0.55;
-  return memory.score >= 0.75;
+  if (memory.event.eventType === 'session_summary') return memory.score >= GENERIC_SESSION_SUMMARY_MIN_SCORE;
+  if (options.recentSessionIds.has(memory.event.sessionId)) return memory.score >= GENERIC_RECENT_MEMORY_MIN_SCORE;
+  return memory.score >= GENERIC_STALE_MEMORY_MIN_SCORE;
 }
 
 function mentionsDifferentWorkspaceProject(content: string, projectPath?: string): boolean {
