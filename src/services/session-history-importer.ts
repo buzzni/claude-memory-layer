@@ -26,6 +26,8 @@ export interface ImportOptions {
   projectPath?: string;
   sessionId?: string;
   limit?: number;
+  /** Limit how many matching sessions are imported. Useful for freshness jobs that only need the latest active session. */
+  sessionLimit?: number;
   skipExisting?: boolean;
   force?: boolean;
   verbose?: boolean;
@@ -80,6 +82,30 @@ export function isWorthStoringPrompt(content: string): boolean {
   if (trimmed.length < 15) return false;
   if (!/[a-zA-Z가-힣]{2,}/.test(trimmed)) return false;
   return true;
+}
+
+function getFileMtimeMs(filePath: string): number {
+  try {
+    return fs.statSync(filePath).mtimeMs;
+  } catch {
+    return 0;
+  }
+}
+
+function selectRecentSessionFiles(files: string[], sessionLimit?: number): string[] {
+  if (sessionLimit === undefined) return files;
+  return [...files]
+    .sort((a, b) => getFileMtimeMs(b) - getFileMtimeMs(a) || b.localeCompare(a))
+    .slice(0, sessionLimit);
+}
+
+function parseSessionLimit(value?: number): number | undefined {
+  if (value === undefined) return undefined;
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : undefined;
+}
+
+function applySessionLimit(files: string[], options: ImportOptions): string[] {
+  return selectRecentSessionFiles(files, parseSessionLimit(options.sessionLimit));
 }
 
 function classifyEntry(entry: ClaudeMessage): 'user_prompt' | 'tool_result' | 'agent_text' | 'tool_use' | 'thinking' | 'skip' {
@@ -162,7 +188,8 @@ export class SessionHistoryImporter {
       allSessionFiles.push(...files);
     }
     const sessionFiles = [...new Set(allSessionFiles)];
-    result.totalSessions = sessionFiles.length;
+    const selectedSessionFiles = applySessionLimit(sessionFiles, options);
+    result.totalSessions = selectedSessionFiles.length;
     onProgress?.({
       phase: 'scan',
       message: `Found ${sessionFiles.length} sessions in ${projectDirs.length} matched project folder(s)`
@@ -176,11 +203,11 @@ export class SessionHistoryImporter {
       console.log(`Found ${sessionFiles.length} session files across matched folders`);
     }
 
-    // Import each session
-    for (let i = 0; i < sessionFiles.length; i++) {
-      const sessionFile = sessionFiles[i];
+    // Import each selected session
+    for (let i = 0; i < selectedSessionFiles.length; i++) {
+      const sessionFile = selectedSessionFiles[i];
       try {
-        onProgress?.({ phase: 'session-start', sessionIndex: i, totalSessions: sessionFiles.length, filePath: sessionFile });
+        onProgress?.({ phase: 'session-start', sessionIndex: i, totalSessions: selectedSessionFiles.length, filePath: sessionFile });
         const sessionResult = await this.importSessionFile(sessionFile, {
           ...options,
           _sessionIndex: i,
@@ -412,16 +439,22 @@ export class SessionHistoryImporter {
       console.log(`Found ${projectDirs.length} project directories, ${allSessionFiles.length} sessions`);
     }
 
-    // Import all session files with progress tracking
-    for (let i = 0; i < allSessionFiles.length; i++) {
-      const sessionFile = allSessionFiles[i];
+    const selectedSessionFiles = applySessionLimit(allSessionFiles, options);
+    result.totalSessions = selectedSessionFiles.length;
+    onProgress?.({
+      phase: 'scan',
+      message: `Selected ${selectedSessionFiles.length} of ${allSessionFiles.length} session(s) for import`
+    });
+
+    // Import selected session files with progress tracking
+    for (let i = 0; i < selectedSessionFiles.length; i++) {
+      const sessionFile = selectedSessionFiles[i];
       try {
-        onProgress?.({ phase: 'session-start', sessionIndex: i, totalSessions: allSessionFiles.length, filePath: sessionFile });
+        onProgress?.({ phase: 'session-start', sessionIndex: i, totalSessions: selectedSessionFiles.length, filePath: sessionFile });
         const sessionResult = await this.importSessionFile(sessionFile, {
           ...options,
           _sessionIndex: i,
         } as ImportOptions & { _sessionIndex: number });
-        result.totalSessions++;
         result.totalMessages += sessionResult.totalMessages;
         result.importedPrompts += sessionResult.importedPrompts;
         result.importedResponses += sessionResult.importedResponses;

@@ -9,24 +9,46 @@ const mocks = vi.hoisted(() => {
       initialize: vi.fn(async () => undefined),
       retrieveMemories: vi.fn(),
       getRecentEvents: vi.fn(),
-      getStats: vi.fn()
+      getStats: vi.fn(),
+      processPendingEmbeddings: vi.fn()
     };
   }
 
   const defaultService = createService();
   const projectService = createService();
+  const claudeImporter = { importProject: vi.fn() };
+  const codexImporter = { importProject: vi.fn() };
+  const hermesImporter = { importProject: vi.fn() };
 
   return {
     defaultService,
     projectService,
+    claudeImporter,
+    codexImporter,
+    hermesImporter,
     getDefaultMemoryService: vi.fn(() => defaultService),
-    getMemoryServiceForProject: vi.fn(() => projectService)
+    getMemoryServiceForProject: vi.fn(() => projectService),
+    createSessionHistoryImporter: vi.fn(() => claudeImporter),
+    createCodexSessionHistoryImporter: vi.fn(() => codexImporter),
+    createHermesSessionHistoryImporter: vi.fn(() => hermesImporter)
   };
 });
 
 vi.mock('../../src/services/memory-service.js', () => ({
   getDefaultMemoryService: mocks.getDefaultMemoryService,
   getMemoryServiceForProject: mocks.getMemoryServiceForProject
+}));
+
+vi.mock('../../src/services/session-history-importer.js', () => ({
+  createSessionHistoryImporter: mocks.createSessionHistoryImporter
+}));
+
+vi.mock('../../src/services/codex-session-history-importer.js', () => ({
+  createCodexSessionHistoryImporter: mocks.createCodexSessionHistoryImporter
+}));
+
+vi.mock('../../src/services/hermes-session-history-importer.js', () => ({
+  createHermesSessionHistoryImporter: mocks.createHermesSessionHistoryImporter
 }));
 
 const { handleToolCall } = await import('../../src/extensions/mcp/handlers.js');
@@ -37,6 +59,18 @@ function resetService(service: typeof mocks.defaultService) {
   service.retrieveMemories.mockReset().mockResolvedValue({ memories: [] });
   service.getRecentEvents.mockReset().mockResolvedValue([]);
   service.getStats.mockReset().mockResolvedValue({ totalEvents: 0, vectorCount: 0, levelStats: [] });
+  service.processPendingEmbeddings.mockReset().mockResolvedValue(0);
+}
+
+function resetImporter(importer: typeof mocks.claudeImporter) {
+  importer.importProject.mockReset().mockResolvedValue({
+    totalSessions: 0,
+    totalMessages: 0,
+    importedPrompts: 0,
+    importedResponses: 0,
+    skippedDuplicates: 0,
+    errors: []
+  });
 }
 
 function event(overrides: Partial<MemoryEvent>): MemoryEvent {
@@ -61,14 +95,20 @@ describe('MCP project context tools', () => {
   beforeEach(() => {
     resetService(mocks.defaultService);
     resetService(mocks.projectService);
+    resetImporter(mocks.claudeImporter);
+    resetImporter(mocks.codexImporter);
+    resetImporter(mocks.hermesImporter);
     mocks.getDefaultMemoryService.mockClear();
     mocks.getMemoryServiceForProject.mockClear();
+    mocks.createSessionHistoryImporter.mockClear();
+    mocks.createCodexSessionHistoryImporter.mockClear();
+    mocks.createHermesSessionHistoryImporter.mockClear();
   });
 
-  it('advertises context-pack, project-timeline, and source-ref tools with projectPath support', () => {
+  it('advertises context-pack, import-latest, project-timeline, and source-ref tools with projectPath support', () => {
     const byName = new Map(tools.map((tool) => [tool.name, tool]));
 
-    for (const name of ['mem-context-pack', 'mem-project-timeline', 'mem-source-ref']) {
+    for (const name of ['mem-context-pack', 'mem-import-latest', 'mem-project-timeline', 'mem-source-ref']) {
       const tool = byName.get(name);
       expect(tool).toBeDefined();
       expect(tool?.inputSchema).toMatchObject({ type: 'object' });
@@ -78,6 +118,110 @@ describe('MCP project context tools', () => {
         description: expect.stringContaining('project')
       });
     }
+  });
+
+  it('imports the latest selected project sessions through a privacy-safe MCP freshness tool', async () => {
+    mocks.hermesImporter.importProject.mockResolvedValue({
+      totalSessions: 1,
+      totalMessages: 4,
+      importedPrompts: 2,
+      importedResponses: 2,
+      skippedDuplicates: 0,
+      errors: []
+    });
+    mocks.codexImporter.importProject.mockResolvedValue({
+      totalSessions: 1,
+      totalMessages: 3,
+      importedPrompts: 1,
+      importedResponses: 2,
+      skippedDuplicates: 1,
+      errors: []
+    });
+    mocks.projectService.processPendingEmbeddings.mockResolvedValue(5);
+
+    const result = await handleToolCall('mem-import-latest', {
+      projectPath: '/repo/app',
+      sources: ['hermes', 'codex'],
+      sessionLimit: 2,
+      messageLimit: 50,
+      force: true,
+      processEmbeddings: true,
+      stateDb: '/tmp/local-hermes-state.db',
+      sessionsDir: '/tmp/local-codex-sessions'
+    });
+
+    const text = textOf(result);
+    expect(result.isError).not.toBe(true);
+    expect(mocks.getMemoryServiceForProject).toHaveBeenCalledWith('/repo/app');
+    expect(mocks.createHermesSessionHistoryImporter).toHaveBeenCalledWith(mocks.projectService, { stateDbPath: '/tmp/local-hermes-state.db' });
+    expect(mocks.createCodexSessionHistoryImporter).toHaveBeenCalledWith(mocks.projectService, { sessionsDir: '/tmp/local-codex-sessions' });
+    expect(mocks.hermesImporter.importProject).toHaveBeenCalledWith('/repo/app', {
+      projectPath: '/repo/app',
+      sessionLimit: 2,
+      limit: 50,
+      force: true
+    });
+    expect(mocks.codexImporter.importProject).toHaveBeenCalledWith('/repo/app', {
+      projectPath: '/repo/app',
+      sessionLimit: 2,
+      limit: 50,
+      force: true
+    });
+    expect(mocks.projectService.processPendingEmbeddings).toHaveBeenCalledTimes(1);
+    expect(text).toContain('## Latest Session Import');
+    expect(text).toContain('- Project: supplied');
+    expect(text).not.toContain('app');
+    expect(text).toContain('- hermes: sessions=1 messages=4 prompts=2 responses=2 skipped=0 errors=0');
+    expect(text).toContain('- codex: sessions=1 messages=3 prompts=1 responses=2 skipped=1 errors=0');
+    expect(text).toContain('Embeddings: processed 5');
+    expect(text).not.toContain('/tmp/local-hermes-state.db');
+    expect(text).not.toContain('/tmp/local-codex-sessions');
+  });
+
+  it('rejects mem-import-latest without an absolute projectPath before opening project storage', async () => {
+    const result = await handleToolCall('mem-import-latest', {
+      projectPath: 'relative/app',
+      sources: ['hermes']
+    });
+
+    const text = textOf(result);
+    expect(result.isError).toBe(true);
+    expect(text).toContain('requires an explicit absolute projectPath');
+    expect(mocks.getMemoryServiceForProject).not.toHaveBeenCalled();
+    expect(mocks.createHermesSessionHistoryImporter).not.toHaveBeenCalled();
+  });
+
+  it('fails closed for invalid mem-import-latest sources before importing', async () => {
+    const result = await handleToolCall('mem-import-latest', {
+      projectPath: '/repo/app',
+      sources: ['hermes', 'unknown']
+    });
+
+    const text = textOf(result);
+    expect(result.isError).toBe(true);
+    expect(text).toContain('Invalid source');
+    expect(text).not.toContain('unknown');
+    expect(mocks.createHermesSessionHistoryImporter).not.toHaveBeenCalled();
+    expect(mocks.createCodexSessionHistoryImporter).not.toHaveBeenCalled();
+    expect(mocks.createSessionHistoryImporter).not.toHaveBeenCalled();
+  });
+
+  it('redacts local paths from mem-import-latest source failures', async () => {
+    mocks.hermesImporter.importProject.mockRejectedValue(new Error('failed to open /repo/app/private/state.db and C:\\Users\\me\\secret\\state.db'));
+
+    const result = await handleToolCall('mem-import-latest', {
+      projectPath: '/repo/app',
+      sources: ['hermes']
+    });
+
+    const text = textOf(result);
+    expect(result.isError).not.toBe(true);
+    expect(text).toContain('- Project: supplied');
+    expect(text).toContain('- hermes: failed');
+    expect(text).toContain('[path]');
+    expect(text).not.toContain('/repo/app');
+    expect(text).not.toContain('C:\\Users\\me');
+    expect(text).not.toContain('state.db');
   });
 
   it('builds a compact project context pack from relevant search results and recent timeline', async () => {

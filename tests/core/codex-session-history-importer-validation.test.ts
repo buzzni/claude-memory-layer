@@ -1,9 +1,9 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { validateCodexSessions } from '../../src/services/codex-session-history-importer.js';
+import { createCodexSessionHistoryImporter, validateCodexSessions } from '../../src/services/codex-session-history-importer.js';
 
 const tempDirs: string[] = [];
 
@@ -110,5 +110,76 @@ describe('Codex session validation replay', () => {
     expect(report.totals.missingProjectCwd).toBe(1);
     expect(report.topProjects).toHaveLength(2);
     expect(report.warnings.some((warning) => warning.includes('missing cwd'))).toBe(true);
+  });
+
+  it('imports only the most recently modified matching Codex session when sessionLimit is set', async () => {
+    const sessionsDir = tempDir();
+    const projectA = join(sessionsDir, 'project-a');
+    const oldFile = join(sessionsDir, 'rollout-2026-05-05T00-00-00-session-old.jsonl');
+    const latestFile = join(sessionsDir, 'rollout-2026-05-05T00-10-00-session-latest.jsonl');
+
+    writeJsonl(oldFile, [
+      { type: 'session_meta', payload: { id: 'session-old', cwd: projectA } },
+      { type: 'response_item', timestamp: '2026-05-05T00:00:01.000Z', payload: { type: 'message', role: 'user', content: 'old Codex project session should not be imported now' } }
+    ]);
+    writeJsonl(latestFile, [
+      { type: 'session_meta', payload: { id: 'session-latest', cwd: projectA } },
+      { type: 'response_item', timestamp: '2026-05-05T00:10:01.000Z', payload: { type: 'message', role: 'user', content: 'latest Codex project session should be imported now' } }
+    ]);
+    utimesSync(oldFile, new Date('2026-05-05T00:00:00.000Z'), new Date('2026-05-05T00:00:00.000Z'));
+    utimesSync(latestFile, new Date('2026-05-05T00:10:00.000Z'), new Date('2026-05-05T00:10:00.000Z'));
+
+    const memoryService = {
+      startSession: vi.fn(async (_sessionId: string, _projectPath?: string) => undefined),
+      endSession: vi.fn(async (_sessionId: string) => undefined),
+      deleteSessionEvents: vi.fn(async (_sessionId: string) => 0),
+      storeUserPrompt: vi.fn(async () => ({ success: true, isDuplicate: false })),
+      storeAgentResponse: vi.fn(async () => ({ success: true, isDuplicate: false }))
+    };
+    const importer = createCodexSessionHistoryImporter(memoryService as never, { sessionsDir });
+
+    const result = await importer.importProject(projectA, { sessionLimit: 1 });
+
+    expect(result.totalSessions).toBe(1);
+    expect(memoryService.startSession).toHaveBeenCalledTimes(1);
+    expect(memoryService.startSession).toHaveBeenCalledWith('session-latest', projectA);
+    expect(memoryService.storeUserPrompt).toHaveBeenCalledTimes(1);
+  });
+
+  it('applies Codex import limit across selected matching sessions', async () => {
+    const sessionsDir = tempDir();
+    const projectA = join(sessionsDir, 'project-a');
+    const oldFile = join(sessionsDir, 'rollout-2026-05-05T00-00-00-session-old.jsonl');
+    const latestFile = join(sessionsDir, 'rollout-2026-05-05T00-10-00-session-latest.jsonl');
+
+    writeJsonl(oldFile, [
+      { type: 'session_meta', payload: { id: 'session-old', cwd: projectA } },
+      { type: 'response_item', timestamp: '2026-05-05T00:00:01.000Z', payload: { type: 'message', role: 'user', content: 'old prompt should remain outside the global Codex import limit' } },
+      { type: 'response_item', timestamp: '2026-05-05T00:00:02.000Z', payload: { type: 'message', role: 'assistant', content: 'old assistant should remain outside the global Codex import limit' } }
+    ]);
+    writeJsonl(latestFile, [
+      { type: 'session_meta', payload: { id: 'session-latest', cwd: projectA } },
+      { type: 'response_item', timestamp: '2026-05-05T00:10:01.000Z', payload: { type: 'message', role: 'user', content: 'latest prompt should be imported first' } },
+      { type: 'response_item', timestamp: '2026-05-05T00:10:02.000Z', payload: { type: 'message', role: 'assistant', content: 'latest assistant should be imported first' } }
+    ]);
+    utimesSync(oldFile, new Date('2026-05-05T00:00:00.000Z'), new Date('2026-05-05T00:00:00.000Z'));
+    utimesSync(latestFile, new Date('2026-05-05T00:10:00.000Z'), new Date('2026-05-05T00:10:00.000Z'));
+
+    const memoryService = {
+      startSession: vi.fn(async (_sessionId: string, _projectPath?: string) => undefined),
+      endSession: vi.fn(async (_sessionId: string) => undefined),
+      deleteSessionEvents: vi.fn(async (_sessionId: string) => 0),
+      storeUserPrompt: vi.fn(async () => ({ success: true, isDuplicate: false })),
+      storeAgentResponse: vi.fn(async () => ({ success: true, isDuplicate: false }))
+    };
+    const importer = createCodexSessionHistoryImporter(memoryService as never, { sessionsDir });
+
+    const result = await importer.importProject(projectA, { sessionLimit: 2, limit: 2 });
+
+    expect(result.totalSessions).toBe(1);
+    expect(memoryService.startSession).toHaveBeenCalledTimes(1);
+    expect(memoryService.startSession).toHaveBeenCalledWith('session-latest', projectA);
+    expect(memoryService.storeUserPrompt).toHaveBeenCalledTimes(1);
+    expect(memoryService.storeAgentResponse).toHaveBeenCalledTimes(1);
   });
 });

@@ -126,9 +126,13 @@ type HermesValidateCommandOptions = {
 };
 
 function parsePositiveIntegerOption(value: string | undefined, optionName: string): number | undefined {
-  if (!value) return undefined;
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
+  if (value === undefined) return undefined;
+  const normalized = value.trim();
+  if (!/^\d+$/.test(normalized)) {
+    throw new Error(`Invalid --${optionName}: expected a positive integer`);
+  }
+  const parsed = Number.parseInt(normalized, 10);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
     throw new Error(`Invalid --${optionName}: expected a positive integer`);
   }
   return parsed;
@@ -949,6 +953,7 @@ program
   .option('-s, --session <file>', 'Import specific session file (JSONL)')
   .option('-a, --all', 'Import all sessions from all projects')
   .option('-l, --limit <number>', 'Limit messages per session')
+  .option('--session-limit <number>', 'Limit recent matching sessions to import')
   .option('-f, --force', 'Force reimport: delete existing events and reimport with turn_id grouping')
   .option('--embedding-model <name>', 'Embedding model override (default: jinaai/jina-embeddings-v5-text-nano-text-matching, or env CLAUDE_MEMORY_EMBEDDING_MODEL; fallback env: CLAUDE_MEMORY_EMBEDDING_FALLBACK_MODEL)')
   .option('-v, --verbose', 'Show detailed progress')
@@ -967,7 +972,8 @@ program
     const importer = createSessionHistoryImporter(service);
 
     const importOpts = {
-      limit: options.limit ? parseInt(options.limit) : undefined,
+      limit: parsePositiveIntegerOption(options.limit, 'limit'),
+      sessionLimit: parsePositiveIntegerOption(options.sessionLimit, 'session-limit'),
       force: options.force,
       verbose: options.verbose,
       onProgress: renderProgress
@@ -1148,7 +1154,8 @@ codexCmd
   .option('-s, --session <file>', 'Import one Codex session JSONL file')
   .option('-a, --all', 'Import all Codex sessions into global memory unless --project is supplied')
   .option('--sessions-dir <path>', 'Codex sessions directory (default: ~/.codex/sessions)')
-  .option('-l, --limit <number>', 'Limit messages imported per session')
+  .option('-l, --limit <number>', 'Limit memories imported across selected matching sessions')
+  .option('--session-limit <number>', 'Limit recent matching sessions to import')
   .option('-f, --force', 'Delete existing events for each imported session before reimporting')
   .option('-v, --verbose', 'Show detailed progress')
   .option('--no-process-embeddings', 'Skip processing pending embeddings after import')
@@ -1230,7 +1237,8 @@ hermesCmd
   .option('-s, --session <id>', 'Import one Hermes session id')
   .option('-a, --all', 'Import all Hermes sessions into global memory unless --project is supplied')
   .option('--state-db <path>', 'Hermes state database path (default: ~/.hermes/state.db)')
-  .option('-l, --limit <number>', 'Limit memories imported across matching sessions')
+  .option('-l, --limit <number>', 'Limit messages imported per selected Hermes session')
+  .option('--session-limit <number>', 'Limit recent matching sessions to import')
   .option('-f, --force', 'Delete existing events for each imported session before reimporting')
   .option('-v, --verbose', 'Show detailed progress')
   .option('--no-process-embeddings', 'Skip processing pending embeddings after import')

@@ -52,7 +52,7 @@ describe('Codex import runner', () => {
   });
 
   it('imports the current project from Codex sessions into the project-scoped memory service', async () => {
-    const outcome = await runCodexImportOnce({ sessionsDir: '/tmp/codex-sessions', limit: '9' }, deps);
+    const outcome = await runCodexImportOnce({ sessionsDir: '/tmp/codex-sessions', limit: '9', sessionLimit: '1' }, deps);
 
     expect(deps?.getMemoryServiceForProject).toHaveBeenCalledWith('/repo/current');
     expect(deps?.getDefaultMemoryService).not.toHaveBeenCalled();
@@ -62,6 +62,7 @@ describe('Codex import runner', () => {
     expect(importer.importProject).toHaveBeenCalledWith('/repo/current', expect.objectContaining({
       projectPath: '/repo/current',
       limit: 9,
+      sessionLimit: 1,
       onProgress: deps?.onProgress
     }));
     expect(projectService.processPendingEmbeddings).toHaveBeenCalledTimes(1);
@@ -88,5 +89,11 @@ describe('Codex import runner', () => {
       projectPath: '/repo/selected',
       force: true
     }));
+  });
+
+  it('rejects non-decimal integer limits instead of partially parsing them', async () => {
+    await expect(runCodexImportOnce({ limit: '1foo' }, deps)).rejects.toThrow('Invalid --limit');
+    await expect(runCodexImportOnce({ sessionLimit: '1.5' }, deps)).rejects.toThrow('Invalid --session-limit');
+    await expect(runCodexImportOnce({ sessionLimit: '1e2' }, deps)).rejects.toThrow('Invalid --session-limit');
   });
 });

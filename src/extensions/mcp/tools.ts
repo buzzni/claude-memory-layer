@@ -116,6 +116,49 @@ export const tools: Tool[] = [
     }
   },
   {
+    name: 'mem-import-latest',
+    description: 'Explicitly import the latest local Claude Code, Codex, and/or Hermes session history into project-scoped memory before retrieving context. This mutates memory; use for freshness jobs before mem-context-pack.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectPath: {
+          type: 'string',
+          description: 'Required absolute project path. Import is always project-scoped to avoid cross-project memory mixing.'
+        },
+        sources: {
+          type: 'array',
+          items: { type: 'string', enum: ['claude', 'codex', 'hermes'] },
+          description: 'Sources to import (default: hermes and codex)'
+        },
+        sessionLimit: {
+          type: 'number',
+          description: 'Maximum recent matching sessions per source to import (default: 1, max: 10)'
+        },
+        messageLimit: {
+          type: 'number',
+          description: 'Maximum messages/memories per source import (default: 200, max: 1000)'
+        },
+        force: {
+          type: 'boolean',
+          description: 'Force reimport by deleting existing events for imported sessions first (default: false)'
+        },
+        processEmbeddings: {
+          type: 'boolean',
+          description: 'Process pending embeddings after import (default: false for fast freshness imports)'
+        },
+        sessionsDir: {
+          type: 'string',
+          description: 'Optional Codex sessions directory override'
+        },
+        stateDb: {
+          type: 'string',
+          description: 'Optional Hermes state database path override'
+        }
+      },
+      required: ['projectPath']
+    }
+  },
+  {
     name: 'mem-project-timeline',
     description: 'Summarize recent project memory by session, source agent, event counts, and safe previews. Useful for understanding what happened recently before continuing work.',
     inputSchema: {

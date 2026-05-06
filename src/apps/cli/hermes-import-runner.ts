@@ -15,6 +15,7 @@ export interface HermesImportCommandOptions {
   session?: string;
   all?: boolean;
   limit?: string;
+  sessionLimit?: string;
   force?: boolean;
   verbose?: boolean;
   stateDb?: string;
@@ -50,8 +51,12 @@ const realDeps: HermesImportRunnerDeps = {
 
 function parsePositiveInteger(value: string | undefined, name: string): number | undefined {
   if (value === undefined) return undefined;
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
+  const normalized = value.trim();
+  if (!/^\d+$/.test(normalized)) {
+    throw new Error(`Invalid --${name}: expected a positive integer`);
+  }
+  const parsed = Number.parseInt(normalized, 10);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
     throw new Error(`Invalid --${name}: expected a positive integer`);
   }
   return parsed;
@@ -81,6 +86,7 @@ export async function runHermesImportOnce(
 
   const importOptions: ImportOptions = {
     limit: parsePositiveInteger(options.limit, 'limit'),
+    sessionLimit: parsePositiveInteger(options.sessionLimit, 'session-limit'),
     force: options.force,
     verbose: options.verbose,
     onProgress: deps.onProgress
