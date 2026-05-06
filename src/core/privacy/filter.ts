@@ -20,6 +20,10 @@ export interface FilterResult {
 
 // Sensitive data patterns
 const SENSITIVE_PATTERNS = [
+  // Credential-bearing URLs/connection strings with userinfo before the host.
+  // Redact the whole URI so usernames, credentials, hosts, paths, and query
+  // params do not leak either.
+  /\b[a-z][a-z0-9+.-]*:\/\/[^\s'"`<>/@]+@[^\s'"`<>]+/gi,
   /password\s*[:=]\s*['"]?[^\s'"]+/gi,
   /api[_-]?key\s*[:=]\s*['"]?[^\s'"]+/gi,
   /secret\s*[:=]\s*['"]?[^\s'"]+/gi,

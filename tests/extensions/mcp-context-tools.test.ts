@@ -135,6 +135,79 @@ describe('MCP project context tools', () => {
     expect(text.length).toBeLessThan(5000);
   });
 
+  it('redacts credential-bearing connection strings from context-pack previews', async () => {
+    const credentialUri = [
+      'mongodb://',
+      'fixture-user',
+      ':',
+      'fixture-credential',
+      '@',
+      'db.example.test:27017/admin?authSource=admin'
+    ].join('');
+    const sensitiveConnection = event({
+      id: 'connection-redaction-1',
+      timestamp: new Date('2026-05-05T01:30:00.000Z'),
+      content: `Run mongo sync with --mongo-uri ${credentialUri} before checking status.`
+    });
+
+    mocks.projectService.retrieveMemories.mockResolvedValue({
+      memories: [{ event: sensitiveConnection, score: 0.9 }]
+    });
+    mocks.projectService.getRecentEvents.mockResolvedValue([sensitiveConnection]);
+
+    const result = await handleToolCall('mem-context-pack', {
+      projectPath: '/repo/app',
+      query: 'mongo sync status',
+      topK: 1,
+      recentLimit: 1,
+      sessionLimit: 1
+    });
+
+    const text = textOf(result);
+    expect(result.isError).not.toBe(true);
+    expect(text).toContain('[REDACTED]');
+    expect(text).not.toContain('fixture-user');
+    expect(text).not.toContain('fixture-credential');
+    expect(text).not.toContain('mongodb://');
+    expect(text).not.toContain('db.example.test');
+    expect(text).not.toContain('authSource=admin');
+  });
+
+  it('redacts password-only credential URLs from context-pack previews', async () => {
+    const passwordOnlyUri = [
+      'redis://',
+      ':',
+      'fixture-credential',
+      '@',
+      'cache.example.test:6379/0'
+    ].join('');
+    const sensitiveConnection = event({
+      id: 'connection-redaction-2',
+      timestamp: new Date('2026-05-05T01:45:00.000Z'),
+      content: `Check queue health with ${passwordOnlyUri} before retrying workers.`
+    });
+
+    mocks.projectService.retrieveMemories.mockResolvedValue({
+      memories: [{ event: sensitiveConnection, score: 0.89 }]
+    });
+    mocks.projectService.getRecentEvents.mockResolvedValue([sensitiveConnection]);
+
+    const result = await handleToolCall('mem-context-pack', {
+      projectPath: '/repo/app',
+      query: 'queue health workers',
+      topK: 1,
+      recentLimit: 1,
+      sessionLimit: 1
+    });
+
+    const text = textOf(result);
+    expect(result.isError).not.toBe(true);
+    expect(text).toContain('[REDACTED]');
+    expect(text).not.toContain('fixture-credential');
+    expect(text).not.toContain('redis://');
+    expect(text).not.toContain('cache.example.test');
+  });
+
   it('summarizes a project timeline by recent sessions and source agent metadata', async () => {
     mocks.projectService.getRecentEvents.mockResolvedValue([
       event({

@@ -3,6 +3,17 @@
 이 저장소는 **Claude Code용 메모리 플러그인 + CLI + 로컬 대시보드 서버**입니다.
 Codex(또는 다른 코딩 에이전트)가 작업할 때 아래 규칙을 우선으로 따르세요.
 
+## Project Memory Bootstrap
+
+작업 시작/재개 전에 Claude Memory Layer MCP 도구가 사용 가능하면 먼저 프로젝트 맥락을 가져오세요.
+
+- 트리거: `continue`, `next`, `이어서`, `다음 단계`, 버그 수정, PR/merge/검증, 이전 결정/작업 맥락이 중요한 요청
+- 우선 호출: `mem-context-pack` / Hermes 도구명 `mcp_claude_memory_layer_mem_context_pack`
+- 권장 인자: `query=<현재 요청 요약>`, `projectPath=<현재 저장소 루트>`, `topK=5`, `recentLimit=30`, `sessionLimit=5`
+- MCP 도구가 없으면 막히지 말고 기존 AGENTS.md 규칙대로 진행하세요.
+- 결과는 배경 맥락으로만 사용하고, secret/token/credential 또는 transcript DB path 같은 민감한 metadata는 출력하지 마세요.
+- live agent session id를 CML `sessionId`로 넘기지 마세요. source-session 필터가 명시된 경우에만 사용하세요.
+
 ## Quick Commands
 
 ```bash
