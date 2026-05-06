@@ -210,23 +210,27 @@ async function handleMemContextPack(memoryService: MemoryService, args: Record<s
   const recentLimit = numberArg(args.recentLimit, 30, 1, 200);
   const sessionLimit = numberArg(args.sessionLimit, 5, 1, 20);
   const sessionId = optionalString(args.sessionId);
+  const projectPath = optionalString(args.projectPath);
   const genericContinuationQuery = isGenericContinuationQuery(query);
-  const retrievalTopK = genericContinuationQuery ? Math.min(topK * 3, 12) : topK;
+  const retrievalTopK = Math.min(topK * 3, 12);
 
   const [searchResult, recentEvents] = await Promise.all([
     memoryService.retrieveMemories(query, { topK: retrievalTopK, sessionId, recordTrace: false }),
     memoryService.getRecentEvents(recentLimit)
   ]);
 
-  const timelineEvents = genericContinuationQuery
-    ? recentEvents.filter(shouldShowGenericTimelineEvent)
-    : recentEvents;
+  const timelineEvents = recentEvents.filter((event) => shouldShowContextPackTimelineEvent(
+    event,
+    projectPath,
+    genericContinuationQuery
+  ));
   const sessions = summarizeSessions(timelineEvents, sessionLimit);
   const recentSessionIds = new Set(sessions.map((session) => session.sessionId));
   const relevantMemories = selectContextPackMemories(searchResult.memories, {
     genericContinuationQuery,
     topK,
-    recentSessionIds
+    recentSessionIds,
+    projectPath
   });
 
   const lines: string[] = [
@@ -344,6 +348,7 @@ interface ContextPackSelectionOptions {
   genericContinuationQuery: boolean;
   topK: number;
   recentSessionIds: Set<string>;
+  projectPath?: string;
 }
 
 interface SessionSummary {
@@ -395,24 +400,57 @@ function selectContextPackMemories(
     .slice(0, options.topK);
 }
 
-function shouldShowGenericTimelineEvent(event: MemoryEvent): boolean {
+function shouldShowContextPackTimelineEvent(
+  event: MemoryEvent,
+  projectPath: string | undefined,
+  genericContinuationQuery: boolean
+): boolean {
   const content = event.content || '';
   if (isLowSignalContextContent(content)) return false;
   if (event.eventType === 'tool_observation') return false;
-  if (isGenericContinuationQuery(content)) return false;
+  if (mentionsDifferentWorkspaceProject(content, projectPath)) return false;
+  if (genericContinuationQuery && isGenericContinuationQuery(content)) return false;
   return true;
 }
 
 function shouldShowContextPackMemory(memory: ContextPackMemory, options: ContextPackSelectionOptions): boolean {
-  if (!options.genericContinuationQuery) return true;
-
   const content = memory.event.content || '';
   if (isLowSignalContextContent(content)) return false;
   if (memory.event.eventType === 'tool_observation') return false;
+  if (mentionsDifferentWorkspaceProject(content, options.projectPath)) return false;
+  if (!options.genericContinuationQuery) return true;
+
   if (isGenericContinuationQuery(content)) return false;
   if (options.recentSessionIds.has(memory.event.sessionId)) return true;
   if (memory.event.eventType === 'session_summary') return memory.score >= 0.55;
   return memory.score >= 0.75;
+}
+
+function mentionsDifferentWorkspaceProject(content: string, projectPath?: string): boolean {
+  const currentProject = basenameOfPath(projectPath);
+  if (!currentProject) return false;
+
+  const workspaceProjectNames = Array.from(content.matchAll(/[\\/](?:workspace|workspaces|projects)[\\/]([^\\/\s'"`<>]+)/gi))
+    .map((match) => normalizeProjectName(match[1]))
+    .filter((name) => name.length > 0);
+
+  if (workspaceProjectNames.length === 0) return false;
+  return !workspaceProjectNames.includes(currentProject);
+}
+
+function basenameOfPath(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const parts = value
+    .replace(/\\/g, '/')
+    .split('/')
+    .map((part) => part.trim())
+    .filter(Boolean);
+  const last = parts[parts.length - 1];
+  return last ? normalizeProjectName(last) : undefined;
+}
+
+function normalizeProjectName(value: string): string {
+  return value.trim().replace(/[.,;:!?]+$/g, '').toLowerCase();
 }
 
 function contextPackMemoryPriority(memory: ContextPackMemory, options: ContextPackSelectionOptions): number {

@@ -121,7 +121,7 @@ describe('MCP project context tools', () => {
     expect(result.isError).not.toBe(true);
     expect(mocks.getMemoryServiceForProject).toHaveBeenCalledWith('/repo/app');
     expect(mocks.projectService.retrieveMemories).toHaveBeenCalledWith('Codex Hermes MCP integration', {
-      topK: 2,
+      topK: 6,
       sessionId: undefined,
       recordTrace: false
     });
@@ -157,6 +157,13 @@ describe('MCP project context tools', () => {
       timestamp: new Date('2026-04-01T00:00:00.000Z'),
       content: 'FinRL stock trading experiments should tune Alpha AI Trader replay settings.'
     });
+    const crossProjectRecentMemory = event({
+      id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+      sessionId: 'session-latest',
+      eventType: 'agent_response',
+      timestamp: new Date('2026-05-06T03:04:00.000Z'),
+      content: 'Created Alpha AI Trader specs at /Users/example/workspace/alpha-ai-trader/specs/ai-korea-stock-trader/plan.md.'
+    });
     const commandArtifact = event({
       id: '77777777-7777-4777-8777-777777777777',
       sessionId: 'session-latest',
@@ -187,6 +194,7 @@ describe('MCP project context tools', () => {
       memories: [
         { event: commandArtifact, score: 0.95 },
         { event: environmentContext, score: 0.9 },
+        { event: crossProjectRecentMemory, score: 0.93 },
         { event: unrelatedMemory, score: 0.62 },
         { event: mergedPr, score: 0.61 }
       ]
@@ -217,17 +225,25 @@ describe('MCP project context tools', () => {
     expect(text.indexOf('### Recent Project Timeline')).toBeLessThan(text.indexOf('### Relevant Memories'));
     expect(text).toContain('Merged CML PR #15');
     expect(text).not.toContain('FinRL stock trading');
+    expect(text).not.toContain('Alpha AI Trader specs');
+    expect(text).not.toContain('alpha-ai-trader');
     expect(text).not.toContain('<command-name>');
     expect(text).not.toContain('Using model opus');
     expect(text).not.toContain('<environment_context>');
   });
 
-  it('keeps non-generic context-pack memory output behavior unchanged', async () => {
+  it('keeps non-generic context-pack ordering while suppressing low-signal artifacts', async () => {
     const commandArtifact = event({
       id: '99999999-9999-4999-8999-999999999999',
       sessionId: 'session-debug',
       timestamp: new Date('2026-05-06T02:59:00.000Z'),
       content: '<command-name>/model</command-name>\n<local-command-stdout>Using model opus</local-command-stdout>'
+    });
+    const agentsDump = event({
+      id: '99999999-9999-4999-8999-999999999998',
+      sessionId: 'session-debug',
+      timestamp: new Date('2026-05-06T02:58:00.000Z'),
+      content: '# AGENTS.md instructions for /repo/app <INSTRUCTIONS> ## Skills A skill is a set of local instructions.'
     });
     const relevantDebug = event({
       id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
@@ -235,14 +251,27 @@ describe('MCP project context tools', () => {
       timestamp: new Date('2026-05-06T03:00:00.000Z'),
       content: 'Investigated MCP context-pack retrieval ranking for a topic-specific debug query.'
     });
+    const crossProjectTimeline = event({
+      id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+      sessionId: 'session-debug',
+      eventType: 'agent_response',
+      timestamp: new Date('2026-05-06T03:01:00.000Z'),
+      content: 'Created Alpha AI Trader specs at /Users/example/workspace/alpha-ai-trader/specs/ai-korea-stock-trader/plan.md.'
+    });
 
     mocks.projectService.retrieveMemories.mockResolvedValue({
       memories: [
         { event: commandArtifact, score: 0.95 },
+        { event: agentsDump, score: 0.9 },
         { event: relevantDebug, score: 0.8 }
       ]
     });
-    mocks.projectService.getRecentEvents.mockResolvedValue([relevantDebug]);
+    mocks.projectService.getRecentEvents.mockResolvedValue([
+      commandArtifact,
+      agentsDump,
+      crossProjectTimeline,
+      relevantDebug
+    ]);
 
     const result = await handleToolCall('mem-context-pack', {
       projectPath: '/repo/app',
@@ -255,14 +284,19 @@ describe('MCP project context tools', () => {
     const text = textOf(result);
     expect(result.isError).not.toBe(true);
     expect(mocks.projectService.retrieveMemories).toHaveBeenCalledWith('debug command artifact retrieval quality', {
-      topK: 2,
+      topK: 6,
       sessionId: undefined,
       recordTrace: false
     });
     expect(text).not.toContain('Generic continuation query');
     expect(text.indexOf('### Relevant Memories')).toBeLessThan(text.indexOf('### Recent Project Timeline'));
-    expect(text).toContain('<command-name>');
-    expect(text).toContain('Using model opus');
+    expect(text).toContain('Investigated MCP context-pack retrieval ranking');
+    expect(text).not.toContain('<command-name>');
+    expect(text).not.toContain('Using model opus');
+    expect(text).not.toContain('AGENTS.md instructions');
+    expect(text).not.toContain('<INSTRUCTIONS>');
+    expect(text).not.toContain('Alpha AI Trader specs');
+    expect(text).not.toContain('alpha-ai-trader');
   });
 
   it('redacts credential-bearing connection strings from context-pack previews', async () => {
