@@ -17,6 +17,7 @@ const LOW_SIGNAL_CONTEXT_PATTERNS = [
   /<environment_context\b[\s\S]*<\/environment_context>/i,
   /<turn_aborted>/i,
   /^#\s*AGENTS\.md\s+instructions\b[\s\S]*<INSTRUCTIONS>/i,
+  /^\s*(?:understood[,\s.]*)?(?:stopping|stopped|pausing|paused)\s+here\b[\s\S]{0,180}\blet\s+me\s+know\s+when\s+you(?:'d|\s+would)?\s+like\s+to\s+continue\b/i,
   /^➜\s+\S+\s+git:\([^)]*\)\s+/i,
   /^\$\s+\S+/i
 ];
