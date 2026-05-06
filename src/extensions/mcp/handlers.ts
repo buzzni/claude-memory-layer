@@ -10,6 +10,10 @@ import {
 } from '../../services/memory-service.js';
 import { generateCitationId } from '../../core/citation-generator.js';
 import { applyPrivacyFilter, maskSensitiveInput } from '../../core/privacy/filter.js';
+import {
+  isGenericContinuationQuery,
+  isLowSignalContextContent
+} from '../../core/retrieval-quality.js';
 import type { Config, EventType, MemoryEvent } from '../../core/types.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 
@@ -206,44 +210,48 @@ async function handleMemContextPack(memoryService: MemoryService, args: Record<s
   const recentLimit = numberArg(args.recentLimit, 30, 1, 200);
   const sessionLimit = numberArg(args.sessionLimit, 5, 1, 20);
   const sessionId = optionalString(args.sessionId);
+  const genericContinuationQuery = isGenericContinuationQuery(query);
+  const retrievalTopK = genericContinuationQuery ? Math.min(topK * 3, 12) : topK;
 
   const [searchResult, recentEvents] = await Promise.all([
-    memoryService.retrieveMemories(query, { topK, sessionId, recordTrace: false }),
+    memoryService.retrieveMemories(query, { topK: retrievalTopK, sessionId, recordTrace: false }),
     memoryService.getRecentEvents(recentLimit)
   ]);
+
+  const timelineEvents = genericContinuationQuery
+    ? recentEvents.filter(shouldShowGenericTimelineEvent)
+    : recentEvents;
+  const sessions = summarizeSessions(timelineEvents, sessionLimit);
+  const recentSessionIds = new Set(sessions.map((session) => session.sessionId));
+  const relevantMemories = selectContextPackMemories(searchResult.memories, {
+    genericContinuationQuery,
+    topK,
+    recentSessionIds
+  });
 
   const lines: string[] = [
     '## Project Context Pack',
     '',
     `- Query: ${safeInline(query, 160)}`,
-    `- Relevant memories: ${searchResult.memories.length}`,
+    `- Relevant memories: ${relevantMemories.length}`,
     `- Recent events inspected: ${recentEvents.length}`,
-    `- Recent sessions shown: ${Math.min(sessionLimit, summarizeSessions(recentEvents, sessionLimit).length)}`,
-    '',
-    '### Relevant Memories',
-    ''
+    `- Recent sessions shown: ${Math.min(sessionLimit, sessions.length)}`
   ];
 
-  if (searchResult.memories.length === 0) {
-    lines.push('No relevant memories found.', '');
+  if (genericContinuationQuery) {
+    lines.push('- Generic continuation query: recent project timeline prioritized.');
+  }
+  lines.push('');
+
+  if (genericContinuationQuery) {
+    appendRecentTimeline(lines, sessions);
+    appendRelevantMemories(lines, relevantMemories);
   } else {
-    for (let i = 0; i < searchResult.memories.length; i++) {
-      const match = searchResult.memories[i];
-      lines.push(formatRelevantMemoryLine(match.event, match.score, i + 1));
-    }
+    appendRelevantMemories(lines, relevantMemories);
+    appendRecentTimeline(lines, sessions);
   }
 
-  lines.push('### Recent Project Timeline', '');
-  const sessions = summarizeSessions(recentEvents, sessionLimit);
-  if (sessions.length === 0) {
-    lines.push('No recent project events found.', '');
-  } else {
-    for (const session of sessions) {
-      lines.push(formatSessionSummary(session));
-    }
-  }
-
-  const sourceIds = searchResult.memories
+  const sourceIds = relevantMemories
     .slice(0, 5)
     .map((match) => generateCitationId(match.event.id));
   if (sourceIds.length > 0) {
@@ -327,6 +335,17 @@ async function handleMemSourceRef(memoryService: MemoryService, args: Record<str
   return textResult(lines.join('\n'));
 }
 
+interface ContextPackMemory {
+  event: MemoryEvent;
+  score: number;
+}
+
+interface ContextPackSelectionOptions {
+  genericContinuationQuery: boolean;
+  topK: number;
+  recentSessionIds: Set<string>;
+}
+
 interface SessionSummary {
   sessionId: string;
   firstAt: Date;
@@ -361,6 +380,74 @@ function summarizeSessions(events: MemoryEvent[], sessionLimit: number): Session
     })
     .sort((a, b) => b.lastAt.getTime() - a.lastAt.getTime())
     .slice(0, sessionLimit);
+}
+
+function selectContextPackMemories(
+  memories: ContextPackMemory[],
+  options: ContextPackSelectionOptions
+): ContextPackMemory[] {
+  const selected = memories.filter((memory) => shouldShowContextPackMemory(memory, options));
+  if (!options.genericContinuationQuery) return selected.slice(0, options.topK);
+
+  return selected
+    .slice()
+    .sort((a, b) => contextPackMemoryPriority(b, options) - contextPackMemoryPriority(a, options))
+    .slice(0, options.topK);
+}
+
+function shouldShowGenericTimelineEvent(event: MemoryEvent): boolean {
+  const content = event.content || '';
+  if (isLowSignalContextContent(content)) return false;
+  if (event.eventType === 'tool_observation') return false;
+  if (isGenericContinuationQuery(content)) return false;
+  return true;
+}
+
+function shouldShowContextPackMemory(memory: ContextPackMemory, options: ContextPackSelectionOptions): boolean {
+  if (!options.genericContinuationQuery) return true;
+
+  const content = memory.event.content || '';
+  if (isLowSignalContextContent(content)) return false;
+  if (memory.event.eventType === 'tool_observation') return false;
+  if (isGenericContinuationQuery(content)) return false;
+  if (options.recentSessionIds.has(memory.event.sessionId)) return true;
+  if (memory.event.eventType === 'session_summary') return memory.score >= 0.55;
+  return memory.score >= 0.75;
+}
+
+function contextPackMemoryPriority(memory: ContextPackMemory, options: ContextPackSelectionOptions): number {
+  const recentBoost = options.recentSessionIds.has(memory.event.sessionId) ? 2 : 0;
+  const typeBoost = memory.event.eventType === 'session_summary'
+    ? 0.5
+    : memory.event.eventType === 'agent_response'
+      ? 0.3
+      : 0;
+  return recentBoost + typeBoost + Math.min(memory.score, 1) + memory.event.timestamp.getTime() / 1e15;
+}
+
+function appendRelevantMemories(lines: string[], memories: ContextPackMemory[]): void {
+  lines.push('### Relevant Memories', '');
+  if (memories.length === 0) {
+    lines.push('No relevant memories found.', '');
+    return;
+  }
+
+  for (let i = 0; i < memories.length; i++) {
+    const match = memories[i];
+    lines.push(formatRelevantMemoryLine(match.event, match.score, i + 1));
+  }
+}
+
+function appendRecentTimeline(lines: string[], sessions: SessionSummary[]): void {
+  lines.push('### Recent Project Timeline', '');
+  if (sessions.length === 0) {
+    lines.push('No recent project events found.', '');
+    return;
+  }
+
+  for (const session of sessions) {
+    lines.push(formatSessionSummary(session));
+  }
 }
 
 function countEventTypes(events: MemoryEvent[]): Record<EventType, number> {
