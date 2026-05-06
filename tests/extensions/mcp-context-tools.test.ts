@@ -232,6 +232,51 @@ describe('MCP project context tools', () => {
     expect(text).not.toContain('<environment_context>');
   });
 
+  it('keeps generic continuation timeline scoped to the latest work block', async () => {
+    const newestWork = event({
+      id: '81818181-8181-4818-8818-818181818181',
+      sessionId: 'session-current',
+      eventType: 'agent_response',
+      timestamp: new Date('2026-05-06T15:04:00.000Z'),
+      content: 'Continue freshness hardening after PR #18; implement latest-work-block timeline pruning.'
+    });
+    const priorSameDayPublish = event({
+      id: '82828282-8282-4828-8828-828282828282',
+      sessionId: 'session-publish',
+      eventType: 'agent_response',
+      timestamp: new Date('2026-05-06T12:26:00.000Z'),
+      content: 'Bumped package version and prepared npm publish for claude-memory-layer.'
+    });
+    const priorSameDayDuckdb = event({
+      id: '83838383-8383-4838-8838-838383838383',
+      sessionId: 'session-duckdb',
+      eventType: 'agent_response',
+      timestamp: new Date('2026-05-06T12:27:00.000Z'),
+      content: 'Diagnosed an x86_64 versus arm64 DuckDB native module mismatch.'
+    });
+
+    mocks.projectService.getRecentEvents.mockResolvedValue([
+      newestWork,
+      priorSameDayPublish,
+      priorSameDayDuckdb
+    ]);
+
+    const result = await handleToolCall('mem-context-pack', {
+      projectPath: '/repo/app',
+      query: '다음 추천작업은 뭐야?',
+      topK: 5,
+      recentLimit: 10,
+      sessionLimit: 5
+    });
+
+    const text = textOf(result);
+    expect(result.isError).not.toBe(true);
+    expect(text).toContain('- Recent sessions shown: 1');
+    expect(text).toContain('latest-work-block timeline pruning');
+    expect(text).not.toContain('npm publish');
+    expect(text).not.toContain('DuckDB native module mismatch');
+  });
+
   it('keeps generic continuation relevant memories sparse and high-confidence', async () => {
     const timelineNow = event({
       id: '12121212-1212-4212-8212-121212121212',
