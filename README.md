@@ -437,9 +437,22 @@ node dist/mcp/index.js
 | 도구 | 설명 |
 |------|------|
 | `mem-search` | 메모리 검색 (`projectPath`를 주면 프로젝트별 저장소 검색) |
-| `mem-timeline` | 타임라인 조회 (`projectPath` 지원) |
+| `mem-timeline` | 특정 memory IDs 주변 chronological context 조회 (`projectPath` 지원) |
 | `mem-details` | 상세 정보 조회 (`projectPath` 지원) |
 | `mem-stats` | 통계 조회 (`projectPath` 지원) |
+| `mem-context-pack` | 작업 시작용 compact context pack. query 관련 memory + 최근 project timeline + follow-up refs를 한 번에 반환 |
+| `mem-project-timeline` | 최근 project memory를 session/source/event-count/safe-preview 기준으로 요약 |
+| `mem-source-ref` | `mem:<citation>` 또는 `event:<id>`를 privacy-safe source reference와 redacted preview로 해석 |
+
+예시 workflow:
+
+```text
+1. 새 작업 시작: mem-context-pack(projectPath, query)
+2. 최근 흐름 확인: mem-project-timeline(projectPath)
+3. 근거가 더 필요할 때: mem-source-ref(projectPath, ids=["mem:abc123"])
+```
+
+이 workflow는 Hermes/Codex/Claude Code가 같은 project-scoped memory backend를 공유할 때 특히 유용합니다. `mem-source-ref`는 raw transcript를 그대로 덤프하지 않고 allowlisted metadata와 privacy-filtered preview만 반환합니다.
 
 ## Web Viewer
 

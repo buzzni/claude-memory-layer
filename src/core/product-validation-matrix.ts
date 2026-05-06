@@ -5,7 +5,7 @@
  * same surface -> requirement -> evidence map that tests assert stays covered.
  */
 
-export type ProductValidationArea = 'claude' | 'codex' | 'hermes' | 'cli' | 'safety';
+export type ProductValidationArea = 'claude' | 'codex' | 'hermes' | 'mcp' | 'cli' | 'safety';
 export type ProductValidationStatus = 'ready' | 'covered' | 'partial' | 'planned';
 export type ProductValidationEvidenceKind = 'test' | 'source' | 'command' | 'doc';
 
@@ -173,6 +173,53 @@ export const productValidationMatrix: readonly ProductValidationSurface[] = [
     ]
   },
   {
+    id: 'mcp.context.pack',
+    area: 'mcp',
+    title: 'MCP context pack',
+    status: 'covered',
+    requirements: [
+      'Expose an agent-ready project context pack that combines relevant retrieval results with recent project timeline.',
+      'Support projectPath scoping so Hermes, Codex, and Claude Code can share the same project memory backend.',
+      'Keep output compact and citation-oriented so agents can follow up with source-ref or timeline tools.'
+    ],
+    evidence: [
+      { kind: 'test', ref: 'tests/extensions/mcp-context-tools.test.ts', note: 'Asserts context-pack output, projectPath routing, compact relevant memory citations, and recent timeline inclusion.' },
+      { kind: 'source', ref: 'src/extensions/mcp/handlers.ts', note: 'mem-context-pack handler formats relevant memories plus session summaries.' },
+      { kind: 'source', ref: 'src/extensions/mcp/tools.ts', note: 'MCP tool schema advertises projectPath, topK, recentLimit, and sessionLimit options.' }
+    ]
+  },
+  {
+    id: 'mcp.project.timeline',
+    area: 'mcp',
+    title: 'MCP project timeline',
+    status: 'covered',
+    requirements: [
+      'Summarize recent project memories by session, source agent, event counts, and last safe preview.',
+      'Avoid raw transcript dumps while still giving enough continuity for another agent to resume work.'
+    ],
+    evidence: [
+      { kind: 'test', ref: 'tests/extensions/mcp-context-tools.test.ts', note: 'Asserts session grouping, source-agent metadata, and event type counts.' },
+      { kind: 'source', ref: 'src/extensions/mcp/handlers.ts', note: 'mem-project-timeline groups recent events by session and source.' },
+      { kind: 'source', ref: 'src/extensions/mcp/tools.ts', note: 'MCP tool schema advertises limit/sessionLimit/projectPath options.' }
+    ]
+  },
+  {
+    id: 'mcp.source.ref',
+    area: 'mcp',
+    title: 'MCP source reference',
+    status: 'covered',
+    requirements: [
+      'Resolve event IDs, event: references, and mem citation IDs into source references.',
+      'Return privacy-safe redacted previews and a narrow allowlist of metadata instead of raw transcript content.',
+      'Support projectPath scoping for project-specific memory stores.'
+    ],
+    evidence: [
+      { kind: 'test', ref: 'tests/extensions/mcp-context-tools.test.ts', note: 'Asserts citation lookup, secret redaction, and safe metadata allowlist.' },
+      { kind: 'source', ref: 'src/extensions/mcp/handlers.ts', note: 'mem-source-ref applies privacy filtering and safe metadata selection.' },
+      { kind: 'source', ref: 'src/core/privacy/filter.ts', note: 'Shared privacy filter masks sensitive patterns before output.' }
+    ]
+  },
+  {
     id: 'cli.api.reporting',
     area: 'cli',
     title: 'CLI / API / reporting',
@@ -212,7 +259,7 @@ export const productValidationMatrix: readonly ProductValidationSurface[] = [
 ];
 
 function emptyAreaCounts(): Record<ProductValidationArea, number> {
-  return { claude: 0, codex: 0, hermes: 0, cli: 0, safety: 0 };
+  return { claude: 0, codex: 0, hermes: 0, mcp: 0, cli: 0, safety: 0 };
 }
 
 function emptyStatusCounts(): Record<ProductValidationStatus, number> {

@@ -24,6 +24,11 @@ export interface RetrieveMemoriesOptions {
   projectScopeMode?: ProjectScopeMode;
   allowedProjectHashes?: string[];
   strategy?: RetrievalStrategy;
+  /**
+   * Disable automatic retrieval trace writes for read-only/navigation callers
+   * that may receive secret-bearing ad-hoc queries.
+   */
+  recordTrace?: boolean;
 }
 
 export interface RecordQueryTraceInput {
@@ -100,6 +105,7 @@ export class RetrievalOrchestrator {
     query: string,
     options?: RetrieveMemoriesOptions
   ): Promise<UnifiedRetrievalResult> {
+    const { recordTrace = true, ...retrieverOptions } = options ?? {};
     const lightweightFastRead = this.isLightweightFastRead(options);
     if (!lightweightFastRead) {
       await this.deps.initialize();
@@ -111,35 +117,37 @@ export class RetrievalOrchestrator {
       ? undefined
       : await this.getRerankWeights(options?.adaptiveRerank === true);
     const projectHash = this.deps.getProjectHash();
-    const projectScopeMode = options?.projectScopeMode ?? (projectHash ? 'strict' : 'global');
+    const projectScopeMode = retrieverOptions.projectScopeMode ?? (projectHash ? 'strict' : 'global');
 
     let result: UnifiedRetrievalResult;
 
-    if (options?.includeShared && this.deps.hasSharedStore()) {
+    if (retrieverOptions.includeShared && this.deps.hasSharedStore()) {
       result = await this.deps.retriever.retrieveUnified(query, {
-        ...options,
-        intentRewrite: options.intentRewrite === true,
+        ...retrieverOptions,
+        intentRewrite: retrieverOptions.intentRewrite === true,
         rerankWeights,
         includeShared: true,
         projectHash: projectHash || undefined,
         projectScopeMode,
-        allowedProjectHashes: options.allowedProjectHashes
+        allowedProjectHashes: retrieverOptions.allowedProjectHashes
       });
     } else {
       result = await this.deps.retriever.retrieve(query, {
-        ...options,
-        intentRewrite: options?.intentRewrite === true,
+        ...retrieverOptions,
+        intentRewrite: retrieverOptions.intentRewrite === true,
         rerankWeights,
         projectHash: projectHash || undefined,
         projectScopeMode,
-        allowedProjectHashes: options?.allowedProjectHashes
+        allowedProjectHashes: retrieverOptions.allowedProjectHashes
       });
     }
 
-    try {
-      await this.recordAutomaticTrace(query, result, options, projectHash);
-    } catch {
-      // Non-blocking telemetry.
+    if (recordTrace) {
+      try {
+        await this.recordAutomaticTrace(query, result, options, projectHash);
+      } catch {
+        // Non-blocking telemetry.
+      }
     }
 
     return result;

@@ -85,7 +85,8 @@ describe('MCP project-aware memory tools', () => {
     expect(mocks.projectService.initialize).toHaveBeenCalledTimes(1);
     expect(mocks.projectService.retrieveMemories).toHaveBeenCalledWith('project scoped memory', {
       topK: 7,
-      sessionId: 'session-a'
+      sessionId: 'session-a',
+      recordTrace: false
     });
     expect(result.content[0]?.text).toContain('project scoped memory result');
   });
