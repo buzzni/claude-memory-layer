@@ -24,6 +24,8 @@ describe('retrieval quality guards', () => {
     expect(isLowSignalContextContent('prefix <environment_context><cwd>/repo/app</cwd></environment_context> suffix')).toBe(true);
     expect(isLowSignalContextContent('<command-name>/model</command-name>\n<local-command-stdout>opus</local-command-stdout>')).toBe(true);
     expect(isLowSignalContextContent('# AGENTS.md instructions for /repo/app <INSTRUCTIONS> ## Skills A skill is local instructions.')).toBe(true);
+    expect(isLowSignalContextContent('Understood, stopping here. Let me know when you would like to continue with the design doc review.')).toBe(true);
+    expect(isLowSignalContextContent('Implementation note: suppress the stale phrase "Understood, stopping here. Let me know when you would like to continue." from context packs.')).toBe(false);
     expect(isLowSignalContextContent('Merged PR #15 and synced local main.')).toBe(false);
   });
 });

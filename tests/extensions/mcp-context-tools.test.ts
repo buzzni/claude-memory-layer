@@ -313,6 +313,13 @@ describe('MCP project context tools', () => {
       timestamp: new Date('2026-05-06T04:02:00.000Z'),
       content: 'Current CML state: PR #17 merged, main synced, MCP runtime reloaded; continue with freshness-aware relevance filtering.'
     });
+    const staleContinuationHandoff = event({
+      id: '78787878-7878-4787-8787-787878787878',
+      sessionId: 'session-old-handoff',
+      eventType: 'agent_response',
+      timestamp: new Date('2026-05-04T15:10:00.000Z'),
+      content: 'Understood, stopping here. Let me know when you would like to continue with the design doc review and edits.'
+    });
     const extraStrongButLowerPriority = event({
       id: '67676767-6767-4676-8676-676767676767',
       sessionId: 'session-current',
@@ -323,6 +330,7 @@ describe('MCP project context tools', () => {
 
     mocks.projectService.retrieveMemories.mockResolvedValue({
       memories: [
+        { event: staleContinuationHandoff, score: 0.99 },
         { event: weakRecentPublish, score: 0.62 },
         { event: strongFreshnessPlan, score: 0.82 },
         { event: strongPrState, score: 0.8 },
@@ -357,6 +365,8 @@ describe('MCP project context tools', () => {
     expect(text).not.toContain('Bumped package version');
     expect(text).not.toContain('DuckDB native module mismatch');
     expect(text).not.toContain('Additional implementation note');
+    expect(text).not.toContain('stopping here');
+    expect(text).not.toContain('design doc review');
   });
 
   it('keeps non-generic context-pack ordering while suppressing low-signal artifacts', async () => {
