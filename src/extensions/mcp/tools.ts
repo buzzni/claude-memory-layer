@@ -111,7 +111,40 @@ export const tools: Tool[] = [
           type: 'string',
           description: 'Optional: filter relevant memories by specific session ID'
         },
-        projectPath: projectPathProperty
+        projectPath: projectPathProperty,
+        refreshLatest: {
+          type: 'boolean',
+          description: 'Explicit opt-in: import latest local session history before retrieval. Requires absolute projectPath and mutates project memory (default: false).'
+        },
+        refreshSources: {
+          type: 'array',
+          items: { type: 'string', enum: ['claude', 'codex', 'hermes'] },
+          description: 'Sources to refresh when refreshLatest is true (default: hermes and codex)'
+        },
+        refreshSessionLimit: {
+          type: 'number',
+          description: 'Maximum recent matching sessions per refresh source (default: 1, max: 10)'
+        },
+        refreshMessageLimit: {
+          type: 'number',
+          description: 'Maximum messages/memories per refresh source (default: 200, max: 1000)'
+        },
+        refreshForce: {
+          type: 'boolean',
+          description: 'Force reimport during refresh by deleting existing events for imported sessions first (default: false)'
+        },
+        refreshEmbeddings: {
+          type: 'boolean',
+          description: 'Process pending embeddings after refresh (default: false for fast context retrieval)'
+        },
+        sessionsDir: {
+          type: 'string',
+          description: 'Optional Codex sessions directory override for refreshLatest'
+        },
+        stateDb: {
+          type: 'string',
+          description: 'Optional Hermes state database path override for refreshLatest'
+        }
       }
     }
   },

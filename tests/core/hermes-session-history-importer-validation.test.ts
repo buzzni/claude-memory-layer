@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   createHermesSessionHistoryImporter,
+  HERMES_IMPORTABLE_SESSION_SCAN_FACTOR,
   validateHermesSessions
 } from '../../src/services/hermes-session-history-importer.js';
 
@@ -298,6 +299,252 @@ describe('Hermes SessionDB validation/import', () => {
     expect(memoryService.startSession).toHaveBeenCalledTimes(1);
     expect(memoryService.startSession).toHaveBeenCalledWith('hermes:session-newer-a', projectA);
     expect(memoryService.storeUserPrompt).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips newer empty Hermes sessions when selecting latest project sessions for import', async () => {
+    const dir = tempDir();
+    const stateDbPath = join(dir, 'state.db');
+    const projectA = join(dir, 'project-a');
+    const projectB = join(dir, 'project-b');
+    createHermesStateDb(stateDbPath, projectA, projectB);
+
+    const db = new Database(stateDbPath);
+    db.prepare(`
+      INSERT INTO sessions (id, source, user_id, model, system_prompt, started_at, title, message_count)
+      VALUES (@id, @source, @userId, @model, @systemPrompt, @startedAt, @title, @messageCount)
+    `).run({
+      id: 'session-empty-newest-a',
+      source: 'discord',
+      userId: 'user-empty',
+      model: 'gpt-5.5',
+      systemPrompt: `Project Context\n${projectA}`,
+      startedAt: 1_779_000_400,
+      title: 'newest empty project a routing shell',
+      messageCount: 0
+    });
+    db.prepare(`
+      INSERT INTO sessions (id, source, user_id, model, system_prompt, started_at, title, message_count)
+      VALUES (@id, @source, @userId, @model, @systemPrompt, @startedAt, @title, @messageCount)
+    `).run({
+      id: 'session-newer-nonempty-a',
+      source: 'discord',
+      userId: 'user-newer',
+      model: 'gpt-5.5',
+      systemPrompt: `Project Context\n${projectA}`,
+      startedAt: 1_779_000_300,
+      title: 'newer non-empty project a thread',
+      messageCount: 1
+    });
+    db.prepare(`
+      INSERT INTO messages (session_id, role, content, tool_name, timestamp)
+      VALUES (@sessionId, @role, @content, @toolName, @timestamp)
+    `).run({
+      sessionId: 'session-newer-nonempty-a',
+      role: 'user',
+      content: 'latest non-empty Hermes project session should be imported despite newer empty shells',
+      toolName: null,
+      timestamp: 1_779_000_301
+    });
+    db.close();
+
+    const memoryService = {
+      startSession: vi.fn(async (_sessionId: string, _projectPath?: string) => undefined),
+      endSession: vi.fn(async (_sessionId: string) => undefined),
+      deleteSessionEvents: vi.fn(async (_sessionId: string) => 0),
+      storeUserPrompt: vi.fn(async () => ({ success: true, isDuplicate: false })),
+      storeAgentResponse: vi.fn(async () => ({ success: true, isDuplicate: false }))
+    };
+
+    const importer = createHermesSessionHistoryImporter(memoryService as never, { stateDbPath });
+    const result = await importer.importProject(projectA, { sessionLimit: 1 });
+
+    expect(result.totalSessions).toBe(1);
+    expect(result.totalMessages).toBe(1);
+    expect(memoryService.startSession).toHaveBeenCalledTimes(1);
+    expect(memoryService.startSession).toHaveBeenCalledWith('hermes:session-newer-nonempty-a', projectA);
+    expect(memoryService.startSession).not.toHaveBeenCalledWith('hermes:session-empty-newest-a', projectA);
+    expect(memoryService.storeUserPrompt).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips newer Hermes sessions that cannot store any prompt or response when selecting latest imports', async () => {
+    const dir = tempDir();
+    const stateDbPath = join(dir, 'state.db');
+    const projectA = join(dir, 'project-a');
+    const projectB = join(dir, 'project-b');
+    createHermesStateDb(stateDbPath, projectA, projectB);
+
+    const db = new Database(stateDbPath);
+    const insertSession = db.prepare(`
+      INSERT INTO sessions (id, source, user_id, model, system_prompt, started_at, title, message_count)
+      VALUES (@id, @source, @userId, @model, @systemPrompt, @startedAt, @title, @messageCount)
+    `);
+    const insertMessage = db.prepare(`
+      INSERT INTO messages (session_id, role, content, tool_name, timestamp)
+      VALUES (@sessionId, @role, @content, @toolName, @timestamp)
+    `);
+
+    insertSession.run({
+      id: 'session-assistant-only-newest-a',
+      source: 'discord',
+      userId: 'user-assistant-only',
+      model: 'gpt-5.5',
+      systemPrompt: `Project Context\n${projectA}`,
+      startedAt: 1_779_000_500,
+      title: 'assistant-only shell',
+      messageCount: 1
+    });
+    insertMessage.run({
+      sessionId: 'session-assistant-only-newest-a',
+      role: 'assistant',
+      content: 'assistant-only content should not make this session consume the freshness slot',
+      toolName: null,
+      timestamp: 1_779_000_501
+    });
+
+    insertSession.run({
+      id: 'session-trivial-user-newer-a',
+      source: 'discord',
+      userId: 'user-trivial',
+      model: 'gpt-5.5',
+      systemPrompt: `Project Context\n${projectA}`,
+      startedAt: 1_779_000_400,
+      title: 'trivial user shell',
+      messageCount: 2
+    });
+    insertMessage.run({
+      sessionId: 'session-trivial-user-newer-a',
+      role: 'user',
+      content: 'ok',
+      toolName: null,
+      timestamp: 1_779_000_401
+    });
+    insertMessage.run({
+      sessionId: 'session-trivial-user-newer-a',
+      role: 'assistant',
+      content: 'assistant response after trivial prompt should not be stored without a real turn',
+      toolName: null,
+      timestamp: 1_779_000_402
+    });
+
+    insertSession.run({
+      id: 'session-meaningful-older-a',
+      source: 'discord',
+      userId: 'user-meaningful',
+      model: 'gpt-5.5',
+      systemPrompt: `Project Context\n${projectA}`,
+      startedAt: 1_779_000_300,
+      title: 'meaningful project a thread',
+      messageCount: 2
+    });
+    insertMessage.run({
+      sessionId: 'session-meaningful-older-a',
+      role: 'user',
+      content: 'meaningful Hermes prompt should be selected after newer non-storable shells',
+      toolName: null,
+      timestamp: 1_779_000_301
+    });
+    insertMessage.run({
+      sessionId: 'session-meaningful-older-a',
+      role: 'assistant',
+      content: 'meaningful Hermes response should be imported after the selected prompt',
+      toolName: null,
+      timestamp: 1_779_000_302
+    });
+    db.close();
+
+    const memoryService = {
+      startSession: vi.fn(async (_sessionId: string, _projectPath?: string) => undefined),
+      endSession: vi.fn(async (_sessionId: string) => undefined),
+      deleteSessionEvents: vi.fn(async (_sessionId: string) => 0),
+      storeUserPrompt: vi.fn(async () => ({ success: true, isDuplicate: false })),
+      storeAgentResponse: vi.fn(async () => ({ success: true, isDuplicate: false }))
+    };
+
+    const importer = createHermesSessionHistoryImporter(memoryService as never, { stateDbPath });
+    const result = await importer.importProject(projectA, { sessionLimit: 1 });
+
+    expect(result.totalSessions).toBe(1);
+    expect(result.totalMessages).toBe(2);
+    expect(result.importedPrompts).toBe(1);
+    expect(result.importedResponses).toBe(1);
+    expect(memoryService.startSession).toHaveBeenCalledTimes(1);
+    expect(memoryService.startSession).toHaveBeenCalledWith('hermes:session-meaningful-older-a', projectA);
+    expect(memoryService.startSession).not.toHaveBeenCalledWith('hermes:session-assistant-only-newest-a', projectA);
+    expect(memoryService.startSession).not.toHaveBeenCalledWith('hermes:session-trivial-user-newer-a', projectA);
+  });
+
+  it('bounds finite sessionLimit freshness selection to the newest candidate window', async () => {
+    const dir = tempDir();
+    const stateDbPath = join(dir, 'state.db');
+    const projectA = join(dir, 'project-a');
+    const projectB = join(dir, 'project-b');
+    createHermesStateDb(stateDbPath, projectA, projectB);
+
+    const db = new Database(stateDbPath);
+    const insertSession = db.prepare(`
+      INSERT INTO sessions (id, source, user_id, model, system_prompt, started_at, title, message_count)
+      VALUES (@id, @source, @userId, @model, @systemPrompt, @startedAt, @title, @messageCount)
+    `);
+    const insertMessage = db.prepare(`
+      INSERT INTO messages (session_id, role, content, tool_name, timestamp)
+      VALUES (@sessionId, @role, @content, @toolName, @timestamp)
+    `);
+
+    const freshnessScanWindow = HERMES_IMPORTABLE_SESSION_SCAN_FACTOR;
+    for (let index = 0; index < freshnessScanWindow + 1; index++) {
+      const sessionId = `session-assistant-shell-${index}`;
+      insertSession.run({
+        id: sessionId,
+        source: 'discord',
+        userId: `user-shell-${index}`,
+        model: 'gpt-5.5',
+        systemPrompt: `Project Context\n${projectA}`,
+        startedAt: 1_779_001_000 - index,
+        title: `assistant-only shell ${index}`,
+        messageCount: 1
+      });
+      insertMessage.run({
+        sessionId,
+        role: 'assistant',
+        content: 'assistant-only shell content should not trigger deep freshness scans',
+        toolName: null,
+        timestamp: 1_779_001_000 - index + 0.1
+      });
+    }
+
+    insertSession.run({
+      id: 'session-meaningful-beyond-window-a',
+      source: 'discord',
+      userId: 'user-meaningful',
+      model: 'gpt-5.5',
+      systemPrompt: `Project Context\n${projectA}`,
+      startedAt: 1_779_000_100,
+      title: 'meaningful but outside freshness window',
+      messageCount: 1
+    });
+    insertMessage.run({
+      sessionId: 'session-meaningful-beyond-window-a',
+      role: 'user',
+      content: 'meaningful Hermes prompt should not be reached beyond the bounded freshness scan window',
+      toolName: null,
+      timestamp: 1_779_000_101
+    });
+    db.close();
+
+    const memoryService = {
+      startSession: vi.fn(async (_sessionId: string, _projectPath?: string) => undefined),
+      endSession: vi.fn(async (_sessionId: string) => undefined),
+      deleteSessionEvents: vi.fn(async (_sessionId: string) => 0),
+      storeUserPrompt: vi.fn(async () => ({ success: true, isDuplicate: false })),
+      storeAgentResponse: vi.fn(async () => ({ success: true, isDuplicate: false }))
+    };
+
+    const importer = createHermesSessionHistoryImporter(memoryService as never, { stateDbPath });
+    const result = await importer.importProject(projectA, { sessionLimit: 1 });
+
+    expect(result.totalSessions).toBe(0);
+    expect(memoryService.startSession).not.toHaveBeenCalled();
+    expect(memoryService.storeUserPrompt).not.toHaveBeenCalled();
   });
 
   it('applies Hermes import limit per selected matching session', async () => {

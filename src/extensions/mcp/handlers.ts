@@ -39,11 +39,12 @@ export async function handleToolCall(
   args: Record<string, unknown>
 ): Promise<ToolResult> {
   try {
-    if (name === 'mem-import-latest') {
+    if (name === 'mem-import-latest' || (name === 'mem-context-pack' && args.refreshLatest === true)) {
       const projectPath = optionalString(args.projectPath);
       if (!projectPath || !path.isAbsolute(projectPath)) {
+        const toolName = name === 'mem-context-pack' ? 'mem-context-pack refreshLatest' : 'mem-import-latest';
         return {
-          content: [{ type: 'text', text: 'Error: mem-import-latest requires an explicit absolute projectPath.' }],
+          content: [{ type: 'text', text: `Error: ${toolName} requires an explicit absolute projectPath.` }],
           isError: true
         };
       }
@@ -231,6 +232,18 @@ async function handleMemContextPack(memoryService: MemoryService, args: Record<s
   const projectPath = optionalString(args.projectPath);
   const genericContinuationQuery = isGenericContinuationQuery(query);
   const retrievalTopK = Math.min(topK * 3, 12);
+  const freshnessRun = args.refreshLatest === true
+    ? await runLatestImport(memoryService, {
+      projectPath: projectPath || '',
+      sources: sourceListArg(args.refreshSources),
+      sessionLimit: numberArg(args.refreshSessionLimit, 1, 1, 10),
+      messageLimit: numberArg(args.refreshMessageLimit, 200, 1, 1000),
+      force: args.refreshForce === true,
+      processEmbeddings: args.refreshEmbeddings === true,
+      sessionsDir: optionalString(args.sessionsDir),
+      stateDb: optionalString(args.stateDb)
+    })
+    : undefined;
 
   const [searchResult, recentEvents] = await Promise.all([
     memoryService.retrieveMemories(query, { topK: retrievalTopK, sessionId, recordTrace: false }),
@@ -260,10 +273,33 @@ async function handleMemContextPack(memoryService: MemoryService, args: Record<s
     `- Recent sessions shown: ${Math.min(sessionLimit, sessions.length)}`
   ];
 
+  if (freshnessRun) {
+    lines.push(
+      `- Freshness refresh: attempted before retrieval (${freshnessRun.sources.join(', ')})`,
+      `- Refresh limits: sessions=${freshnessRun.sessionLimit} messages=${freshnessRun.messageLimit} force=${freshnessRun.force ? 'yes' : 'no'} embeddings=${freshnessRun.processEmbeddings ? `processed ${freshnessRun.embeddingsProcessed ?? 0}` : 'skipped'}`
+    );
+  }
+
   if (genericContinuationQuery) {
     lines.push('- Generic continuation query: recent project timeline prioritized.');
   }
   lines.push('');
+
+  if (freshnessRun) {
+    lines.push('### Freshness Refresh', '');
+    for (const summary of freshnessRun.summaries) {
+      if (summary.result) {
+        lines.push(formatImportSummary(summary.source, summary.result));
+      } else {
+        lines.push(`- ${summary.source}: failed (${summary.error ?? 'details suppressed'})`);
+      }
+    }
+    const failedCount = freshnessRun.summaries.filter((summary) => summary.error).length;
+    if (failedCount > 0) {
+      lines.push('', `Warnings: ${failedCount} refresh source(s) failed; local path details were suppressed.`);
+    }
+    lines.push('');
+  }
 
   if (genericContinuationQuery) {
     appendRecentTimeline(lines, sessions);
@@ -294,6 +330,86 @@ interface LatestImportSummary {
   error?: string;
 }
 
+interface LatestImportRun {
+  sources: LatestImportSource[];
+  sessionLimit: number;
+  messageLimit: number;
+  force: boolean;
+  processEmbeddings: boolean;
+  embeddingsProcessed?: number;
+  summaries: LatestImportSummary[];
+}
+
+interface LatestImportRunOptions {
+  projectPath: string;
+  sources: LatestImportSource[];
+  sessionLimit: number;
+  messageLimit: number;
+  force: boolean;
+  processEmbeddings: boolean;
+  sessionsDir?: string;
+  stateDb?: string;
+}
+
+async function runLatestImport(memoryService: MemoryService, options: LatestImportRunOptions): Promise<LatestImportRun> {
+  const summaries: LatestImportSummary[] = [];
+
+  for (const source of options.sources) {
+    try {
+      if (source === 'claude') {
+        const importer = createSessionHistoryImporter(memoryService);
+        summaries.push({
+          source,
+          result: await importer.importProject(options.projectPath, {
+            projectPath: options.projectPath,
+            sessionLimit: options.sessionLimit,
+            limit: options.messageLimit,
+            force: options.force
+          })
+        });
+      } else if (source === 'codex') {
+        const importer = createCodexSessionHistoryImporter(memoryService, { sessionsDir: options.sessionsDir });
+        summaries.push({
+          source,
+          result: await importer.importProject(options.projectPath, {
+            projectPath: options.projectPath,
+            sessionLimit: options.sessionLimit,
+            limit: options.messageLimit,
+            force: options.force
+          })
+        });
+      } else {
+        const importer = createHermesSessionHistoryImporter(memoryService, { stateDbPath: options.stateDb });
+        summaries.push({
+          source,
+          result: await importer.importProject(options.projectPath, {
+            projectPath: options.projectPath,
+            sessionLimit: options.sessionLimit,
+            limit: options.messageLimit,
+            force: options.force
+          })
+        });
+      }
+    } catch (error) {
+      summaries.push({ source, error: safeErrorSummary(error) });
+    }
+  }
+
+  const embeddingsProcessed = options.processEmbeddings
+    ? await memoryService.processPendingEmbeddings()
+    : undefined;
+
+  return {
+    sources: options.sources,
+    sessionLimit: options.sessionLimit,
+    messageLimit: options.messageLimit,
+    force: options.force,
+    processEmbeddings: options.processEmbeddings,
+    embeddingsProcessed,
+    summaries
+  };
+}
+
 async function handleMemImportLatest(memoryService: MemoryService, args: Record<string, unknown>): Promise<ToolResult> {
   const projectPath = optionalString(args.projectPath);
   if (!projectPath) {
@@ -303,58 +419,32 @@ async function handleMemImportLatest(memoryService: MemoryService, args: Record<
     };
   }
 
-  const sources = sourceListArg(args.sources);
-  const sessionLimit = numberArg(args.sessionLimit, 1, 1, 10);
-  const messageLimit = numberArg(args.messageLimit, 200, 1, 1000);
-  const force = args.force === true;
-  const processEmbeddings = args.processEmbeddings === true;
-  const summaries: LatestImportSummary[] = [];
-
-  for (const source of sources) {
-    try {
-      if (source === 'claude') {
-        const importer = createSessionHistoryImporter(memoryService);
-        summaries.push({
-          source,
-          result: await importer.importProject(projectPath, { projectPath, sessionLimit, limit: messageLimit, force })
-        });
-      } else if (source === 'codex') {
-        const importer = createCodexSessionHistoryImporter(memoryService, { sessionsDir: optionalString(args.sessionsDir) });
-        summaries.push({
-          source,
-          result: await importer.importProject(projectPath, { projectPath, sessionLimit, limit: messageLimit, force })
-        });
-      } else {
-        const importer = createHermesSessionHistoryImporter(memoryService, { stateDbPath: optionalString(args.stateDb) });
-        summaries.push({
-          source,
-          result: await importer.importProject(projectPath, { projectPath, sessionLimit, limit: messageLimit, force })
-        });
-      }
-    } catch (error) {
-      summaries.push({ source, error: safeErrorSummary(error) });
-    }
-  }
-
-  const embeddingsProcessed = processEmbeddings
-    ? await memoryService.processPendingEmbeddings()
-    : undefined;
+  const importRun = await runLatestImport(memoryService, {
+    projectPath,
+    sources: sourceListArg(args.sources),
+    sessionLimit: numberArg(args.sessionLimit, 1, 1, 10),
+    messageLimit: numberArg(args.messageLimit, 200, 1, 1000),
+    force: args.force === true,
+    processEmbeddings: args.processEmbeddings === true,
+    sessionsDir: optionalString(args.sessionsDir),
+    stateDb: optionalString(args.stateDb)
+  });
 
   const lines: string[] = [
     '## Latest Session Import',
     '',
     '- Project: supplied',
-    `- Sources: ${sources.join(', ')}`,
-    `- Recent session limit per source: ${sessionLimit}`,
-    `- Message limit per source: ${messageLimit}`,
-    `- Force reimport: ${force ? 'yes' : 'no'}`,
-    `- Embeddings: ${processEmbeddings ? `processed ${embeddingsProcessed ?? 0}` : 'skipped'}`,
+    `- Sources: ${importRun.sources.join(', ')}`,
+    `- Recent session limit per source: ${importRun.sessionLimit}`,
+    `- Message limit per source: ${importRun.messageLimit}`,
+    `- Force reimport: ${importRun.force ? 'yes' : 'no'}`,
+    `- Embeddings: ${importRun.processEmbeddings ? `processed ${importRun.embeddingsProcessed ?? 0}` : 'skipped'}`,
     '',
     '### Source Results',
     ''
   ];
 
-  for (const summary of summaries) {
+  for (const summary of importRun.summaries) {
     if (summary.result) {
       lines.push(formatImportSummary(summary.source, summary.result));
     } else {
@@ -362,7 +452,7 @@ async function handleMemImportLatest(memoryService: MemoryService, args: Record<
     }
   }
 
-  const failedCount = summaries.filter((summary) => summary.error).length;
+  const failedCount = importRun.summaries.filter((summary) => summary.error).length;
   if (failedCount > 0) {
     lines.push('', `Warnings: ${failedCount} source(s) failed; local path details were suppressed.`);
   }
