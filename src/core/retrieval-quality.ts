@@ -16,6 +16,7 @@ const COMMAND_ARTIFACT_PATTERNS = [
 const LOW_SIGNAL_CONTEXT_PATTERNS = [
   /<environment_context\b[\s\S]*<\/environment_context>/i,
   /<turn_aborted>/i,
+  /^#\s*AGENTS\.md\s+instructions\b[\s\S]*<INSTRUCTIONS>/i,
   /^➜\s+\S+\s+git:\([^)]*\)\s+/i,
   /^\$\s+\S+/i
 ];
