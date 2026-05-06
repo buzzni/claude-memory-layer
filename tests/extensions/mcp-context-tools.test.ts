@@ -232,6 +232,88 @@ describe('MCP project context tools', () => {
     expect(text).not.toContain('<environment_context>');
   });
 
+  it('keeps generic continuation relevant memories sparse and high-confidence', async () => {
+    const timelineNow = event({
+      id: '12121212-1212-4212-8212-121212121212',
+      sessionId: 'session-current',
+      eventType: 'agent_response',
+      timestamp: new Date('2026-05-06T04:00:00.000Z'),
+      content: 'Merged CML PR #17 and reloaded the MCP server; next implementation focus is freshness-aware context filtering.'
+    });
+    const weakRecentPublish = event({
+      id: '23232323-2323-4232-8232-232323232323',
+      sessionId: 'session-publish',
+      eventType: 'agent_response',
+      timestamp: new Date('2026-05-05T12:26:00.000Z'),
+      content: 'Bumped package version and prepared npm publish for claude-memory-layer.'
+    });
+    const weakRecentDuckdb = event({
+      id: '34343434-3434-4343-8343-343434343434',
+      sessionId: 'session-duckdb',
+      eventType: 'agent_response',
+      timestamp: new Date('2026-05-05T12:27:00.000Z'),
+      content: 'Diagnosed an x86_64 versus arm64 DuckDB native module mismatch.'
+    });
+    const strongFreshnessPlan = event({
+      id: '45454545-4545-4545-8545-454545454545',
+      sessionId: 'session-current',
+      eventType: 'agent_response',
+      timestamp: new Date('2026-05-06T04:01:00.000Z'),
+      content: 'Freshness filter design: for generic continuation prompts, suppress weak semantic memories and rely on recent project timeline first.'
+    });
+    const strongPrState = event({
+      id: '56565656-5656-4565-8565-565656565656',
+      sessionId: 'session-current',
+      eventType: 'session_summary',
+      timestamp: new Date('2026-05-06T04:02:00.000Z'),
+      content: 'Current CML state: PR #17 merged, main synced, MCP runtime reloaded; continue with freshness-aware relevance filtering.'
+    });
+    const extraStrongButLowerPriority = event({
+      id: '67676767-6767-4676-8676-676767676767',
+      sessionId: 'session-current',
+      eventType: 'agent_response',
+      timestamp: new Date('2026-05-06T04:03:00.000Z'),
+      content: 'Additional implementation note that should be omitted because generic continuation relevant memories are capped.'
+    });
+
+    mocks.projectService.retrieveMemories.mockResolvedValue({
+      memories: [
+        { event: weakRecentPublish, score: 0.62 },
+        { event: strongFreshnessPlan, score: 0.82 },
+        { event: strongPrState, score: 0.8 },
+        { event: extraStrongButLowerPriority, score: 0.77 },
+        { event: weakRecentDuckdb, score: 0.6 }
+      ]
+    });
+    mocks.projectService.getRecentEvents.mockResolvedValue([
+      timelineNow,
+      weakRecentPublish,
+      weakRecentDuckdb
+    ]);
+
+    const result = await handleToolCall('mem-context-pack', {
+      projectPath: '/repo/app',
+      query: 'continue',
+      topK: 5,
+      recentLimit: 10,
+      sessionLimit: 3
+    });
+
+    const text = textOf(result);
+    expect(result.isError).not.toBe(true);
+    expect(mocks.projectService.retrieveMemories).toHaveBeenCalledWith('continue', {
+      topK: 12,
+      sessionId: undefined,
+      recordTrace: false
+    });
+    expect(text).toContain('- Relevant memories: 2');
+    expect(text).toContain('Freshness filter design');
+    expect(text).toContain('Current CML state: PR #17 merged');
+    expect(text).not.toContain('Bumped package version');
+    expect(text).not.toContain('DuckDB native module mismatch');
+    expect(text).not.toContain('Additional implementation note');
+  });
+
   it('keeps non-generic context-pack ordering while suppressing low-signal artifacts', async () => {
     const commandArtifact = event({
       id: '99999999-9999-4999-8999-999999999999',
