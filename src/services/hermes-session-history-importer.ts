@@ -287,6 +287,29 @@ function listHermesMessages(db: Database, sessionId: string): HermesMessageRow[]
   `).all(sessionId) as HermesMessageRow[];
 }
 
+export const HERMES_IMPORTABLE_SESSION_SCAN_FACTOR = 50;
+
+function hasImportableHermesMessages(db: Database, sessionId: string): boolean {
+  return listHermesMessages(db, sessionId).some((message) => {
+    const normalized = normalizeHermesMessage(message);
+    return typeof normalized === 'object' && normalized.role === 'user';
+  });
+}
+
+function selectImportableHermesSessions(db: Database, sessions: HermesSessionRow[], sessionLimit: number): HermesSessionRow[] {
+  if (!Number.isFinite(sessionLimit) || sessionLimit <= 0) return sessions;
+
+  const selected: HermesSessionRow[] = [];
+  const maxSessions = Math.floor(sessionLimit);
+  const scanLimit = Math.min(sessions.length, Math.max(maxSessions, maxSessions * HERMES_IMPORTABLE_SESSION_SCAN_FACTOR));
+  for (const session of sessions.slice(0, scanLimit)) {
+    if (!hasImportableHermesMessages(db, session.id)) continue;
+    selected.push(session);
+    if (selected.length >= maxSessions) break;
+  }
+  return selected;
+}
+
 function createEmptyImportResult(): ImportResult {
   return {
     totalSessions: 0,
@@ -525,9 +548,7 @@ export class HermesSessionHistoryImporter {
     const result = createEmptyImportResult();
     const onProgress = options.onProgress;
     const sessionLimit = options.sessionLimit ?? Infinity;
-    const selectedSessions = Number.isFinite(sessionLimit) && sessionLimit > 0
-      ? sessions.slice(0, Math.floor(sessionLimit))
-      : sessions;
+    const selectedSessions = selectImportableHermesSessions(db, sessions, sessionLimit);
 
     onProgress?.({ phase: 'scan', message: `Found ${sessions.length} Hermes session(s)` });
 

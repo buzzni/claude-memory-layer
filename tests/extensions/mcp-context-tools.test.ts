@@ -118,6 +118,15 @@ describe('MCP project context tools', () => {
         description: expect.stringContaining('project')
       });
     }
+
+    const contextPackProperties = byName.get('mem-context-pack')?.inputSchema.properties as Record<string, unknown>;
+    expect(contextPackProperties.refreshLatest).toMatchObject({
+      type: 'boolean',
+      description: expect.stringContaining('Explicit opt-in')
+    });
+    expect(contextPackProperties.refreshSources).toMatchObject({
+      type: 'array'
+    });
   });
 
   it('imports the latest selected project sessions through a privacy-safe MCP freshness tool', async () => {
@@ -222,6 +231,77 @@ describe('MCP project context tools', () => {
     expect(text).not.toContain('/repo/app');
     expect(text).not.toContain('C:\\Users\\me');
     expect(text).not.toContain('state.db');
+  });
+
+  it('refreshes latest sessions before building a context pack when explicitly requested', async () => {
+    mocks.hermesImporter.importProject.mockResolvedValue({
+      totalSessions: 1,
+      totalMessages: 2,
+      importedPrompts: 1,
+      importedResponses: 1,
+      skippedDuplicates: 0,
+      errors: []
+    });
+    mocks.projectService.processPendingEmbeddings.mockResolvedValue(3);
+    mocks.projectService.getRecentEvents.mockResolvedValue([
+      event({
+        id: '33333333-3333-4333-8333-333333333333',
+        sessionId: 'hermes:fresh-session',
+        eventType: 'agent_response',
+        timestamp: new Date('2026-05-05T03:00:00.000Z'),
+        content: 'Freshly imported context-pack auto-refresh implementation checkpoint.'
+      })
+    ]);
+
+    const result = await handleToolCall('mem-context-pack', {
+      projectPath: '/repo/app',
+      query: 'continue',
+      refreshLatest: true,
+      refreshSources: ['hermes'],
+      refreshSessionLimit: 2,
+      refreshMessageLimit: 50,
+      refreshForce: true,
+      refreshEmbeddings: true,
+      stateDb: '/tmp/local-hermes-state.db'
+    });
+
+    const text = textOf(result);
+    expect(result.isError).not.toBe(true);
+    expect(mocks.createHermesSessionHistoryImporter).toHaveBeenCalledWith(mocks.projectService, { stateDbPath: '/tmp/local-hermes-state.db' });
+    expect(mocks.hermesImporter.importProject).toHaveBeenCalledWith('/repo/app', {
+      projectPath: '/repo/app',
+      sessionLimit: 2,
+      limit: 50,
+      force: true
+    });
+    expect(mocks.projectService.processPendingEmbeddings).toHaveBeenCalledTimes(1);
+    expect(mocks.hermesImporter.importProject.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.projectService.retrieveMemories.mock.invocationCallOrder[0]
+    );
+    expect(mocks.hermesImporter.importProject.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.projectService.getRecentEvents.mock.invocationCallOrder[0]
+    );
+    expect(text).toContain('- Freshness refresh: attempted before retrieval (hermes)');
+    expect(text).toContain('- Refresh limits: sessions=2 messages=50 force=yes embeddings=processed 3');
+    expect(text).toContain('- hermes: sessions=1 messages=2 prompts=1 responses=1 skipped=0 errors=0');
+    expect(text).toContain('Freshly imported context-pack auto-refresh implementation checkpoint.');
+    expect(text).not.toContain('/repo/app');
+    expect(text).not.toContain('/tmp/local-hermes-state.db');
+  });
+
+  it('rejects mem-context-pack refreshLatest without opening project storage when projectPath is not absolute', async () => {
+    const result = await handleToolCall('mem-context-pack', {
+      projectPath: 'relative/app',
+      query: 'continue',
+      refreshLatest: true
+    });
+
+    const text = textOf(result);
+    expect(result.isError).toBe(true);
+    expect(text).toContain('mem-context-pack refreshLatest requires an explicit absolute projectPath');
+    expect(mocks.getMemoryServiceForProject).not.toHaveBeenCalled();
+    expect(mocks.createHermesSessionHistoryImporter).not.toHaveBeenCalled();
+    expect(mocks.projectService.retrieveMemories).not.toHaveBeenCalled();
   });
 
   it('builds a compact project context pack from relevant search results and recent timeline', async () => {
