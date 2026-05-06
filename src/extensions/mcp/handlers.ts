@@ -13,6 +13,11 @@ import {
 import { createSessionHistoryImporter, type ImportResult } from '../../services/session-history-importer.js';
 import { createCodexSessionHistoryImporter } from '../../services/codex-session-history-importer.js';
 import { createHermesSessionHistoryImporter } from '../../services/hermes-session-history-importer.js';
+import {
+  fetchExternalMarketContext,
+  renderExternalMarketContextReport,
+  type ExternalMarketProvider
+} from '../../core/external-market-context.js';
 import { generateCitationId } from '../../core/citation-generator.js';
 import { applyPrivacyFilter, maskSensitiveInput } from '../../core/privacy/filter.js';
 import {
@@ -39,6 +44,10 @@ export async function handleToolCall(
   args: Record<string, unknown>
 ): Promise<ToolResult> {
   try {
+    if (name === 'external-market-context') {
+      return await handleExternalMarketContext(args);
+    }
+
     if (name === 'mem-import-latest' || (name === 'mem-context-pack' && args.refreshLatest === true)) {
       const projectPath = optionalString(args.projectPath);
       if (!projectPath || !path.isAbsolute(projectPath)) {
@@ -90,6 +99,18 @@ export async function handleToolCall(
       isError: true
     };
   }
+}
+
+async function handleExternalMarketContext(args: Record<string, unknown>): Promise<ToolResult> {
+  const report = await fetchExternalMarketContext({
+    company: optionalString(args.company),
+    dartCorpCode: optionalString(args.dartCorpCode),
+    symbol: optionalString(args.symbol),
+    providers: providerListArg(args.providers),
+    fredSeries: stringListArg(args.fredSeries),
+    includeSnapshot: args.includeSnapshot !== false
+  });
+  return textResult(renderExternalMarketContextReport(report));
 }
 
 async function handleMemSearch(memoryService: MemoryService, args: Record<string, unknown>): Promise<ToolResult> {
@@ -832,6 +853,30 @@ function stringArg(value: unknown, fallback: string): string {
 
 function optionalString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function stringListArg(value: unknown): string[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) return undefined;
+  const selected = value.map((item) => String(item).trim()).filter(Boolean);
+  return selected.length > 0 ? Array.from(new Set(selected)) : undefined;
+}
+
+function providerListArg(value: unknown): ExternalMarketProvider[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error('Invalid providers: expected a non-empty array of dart, fred, or finnhub');
+  }
+  const allowed = new Set<ExternalMarketProvider>(['dart', 'fred', 'finnhub']);
+  const selected: ExternalMarketProvider[] = [];
+  for (const item of value) {
+    const normalized = String(item).trim().toLowerCase() as ExternalMarketProvider;
+    if (!allowed.has(normalized)) {
+      throw new Error('Invalid providers: expected dart, fred, or finnhub');
+    }
+    if (!selected.includes(normalized)) selected.push(normalized);
+  }
+  return selected;
 }
 
 function sourceListArg(value: unknown): LatestImportSource[] {

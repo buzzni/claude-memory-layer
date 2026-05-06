@@ -12,6 +12,22 @@ const projectPathProperty = {
 
 export const tools: Tool[] = [
   {
+    name: 'external-market-context',
+    description: 'Read-only external market/company context from DART, FRED, and Finnhub with structured MarketContextSnapshot bull/bear/risk/catalyst analysis.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        company: { type: 'string', description: 'Optional company name for report subject and DART fallback search' },
+        dartCorpCode: { type: 'string', description: 'Optional exact DART corp_code for issuer-specific filings' },
+        symbol: { type: 'string', description: 'Optional listed ticker for Finnhub company profile' },
+        providers: { type: 'array', items: { type: 'string', enum: ['dart', 'fred', 'finnhub'] }, description: 'Providers to fetch (default: dart, fred, finnhub)' },
+        fredSeries: { type: 'array', items: { type: 'string' }, description: 'Optional FRED series IDs (default: FEDFUNDS, CPIAUCSL, UNRATE)' },
+        includeSnapshot: { type: 'boolean', description: 'Include structured MarketContextSnapshot and DART company snapshot (default: true)' },
+        projectPath: projectPathProperty
+      }
+    }
+  },
+  {
     name: 'mem-search',
     description: 'Search claude-memory-layer for relevant past conversations and insights. Returns a compact index of results - use mem-details to get full content.',
     inputSchema: {

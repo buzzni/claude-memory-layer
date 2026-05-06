@@ -6,3 +6,5 @@ memory/
 test_access.js
 .omc/
 graphify-out/
+.env*
+!.env.example
