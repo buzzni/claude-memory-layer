@@ -3,11 +3,16 @@
  * Implementation of tool calls
  */
 
+import * as path from 'node:path';
+
 import {
   getDefaultMemoryService,
   getMemoryServiceForProject,
   type MemoryService
 } from '../../services/memory-service.js';
+import { createSessionHistoryImporter, type ImportResult } from '../../services/session-history-importer.js';
+import { createCodexSessionHistoryImporter } from '../../services/codex-session-history-importer.js';
+import { createHermesSessionHistoryImporter } from '../../services/hermes-session-history-importer.js';
 import { generateCitationId } from '../../core/citation-generator.js';
 import { applyPrivacyFilter, maskSensitiveInput } from '../../core/privacy/filter.js';
 import {
@@ -34,6 +39,16 @@ export async function handleToolCall(
   args: Record<string, unknown>
 ): Promise<ToolResult> {
   try {
+    if (name === 'mem-import-latest') {
+      const projectPath = optionalString(args.projectPath);
+      if (!projectPath || !path.isAbsolute(projectPath)) {
+        return {
+          content: [{ type: 'text', text: 'Error: mem-import-latest requires an explicit absolute projectPath.' }],
+          isError: true
+        };
+      }
+    }
+
     const memoryService = resolveMemoryService(args);
     await memoryService.initialize();
 
@@ -53,6 +68,9 @@ export async function handleToolCall(
       case 'mem-context-pack':
         return await handleMemContextPack(memoryService, args);
 
+      case 'mem-import-latest':
+        return await handleMemImportLatest(memoryService, args);
+
       case 'mem-project-timeline':
         return await handleMemProjectTimeline(memoryService, args);
 
@@ -67,7 +85,7 @@ export async function handleToolCall(
     }
   } catch (error) {
     return {
-      content: [{ type: 'text', text: `Error: ${(error as Error).message}` }],
+      content: [{ type: 'text', text: `Error: ${safeErrorSummary(error)}` }],
       isError: true
     };
   }
@@ -263,6 +281,90 @@ async function handleMemContextPack(memoryService: MemoryService, args: Record<s
     lines.push(`- Source refs: mem-source-ref ids=[${sourceIds.map((id) => `'${id}'`).join(', ')}]`);
     lines.push('- Wider timeline: mem-project-timeline with the same projectPath');
     lines.push('');
+  }
+
+  return textResult(lines.join('\n'));
+}
+
+type LatestImportSource = 'claude' | 'codex' | 'hermes';
+
+interface LatestImportSummary {
+  source: LatestImportSource;
+  result?: ImportResult;
+  error?: string;
+}
+
+async function handleMemImportLatest(memoryService: MemoryService, args: Record<string, unknown>): Promise<ToolResult> {
+  const projectPath = optionalString(args.projectPath);
+  if (!projectPath) {
+    return {
+      content: [{ type: 'text', text: 'Error: mem-import-latest requires an explicit projectPath.' }],
+      isError: true
+    };
+  }
+
+  const sources = sourceListArg(args.sources);
+  const sessionLimit = numberArg(args.sessionLimit, 1, 1, 10);
+  const messageLimit = numberArg(args.messageLimit, 200, 1, 1000);
+  const force = args.force === true;
+  const processEmbeddings = args.processEmbeddings === true;
+  const summaries: LatestImportSummary[] = [];
+
+  for (const source of sources) {
+    try {
+      if (source === 'claude') {
+        const importer = createSessionHistoryImporter(memoryService);
+        summaries.push({
+          source,
+          result: await importer.importProject(projectPath, { projectPath, sessionLimit, limit: messageLimit, force })
+        });
+      } else if (source === 'codex') {
+        const importer = createCodexSessionHistoryImporter(memoryService, { sessionsDir: optionalString(args.sessionsDir) });
+        summaries.push({
+          source,
+          result: await importer.importProject(projectPath, { projectPath, sessionLimit, limit: messageLimit, force })
+        });
+      } else {
+        const importer = createHermesSessionHistoryImporter(memoryService, { stateDbPath: optionalString(args.stateDb) });
+        summaries.push({
+          source,
+          result: await importer.importProject(projectPath, { projectPath, sessionLimit, limit: messageLimit, force })
+        });
+      }
+    } catch (error) {
+      summaries.push({ source, error: safeErrorSummary(error) });
+    }
+  }
+
+  const embeddingsProcessed = processEmbeddings
+    ? await memoryService.processPendingEmbeddings()
+    : undefined;
+
+  const lines: string[] = [
+    '## Latest Session Import',
+    '',
+    '- Project: supplied',
+    `- Sources: ${sources.join(', ')}`,
+    `- Recent session limit per source: ${sessionLimit}`,
+    `- Message limit per source: ${messageLimit}`,
+    `- Force reimport: ${force ? 'yes' : 'no'}`,
+    `- Embeddings: ${processEmbeddings ? `processed ${embeddingsProcessed ?? 0}` : 'skipped'}`,
+    '',
+    '### Source Results',
+    ''
+  ];
+
+  for (const summary of summaries) {
+    if (summary.result) {
+      lines.push(formatImportSummary(summary.source, summary.result));
+    } else {
+      lines.push(`- ${summary.source}: failed (${summary.error ?? 'details suppressed'})`);
+    }
+  }
+
+  const failedCount = summaries.filter((summary) => summary.error).length;
+  if (failedCount > 0) {
+    lines.push('', `Warnings: ${failedCount} source(s) failed; local path details were suppressed.`);
   }
 
   return textResult(lines.join('\n'));
@@ -640,6 +742,39 @@ function stringArg(value: unknown, fallback: string): string {
 
 function optionalString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function sourceListArg(value: unknown): LatestImportSource[] {
+  const fallback: LatestImportSource[] = ['hermes', 'codex'];
+  if (value === undefined) return fallback;
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error('Invalid sources: expected a non-empty array of claude, codex, or hermes');
+  }
+
+  const allowed = new Set<LatestImportSource>(['claude', 'codex', 'hermes']);
+  const selected: LatestImportSource[] = [];
+  for (const item of value) {
+    const normalized = String(item).trim().toLowerCase() as LatestImportSource;
+    if (!allowed.has(normalized)) {
+      throw new Error('Invalid source: expected claude, codex, or hermes');
+    }
+    if (!selected.includes(normalized)) selected.push(normalized);
+  }
+  return selected;
+}
+
+function formatImportSummary(source: LatestImportSource, result: ImportResult): string {
+  return `- ${source}: sessions=${result.totalSessions} messages=${result.totalMessages} prompts=${result.importedPrompts} responses=${result.importedResponses} skipped=${result.skippedDuplicates} errors=${result.errors.length}`;
+}
+
+function safeErrorSummary(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  const scrubbedPaths = raw
+    .replace(/[A-Za-z]:[\\/][^\s'"`<>)]*/g, '[path]')
+    .replace(/~[\\/][^\s'"`<>)]*/g, '[path]')
+    .replace(/(^|[\s([{=,:;])\/(?!\/)[^\s'"`<>)]*/g, '$1[path]')
+    .replace(/(^|[\s([{=,:;])(?:\.{1,2}[\\/])?[^\s'"`<>)]*\.(?:db|sqlite|jsonl|log|txt)\b[^\s'"`<>)]*/g, '$1[path]');
+  return safeInline(scrubbedPaths, 180) || 'details suppressed';
 }
 
 function numberArg(value: unknown, fallback: number, min: number, max: number): number {

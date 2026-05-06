@@ -214,6 +214,32 @@ export function listCodexSessionFilesRecursive(rootDir: string): string[] {
   return out.sort();
 }
 
+function getFileMtimeMs(filePath: string): number {
+  try {
+    return fs.statSync(filePath).mtimeMs;
+  } catch {
+    return 0;
+  }
+}
+
+function selectRecentCodexSessionFiles(files: string[], sessionLimit?: number): string[] {
+  if (sessionLimit === undefined) return files;
+  const limit = Number.isFinite(sessionLimit) && sessionLimit > 0 ? Math.floor(sessionLimit) : undefined;
+  if (limit === undefined) return files;
+  return [...files]
+    .sort((a, b) => getFileMtimeMs(b) - getFileMtimeMs(a) || b.localeCompare(a))
+    .slice(0, limit);
+}
+
+function normalizePositiveImportLimit(limit?: number): number | undefined {
+  if (limit === undefined) return undefined;
+  return Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : undefined;
+}
+
+function countStoredEntries(result: ImportResult): number {
+  return result.importedPrompts + result.importedResponses + result.skippedDuplicates;
+}
+
 export async function readCodexSessionMeta(filePath: string): Promise<CodexSessionMeta> {
   const fileStream = fs.createReadStream(filePath, { encoding: 'utf-8' });
   const rl = readline.createInterface({ input: fileStream, crlfDelay: Infinity });
@@ -629,26 +655,33 @@ export class CodexSessionHistoryImporter {
       }
     }
 
-    result.totalSessions = matchingFiles.length;
+    const selectedFiles = selectRecentCodexSessionFiles(matchingFiles, options.sessionLimit);
     onProgress?.({ phase: 'scan', message: `Found ${matchingFiles.length} Codex session(s) for this project` });
 
     const effectiveProjectPath = options.projectPath ?? projectPath;
+    const totalLimit = normalizePositiveImportLimit(options.limit);
+    let storedAcrossSessions = 0;
 
-    for (let i = 0; i < matchingFiles.length; i++) {
-      const filePath = matchingFiles[i];
+    for (let i = 0; i < selectedFiles.length; i++) {
+      if (totalLimit !== undefined && storedAcrossSessions >= totalLimit) break;
+      const filePath = selectedFiles[i];
+      const remainingLimit = totalLimit === undefined ? undefined : totalLimit - storedAcrossSessions;
       try {
-        onProgress?.({ phase: 'session-start', sessionIndex: i, totalSessions: matchingFiles.length, filePath });
+        onProgress?.({ phase: 'session-start', sessionIndex: i, totalSessions: selectedFiles.length, filePath });
         const sessionResult = await this.importSessionFile(filePath, {
           ...options,
+          limit: remainingLimit,
           projectPath: effectiveProjectPath,
           _sessionIndex: i,
         } as ImportOptions & { _sessionIndex: number });
 
+        result.totalSessions++;
         result.totalMessages += sessionResult.totalMessages;
         result.importedPrompts += sessionResult.importedPrompts;
         result.importedResponses += sessionResult.importedResponses;
         result.skippedDuplicates += sessionResult.skippedDuplicates;
         result.errors.push(...sessionResult.errors);
+        storedAcrossSessions += countStoredEntries(sessionResult);
 
         onProgress?.({
           phase: 'session-done',
@@ -684,23 +717,31 @@ export class CodexSessionHistoryImporter {
 
     onProgress?.({ phase: 'scan', message: 'Scanning all Codex sessions...' });
     const sessionFiles = this.listSessionFilesRecursive(sessionsRoot);
-    result.totalSessions = sessionFiles.length;
+    const selectedFiles = selectRecentCodexSessionFiles(sessionFiles, options.sessionLimit);
     onProgress?.({ phase: 'scan', message: `Found ${sessionFiles.length} Codex session file(s)` });
 
-    for (let i = 0; i < sessionFiles.length; i++) {
-      const filePath = sessionFiles[i];
+    const totalLimit = normalizePositiveImportLimit(options.limit);
+    let storedAcrossSessions = 0;
+
+    for (let i = 0; i < selectedFiles.length; i++) {
+      if (totalLimit !== undefined && storedAcrossSessions >= totalLimit) break;
+      const filePath = selectedFiles[i];
+      const remainingLimit = totalLimit === undefined ? undefined : totalLimit - storedAcrossSessions;
       try {
-        onProgress?.({ phase: 'session-start', sessionIndex: i, totalSessions: sessionFiles.length, filePath });
+        onProgress?.({ phase: 'session-start', sessionIndex: i, totalSessions: selectedFiles.length, filePath });
         const sessionResult = await this.importSessionFile(filePath, {
           ...options,
+          limit: remainingLimit,
           _sessionIndex: i,
         } as ImportOptions & { _sessionIndex: number });
 
+        result.totalSessions++;
         result.totalMessages += sessionResult.totalMessages;
         result.importedPrompts += sessionResult.importedPrompts;
         result.importedResponses += sessionResult.importedResponses;
         result.skippedDuplicates += sessionResult.skippedDuplicates;
         result.errors.push(...sessionResult.errors);
+        storedAcrossSessions += countStoredEntries(sessionResult);
 
         onProgress?.({
           phase: 'session-done',

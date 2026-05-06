@@ -524,18 +524,28 @@ export class HermesSessionHistoryImporter {
   ): Promise<ImportResult> {
     const result = createEmptyImportResult();
     const onProgress = options.onProgress;
-    const limit = options.limit ?? Infinity;
-    let storedCount = 0;
+    const sessionLimit = options.sessionLimit ?? Infinity;
+    const selectedSessions = Number.isFinite(sessionLimit) && sessionLimit > 0
+      ? sessions.slice(0, Math.floor(sessionLimit))
+      : sessions;
 
     onProgress?.({ phase: 'scan', message: `Found ${sessions.length} Hermes session(s)` });
 
-    for (let i = 0; i < sessions.length; i++) {
-      if (storedCount >= limit) break;
-      const session = sessions[i];
-      onProgress?.({ phase: 'session-start', sessionIndex: i, totalSessions: sessions.length, filePath: this.stateDbPath });
+    for (let i = 0; i < selectedSessions.length; i++) {
+      const session = selectedSessions[i];
+      onProgress?.({ phase: 'session-start', sessionIndex: i, totalSessions: selectedSessions.length, filePath: this.stateDbPath });
 
+      let sessionStoredCount = 0;
       const memorySessionId = makeMemorySessionId(session.id);
-      const sessionResult = await this.importOneSession(db, session, memorySessionId, options, i, () => storedCount, (next) => { storedCount = next; });
+      const sessionResult = await this.importOneSession(
+        db,
+        session,
+        memorySessionId,
+        options,
+        i,
+        () => sessionStoredCount,
+        (next) => { sessionStoredCount = next; }
+      );
 
       result.totalSessions++;
       result.totalMessages += sessionResult.totalMessages;
