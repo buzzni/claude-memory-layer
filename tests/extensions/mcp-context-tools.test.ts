@@ -135,6 +135,136 @@ describe('MCP project context tools', () => {
     expect(text.length).toBeLessThan(5000);
   });
 
+  it('prioritizes recent project timeline and suppresses low-signal search noise for generic continuation queries', async () => {
+    const mergedPr = event({
+      id: '44444444-4444-4444-8444-444444444444',
+      sessionId: 'session-latest',
+      eventType: 'agent_response',
+      timestamp: new Date('2026-05-06T03:00:00.000Z'),
+      content: 'Merged CML PR #15 and synced local main; next recommended task is generic context quality hardening.',
+      metadata: { source: 'hermes' }
+    });
+    const genericPrompt = event({
+      id: '55555555-5555-4555-8555-555555555555',
+      sessionId: 'session-latest',
+      timestamp: new Date('2026-05-06T03:01:00.000Z'),
+      content: '다음 추천작업은 뭐야?',
+      metadata: { source: 'hermes' }
+    });
+    const unrelatedMemory = event({
+      id: '66666666-6666-4666-8666-666666666666',
+      sessionId: 'session-old',
+      timestamp: new Date('2026-04-01T00:00:00.000Z'),
+      content: 'FinRL stock trading experiments should tune Alpha AI Trader replay settings.'
+    });
+    const commandArtifact = event({
+      id: '77777777-7777-4777-8777-777777777777',
+      sessionId: 'session-latest',
+      timestamp: new Date('2026-05-06T02:59:00.000Z'),
+      content: '<command-name>/model</command-name>\n<local-command-stdout>Using model opus</local-command-stdout>'
+    });
+    const environmentContext = event({
+      id: '88888888-8888-4888-8888-888888888888',
+      sessionId: 'session-latest',
+      timestamp: new Date('2026-05-06T02:58:00.000Z'),
+      content: '<environment_context><cwd>/repo/app</cwd><shell>zsh</shell></environment_context>'
+    });
+    const latestCommandArtifact = event({
+      id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      sessionId: 'session-latest',
+      eventType: 'tool_observation',
+      timestamp: new Date('2026-05-06T03:03:00.000Z'),
+      content: '<command-name>/model</command-name>\n<local-command-stdout>Using model opus</local-command-stdout>'
+    });
+    const latestEnvironmentContext = event({
+      id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+      sessionId: 'session-latest',
+      timestamp: new Date('2026-05-06T03:02:00.000Z'),
+      content: '<environment_context><cwd>/repo/app</cwd><shell>zsh</shell></environment_context>'
+    });
+
+    mocks.projectService.retrieveMemories.mockResolvedValue({
+      memories: [
+        { event: commandArtifact, score: 0.95 },
+        { event: environmentContext, score: 0.9 },
+        { event: unrelatedMemory, score: 0.62 },
+        { event: mergedPr, score: 0.61 }
+      ]
+    });
+    mocks.projectService.getRecentEvents.mockResolvedValue([
+      latestCommandArtifact,
+      latestEnvironmentContext,
+      genericPrompt,
+      mergedPr
+    ]);
+
+    const result = await handleToolCall('mem-context-pack', {
+      projectPath: '/repo/app',
+      query: '다음 추천작업은 뭐야?',
+      topK: 3,
+      recentLimit: 10,
+      sessionLimit: 2
+    });
+
+    const text = textOf(result);
+    expect(result.isError).not.toBe(true);
+    expect(mocks.projectService.retrieveMemories).toHaveBeenCalledWith('다음 추천작업은 뭐야?', {
+      topK: 9,
+      sessionId: undefined,
+      recordTrace: false
+    });
+    expect(text).toContain('Generic continuation query: recent project timeline prioritized.');
+    expect(text.indexOf('### Recent Project Timeline')).toBeLessThan(text.indexOf('### Relevant Memories'));
+    expect(text).toContain('Merged CML PR #15');
+    expect(text).not.toContain('FinRL stock trading');
+    expect(text).not.toContain('<command-name>');
+    expect(text).not.toContain('Using model opus');
+    expect(text).not.toContain('<environment_context>');
+  });
+
+  it('keeps non-generic context-pack memory output behavior unchanged', async () => {
+    const commandArtifact = event({
+      id: '99999999-9999-4999-8999-999999999999',
+      sessionId: 'session-debug',
+      timestamp: new Date('2026-05-06T02:59:00.000Z'),
+      content: '<command-name>/model</command-name>\n<local-command-stdout>Using model opus</local-command-stdout>'
+    });
+    const relevantDebug = event({
+      id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      sessionId: 'session-debug',
+      timestamp: new Date('2026-05-06T03:00:00.000Z'),
+      content: 'Investigated MCP context-pack retrieval ranking for a topic-specific debug query.'
+    });
+
+    mocks.projectService.retrieveMemories.mockResolvedValue({
+      memories: [
+        { event: commandArtifact, score: 0.95 },
+        { event: relevantDebug, score: 0.8 }
+      ]
+    });
+    mocks.projectService.getRecentEvents.mockResolvedValue([relevantDebug]);
+
+    const result = await handleToolCall('mem-context-pack', {
+      projectPath: '/repo/app',
+      query: 'debug command artifact retrieval quality',
+      topK: 2,
+      recentLimit: 10,
+      sessionLimit: 2
+    });
+
+    const text = textOf(result);
+    expect(result.isError).not.toBe(true);
+    expect(mocks.projectService.retrieveMemories).toHaveBeenCalledWith('debug command artifact retrieval quality', {
+      topK: 2,
+      sessionId: undefined,
+      recordTrace: false
+    });
+    expect(text).not.toContain('Generic continuation query');
+    expect(text.indexOf('### Relevant Memories')).toBeLessThan(text.indexOf('### Recent Project Timeline'));
+    expect(text).toContain('<command-name>');
+    expect(text).toContain('Using model opus');
+  });
+
   it('redacts credential-bearing connection strings from context-pack previews', async () => {
     const credentialUri = [
       'mongodb://',
