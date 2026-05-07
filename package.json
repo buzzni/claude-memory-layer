@@ -1,6 +1,6 @@
 {
   "name": "claude-memory-layer",
-  "version": "1.0.28",
+  "version": "1.0.29",
   "description": "Claude Code plugin that learns from conversations to provide personalized assistance",
   "main": "dist/index.js",
   "bin": {
@@ -23,7 +23,8 @@
     "ops:health": "npm run ops:sync-gap:report && npm run ops:sync-gap:heal && npm run ops:review:resolve",
     "ops:projects:clean-unknown": "node scripts/delete-unknown-projects.js",
     "benchmark:replay": "tsx scripts/replay-retrieval-benchmark.ts",
-    "benchmark:qrels": "tsx scripts/generate-session-qrels.ts"
+    "benchmark:qrels": "tsx scripts/generate-session-qrels.ts",
+    "postinstall": "node scripts/postinstall-embedding-backend.cjs"
   },
   "keywords": [
     "claude-code",
@@ -40,7 +41,6 @@
   },
   "dependencies": {
     "@hono/node-server": "^1.13.0",
-    "@huggingface/transformers": "^3.8.1",
     "@lancedb/lancedb": "^0.5.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "better-sqlite3": "^12.6.2",
@@ -48,6 +48,9 @@
     "hono": "^4.0.0",
     "mongodb": "^6.14.0",
     "zod": "^3.22.0"
+  },
+  "optionalDependencies": {
+    "@huggingface/transformers": "^3.8.1"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",

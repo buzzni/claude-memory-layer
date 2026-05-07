@@ -16,37 +16,80 @@ Claude Memory Layer는 Claude Code에서 사용자와 AI 간의 모든 대화를
 
 ### 0) 최초 1회(머신 전체) 설치
 
+권장 설치 방식은 npm에 배포된 패키지를 **전역 설치**하는 것입니다. `install`은 Claude Code hook 파일 경로를 `~/.claude/settings.json`에 저장하므로, 일회성 `npx claude-memory-layer install`보다 전역 설치 또는 고정된 로컬 checkout을 쓰는 것이 안전합니다.
+
 ```bash
-cd ~/workspace/claude-memory-layer
+npm install -g claude-memory-layer@latest
+claude-memory-layer install
+claude-memory-layer status
+```
+
+로컬 개발 checkout에서 설치할 때:
+
+```bash
+git clone https://github.com/buzzni/claude-memory-layer.git
+cd claude-memory-layer
 npm install
 npm run build
 npx claude-memory-layer install
+npx claude-memory-layer status
 ```
 
 - `install`은 **한 번만** 하면 됩니다(Claude Code hooks 등록).
+- Linux x64 + CUDA 11 환경에서는 설치 중 optional embedding backend를 CPU-only ONNX Runtime으로 자동 복구합니다.
 - 이후 프로젝트별로 메모리 저장소가 자동 분리됩니다.
+- `install` / `uninstall`은 `~/.claude/settings.json`을 수정합니다.
+
+#### CUDA 11 / `onnxruntime-node` 설치 에러
+
+Linux x64 서버에 CUDA 11이 설치되어 있으면 `@huggingface/transformers`의 하위 의존성인 `onnxruntime-node`가 `nvcc --version`을 감지한 뒤 CUDA 11용 GPU 바이너리를 자동 설치하려고 합니다. 현재 해당 install script는 CUDA 11 자동 설치를 지원하지 않아 다음 오류로 `npm install`이 실패할 수 있습니다.
+
+```text
+Error: CUDA 11 binaries are not supported by this script yet.
+```
+
+Claude Memory Layer는 설치 시 Linux x64 + CUDA 11 환경을 감지하면 `@huggingface/transformers`를 optional dependency로 처리한 뒤 CPU-only ONNX Runtime 설정으로 자동 복구합니다. 그래서 일반적으로 사용자가 환경변수를 직접 지정할 필요는 없습니다.
+
+만약 구버전 패키지를 설치 중이거나 postinstall 복구가 실패하면 아래처럼 수동으로 CUDA 바이너리 다운로드만 건너뛰어 재설치할 수 있습니다.
+
+```bash
+# 실패한 전역 설치가 일부 남아 있으면 먼저 제거
+npm uninstall -g claude-memory-layer || true
+
+# 수동 fallback: CPU-only ONNX Runtime으로 재설치
+ONNXRUNTIME_NODE_INSTALL_CUDA=skip npm install -g claude-memory-layer@latest
+claude-memory-layer --version
+```
+
+로컬 checkout 개발 환경에서 구버전 의존성 설치가 같은 오류를 내면 아래처럼 수동 fallback을 사용할 수 있습니다.
+
+```bash
+ONNXRUNTIME_NODE_INSTALL_CUDA=skip npm install
+```
+
+`npm warn deprecated ...` 경고는 하위 의존성 경고이며 설치 실패 원인이 아닙니다.
 
 ### 1) 새 프로젝트에서 초기 메모리 생성
 
 ```bash
 cd /path/to/your-project
-npx claude-memory-layer import
+claude-memory-layer import
 ```
 
-- 현재 프로젝트의 기존 Claude 세션(`~/.claude/projects/...`)을 읽어와 메모리로 적재합니다.
+- 현재 프로젝트의 기존 Claude Code 세션(`~/.claude/projects/...`)을 읽어와 메모리로 적재합니다.
 - 벡터 임베딩까지 한 번에 처리됩니다.
 
 ### 2) 사용 중 확인
 
 ```bash
 # 프로젝트 메모리 검색
-npx claude-memory-layer search "인증 구조"
+claude-memory-layer search "인증 구조"
 
 # 통계 확인
-npx claude-memory-layer stats
+claude-memory-layer stats
 
 # 대시보드 실행
-npx claude-memory-layer dashboard
+claude-memory-layer dashboard --no-open
 ```
 
 ### 3) 다른 프로젝트에도 동일하게 적용?
@@ -55,8 +98,8 @@ npx claude-memory-layer dashboard
 
 ```bash
 cd /path/to/another-project
-npx claude-memory-layer import
-npx claude-memory-layer search "배포 이슈"
+claude-memory-layer import
+claude-memory-layer search "배포 이슈"
 ```
 
 프로젝트마다 내부적으로 별도 저장소(`~/.claude-code/memory/projects/<hash>`)를 사용하므로,
@@ -66,6 +109,7 @@ npx claude-memory-layer search "배포 이슈"
 
 - 특정 프로젝트를 명시하고 싶으면 대부분 명령에 `--project <path>` 사용 가능
 - 대규모 리임포트가 필요하면 `import --force` 사용
+- 최근 일부만 가져오고 싶으면 `--session-limit <n>` 또는 `--limit <n>` 사용
 - 백그라운드 worker가 못 처리한 임베딩은 `process`로 수동 처리
 - 상태 점검:
   - `GET /health` (서버 헬스)
@@ -76,6 +120,144 @@ npx claude-memory-layer search "배포 이슈"
   - `CLAUDE_MEMORY_SEMANTIC_DAEMON_IDLE_MS` (기본 `600000`, semantic daemon 유휴 종료 시간)
   - `CLAUDE_MEMORY_MIN_SCORE` (기본 0.4)
   - `CLAUDE_MEMORY_FALLBACK_MIN_SCORE` (기본 0.3, 결과 0건일 때 재시도)
+
+---
+
+## 다른 서버 초기 세팅 & 이전 대화 ingest
+
+새 서버에서 Claude Memory Layer를 설치하고 기존 Claude Code/Codex/Hermes 대화 기록을 처음 적재할 때는 아래 체크리스트를 따르세요.
+
+### 1) 새 서버 준비
+
+```bash
+node --version   # Node.js >= 18 필수
+npm --version
+npm install -g claude-memory-layer@latest
+claude-memory-layer install
+claude-memory-layer status
+```
+
+> `claude-memory-layer install`은 Claude Code hooks를 등록합니다. 이미 Claude Code가 실행 중이면 재시작해야 hook이 반영됩니다.
+
+### 2) 이전 서버의 원본 대화 기록 가져오기
+
+가장 안전한 방식은 **원본 대화 기록을 새 서버로 복사한 뒤 새 서버에서 다시 import**하는 것입니다. 필요한 것만 선택해서 복사하세요. 이 디렉토리/DB에는 민감한 대화와 경로가 포함될 수 있으므로 공개 저장소에 커밋하거나 공유하지 말고, SSH/사설망 등 신뢰할 수 있는 경로로만 복사하세요.
+
+```bash
+# Claude Code 원본 세션(JSONL)
+mkdir -p ~/.claude/projects
+rsync -a OLD_HOST:~/.claude/projects/ ~/.claude/projects/
+
+# Codex CLI 원본 세션(JSONL) - Codex 기록도 가져올 때만
+mkdir -p ~/.codex/sessions
+rsync -a OLD_HOST:~/.codex/sessions/ ~/.codex/sessions/
+
+# Hermes Agent SessionDB - Hermes 기록도 가져올 때만
+# 권장: OLD_HOST에서 Hermes/gateway/agent 프로세스를 먼저 멈춘 뒤 SQLite sidecar까지 함께 복사
+mkdir -p ~/.hermes
+rsync -a OLD_HOST:'~/.hermes/state.db*' ~/.hermes/
+```
+
+Hermes를 멈출 수 없는 운영 서버라면, `state.db` 파일을 직접 복사하는 대신 OLD_HOST에서 SQLite `.backup`으로 일관된 스냅샷을 만든 뒤 가져오세요.
+
+```bash
+ssh OLD_HOST 'sqlite3 ~/.hermes/state.db ".backup /tmp/hermes-state.db.backup"'
+mkdir -p ~/.hermes
+rsync -a OLD_HOST:/tmp/hermes-state.db.backup ~/.hermes/state.db
+```
+
+이미 처리된 CML 저장소를 그대로 옮기고 싶다면, 이전/새 서버의 관련 agent, dashboard, semantic daemon/worker 등 모든 CML writer를 멈춘 뒤 아래처럼 복사할 수도 있습니다. 단, 재현성과 모델/버전 migration을 위해서는 위의 원본 기록 re-ingest 방식을 우선 권장합니다.
+
+```bash
+mkdir -p ~/.claude-code
+rsync -a OLD_HOST:~/.claude-code/memory/ ~/.claude-code/memory/
+```
+
+### 3) 프로젝트별로 read-only 검증 후 import
+
+프로젝트 메모리는 프로젝트 경로 기준으로 분리됩니다. 새 서버의 실제 repo 경로를 `PROJECT`에 넣고, 필요한 importer만 실행하세요.
+
+중요: Codex/Hermes/Claude Code 원본 세션의 project filter는 **대화가 생성될 당시의 절대 경로**를 기준으로 매칭합니다. 새 서버에서도 repo 절대 경로가 이전 서버와 같으면 아래 project import를 그대로 쓰면 됩니다.
+
+```bash
+export PROJECT=/path/to/your-project
+cd "$PROJECT"
+
+# Claude Code 기록: import 가능한 세션 확인 후 프로젝트 메모리로 적재
+claude-memory-layer list --project "$PROJECT"
+claude-memory-layer import --project "$PROJECT" --verbose
+
+# Codex 기록: 먼저 읽기 전용 리포트로 확인한 뒤 명시적으로 import
+claude-memory-layer codex validate --project "$PROJECT" --format markdown
+claude-memory-layer codex import --project "$PROJECT" --verbose
+
+# Hermes 기록: 먼저 읽기 전용 리포트로 확인한 뒤 명시적으로 import
+claude-memory-layer hermes validate --project "$PROJECT" --format markdown
+claude-memory-layer hermes import --project "$PROJECT" --verbose
+
+# pending embedding이 남아 있으면 수동 처리
+claude-memory-layer process --project "$PROJECT"
+```
+
+이전 서버와 새 서버의 repo 절대 경로가 다르면, `OLD_PROJECT`로 원본 세션을 찾고 특정 session 파일/id를 새 프로젝트 저장소(`NEW_PROJECT`)로 가져오세요.
+
+```bash
+export OLD_PROJECT=/old/server/path/to/your-project
+export NEW_PROJECT=/path/to/your-project
+cd "$NEW_PROJECT"
+
+# Claude Code: list 출력의 JSONL session file path를 확인해서 사용
+claude-memory-layer list --project "$OLD_PROJECT"
+claude-memory-layer import --project "$NEW_PROJECT" --session /path/to/claude-session.jsonl --verbose
+
+# Codex: validate 결과에서 session JSONL 파일을 확인한 뒤 import
+claude-memory-layer codex validate --project "$OLD_PROJECT" --format markdown
+claude-memory-layer codex import --project "$NEW_PROJECT" --session /path/to/codex-session.jsonl --verbose
+
+# Hermes: validate 결과에서 Hermes session id를 확인한 뒤 import
+claude-memory-layer hermes validate --project "$OLD_PROJECT" --format markdown
+claude-memory-layer hermes import --project "$NEW_PROJECT" --session 20260505_010203_abcd1234 --verbose
+
+claude-memory-layer process --project "$NEW_PROJECT"
+```
+
+주의:
+
+- `claude-memory-layer import --all`은 모든 Claude Code 세션을 전역 저장소로 가져옵니다. 프로젝트별 컨텍스트 품질이 중요하면 각 repo에서 `--project <path>` 방식으로 반복하는 것을 권장합니다.
+- `codex import --all`, `hermes import --all`도 의도적으로 전역 메모리를 만들 때만 사용하세요.
+- import/validate/list 결과에는 대화 내용 일부나 로컬 경로가 포함될 수 있습니다. 외부 공유 전에는 민감정보와 경로를 제거하고, Codex validate 리포트는 필요하면 `--anonymize-projects`를 함께 사용하세요.
+- import는 콘텐츠 해시 기반으로 중복을 건너뛰므로 여러 번 실행해도 같은 내용이 중복 저장되지 않습니다. 단, `--force`는 기존 import 이벤트를 지우고 재적재하므로 신중히 사용하세요.
+
+### 4) 검증
+
+```bash
+export VERIFY_PROJECT=/path/to/your-project  # 위에서 쓴 PROJECT 또는 NEW_PROJECT
+claude-memory-layer stats --project "$VERIFY_PROJECT"
+claude-memory-layer search "최근에 하던 작업" --project "$VERIFY_PROJECT" --top-k 5
+claude-memory-layer dashboard --no-open --port 37777
+# 다른 터미널에서: curl http://localhost:37777/api/health
+```
+
+### 5) MCP/다른 agent에 연결
+
+Claude Desktop은 CLI로 자동 등록할 수 있습니다. GUI 앱에서 shell `PATH`가 다를 수 있으면 stdio binary의 절대 경로를 command로 넣는 방식이 더 견고합니다.
+
+```bash
+claude-memory-layer mcp install --command "$(command -v claude-memory-layer-mcp)"
+# Claude Desktop 재시작
+```
+
+Codex/Hermes 등 MCP client에도 전역 설치된 stdio binary를 등록하면 됩니다.
+
+```bash
+# Codex 예시
+codex mcp add claude-memory-layer -- claude-memory-layer-mcp
+
+# Hermes 예시
+hermes mcp add claude-memory-layer --command claude-memory-layer-mcp
+```
+
+MCP client가 환경에 따라 PATH를 못 찾으면 `command -v claude-memory-layer-mcp`로 절대 경로를 확인해서 command에 넣으세요.
 
 ---
 
