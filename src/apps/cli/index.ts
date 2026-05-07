@@ -59,6 +59,10 @@ import {
   renderExternalMarketContextReport,
   type ExternalMarketProvider
 } from '../../core/external-market-context.js';
+import {
+  DEFAULT_EMBEDDING_FALLBACK_MODEL,
+  DEFAULT_EMBEDDING_MODEL
+} from '../../extensions/vector/embedder.js';
 
 // ============================================================
 // Hook Installation Utilities
@@ -1025,7 +1029,7 @@ program
   .option('-l, --limit <number>', 'Limit messages per session')
   .option('--session-limit <number>', 'Limit recent matching sessions to import')
   .option('-f, --force', 'Force reimport: delete existing events and reimport with turn_id grouping')
-  .option('--embedding-model <name>', 'Embedding model override (default: jinaai/jina-embeddings-v5-text-nano-text-matching, or env CLAUDE_MEMORY_EMBEDDING_MODEL; fallback env: CLAUDE_MEMORY_EMBEDDING_FALLBACK_MODEL)')
+  .option('--embedding-model <name>', `Embedding model override (default: ${DEFAULT_EMBEDDING_MODEL}, or env CLAUDE_MEMORY_EMBEDDING_MODEL; fallback: ${DEFAULT_EMBEDDING_FALLBACK_MODEL} or env CLAUDE_MEMORY_EMBEDDING_FALLBACK_MODEL)`)
   .option('-v, --verbose', 'Show detailed progress')
   .action(async (options) => {
     const startTime = Date.now();

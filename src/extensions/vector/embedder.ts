@@ -14,13 +14,16 @@ type FeatureExtractionPipelineFactory = (
   model: string
 ) => Promise<NonNullable<Embedder['pipeline']>>;
 
+export const DEFAULT_EMBEDDING_MODEL = 'Xenova/multilingual-e5-small';
+export const DEFAULT_EMBEDDING_FALLBACK_MODEL = 'intfloat/multilingual-e5-small';
+
 export class Embedder {
   private pipeline: ((input: string, options?: Record<string, unknown>) => Promise<{ data: Float32Array }>) | null = null;
   private readonly modelName: string;
   private activeModelName: string;
   private initialized = false;
 
-  constructor(modelName: string = 'jinaai/jina-embeddings-v5-text-nano-text-matching') {
+  constructor(modelName: string = DEFAULT_EMBEDDING_MODEL) {
     this.modelName = modelName;
     this.activeModelName = modelName;
   }
@@ -31,7 +34,16 @@ export class Embedder {
   async initialize(): Promise<void> {
     if (this.initialized) return;
 
-    const pipeline = await withSuppressedKnownTransformersWarnings(() => loadTransformersPipeline());
+    const pipeline = await withSuppressedKnownTransformersWarnings(async () => {
+      try {
+        return await loadTransformersPipeline();
+      } catch (error) {
+        if (isMissingTransformersDependencyError(error)) {
+          throw createEmbeddingBackendUnavailableError(error);
+        }
+        throw error;
+      }
+    });
 
     try {
       this.pipeline = await withSuppressedKnownTransformersWarnings(() => pipeline('feature-extraction', this.modelName));
@@ -39,7 +51,7 @@ export class Embedder {
       this.initialized = true;
       return;
     } catch (primaryError) {
-      const fallbackModel = process.env.CLAUDE_MEMORY_EMBEDDING_FALLBACK_MODEL || 'onnx-community/embeddinggemma-300m-ONNX';
+      const fallbackModel = process.env.CLAUDE_MEMORY_EMBEDDING_FALLBACK_MODEL || DEFAULT_EMBEDDING_FALLBACK_MODEL;
       if (fallbackModel === this.modelName) {
         throw primaryError;
       }
@@ -184,6 +196,30 @@ export async function withSuppressedKnownTransformersWarnings<T>(fn: () => Promi
 export function isKnownBenignTransformersWarning(message: string): boolean {
   return message.includes('Unknown model class "eurobert"') ||
     message.includes('dtype not specified for "model"');
+}
+
+export function isMissingTransformersDependencyError(error: unknown): boolean {
+  const maybeError = error as { code?: unknown; message?: unknown } | null;
+  const message = typeof maybeError?.message === 'string' ? maybeError.message : '';
+  return maybeError?.code === 'ERR_MODULE_NOT_FOUND' &&
+    message.includes("@huggingface/transformers");
+}
+
+export function createEmbeddingBackendUnavailableError(cause: unknown): Error & { cause?: unknown } {
+  const error = new Error(
+    [
+      'Optional embedding backend is not installed.',
+      '',
+      'Claude Memory Layer can run embeddings on CPU-only ONNX Runtime; CUDA is not required.',
+      'Reinstall globally with:',
+      '  ONNXRUNTIME_NODE_INSTALL_CUDA=skip npm install -g claude-memory-layer@latest',
+      '',
+      'If you are inside a local checkout or package directory, repair only the backend with:',
+      '  ONNXRUNTIME_NODE_INSTALL_CUDA=skip npm install --no-save --no-package-lock --omit=dev @huggingface/transformers@3.8.1'
+    ].join('\n')
+  ) as Error & { cause?: unknown };
+  error.cause = cause;
+  return error;
 }
 
 async function loadTransformersPipeline(): Promise<FeatureExtractionPipelineFactory> {
