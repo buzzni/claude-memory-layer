@@ -64,7 +64,7 @@ describe('embedding backend postinstall repair', () => {
     expect(postinstall.parseCudaMajor('nvcc: NVIDIA (R) Cuda compiler driver')).toBeNull();
   });
 
-  it('only auto-installs the embedding backend for Linux x64 CUDA 11 when it is missing', () => {
+  it('auto-installs a missing embedding backend for Linux x64 even when CUDA cannot be detected', () => {
     const postinstall = loadPostinstallModule();
 
     expect(postinstall.shouldAttemptAutoInstall({
@@ -78,26 +78,10 @@ describe('embedding backend postinstall repair', () => {
     expect(postinstall.shouldAttemptAutoInstall({
       platform: 'linux',
       arch: 'x64',
-      cudaMajor: 11,
-      transformersAvailable: true,
-      skipRequested: false
-    })).toBe(false);
-
-    expect(postinstall.shouldAttemptAutoInstall({
-      platform: 'linux',
-      arch: 'arm64',
-      cudaMajor: 11,
+      cudaMajor: null,
       transformersAvailable: false,
       skipRequested: false
-    })).toBe(false);
-
-    expect(postinstall.shouldAttemptAutoInstall({
-      platform: 'darwin',
-      arch: 'x64',
-      cudaMajor: 11,
-      transformersAvailable: false,
-      skipRequested: false
-    })).toBe(false);
+    })).toBe(true);
 
     expect(postinstall.shouldAttemptAutoInstall({
       platform: 'linux',
@@ -105,12 +89,36 @@ describe('embedding backend postinstall repair', () => {
       cudaMajor: 12,
       transformersAvailable: false,
       skipRequested: false
+    })).toBe(true);
+
+    expect(postinstall.shouldAttemptAutoInstall({
+      platform: 'linux',
+      arch: 'x64',
+      cudaMajor: null,
+      transformersAvailable: true,
+      skipRequested: false
+    })).toBe(false);
+
+    expect(postinstall.shouldAttemptAutoInstall({
+      platform: 'linux',
+      arch: 'arm64',
+      cudaMajor: null,
+      transformersAvailable: false,
+      skipRequested: false
+    })).toBe(false);
+
+    expect(postinstall.shouldAttemptAutoInstall({
+      platform: 'darwin',
+      arch: 'x64',
+      cudaMajor: null,
+      transformersAvailable: false,
+      skipRequested: false
     })).toBe(false);
 
     expect(postinstall.shouldAttemptAutoInstall({
       platform: 'linux',
       arch: 'x64',
-      cudaMajor: 11,
+      cudaMajor: null,
       transformersAvailable: false,
       skipRequested: true
     })).toBe(false);
@@ -132,7 +140,7 @@ describe('embedding backend postinstall repair', () => {
     ]);
   });
 
-  it('runs the automatic repair command when Linux x64 CUDA 11 skipped the optional backend', () => {
+  it('runs the automatic repair command when Linux x64 skipped the optional backend without detectable CUDA', () => {
     const postinstall = loadPostinstallModule();
     const rootDir = mkdtempSync(join(tmpdir(), 'cml-postinstall-test-'));
     const calls: SpawnCall[] = [];
@@ -145,7 +153,7 @@ describe('embedding backend postinstall repair', () => {
         env: {},
         platform: 'linux',
         arch: 'x64',
-        execFileSyncImpl: () => 'Cuda compilation tools, release 11.8, V11.8.89',
+        execFileSyncImpl: () => '',
         spawnSyncImpl: (cmd, args, options) => {
           calls.push({ cmd, args, env: options.env });
           return { status: 0 };
@@ -154,7 +162,7 @@ describe('embedding backend postinstall repair', () => {
         warn: () => undefined
       });
 
-      expect(result).toMatchObject({ attempted: true, success: true, cudaMajor: 11, transformersAvailable: false });
+      expect(result).toMatchObject({ attempted: true, success: true, cudaMajor: null, transformersAvailable: false });
       expect(calls).toHaveLength(1);
       expect(calls[0]?.cmd).toBe('npm');
       expect(calls[0]?.args).toEqual(postinstall.createNpmInstallArgs());

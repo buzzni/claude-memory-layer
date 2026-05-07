@@ -60,10 +60,9 @@ function isEmbeddingBackendAvailable(rootDir = process.cwd()) {
   }
 }
 
-function shouldAttemptAutoInstall({ platform, arch, cudaMajor, transformersAvailable, skipRequested }) {
+function shouldAttemptAutoInstall({ platform, arch, transformersAvailable, skipRequested }) {
   return platform === 'linux' &&
     arch === 'x64' &&
-    cudaMajor === 11 &&
     !transformersAvailable &&
     !skipRequested;
 }
@@ -104,7 +103,7 @@ function runPostinstall({
     return { attempted: false, cudaMajor, transformersAvailable, skipRequested };
   }
 
-  log('[claude-memory-layer] CUDA 11 detected and optional embedding backend is missing. Installing CPU-only embedding backend...');
+  log('[claude-memory-layer] Optional embedding backend is missing on Linux x64. Installing CPU-only embedding backend...');
 
   const npmCommand = platform === 'win32' ? 'npm.cmd' : 'npm';
   const result = spawnSyncImpl(npmCommand, createNpmInstallArgs(), {

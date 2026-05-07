@@ -36,7 +36,7 @@ npx claude-memory-layer status
 ```
 
 - `install`은 **한 번만** 하면 됩니다(Claude Code hooks 등록).
-- Linux x64 + CUDA 11 환경에서는 설치 중 optional embedding backend를 CPU-only ONNX Runtime으로 자동 복구합니다.
+- Linux x64에서 optional embedding backend가 빠져 있으면 설치 중 CPU-only ONNX Runtime으로 자동 복구합니다(CUDA 불필요).
 - 이후 프로젝트별로 메모리 저장소가 자동 분리됩니다.
 - `install` / `uninstall`은 `~/.claude/settings.json`을 수정합니다.
 
@@ -48,7 +48,7 @@ Linux x64 서버에 CUDA 11이 설치되어 있으면 `@huggingface/transformers
 Error: CUDA 11 binaries are not supported by this script yet.
 ```
 
-Claude Memory Layer는 설치 시 Linux x64 + CUDA 11 환경을 감지하면 `@huggingface/transformers`를 optional dependency로 처리한 뒤 CPU-only ONNX Runtime 설정으로 자동 복구합니다. 그래서 일반적으로 사용자가 환경변수를 직접 지정할 필요는 없습니다.
+Claude Memory Layer는 `@huggingface/transformers`를 optional dependency로 두고, 설치 후 Linux x64에서 embedding backend가 빠져 있으면 CPU-only ONNX Runtime 설정으로 자동 복구합니다. CUDA가 없어도 로컬 임베딩을 사용할 수 있고, CUDA 11을 감지하지 못하는 서버에서도 복구를 한 번 더 시도합니다. 그래서 일반적으로 사용자가 환경변수를 직접 지정할 필요는 없습니다.
 
 만약 구버전 패키지를 설치 중이거나 postinstall 복구가 실패하면 아래처럼 수동으로 CUDA 바이너리 다운로드만 건너뛰어 재설치할 수 있습니다.
 
@@ -68,6 +68,20 @@ ONNXRUNTIME_NODE_INSTALL_CUDA=skip npm install
 ```
 
 `npm warn deprecated ...` 경고는 하위 의존성 경고이며 설치 실패 원인이 아닙니다.
+
+#### Embedding model
+
+기본 로컬 embedding 모델은 `Xenova/multilingual-e5-small`입니다.
+
+- `@huggingface/transformers`/ONNX Runtime CPU에서 동작하므로 CUDA가 필요 없습니다.
+- 원본 `intfloat/multilingual-e5-small`은 multilingual + Korean(`ko`) 지원 모델이고, Xenova variant는 Transformers.js용 ONNX 파일을 제공합니다.
+- 384차원이라 대규모 세션 import에서도 CPU/메모리 부담이 작습니다.
+- 더 높은 품질이 필요하면 `--embedding-model <hf-model>` 또는 `CLAUDE_MEMORY_EMBEDDING_MODEL`로 `onnx-community/Qwen3-Embedding-0.6B-ONNX`, `onnx-community/embeddinggemma-300m-ONNX` 같은 Transformers.js/ONNX 모델을 실험할 수 있습니다. 다만 이들은 다운로드/CPU 비용이 더 크거나 모델/라이선스 성숙도를 별도 검토해야 합니다.
+
+```bash
+claude-memory-layer import --project "$PWD" --embedding-model Xenova/multilingual-e5-small
+CLAUDE_MEMORY_EMBEDDING_MODEL=onnx-community/Qwen3-Embedding-0.6B-ONNX claude-memory-layer process --project "$PWD"
+```
 
 ### 1) 새 프로젝트에서 초기 메모리 생성
 
