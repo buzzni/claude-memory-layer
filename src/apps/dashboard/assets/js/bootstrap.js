@@ -76,7 +76,9 @@ function setupEventListeners() {
         b.classList.toggle('active', b.dataset.kpiWindow === window);
       });
       await loadKpiData();
+      await loadMemoryUsefulnessData();
       updateKpiCardsUI();
+      updateMemoryUsefulnessUI();
       renderKpiTrendChart();
     });
   });

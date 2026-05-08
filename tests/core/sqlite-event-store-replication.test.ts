@@ -123,5 +123,60 @@ describe('SQLiteEventStore replication helpers', () => {
     await expect(storeA.deleteSessionEvents('mutable-session')).resolves.toBe(1);
     await expect(storeA.keywordSearch('mango', 5)).resolves.toEqual([]);
   });
+
+  it('parses SQLite UTC datetime strings without local timezone shifts for retrieval traces', async () => {
+    await storeA.recordRetrievalTrace({
+      sessionId: 'trace-session',
+      projectHash: 'trace-project',
+      queryText: 'timezone boundary query',
+      candidateEventIds: ['candidate-1'],
+      selectedEventIds: ['candidate-1']
+    });
+
+    const db = (storeA as unknown as {
+      db: { prepare: (sql: string) => { run: (...params: unknown[]) => unknown } };
+    }).db;
+    db.prepare(`UPDATE retrieval_traces SET created_at = ? WHERE query_text = ?`)
+      .run('2026-05-07 16:00:00', 'timezone boundary query');
+
+    const [trace] = await storeA.getRecentRetrievalTraces(1);
+    expect(trace.createdAt.toISOString()).toBe('2026-05-07T16:00:00.000Z');
+  });
+
+  it('filters helpfulness statistics by the requested time window', async () => {
+    await storeA.recordRetrieval('old-event', 'old-session', 0.2, 'old retrieval query');
+    await storeA.recordRetrieval('new-event', 'new-session', 0.8, 'new retrieval query');
+
+    const db = (storeA as unknown as {
+      db: { prepare: (sql: string) => { run: (...params: unknown[]) => unknown } };
+    }).db;
+    db.prepare(`
+      UPDATE memory_helpfulness
+      SET helpfulness_score = ?, created_at = ?, measured_at = ?
+      WHERE event_id = ?
+    `).run(0.2, '2026-04-01T00:00:00.000Z', '2026-05-08T00:00:00.000Z', 'old-event');
+    db.prepare(`
+      UPDATE memory_helpfulness
+      SET helpfulness_score = ?, created_at = ?, measured_at = ?
+      WHERE event_id = ?
+    `).run(0.8, '2026-05-08T00:00:00.000Z', '2026-05-08T00:00:00.000Z', 'new-event');
+
+    await expect(storeA.getHelpfulnessStats()).resolves.toMatchObject({
+      avgScore: 0.5,
+      totalEvaluated: 2,
+      totalRetrievals: 2,
+      helpful: 1,
+      neutral: 0,
+      unhelpful: 1
+    });
+    await expect(storeA.getHelpfulnessStats(new Date('2026-05-01T00:00:00.000Z'))).resolves.toMatchObject({
+      avgScore: 0.8,
+      totalEvaluated: 1,
+      totalRetrievals: 1,
+      helpful: 1,
+      neutral: 0,
+      unhelpful: 0
+    });
+  });
 });
 

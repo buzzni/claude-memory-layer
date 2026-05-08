@@ -11,6 +11,7 @@ const state = {
   sharedStats: null,
   mostAccessed: null,
   helpfulness: null,
+  memoryUsefulness: null,
   retrievalTraces: null,
   adherenceSummary: null,
   adherenceWindow: '24h',
@@ -22,6 +23,7 @@ const state = {
   currentSort: 'recent',
   currentView: 'overview',
   currentProject: '', // empty = global
+  refreshRequestId: 0,
   projects: [],
   events: [],
   isLoading: false,

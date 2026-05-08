@@ -4,28 +4,49 @@ async function loadKpiData() {
     .catch(() => null);
 }
 
+async function loadMemoryUsefulnessData() {
+  state.memoryUsefulness = await fetch(apiUrl(`${API_BASE}/stats/usefulness`, { window: state.kpiWindow }))
+    .then(r => r.json())
+    .catch(() => null);
+}
+
 async function refreshData() {
   const btn = document.getElementById('refresh-btn');
   if(btn) btn.classList.add('loading');
+  const refreshRequestId = (state.refreshRequestId || 0) + 1;
+  state.refreshRequestId = refreshRequestId;
+  const projectAtStart = state.currentProject;
+  const kpiWindowAtStart = state.kpiWindow;
 
   try {
-    const [stats, shared, mostAccessed, helpfulness, retrievalTraces, adherenceSummary] = await Promise.all([
+    const [stats, shared, mostAccessed, helpfulness, memoryUsefulness, retrievalTraces, adherenceSummary] = await Promise.all([
       fetch(apiUrl(`${API_BASE}/stats`)).then(r => r.json()).catch(() => null),
       fetch(apiUrl(`${API_BASE}/stats/shared`)).then(r => r.json()).catch(() => null),
       fetch(apiUrl(`${API_BASE}/stats/most-accessed`, { limit: 10 })).then(r => r.json()).catch(() => null),
       fetch(apiUrl(`${API_BASE}/stats/helpfulness`, { limit: 5 })).then(r => r.json()).catch(() => null),
+      fetch(apiUrl(`${API_BASE}/stats/usefulness`, { window: state.kpiWindow })).then(r => r.json()).catch(() => null),
       fetch(apiUrl(`${API_BASE}/stats/retrieval-traces`, { limit: 20 })).then(r => r.json()).catch(() => null),
       fetchAdherenceSummary().catch(() => null)
     ]);
+
+    if (
+      refreshRequestId !== state.refreshRequestId ||
+      projectAtStart !== state.currentProject ||
+      kpiWindowAtStart !== state.kpiWindow
+    ) {
+      return;
+    }
 
     state.stats = stats;
     state.sharedStats = shared;
     state.mostAccessed = mostAccessed;
     state.helpfulness = helpfulness;
+    state.memoryUsefulness = memoryUsefulness;
     state.retrievalTraces = retrievalTraces;
     state.adherenceSummary = adherenceSummary;
 
     await loadKpiData();
+    if (refreshRequestId !== state.refreshRequestId) return;
 
     updateStatsUI();
     updateSharedUI();
@@ -336,6 +357,7 @@ function updateTopAccessedEventsUI() {
 
 function updateMemoryUsageUI() {
   updateGraduationBars();
+  updateMemoryUsefulnessUI();
   updateHelpfulnessUI();
   updateMostHelpfulList();
   updateTopAccessedEventsUI();
@@ -426,6 +448,59 @@ function updateGraduationBars() {
           <div class="grad-bar-fill" style="width:${pct}%; background:${colors[i]};"></div>
         </div>
         <span class="grad-bar-value">${count} (${pct}%)</span>
+      </div>
+    `;
+  }).join('');
+}
+
+function updateMemoryUsefulnessUI() {
+  const scoreEl = document.getElementById('memory-usefulness-score');
+  const summaryEl = document.getElementById('memory-usefulness-summary');
+  const breakdownEl = document.getElementById('memory-usefulness-breakdown');
+  if (!scoreEl || !summaryEl || !breakdownEl) return;
+
+  const payload = state.memoryUsefulness;
+  if (!payload || payload.error || !payload.score) {
+    scoreEl.textContent = '-';
+    scoreEl.className = 'memory-usefulness-score score-unknown';
+    summaryEl.innerHTML = '<span style="color:var(--text-muted);">No usefulness telemetry yet.</span>';
+    breakdownEl.innerHTML = '';
+    return;
+  }
+
+  const score = payload.score || {};
+  const counts = payload.counts || {};
+  const label = score.label || 'unknown';
+  const confidencePct = ((score.confidence || 0) * 100).toFixed(0);
+  scoreEl.textContent = Number(score.value || 0).toFixed(1).replace(/\.0$/, '');
+  scoreEl.className = `memory-usefulness-score score-${label}`;
+
+  summaryEl.innerHTML = `
+    <span class="usefulness-pill usefulness-${escapeHtml(label)}">${escapeHtml(label)}</span>
+    <span><strong>${formatNumber(counts.retrievalQueries || 0)}</strong> queries</span>
+    <span><strong>${formatNumber(counts.promptCount || 0)}</strong> prompts</span>
+    <span><strong>${formatNumber(counts.totalEvaluated || 0)}</strong> evaluated</span>
+    <span title="How many input signals were available for the composite score"><strong>${confidencePct}%</strong> confidence</span>
+  `;
+
+  const components = payload.components || [];
+  if (components.length === 0) {
+    breakdownEl.innerHTML = '';
+    return;
+  }
+
+  breakdownEl.innerHTML = components.map((component) => {
+    const valuePct = `${((component.value || 0) * 100).toFixed(1)}%`;
+    const availableClass = component.available ? '' : ' unavailable';
+    const availableText = component.available ? valuePct : 'n/a';
+    const width = Math.max(0, Math.min(100, (component.value || 0) * 100));
+    return `
+      <div class="usefulness-component${availableClass}">
+        <div class="usefulness-component-row">
+          <span>${escapeHtml(component.label || component.key)}</span>
+          <strong>${availableText}</strong>
+        </div>
+        <div class="usefulness-bar-track"><div class="usefulness-bar-fill" style="width:${width}%;"></div></div>
       </div>
     `;
   }).join('');

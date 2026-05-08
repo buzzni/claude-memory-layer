@@ -338,6 +338,8 @@ export class SQLiteEventStore {
       CREATE INDEX IF NOT EXISTS idx_helpfulness_event ON memory_helpfulness(event_id);
       CREATE INDEX IF NOT EXISTS idx_helpfulness_session ON memory_helpfulness(session_id);
       CREATE INDEX IF NOT EXISTS idx_helpfulness_score ON memory_helpfulness(helpfulness_score DESC);
+      CREATE INDEX IF NOT EXISTS idx_helpfulness_created_at ON memory_helpfulness(created_at);
+      CREATE INDEX IF NOT EXISTS idx_helpfulness_measured_at ON memory_helpfulness(measured_at);
       CREATE INDEX IF NOT EXISTS idx_retrieval_traces_created_at ON retrieval_traces(created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_retrieval_traces_project_hash ON retrieval_traces(project_hash);
       CREATE INDEX IF NOT EXISTS idx_retrieval_traces_session_id ON retrieval_traces(session_id);
@@ -1318,7 +1320,7 @@ export class SQLiteEventStore {
   /**
    * Get helpfulness statistics for dashboard
    */
-  async getHelpfulnessStats(): Promise<{
+  async getHelpfulnessStats(since?: Date): Promise<{
     avgScore: number;
     totalEvaluated: number;
     totalRetrievals: number;
@@ -1327,6 +1329,14 @@ export class SQLiteEventStore {
     unhelpful: number;
   }> {
     await this.initialize();
+
+    const sinceIso = since?.toISOString();
+    const evaluatedWhere = sinceIso
+      ? `WHERE measured_at IS NOT NULL AND datetime(created_at) >= datetime(?)`
+      : `WHERE measured_at IS NOT NULL`;
+    const totalWhere = sinceIso
+      ? `WHERE datetime(created_at) >= datetime(?)`
+      : ``;
 
     const stats = sqliteGet<Record<string, unknown>>(
       this.db,
@@ -1337,12 +1347,14 @@ export class SQLiteEventStore {
          SUM(CASE WHEN helpfulness_score >= 0.4 AND helpfulness_score < 0.7 THEN 1 ELSE 0 END) as neutral,
          SUM(CASE WHEN helpfulness_score < 0.4 THEN 1 ELSE 0 END) as unhelpful
        FROM memory_helpfulness
-       WHERE measured_at IS NOT NULL`
+       ${evaluatedWhere}`,
+      sinceIso ? [sinceIso] : []
     );
 
     const totalRow = sqliteGet<Record<string, unknown>>(
       this.db,
-      `SELECT COUNT(*) as total FROM memory_helpfulness`
+      `SELECT COUNT(*) as total FROM memory_helpfulness ${totalWhere}`,
+      sinceIso ? [sinceIso] : []
     );
 
     return {

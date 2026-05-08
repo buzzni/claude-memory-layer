@@ -676,6 +676,125 @@ body {
   text-align: right;
 }
 
+/* Memory Usefulness */
+.memory-usefulness-panel {
+  padding: 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  background: rgba(255,255,255,0.03);
+}
+
+.memory-usefulness-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.memory-usefulness-score {
+  min-width: 62px;
+  font-size: 30px;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: -1px;
+}
+
+.memory-usefulness-score.score-excellent,
+.memory-usefulness-score.score-good {
+  color: var(--success);
+}
+
+.memory-usefulness-score.score-watch {
+  color: var(--warning);
+}
+
+.memory-usefulness-score.score-low {
+  color: var(--error);
+}
+
+.memory-usefulness-score.score-unknown {
+  color: var(--text-muted);
+}
+
+.memory-usefulness-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.usefulness-pill {
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.usefulness-excellent,
+.usefulness-good {
+  background: rgba(52, 211, 153, 0.14);
+  color: #34D399;
+}
+
+.usefulness-watch {
+  background: rgba(254, 176, 25, 0.14);
+  color: #FEB019;
+}
+
+.usefulness-low {
+  background: rgba(255, 69, 96, 0.14);
+  color: #FF4560;
+}
+
+.usefulness-unknown {
+  background: rgba(148, 163, 184, 0.14);
+  color: #94A3B8;
+}
+
+.memory-usefulness-breakdown {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.usefulness-component {
+  opacity: 1;
+}
+
+.usefulness-component.unavailable {
+  opacity: 0.45;
+}
+
+.usefulness-component-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+}
+
+.usefulness-component-row strong {
+  color: var(--text-primary);
+}
+
+.usefulness-bar-track {
+  height: 5px;
+  background: rgba(255,255,255,0.05);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.usefulness-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent-primary), var(--accent-secondary));
+  border-radius: 999px;
+  transition: width 0.5s;
+}
+
 /* Endless Mode */
 .endless-card {
   background: linear-gradient(135deg, rgba(16, 16, 24, 0.6) 0%, rgba(20, 20, 30, 0.6) 100%);

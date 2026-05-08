@@ -78,7 +78,7 @@ export interface RetrievalAnalyticsStore {
   evaluateSessionHelpfulness(sessionId: string): Promise<void>;
   getUnevaluatedSessions(currentSessionId: string, limit?: number): Promise<string[]>;
   getHelpfulMemories(limit?: number): Promise<HelpfulMemory[]>;
-  getHelpfulnessStats(): Promise<HelpfulnessStats>;
+  getHelpfulnessStats(since?: Date): Promise<HelpfulnessStats>;
 }
 
 export interface RetrievalAnalyticsServiceDeps {
@@ -139,9 +139,9 @@ export class RetrievalAnalyticsService {
     return this.deps.retrievalStore.getHelpfulMemories(limit);
   }
 
-  async getHelpfulnessStats(): Promise<HelpfulnessStats> {
+  async getHelpfulnessStats(since?: Date): Promise<HelpfulnessStats> {
     await this.deps.initialize();
-    return this.deps.retrievalStore.getHelpfulnessStats();
+    return this.deps.retrievalStore.getHelpfulnessStats(since);
   }
 
   /**

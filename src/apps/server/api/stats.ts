@@ -115,6 +115,182 @@ type KpiMetrics = {
   postChangeFailureRate: number;
 };
 
+type MemoryUsefulnessComponentKey =
+  | 'avgHelpfulnessScore'
+  | 'usefulRecallRate'
+  | 'memoryHitRate'
+  | 'retrievalUsageRate'
+  | 'queryYieldRate';
+
+type MemoryUsefulnessComponent = {
+  key: MemoryUsefulnessComponentKey;
+  label: string;
+  value: number;
+  weight: number;
+  available: boolean;
+  contribution: number;
+};
+
+type HelpfulnessStatsLike = {
+  avgScore?: number;
+  totalEvaluated?: number;
+  totalRetrievals?: number;
+  helpful?: number;
+  neutral?: number;
+  unhelpful?: number;
+};
+
+type RetrievalTraceLike = {
+  candidateCount?: number;
+  selectedCount?: number;
+  candidateEventIds?: string[];
+  selectedEventIds?: string[];
+  createdAt?: Date | string;
+};
+
+function normalizeMetric(value: unknown): number {
+  const numberValue = Number(value || 0);
+  if (!Number.isFinite(numberValue)) return 0;
+  return Math.max(0, Math.min(1, numberValue));
+}
+
+function getTimestampMs(value: Date | string | undefined): number {
+  if (value instanceof Date) return value.getTime();
+  if (typeof value === 'string') {
+    const parsed = new Date(value).getTime();
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  return 0;
+}
+
+function usefulnessScoreLabel(score: number, confidence: number): 'excellent' | 'good' | 'watch' | 'low' | 'unknown' {
+  if (confidence <= 0) return 'unknown';
+  if (score >= 80) return 'excellent';
+  if (score >= 60) return 'good';
+  if (score >= 40) return 'watch';
+  return 'low';
+}
+
+function computeMemoryUsefulnessSummary(
+  events: MemoryEvent[],
+  helpfulness: HelpfulnessStatsLike,
+  traces: RetrievalTraceLike[],
+  now: number,
+  window: KpiWindow,
+  limits: { eventsLimit?: number; tracesLimit?: number } = {}
+) {
+  const windowEvents = events.filter((event) => inWindow(event, now, window));
+  const prompts = windowEvents.filter((event) => event.eventType === 'user_prompt');
+  const promptCount = prompts.length;
+  const memoryCheckedPrompts = prompts.filter((prompt) => (prompt.metadata as any)?.adherence?.checked).length;
+
+  const windowMs = windowToMs(window);
+  const windowStart = now - windowMs;
+  const windowTraces = traces.filter((trace) => {
+    const ts = getTimestampMs(trace.createdAt);
+    return ts > 0 && ts >= windowStart;
+  });
+  const oldestEventTimestamp = events.reduce((oldest, event) => {
+    const timestamp = event.timestamp?.getTime?.() || 0;
+    return timestamp > 0 ? Math.min(oldest, timestamp) : oldest;
+  }, Number.POSITIVE_INFINITY);
+  const oldestTraceTimestamp = traces.reduce((oldest, trace) => {
+    const timestamp = getTimestampMs(trace.createdAt);
+    return timestamp > 0 ? Math.min(oldest, timestamp) : oldest;
+  }, Number.POSITIVE_INFINITY);
+  const eventWindowTruncated = Boolean(
+    limits.eventsLimit &&
+    events.length >= limits.eventsLimit &&
+    Number.isFinite(oldestEventTimestamp) &&
+    oldestEventTimestamp >= windowStart
+  );
+  const traceWindowTruncated = Boolean(
+    limits.tracesLimit &&
+    traces.length >= limits.tracesLimit &&
+    Number.isFinite(oldestTraceTimestamp) &&
+    oldestTraceTimestamp >= windowStart
+  );
+
+  const retrievalQueries = windowTraces.length;
+  const candidateCounts = windowTraces.map((trace) => Number(trace.candidateCount ?? trace.candidateEventIds?.length ?? 0));
+  const selectedCounts = windowTraces.map((trace) => Number(trace.selectedCount ?? trace.selectedEventIds?.length ?? 0));
+  const totalCandidateCount = candidateCounts.reduce((sum, count) => sum + (Number.isFinite(count) ? count : 0), 0);
+  const totalSelectedCount = selectedCounts.reduce((sum, count) => sum + (Number.isFinite(count) ? count : 0), 0);
+  const queriesWithSelected = selectedCounts.filter((count) => Number.isFinite(count) && count > 0).length;
+
+  const totalEvaluated = Number(helpfulness.totalEvaluated || 0);
+  const totalRetrievals = Number(helpfulness.totalRetrievals || 0);
+  const helpful = Number(helpfulness.helpful || 0);
+  const neutral = Number(helpfulness.neutral || 0);
+  const unhelpful = Number(helpfulness.unhelpful || 0);
+
+  const retrievalsPerPrompt = safeRatio(retrievalQueries, promptCount);
+  const metrics = {
+    avgHelpfulnessScore: round(normalizeMetric(helpfulness.avgScore)),
+    usefulRecallRate: round(safeRatio(helpful, totalEvaluated)),
+    memoryHitRate: round(safeRatio(memoryCheckedPrompts, promptCount)),
+    retrievalUsageRate: round(Math.min(1, retrievalsPerPrompt)),
+    queryYieldRate: round(safeRatio(queriesWithSelected, retrievalQueries)),
+    evaluationCoverage: round(safeRatio(totalEvaluated, totalRetrievals)),
+    retrievalsPerPrompt: round(retrievalsPerPrompt),
+    avgCandidatesPerQuery: round(safeRatio(totalCandidateCount, retrievalQueries), 2),
+    avgSelectedPerQuery: round(safeRatio(totalSelectedCount, retrievalQueries), 2),
+    selectionRate: round(safeRatio(totalSelectedCount, totalCandidateCount))
+  };
+
+  const componentSpecs: Omit<MemoryUsefulnessComponent, 'contribution'>[] = [
+    { key: 'avgHelpfulnessScore', label: 'Average helpfulness score', value: metrics.avgHelpfulnessScore, weight: 0.3, available: totalEvaluated > 0 },
+    { key: 'usefulRecallRate', label: 'Useful recall rate', value: metrics.usefulRecallRate, weight: 0.25, available: totalEvaluated > 0 },
+    { key: 'memoryHitRate', label: 'Memory hit rate', value: metrics.memoryHitRate, weight: 0.2, available: promptCount > 0 },
+    { key: 'retrievalUsageRate', label: 'Retrieval usage rate', value: metrics.retrievalUsageRate, weight: 0.15, available: promptCount > 0 },
+    { key: 'queryYieldRate', label: 'Query yield rate', value: metrics.queryYieldRate, weight: 0.1, available: retrievalQueries > 0 }
+  ];
+  const totalWeight = componentSpecs.reduce((sum, component) => sum + component.weight, 0);
+  const availableWeight = componentSpecs
+    .filter((component) => component.available)
+    .reduce((sum, component) => sum + component.weight, 0);
+  const weightedScore = availableWeight > 0
+    ? componentSpecs.reduce((sum, component) => sum + (component.available ? component.value * component.weight : 0), 0) / availableWeight
+    : 0;
+  const scoreValue = round(weightedScore * 100, 1);
+  const confidence = round(safeRatio(availableWeight, totalWeight), 2);
+  const components = componentSpecs.map((component) => ({
+    ...component,
+    contribution: component.available ? round(component.value * component.weight * 100, 2) : 0
+  }));
+
+  return {
+    window,
+    score: {
+      value: scoreValue,
+      label: usefulnessScoreLabel(scoreValue, confidence),
+      confidence
+    },
+    metrics,
+    counts: {
+      promptCount,
+      memoryCheckedPrompts,
+      retrievalQueries,
+      queriesWithSelected,
+      selectedMemories: totalSelectedCount,
+      candidateMemories: totalCandidateCount,
+      totalEvaluated,
+      totalRetrievals,
+      helpful,
+      neutral,
+      unhelpful
+    },
+    components,
+    limits: {
+      eventsLimit: limits.eventsLimit || events.length,
+      tracesLimit: limits.tracesLimit || traces.length,
+      eventWindowTruncated,
+      traceWindowTruncated
+    },
+    generatedAt: new Date(now).toISOString()
+  };
+}
+
 function computeKpiMetrics(events: MemoryEvent[], usefulRecallRate: number): KpiMetrics {
   const prompts = events.filter((e) => e.eventType === 'user_prompt');
   const promptCount = prompts.length;
@@ -490,6 +666,35 @@ statsRouter.get('/helpfulness', async (c) => {
       unhelpful: 0,
       topMemories: []
     });
+  } finally {
+    await memoryService.shutdown();
+  }
+});
+// GET /api/stats/usefulness - Get a dashboard-ready memory usefulness score
+statsRouter.get('/usefulness', async (c) => {
+  const rawWindow = (c.req.query('window') || '7d') as KpiWindow;
+  const window: KpiWindow = rawWindow === '24h' || rawWindow === '30d' ? rawWindow : '7d';
+  const memoryService = getLightweightServiceFromQuery(c);
+
+  try {
+    await memoryService.initialize();
+    const now = Date.now();
+    const eventLimit = 20000;
+    const traceLimit = 5000;
+    const windowStart = new Date(now - windowToMs(window));
+    const [events, helpfulness, traces] = await Promise.all([
+      memoryService.getRecentEvents(eventLimit),
+      memoryService.getHelpfulnessStats(windowStart),
+      memoryService.getRecentRetrievalTraces(traceLimit)
+    ]);
+
+    return c.json(computeMemoryUsefulnessSummary(events, helpfulness, traces, now, window, {
+      eventsLimit: eventLimit,
+      tracesLimit: traceLimit
+    }));
+  } catch (error) {
+    console.error('[stats/usefulness] failed to calculate dashboard metrics', error);
+    return c.json({ error: 'Unable to calculate memory usefulness statistics' }, 500);
   } finally {
     await memoryService.shutdown();
   }

@@ -103,8 +103,19 @@ export function sqliteTransaction<T>(
  */
 export function toDateFromSQLite(value: unknown): Date {
   if (value instanceof Date) return value;
-  if (typeof value === 'string') return new Date(value);
   if (typeof value === 'number') return new Date(value);
+  if (typeof value === 'string') {
+    // SQLite datetime('now') stores UTC timestamps without an explicit timezone
+    // (for example, "2026-05-07 16:00:00"). JavaScript treats that shape as
+    // local time, which shifts dashboard time-window calculations on non-UTC
+    // machines. Normalize SQLite's timezone-less UTC shape before parsing while
+    // leaving ISO strings with an explicit offset/Z untouched.
+    const trimmed = value.trim();
+    if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(trimmed)) {
+      return new Date(trimmed.replace(' ', 'T') + 'Z');
+    }
+    return new Date(trimmed);
+  }
   return new Date(String(value));
 }
 
