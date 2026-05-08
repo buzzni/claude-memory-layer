@@ -13,10 +13,13 @@ type SpawnCall = {
   env: NodeJS.ProcessEnv;
 };
 
+type ExecFileSyncLike = (cmd: string, args: string[], options?: unknown) => string | Buffer;
+
 type PostinstallEmbeddingBackend = {
   EMBEDDING_BACKEND_PACKAGE: string;
   parseCudaMajor(output: string): number | null;
   isSkipRequested(env: NodeJS.ProcessEnv): boolean;
+  isEmbeddingBackendAvailable(rootDir?: string, execFileSyncImpl?: ExecFileSyncLike): boolean;
   shouldAttemptAutoInstall(input: {
     platform: NodeJS.Platform;
     arch: string;
@@ -31,7 +34,8 @@ type PostinstallEmbeddingBackend = {
     env?: NodeJS.ProcessEnv;
     platform?: NodeJS.Platform;
     arch?: string;
-    execFileSyncImpl?: () => string;
+    execFileSyncImpl?: ExecFileSyncLike;
+    isEmbeddingBackendAvailableImpl?: (rootDir: string, execFileSyncImpl: ExecFileSyncLike) => boolean;
     spawnSyncImpl?: (cmd: string, args: string[], options: { env: NodeJS.ProcessEnv }) => { status: number };
     log?: () => void;
     warn?: () => void;
@@ -43,17 +47,17 @@ function loadPostinstallModule(): PostinstallEmbeddingBackend {
 }
 
 describe('embedding backend postinstall repair', () => {
-  it('requires the embedding backend at install time and registers a broken-install repair hook', () => {
+  it('keeps the npm-level embedding backend non-fatal and registers a required-backend repair hook', () => {
     const pkg = JSON.parse(readFileSync('package.json', 'utf-8')) as {
       scripts: Record<string, string>;
       dependencies?: Record<string, string>;
       optionalDependencies?: Record<string, string>;
     };
 
-    expect(pkg.dependencies).toMatchObject({
+    expect(pkg.dependencies ?? {}).not.toHaveProperty('@huggingface/transformers');
+    expect(pkg.optionalDependencies).toMatchObject({
       '@huggingface/transformers': '^3.8.1'
     });
-    expect(pkg.optionalDependencies ?? {}).not.toHaveProperty('@huggingface/transformers');
     expect(pkg.scripts.postinstall).toBe('node scripts/postinstall-embedding-backend.cjs');
   });
 
@@ -74,7 +78,7 @@ describe('embedding backend postinstall repair', () => {
     expect(postinstall.parseCudaMajor('nvcc: NVIDIA (R) Cuda compiler driver')).toBeNull();
   });
 
-  it('auto-installs a missing embedding backend for Linux x64 even when CUDA cannot be detected', () => {
+  it('auto-installs a missing embedding backend when the npm-level optional install did not leave a loadable backend', () => {
     const postinstall = loadPostinstallModule();
 
     expect(postinstall.shouldAttemptAutoInstall({
@@ -111,11 +115,19 @@ describe('embedding backend postinstall repair', () => {
 
     expect(postinstall.shouldAttemptAutoInstall({
       platform: 'linux',
+      arch: 'x64',
+      cudaMajor: 11,
+      transformersAvailable: true,
+      skipRequested: false
+    })).toBe(true);
+
+    expect(postinstall.shouldAttemptAutoInstall({
+      platform: 'linux',
       arch: 'arm64',
       cudaMajor: null,
       transformersAvailable: false,
       skipRequested: false
-    })).toBe(false);
+    })).toBe(true);
 
     expect(postinstall.shouldAttemptAutoInstall({
       platform: 'darwin',
@@ -123,7 +135,7 @@ describe('embedding backend postinstall repair', () => {
       cudaMajor: null,
       transformersAvailable: false,
       skipRequested: false
-    })).toBe(false);
+    })).toBe(true);
 
     expect(postinstall.shouldAttemptAutoInstall({
       platform: 'linux',
@@ -139,6 +151,7 @@ describe('embedding backend postinstall repair', () => {
 
     expect(postinstall.createRepairEnv({})).toMatchObject({
       ONNXRUNTIME_NODE_INSTALL_CUDA: 'skip',
+      npm_config_onnxruntime_node_install_cuda: 'skip',
       CLAUDE_MEMORY_LAYER_EMBEDDING_POSTINSTALL_REPAIR: '1'
     });
     expect(postinstall.createNpmInstallArgs()).toEqual([
@@ -148,6 +161,14 @@ describe('embedding backend postinstall repair', () => {
       '--omit=dev',
       postinstall.EMBEDDING_BACKEND_PACKAGE
     ]);
+  });
+
+  it('treats a resolvable but unloadable backend as unavailable so postinstall can repair it', () => {
+    const postinstall = loadPostinstallModule();
+
+    expect(postinstall.isEmbeddingBackendAvailable(process.cwd(), () => {
+      throw new Error('native binding missing');
+    })).toBe(false);
   });
 
   it('runs the repair command when Linux x64 is missing the required backend without detectable CUDA', () => {
@@ -164,6 +185,7 @@ describe('embedding backend postinstall repair', () => {
         platform: 'linux',
         arch: 'x64',
         execFileSyncImpl: () => '',
+        isEmbeddingBackendAvailableImpl: () => false,
         spawnSyncImpl: (cmd, args, options) => {
           calls.push({ cmd, args, env: options.env });
           return { status: 0 };
@@ -177,6 +199,7 @@ describe('embedding backend postinstall repair', () => {
       expect(calls[0]?.cmd).toBe('npm');
       expect(calls[0]?.args).toEqual(postinstall.createNpmInstallArgs());
       expect(calls[0]?.env.ONNXRUNTIME_NODE_INSTALL_CUDA).toBe('skip');
+      expect(calls[0]?.env.npm_config_onnxruntime_node_install_cuda).toBe('skip');
       expect(calls[0]?.env.CLAUDE_MEMORY_LAYER_EMBEDDING_POSTINSTALL_REPAIR).toBe('1');
     } finally {
       rmSync(rootDir, { recursive: true, force: true });

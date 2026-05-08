@@ -1,0 +1,6 @@
+# Generated npm tarballs must never be re-packed into published packages.
+*.tgz
+
+# Local coverage/build caches.
+coverage/
+.nyc_output/

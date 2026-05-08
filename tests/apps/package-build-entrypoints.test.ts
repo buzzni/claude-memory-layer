@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 interface PackageJson {
   main: string;
   bin: Record<string, string>;
+  files?: string[];
 }
 
 describe('package build entrypoints', () => {
@@ -26,5 +27,17 @@ describe('package build entrypoints', () => {
     expect(lock.packages[''].bin).toMatchObject(pkg.bin);
     expect(buildScript).toContain("entryPoints: ['src/mcp/index.ts']");
     expect(buildScript).toContain("outfile: 'dist/mcp/index.js'");
+  });
+
+  it('publishes only runtime artifacts and the postinstall repair script', () => {
+    const pkg = JSON.parse(readFileSync('package.json', 'utf-8')) as PackageJson;
+
+    expect(pkg.files).toEqual([
+      'dist/',
+      '.claude-plugin/',
+      'scripts/postinstall-embedding-backend.cjs',
+      'README.md',
+      '.env.example'
+    ]);
   });
 });

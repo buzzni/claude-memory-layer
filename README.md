@@ -36,7 +36,7 @@ npx claude-memory-layer status
 ```
 
 - `install`은 **한 번만** 하면 됩니다(Claude Code hooks 등록).
-- `@huggingface/transformers`는 일반 dependency라 기본 설치에 포함됩니다. 따라서 정상 설치 후 embedding runtime 누락으로 `ERR_MODULE_NOT_FOUND`가 나는 것을 방지합니다.
+- Embedding backend은 런타임 필수 기능이지만, npm 설치 단계에서는 `optionalDependencies` + postinstall repair로 처리합니다. CUDA 11 환경에서 `onnxruntime-node`의 GPU 바이너리 자동 설치가 실패해도 패키지 설치 자체를 살리고 CPU-only backend로 복구하기 위해서입니다.
 - 이후 프로젝트별로 메모리 저장소가 자동 분리됩니다.
 - `install` / `uninstall`은 `~/.claude/settings.json`을 수정합니다.
 
@@ -48,7 +48,14 @@ Linux x64 서버에 CUDA 11이 설치되어 있으면 `@huggingface/transformers
 Error: CUDA 11 binaries are not supported by this script yet.
 ```
 
-Claude Memory Layer는 로컬 semantic/vector embedding에 필요한 `@huggingface/transformers`를 필수 dependency로 설치합니다. 이 선택은 정상 설치 후 backend 누락을 조용히 넘기지 않기 위한 것입니다. 다만 CUDA 11 환경에서는 하위 의존성 설치가 Claude Memory Layer의 postinstall repair 전에 실패할 수 있으므로, 아래처럼 CUDA 바이너리 다운로드를 건너뛰고 CPU-only ONNX Runtime으로 재설치하세요.
+Claude Memory Layer는 로컬 semantic/vector embedding에 필요한 `@huggingface/transformers`를 런타임 필수 backend로 취급합니다. 다만 CUDA 11 환경에서 하위 의존성 설치가 먼저 실패하는 문제를 피하려고 npm dependency level에서는 optional로 두고, 설치 중 postinstall repair가 `ONNXRUNTIME_NODE_INSTALL_CUDA=skip`으로 CPU-only ONNX Runtime을 자동 복구합니다. npm 로그에 `onnxruntime-node`의 CUDA 11 stack trace가 보이더라도 최종 exit code가 0이고 `claude-memory-layer --version`이 동작하면 정상입니다. 최신 버전에서는 일반적으로 아래 명령이 그대로 동작해야 합니다.
+
+```bash
+npm install -g claude-memory-layer@latest
+claude-memory-layer --version
+```
+
+만약 npm 버전/환경 차이로 같은 오류가 계속 나면 아래처럼 CUDA 바이너리 다운로드를 명시적으로 건너뛰어 재설치하세요.
 
 ```bash
 # 실패한 전역 설치가 일부 남아 있으면 먼저 제거

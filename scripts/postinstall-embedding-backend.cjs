@@ -2,14 +2,17 @@
 'use strict';
 
 const { execFileSync, spawnSync } = require('node:child_process');
-const path = require('node:path');
-const { createRequire } = require('node:module');
 
 const EMBEDDING_BACKEND_PACKAGE_NAME = '@huggingface/transformers';
 const EMBEDDING_BACKEND_VERSION = '3.8.1';
 const EMBEDDING_BACKEND_PACKAGE = `${EMBEDDING_BACKEND_PACKAGE_NAME}@${EMBEDDING_BACKEND_VERSION}`;
 const REPAIR_GUARD_ENV = 'CLAUDE_MEMORY_LAYER_EMBEDDING_POSTINSTALL_REPAIR';
 const SKIP_ENV = 'CLAUDE_MEMORY_LAYER_SKIP_EMBEDDING_POSTINSTALL';
+const EMBEDDING_BACKEND_HEALTHCHECK_SCRIPT = `
+import('${EMBEDDING_BACKEND_PACKAGE_NAME}')
+  .then(() => undefined)
+  .catch(() => process.exit(1));
+`;
 
 function parseCudaMajor(output) {
   const releaseMatch = String(output).match(/release\s+(\d+)(?:\.\d+)?/i);
@@ -48,27 +51,27 @@ function isSkipRequested(env = process.env) {
   return false;
 }
 
-function isEmbeddingBackendAvailable(rootDir = process.cwd()) {
+function isEmbeddingBackendAvailable(rootDir = process.cwd(), execFileSyncImpl = execFileSync) {
   try {
-    const requireFromRoot = createRequire(path.join(rootDir, 'package.json'));
-    requireFromRoot.resolve(EMBEDDING_BACKEND_PACKAGE_NAME);
+    execFileSyncImpl(process.execPath, ['--input-type=module', '--eval', EMBEDDING_BACKEND_HEALTHCHECK_SCRIPT], {
+      cwd: rootDir,
+      stdio: 'ignore'
+    });
     return true;
   } catch {
     return false;
   }
 }
 
-function shouldAttemptAutoInstall({ platform, arch, transformersAvailable, skipRequested }) {
-  return platform === 'linux' &&
-    arch === 'x64' &&
-    !transformersAvailable &&
-    !skipRequested;
+function shouldAttemptAutoInstall({ cudaMajor, transformersAvailable, skipRequested }) {
+  return !skipRequested && (!transformersAvailable || cudaMajor === 11);
 }
 
 function createRepairEnv(env = process.env) {
   return {
     ...env,
     ONNXRUNTIME_NODE_INSTALL_CUDA: 'skip',
+    npm_config_onnxruntime_node_install_cuda: 'skip',
     [REPAIR_GUARD_ENV]: '1'
   };
 }
@@ -89,11 +92,12 @@ function runPostinstall({
   platform = process.platform,
   arch = process.arch,
   execFileSyncImpl = execFileSync,
+  isEmbeddingBackendAvailableImpl = isEmbeddingBackendAvailable,
   spawnSyncImpl = spawnSync,
   log = console.log,
   warn = console.warn
 } = {}) {
-  const transformersAvailable = isEmbeddingBackendAvailable(rootDir);
+  const transformersAvailable = isEmbeddingBackendAvailableImpl(rootDir, execFileSyncImpl);
   const skipRequested = isSkipRequested(env);
   const cudaMajor = detectCudaMajor({ env, execFileSyncImpl });
 
@@ -101,7 +105,7 @@ function runPostinstall({
     return { attempted: false, cudaMajor, transformersAvailable, skipRequested };
   }
 
-  log('[claude-memory-layer] Required embedding backend is missing on Linux x64. Repairing with CPU-only ONNX Runtime...');
+  log('[claude-memory-layer] Embedding backend is missing or needs CUDA 11 CPU-only repair. Repairing with CPU-only ONNX Runtime...');
 
   const npmCommand = platform === 'win32' ? 'npm.cmd' : 'npm';
   const result = spawnSyncImpl(npmCommand, createNpmInstallArgs(), {
