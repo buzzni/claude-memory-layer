@@ -54,6 +54,7 @@ import {
 } from './hermes-validation-output.js';
 import { runCodexImportOnce } from './codex-import-runner.js';
 import { runHermesImportOnce } from './hermes-import-runner.js';
+import { resolveDashboardCommandOptions } from './dashboard-command.js';
 import {
   fetchExternalMarketContext,
   renderExternalMarketContextReport,
@@ -1662,33 +1663,42 @@ program
   .command('dashboard')
   .description('Open memory dashboard in browser')
   .option('-p, --port <port>', 'Server port', '37777')
+  .option('--bind <host>', 'Bind host: localhost (default) or 0.0.0.0')
+  .option('--host <host>', 'Alias for --bind <host>')
+  .option('--password <password>', 'Require this password before serving the dashboard')
   .option('--no-open', 'Do not auto-open browser')
   .action(async (options) => {
-    const port = parseInt(options.port, 10);
+    const dashboard = resolveDashboardCommandOptions(options);
+    const { port, host, password, dashboardUrl } = dashboard;
 
     try {
       // Check if server is already running
       const running = await isServerRunning(port);
       if (running) {
-        console.log(`\n🧠 Dashboard already running at http://localhost:${port}\n`);
+        console.log(`\n🧠 Dashboard already running at ${dashboardUrl}\n`);
         if (options.open) {
-          openBrowser(`http://localhost:${port}`);
+          openBrowser(dashboardUrl);
         }
         return;
       }
 
       // Start the server
       console.log('\n🧠 Starting Code Memory Dashboard...\n');
-      startServer(port);
+      startServer({ port, host, password });
 
       // Open browser
       if (options.open) {
         setTimeout(() => {
-          openBrowser(`http://localhost:${port}`);
+          openBrowser(dashboardUrl);
         }, 500);
       }
 
-      console.log(`\n📊 Dashboard: http://localhost:${port}`);
+      console.log(`\n📊 Dashboard: ${dashboardUrl}`);
+      console.log(`🔌 Bind: ${host}`);
+      console.log(`🔐 Password: ${password ? 'enabled' : 'disabled'}`);
+      if (host === '0.0.0.0' && !password) {
+        console.log('⚠️  Bound to 0.0.0.0 without --password; anyone on the reachable network can access it.');
+      }
       console.log('Press Ctrl+C to stop the server\n');
 
       // Handle graceful shutdown
