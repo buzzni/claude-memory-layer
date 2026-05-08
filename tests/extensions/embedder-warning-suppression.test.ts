@@ -20,7 +20,7 @@ describe('Embedder warning suppression', () => {
     expect(parsedConfig.embedding.openaiModel).toBe(DEFAULT_EMBEDDING_MODEL);
   });
 
-  it('turns missing optional @huggingface/transformers errors into actionable install guidance', () => {
+  it('turns missing required @huggingface/transformers errors into actionable install guidance', () => {
     const missingBackendError = Object.assign(
       new Error("Cannot find package '@huggingface/transformers' imported from /tmp/dist/cli/index.js"),
       { code: 'ERR_MODULE_NOT_FOUND' }
@@ -30,7 +30,8 @@ describe('Embedder warning suppression', () => {
     expect(isMissingTransformersDependencyError(new Error('network failure'))).toBe(false);
 
     const friendly = createEmbeddingBackendUnavailableError(missingBackendError);
-    expect(friendly.message).toContain('Optional embedding backend is not installed');
+    expect(friendly.message).toContain('Required embedding backend is not installed');
+    expect(friendly.message).toContain('Claude Memory Layer requires @huggingface/transformers');
     expect(friendly.message).toContain('ONNXRUNTIME_NODE_INSTALL_CUDA=skip npm install -g claude-memory-layer@latest');
     expect(friendly.message).toContain('ONNXRUNTIME_NODE_INSTALL_CUDA=skip npm install --no-save --no-package-lock --omit=dev @huggingface/transformers@3.8.1');
     expect(friendly.cause).toBe(missingBackendError);

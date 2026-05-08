@@ -45,8 +45,6 @@ function detectCudaMajor({ env = process.env, execFileSyncImpl = execFileSync } 
 
 function isSkipRequested(env = process.env) {
   if (env[SKIP_ENV] === '1' || env[REPAIR_GUARD_ENV] === '1') return true;
-  if (env.npm_config_optional === 'false') return true;
-  if (String(env.npm_config_omit || '').split(',').map((item) => item.trim()).includes('optional')) return true;
   return false;
 }
 
@@ -103,7 +101,7 @@ function runPostinstall({
     return { attempted: false, cudaMajor, transformersAvailable, skipRequested };
   }
 
-  log('[claude-memory-layer] Optional embedding backend is missing on Linux x64. Installing CPU-only embedding backend...');
+  log('[claude-memory-layer] Required embedding backend is missing on Linux x64. Repairing with CPU-only ONNX Runtime...');
 
   const npmCommand = platform === 'win32' ? 'npm.cmd' : 'npm';
   const result = spawnSyncImpl(npmCommand, createNpmInstallArgs(), {
@@ -113,13 +111,13 @@ function runPostinstall({
   });
 
   if (result.error || result.status !== 0) {
-    warn('[claude-memory-layer] Optional embedding backend repair failed. Claude Memory Layer is installed, but semantic/vector embeddings may be unavailable until you run:');
+    warn('[claude-memory-layer] Required embedding backend repair failed. Semantic/vector embeddings may be unavailable until you run:');
     warn(`  ONNXRUNTIME_NODE_INSTALL_CUDA=skip npm install -g claude-memory-layer@latest`);
     if (result.error) warn(`  ${result.error.message}`);
     return { attempted: true, success: false, cudaMajor, transformersAvailable, skipRequested };
   }
 
-  log('[claude-memory-layer] Optional embedding backend installed with CPU-only ONNX Runtime.');
+  log('[claude-memory-layer] Required embedding backend repaired with CPU-only ONNX Runtime.');
   return { attempted: true, success: true, cudaMajor, transformersAvailable, skipRequested };
 }
 

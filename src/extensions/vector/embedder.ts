@@ -208,9 +208,10 @@ export function isMissingTransformersDependencyError(error: unknown): boolean {
 export function createEmbeddingBackendUnavailableError(cause: unknown): Error & { cause?: unknown } {
   const error = new Error(
     [
-      'Optional embedding backend is not installed.',
+      'Required embedding backend is not installed.',
       '',
-      'Claude Memory Layer can run embeddings on CPU-only ONNX Runtime; CUDA is not required.',
+      'Claude Memory Layer requires @huggingface/transformers for local semantic/vector embeddings.',
+      'The backend runs on CPU-only ONNX Runtime; CUDA is not required.',
       'Reinstall globally with:',
       '  ONNXRUNTIME_NODE_INSTALL_CUDA=skip npm install -g claude-memory-layer@latest',
       '',

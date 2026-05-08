@@ -36,7 +36,7 @@ npx claude-memory-layer status
 ```
 
 - `install`은 **한 번만** 하면 됩니다(Claude Code hooks 등록).
-- Linux x64에서 optional embedding backend가 빠져 있으면 설치 중 CPU-only ONNX Runtime으로 자동 복구합니다(CUDA 불필요).
+- `@huggingface/transformers`는 일반 dependency라 기본 설치에 포함됩니다. 따라서 정상 설치 후 embedding runtime 누락으로 `ERR_MODULE_NOT_FOUND`가 나는 것을 방지합니다.
 - 이후 프로젝트별로 메모리 저장소가 자동 분리됩니다.
 - `install` / `uninstall`은 `~/.claude/settings.json`을 수정합니다.
 
@@ -48,24 +48,24 @@ Linux x64 서버에 CUDA 11이 설치되어 있으면 `@huggingface/transformers
 Error: CUDA 11 binaries are not supported by this script yet.
 ```
 
-Claude Memory Layer는 `@huggingface/transformers`를 optional dependency로 두고, 설치 후 Linux x64에서 embedding backend가 빠져 있으면 CPU-only ONNX Runtime 설정으로 자동 복구합니다. CUDA가 없어도 로컬 임베딩을 사용할 수 있고, CUDA 11을 감지하지 못하는 서버에서도 복구를 한 번 더 시도합니다. 그래서 일반적으로 사용자가 환경변수를 직접 지정할 필요는 없습니다.
-
-만약 구버전 패키지를 설치 중이거나 postinstall 복구가 실패하면 아래처럼 수동으로 CUDA 바이너리 다운로드만 건너뛰어 재설치할 수 있습니다.
+Claude Memory Layer는 로컬 semantic/vector embedding에 필요한 `@huggingface/transformers`를 필수 dependency로 설치합니다. 이 선택은 정상 설치 후 backend 누락을 조용히 넘기지 않기 위한 것입니다. 다만 CUDA 11 환경에서는 하위 의존성 설치가 Claude Memory Layer의 postinstall repair 전에 실패할 수 있으므로, 아래처럼 CUDA 바이너리 다운로드를 건너뛰고 CPU-only ONNX Runtime으로 재설치하세요.
 
 ```bash
 # 실패한 전역 설치가 일부 남아 있으면 먼저 제거
 npm uninstall -g claude-memory-layer || true
 
-# 수동 fallback: CPU-only ONNX Runtime으로 재설치
+# CPU-only ONNX Runtime으로 재설치
 ONNXRUNTIME_NODE_INSTALL_CUDA=skip npm install -g claude-memory-layer@latest
 claude-memory-layer --version
 ```
 
-로컬 checkout 개발 환경에서 구버전 의존성 설치가 같은 오류를 내면 아래처럼 수동 fallback을 사용할 수 있습니다.
+로컬 checkout 개발 환경에서 같은 오류가 나면 아래처럼 설치합니다.
 
 ```bash
 ONNXRUNTIME_NODE_INSTALL_CUDA=skip npm install
 ```
+
+이미 설치된 패키지 디렉터리에서 backend만 손상/누락된 경우에는 postinstall repair와 런타임 오류 메시지가 동일한 CPU-only 복구 명령을 안내합니다.
 
 `npm warn deprecated ...` 경고는 하위 의존성 경고이며 설치 실패 원인이 아닙니다.
 

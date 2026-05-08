@@ -16,6 +16,7 @@ type SpawnCall = {
 type PostinstallEmbeddingBackend = {
   EMBEDDING_BACKEND_PACKAGE: string;
   parseCudaMajor(output: string): number | null;
+  isSkipRequested(env: NodeJS.ProcessEnv): boolean;
   shouldAttemptAutoInstall(input: {
     platform: NodeJS.Platform;
     arch: string;
@@ -42,18 +43,27 @@ function loadPostinstallModule(): PostinstallEmbeddingBackend {
 }
 
 describe('embedding backend postinstall repair', () => {
-  it('keeps the install-time embedding backend optional and registers postinstall repair', () => {
+  it('requires the embedding backend at install time and registers a broken-install repair hook', () => {
     const pkg = JSON.parse(readFileSync('package.json', 'utf-8')) as {
       scripts: Record<string, string>;
       dependencies?: Record<string, string>;
       optionalDependencies?: Record<string, string>;
     };
 
-    expect(pkg.dependencies).not.toHaveProperty('@huggingface/transformers');
-    expect(pkg.optionalDependencies).toMatchObject({
+    expect(pkg.dependencies).toMatchObject({
       '@huggingface/transformers': '^3.8.1'
     });
+    expect(pkg.optionalDependencies ?? {}).not.toHaveProperty('@huggingface/transformers');
     expect(pkg.scripts.postinstall).toBe('node scripts/postinstall-embedding-backend.cjs');
+  });
+
+  it('only skips required-backend repair when the explicit repair guards are set', () => {
+    const postinstall = loadPostinstallModule();
+
+    expect(postinstall.isSkipRequested({ CLAUDE_MEMORY_LAYER_SKIP_EMBEDDING_POSTINSTALL: '1' })).toBe(true);
+    expect(postinstall.isSkipRequested({ CLAUDE_MEMORY_LAYER_EMBEDDING_POSTINSTALL_REPAIR: '1' })).toBe(true);
+    expect(postinstall.isSkipRequested({ npm_config_optional: 'false' })).toBe(false);
+    expect(postinstall.isSkipRequested({ npm_config_omit: 'optional' })).toBe(false);
   });
 
   it('detects CUDA major version from nvcc output', () => {
@@ -140,7 +150,7 @@ describe('embedding backend postinstall repair', () => {
     ]);
   });
 
-  it('runs the automatic repair command when Linux x64 skipped the optional backend without detectable CUDA', () => {
+  it('runs the repair command when Linux x64 is missing the required backend without detectable CUDA', () => {
     const postinstall = loadPostinstallModule();
     const rootDir = mkdtempSync(join(tmpdir(), 'cml-postinstall-test-'));
     const calls: SpawnCall[] = [];
