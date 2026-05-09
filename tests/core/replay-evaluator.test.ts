@@ -277,13 +277,36 @@ describe('replay fixture evaluator', () => {
       retrievalOptions: { strategy: 'auto' }
     });
 
-    expect(report.summary.queryYieldRate).toBeGreaterThanOrEqual(0.9);
-    expect(report.summary.noMatchAccuracy).toBeGreaterThanOrEqual(5 / 6);
-    expect(report.summary.forbiddenHitCount).toBeLessThanOrEqual(1);
-    expect(report.summary.failedQueryCount).toBeLessThanOrEqual(2);
+    expect(report.summary.queryYieldRate).toBe(1);
+    expect(report.summary.noMatchAccuracy).toBe(1);
+    expect(report.summary.forbiddenHitCount).toBe(0);
+    expect(report.summary.failedQueryCount).toBe(0);
     expect(report.summary.categoryBreakdown['korean-short-follow-up']?.queryYieldRate).toBe(1);
     expect(report.summary.categoryBreakdown['stale-memory-trap']?.noMatchAccuracy).toBe(1);
     expect(report.summary.categoryBreakdown['cross-project-contamination']?.forbiddenHitCount).toBe(0);
+  });
+
+  it('recalls privacy/dashboard decision memories in the golden replay set', async () => {
+    const goldenFixture = JSON.parse(
+      readFileSync('benchmarks/replay/golden-memory-usefulness-v1.json', 'utf8')
+    ) as ReplayEvaluationFixture;
+
+    const report = await evaluateReplayFixture(goldenFixture, {
+      generatedAt: '2026-05-09T00:00:00.000Z',
+      retrievalOptions: { strategy: 'auto' }
+    });
+    const decisionRecall = report.perQuery.find(
+      (query) => query.queryId === 'q-decision-recall-privacy-dashboard'
+    );
+
+    expect(decisionRecall?.retrievedIds).toEqual(expect.arrayContaining([
+      'm-retrieval-telemetry-privacy',
+      'm-dashboard-safe-trace-metadata'
+    ]));
+    expect(decisionRecall?.reciprocalRank).toBeGreaterThan(0);
+    expect(report.summary.failedQueries.map((query) => query.queryId)).not.toContain(
+      'q-decision-recall-privacy-dashboard'
+    );
   });
 
   it('ships a privacy-safe golden replay fixture and npm eval script', () => {

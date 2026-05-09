@@ -528,6 +528,100 @@ describe('Retriever strategy/scope', () => {
     expect(out.memories.map((memory) => memory.event.id)).toContain('e-pr-resolved-status');
   });
 
+  it('does not let privacy/dashboard decision expansion hijack unrelated decision recall queries', async () => {
+    const telemetryPrivacy = ev(
+      'e-telemetry-privacy',
+      'agent:main:current',
+      'session_summary',
+      'Retrieval telemetry public APIs and dashboards must not expose rawQueryText or queryText; use trace id, strategy, rewrite kind, and aggregate counts instead.',
+      'memory/privacy/retrieval-telemetry'
+    );
+    const dashboardTrace = ev(
+      'e-dashboard-trace',
+      'agent:main:current',
+      'session_summary',
+      'Dashboard trace panels render safe metadata such as trace id, reason, strategy, rewrite kind, candidate count, and selected count.',
+      'memory/privacy/dashboard-trace'
+    );
+    const apiRetry = ev(
+      'e-api-retry',
+      'agent:main:current',
+      'session_summary',
+      'API retry policy decision: retry failed provider calls with exponential backoff.',
+      'memory/api/retry-policy'
+    );
+    const dashboardLayout = ev(
+      'e-dashboard-layout',
+      'agent:main:current',
+      'session_summary',
+      'Dashboard layout decision: spacing counts use compact cards with consistent gutters.',
+      'memory/dashboard/layout-spacing'
+    );
+    const dashboardLayoutKo = ev(
+      'e-dashboard-layout-ko',
+      'agent:main:current',
+      'session_summary',
+      '대시보드 레이아웃 간격 결정: 카드 간격은 compact gutter를 사용한다.',
+      'memory/dashboard/layout-spacing-ko'
+    );
+    const events = [telemetryPrivacy, dashboardTrace, apiRetry, dashboardLayout, dashboardLayoutKo];
+    const eventStore = {
+      async keywordSearch() {
+        return [];
+      },
+      async getRecentEvents() {
+        return events;
+      },
+      async getEvent(id: string) {
+        return events.find((event) => event.id === id) ?? null;
+      },
+      async getSessionEvents(sessionId: string) {
+        return events.filter((event) => event.sessionId === sessionId);
+      }
+    };
+    let vectorEvents = [telemetryPrivacy, dashboardTrace, apiRetry];
+    const vectorStore = {
+      async search() {
+        return vectorEvents.map((event, index) => ({
+          id: `v-${event.id}`,
+          eventId: event.id,
+          content: event.content,
+          score: [0.98, 0.96, 0.8][index] ?? 0.75,
+          sessionId: event.sessionId,
+          eventType: event.eventType,
+          timestamp: event.timestamp.toISOString()
+        }));
+      }
+    };
+    const retriever = new Retriever(eventStore as any, vectorStore as any, fakeEmbedder as any, new Matcher());
+
+    const apiOut = await retriever.retrieve('what API policy did we decide for retries', {
+      strategy: 'deep',
+      topK: 3,
+      minScore: 0.1,
+      includeSessionContext: false
+    });
+    expect(apiOut.memories.map((memory) => memory.event.id)).toEqual(['e-api-retry']);
+
+    vectorEvents = [dashboardTrace, telemetryPrivacy, dashboardLayout];
+    const layoutOut = await retriever.retrieve('what dashboard layout decision did we make for spacing counts', {
+      strategy: 'deep',
+      topK: 3,
+      minScore: 0.1,
+      includeSessionContext: false
+    });
+    expect(layoutOut.memories.map((memory) => memory.event.id)).toEqual(['e-dashboard-layout']);
+
+    vectorEvents = [dashboardTrace, dashboardLayoutKo];
+    const koreanLayoutOut = await retriever.retrieve('대시보드 레이아웃 간격 결정은 뭐였지', {
+      strategy: 'deep',
+      topK: 3,
+      minScore: 0.1,
+      includeSessionContext: false
+    });
+    expect(koreanLayoutOut.memories.map((memory) => memory.event.id)).toEqual(['e-dashboard-layout-ko']);
+  });
+
   it('keeps summary fallback within strict project scope for generic continuation', async () => {
     const foreign = {
       ...ev(

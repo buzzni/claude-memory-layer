@@ -51,6 +51,35 @@ const STALE_CONTENT_PATTERNS = [
 
 const CONTINUATION_EXPANSION = 'current next step plan roadmap status validation replay rerank memory usefulness continuation';
 const REPAIR_FOLLOW_UP_EXPANSION = 'review blocker fix pattern dashboard error state metrics bucket validation sanitize rerun unresolved';
+const RETRIEVAL_PRIVACY_DECISION_EXPANSION = 'retrieval telemetry privacy public api dashboard dashboards rawQueryText queryText raw query text expose safe trace metadata trace id reason strategy rewrite kind aggregate count counts candidate selected public panel';
+
+const DECISION_RECALL_TERMS = new Set([
+  'decide',
+  'decided',
+  'decision',
+  'agreed',
+  'policy',
+  'constraint'
+]);
+
+const RETRIEVAL_PRIVACY_SURFACE_TERMS = new Set([
+  'retrieval',
+  'dashboard',
+  'telemetry',
+  'trace'
+]);
+
+const DECISION_TOPIC_WEAK_TERMS = new Set([
+  'api',
+  'dashboard',
+  'retrieval',
+  'trace',
+  'telemetry',
+  'query',
+  'raw',
+  'count',
+  'counts'
+]);
 
 const GENERIC_TECHNICAL_TERMS = new Set([
   'api',
@@ -86,14 +115,32 @@ const LOW_INFORMATION_QUERY_TERMS = new Set([
   'who',
   'why',
   'how',
+  'did',
+  'does',
+  'do',
+  'we',
+  'i',
+  'in',
+  'to',
+  'of',
+  'on',
+  'as',
+  'be',
+  'was',
+  'were',
+  'decide',
+  'decided',
+  'decision',
+  'agreed',
+  'policy',
+  'constraint',
+  'showing',
   'can',
   'you',
   'me',
   'show',
   'tell',
   'please',
-  'did',
-  'does',
   'should',
   'would',
   'could',
@@ -198,6 +245,9 @@ export function isStaleOrSupersededContent(content: string): boolean {
 export function buildRetrievalQualityQuery(query: string): string {
   const trimmed = query.trim();
   if (!trimmed) return query;
+  if (isRetrievalPrivacyDecisionQuery(trimmed)) {
+    return `${trimmed} ${RETRIEVAL_PRIVACY_DECISION_EXPANSION}`;
+  }
   if (isGenericContinuationQuery(trimmed)) {
     return `${trimmed} ${CONTINUATION_EXPANSION}`;
   }
@@ -205,6 +255,31 @@ export function buildRetrievalQualityQuery(query: string): string {
     return `${trimmed} ${REPAIR_FOLLOW_UP_EXPANSION}`;
   }
   return query;
+}
+
+export function isRetrievalPrivacyDecisionQuery(query: string): boolean {
+  const trimmed = query.trim();
+  if (!trimmed) return false;
+
+  const terms = new Set(tokenizeQualityText(trimmed));
+  const hasDecisionSignal = hasAnyTerm(terms, DECISION_RECALL_TERMS) || /(?:결정|정책|원칙)/i.test(trimmed);
+  if (!hasDecisionSignal) return false;
+
+  const hasRawQuerySignal = terms.has('raw') && terms.has('query');
+  const hasPrivacySignal = terms.has('privacy') || terms.has('expose') || terms.has('redacted');
+  const hasRetrievalSurface = hasAnyTerm(terms, RETRIEVAL_PRIVACY_SURFACE_TERMS) ||
+    (terms.has('api') && terms.has('query'));
+  const hasQuerySurface = terms.has('query') && (
+    terms.has('dashboard') ||
+    terms.has('trace') ||
+    terms.has('telemetry') ||
+    terms.has('api')
+  );
+  const hasKoreanRetrievalSurface = /(?:검색|리트리벌|retrieval|대시보드|트레이스|텔레메트리|telemetry)/i.test(trimmed);
+  const hasKoreanPrivacySurface = /(?:원문|쿼리|프라이버시|개인정보|노출|트레이스|메타데이터)/i.test(trimmed);
+
+  return (hasRetrievalSurface || (hasKoreanRetrievalSurface && hasKoreanPrivacySurface)) &&
+    (hasRawQuerySignal || hasPrivacySignal || hasQuerySurface || hasKoreanPrivacySurface);
 }
 
 export function extractTechnicalQueryTerms(query: string): string[] {
@@ -228,8 +303,17 @@ export function hasTechnicalTermOverlap(query: string, content: string): boolean
 
 export function hasDiscriminativeTermOverlap(query: string, content: string): boolean {
   const queryTerms = extractDiscriminativeQueryTerms(query);
-  if (queryTerms.length < 3) return true;
   const contentTerms = new Set(tokenizeQualityText(content));
+  if (isRetrievalPrivacyDecisionQuery(query) && hasRetrievalPrivacyDecisionContent(contentTerms)) {
+    return true;
+  }
+  if (shouldRequireDecisionTopicOverlap(query)) {
+    const topicTerms = queryTerms.filter((term) => !DECISION_TOPIC_WEAK_TERMS.has(term));
+    if (topicTerms.length > 0) {
+      return topicTerms.some((term) => contentTerms.has(term));
+    }
+  }
+  if (queryTerms.length < 3) return true;
   const requiredHits = queryTerms.length >= 3 ? 2 : 1;
   let hits = 0;
   for (const term of queryTerms) {
@@ -241,6 +325,22 @@ export function hasDiscriminativeTermOverlap(query: string, content: string): bo
 
 export function shouldApplyTechnicalGuard(query: string): boolean {
   return extractTechnicalQueryTerms(query).length > 0;
+}
+
+function hasAnyTerm(terms: Set<string>, expectedTerms: Set<string>): boolean {
+  let found = false;
+  expectedTerms.forEach((term) => {
+    if (terms.has(term)) found = true;
+  });
+  return found;
+}
+
+function shouldRequireDecisionTopicOverlap(query: string): boolean {
+  if (isRetrievalPrivacyDecisionQuery(query)) return false;
+  const trimmed = query.trim();
+  if (!trimmed) return false;
+  const terms = new Set(tokenizeQualityText(trimmed));
+  return hasAnyTerm(terms, DECISION_RECALL_TERMS) || /(?:결정|정책|원칙)/i.test(trimmed);
 }
 
 function extractDiscriminativeQueryTerms(query: string): string[] {
@@ -256,12 +356,60 @@ function extractDiscriminativeQueryTerms(query: string): string[] {
   return terms;
 }
 
+function hasRetrievalPrivacyDecisionContent(contentTerms: Set<string>): boolean {
+  const hasDashboardTraceMetadata = contentTerms.has('dashboard') &&
+    (contentTerms.has('trace') || contentTerms.has('metadata')) &&
+    (
+      contentTerms.has('safe') ||
+      contentTerms.has('strategy') ||
+      contentTerms.has('rewrite') ||
+      contentTerms.has('candidate') ||
+      contentTerms.has('selected') ||
+      contentTerms.has('count') ||
+      contentTerms.has('reason')
+    );
+  const hasRawQueryPrivacyPolicy = contentTerms.has('retrieval') &&
+    (
+      contentTerms.has('privacy') ||
+      contentTerms.has('expose') ||
+      (
+        contentTerms.has('raw') &&
+        contentTerms.has('query') &&
+        (
+          contentTerms.has('dashboard') ||
+          contentTerms.has('telemetry') ||
+          contentTerms.has('api') ||
+          contentTerms.has('public')
+        )
+      )
+    );
+  return hasDashboardTraceMetadata || hasRawQueryPrivacyPolicy;
+}
+
 function tokenizeQualityText(text: string): string[] {
   return text
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
     .toLowerCase()
     .replace(/[^A-Za-z0-9가-힣\s_.:-]/g, ' ')
     .split(/\s+/)
     .flatMap((token) => token.split(/(?=[._:-])|(?<=[._:-])/g))
-    .map((token) => token.replace(/^[._:-]+|[._:-]+$/g, ''))
+    .map((token) => normalizeQualityToken(token.replace(/^[._:-]+|[._:-]+$/g, '')))
     .filter((token) => token.length >= 2);
+}
+
+function normalizeQualityToken(token: string): string {
+  if (token === 'apis') return 'api';
+  if (token === 'ids') return 'id';
+  if (LOW_INFORMATION_QUERY_TERMS.has(token) || GENERIC_TECHNICAL_TERMS.has(token)) return token;
+  if (token.length > 4 && token.endsWith('ies')) return `${token.slice(0, -3)}y`;
+  if (
+    token.length > 3 &&
+    token.endsWith('s') &&
+    !token.endsWith('ss') &&
+    !token.endsWith('us') &&
+    !token.endsWith('is')
+  ) {
+    return token.slice(0, -1);
+  }
+  return token;
 }

@@ -813,11 +813,31 @@ export class Retriever {
 
   private tokenize(text: string): string[] {
     return text
+      .replace(/([a-z])([A-Z])/g, '$1 $2')
       .toLowerCase()
       .replace(/[^\p{L}\p{N}\s]/gu, ' ')
       .split(/\s+/)
+      .map((token) => this.normalizeToken(token))
       .filter((t) => t.length >= 2)
       .slice(0, 64);
+  }
+
+  private normalizeToken(token: string): string {
+    if (token === 'apis') return 'api';
+    if (token === 'ids') return 'id';
+    if (token === 'does') return token;
+    if (token.length > 4 && token.endsWith('ies')) return `${token.slice(0, -3)}y`;
+    if (
+      token.length > 3 &&
+      token.endsWith('s') &&
+      !token.endsWith('ss') &&
+      !token.endsWith('us') &&
+      !token.endsWith('is') &&
+      !token.endsWith('ps')
+    ) {
+      return token.slice(0, -1);
+    }
+    return token;
   }
 
   private keywordOverlap(a: string[], b: string[]): number {
