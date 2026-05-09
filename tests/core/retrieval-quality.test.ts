@@ -12,6 +12,9 @@ describe('retrieval quality guards', () => {
     expect(isGenericContinuationQuery('continue')).toBe(true);
     expect(isGenericContinuationQuery('what next?')).toBe(true);
     expect(isGenericContinuationQuery('다음 추천작업은 뭐야?')).toBe(true);
+    expect(isGenericContinuationQuery('남은 추가 작업 있어?')).toBe(true);
+    expect(isGenericContinuationQuery('남은 추가로 할만한 작업 있어?')).toBe(true);
+    expect(isGenericContinuationQuery('남은 작업 있나요?')).toBe(true);
     expect(isGenericContinuationQuery('이어서 진행해줘')).toBe(true);
   });
 

@@ -131,7 +131,7 @@ describe('MCP project context tools', () => {
     const contextPackProperties = byName.get('mem-context-pack')?.inputSchema.properties as Record<string, unknown>;
     expect(contextPackProperties.refreshLatest).toMatchObject({
       type: 'boolean',
-      description: expect.stringContaining('Explicit opt-in')
+      description: expect.stringContaining('auto-refresh')
     });
     const marketContextProperties = byName.get('external-market-context')?.inputSchema.properties as Record<string, unknown>;
     expect(marketContextProperties.projectPath).toMatchObject({ type: 'string' });
@@ -279,6 +279,133 @@ describe('MCP project context tools', () => {
     expect(text).not.toContain('/repo/app');
     expect(text).not.toContain('C:\\Users\\me');
     expect(text).not.toContain('state.db');
+  });
+
+  it('auto-refreshes latest project sessions for generic continuation context packs', async () => {
+    mocks.hermesImporter.importProject.mockResolvedValue({
+      totalSessions: 1,
+      totalMessages: 4,
+      importedPrompts: 2,
+      importedResponses: 2,
+      skippedDuplicates: 0,
+      errors: []
+    });
+    mocks.codexImporter.importProject.mockResolvedValue({
+      totalSessions: 0,
+      totalMessages: 0,
+      importedPrompts: 0,
+      importedResponses: 0,
+      skippedDuplicates: 0,
+      errors: []
+    });
+    mocks.projectService.getRecentEvents.mockResolvedValue([
+      event({
+        id: '37373737-3737-4737-8737-373737373737',
+        sessionId: 'hermes:fresh-auto-session',
+        eventType: 'agent_response',
+        timestamp: new Date('2026-05-05T04:00:00.000Z'),
+        content: 'Latest auto-refresh context: committed replay promotion append validator and all validation passed.'
+      })
+    ]);
+
+    const result = await handleToolCall('mem-context-pack', {
+      projectPath: '/repo/app',
+      query: '남은 추가 작업 있어?',
+      topK: 3,
+      recentLimit: 10,
+      sessionLimit: 2
+    });
+
+    const text = textOf(result);
+    expect(result.isError).not.toBe(true);
+    expect(mocks.createHermesSessionHistoryImporter).toHaveBeenCalledWith(mocks.projectService, { stateDbPath: undefined });
+    expect(mocks.createCodexSessionHistoryImporter).toHaveBeenCalledWith(mocks.projectService, { sessionsDir: undefined });
+    expect(mocks.hermesImporter.importProject).toHaveBeenCalledWith('/repo/app', {
+      projectPath: '/repo/app',
+      sessionLimit: 1,
+      limit: 200,
+      force: false
+    });
+    expect(mocks.codexImporter.importProject).toHaveBeenCalledWith('/repo/app', {
+      projectPath: '/repo/app',
+      sessionLimit: 1,
+      limit: 200,
+      force: false
+    });
+    expect(mocks.hermesImporter.importProject.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.projectService.retrieveMemories.mock.invocationCallOrder[0]
+    );
+    expect(mocks.hermesImporter.importProject.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.projectService.getRecentEvents.mock.invocationCallOrder[0]
+    );
+    expect(mocks.projectService.processPendingEmbeddings).not.toHaveBeenCalled();
+    expect(text).toContain('- Freshness refresh: auto before retrieval (hermes, codex)');
+    expect(text).toContain('- Refresh limits: sessions=1 messages=200 force=no embeddings=skipped');
+    expect(text).toContain('Latest auto-refresh context');
+    expect(text).not.toContain('/repo/app');
+  });
+
+  it('honors refreshLatest false as an opt-out for generic continuation context packs', async () => {
+    const result = await handleToolCall('mem-context-pack', {
+      projectPath: '/repo/app',
+      query: 'continue',
+      refreshLatest: false,
+      topK: 2,
+      recentLimit: 5,
+      sessionLimit: 1
+    });
+
+    expect(result.isError).not.toBe(true);
+    expect(mocks.createHermesSessionHistoryImporter).not.toHaveBeenCalled();
+    expect(mocks.createCodexSessionHistoryImporter).not.toHaveBeenCalled();
+    expect(mocks.createSessionHistoryImporter).not.toHaveBeenCalled();
+    expect(textOf(result)).not.toContain('Freshness refresh');
+  });
+
+  it('does not auto-refresh when generic continuation lacks a safe project scope', async () => {
+    const withSession = await handleToolCall('mem-context-pack', {
+      projectPath: '/repo/app',
+      query: 'continue',
+      sessionId: 'specific-session',
+      topK: 2,
+      recentLimit: 5,
+      sessionLimit: 1
+    });
+    expect(withSession.isError).not.toBe(true);
+    expect(mocks.createHermesSessionHistoryImporter).not.toHaveBeenCalled();
+    expect(mocks.createCodexSessionHistoryImporter).not.toHaveBeenCalled();
+
+    mocks.createHermesSessionHistoryImporter.mockClear();
+    mocks.createCodexSessionHistoryImporter.mockClear();
+    mocks.createSessionHistoryImporter.mockClear();
+
+    const relativeProject = await handleToolCall('mem-context-pack', {
+      projectPath: 'relative/app',
+      query: 'continue',
+      topK: 2,
+      recentLimit: 5,
+      sessionLimit: 1
+    });
+    expect(relativeProject.isError).not.toBe(true);
+    expect(mocks.createHermesSessionHistoryImporter).not.toHaveBeenCalled();
+    expect(mocks.createCodexSessionHistoryImporter).not.toHaveBeenCalled();
+    expect(mocks.createSessionHistoryImporter).not.toHaveBeenCalled();
+  });
+
+  it('does not auto-refresh latest sessions for topic-specific context packs', async () => {
+    const result = await handleToolCall('mem-context-pack', {
+      projectPath: '/repo/app',
+      query: 'debug retrieval ranking for command artifacts',
+      topK: 2,
+      recentLimit: 5,
+      sessionLimit: 1
+    });
+
+    expect(result.isError).not.toBe(true);
+    expect(mocks.createHermesSessionHistoryImporter).not.toHaveBeenCalled();
+    expect(mocks.createCodexSessionHistoryImporter).not.toHaveBeenCalled();
+    expect(mocks.createSessionHistoryImporter).not.toHaveBeenCalled();
+    expect(textOf(result)).not.toContain('Freshness refresh');
   });
 
   it('refreshes latest sessions before building a context pack when explicitly requested', async () => {

@@ -252,8 +252,15 @@ async function handleMemContextPack(memoryService: MemoryService, args: Record<s
   const sessionId = optionalString(args.sessionId);
   const projectPath = optionalString(args.projectPath);
   const genericContinuationQuery = isGenericContinuationQuery(query);
+  const explicitFreshnessRefresh = args.refreshLatest === true;
+  const autoFreshnessRefresh = args.refreshLatest !== false
+    && !explicitFreshnessRefresh
+    && genericContinuationQuery
+    && sessionId === undefined
+    && projectPath !== undefined
+    && path.isAbsolute(projectPath);
   const retrievalTopK = Math.min(topK * 3, 12);
-  const freshnessRun = args.refreshLatest === true
+  const freshnessRun = explicitFreshnessRefresh || autoFreshnessRefresh
     ? await runLatestImport(memoryService, {
       projectPath: projectPath || '',
       sources: sourceListArg(args.refreshSources),
@@ -295,8 +302,9 @@ async function handleMemContextPack(memoryService: MemoryService, args: Record<s
   ];
 
   if (freshnessRun) {
+    const refreshMode = autoFreshnessRefresh ? 'auto' : 'attempted';
     lines.push(
-      `- Freshness refresh: attempted before retrieval (${freshnessRun.sources.join(', ')})`,
+      `- Freshness refresh: ${refreshMode} before retrieval (${freshnessRun.sources.join(', ')})`,
       `- Refresh limits: sessions=${freshnessRun.sessionLimit} messages=${freshnessRun.messageLimit} force=${freshnessRun.force ? 'yes' : 'no'} embeddings=${freshnessRun.processEmbeddings ? `processed ${freshnessRun.embeddingsProcessed ?? 0}` : 'skipped'}`
     );
   }

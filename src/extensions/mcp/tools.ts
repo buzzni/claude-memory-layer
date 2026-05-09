@@ -130,12 +130,12 @@ export const tools: Tool[] = [
         projectPath: projectPathProperty,
         refreshLatest: {
           type: 'boolean',
-          description: 'Explicit opt-in: import latest local session history before retrieval. Requires absolute projectPath and mutates project memory (default: false).'
+          description: 'Import latest local session history before retrieval. Generic continuation queries auto-refresh when absolute projectPath is supplied and no sessionId filter is set; set false to opt out. Auto-refresh and explicit true both mutate project memory; explicit true also requires absolute projectPath.'
         },
         refreshSources: {
           type: 'array',
           items: { type: 'string', enum: ['claude', 'codex', 'hermes'] },
-          description: 'Sources to refresh when refreshLatest is true (default: hermes and codex)'
+          description: 'Sources to refresh when refreshLatest is true or auto-refresh runs (default: hermes and codex)'
         },
         refreshSessionLimit: {
           type: 'number',
