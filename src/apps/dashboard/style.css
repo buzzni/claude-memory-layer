@@ -760,6 +760,80 @@ body {
   gap: 8px;
 }
 
+.memory-usefulness-diagnostics {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.usefulness-diagnostics-title {
+  font-size: 11px;
+  font-weight: 800;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.usefulness-diagnostic {
+  padding: 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  background: rgba(255,255,255,0.025);
+}
+
+.usefulness-diagnostic-warn {
+  border-color: rgba(254, 176, 25, 0.32);
+  background: rgba(254, 176, 25, 0.06);
+}
+
+.usefulness-diagnostic-info {
+  border-color: rgba(0, 240, 255, 0.24);
+  background: rgba(0, 240, 255, 0.04);
+}
+
+.usefulness-diagnostic-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-primary);
+  margin-bottom: 5px;
+}
+
+.usefulness-diagnostic-severity {
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 800;
+  text-transform: uppercase;
+  color: var(--bg-primary);
+  background: var(--warning);
+}
+
+.usefulness-diagnostic-info .usefulness-diagnostic-severity {
+  background: var(--accent-secondary);
+}
+
+.usefulness-diagnostic-detail,
+.usefulness-diagnostic-action,
+.usefulness-diagnostics-empty {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+
+.usefulness-diagnostic-action {
+  margin-top: 5px;
+  color: var(--text-secondary);
+}
+
+.usefulness-diagnostic-action::before {
+  content: 'Action: ';
+  color: var(--accent-secondary);
+  font-weight: 700;
+}
+
 .usefulness-component {
   opacity: 1;
 }

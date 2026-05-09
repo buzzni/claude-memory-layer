@@ -457,6 +457,7 @@ function updateMemoryUsefulnessUI() {
   const scoreEl = document.getElementById('memory-usefulness-score');
   const summaryEl = document.getElementById('memory-usefulness-summary');
   const breakdownEl = document.getElementById('memory-usefulness-breakdown');
+  const diagnosticsEl = document.getElementById('memory-usefulness-diagnostics');
   if (!scoreEl || !summaryEl || !breakdownEl) return;
 
   const payload = state.memoryUsefulness;
@@ -465,6 +466,7 @@ function updateMemoryUsefulnessUI() {
     scoreEl.className = 'memory-usefulness-score score-unknown';
     summaryEl.innerHTML = '<span style="color:var(--text-muted);">No usefulness telemetry yet.</span>';
     breakdownEl.innerHTML = '';
+    if (diagnosticsEl) diagnosticsEl.innerHTML = '';
     return;
   }
 
@@ -484,11 +486,6 @@ function updateMemoryUsefulnessUI() {
   `;
 
   const components = payload.components || [];
-  if (components.length === 0) {
-    breakdownEl.innerHTML = '';
-    return;
-  }
-
   breakdownEl.innerHTML = components.map((component) => {
     const valuePct = `${((component.value || 0) * 100).toFixed(1)}%`;
     const availableClass = component.available ? '' : ' unavailable';
@@ -504,6 +501,27 @@ function updateMemoryUsefulnessUI() {
       </div>
     `;
   }).join('');
+
+  const diagnostics = (payload.diagnostics || []).slice(0, 3);
+  if (!diagnosticsEl) return;
+  if (diagnostics.length === 0) {
+    diagnosticsEl.innerHTML = '<div class="usefulness-diagnostics-empty">No immediate improvement actions.</div>';
+    return;
+  }
+
+  diagnosticsEl.innerHTML = `
+    <div class="usefulness-diagnostics-title">Top improvement actions</div>
+    ${diagnostics.map((diagnostic) => `
+      <div class="usefulness-diagnostic usefulness-diagnostic-${escapeHtml(diagnostic.severity || 'info')}">
+        <div class="usefulness-diagnostic-header">
+          <span class="usefulness-diagnostic-severity">${escapeHtml(diagnostic.severity || 'info')}</span>
+          <strong>${escapeHtml(diagnostic.title || diagnostic.key || 'Improve memory usefulness')}</strong>
+        </div>
+        <div class="usefulness-diagnostic-detail">${escapeHtml(diagnostic.detail || '')}</div>
+        <div class="usefulness-diagnostic-action">${escapeHtml(diagnostic.action || '')}</div>
+      </div>
+    `).join('')}
+  `;
 }
 
 function updateHelpfulnessUI() {

@@ -131,6 +131,17 @@ type MemoryUsefulnessComponent = {
   contribution: number;
 };
 
+type MemoryUsefulnessDiagnostic = {
+  key: string;
+  severity: 'info' | 'warn';
+  metric: string;
+  value: number;
+  target: number;
+  title: string;
+  detail: string;
+  action: string;
+};
+
 type HelpfulnessStatsLike = {
   avgScore?: number;
   totalEvaluated?: number;
@@ -169,6 +180,109 @@ function usefulnessScoreLabel(score: number, confidence: number): 'excellent' | 
   if (score >= 60) return 'good';
   if (score >= 40) return 'watch';
   return 'low';
+}
+
+function buildMemoryUsefulnessDiagnostics(input: {
+  metrics: {
+    avgHelpfulnessScore: number;
+    memoryHitRate: number;
+    queryYieldRate: number;
+    evaluationCoverage: number;
+    selectionRate: number;
+  };
+  counts: {
+    promptCount: number;
+    memoryCheckedPrompts: number;
+    retrievalQueries: number;
+    queriesWithSelected: number;
+    selectedMemories: number;
+    candidateMemories: number;
+    totalEvaluated: number;
+    totalRetrievals: number;
+  };
+}): MemoryUsefulnessDiagnostic[] {
+  const { metrics, counts } = input;
+  const diagnostics: MemoryUsefulnessDiagnostic[] = [];
+
+  if (counts.promptCount > 0 && counts.retrievalQueries === 0) {
+    diagnostics.push({
+      key: 'no-retrieval-traces',
+      severity: 'warn',
+      metric: 'retrievalUsageRate',
+      value: 0,
+      target: 0.5,
+      title: 'No retrieval traces were recorded',
+      detail: `${counts.promptCount} prompts were seen, but none produced a retrieval trace in this window.`,
+      action: 'Confirm the prompt hook is enabled and broaden adherence triggers for continuation, write-intent, and project-specific prompts.'
+    });
+  }
+
+  if (counts.promptCount > 0 && metrics.memoryHitRate < 0.5) {
+    diagnostics.push({
+      key: 'low-memory-hit-rate',
+      severity: 'warn',
+      metric: 'memoryHitRate',
+      value: metrics.memoryHitRate,
+      target: 0.5,
+      title: 'Memory checks are missing many prompts',
+      detail: `Only ${counts.memoryCheckedPrompts} of ${counts.promptCount} prompts had an adherence check in this window.`,
+      action: 'Broaden adherence triggers for continuation, write-intent, topic-shift, and project-specific prompts.'
+    });
+  }
+
+  if (counts.retrievalQueries > 0 && metrics.queryYieldRate < 0.6) {
+    diagnostics.push({
+      key: 'low-query-yield-rate',
+      severity: 'warn',
+      metric: 'queryYieldRate',
+      value: metrics.queryYieldRate,
+      target: 0.6,
+      title: 'Searches often select no memory',
+      detail: `${counts.queriesWithSelected} of ${counts.retrievalQueries} retrieval queries injected at least one memory.`,
+      action: 'Overfetch candidates, then filter/rerank before applying the final injection threshold.'
+    });
+  }
+
+  if (counts.totalEvaluated > 0 && metrics.avgHelpfulnessScore < 0.7) {
+    diagnostics.push({
+      key: 'low-helpfulness-score',
+      severity: 'warn',
+      metric: 'avgHelpfulnessScore',
+      value: metrics.avgHelpfulnessScore,
+      target: 0.7,
+      title: 'Injected memories are not translating into outcomes',
+      detail: `${counts.totalEvaluated} evaluated retrievals averaged ${(metrics.avgHelpfulnessScore * 100).toFixed(1)}% helpfulness.`,
+      action: 'Review low-scoring retrieval samples for stale decisions, cross-project noise, or raw transcript snippets.'
+    });
+  }
+
+  if (counts.totalRetrievals > 0 && metrics.evaluationCoverage < 0.8) {
+    diagnostics.push({
+      key: 'low-evaluation-coverage',
+      severity: 'info',
+      metric: 'evaluationCoverage',
+      value: metrics.evaluationCoverage,
+      target: 0.8,
+      title: 'Many retrievals are still unevaluated',
+      detail: `${counts.totalEvaluated} of ${counts.totalRetrievals} retrievals have measured helpfulness.`,
+      action: 'Ensure Stop/session-end hooks or pending-session backfill are running so usefulness reflects real outcomes.'
+    });
+  }
+
+  if (counts.candidateMemories > 0 && counts.selectedMemories === 0) {
+    diagnostics.push({
+      key: 'candidates-without-selection',
+      severity: 'warn',
+      metric: 'selectionRate',
+      value: metrics.selectionRate,
+      target: 0.2,
+      title: 'Candidates are found but none are injected',
+      detail: `${counts.candidateMemories} candidates were retrieved, but no memories passed the injection policy.`,
+      action: 'Inspect threshold settings and prompt-injection policy before lowering filters globally.'
+    });
+  }
+
+  return diagnostics.slice(0, 3);
 }
 
 function computeMemoryUsefulnessSummary(
@@ -237,6 +351,19 @@ function computeMemoryUsefulnessSummary(
     avgSelectedPerQuery: round(safeRatio(totalSelectedCount, retrievalQueries), 2),
     selectionRate: round(safeRatio(totalSelectedCount, totalCandidateCount))
   };
+  const counts = {
+    promptCount,
+    memoryCheckedPrompts,
+    retrievalQueries,
+    queriesWithSelected,
+    selectedMemories: totalSelectedCount,
+    candidateMemories: totalCandidateCount,
+    totalEvaluated,
+    totalRetrievals,
+    helpful,
+    neutral,
+    unhelpful
+  };
 
   const componentSpecs: Omit<MemoryUsefulnessComponent, 'contribution'>[] = [
     { key: 'avgHelpfulnessScore', label: 'Average helpfulness score', value: metrics.avgHelpfulnessScore, weight: 0.3, available: totalEvaluated > 0 },
@@ -267,20 +394,9 @@ function computeMemoryUsefulnessSummary(
       confidence
     },
     metrics,
-    counts: {
-      promptCount,
-      memoryCheckedPrompts,
-      retrievalQueries,
-      queriesWithSelected,
-      selectedMemories: totalSelectedCount,
-      candidateMemories: totalCandidateCount,
-      totalEvaluated,
-      totalRetrievals,
-      helpful,
-      neutral,
-      unhelpful
-    },
+    counts,
     components,
+    diagnostics: buildMemoryUsefulnessDiagnostics({ metrics, counts }),
     limits: {
       eventsLimit: limits.eventsLimit || events.length,
       tracesLimit: limits.tracesLimit || traces.length,

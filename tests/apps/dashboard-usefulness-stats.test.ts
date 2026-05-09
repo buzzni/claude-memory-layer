@@ -161,6 +161,18 @@ describe('dashboard memory usefulness stats', () => {
       'retrievalUsageRate',
       'queryYieldRate',
     ]);
+    expect(body.diagnostics.map((d: any) => d.key)).toEqual([
+      'low-memory-hit-rate',
+      'low-query-yield-rate',
+    ]);
+    expect(body.diagnostics[0]).toMatchObject({
+      severity: 'warn',
+      metric: 'memoryHitRate',
+      value: 0.3333,
+      target: 0.5,
+    });
+    expect(body.diagnostics[0].detail).toContain('1 of 3 prompts');
+    expect(body.diagnostics[0].action).toContain('adherence triggers');
     expect(body.limits).toEqual({
       eventsLimit: 20000,
       tracesLimit: 5000,
@@ -217,6 +229,7 @@ describe('dashboard memory usefulness stats', () => {
       'memory-usefulness-score': new TestElement(),
       'memory-usefulness-summary': new TestElement(),
       'memory-usefulness-breakdown': new TestElement(),
+      'memory-usefulness-diagnostics': new TestElement(),
     };
     const hooks = loadOverviewWithElements(elements);
 
@@ -229,6 +242,15 @@ describe('dashboard memory usefulness stats', () => {
         { key: 'memoryHitRate', label: 'Memory hit rate', value: 0.3333, available: true },
         { key: 'retrievalUsageRate', label: 'Retrieval usage rate', value: 0.6667, available: true },
       ],
+      diagnostics: [
+        {
+          key: 'low-memory-hit-rate',
+          severity: 'warn',
+          title: 'Memory checks are missing many prompts',
+          detail: 'Only 1 of 3 prompts had an adherence check in this window.',
+          action: 'Broaden adherence triggers for continuation, write-intent, and project-specific prompts.',
+        },
+      ],
     };
 
     hooks.updateMemoryUsefulnessUI();
@@ -239,5 +261,8 @@ describe('dashboard memory usefulness stats', () => {
     expect(elements['memory-usefulness-summary'].innerHTML).toContain('<strong>3</strong> prompts');
     expect(elements['memory-usefulness-breakdown'].innerHTML).toContain('Useful recall rate');
     expect(elements['memory-usefulness-breakdown'].innerHTML).toContain('75.0%');
+    expect(elements['memory-usefulness-diagnostics'].innerHTML).toContain('Top improvement actions');
+    expect(elements['memory-usefulness-diagnostics'].innerHTML).toContain('Memory checks are missing many prompts');
+    expect(elements['memory-usefulness-diagnostics'].innerHTML).toContain('Broaden adherence triggers');
   });
 });
