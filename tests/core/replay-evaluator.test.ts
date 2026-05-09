@@ -342,6 +342,9 @@ describe('replay fixture evaluator', () => {
     expect(packageJson.scripts?.['benchmark:replay:promote-review']).toBe(
       'tsx scripts/promote-retrieval-review-queue.ts'
     );
+    expect(packageJson.scripts?.['benchmark:replay:validate-promotion']).toBe(
+      'tsx scripts/validate-replay-promotion-candidates.ts'
+    );
     expect(serialized).not.toMatch(/\/Users\//);
     expect(serialized).not.toMatch(/PRIVATE_|SECRET|TOKEN|PASSWORD/i);
   });
