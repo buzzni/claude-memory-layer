@@ -160,6 +160,14 @@ type RetrievalTraceLike = {
   createdAt?: Date | string;
 };
 
+type QueryRewriteKind = 'none' | 'follow-up-context' | 'intent-rewrite';
+
+function normalizeQueryRewriteKind(value?: string | null): QueryRewriteKind {
+  const normalized = (value || '').trim().toLowerCase();
+  if (normalized === 'follow-up-context' || normalized === 'intent-rewrite') return normalized;
+  return 'none';
+}
+
 function normalizeMetric(value: unknown): number {
   const numberValue = Number(value || 0);
   if (!Number.isFinite(numberValue)) return 0;
@@ -176,8 +184,7 @@ function getTimestampMs(value: Date | string | undefined): number {
 }
 
 function isRewrittenRetrievalTrace(trace: RetrievalTraceLike): boolean {
-  const kind = (trace.queryRewriteKind || '').trim();
-  return kind.length > 0 && kind !== 'none';
+  return normalizeQueryRewriteKind(trace.queryRewriteKind) !== 'none';
 }
 
 function getTraceSelectedCount(trace: RetrievalTraceLike): number {
@@ -863,24 +870,26 @@ statsRouter.get('/retrieval-traces', async (c) => {
 
     return c.json({
       stats: traceStats,
-      traces: traces.map((t) => ({
-        traceId: t.traceId,
-        sessionId: t.sessionId || null,
-        projectHash: t.projectHash || null,
-        queryText: t.queryText,
-        queryRewriteKind: t.queryRewriteKind || 'none',
-        rewritten: Boolean(t.queryRewriteKind && t.queryRewriteKind !== 'none'),
-        strategy: t.strategy || null,
-        candidateEventIds: t.candidateEventIds,
-        selectedEventIds: t.selectedEventIds,
-        candidateDetails: t.candidateDetails || [],
-        selectedDetails: t.selectedDetails || [],
-        candidateCount: t.candidateCount,
-        selectedCount: t.selectedCount,
-        confidence: t.confidence || null,
-        fallbackTrace: t.fallbackTrace,
-        createdAt: t.createdAt.toISOString()
-      }))
+      traces: traces.map((t) => {
+        const queryRewriteKind = normalizeQueryRewriteKind(t.queryRewriteKind);
+        return {
+          traceId: t.traceId,
+          sessionId: t.sessionId || null,
+          projectHash: t.projectHash || null,
+          queryRewriteKind,
+          rewritten: queryRewriteKind !== 'none',
+          strategy: t.strategy || null,
+          candidateEventIds: t.candidateEventIds,
+          selectedEventIds: t.selectedEventIds,
+          candidateDetails: t.candidateDetails || [],
+          selectedDetails: t.selectedDetails || [],
+          candidateCount: t.candidateCount,
+          selectedCount: t.selectedCount,
+          confidence: t.confidence || null,
+          fallbackTrace: t.fallbackTrace,
+          createdAt: t.createdAt.toISOString()
+        };
+      })
     });
   } catch (error) {
     return c.json({

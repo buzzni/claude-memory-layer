@@ -636,7 +636,7 @@ function updateRetrievalTraceUI() {
     return `
       <div class="shared-item" style="align-items:flex-start;">
         <div class="shared-info" style="align-items:flex-start; flex-direction:column; gap:4px;">
-          <span style="font-size:12px; color:var(--text-secondary);"><strong>Q:</strong> ${escapeHtml((t.queryText || '').slice(0, 120))}</span>
+          <span style="font-size:12px; color:var(--text-secondary);"><strong>Trace:</strong> ${escapeHtml((t.traceId || '').slice(0, 12)) || '-'}</span>
           <span style="font-size:11px; color:var(--text-muted);">${ts} · strategy=${escapeHtml(t.strategy || 'auto')} · conf=${escapeHtml(confidence)} ${rewriteBadge}</span>
           <span style="font-size:11px; color:var(--text-muted);">selected IDs: ${selectedIdsHtml}</span>
           <span style="font-size:11px; color:var(--text-muted);">candidates: ${candidateDetails.map((d) => `<span class=\"event-type-badge\" style=\"cursor:pointer;\" onclick=\"openDetailModal('${d.eventId}')\">${escapeHtml((d.eventId || '').slice(0, 8))}...</span>`).join(' ') || '-'}</span>

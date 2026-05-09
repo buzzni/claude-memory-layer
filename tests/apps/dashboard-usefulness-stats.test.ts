@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => {
     getRecentEvents: vi.fn(),
     getHelpfulnessStats: vi.fn(),
     getRecentRetrievalTraces: vi.fn(),
+    getRetrievalTraceStats: vi.fn(),
   };
 
   return {
@@ -140,6 +141,20 @@ describe('dashboard memory usefulness stats', () => {
       },
       { traceId: 'old-trace', rawQueryText: 'old', queryText: 'old', queryRewriteKind: 'none', candidateCount: 10, selectedCount: 10, candidateEventIds: [], selectedEventIds: [], candidateDetails: [], selectedDetails: [], fallbackTrace: [], createdAt: new Date('2026-04-01T00:00:00.000Z') },
     ]);
+    mocks.service.getRetrievalTraceStats.mockReset().mockResolvedValue({
+      totalQueries: 2,
+      avgCandidateCount: 4,
+      avgSelectedCount: 1,
+      selectionRate: 0.25,
+      rewrittenQueries: 1,
+      rewriteRate: 0.5,
+      rewrittenQueriesWithSelection: 1,
+      rawQueriesWithSelection: 0,
+      rewrittenSelectionRate: 1,
+      rawSelectionRate: 0,
+      avgSelectedCountForRewrittenQueries: 2,
+      avgSelectedCountForRawQueries: 0,
+    });
     mocks.getServiceFromQuery.mockClear();
     mocks.getLightweightServiceFromQuery.mockClear();
   });
@@ -259,6 +274,64 @@ describe('dashboard memory usefulness stats', () => {
     expect(JSON.stringify(body)).not.toContain('/Users/example/private-store');
     expect(errorSpy).toHaveBeenCalled();
     errorSpy.mockRestore();
+  });
+
+  it('does not serialize raw query text and normalizes rewrite kind in retrieval trace API', async () => {
+    mocks.service.getRecentRetrievalTraces.mockReset().mockResolvedValue([
+      {
+        traceId: 'trace-private',
+        rawQueryText: 'PRIVATE_RAW_PROMPT_SHOULD_NOT_LEAK',
+        queryText: 'PRIVATE_EFFECTIVE_QUERY_SHOULD_NOT_LEAK',
+        queryRewriteKind: ' surprise-kind ',
+        strategy: 'hybrid',
+        candidateCount: 1,
+        selectedCount: 0,
+        candidateEventIds: ['candidate-1'],
+        selectedEventIds: [],
+        candidateDetails: [],
+        selectedDetails: [],
+        fallbackTrace: [],
+        createdAt: new Date('2026-05-08T10:10:00.000Z')
+      },
+      {
+        traceId: 'trace-rewritten',
+        rawQueryText: 'PRIVATE_REWRITE_RAW_SHOULD_NOT_LEAK',
+        queryText: 'PRIVATE_REWRITE_EFFECTIVE_QUERY_SHOULD_NOT_LEAK',
+        queryRewriteKind: ' INTENT-REWRITE ',
+        strategy: 'deep',
+        candidateCount: 2,
+        selectedCount: 1,
+        candidateEventIds: ['candidate-2', 'candidate-3'],
+        selectedEventIds: ['candidate-2'],
+        candidateDetails: [],
+        selectedDetails: [],
+        fallbackTrace: [],
+        createdAt: new Date('2026-05-08T10:20:00.000Z')
+      }
+    ]);
+
+    const res = await createApp().request('/api/stats/retrieval-traces?limit=10');
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.traces[0]).toMatchObject({
+      traceId: 'trace-private',
+      queryRewriteKind: 'none',
+      rewritten: false,
+    });
+    expect(body.traces[1]).toMatchObject({
+      traceId: 'trace-rewritten',
+      queryRewriteKind: 'intent-rewrite',
+      rewritten: true,
+    });
+    expect(body.traces[0]).not.toHaveProperty('rawQueryText');
+    expect(body.traces[0]).not.toHaveProperty('queryText');
+    expect(body.traces[1]).not.toHaveProperty('rawQueryText');
+    expect(body.traces[1]).not.toHaveProperty('queryText');
+    expect(JSON.stringify(body)).not.toContain('PRIVATE_RAW_PROMPT_SHOULD_NOT_LEAK');
+    expect(JSON.stringify(body)).not.toContain('PRIVATE_EFFECTIVE_QUERY_SHOULD_NOT_LEAK');
+    expect(JSON.stringify(body)).not.toContain('PRIVATE_REWRITE_RAW_SHOULD_NOT_LEAK');
+    expect(JSON.stringify(body)).not.toContain('PRIVATE_REWRITE_EFFECTIVE_QUERY_SHOULD_NOT_LEAK');
   });
 
   it('renders the usefulness score and component percentages in the overview dashboard', () => {

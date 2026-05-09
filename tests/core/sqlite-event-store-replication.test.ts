@@ -186,6 +186,47 @@ describe('SQLiteEventStore replication helpers', () => {
     });
   });
 
+  it('normalizes malformed query rewrite kinds before returning trace stats', async () => {
+    await storeA.recordRetrievalTrace({
+      sessionId: 'normalize-session',
+      queryText: 'trimmed none query',
+      queryRewriteKind: ' none ',
+      candidateEventIds: ['candidate-1'],
+      selectedEventIds: ['candidate-1']
+    });
+    await storeA.recordRetrievalTrace({
+      sessionId: 'normalize-session',
+      queryText: 'unknown rewrite query',
+      queryRewriteKind: 'surprise-kind',
+      candidateEventIds: ['candidate-2'],
+      selectedEventIds: ['candidate-2']
+    });
+    await storeA.recordRetrievalTrace({
+      sessionId: 'normalize-session',
+      rawQueryText: '계속',
+      queryText: 'expanded follow up query',
+      queryRewriteKind: ' INTENT-REWRITE ',
+      candidateEventIds: ['candidate-3'],
+      selectedEventIds: ['candidate-3']
+    });
+
+    const traces = await storeA.getRecentRetrievalTraces(3);
+    expect(traces.map((trace) => trace.queryRewriteKind).sort()).toEqual([
+      'intent-rewrite',
+      'none',
+      'none'
+    ]);
+    await expect(storeA.getRetrievalTraceStats()).resolves.toMatchObject({
+      totalQueries: 3,
+      rewrittenQueries: 1,
+      rewriteRate: 1 / 3,
+      rewrittenQueriesWithSelection: 1,
+      rawQueriesWithSelection: 2,
+      rewrittenSelectionRate: 1,
+      rawSelectionRate: 1,
+    });
+  });
+
   it('filters helpfulness statistics by the requested time window', async () => {
     await storeA.recordRetrieval('old-event', 'old-session', 0.2, 'old retrieval query');
     await storeA.recordRetrieval('new-event', 'new-session', 0.8, 'new retrieval query');

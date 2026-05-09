@@ -30,6 +30,16 @@ export interface SQLiteEventStoreOptions extends SQLiteOptions {
   markdownMirrorRoot?: string;
 }
 
+type QueryRewriteKind = 'none' | 'follow-up-context' | 'intent-rewrite';
+
+function normalizeQueryRewriteKind(value?: string | null): QueryRewriteKind {
+  const normalized = (value || '').trim().toLowerCase();
+  if (normalized === 'follow-up-context' || normalized === 'intent-rewrite') return normalized;
+  return 'none';
+}
+
+const REWRITTEN_QUERY_REWRITE_KIND_SQL = `LOWER(TRIM(COALESCE(query_rewrite_kind, 'none'))) IN ('follow-up-context', 'intent-rewrite')`;
+
 export class SQLiteEventStore {
   private db: SQLiteDatabase;
   private initialized = false;
@@ -1522,6 +1532,7 @@ export class SQLiteEventStore {
     await this.initialize();
 
     const traceId = randomUUID();
+    const queryRewriteKind = normalizeQueryRewriteKind(input.queryRewriteKind);
     sqliteRun(
       this.db,
       `INSERT INTO retrieval_traces (
@@ -1535,7 +1546,7 @@ export class SQLiteEventStore {
         input.projectHash || null,
         input.queryText,
         input.rawQueryText || null,
-        input.queryRewriteKind || null,
+        queryRewriteKind,
         input.strategy || null,
         JSON.stringify(input.candidateEventIds || []),
         JSON.stringify(input.selectedEventIds || []),
@@ -1594,7 +1605,7 @@ export class SQLiteEventStore {
         projectHash: (row.project_hash as string) || undefined,
         queryText: row.query_text as string,
         rawQueryText: (row.raw_query_text as string) || undefined,
-        queryRewriteKind: (row.query_rewrite_kind as string) || undefined,
+        queryRewriteKind: normalizeQueryRewriteKind(row.query_rewrite_kind as string | null),
         strategy: (row.strategy as string) || undefined,
         candidateEventIds: row.candidate_event_ids ? JSON.parse(row.candidate_event_ids as string) : [],
         selectedEventIds: row.selected_event_ids ? JSON.parse(row.selected_event_ids as string) : [],
@@ -1635,11 +1646,11 @@ export class SQLiteEventStore {
           COUNT(*) as total_queries,
           AVG(candidate_count) as avg_candidate_count,
           AVG(selected_count) as avg_selected_count,
-          SUM(CASE WHEN query_rewrite_kind IS NOT NULL AND query_rewrite_kind != 'none' THEN 1 ELSE 0 END) as rewritten_queries,
-          SUM(CASE WHEN query_rewrite_kind IS NOT NULL AND query_rewrite_kind != 'none' AND selected_count > 0 THEN 1 ELSE 0 END) as rewritten_queries_with_selection,
-          SUM(CASE WHEN (query_rewrite_kind IS NULL OR query_rewrite_kind = 'none') AND selected_count > 0 THEN 1 ELSE 0 END) as raw_queries_with_selection,
-          AVG(CASE WHEN query_rewrite_kind IS NOT NULL AND query_rewrite_kind != 'none' THEN selected_count END) as avg_selected_count_for_rewritten_queries,
-          AVG(CASE WHEN query_rewrite_kind IS NULL OR query_rewrite_kind = 'none' THEN selected_count END) as avg_selected_count_for_raw_queries,
+          SUM(CASE WHEN ${REWRITTEN_QUERY_REWRITE_KIND_SQL} THEN 1 ELSE 0 END) as rewritten_queries,
+          SUM(CASE WHEN ${REWRITTEN_QUERY_REWRITE_KIND_SQL} AND selected_count > 0 THEN 1 ELSE 0 END) as rewritten_queries_with_selection,
+          SUM(CASE WHEN NOT (${REWRITTEN_QUERY_REWRITE_KIND_SQL}) AND selected_count > 0 THEN 1 ELSE 0 END) as raw_queries_with_selection,
+          AVG(CASE WHEN ${REWRITTEN_QUERY_REWRITE_KIND_SQL} THEN selected_count END) as avg_selected_count_for_rewritten_queries,
+          AVG(CASE WHEN NOT (${REWRITTEN_QUERY_REWRITE_KIND_SQL}) THEN selected_count END) as avg_selected_count_for_raw_queries,
           CASE
             WHEN SUM(candidate_count) > 0 THEN (SUM(selected_count) * 1.0 / SUM(candidate_count))
             ELSE 0
