@@ -30,7 +30,8 @@
     "ops:health": "npm run ops:sync-gap:report && npm run ops:sync-gap:heal && npm run ops:review:resolve",
     "ops:projects:clean-unknown": "node scripts/delete-unknown-projects.js",
     "benchmark:replay": "tsx scripts/replay-retrieval-benchmark.ts",
-    "eval:retrieval-replay": "tsx scripts/replay-retrieval-benchmark.ts --fixture benchmarks/replay/golden-memory-usefulness-v1.json --format markdown --no-per-query",
+    "eval:retrieval-replay": "tsx scripts/replay-retrieval-benchmark.ts --fixture benchmarks/replay/golden-memory-usefulness-v1.json --format markdown --no-per-query --min-query-yield 1 --min-no-match-accuracy 1 --max-forbidden-hits 0 --max-failed-queries 0",
+    "eval:retrieval-replay:report": "tsx scripts/replay-retrieval-benchmark.ts --fixture benchmarks/replay/golden-memory-usefulness-v1.json --format markdown --no-per-query",
     "benchmark:qrels": "tsx scripts/generate-session-qrels.ts",
     "postinstall": "node scripts/postinstall-embedding-backend.cjs"
   },

@@ -334,6 +334,9 @@ describe('replay fixture evaluator', () => {
       'cross-project-contamination'
     ]));
     expect(packageJson.scripts?.['eval:retrieval-replay']).toBe(
+      'tsx scripts/replay-retrieval-benchmark.ts --fixture benchmarks/replay/golden-memory-usefulness-v1.json --format markdown --no-per-query --min-query-yield 1 --min-no-match-accuracy 1 --max-forbidden-hits 0 --max-failed-queries 0'
+    );
+    expect(packageJson.scripts?.['eval:retrieval-replay:report']).toBe(
       'tsx scripts/replay-retrieval-benchmark.ts --fixture benchmarks/replay/golden-memory-usefulness-v1.json --format markdown --no-per-query'
     );
     expect(serialized).not.toMatch(/\/Users\//);
