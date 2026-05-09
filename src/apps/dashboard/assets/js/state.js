@@ -13,6 +13,7 @@ const state = {
   helpfulness: null,
   memoryUsefulness: null,
   retrievalTraces: null,
+  retrievalReviewQueue: null,
   adherenceSummary: null,
   adherenceWindow: '24h',
   userPromptSearchQuery: '',

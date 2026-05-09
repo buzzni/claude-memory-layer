@@ -81,12 +81,13 @@ function loadOverviewWithElements(elements: Record<string, TestElement>) {
   };
 
   vm.runInNewContext(
-    `${source}\n;globalThis.__dashboardTestHooks = { state, updateMemoryUsefulnessUI };`,
+    `${source}\n;globalThis.__dashboardTestHooks = { state, updateMemoryUsefulnessUI, updateRetrievalTraceUI };`,
     context
   );
   return (context as unknown as { __dashboardTestHooks: {
     state: Record<string, any>;
     updateMemoryUsefulnessUI: () => void;
+    updateRetrievalTraceUI: () => void;
   }}).__dashboardTestHooks;
 }
 
@@ -332,6 +333,197 @@ describe('dashboard memory usefulness stats', () => {
     expect(JSON.stringify(body)).not.toContain('PRIVATE_EFFECTIVE_QUERY_SHOULD_NOT_LEAK');
     expect(JSON.stringify(body)).not.toContain('PRIVATE_REWRITE_RAW_SHOULD_NOT_LEAK');
     expect(JSON.stringify(body)).not.toContain('PRIVATE_REWRITE_EFFECTIVE_QUERY_SHOULD_NOT_LEAK');
+  });
+
+  it('returns a privacy-safe bad retrieval review queue with prioritized failure reasons', async () => {
+    mocks.service.getRecentRetrievalTraces.mockReset().mockResolvedValue([
+      {
+        traceId: 'trace-rewrite-empty',
+        rawQueryText: 'PRIVATE_REWRITE_RAW_SHOULD_NOT_LEAK',
+        queryText: 'PRIVATE_REWRITE_EFFECTIVE_QUERY_SHOULD_NOT_LEAK',
+        queryRewriteKind: 'follow-up-context',
+        strategy: 'hybrid',
+        candidateCount: 4,
+        selectedCount: 0,
+        candidateEventIds: ['candidate-a', 'candidate-b'],
+        selectedEventIds: [],
+        candidateDetails: [{ eventId: 'candidate-a', score: 0.8, semanticScore: 0.7, lexicalScore: 0.1, recencyScore: 0.2 }],
+        selectedDetails: [],
+        fallbackTrace: [],
+        createdAt: new Date('2026-05-08T10:30:00.000Z')
+      },
+      {
+        traceId: 'trace-empty-candidates',
+        rawQueryText: 'PRIVATE_EMPTY_RAW_SHOULD_NOT_LEAK',
+        queryText: 'PRIVATE_EMPTY_EFFECTIVE_QUERY_SHOULD_NOT_LEAK',
+        queryRewriteKind: 'none',
+        strategy: 'auto',
+        candidateCount: 0,
+        selectedCount: 0,
+        candidateEventIds: [],
+        selectedEventIds: [],
+        candidateDetails: [],
+        selectedDetails: [],
+        fallbackTrace: [],
+        createdAt: new Date('2026-05-08T10:20:00.000Z')
+      },
+      {
+        traceId: 'trace-healthy',
+        rawQueryText: 'PRIVATE_HEALTHY_RAW_SHOULD_NOT_LEAK',
+        queryText: 'PRIVATE_HEALTHY_EFFECTIVE_QUERY_SHOULD_NOT_LEAK',
+        queryRewriteKind: 'intent-rewrite',
+        strategy: 'deep',
+        candidateCount: 5,
+        selectedCount: 2,
+        candidateEventIds: ['candidate-ok'],
+        selectedEventIds: ['candidate-ok'],
+        candidateDetails: [],
+        selectedDetails: [],
+        fallbackTrace: [],
+        createdAt: new Date('2026-05-08T10:10:00.000Z')
+      }
+    ]);
+
+    const res = await createApp().request('/api/stats/retrieval-review-queue?limit=2');
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.summary).toMatchObject({
+      totalTraces: 3,
+      reviewItems: 2,
+      candidateNoSelection: 0,
+      emptyCandidateSet: 1,
+      rewrittenNoSelection: 1,
+    });
+    expect(body.items).toHaveLength(2);
+    expect(body.items[0]).toMatchObject({
+      traceId: 'trace-rewrite-empty',
+      reason: 'rewritten-query-no-selection',
+      severity: 'warn',
+      queryRewriteKind: 'follow-up-context',
+      candidateCount: 4,
+      selectedCount: 0,
+      rewritten: true,
+    });
+    expect(body.items[0].title).toContain('Rewritten query selected no memories');
+    expect(body.items[0].action).toContain('rerank');
+    expect(body.items[1]).toMatchObject({
+      traceId: 'trace-empty-candidates',
+      reason: 'empty-candidate-set',
+      severity: 'info',
+      queryRewriteKind: 'none',
+      candidateCount: 0,
+      selectedCount: 0,
+      rewritten: false,
+    });
+    expect(body.items[0]).not.toHaveProperty('rawQueryText');
+    expect(body.items[0]).not.toHaveProperty('queryText');
+    expect(JSON.stringify(body)).not.toContain('PRIVATE_REWRITE_RAW_SHOULD_NOT_LEAK');
+    expect(JSON.stringify(body)).not.toContain('PRIVATE_REWRITE_EFFECTIVE_QUERY_SHOULD_NOT_LEAK');
+    expect(JSON.stringify(body)).not.toContain('PRIVATE_EMPTY_RAW_SHOULD_NOT_LEAK');
+    expect(JSON.stringify(body)).not.toContain('PRIVATE_EMPTY_EFFECTIVE_QUERY_SHOULD_NOT_LEAK');
+    expect(JSON.stringify(body)).not.toContain('PRIVATE_HEALTHY_RAW_SHOULD_NOT_LEAK');
+    expect(JSON.stringify(body)).not.toContain('PRIVATE_HEALTHY_EFFECTIVE_QUERY_SHOULD_NOT_LEAK');
+  });
+
+  it('returns a generic error when the retrieval review queue fails', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    mocks.service.getRecentRetrievalTraces.mockReset().mockRejectedValue(new Error('/Users/private/retrieval-store PRIVATE_EXCEPTION_SHOULD_NOT_LEAK'));
+
+    const res = await createApp().request('/api/stats/retrieval-review-queue?limit=2');
+    const body = await res.json();
+
+    expect(res.status).toBe(500);
+    expect(body).toMatchObject({
+      summary: {
+        totalTraces: 0,
+        reviewItems: 0,
+        returnedItems: 0,
+        candidateNoSelection: 0,
+        emptyCandidateSet: 0,
+        rewrittenNoSelection: 0,
+        lowSelectionRate: 0,
+      },
+      items: [],
+      error: 'Unable to build retrieval review queue',
+    });
+    expect(JSON.stringify(body)).not.toContain('/Users/private/retrieval-store');
+    expect(JSON.stringify(body)).not.toContain('PRIVATE_EXCEPTION_SHOULD_NOT_LEAK');
+    expect(errorSpy).toHaveBeenCalled();
+    const logged = JSON.stringify(errorSpy.mock.calls);
+    expect(logged).not.toContain('/Users/private/retrieval-store');
+    expect(logged).not.toContain('PRIVATE_EXCEPTION_SHOULD_NOT_LEAK');
+    errorSpy.mockRestore();
+  });
+
+  it('renders a privacy-safe retrieval review queue in the overview dashboard', () => {
+    const elements = {
+      'retrieval-trace-summary': new TestElement(),
+      'retrieval-trace-list': new TestElement(),
+      'retrieval-review-summary': new TestElement(),
+      'retrieval-review-list': new TestElement(),
+    };
+    const hooks = loadOverviewWithElements(elements);
+    hooks.state.retrievalTraces = {
+      stats: { totalQueries: 2, avgCandidateCount: 4, avgSelectedCount: 1, selectionRate: 0.25, rewriteRate: 0.5 },
+      traces: [],
+    };
+    hooks.state.retrievalReviewQueue = {
+      summary: { reviewItems: 1, rewrittenNoSelection: 1, candidateNoSelection: 1, emptyCandidateSet: 0 },
+      items: [
+        {
+          traceId: 'trace-rewrite-empty',
+          reason: 'rewritten-query-no-selection',
+          severity: 'warn',
+          title: 'Rewritten query selected no memories',
+          detail: '4 candidates were found but no memory was selected.',
+          action: 'Review rerank thresholds.',
+          queryRewriteKind: 'follow-up-context',
+          candidateCount: 4,
+          selectedCount: 0,
+          strategy: 'hybrid',
+          createdAt: '2026-05-08T10:30:00.000Z',
+          rawQueryText: 'PRIVATE_UI_RAW_SHOULD_NOT_LEAK',
+          queryText: 'PRIVATE_UI_EFFECTIVE_QUERY_SHOULD_NOT_LEAK',
+        }
+      ],
+    };
+
+    hooks.updateRetrievalTraceUI();
+
+    expect(elements['retrieval-review-summary'].innerHTML).toContain('<strong>1</strong> review items');
+    expect(elements['retrieval-review-summary'].innerHTML).toContain('rewritten no-selection');
+    expect(elements['retrieval-review-list'].innerHTML).toContain('trace-rewrite');
+    expect(elements['retrieval-review-list'].innerHTML).toContain('Rewritten query selected no memories');
+    expect(elements['retrieval-review-list'].innerHTML).toContain('Review rerank thresholds');
+    expect(elements['retrieval-review-list'].innerHTML).not.toContain('PRIVATE_UI_RAW_SHOULD_NOT_LEAK');
+    expect(elements['retrieval-review-list'].innerHTML).not.toContain('PRIVATE_UI_EFFECTIVE_QUERY_SHOULD_NOT_LEAK');
+  });
+
+  it('renders a generic retrieval review queue error state without leaking error text', () => {
+    const elements = {
+      'retrieval-trace-summary': new TestElement(),
+      'retrieval-trace-list': new TestElement(),
+      'retrieval-review-summary': new TestElement(),
+      'retrieval-review-list': new TestElement(),
+    };
+    const hooks = loadOverviewWithElements(elements);
+    hooks.state.retrievalTraces = {
+      stats: { totalQueries: 1, avgCandidateCount: 0, avgSelectedCount: 0, selectionRate: 0, rewriteRate: 0 },
+      traces: [],
+    };
+    hooks.state.retrievalReviewQueue = {
+      error: '/Users/private/retrieval-store PRIVATE_DASHBOARD_ERROR_SHOULD_NOT_LEAK',
+      summary: { reviewItems: 0, rewrittenNoSelection: 0, candidateNoSelection: 0, emptyCandidateSet: 0 },
+      items: [],
+    };
+
+    hooks.updateRetrievalTraceUI();
+
+    expect(elements['retrieval-review-summary'].innerHTML).toContain('temporarily unavailable');
+    expect(elements['retrieval-review-list'].innerHTML).toContain('Unable to load bad retrieval cases');
+    expect(elements['retrieval-review-summary'].innerHTML).not.toContain('/Users/private/retrieval-store');
+    expect(elements['retrieval-review-list'].innerHTML).not.toContain('PRIVATE_DASHBOARD_ERROR_SHOULD_NOT_LEAK');
   });
 
   it('renders the usefulness score and component percentages in the overview dashboard', () => {

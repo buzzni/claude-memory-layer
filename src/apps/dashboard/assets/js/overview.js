@@ -19,13 +19,14 @@ async function refreshData() {
   const kpiWindowAtStart = state.kpiWindow;
 
   try {
-    const [stats, shared, mostAccessed, helpfulness, memoryUsefulness, retrievalTraces, adherenceSummary] = await Promise.all([
+    const [stats, shared, mostAccessed, helpfulness, memoryUsefulness, retrievalTraces, retrievalReviewQueue, adherenceSummary] = await Promise.all([
       fetch(apiUrl(`${API_BASE}/stats`)).then(r => r.json()).catch(() => null),
       fetch(apiUrl(`${API_BASE}/stats/shared`)).then(r => r.json()).catch(() => null),
       fetch(apiUrl(`${API_BASE}/stats/most-accessed`, { limit: 10 })).then(r => r.json()).catch(() => null),
       fetch(apiUrl(`${API_BASE}/stats/helpfulness`, { limit: 5 })).then(r => r.json()).catch(() => null),
       fetch(apiUrl(`${API_BASE}/stats/usefulness`, { window: state.kpiWindow })).then(r => r.json()).catch(() => null),
       fetch(apiUrl(`${API_BASE}/stats/retrieval-traces`, { limit: 20 })).then(r => r.json()).catch(() => null),
+      fetch(apiUrl(`${API_BASE}/stats/retrieval-review-queue`, { limit: 10 })).then(r => r.json()).catch(() => null),
       fetchAdherenceSummary().catch(() => null)
     ]);
 
@@ -43,6 +44,7 @@ async function refreshData() {
     state.helpfulness = helpfulness;
     state.memoryUsefulness = memoryUsefulness;
     state.retrievalTraces = retrievalTraces;
+    state.retrievalReviewQueue = retrievalReviewQueue;
     state.adherenceSummary = adherenceSummary;
 
     await loadKpiData();
@@ -584,7 +586,68 @@ function updateMostHelpfulList() {
 }
 
 
+function updateRetrievalReviewQueueUI() {
+  const summaryEl = document.getElementById('retrieval-review-summary');
+  const listEl = document.getElementById('retrieval-review-list');
+  if (!summaryEl || !listEl) return;
+
+  const payload = state.retrievalReviewQueue;
+  if (payload?.error) {
+    summaryEl.innerHTML = '<span style="color:var(--warning, #FEB019);">Retrieval review queue is temporarily unavailable.</span>';
+    listEl.innerHTML = '<div style="padding:12px; text-align:center; color:var(--text-muted); font-size:13px;">Unable to load bad retrieval cases right now.</div>';
+    return;
+  }
+  const summary = payload?.summary;
+  const items = payload?.items || [];
+
+  if (!summary || !Number.isFinite(summary.reviewItems) || summary.reviewItems === 0) {
+    summaryEl.innerHTML = '<span style="color:var(--text-muted);">No retrieval traces need review.</span>';
+    listEl.innerHTML = '<div style="padding:12px; text-align:center; color:var(--text-muted); font-size:13px;">No bad retrieval cases in the current scan</div>';
+    return;
+  }
+
+  summaryEl.innerHTML = `
+    <div style="display:flex; gap:14px; flex-wrap:wrap; font-size:12px;">
+      <span><strong>${formatNumber(summary.reviewItems)}</strong> review items</span>
+      <span><strong>${formatNumber(summary.rewrittenNoSelection || 0)}</strong> rewritten no-selection</span>
+      <span><strong>${formatNumber(summary.candidateNoSelection || 0)}</strong> candidate no-selection</span>
+      <span><strong>${formatNumber(summary.emptyCandidateSet || 0)}</strong> empty candidates</span>
+    </div>
+  `;
+
+  listEl.innerHTML = items.slice(0, 10).map((item) => {
+    const ts = item.createdAt ? new Date(item.createdAt).toLocaleString() : '-';
+    const severityColor = item.severity === 'warn' ? 'var(--warning, #FEB019)' : 'var(--accent-primary)';
+    const rewriteKind = item.queryRewriteKind || (item.rewritten ? 'rewritten' : 'none');
+    const rewriteBadge = rewriteKind && rewriteKind !== 'none'
+      ? `<span class="event-type-badge" title="Safe rewrite classification">${escapeHtml(rewriteKind)}</span>`
+      : '';
+    const candidateIds = (item.candidateEventIds || []).slice(0, 3)
+      .map((id) => `<span class="event-type-badge">${escapeHtml((id || '').slice(0, 8))}...</span>`)
+      .join(' ');
+    const selectedIds = (item.selectedEventIds || []).slice(0, 3)
+      .map((id) => `<span class="event-type-badge">${escapeHtml((id || '').slice(0, 8))}...</span>`)
+      .join(' ');
+    return `
+      <div class="shared-item" style="align-items:flex-start; border-left:2px solid ${severityColor};">
+        <div class="shared-info" style="align-items:flex-start; flex-direction:column; gap:4px;">
+          <span style="font-size:12px; color:var(--text-secondary);"><strong>${escapeHtml(item.title || 'Retrieval trace needs review')}</strong></span>
+          <span style="font-size:11px; color:var(--text-muted);">Trace ${escapeHtml((item.traceId || '').slice(0, 18))} · ${ts} · reason=${escapeHtml(item.reason || 'unknown')} · strategy=${escapeHtml(item.strategy || 'auto')} ${rewriteBadge}</span>
+          <span style="font-size:11px; color:var(--text-muted);">${escapeHtml(item.detail || '')}</span>
+          <span style="font-size:11px; color:var(--text-secondary);"><strong>Action:</strong> ${escapeHtml(item.action || '')}</span>
+          <span style="font-size:11px; color:var(--text-muted);">candidates: ${candidateIds || '-'} · selected: ${selectedIds || '-'}</span>
+        </div>
+        <div style="display:flex; flex-direction:column; align-items:flex-end; gap:2px; min-width:68px;">
+          <span style="font-size:13px; font-weight:600; color:${severityColor};">${Number(item.selectedCount || 0)}/${Number(item.candidateCount || 0)}</span>
+          <span style="font-size:10px; color:var(--text-muted);">sel/cand</span>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
 function updateRetrievalTraceUI() {
+  updateRetrievalReviewQueueUI();
   const summaryEl = document.getElementById('retrieval-trace-summary');
   const listEl = document.getElementById('retrieval-trace-list');
   if (!summaryEl || !listEl) return;

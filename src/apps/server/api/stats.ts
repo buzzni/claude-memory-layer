@@ -152,10 +152,30 @@ type HelpfulnessStatsLike = {
 };
 
 type RetrievalTraceLike = {
+  traceId?: string;
+  sessionId?: string;
+  projectHash?: string;
+  strategy?: string;
+  confidence?: string;
   candidateCount?: number;
   selectedCount?: number;
   candidateEventIds?: string[];
   selectedEventIds?: string[];
+  candidateDetails?: Array<{
+    eventId?: string;
+    score?: number;
+    semanticScore?: number;
+    lexicalScore?: number;
+    recencyScore?: number;
+  }>;
+  selectedDetails?: Array<{
+    eventId?: string;
+    score?: number;
+    semanticScore?: number;
+    lexicalScore?: number;
+    recencyScore?: number;
+  }>;
+  fallbackTrace?: unknown[];
   queryRewriteKind?: string;
   createdAt?: Date | string;
 };
@@ -189,6 +209,144 @@ function isRewrittenRetrievalTrace(trace: RetrievalTraceLike): boolean {
 
 function getTraceSelectedCount(trace: RetrievalTraceLike): number {
   return Number(trace.selectedCount ?? trace.selectedEventIds?.length ?? 0);
+}
+
+function getTraceCandidateCount(trace: RetrievalTraceLike): number {
+  return Number(trace.candidateCount ?? trace.candidateEventIds?.length ?? trace.candidateDetails?.length ?? 0);
+}
+
+type RetrievalReviewReason =
+  | 'rewritten-query-no-selection'
+  | 'candidate-no-selection'
+  | 'empty-candidate-set'
+  | 'low-selection-rate';
+
+type RetrievalReviewItem = {
+  traceId: string;
+  reason: RetrievalReviewReason;
+  severity: 'warn' | 'info';
+  priority: number;
+  title: string;
+  detail: string;
+  action: string;
+  queryRewriteKind: QueryRewriteKind;
+  rewritten: boolean;
+  strategy: string | null;
+  candidateCount: number;
+  selectedCount: number;
+  candidateEventIds: string[];
+  selectedEventIds: string[];
+  candidateDetails: NonNullable<RetrievalTraceLike['candidateDetails']>;
+  selectedDetails: NonNullable<RetrievalTraceLike['selectedDetails']>;
+  createdAt: string;
+};
+
+function makeRetrievalReviewItem(trace: RetrievalTraceLike): RetrievalReviewItem | null {
+  const candidateCount = getTraceCandidateCount(trace);
+  const selectedCount = getTraceSelectedCount(trace);
+  const queryRewriteKind = normalizeQueryRewriteKind(trace.queryRewriteKind);
+  const rewritten = queryRewriteKind !== 'none';
+  const createdAtMs = getTimestampMs(trace.createdAt);
+  const createdAt = createdAtMs > 0 ? new Date(createdAtMs).toISOString() : new Date(0).toISOString();
+
+  let reason: RetrievalReviewReason | null = null;
+  let severity: 'warn' | 'info' = 'info';
+  let priority = 0;
+  let title = '';
+  let detail = '';
+  let action = '';
+
+  if (candidateCount > 0 && selectedCount === 0 && rewritten) {
+    reason = 'rewritten-query-no-selection';
+    severity = 'warn';
+    priority = 100;
+    title = 'Rewritten query selected no memories';
+    detail = `${candidateCount} candidates were found after query rewrite, but no memory was selected.`;
+    action = 'Review rewrite wording, rerank scores, and final selection thresholds for this trace.';
+  } else if (candidateCount > 0 && selectedCount === 0) {
+    reason = 'candidate-no-selection';
+    severity = 'warn';
+    priority = 90;
+    title = 'Candidates found but nothing selected';
+    detail = `${candidateCount} candidates were available, but the final selection injected no memory.`;
+    action = 'Review rerank thresholds and candidate filtering; consider overfetching before final selection.';
+  } else if (candidateCount === 0) {
+    reason = 'empty-candidate-set';
+    severity = 'info';
+    priority = 70;
+    title = 'Retrieval found no candidates';
+    detail = 'The retrieval pipeline returned no candidate memories for this trace.';
+    action = 'Check trigger/query rewrite coverage and whether the project has indexed memories for this topic.';
+  } else if (candidateCount >= 10 && safeRatio(selectedCount, candidateCount) < 0.15) {
+    reason = 'low-selection-rate';
+    severity = 'info';
+    priority = 60;
+    title = 'Low selection ratio from many candidates';
+    detail = `${selectedCount} of ${candidateCount} candidates were selected.`;
+    action = 'Inspect score distribution and MMR/diversity settings before lowering thresholds.';
+  }
+
+  if (!reason) return null;
+
+  return {
+    traceId: trace.traceId || 'unknown-trace',
+    reason,
+    severity,
+    priority,
+    title,
+    detail,
+    action,
+    queryRewriteKind,
+    rewritten,
+    strategy: trace.strategy || null,
+    candidateCount,
+    selectedCount,
+    candidateEventIds: (trace.candidateEventIds || []).slice(0, 5),
+    selectedEventIds: (trace.selectedEventIds || []).slice(0, 5),
+    candidateDetails: (trace.candidateDetails || []).slice(0, 3).map((detail) => ({
+      eventId: detail.eventId,
+      score: detail.score,
+      semanticScore: detail.semanticScore,
+      lexicalScore: detail.lexicalScore,
+      recencyScore: detail.recencyScore,
+    })),
+    selectedDetails: (trace.selectedDetails || []).slice(0, 3).map((detail) => ({
+      eventId: detail.eventId,
+      score: detail.score,
+      semanticScore: detail.semanticScore,
+      lexicalScore: detail.lexicalScore,
+      recencyScore: detail.recencyScore,
+    })),
+    createdAt,
+  };
+}
+
+function buildRetrievalReviewQueue(traces: RetrievalTraceLike[], limit: number) {
+  const reviewItems = traces
+    .map(makeRetrievalReviewItem)
+    .filter((item): item is RetrievalReviewItem => item !== null)
+    .sort((a, b) => b.priority - a.priority || new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+  return {
+    summary: {
+      totalTraces: traces.length,
+      reviewItems: reviewItems.length,
+      returnedItems: Math.min(reviewItems.length, limit),
+      candidateNoSelection: reviewItems.filter((item) => item.reason === 'candidate-no-selection').length,
+      emptyCandidateSet: reviewItems.filter((item) => item.reason === 'empty-candidate-set').length,
+      rewrittenNoSelection: reviewItems.filter((item) => item.reason === 'rewritten-query-no-selection').length,
+      lowSelectionRate: reviewItems.filter((item) => item.reason === 'low-selection-rate').length,
+    },
+    items: reviewItems.slice(0, limit),
+  };
+}
+
+function parseStatsLimit(value: string | undefined, fallback: number, max: number): number {
+  if (!value) return fallback;
+  if (!/^\d+$/.test(value)) return fallback;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.min(parsed, max);
 }
 
 function usefulnessScoreLabel(score: number, confidence: number): 'excellent' | 'good' | 'watch' | 'low' | 'unknown' {
@@ -909,6 +1067,43 @@ statsRouter.get('/retrieval-traces', async (c) => {
       },
       traces: [],
       error: (error as Error).message
+    }, 500);
+  } finally {
+    await memoryService.shutdown();
+  }
+});
+
+// GET /api/stats/retrieval-review-queue - Prioritized privacy-safe retrieval traces that need review
+statsRouter.get('/retrieval-review-queue', async (c) => {
+  const limit = parseStatsLimit(c.req.query('limit'), 10, 50);
+  const scanLimit = parseStatsLimit(c.req.query('scanLimit'), 500, 5000);
+  const memoryService = getServiceFromQuery(c);
+
+  try {
+    await memoryService.initialize();
+    const traces = await memoryService.getRecentRetrievalTraces(scanLimit);
+    return c.json({
+      ...buildRetrievalReviewQueue(traces, limit),
+      limits: {
+        requestedLimit: limit,
+        scanLimit,
+        scannedTraces: traces.length,
+      }
+    });
+  } catch (error) {
+    console.error('Failed to build retrieval review queue');
+    return c.json({
+      summary: {
+        totalTraces: 0,
+        reviewItems: 0,
+        returnedItems: 0,
+        candidateNoSelection: 0,
+        emptyCandidateSet: 0,
+        rewrittenNoSelection: 0,
+        lowSelectionRate: 0,
+      },
+      items: [],
+      error: 'Unable to build retrieval review queue'
     }, 500);
   } finally {
     await memoryService.shutdown();
