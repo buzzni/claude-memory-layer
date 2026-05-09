@@ -41,7 +41,7 @@ const ADHERENCE_INTERVAL_TURNS = parseInt(process.env.CLAUDE_MEMORY_ADHERENCE_IN
 
 const ADHERENCE_STATE_DIR = path.join(os.homedir(), '.claude-code', 'memory');
 
-interface AdherenceState {
+export interface AdherenceState {
   sessionId: string;
   turnCount: number;
   lastCheckedTurn: number;
@@ -49,6 +49,8 @@ interface AdherenceState {
   lastReason?: string;
   updatedAt: string;
 }
+
+export type AdherenceDecision = { run: boolean; reason: string };
 
 /**
  * Determine if a prompt is worth storing as a memory.
@@ -131,6 +133,20 @@ function hasWriteIntent(prompt: string): boolean {
   return /(fix|refactor|implement|change|modify|edit|update|rewrite|patch|create|add|remove|delete|버그|수정|리팩터|구현|추가|삭제|개선)/i.test(prompt);
 }
 
+function hasContinuationIntent(prompt: string): boolean {
+  const normalized = prompt.trim().toLowerCase();
+  return /\b(continue|resume|next\s+(step|task|phase|item)|pick\s+up|follow[-\s]?up|carry\s+on)\b/i.test(normalized) ||
+    /(이어서|이어\s*서|계속|아까|지난번|방금|그거|다음\s*(단계|개발|작업|거|것)(\s*(진행|해줘|하자|가자|시작))?|다음\s*(진행|해줘|하자|가자|시작))/i.test(prompt);
+}
+
+function hasDecisionRecallIntent(prompt: string): boolean {
+  return /(what\s+did\s+we\s+decide|why\s+did\s+we|previous\s+decision|decision\s+we\s+made|remember\s+when|recall\s+the|전에\s*결정|결정한\s*(것|거|내용|옵션)|왜\s+.*했|기억|맥락|컨텍스트)/i.test(prompt);
+}
+
+function hasProjectCodeSignal(prompt: string): boolean {
+  return /((^|[\s`'"(])([\w.-]+\/)+[\w.-]+\.(ts|tsx|js|jsx|mjs|cjs|py|md|json|ya?ml|toml|sql|go|rs|java|kt|swift|css|html)\b|\b(src|tests?|packages?|apps?|scripts?)\/|\/Users\/|\b(PR|pull\s+request|issue|branch|commit|merge|rebase)\b\s*#?\d*|#\d+|\b(Traceback|AssertionError|TypeError|ReferenceError|SyntaxError|stack\s+trace|pytest|vitest|npm\s+test|build\s+failed|test\s+failed|failing\s+test)\b|스택\s*트레이스|테스트\s*(실패|에러|깨짐)|빌드\s*(실패|에러)|브랜치|파일명?)/i.test(prompt);
+}
+
 function tokenize(text: string): string[] {
   const stopwords = new Set(['the', 'and', 'for', 'with', 'that', 'this', 'from', 'have', 'what', 'when', 'where', 'how', 'why', '그리고', '그리고요', '이거', '그거', '해주세요', '해줘', '좀', '에서', '으로', '하는', '해']);
   return text
@@ -155,12 +171,33 @@ function isTopicShift(currentPrompt: string, lastPrompt: string): boolean {
   return similarity < 0.2;
 }
 
-function shouldRunAdherenceCheck(turnCount: number, prompt: string, state: AdherenceState): { run: boolean; reason: string } {
-  if (turnCount === 1) return { run: true, reason: 'first-turn' };
+export function shouldRunAdherenceCheck(turnCount: number, prompt: string, state: AdherenceState): AdherenceDecision {
   if (hasWriteIntent(prompt)) return { run: true, reason: 'write-intent' };
+  if (hasContinuationIntent(prompt)) return { run: true, reason: 'continuation-intent' };
+  if (hasDecisionRecallIntent(prompt)) return { run: true, reason: 'decision-recall' };
+  if (hasProjectCodeSignal(prompt)) return { run: true, reason: 'code-signal' };
+  if (turnCount === 1) return { run: true, reason: 'first-turn' };
   if (isTopicShift(prompt, state.lastPrompt)) return { run: true, reason: 'topic-shift' };
   if (turnCount - state.lastCheckedTurn >= ADHERENCE_INTERVAL_TURNS) return { run: true, reason: 'interval' };
   return { run: false, reason: 'skip' };
+}
+
+function isSlashCommandPrompt(prompt: string): boolean {
+  return /^\/[a-z][\w:-]*(?:\s|$)/i.test(prompt);
+}
+
+export function shouldRunMemorySearch(prompt: string, adherenceDecision: AdherenceDecision): boolean {
+  if (!adherenceDecision.run) return false;
+  const trimmed = prompt.trim();
+  if (isSlashCommandPrompt(trimmed)) return false;
+
+  const strongIntentReasons = new Set([
+    'write-intent',
+    'continuation-intent',
+    'decision-recall',
+    'code-signal'
+  ]);
+  return trimmed.length > 10 || strongIntentReasons.has(adherenceDecision.reason);
 }
 
 function logAdherenceDecision(sessionId: string, turn: number, run: boolean, reason: string): void {
@@ -215,9 +252,8 @@ export async function main(): Promise<void> {
     }
 
     // Search strategy: turn-1 always enforce adherence check,
-    // then adaptively enforce on write-intent/topic-shift/interval
-    const isSlashCommand = input.prompt.trimStart().startsWith('/');
-    if (ENABLE_SEARCH && !isSlashCommand && input.prompt.length > 10 && adherenceDecision.run) {
+    // then adaptively enforce on write-intent/continuation/decision/code/topic-shift/interval
+    if (ENABLE_SEARCH && shouldRunMemorySearch(input.prompt, adherenceDecision)) {
       const minScore = getDynamicMinScore(input.prompt);
       let mergedMemories: HookMemoryCandidate[] = [];
 
