@@ -12,6 +12,14 @@ export interface RetrievalTraceStats {
   avgCandidateCount: number;
   avgSelectedCount: number;
   selectionRate: number;
+  rewrittenQueries?: number;
+  rewriteRate?: number;
+  rewrittenQueriesWithSelection?: number;
+  rawQueriesWithSelection?: number;
+  rewrittenSelectionRate?: number;
+  rawSelectionRate?: number;
+  avgSelectedCountForRewrittenQueries?: number;
+  avgSelectedCountForRawQueries?: number;
 }
 
 export interface HelpfulnessStats {
@@ -44,6 +52,8 @@ export interface RetrievalTrace {
   sessionId?: string;
   projectHash?: string;
   queryText: string;
+  rawQueryText?: string;
+  queryRewriteKind?: string;
   strategy?: string;
   candidateEventIds: string[];
   selectedEventIds: string[];

@@ -143,6 +143,49 @@ describe('SQLiteEventStore replication helpers', () => {
     expect(trace.createdAt.toISOString()).toBe('2026-05-07T16:00:00.000Z');
   });
 
+  it('stores query rewrite telemetry and aggregates rewritten query yield', async () => {
+    await storeA.recordRetrievalTrace({
+      sessionId: 'rewrite-session',
+      projectHash: 'rewrite-project',
+      rawQueryText: '계속',
+      queryText: 'Previous user: implement retrieval\nCurrent user: 계속',
+      queryRewriteKind: 'follow-up-context',
+      candidateEventIds: ['candidate-1', 'candidate-2'],
+      selectedEventIds: ['candidate-1']
+    });
+    await storeA.recordRetrievalTrace({
+      sessionId: 'rewrite-session',
+      projectHash: 'rewrite-project',
+      rawQueryText: 'self contained query',
+      queryText: 'self contained query',
+      queryRewriteKind: 'none',
+      candidateEventIds: ['candidate-3'],
+      selectedEventIds: []
+    });
+
+    const traces = await storeA.getRecentRetrievalTraces(2);
+    const rewrittenTrace = traces.find((trace) => trace.queryRewriteKind === 'follow-up-context');
+    expect(rewrittenTrace).toMatchObject({
+      rawQueryText: '계속',
+      queryText: 'Previous user: implement retrieval\nCurrent user: 계속',
+      queryRewriteKind: 'follow-up-context',
+      selectedCount: 1,
+      candidateCount: 2
+    });
+
+    await expect(storeA.getRetrievalTraceStats()).resolves.toMatchObject({
+      totalQueries: 2,
+      rewrittenQueries: 1,
+      rewriteRate: 0.5,
+      rewrittenQueriesWithSelection: 1,
+      rawQueriesWithSelection: 0,
+      rewrittenSelectionRate: 1,
+      rawSelectionRate: 0,
+      avgSelectedCountForRewrittenQueries: 1,
+      avgSelectedCountForRawQueries: 0
+    });
+  });
+
   it('filters helpfulness statistics by the requested time window', async () => {
     await storeA.recordRetrieval('old-event', 'old-session', 0.2, 'old retrieval query');
     await storeA.recordRetrieval('new-event', 'new-session', 0.8, 'new retrieval query');

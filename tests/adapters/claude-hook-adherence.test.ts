@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildRetrievalQuery,
+  getRetrievalQueryRewriteKind,
   shouldRunMemorySearch,
   shouldRunAdherenceCheck,
   type AdherenceState,
@@ -134,5 +135,10 @@ describe('Claude user prompt adherence trigger heuristics', () => {
 
     expect(query).toContain('Previous assistant: ' + 'a'.repeat(500));
     expect(query).not.toContain('a'.repeat(700));
+  });
+
+  it('does not classify whitespace-only prompt normalization as query rewrite', () => {
+    expect(getRetrievalQueryRewriteKind('  상태 확인만 해줘  ', '상태 확인만 해줘')).toBe('none');
+    expect(getRetrievalQueryRewriteKind('그거 계속', 'Previous user: 이전\nCurrent user: 그거 계속')).toBe('follow-up-context');
   });
 });

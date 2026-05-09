@@ -81,6 +81,9 @@ export interface RetrievalResult {
     lexicalScore?: number;
     recencyScore?: number;
   }>;
+  rawQueryText?: string;
+  effectiveQueryText?: string;
+  queryRewriteKind?: string;
 }
 
 export interface MemoryWithContext {
@@ -279,7 +282,10 @@ export class Retriever {
         semanticScore: r.semanticScore,
         lexicalScore: r.lexicalScore,
         recencyScore: r.recencyScore,
-      }))
+      })),
+      rawQueryText: current.queryRewriteKind ? query : undefined,
+      effectiveQueryText: current.effectiveQueryText,
+      queryRewriteKind: current.queryRewriteKind
     };
   }
 
@@ -345,8 +351,16 @@ export class Retriever {
       projectHash?: string;
       allowedProjectHashes?: string[];
     }
-  ): Promise<{ results: SearchResult[]; candidateResults: SearchResult[]; matchResult: MatchResult }> {
+  ): Promise<{
+    results: SearchResult[];
+    candidateResults: SearchResult[];
+    matchResult: MatchResult;
+    effectiveQueryText?: string;
+    queryRewriteKind?: string;
+  }> {
     let rerankQuery = query;
+    let effectiveQueryText: string | undefined;
+    let queryRewriteKind: string | undefined;
     let initialResults = await this.searchByStrategy(query, {
       strategy: input.strategy,
       topK: input.topK,
@@ -356,8 +370,11 @@ export class Retriever {
 
     if (input.intentRewrite && input.strategy === 'deep' && this.queryRewriter) {
       const rewritten = (await this.queryRewriter(query))?.trim();
-      if (rewritten && rewritten !== query) {
-        rerankQuery = `${query} ${rewritten}`;
+      const normalizedQuery = query.trim();
+      if (rewritten && rewritten !== normalizedQuery) {
+        effectiveQueryText = `${normalizedQuery} ${rewritten}`.trim();
+        queryRewriteKind = 'intent-rewrite';
+        rerankQuery = effectiveQueryText;
         const rewrittenResults = await this.searchByStrategy(rewritten, {
           strategy: 'deep',
           topK: input.topK,
@@ -393,7 +410,7 @@ export class Retriever {
     const top = qualityFiltered.slice(0, input.topK);
     const matchResult = this.matcher.matchSearchResults(top, () => 0);
 
-    return { results: top, candidateResults: qualityFiltered, matchResult };
+    return { results: top, candidateResults: qualityFiltered, matchResult, effectiveQueryText, queryRewriteKind };
   }
 
   private applyQualityFilters(

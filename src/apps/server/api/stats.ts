@@ -156,6 +156,7 @@ type RetrievalTraceLike = {
   selectedCount?: number;
   candidateEventIds?: string[];
   selectedEventIds?: string[];
+  queryRewriteKind?: string;
   createdAt?: Date | string;
 };
 
@@ -172,6 +173,15 @@ function getTimestampMs(value: Date | string | undefined): number {
     return Number.isFinite(parsed) ? parsed : 0;
   }
   return 0;
+}
+
+function isRewrittenRetrievalTrace(trace: RetrievalTraceLike): boolean {
+  const kind = (trace.queryRewriteKind || '').trim();
+  return kind.length > 0 && kind !== 'none';
+}
+
+function getTraceSelectedCount(trace: RetrievalTraceLike): number {
+  return Number(trace.selectedCount ?? trace.selectedEventIds?.length ?? 0);
 }
 
 function usefulnessScoreLabel(score: number, confidence: number): 'excellent' | 'good' | 'watch' | 'low' | 'unknown' {
@@ -327,10 +337,24 @@ function computeMemoryUsefulnessSummary(
 
   const retrievalQueries = windowTraces.length;
   const candidateCounts = windowTraces.map((trace) => Number(trace.candidateCount ?? trace.candidateEventIds?.length ?? 0));
-  const selectedCounts = windowTraces.map((trace) => Number(trace.selectedCount ?? trace.selectedEventIds?.length ?? 0));
+  const selectedCounts = windowTraces.map((trace) => getTraceSelectedCount(trace));
   const totalCandidateCount = candidateCounts.reduce((sum, count) => sum + (Number.isFinite(count) ? count : 0), 0);
   const totalSelectedCount = selectedCounts.reduce((sum, count) => sum + (Number.isFinite(count) ? count : 0), 0);
   const queriesWithSelected = selectedCounts.filter((count) => Number.isFinite(count) && count > 0).length;
+  const rewrittenTraces = windowTraces.filter(isRewrittenRetrievalTrace);
+  const rawTraces = windowTraces.filter((trace) => !isRewrittenRetrievalTrace(trace));
+  const rewrittenQueries = rewrittenTraces.length;
+  const rawQueries = rawTraces.length;
+  const rewrittenSelectedCount = rewrittenTraces.reduce((sum, trace) => {
+    const selectedCount = getTraceSelectedCount(trace);
+    return sum + (Number.isFinite(selectedCount) ? selectedCount : 0);
+  }, 0);
+  const rawSelectedCount = rawTraces.reduce((sum, trace) => {
+    const selectedCount = getTraceSelectedCount(trace);
+    return sum + (Number.isFinite(selectedCount) ? selectedCount : 0);
+  }, 0);
+  const rewrittenQueriesWithSelected = rewrittenTraces.filter((trace) => getTraceSelectedCount(trace) > 0).length;
+  const rawQueriesWithSelected = rawTraces.filter((trace) => getTraceSelectedCount(trace) > 0).length;
 
   const totalEvaluated = Number(helpfulness.totalEvaluated || 0);
   const totalRetrievals = Number(helpfulness.totalRetrievals || 0);
@@ -349,13 +373,22 @@ function computeMemoryUsefulnessSummary(
     retrievalsPerPrompt: round(retrievalsPerPrompt),
     avgCandidatesPerQuery: round(safeRatio(totalCandidateCount, retrievalQueries), 2),
     avgSelectedPerQuery: round(safeRatio(totalSelectedCount, retrievalQueries), 2),
-    selectionRate: round(safeRatio(totalSelectedCount, totalCandidateCount))
+    selectionRate: round(safeRatio(totalSelectedCount, totalCandidateCount)),
+    queryRewriteRate: round(safeRatio(rewrittenQueries, retrievalQueries)),
+    rewrittenQueryYieldRate: round(safeRatio(rewrittenQueriesWithSelected, rewrittenQueries)),
+    rawQueryYieldRate: round(safeRatio(rawQueriesWithSelected, rawQueries)),
+    avgSelectedPerRewrittenQuery: round(safeRatio(rewrittenSelectedCount, rewrittenQueries), 2),
+    avgSelectedPerRawQuery: round(safeRatio(rawSelectedCount, rawQueries), 2)
   };
   const counts = {
     promptCount,
     memoryCheckedPrompts,
     retrievalQueries,
     queriesWithSelected,
+    rewrittenQueries,
+    rawQueries,
+    rewrittenQueriesWithSelected,
+    rawQueriesWithSelected,
     selectedMemories: totalSelectedCount,
     candidateMemories: totalCandidateCount,
     totalEvaluated,
@@ -835,6 +868,8 @@ statsRouter.get('/retrieval-traces', async (c) => {
         sessionId: t.sessionId || null,
         projectHash: t.projectHash || null,
         queryText: t.queryText,
+        queryRewriteKind: t.queryRewriteKind || 'none',
+        rewritten: Boolean(t.queryRewriteKind && t.queryRewriteKind !== 'none'),
         strategy: t.strategy || null,
         candidateEventIds: t.candidateEventIds,
         selectedEventIds: t.selectedEventIds,
@@ -849,7 +884,20 @@ statsRouter.get('/retrieval-traces', async (c) => {
     });
   } catch (error) {
     return c.json({
-      stats: { totalQueries: 0, avgCandidateCount: 0, avgSelectedCount: 0, selectionRate: 0 },
+      stats: {
+        totalQueries: 0,
+        avgCandidateCount: 0,
+        avgSelectedCount: 0,
+        selectionRate: 0,
+        rewrittenQueries: 0,
+        rewriteRate: 0,
+        rewrittenQueriesWithSelection: 0,
+        rawQueriesWithSelection: 0,
+        rewrittenSelectionRate: 0,
+        rawSelectionRate: 0,
+        avgSelectedCountForRewrittenQueries: 0,
+        avgSelectedCountForRawQueries: 0,
+      },
       traces: [],
       error: (error as Error).message
     }, 500);

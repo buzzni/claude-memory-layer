@@ -16,7 +16,7 @@ function event(id: string): MemoryEvent {
   };
 }
 
-function retrievalResult(id = 'e1'): UnifiedRetrievalResult {
+function retrievalResult(id = 'e1', overrides: Partial<UnifiedRetrievalResult> = {}): UnifiedRetrievalResult {
   const memoryEvent = event(id);
   return {
     memories: [{ event: memoryEvent, score: 0.91 }],
@@ -28,7 +28,8 @@ function retrievalResult(id = 'e1'): UnifiedRetrievalResult {
     context: 'remembered project context',
     fallbackTrace: ['stage:primary:fast'],
     selectedDebug: [{ eventId: id, score: 0.91, semanticScore: 0.8, lexicalScore: 0.2, recencyScore: 0.1 }],
-    candidateDebug: [{ eventId: id, score: 0.91, semanticScore: 0.8, lexicalScore: 0.2, recencyScore: 0.1 }]
+    candidateDebug: [{ eventId: id, score: 0.91, semanticScore: 0.8, lexicalScore: 0.2, recencyScore: 0.1 }],
+    ...overrides
   };
 }
 
@@ -93,11 +94,49 @@ describe('RetrievalOrchestrator', () => {
       sessionId: 's1',
       projectHash: 'project-1',
       queryText: 'project query',
+      queryRewriteKind: 'none',
       strategy: 'auto',
       candidateEventIds: ['e1'],
       selectedEventIds: ['e1'],
       confidence: 'high',
       fallbackTrace: ['stage:primary:fast']
+    });
+  });
+
+  it('records automatic intent-rewrite metadata when retriever rewrites a query', async () => {
+    const traces: Array<Record<string, unknown>> = [];
+    const fakeRetriever = {
+      setQueryRewriter() {},
+      async retrieve() {
+        return retrievalResult('rewritten-e1', {
+          rawQueryText: '그거 계속',
+          effectiveQueryText: '그거 계속 previous implementation plan',
+          queryRewriteKind: 'intent-rewrite'
+        });
+      }
+    } as unknown as Retriever;
+
+    const orchestrator = new RetrievalOrchestrator({
+      initialize: async () => {},
+      retriever: fakeRetriever,
+      traceStore: {
+        getHelpfulnessStats: async () => stats(),
+        recordRetrievalTrace: async (input) => { traces.push(input); }
+      },
+      accessStore: noopAccessStore(),
+      getProjectHash: () => 'project-1',
+      hasSharedStore: () => false
+    });
+
+    await orchestrator.retrieveMemories('그거 계속', { topK: 3, sessionId: 's1', intentRewrite: true, strategy: 'deep' });
+
+    expect(traces[0]).toMatchObject({
+      sessionId: 's1',
+      projectHash: 'project-1',
+      queryText: '그거 계속 previous implementation plan',
+      rawQueryText: '그거 계속',
+      queryRewriteKind: 'intent-rewrite',
+      strategy: 'deep'
     });
   });
 

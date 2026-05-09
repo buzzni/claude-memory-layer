@@ -34,6 +34,8 @@ export interface RetrieveMemoriesOptions {
 export interface RecordQueryTraceInput {
   sessionId: string;
   queryText: string;
+  rawQueryText?: string;
+  queryRewriteKind?: string;
   strategy: string;
   candidateEventIds: string[];
   selectedEventIds: string[];
@@ -69,6 +71,8 @@ export interface RetrievalTraceStore {
     sessionId?: string;
     projectHash?: string;
     queryText: string;
+    rawQueryText?: string;
+    queryRewriteKind?: string;
     strategy?: string;
     candidateEventIds: string[];
     selectedEventIds: string[];
@@ -241,7 +245,9 @@ export class RetrievalOrchestrator {
     await this.deps.traceStore.recordRetrievalTrace({
       sessionId: options?.sessionId,
       projectHash: projectHash || undefined,
-      queryText: query,
+      queryText: result.effectiveQueryText || query,
+      rawQueryText: result.rawQueryText || (result.queryRewriteKind ? query : undefined),
+      queryRewriteKind: result.queryRewriteKind || 'none',
       strategy: options?.strategy || 'auto',
       candidateEventIds,
       selectedEventIds,

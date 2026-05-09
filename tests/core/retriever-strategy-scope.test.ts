@@ -161,4 +161,37 @@ describe('Retriever strategy/scope', () => {
 
     expect(out.memories.map((memory) => memory.event.id)).toEqual(['e3']);
   });
+
+  it('reports intent rewrite metadata when deep retrieval expands a query', async () => {
+    const vectorQueries: number[][] = [];
+    const vectorStore = {
+      async search(vector: number[]) {
+        vectorQueries.push(vector);
+        return [{
+          id: `v${vectorQueries.length}`,
+          eventId: 'e1',
+          content: e1.content,
+          score: 0.92,
+          sessionId: e1.sessionId,
+          eventType: e1.eventType,
+          timestamp: e1.timestamp.toISOString()
+        }];
+      }
+    };
+    const retriever = new Retriever(fakeEventStore as any, vectorStore as any, fakeEmbedder as any, new Matcher());
+    retriever.setQueryRewriter(async () => 'previous implementation plan');
+
+    const out = await retriever.retrieve('그거 계속', {
+      strategy: 'deep',
+      topK: 5,
+      minScore: 0.1,
+      includeSessionContext: false,
+      intentRewrite: true
+    });
+
+    expect(vectorQueries).toHaveLength(2);
+    expect(out.rawQueryText).toBe('그거 계속');
+    expect(out.effectiveQueryText).toBe('그거 계속 previous implementation plan');
+    expect(out.queryRewriteKind).toBe('intent-rewrite');
+  });
 });

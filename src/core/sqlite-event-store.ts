@@ -297,6 +297,8 @@ export class SQLiteEventStore {
         session_id TEXT,
         project_hash TEXT,
         query_text TEXT NOT NULL,
+        raw_query_text TEXT,
+        query_rewrite_kind TEXT,
         strategy TEXT,
         candidate_event_ids TEXT,
         selected_event_ids TEXT,
@@ -377,6 +379,21 @@ export class SQLiteEventStore {
       sqliteExec(this.db, `ALTER TABLE retrieval_traces ADD COLUMN candidate_details_json TEXT;`);
     } catch {
       // column may already exist
+    }
+    try {
+      sqliteExec(this.db, `ALTER TABLE retrieval_traces ADD COLUMN raw_query_text TEXT;`);
+    } catch {
+      // column may already exist
+    }
+    try {
+      sqliteExec(this.db, `ALTER TABLE retrieval_traces ADD COLUMN query_rewrite_kind TEXT;`);
+    } catch {
+      // column may already exist
+    }
+    try {
+      sqliteExec(this.db, `CREATE INDEX IF NOT EXISTS idx_retrieval_traces_query_rewrite_kind ON retrieval_traces(query_rewrite_kind);`);
+    } catch {
+      // index/table may not exist in partial migrations
     }
 
     // Migrate existing events table to add new columns if they don't exist
@@ -1480,6 +1497,8 @@ export class SQLiteEventStore {
     sessionId?: string;
     projectHash?: string;
     queryText: string;
+    rawQueryText?: string;
+    queryRewriteKind?: string;
     strategy?: string;
     candidateEventIds: string[];
     selectedEventIds: string[];
@@ -1506,15 +1525,17 @@ export class SQLiteEventStore {
     sqliteRun(
       this.db,
       `INSERT INTO retrieval_traces (
-        trace_id, session_id, project_hash, query_text, strategy,
+        trace_id, session_id, project_hash, query_text, raw_query_text, query_rewrite_kind, strategy,
         candidate_event_ids, selected_event_ids, candidate_details_json, selected_details_json,
         candidate_count, selected_count, confidence, fallback_trace
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         traceId,
         input.sessionId || null,
         input.projectHash || null,
         input.queryText,
+        input.rawQueryText || null,
+        input.queryRewriteKind || null,
         input.strategy || null,
         JSON.stringify(input.candidateEventIds || []),
         JSON.stringify(input.selectedEventIds || []),
@@ -1533,6 +1554,8 @@ export class SQLiteEventStore {
     sessionId?: string;
     projectHash?: string;
     queryText: string;
+    rawQueryText?: string;
+    queryRewriteKind?: string;
     strategy?: string;
     candidateEventIds: string[];
     selectedEventIds: string[];
@@ -1570,6 +1593,8 @@ export class SQLiteEventStore {
         sessionId: (row.session_id as string) || undefined,
         projectHash: (row.project_hash as string) || undefined,
         queryText: row.query_text as string,
+        rawQueryText: (row.raw_query_text as string) || undefined,
+        queryRewriteKind: (row.query_rewrite_kind as string) || undefined,
         strategy: (row.strategy as string) || undefined,
         candidateEventIds: row.candidate_event_ids ? JSON.parse(row.candidate_event_ids as string) : [],
         selectedEventIds: row.selected_event_ids ? JSON.parse(row.selected_event_ids as string) : [],
@@ -1592,6 +1617,14 @@ export class SQLiteEventStore {
     avgCandidateCount: number;
     avgSelectedCount: number;
     selectionRate: number;
+    rewrittenQueries: number;
+    rewriteRate: number;
+    rewrittenQueriesWithSelection: number;
+    rawQueriesWithSelection: number;
+    rewrittenSelectionRate: number;
+    rawSelectionRate: number;
+    avgSelectedCountForRewrittenQueries: number;
+    avgSelectedCountForRawQueries: number;
   }> {
     await this.initialize();
 
@@ -1602,6 +1635,11 @@ export class SQLiteEventStore {
           COUNT(*) as total_queries,
           AVG(candidate_count) as avg_candidate_count,
           AVG(selected_count) as avg_selected_count,
+          SUM(CASE WHEN query_rewrite_kind IS NOT NULL AND query_rewrite_kind != 'none' THEN 1 ELSE 0 END) as rewritten_queries,
+          SUM(CASE WHEN query_rewrite_kind IS NOT NULL AND query_rewrite_kind != 'none' AND selected_count > 0 THEN 1 ELSE 0 END) as rewritten_queries_with_selection,
+          SUM(CASE WHEN (query_rewrite_kind IS NULL OR query_rewrite_kind = 'none') AND selected_count > 0 THEN 1 ELSE 0 END) as raw_queries_with_selection,
+          AVG(CASE WHEN query_rewrite_kind IS NOT NULL AND query_rewrite_kind != 'none' THEN selected_count END) as avg_selected_count_for_rewritten_queries,
+          AVG(CASE WHEN query_rewrite_kind IS NULL OR query_rewrite_kind = 'none' THEN selected_count END) as avg_selected_count_for_raw_queries,
           CASE
             WHEN SUM(candidate_count) > 0 THEN (SUM(selected_count) * 1.0 / SUM(candidate_count))
             ELSE 0
@@ -1610,15 +1648,42 @@ export class SQLiteEventStore {
         []
       );
 
+      const totalQueries = Number(row?.total_queries || 0);
+      const rewrittenQueries = Number(row?.rewritten_queries || 0);
+      const rawQueries = Math.max(0, totalQueries - rewrittenQueries);
+      const rewrittenQueriesWithSelection = Number(row?.rewritten_queries_with_selection || 0);
+      const rawQueriesWithSelection = Number(row?.raw_queries_with_selection || 0);
+
       return {
-        totalQueries: Number(row?.total_queries || 0),
+        totalQueries,
         avgCandidateCount: Number(row?.avg_candidate_count || 0),
         avgSelectedCount: Number(row?.avg_selected_count || 0),
         selectionRate: Number(row?.selection_rate || 0),
+        rewrittenQueries,
+        rewriteRate: totalQueries > 0 ? rewrittenQueries / totalQueries : 0,
+        rewrittenQueriesWithSelection,
+        rawQueriesWithSelection,
+        rewrittenSelectionRate: rewrittenQueries > 0 ? rewrittenQueriesWithSelection / rewrittenQueries : 0,
+        rawSelectionRate: rawQueries > 0 ? rawQueriesWithSelection / rawQueries : 0,
+        avgSelectedCountForRewrittenQueries: Number(row?.avg_selected_count_for_rewritten_queries || 0),
+        avgSelectedCountForRawQueries: Number(row?.avg_selected_count_for_raw_queries || 0),
       };
     } catch (err: any) {
       if (err?.message?.includes('no such table')) {
-        return { totalQueries: 0, avgCandidateCount: 0, avgSelectedCount: 0, selectionRate: 0 };
+        return {
+          totalQueries: 0,
+          avgCandidateCount: 0,
+          avgSelectedCount: 0,
+          selectionRate: 0,
+          rewrittenQueries: 0,
+          rewriteRate: 0,
+          rewrittenQueriesWithSelection: 0,
+          rawQueriesWithSelection: 0,
+          rewrittenSelectionRate: 0,
+          rawSelectionRate: 0,
+          avgSelectedCountForRewrittenQueries: 0,
+          avgSelectedCountForRawQueries: 0,
+        };
       }
       throw err;
     }

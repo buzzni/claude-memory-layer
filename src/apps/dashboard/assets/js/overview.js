@@ -480,6 +480,7 @@ function updateMemoryUsefulnessUI() {
   summaryEl.innerHTML = `
     <span class="usefulness-pill usefulness-${escapeHtml(label)}">${escapeHtml(label)}</span>
     <span><strong>${formatNumber(counts.retrievalQueries || 0)}</strong> queries</span>
+    <span><strong>${formatNumber(counts.rewrittenQueries || 0)}</strong> rewritten</span>
     <span><strong>${formatNumber(counts.promptCount || 0)}</strong> prompts</span>
     <span><strong>${formatNumber(counts.totalEvaluated || 0)}</strong> evaluated</span>
     <span title="How many input signals were available for the composite score"><strong>${confidencePct}%</strong> confidence</span>
@@ -599,12 +600,14 @@ function updateRetrievalTraceUI() {
   }
 
   const selectionRate = ((stats.selectionRate || 0) * 100).toFixed(1);
+  const rewriteRate = ((stats.rewriteRate || 0) * 100).toFixed(1);
   summaryEl.innerHTML = `
     <div style="display:flex; gap:14px; flex-wrap:wrap; font-size:12px;">
       <span><strong>${formatNumber(stats.totalQueries)}</strong> queries</span>
       <span><strong>${Number(stats.avgCandidateCount || 0).toFixed(1)}</strong> avg candidates</span>
       <span><strong>${Number(stats.avgSelectedCount || 0).toFixed(1)}</strong> avg selected</span>
       <span><strong>${selectionRate}%</strong> selection rate</span>
+      <span title="Share of retrieval queries enriched with previous prompt/assistant context"><strong>${rewriteRate}%</strong> rewrite rate</span>
     </div>
   `;
 
@@ -613,6 +616,10 @@ function updateRetrievalTraceUI() {
     const confidence = t.confidence || 'n/a';
     const selected = Number(t.selectedCount || 0);
     const candidates = Number(t.candidateCount || 0);
+    const rewriteKind = t.queryRewriteKind || (t.rewritten ? 'rewritten' : 'none');
+    const rewriteBadge = rewriteKind && rewriteKind !== 'none'
+      ? `<span class="event-type-badge" title="Query was enriched before retrieval">${escapeHtml(rewriteKind)}</span>`
+      : '';
     const selectedDetails = (t.selectedDetails || []).slice(0, 2);
     const candidateDetails = (t.candidateDetails || []).slice(0, 3);
     const selectedIdsHtml = selectedDetails.length > 0
@@ -630,7 +637,7 @@ function updateRetrievalTraceUI() {
       <div class="shared-item" style="align-items:flex-start;">
         <div class="shared-info" style="align-items:flex-start; flex-direction:column; gap:4px;">
           <span style="font-size:12px; color:var(--text-secondary);"><strong>Q:</strong> ${escapeHtml((t.queryText || '').slice(0, 120))}</span>
-          <span style="font-size:11px; color:var(--text-muted);">${ts} · strategy=${escapeHtml(t.strategy || 'auto')} · conf=${escapeHtml(confidence)}</span>
+          <span style="font-size:11px; color:var(--text-muted);">${ts} · strategy=${escapeHtml(t.strategy || 'auto')} · conf=${escapeHtml(confidence)} ${rewriteBadge}</span>
           <span style="font-size:11px; color:var(--text-muted);">selected IDs: ${selectedIdsHtml}</span>
           <span style="font-size:11px; color:var(--text-muted);">candidates: ${candidateDetails.map((d) => `<span class=\"event-type-badge\" style=\"cursor:pointer;\" onclick=\"openDetailModal('${d.eventId}')\">${escapeHtml((d.eventId || '').slice(0, 8))}...</span>`).join(' ') || '-'}</span>
           ${scoreBreakdownHtml}

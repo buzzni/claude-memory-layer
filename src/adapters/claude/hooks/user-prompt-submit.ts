@@ -252,6 +252,10 @@ function logAdherenceDecision(sessionId: string, turn: number, run: boolean, rea
   console.error(`[adherence] session=${sessionId} turn=${turn} mode=${mode} reason=${reason}`);
 }
 
+export function getRetrievalQueryRewriteKind(prompt: string, retrievalQuery: string): 'none' | 'follow-up-context' {
+  return retrievalQuery === prompt.trim() ? 'none' : 'follow-up-context';
+}
+
 export async function main(): Promise<void> {
   // Read input from stdin
   const inputData = await readStdin();
@@ -313,6 +317,7 @@ export async function main(): Promise<void> {
         lastAssistantSnippet: lastSnippet,
         adherenceDecision
       });
+      const queryRewriteKind = getRetrievalQueryRewriteKind(input.prompt, retrievalQuery);
 
       const canUseSemantic = RETRIEVAL_MODE === 'semantic' || RETRIEVAL_MODE === 'hybrid';
       if (canUseSemantic) {
@@ -406,6 +411,8 @@ export async function main(): Promise<void> {
         await memoryService.recordQueryTrace({
           sessionId: input.session_id,
           queryText: retrievalQuery,
+          rawQueryText: input.prompt,
+          queryRewriteKind,
           strategy: RETRIEVAL_MODE,
           candidateEventIds: allCandidateIds,
           selectedEventIds: selectedIds,

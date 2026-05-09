@@ -110,9 +110,35 @@ describe('dashboard memory usefulness stats', () => {
       unhelpful: 0,
     });
     mocks.service.getRecentRetrievalTraces.mockReset().mockResolvedValue([
-      { traceId: 't1', queryText: 'q1', candidateCount: 5, selectedCount: 2, candidateEventIds: [], selectedEventIds: [], candidateDetails: [], selectedDetails: [], fallbackTrace: [], createdAt: new Date('2026-05-08T10:10:00.000Z') },
-      { traceId: 't2', queryText: 'q2', candidateCount: 3, selectedCount: 0, candidateEventIds: [], selectedEventIds: [], candidateDetails: [], selectedDetails: [], fallbackTrace: [], createdAt: new Date('2026-05-07T10:10:00.000Z') },
-      { traceId: 'old-trace', queryText: 'old', candidateCount: 10, selectedCount: 10, candidateEventIds: [], selectedEventIds: [], candidateDetails: [], selectedDetails: [], fallbackTrace: [], createdAt: new Date('2026-04-01T00:00:00.000Z') },
+      {
+        traceId: 't1',
+        rawQueryText: '응 다음 단계 진행',
+        queryText: 'Previous user: implement retrieval\nCurrent user: 응 다음 단계 진행',
+        queryRewriteKind: 'follow-up-context',
+        candidateCount: 5,
+        selectedCount: 2,
+        candidateEventIds: [],
+        selectedEventIds: [],
+        candidateDetails: [],
+        selectedDetails: [],
+        fallbackTrace: [],
+        createdAt: new Date('2026-05-08T10:10:00.000Z')
+      },
+      {
+        traceId: 't2',
+        rawQueryText: 'self contained query',
+        queryText: 'self contained query',
+        queryRewriteKind: 'none',
+        candidateCount: 3,
+        selectedCount: 0,
+        candidateEventIds: [],
+        selectedEventIds: [],
+        candidateDetails: [],
+        selectedDetails: [],
+        fallbackTrace: [],
+        createdAt: new Date('2026-05-07T10:10:00.000Z')
+      },
+      { traceId: 'old-trace', rawQueryText: 'old', queryText: 'old', queryRewriteKind: 'none', candidateCount: 10, selectedCount: 10, candidateEventIds: [], selectedEventIds: [], candidateDetails: [], selectedDetails: [], fallbackTrace: [], createdAt: new Date('2026-04-01T00:00:00.000Z') },
     ]);
     mocks.getServiceFromQuery.mockClear();
     mocks.getLightweightServiceFromQuery.mockClear();
@@ -142,12 +168,21 @@ describe('dashboard memory usefulness stats', () => {
       avgCandidatesPerQuery: 4,
       avgSelectedPerQuery: 1,
       selectionRate: 0.25,
+      queryRewriteRate: 0.5,
+      rewrittenQueryYieldRate: 1,
+      rawQueryYieldRate: 0,
+      avgSelectedPerRewrittenQuery: 2,
+      avgSelectedPerRawQuery: 0,
     });
     expect(body.counts).toMatchObject({
       promptCount: 3,
       memoryCheckedPrompts: 1,
       retrievalQueries: 2,
       queriesWithSelected: 1,
+      rewrittenQueries: 1,
+      rawQueries: 1,
+      rewrittenQueriesWithSelected: 1,
+      rawQueriesWithSelected: 0,
       helpful: 3,
       neutral: 1,
       unhelpful: 0,
@@ -180,7 +215,9 @@ describe('dashboard memory usefulness stats', () => {
       traceWindowTruncated: false,
     });
     expect(JSON.stringify(body)).not.toContain('user_prompt p1');
-    expect(JSON.stringify(body)).not.toContain('q1');
+    expect(JSON.stringify(body)).not.toContain('Previous user: implement retrieval');
+    expect(JSON.stringify(body)).not.toContain('응 다음 단계 진행');
+    expect(JSON.stringify(body)).not.toContain('self contained query');
     expect(mocks.service.getHelpfulnessStats).toHaveBeenCalledWith(new Date('2026-05-01T12:00:00.000Z'));
     expect(mocks.getLightweightServiceFromQuery).toHaveBeenCalledTimes(1);
     expect(mocks.getServiceFromQuery).not.toHaveBeenCalled();
@@ -236,7 +273,7 @@ describe('dashboard memory usefulness stats', () => {
     hooks.state.memoryUsefulness = {
       score: { value: 64.4, label: 'good', confidence: 1 },
       metrics: { usefulRecallRate: 0.75, memoryHitRate: 0.3333, retrievalUsageRate: 0.6667, queryYieldRate: 0.5 },
-      counts: { retrievalQueries: 2, promptCount: 3, totalEvaluated: 4 },
+      counts: { retrievalQueries: 2, promptCount: 3, totalEvaluated: 4, rewrittenQueries: 1, rewrittenQueriesWithSelected: 1 },
       components: [
         { key: 'usefulRecallRate', label: 'Useful recall rate', value: 0.75, available: true },
         { key: 'memoryHitRate', label: 'Memory hit rate', value: 0.3333, available: true },
@@ -258,6 +295,7 @@ describe('dashboard memory usefulness stats', () => {
     expect(elements['memory-usefulness-score'].textContent).toBe('64.4');
     expect(elements['memory-usefulness-summary'].innerHTML).toContain('good');
     expect(elements['memory-usefulness-summary'].innerHTML).toContain('<strong>2</strong> queries');
+    expect(elements['memory-usefulness-summary'].innerHTML).toContain('<strong>1</strong> rewritten');
     expect(elements['memory-usefulness-summary'].innerHTML).toContain('<strong>3</strong> prompts');
     expect(elements['memory-usefulness-breakdown'].innerHTML).toContain('Useful recall rate');
     expect(elements['memory-usefulness-breakdown'].innerHTML).toContain('75.0%');
