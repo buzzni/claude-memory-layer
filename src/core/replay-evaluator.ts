@@ -18,6 +18,7 @@ export interface ReplayEvaluationQuery {
   expectedIds: string[];
   expectedRelevance?: Record<string, number>;
   expectation?: ReplayExpectation;
+  category?: string;
   forbiddenIds?: string[];
   knownAnswer?: string;
 }
@@ -92,6 +93,18 @@ export interface ReplayFailedQuery {
   reason?: 'missing_expected' | 'unexpected_match';
 }
 
+export interface ReplayEvaluationCategorySummary extends ReplayMetricsSummary {
+  positiveQueryCount: number;
+  noMatchQueryCount: number;
+  noMatchCorrect: number;
+  noMatchAccuracy: number;
+  forbiddenHitCount: number;
+  hitAtK: Record<number, number>;
+  mrr: number;
+  failedQueryCount: number;
+  queryYieldRate: number;
+}
+
 export interface ReplayEvaluationSummary extends ReplayMetricsSummary {
   positiveQueryCount: number;
   noMatchQueryCount: number;
@@ -102,6 +115,8 @@ export interface ReplayEvaluationSummary extends ReplayMetricsSummary {
   mrr: number;
   failedQueryCount: number;
   failedQueries: ReplayFailedQuery[];
+  queryYieldRate: number;
+  categoryBreakdown: Record<string, ReplayEvaluationCategorySummary>;
 }
 
 export interface ReplayEvaluationQueryMetrics extends ReplayQueryMetrics {
@@ -111,6 +126,7 @@ export interface ReplayEvaluationQueryMetrics extends ReplayQueryMetrics {
   fallbackTrace: string[];
   reciprocalRank: number;
   expectation?: ReplayExpectation;
+  category?: string;
   forbiddenHitIds?: string[];
   noMatchSatisfied?: boolean;
 }
@@ -183,6 +199,9 @@ export async function evaluateReplayFixture(
       fallbackTrace: run.fallbackTrace,
       reciprocalRank: expectation === 'match' ? reciprocalRank(run.retrievedIds, run.query.expectedIds) : 0
     };
+    if (run.query.category !== undefined) {
+      base.category = normalizeCategory(run.query.category);
+    }
 
     if (expectation === 'no_match') {
       const forbiddenHitIds = findForbiddenHitIds(run.retrievedIds, run.query.forbiddenIds ?? []);
@@ -297,12 +316,30 @@ export function formatReplayEvaluationMarkdown(
   lines.push(`| No-match accuracy | ${formatMetric(report.summary.noMatchAccuracy)} |`);
   lines.push(`| Forbidden hits | ${report.summary.forbiddenHitCount} |`);
   lines.push(`| MRR | ${formatMetric(report.summary.mrr)} |`);
+  lines.push(`| Query yield rate | ${formatMetric(report.summary.queryYieldRate)} |`);
   lines.push(`| Failed queries | ${report.summary.failedQueryCount} |`);
   for (const k of sortedKValues(report.summary)) {
     lines.push(`| Precision@${k} | ${formatMetric(report.summary.precisionAtK[k] ?? 0)} |`);
     lines.push(`| Recall@${k} | ${formatMetric(report.summary.recallAtK[k] ?? 0)} |`);
     lines.push(`| nDCG@${k} | ${formatMetric(report.summary.ndcgAtK[k] ?? 0)} |`);
     lines.push(`| Hit@${k} | ${formatMetric(report.summary.hitAtK[k] ?? 0)} |`);
+  }
+
+  if (Object.keys(report.summary.categoryBreakdown).length > 0) {
+    lines.push('');
+    lines.push('## Category breakdown');
+    lines.push('');
+    lines.push('| category | queries | positive | no-match | yield | Recall@k | Hit@k | failures | forbidden hits |');
+    lines.push('|---|---:|---:|---:|---:|---|---|---:|---:|');
+    for (const category of Object.keys(report.summary.categoryBreakdown).sort()) {
+      const summary = report.summary.categoryBreakdown[category];
+      if (!summary) continue;
+      const recall = formatMetricMap(summary.recallAtK, 'Recall');
+      const hit = formatMetricMap(summary.hitAtK, 'Hit');
+      lines.push(
+        `| ${escapeMarkdownCell(category)} | ${summary.queryCount} | ${summary.positiveQueryCount} | ${summary.noMatchQueryCount} | ${formatMetric(summary.queryYieldRate)} | ${escapeMarkdownCell(recall)} | ${escapeMarkdownCell(hit)} | ${summary.failedQueryCount} | ${summary.forbiddenHitCount} |`
+      );
+    }
   }
 
   if (report.summary.failedQueries.length > 0) {
@@ -343,16 +380,40 @@ export function formatReplayEvaluationMarkdown(
   return lines.join('\n');
 }
 
+type ReplayMetricPair = {
+  metric: ReplayEvaluationQueryMetrics;
+  query: ReplayEvaluationQuery;
+  expectation: ReplayExpectation;
+};
+
 function summarizeEvaluationMetrics(
   perQuery: ReplayEvaluationQueryMetrics[],
   queries: ReplayEvaluationQuery[],
   ks: number[]
 ): ReplayEvaluationSummary {
-  const pairs = perQuery.map((metric, index) => ({
+  const pairs: ReplayMetricPair[] = perQuery.map((metric, index) => ({
     metric,
     query: queries[index],
     expectation: getReplayExpectation(queries[index])
   }));
+  const overall = summarizeMetricPairs(pairs, ks);
+  const categoryBreakdown: Record<string, ReplayEvaluationCategorySummary> = {};
+
+  for (const [category, categoryPairs] of groupPairsByCategory(pairs)) {
+    const { failedQueries: _failedQueries, ...categorySummary } = summarizeMetricPairs(categoryPairs, ks);
+    categoryBreakdown[category] = categorySummary;
+  }
+
+  return {
+    ...overall,
+    categoryBreakdown
+  };
+}
+
+function summarizeMetricPairs(
+  pairs: ReplayMetricPair[],
+  ks: number[]
+): ReplayEvaluationCategorySummary & { failedQueries: ReplayFailedQuery[] } {
   const positivePairs = pairs.filter((pair) => pair.expectation === 'match');
   const noMatchPairs = pairs.filter((pair) => pair.expectation === 'no_match');
   const positiveMetrics = positivePairs.map((pair) => pair.metric);
@@ -375,8 +436,8 @@ function summarizeEvaluationMetrics(
 
   const noMatchFailures: ReplayFailedQuery[] = noMatchPairs
     .filter(({ metric }) => metric.noMatchSatisfied !== true)
-    .map(({ metric, query }) => ({
-      queryId: query.queryId,
+    .map(({ metric }) => ({
+      queryId: metric.queryId,
       expectedIds: [],
       retrievedIds: [...metric.retrievedIds],
       expectation: 'no_match',
@@ -389,10 +450,11 @@ function summarizeEvaluationMetrics(
     0
   );
   const failedQueries = [...positiveFailures, ...noMatchFailures];
+  const yieldedPositiveQueries = positivePairs.filter(({ metric }) => metric.retrievedIds.length > 0).length;
 
   return {
     ...base,
-    queryCount: perQuery.length,
+    queryCount: pairs.length,
     positiveQueryCount: positivePairs.length,
     noMatchQueryCount: noMatchPairs.length,
     noMatchCorrect,
@@ -401,8 +463,20 @@ function summarizeEvaluationMetrics(
     hitAtK,
     mrr: average(positiveMetrics.map((metric) => metric.reciprocalRank)),
     failedQueryCount: failedQueries.length,
-    failedQueries
+    failedQueries,
+    queryYieldRate: positivePairs.length === 0 ? 0 : yieldedPositiveQueries / positivePairs.length
   };
+}
+
+function groupPairsByCategory(pairs: ReplayMetricPair[]): Map<string, ReplayMetricPair[]> {
+  const groups = new Map<string, ReplayMetricPair[]>();
+  for (const pair of pairs) {
+    const category = pair.metric.category ?? normalizeCategory(pair.query.category);
+    const values = groups.get(category) ?? [];
+    values.push(pair);
+    groups.set(category, values);
+  }
+  return groups;
 }
 
 function determineTopK(fixture: ReplayEvaluationFixture, optionTopK?: number): number {
@@ -411,6 +485,19 @@ function determineTopK(fixture: ReplayEvaluationFixture, optionTopK?: number): n
 
 function sortedKValues(summary: ReplayMetricsSummary): number[] {
   return Object.keys(summary.precisionAtK).map(Number).sort((a, b) => a - b);
+}
+
+function normalizeCategory(category: string | undefined): string {
+  const normalized = category?.trim().toLowerCase();
+  return normalized && normalized.length > 0 ? normalized : 'uncategorized';
+}
+
+function formatMetricMap(values: Record<number, number>, label: string): string {
+  return Object.keys(values)
+    .map(Number)
+    .sort((a, b) => a - b)
+    .map((k) => `${label}@${k}=${formatMetric(values[k] ?? 0)}`)
+    .join(', ');
 }
 
 function normalizeKs(ks: number[]): number[] {

@@ -1,8 +1,11 @@
+import { readFileSync } from 'node:fs';
+
 import { describe, expect, it } from 'vitest';
 
 import {
   evaluateReplayFixture,
   formatReplayEvaluationMarkdown,
+  type ReplayEvaluationFixture,
   type ReplayRetrievalRunner
 } from '../../src/core/replay-evaluator.js';
 
@@ -177,5 +180,120 @@ describe('replay fixture evaluator', () => {
     expect(markdown).toContain('.claude-memory/benchmarks/real-session-qrels.json');
     expect(markdown).not.toContain('SECRET');
     expect(markdown).not.toContain('vector search recall regression');
+  });
+
+  it('summarizes query yield and category breakdown for golden replay safety gates', async () => {
+    const categoryFixture = {
+      name: 'category-golden-replay',
+      ks: [1, 3],
+      queries: [
+        {
+          queryId: 'q-continuation',
+          category: 'continuation',
+          query: 'PRIVATE_CONTINUE_PROMPT_SHOULD_NOT_LEAK',
+          expectation: 'match',
+          expectedIds: ['m-continuation'],
+          expectedRelevance: { 'm-continuation': 3 }
+        },
+        {
+          queryId: 'q-debugging',
+          category: 'debugging',
+          query: 'PRIVATE_DEBUG_PROMPT_SHOULD_NOT_LEAK',
+          expectation: 'match',
+          expectedIds: ['m-debugging'],
+          expectedRelevance: { 'm-debugging': 2 }
+        },
+        {
+          queryId: 'q-cross-project',
+          category: 'cross-project-contamination',
+          query: 'PRIVATE_OTHER_PROJECT_PROMPT_SHOULD_NOT_LEAK',
+          expectation: 'no_match',
+          expectedIds: [],
+          expectedRelevance: {},
+          forbiddenIds: ['m-debugging']
+        }
+      ],
+      memories: [
+        { id: 'm-continuation', content: 'PRIVATE_CONTINUE_MEMORY_SHOULD_NOT_LEAK' },
+        { id: 'm-debugging', content: 'PRIVATE_DEBUG_MEMORY_SHOULD_NOT_LEAK' }
+      ]
+    };
+    const retrievalRunner: ReplayRetrievalRunner = async (_query, input) => {
+      if (input.query.queryId === 'q-continuation') {
+        return { retrievedIds: ['m-continuation'], candidateIds: ['m-continuation'], confidence: 'high' };
+      }
+      return { retrievedIds: [], candidateIds: [], confidence: 'none' };
+    };
+
+    const report = await evaluateReplayFixture(categoryFixture, {
+      generatedAt: '2026-05-05T00:00:00.000Z',
+      retrievalRunner
+    });
+    const markdown = formatReplayEvaluationMarkdown(report);
+
+    expect(report.summary).toMatchObject({
+      positiveQueryCount: 2,
+      noMatchQueryCount: 1,
+      failedQueryCount: 1,
+      queryYieldRate: 0.5,
+      categoryBreakdown: {
+        continuation: {
+          queryCount: 1,
+          positiveQueryCount: 1,
+          failedQueryCount: 0,
+          queryYieldRate: 1,
+          recallAtK: { 1: 1, 3: 1 }
+        },
+        debugging: {
+          queryCount: 1,
+          positiveQueryCount: 1,
+          failedQueryCount: 1,
+          queryYieldRate: 0,
+          recallAtK: { 1: 0, 3: 0 }
+        },
+        'cross-project-contamination': {
+          queryCount: 1,
+          noMatchQueryCount: 1,
+          noMatchAccuracy: 1,
+          forbiddenHitCount: 0
+        }
+      }
+    });
+    expect(markdown).toContain('Query yield rate');
+    expect(markdown).toContain('## Category breakdown');
+    expect(markdown).toContain('cross-project-contamination');
+    expect(JSON.stringify(report)).not.toContain('PRIVATE_');
+    expect(markdown).not.toContain('PRIVATE_');
+  });
+
+  it('ships a privacy-safe golden replay fixture and npm eval script', () => {
+    const fixture = JSON.parse(
+      readFileSync('benchmarks/replay/golden-memory-usefulness-v1.json', 'utf8')
+    ) as ReplayEvaluationFixture;
+    const packageJson = JSON.parse(readFileSync('package.json', 'utf8')) as {
+      scripts?: Record<string, string>;
+    };
+    const categories = new Set(fixture.queries.map((query) => query.category));
+    const serialized = JSON.stringify(fixture);
+
+    expect(fixture.name).toBe('golden-memory-usefulness-v1');
+    expect(fixture.metadata).toMatchObject({ rawContentIncluded: false });
+    expect(fixture.queries.length).toBeGreaterThanOrEqual(12);
+    expect(fixture.memories.length).toBeGreaterThanOrEqual(12);
+    expect([...categories]).toEqual(expect.arrayContaining([
+      'korean-short-follow-up',
+      'continuation',
+      'project-code-task',
+      'debugging',
+      'decision-recall',
+      'topic-shift-no-match',
+      'stale-memory-trap',
+      'cross-project-contamination'
+    ]));
+    expect(packageJson.scripts?.['eval:retrieval-replay']).toBe(
+      'tsx scripts/replay-retrieval-benchmark.ts --fixture benchmarks/replay/golden-memory-usefulness-v1.json --format markdown --no-per-query'
+    );
+    expect(serialized).not.toMatch(/\/Users\//);
+    expect(serialized).not.toMatch(/PRIVATE_|SECRET|TOKEN|PASSWORD/i);
   });
 });

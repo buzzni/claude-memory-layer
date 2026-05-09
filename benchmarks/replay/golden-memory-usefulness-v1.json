@@ -1,0 +1,212 @@
+{
+  "name": "golden-memory-usefulness-v1",
+  "description": "Privacy-safe golden replay set for memory usefulness: continuation, debugging, project recall, stale/noise suppression, and cross-project contamination traps.",
+  "metadata": {
+    "sourceFileCount": 0,
+    "rawContentIncluded": false,
+    "generatedAt": "2026-05-09T00:00:00.000Z"
+  },
+  "ks": [1, 3, 5],
+  "queries": [
+    {
+      "queryId": "q-kr-follow-up-next-step",
+      "category": "korean-short-follow-up",
+      "query": "응 다음 단계 진행",
+      "expectation": "match",
+      "expectedIds": ["m-current-plan-next-step", "m-current-validation-state"],
+      "expectedRelevance": { "m-current-plan-next-step": 3, "m-current-validation-state": 2 }
+    },
+    {
+      "queryId": "q-kr-follow-up-fix-that",
+      "category": "korean-short-follow-up",
+      "query": "그거 고쳐줘",
+      "expectation": "match",
+      "expectedIds": ["m-review-blocker-fix-pattern", "m-current-validation-state"],
+      "expectedRelevance": { "m-review-blocker-fix-pattern": 3, "m-current-validation-state": 2 }
+    },
+    {
+      "queryId": "q-continuation-continue",
+      "category": "continuation",
+      "query": "continue the memory usefulness work from the last completed step",
+      "expectation": "match",
+      "expectedIds": ["m-current-plan-next-step", "m-usefulness-roadmap"],
+      "expectedRelevance": { "m-current-plan-next-step": 3, "m-usefulness-roadmap": 2 }
+    },
+    {
+      "queryId": "q-continuation-resume-queue",
+      "category": "continuation",
+      "query": "resume after adding the bad retrieval review queue",
+      "expectation": "match",
+      "expectedIds": ["m-bad-retrieval-review-queue", "m-usefulness-roadmap"],
+      "expectedRelevance": { "m-bad-retrieval-review-queue": 3, "m-usefulness-roadmap": 2 }
+    },
+    {
+      "queryId": "q-project-code-task-retrieval-trace-api",
+      "category": "project-code-task",
+      "query": "update retrieval trace stats API and dashboard without exposing query text",
+      "expectation": "match",
+      "expectedIds": ["m-retrieval-telemetry-privacy", "m-dashboard-safe-trace-metadata"],
+      "expectedRelevance": { "m-retrieval-telemetry-privacy": 3, "m-dashboard-safe-trace-metadata": 2 }
+    },
+    {
+      "queryId": "q-project-code-task-replay-cli",
+      "category": "project-code-task",
+      "query": "add replay benchmark CLI report for retrieval quality regression",
+      "expectation": "match",
+      "expectedIds": ["m-golden-replay-eval", "m-replay-cli-command"],
+      "expectedRelevance": { "m-golden-replay-eval": 3, "m-replay-cli-command": 2 }
+    },
+    {
+      "queryId": "q-debugging-arch-mismatch",
+      "category": "debugging",
+      "query": "duckdb node module architecture mismatch arm64 x64 rebuild fix",
+      "expectation": "match",
+      "expectedIds": ["m-duckdb-arch-mismatch"],
+      "expectedRelevance": { "m-duckdb-arch-mismatch": 3 }
+    },
+    {
+      "queryId": "q-debugging-test-review-blocker",
+      "category": "debugging",
+      "query": "independent review found dashboard error state and metrics bucket blocker",
+      "expectation": "match",
+      "expectedIds": ["m-review-blocker-fix-pattern", "m-dashboard-error-state"],
+      "expectedRelevance": { "m-review-blocker-fix-pattern": 3, "m-dashboard-error-state": 2 }
+    },
+    {
+      "queryId": "q-decision-recall-privacy-dashboard",
+      "category": "decision-recall",
+      "query": "what did we decide about showing raw retrieval queries in dashboard",
+      "expectation": "match",
+      "expectedIds": ["m-retrieval-telemetry-privacy", "m-dashboard-safe-trace-metadata"],
+      "expectedRelevance": { "m-retrieval-telemetry-privacy": 3, "m-dashboard-safe-trace-metadata": 2 }
+    },
+    {
+      "queryId": "q-decision-recall-validation-standard",
+      "category": "decision-recall",
+      "query": "what validation gates should run before committing memory telemetry changes",
+      "expectation": "match",
+      "expectedIds": ["m-validation-gates", "m-independent-review-required"],
+      "expectedRelevance": { "m-validation-gates": 3, "m-independent-review-required": 2 }
+    },
+    {
+      "queryId": "q-stale-memory-trap-old-pr-status",
+      "category": "stale-memory-trap",
+      "query": "use the old open pull request status as current deployment state",
+      "expectation": "no_match",
+      "expectedIds": [],
+      "expectedRelevance": {},
+      "forbiddenIds": ["m-stale-old-pr-status"]
+    },
+    {
+      "queryId": "q-stale-memory-trap-resolved-error",
+      "category": "stale-memory-trap",
+      "query": "treat the already resolved query text leakage as still unresolved",
+      "expectation": "no_match",
+      "expectedIds": [],
+      "expectedRelevance": {},
+      "forbiddenIds": ["m-stale-resolved-query-leak"]
+    },
+    {
+      "queryId": "q-topic-shift-no-match-weather",
+      "category": "topic-shift-no-match",
+      "query": "recommend lunch near the office today",
+      "expectation": "no_match",
+      "expectedIds": [],
+      "expectedRelevance": {},
+      "forbiddenIds": ["m-current-plan-next-step", "m-golden-replay-eval", "m-validation-gates"]
+    },
+    {
+      "queryId": "q-topic-shift-no-match-calendar",
+      "category": "topic-shift-no-match",
+      "query": "what time is the next calendar meeting",
+      "expectation": "no_match",
+      "expectedIds": [],
+      "expectedRelevance": {},
+      "forbiddenIds": ["m-current-plan-next-step", "m-usefulness-roadmap"]
+    },
+    {
+      "queryId": "q-cross-project-contamination-trading",
+      "category": "cross-project-contamination",
+      "query": "continue the stock trading KOSPI strategy roadmap",
+      "expectation": "no_match",
+      "expectedIds": [],
+      "expectedRelevance": {},
+      "forbiddenIds": ["m-current-plan-next-step", "m-golden-replay-eval", "m-replay-cli-command"]
+    },
+    {
+      "queryId": "q-cross-project-contamination-catalog",
+      "category": "cross-project-contamination",
+      "query": "improve catalog option extraction accuracy scripts",
+      "expectation": "no_match",
+      "expectedIds": [],
+      "expectedRelevance": {},
+      "forbiddenIds": ["m-retrieval-telemetry-privacy", "m-bad-retrieval-review-queue"]
+    }
+  ],
+  "memories": [
+    {
+      "id": "m-current-plan-next-step",
+      "content": "Memory usefulness roadmap current next step is a golden retrieval replay set before rerank or MMR tuning."
+    },
+    {
+      "id": "m-current-validation-state",
+      "content": "After each usefulness improvement run focused tests, typecheck, build, full vitest, static scan, independent review, then commit."
+    },
+    {
+      "id": "m-usefulness-roadmap",
+      "content": "Useful memory work order: diagnostic cards, trigger coverage, follow-up query rewrite, telemetry, review queue, golden replay, rerank MMR, stale penalty, usage tracking."
+    },
+    {
+      "id": "m-bad-retrieval-review-queue",
+      "content": "Bad retrieval review queue prioritizes rewritten queries with no selection, empty candidates, candidate no selection, and low selection rate using trace metadata only."
+    },
+    {
+      "id": "m-retrieval-telemetry-privacy",
+      "content": "Retrieval telemetry public APIs and dashboards must not expose rawQueryText or queryText; use trace id, strategy, rewrite kind, and aggregate counts instead."
+    },
+    {
+      "id": "m-dashboard-safe-trace-metadata",
+      "content": "Dashboard trace panels render safe metadata such as trace id, reason, strategy, rewrite kind, candidate count, and selected count."
+    },
+    {
+      "id": "m-golden-replay-eval",
+      "content": "Golden replay evaluation should cover Korean short follow-up, continuation, project code task, debugging, decision recall, stale traps, topic shift, and cross project contamination."
+    },
+    {
+      "id": "m-replay-cli-command",
+      "content": "Retrieval replay benchmark can run from a fixture and emit a markdown report with summary metrics, category breakdown, failed query ids, and no raw prompt or memory text."
+    },
+    {
+      "id": "m-duckdb-arch-mismatch",
+      "content": "DuckDB native module architecture mismatch between arm64 package and x64 Node runtime is fixed by rebuilding or reinstalling the native module for the active runtime architecture."
+    },
+    {
+      "id": "m-review-blocker-fix-pattern",
+      "content": "When independent review finds blockers, add regression tests for each blocker, sanitize error paths, fix metric buckets, rerun validation and rerun independent review before commit."
+    },
+    {
+      "id": "m-dashboard-error-state",
+      "content": "Dashboard unavailable states must show a generic unavailable message instead of presenting missing data as no review needed."
+    },
+    {
+      "id": "m-validation-gates",
+      "content": "Telemetry and dashboard changes require focused tests, typecheck, production build, full vitest, diff check, static privacy scan, and staged diff review."
+    },
+    {
+      "id": "m-independent-review-required",
+      "content": "Pre commit workflow uses an independent reviewer on the staged diff and treats security or logic findings as blockers."
+    },
+    {
+      "id": "m-stale-old-pr-status",
+      "content": "Obsolete note: an earlier pull request was still open and validation had not completed. This stale operational state should not be injected as current context."
+    },
+    {
+      "id": "m-stale-resolved-query-leak",
+      "content": "Obsolete note: query text leakage was still unresolved. This is stale after privacy hardening was validated and committed."
+    },
+    {
+      "id": "m-noise-dashboard-style",
+      "content": "Unrelated visual spacing note for dashboard card padding and color contrast."
+    }
+  ]
+}
