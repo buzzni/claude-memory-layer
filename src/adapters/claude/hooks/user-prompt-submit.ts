@@ -200,6 +200,52 @@ export function shouldRunMemorySearch(prompt: string, adherenceDecision: Adheren
   return trimmed.length > 10 || strongIntentReasons.has(adherenceDecision.reason);
 }
 
+const MAX_RETRIEVAL_CONTEXT_CHARS = 500;
+
+export interface RetrievalQueryInput {
+  prompt: string;
+  currentTurn: number;
+  previousUserPrompt?: string | null;
+  lastAssistantSnippet?: string | null;
+  adherenceDecision: AdherenceDecision;
+}
+
+function compactRetrievalContext(text: string | null | undefined): string {
+  const compacted = (text || '').replace(/\s+/g, ' ').trim();
+  if (compacted.length <= MAX_RETRIEVAL_CONTEXT_CHARS) return compacted;
+  return `${compacted.slice(0, MAX_RETRIEVAL_CONTEXT_CHARS)}…`;
+}
+
+function shouldEnrichRetrievalQuery(input: RetrievalQueryInput): boolean {
+  if (input.currentTurn <= 1) return false;
+  if (!input.adherenceDecision.run) return false;
+  if (input.adherenceDecision.reason === 'topic-shift' || input.adherenceDecision.reason === 'first-turn') {
+    return false;
+  }
+
+  const hasPriorContext = Boolean(compactRetrievalContext(input.previousUserPrompt)) ||
+    Boolean(compactRetrievalContext(input.lastAssistantSnippet));
+  if (!hasPriorContext) return false;
+
+  const reason = input.adherenceDecision.reason;
+  if (reason === 'continuation-intent' || reason === 'decision-recall') return true;
+  if (reason === 'write-intent' && input.prompt.trim().length <= 40) return true;
+  return false;
+}
+
+export function buildRetrievalQuery(input: RetrievalQueryInput): string {
+  const currentPrompt = input.prompt.trim();
+  if (!shouldEnrichRetrievalQuery(input)) return currentPrompt;
+
+  const previousUser = compactRetrievalContext(input.previousUserPrompt);
+  const previousAssistant = compactRetrievalContext(input.lastAssistantSnippet);
+  const parts: string[] = [];
+  if (previousUser) parts.push(`Previous user: ${previousUser}`);
+  if (previousAssistant) parts.push(`Previous assistant: ${previousAssistant}`);
+  parts.push(`Current user: ${currentPrompt}`);
+  return parts.join('\n\n');
+}
+
 function logAdherenceDecision(sessionId: string, turn: number, run: boolean, reason: string): void {
   if (!process.env.CLAUDE_MEMORY_DEBUG) return;
   const mode = run ? 'enforced' : 'skipped';
@@ -257,12 +303,16 @@ export async function main(): Promise<void> {
       const minScore = getDynamicMinScore(input.prompt);
       let mergedMemories: HookMemoryCandidate[] = [];
 
-      // On turn 2+, enrich the retrieval query with the previous assistant response
-      // so short/ambiguous follow-ups ("그거 고쳐줘") resolve correctly.
+      // On turn 2+, enrich ambiguous follow-up retrieval with the previous user prompt
+      // and assistant response so short prompts ("그거 고쳐줘") resolve correctly.
       const lastSnippet = currentTurn > 1 ? readLastAssistantSnippet(input.session_id) : null;
-      const retrievalQuery = lastSnippet
-        ? `${lastSnippet}\n\n${input.prompt}`
-        : input.prompt;
+      const retrievalQuery = buildRetrievalQuery({
+        prompt: input.prompt,
+        currentTurn,
+        previousUserPrompt: adherenceState.lastPrompt,
+        lastAssistantSnippet: lastSnippet,
+        adherenceDecision
+      });
 
       const canUseSemantic = RETRIEVAL_MODE === 'semantic' || RETRIEVAL_MODE === 'hybrid';
       if (canUseSemantic) {

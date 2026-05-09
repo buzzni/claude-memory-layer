@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildRetrievalQuery,
   shouldRunMemorySearch,
   shouldRunAdherenceCheck,
   type AdherenceState,
@@ -93,5 +94,45 @@ describe('Claude user prompt adherence trigger heuristics', () => {
     ).toEqual({ run: true, reason: 'code-signal' });
     expect(shouldRunMemorySearch(prompt, { run: true, reason: 'code-signal' })).toBe(true);
     expect(shouldRunMemorySearch('/help', { run: true, reason: 'continuation-intent' })).toBe(false);
+  });
+
+  it('enriches short follow-up retrieval queries with previous user and assistant context', () => {
+    const query = buildRetrievalQuery({
+      prompt: '응 다음 단계 진행',
+      currentTurn: 3,
+      previousUserPrompt: 'Useful score 진단 카드 구현 완료. 다음은 trigger 다음 단계로 query rewrite 개선',
+      lastAssistantSnippet: '다음으로 제일 효용 큰 개발 후보는 short follow-up query rewrite 강화입니다.',
+      adherenceDecision: { run: true, reason: 'continuation-intent' },
+    });
+
+    expect(query).toContain('Previous user: Useful score 진단 카드 구현 완료');
+    expect(query).toContain('Previous assistant: 다음으로 제일 효용 큰 개발 후보');
+    expect(query).toContain('Current user: 응 다음 단계 진행');
+  });
+
+  it('keeps self-contained topic-shift queries focused on the current prompt', () => {
+    const query = buildRetrievalQuery({
+      prompt: '새로운 프로젝트의 OAuth 설계를 검토해줘',
+      currentTurn: 4,
+      previousUserPrompt: 'claude-memory-layer useful score 개선',
+      lastAssistantSnippet: '이전 작업은 memory retrieval trigger 개선이었습니다.',
+      adherenceDecision: { run: true, reason: 'topic-shift' },
+    });
+
+    expect(query).toBe('새로운 프로젝트의 OAuth 설계를 검토해줘');
+  });
+
+  it('bounds long previous context when building retrieval queries', () => {
+    const longSnippet = 'a'.repeat(900);
+    const query = buildRetrievalQuery({
+      prompt: '그거 계속',
+      currentTurn: 2,
+      previousUserPrompt: '이전 사용자 질문',
+      lastAssistantSnippet: longSnippet,
+      adherenceDecision: { run: true, reason: 'continuation-intent' },
+    });
+
+    expect(query).toContain('Previous assistant: ' + 'a'.repeat(500));
+    expect(query).not.toContain('a'.repeat(700));
   });
 });
