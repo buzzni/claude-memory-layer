@@ -128,6 +128,9 @@ export function buildReplayPromotionPlan(
   options: ReplayPromotionPlanOptions = {}
 ): ReplayPromotionPlan {
   const items = Array.isArray(reviewQueue.items) ? reviewQueue.items : [];
+  const generatedAt = options.generatedAt === undefined
+    ? new Date().toISOString()
+    : validateCanonicalUtcIsoTimestamp(options.generatedAt, 'generatedAt');
   const maxItems = Number.isFinite(options.maxItems) && options.maxItems !== undefined
     ? Math.max(0, Math.floor(options.maxItems))
     : items.length;
@@ -140,7 +143,7 @@ export function buildReplayPromotionPlan(
   return {
     name: 'retrieval-review-golden-promotion-candidates',
     description: 'Privacy-safe candidate plan for manually promoting bad retrieval review queue items into the golden replay fixture.',
-    generatedAt: options.generatedAt ?? new Date().toISOString(),
+    generatedAt,
     metadata: {
       rawContentIncluded: false,
       requiresHumanLabeling: true,
@@ -360,6 +363,17 @@ function safeTimestamp(value: unknown): string | null {
   const date = new Date(value);
   if (!Number.isFinite(date.getTime())) return null;
   return date.toISOString();
+}
+
+function validateCanonicalUtcIsoTimestamp(value: unknown, fieldName: string): string {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)) {
+    throw new Error(`Invalid ${fieldName}: expected a canonical UTC ISO timestamp`);
+  }
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime()) || date.toISOString() !== value) {
+    throw new Error(`Invalid ${fieldName}: expected a canonical UTC ISO timestamp`);
+  }
+  return value;
 }
 
 function compareCreatedAt(left: string | null, right: string | null): number {

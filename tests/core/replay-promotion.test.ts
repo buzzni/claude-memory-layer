@@ -175,6 +175,12 @@ describe('retrieval review queue replay promotion', () => {
     expect(new Set(placeholderQueries).size).toBe(placeholderQueries.length);
   });
 
+  it('rejects malformed generatedAt values in the core helper', () => {
+    for (const generatedAt of ['1', '05/09/2026', '2026-05-09 04:00:00', '2026-02-31T00:00:00.000Z']) {
+      expect(() => buildReplayPromotionPlan(reviewQueue, { generatedAt })).toThrow('Invalid generatedAt');
+    }
+  });
+
   it('formats a markdown labeling checklist without raw query or memory content', () => {
     const plan = buildReplayPromotionPlan(reviewQueue, {
       generatedAt: '2026-05-09T02:00:00.000Z',
