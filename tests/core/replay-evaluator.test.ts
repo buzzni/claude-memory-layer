@@ -339,6 +339,9 @@ describe('replay fixture evaluator', () => {
     expect(packageJson.scripts?.['eval:retrieval-replay:report']).toBe(
       'tsx scripts/replay-retrieval-benchmark.ts --fixture benchmarks/replay/golden-memory-usefulness-v1.json --format markdown --no-per-query'
     );
+    expect(packageJson.scripts?.['benchmark:replay:promote-review']).toBe(
+      'tsx scripts/promote-retrieval-review-queue.ts'
+    );
     expect(serialized).not.toMatch(/\/Users\//);
     expect(serialized).not.toMatch(/PRIVATE_|SECRET|TOKEN|PASSWORD/i);
   });
