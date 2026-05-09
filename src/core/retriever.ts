@@ -13,6 +13,10 @@ import { GraduationPipeline } from './graduation.js';
 import {
   hasTechnicalTermOverlap,
   isCommandArtifactQuery,
+  isCurrentStateQuery,
+  isStaleOrSupersededContent,
+  buildRetrievalQualityQuery,
+  hasDiscriminativeTermOverlap,
   shouldApplyTechnicalGuard
 } from './retrieval-quality.js';
 import type { MemoryEvent, MatchResult, SharedTroubleshootingEntry } from './types.js';
@@ -175,6 +179,7 @@ export class Retriever {
     const opts = { ...DEFAULT_OPTIONS, ...options };
     const sessionFilter = opts.scope?.sessionId ?? opts.sessionId;
     const fallbackTrace: string[] = [];
+    const qualityQuery = buildRetrievalQualityQuery(query);
 
     if (isCommandArtifactQuery(query)) {
       fallbackTrace.push('guard:command-artifact-query');
@@ -195,6 +200,7 @@ export class Retriever {
     // Stage 1: primary retrieval
     const primaryStrategy: RetrievalStrategy = opts.strategy === 'auto' ? 'fast' : (opts.strategy || 'fast');
     let current = await this.runStage(query, {
+      qualityQuery,
       strategy: primaryStrategy,
       topK: opts.topK,
       minScore: opts.minScore,
@@ -214,6 +220,7 @@ export class Retriever {
     // Stage 2: deep fallback
     if (fallbackEnabled && this.shouldFallback(current.matchResult, current.results) && primaryStrategy !== 'deep') {
       current = await this.runStage(query, {
+        qualityQuery,
         strategy: 'deep',
         topK: opts.topK,
         minScore: opts.minScore,
@@ -233,6 +240,7 @@ export class Retriever {
     // Stage 3: scope-expanded deep fallback
     if (fallbackEnabled && this.shouldFallback(current.matchResult, current.results)) {
       current = await this.runStage(query, {
+        qualityQuery,
         strategy: 'deep',
         topK: opts.topK,
         minScore: Math.max(0.5, opts.minScore - 0.15),
@@ -251,11 +259,21 @@ export class Retriever {
 
     // Stage 4: summary fallback
     if (fallbackEnabled && this.shouldFallback(current.matchResult, current.results)) {
-      const summary = await this.buildSummaryFallback(query, opts.topK);
+      const summary = await this.buildSummaryFallback(qualityQuery, opts.topK);
+      const scopedSummary = await this.applyScopeFilters(summary, {
+        scope: opts.scope,
+        projectScopeMode: opts.projectScopeMode,
+        projectHash: opts.projectHash,
+        allowedProjectHashes: opts.allowedProjectHashes
+      });
+      const filteredSummary = this.applyQualityFilters(scopedSummary, {
+        query,
+        minScore: opts.minScore
+      });
       current = {
-        results: summary,
-        candidateResults: summary,
-        matchResult: this.matcher.matchSearchResults(summary, () => 0)
+        results: filteredSummary,
+        candidateResults: filteredSummary,
+        matchResult: this.matcher.matchSearchResults(filteredSummary, () => 0)
       };
       fallbackTrace.push('fallback:summary');
     }
@@ -333,6 +351,7 @@ export class Retriever {
   private async runStage(
     query: string,
     input: {
+      qualityQuery?: string;
       strategy: RetrievalStrategy;
       topK: number;
       minScore: number;
@@ -358,10 +377,11 @@ export class Retriever {
     effectiveQueryText?: string;
     queryRewriteKind?: string;
   }> {
-    let rerankQuery = query;
+    const searchQuery = input.qualityQuery ?? query;
+    let rerankQuery = searchQuery;
     let effectiveQueryText: string | undefined;
     let queryRewriteKind: string | undefined;
-    let initialResults = await this.searchByStrategy(query, {
+    let initialResults = await this.searchByStrategy(searchQuery, {
       strategy: input.strategy,
       topK: input.topK,
       minScore: input.minScore,
@@ -374,8 +394,8 @@ export class Retriever {
       if (rewritten && rewritten !== normalizedQuery) {
         effectiveQueryText = `${normalizedQuery} ${rewritten}`.trim();
         queryRewriteKind = 'intent-rewrite';
-        rerankQuery = effectiveQueryText;
-        const rewrittenResults = await this.searchByStrategy(rewritten, {
+        rerankQuery = buildRetrievalQualityQuery(effectiveQueryText);
+        const rewrittenResults = await this.searchByStrategy(buildRetrievalQualityQuery(rewritten), {
           strategy: 'deep',
           topK: input.topK,
           minScore: Math.max(0.5, input.minScore - 0.1),
@@ -418,6 +438,12 @@ export class Retriever {
     options: { query: string; minScore: number }
   ): Array<SearchResult & { semanticScore?: number; lexicalScore?: number; recencyScore?: number }> {
     let filtered = [...results];
+
+    if (isCurrentStateQuery(options.query)) {
+      filtered = filtered.filter((result) => !isStaleOrSupersededContent(result.content));
+    }
+
+    filtered = filtered.filter((result) => hasDiscriminativeTermOverlap(options.query, result.content));
 
     if (shouldApplyTechnicalGuard(options.query)) {
       filtered = filtered.filter((result) => hasTechnicalTermOverlap(options.query, result.content));

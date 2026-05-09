@@ -266,6 +266,26 @@ describe('replay fixture evaluator', () => {
     expect(markdown).not.toContain('PRIVATE_');
   });
 
+  it('meets the golden usefulness noise-reduction gate with the default retriever', async () => {
+    const goldenFixture = JSON.parse(
+      readFileSync('benchmarks/replay/golden-memory-usefulness-v1.json', 'utf8')
+    ) as ReplayEvaluationFixture;
+
+    const report = await evaluateReplayFixture(goldenFixture, {
+      generatedAt: '2026-05-09T00:00:00.000Z',
+      includePerQuery: false,
+      retrievalOptions: { strategy: 'auto' }
+    });
+
+    expect(report.summary.queryYieldRate).toBeGreaterThanOrEqual(0.9);
+    expect(report.summary.noMatchAccuracy).toBeGreaterThanOrEqual(5 / 6);
+    expect(report.summary.forbiddenHitCount).toBeLessThanOrEqual(1);
+    expect(report.summary.failedQueryCount).toBeLessThanOrEqual(2);
+    expect(report.summary.categoryBreakdown['korean-short-follow-up']?.queryYieldRate).toBe(1);
+    expect(report.summary.categoryBreakdown['stale-memory-trap']?.noMatchAccuracy).toBe(1);
+    expect(report.summary.categoryBreakdown['cross-project-contamination']?.forbiddenHitCount).toBe(0);
+  });
+
   it('ships a privacy-safe golden replay fixture and npm eval script', () => {
     const fixture = JSON.parse(
       readFileSync('benchmarks/replay/golden-memory-usefulness-v1.json', 'utf8')
