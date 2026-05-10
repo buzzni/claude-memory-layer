@@ -306,6 +306,50 @@ cascade failure를 단계적으로 수정한다.
 
 ---
 
+### Task 3.3 — Vector/LanceDB schema mismatch fallback (IMP-08)
+
+**목표**: 오래된 vector index 또는 embedder dimension mismatch가 있어도 agent-facing MCP tools가 멈추지 않도록 한다.
+
+**작업 단계**:
+
+1. `src/core/progressive-retriever.ts`, vector adapter, `src/extensions/mcp/handlers.ts`에서 semantic/vector query 예외 경계를 확인한다.
+2. LanceDB 오류 메시지(`No vector column found to match with the query vector dimension`)를 recoverable vector-unavailable 상태로 매핑한다.
+3. `mem-context-pack` fallback 경로 추가:
+   - relevant memories: keyword/FTS 가능한 결과만 사용
+   - recent timeline/session summaries: 항상 반환
+   - warning: semantic vector search unavailable
+4. `mem-search` fallback 경로 추가:
+   - keyword results가 있으면 반환
+   - 없으면 safe diagnostic + `claude-memory-layer process -p <project>` 또는 rebuild 안내
+5. Fixture/test 추가:
+   - vector table dimension mismatch를 재현
+   - `mem-context-pack`은 `isError=false`
+   - `mem-search`는 fallback 또는 actionable diagnostic 반환
+
+**완료 조건**: 실제 `/Users/namsangboy/workspace/claude-memory-layer` projectPath에서 MCP `mem-context-pack(query=continue)`와 `mem-search`가 오류 없이 완료
+
+---
+
+### Task 3.4 — Project-scoped retrieval isolation (IMP-09)
+
+**목표**: `projectPath`가 지정된 context pack/timeline/search에 다른 workspace 프로젝트 내용이 섞이지 않도록 한다.
+
+**작업 단계**:
+
+1. Codex/Hermes/Claude importer가 저장하는 event/session metadata의 `projectPath`, `projectHash`, source 정보를 확인한다.
+2. Retrieval/timeline query가 project service를 사용하더라도 metadata filter를 한 번 더 적용하도록 보강한다.
+3. Hermes project context가 없는 sessions는 auto-refresh 대상에서 제외하고 validation warning을 유지한다.
+4. Cross-project contamination fixture 구성:
+   - target: `claude-memory-layer`
+   - distractors: `predictor`, `Streamlit`
+   - assertion: `containsOtherProject === false`
+5. CLI/MCP parity test 추가:
+   - 같은 `projectPath`의 stats/search storage label과 event/vector count가 일치
+
+**완료 조건**: `mem-context-pack(projectPath=...)`, `mem-project-timeline(projectPath=...)`, CLI `search -p ...`가 모두 same-project 결과만 반환
+
+---
+
 ## 검증 계획
 
 각 Phase 완료 후 f4d5c120 프로젝트로 아래 지표 확인:

@@ -271,7 +271,33 @@ Claude: [mem-details 도구 호출]
         [전체 내용 표시]
 ```
 
-## 8. 참고 자료
+## 8. 2026-05-10 실데이터 검증 메모
+
+**검증 대상 프로젝트**: `/Users/namsangboy/workspace/claude-memory-layer`
+
+**산출물**: `/tmp/cml-realdata-verify-20260510-092638/`
+
+**통과한 항목**:
+- `npm run typecheck`, `npm run build`, `npm test -- --run` 통과. 전체 test는 71 files / 386 tests passed.
+- Retrieval replay eval 통과. Golden replay query 16개 실행.
+- CLI dry-run 검증 통과: Codex 50 sessions scanned / 3 matched / 17 normalized messages / warnings 0.
+- CLI dry-run 검증 통과: Hermes 1263 sessions scanned / 50 matched / 811 normalized messages / warnings 1.
+- Project-scoped Codex/Hermes import smoke는 중복으로 인해 신규 import 0이었지만 project storage mode로 정상 종료.
+- CLI project search는 같은 project data에서 3개 local memories를 반환.
+
+**발견한 문제**:
+- Native MCP `mem-context-pack(query=continue, projectPath=...)`와 `mem-search(projectPath=...)`가 vector dimension mismatch로 실패했다.
+- CLI stats와 MCP stats가 같은 `projectPath`에서 서로 다른 vector count를 보여 storage/service freshness parity 확인이 필요하다.
+- Hermes validation에서 project context 없는 session 66개가 관측되었다. Auto-refresh/import는 no-context session을 same-project로 오인하지 않아야 한다.
+- 이전 direct handler smoke에서 다른 workspace project signal이 context pack에 섞이는 사례가 있었다.
+
+**후속 계획 위치**:
+- `specs/mcp-desktop-integration/spec.md` §9
+- `specs/mcp-desktop-integration/plan.md` Phase 5
+- `specs/memory-utilization-improvements/spec.md` IMP-08/IMP-09
+- `specs/memory-utilization-improvements/plan.md` Task 3.3/3.4
+
+## 9. 참고 자료
 
 - **MCP 공식 문서**: https://modelcontextprotocol.io/
 - **claude-mem MCP**: Desktop integration via MCP

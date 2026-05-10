@@ -536,6 +536,58 @@ package.json               # 워크스페이스 설정
 src/cli/index.ts           # mcp 명령 등록
 ```
 
+## Phase 5: Agent Context Tools 실데이터 Hardening (P0)
+
+### 5.1 Vector schema mismatch fallback
+
+**문제**: 2026-05-10 실제 `claude-memory-layer` project data에서 MCP `mem-context-pack`/`mem-search`가 LanceDB vector dimension mismatch(`No vector column found to match with the query vector dimension: 384`)로 실패했다. CLI `search`는 같은 프로젝트에서 fallback/keyword 기반으로 성공했다.
+
+**작업 항목**:
+- [ ] `ProgressiveRetriever.smartSearch()` 또는 MCP handler 경계에서 vector query 예외를 잡고 keyword/recent timeline fallback을 수행한다.
+- [ ] fallback 응답에 `warning: semantic vector search unavailable; using keyword/timeline fallback`을 포함한다.
+- [ ] embedder 모델/차원 변경 시 오래된 LanceDB table을 detect하고 rebuild/reopen 안내를 제공한다.
+- [ ] 회귀 테스트: vector table dimension mismatch fixture에서도 `mem-context-pack`은 `isError=false`와 recent timeline을 반환한다.
+
+### 5.2 Project isolation 보강
+
+**문제**: direct handler smoke에서 `projectPath=/Users/namsangboy/workspace/claude-memory-layer`인데 `predictor`, Streamlit 등 다른 workspace signal이 context pack에 섞인 사례가 있었다. Hermes validation도 project context가 없는 66개 session을 경고했다.
+
+**작업 항목**:
+- [ ] Hermes/Codex imported session metadata에 canonical `projectPath`/`projectHash`를 저장하고 retrieval/timeline 쿼리에서 필수 필터로 사용한다.
+- [ ] project context가 없는 Hermes session은 explicit session import가 아닌 한 project-scoped auto-refresh 대상에서 제외한다.
+- [ ] `mem-project-timeline`/`mem-context-pack`에 `containsOtherProject` 회귀 테스트를 추가한다.
+- [ ] Generic continuation query는 semantic relevance보다 same-project recent timeline을 우선한다.
+
+### 5.3 CLI/MCP parity 및 long-lived service freshness
+
+**문제**: 같은 `projectPath`에 대해 CLI stats는 `Vector Count: 0`, MCP stats는 `Total Vectors: 23`으로 관측되었다. Long-lived MCP server가 오래된 index/schema/service instance를 유지할 수 있다.
+
+**작업 항목**:
+- [ ] CLI와 MCP가 동일한 project registry/storage path를 사용하는지 parity test를 추가한다.
+- [ ] MCP tool call 전 storage schema/version/embedding model metadata를 검사하고 mismatch 시 service를 reopen하거나 명확한 restart 안내를 반환한다.
+- [ ] `mem-stats`에 embedder model, vector table dimension, pending embeddings, storage path label을 safe metadata로 표시한다.
+
+### 5.4 Real-data smoke script
+
+**검증 명령 묶음**:
+```bash
+npm run typecheck
+npm run build
+npm test -- --run
+npm run eval:retrieval-replay
+node dist/cli/index.js codex validate -p "$PWD" -l 50 --format json --anonymize-projects
+node dist/cli/index.js hermes validate -p "$PWD" -l 50 --format json
+node dist/cli/index.js codex import -p "$PWD" --session-limit 2 -l 120 --no-process-embeddings
+node dist/cli/index.js hermes import -p "$PWD" --session-limit 2 -l 120 --no-process-embeddings
+node dist/cli/index.js search "claude-memory-layer MCP context pack refreshLatest" -p "$PWD" -k 5 -s 0.1
+# MCP native: mem-stats, mem-context-pack(query=continue), mem-search(query=...)
+```
+
+**완료 조건**:
+- [ ] CLI smoke 명령이 모두 exit 0.
+- [ ] MCP native `mem-context-pack`와 `mem-search`가 실제 project data에서 exit/error 없이 결과를 반환.
+- [ ] Smoke report가 `/tmp/cml-realdata-verify-*` 또는 CI artifact로 남고, secret redaction을 통과.
+
 ## 마일스톤
 
 | 단계 | 완료 기준 |
@@ -548,3 +600,4 @@ src/cli/index.ts           # mcp 명령 등록
 | M6 | 테스트 |
 | M7 | 문서화 |
 | M8 | npm 배포 |
+| M9 | Agent context tools real-data hardening |

@@ -280,6 +280,47 @@ score = 0.35 × semanticScore +
 
 ---
 
+### IMP-08: Vector/LanceDB schema mismatch fallback
+
+**우선순위**: P0 (Agent workflow blocker)
+
+**문제**:
+- 2026-05-10 실제 `claude-memory-layer` project store에서 MCP `mem-context-pack`와 `mem-search`가 `No vector column found to match with the query vector dimension: 384`로 실패.
+- CLI `search`는 같은 project data에서 3개 local memories를 반환했지만 MCP native tool은 전체 tool failure로 종료.
+- 오래된 LanceDB table 또는 long-lived MCP service가 현재 embedder metadata와 다른 vector schema를 유지할 수 있음.
+
+**해결 방안**:
+1. Vector query boundary에서 dimension/schema mismatch를 typed recoverable error로 분류한다.
+2. `mem-context-pack`은 semantic retrieval 실패 시 keyword search + recent project timeline fallback을 반환한다.
+3. `mem-search`는 가능한 경우 keyword fallback 결과를 반환하고, 불가능하면 `isError=true` 대신 복구 지침이 포함된 safe diagnostic을 반환한다.
+4. Stats/health에 embedder model, vector dimension, table schema, pending embeddings를 노출해 재색인 필요성을 알린다.
+
+**검증**:
+- 오래된 vector table fixture에서 `mem-context-pack(query="continue")`가 `isError=false`와 warning을 반환.
+- 실제 project smoke에서 MCP `mem-context-pack`/`mem-search` 모두 실패 없이 완료.
+
+---
+
+### IMP-09: Project-scoped retrieval isolation
+
+**우선순위**: P0 (Context contamination)
+
+**문제**:
+- Direct handler smoke에서 `projectPath=/Users/namsangboy/workspace/claude-memory-layer`인데 `predictor`, Streamlit 등 다른 workspace 내용이 context pack에 섞인 사례가 있었다.
+- Hermes validation에서 project context 없는 session 66개가 관측되어 auto-refresh/import에서 오매칭 위험이 있다.
+
+**해결 방안**:
+1. Imported event/session metadata에 canonical `projectPath`, `projectHash`, `sourceAgent`를 저장하고 retrieval query에 same-project filter를 강제한다.
+2. Project context가 없는 Hermes sessions는 explicit `sessionId` import가 아닌 한 `mem-import-latest`/auto-refresh 대상에서 제외한다.
+3. Generic continuation query는 same-project recent timeline을 먼저 구성하고 semantic results는 same-project 필터를 통과한 경우에만 병합한다.
+4. Test fixture에 다른 project keywords(`predictor`, `Streamlit`)를 넣고 `containsOtherProject=false`를 검증한다.
+
+**검증**:
+- `mem-project-timeline(projectPath=...)`와 `mem-context-pack(projectPath=...)` 결과에 다른 workspace path/topic이 포함되지 않음.
+- CLI/MCP stats/search가 같은 `projectPath`에서 같은 storage scope와 event/vector count를 보고.
+
+---
+
 ## 2차 개선 (실측 데이터 기반 후속)
 
 ### IMP-01b: 대시보드 API projectId 파라미터 불일치 수정

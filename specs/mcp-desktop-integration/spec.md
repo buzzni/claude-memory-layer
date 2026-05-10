@@ -484,7 +484,35 @@ function handleError(error: Error): ToolResult {
 - Storage corrupted
 ```
 
-## 9. 성공 기준
+## 9. Agent Context Tools 실데이터 요구사항 (2026-05-10 검증 반영)
+
+최근 기능 개선은 Desktop 검색뿐 아니라 Hermes/Codex coding agent가 세션 시작 시 바로 사용할 수 있는 compact project context를 제공해야 한다.
+
+### 9.1 추가 MCP 도구 범위
+
+- `mem-context-pack`: `projectPath` 기준 관련 메모리, 최근 프로젝트 타임라인, 최근 세션 요약을 compact Markdown으로 반환한다.
+- `mem-import-latest`: Claude/Codex/Hermes 최신 로컬 세션을 명시적 project scope로 import한다.
+- `mem-project-timeline`: project store 안의 최근 이벤트/세션만 요약한다.
+- `mem-source-ref`: raw transcript를 노출하지 않고 안전한 source reference와 redacted preview만 반환한다.
+
+### 9.2 필수 동작
+
+- `mem-import-latest` 및 `mem-context-pack refreshLatest=true`는 absolute `projectPath` 없이 실행되면 안 된다. Global/default store를 묵시적으로 오염시키지 않는다.
+- `projectPath`가 지정되면 결과에는 해당 프로젝트와 매칭된 session/event만 포함한다. 다른 workspace 프로젝트(`predictor`, Streamlit 등) 내용이 continuation pack에 섞이면 실패로 본다.
+- Generic continuation query(`continue`, `다음`, `이어서`)는 semantic score보다 최근 프로젝트 timeline/session summary를 우선한다.
+- LanceDB/vector index가 오래되어 현재 embedder 차원과 맞지 않거나 vector count가 0이어도 agent workflow를 막지 않는다. `mem-context-pack`은 keyword/timeline fallback pack을 반환하고, `mem-search`는 fallback 결과 또는 복구 가능한 safe error와 재색인 안내를 반환한다.
+- CLI와 MCP가 같은 `projectPath`를 받을 때 stats/search 결과가 일관되어야 한다. Long-lived MCP server가 오래된 index/schema를 물고 있으면 재시작 필요성을 명시하거나 자동 reload/reopen한다.
+- MCP 응답의 safe metadata/preview에는 connection string, token, API key, raw transcript 경로, state DB path, raw query content를 그대로 보존하지 않는다.
+
+### 9.3 2026-05-10 실데이터 검증에서 확인한 이슈
+
+- CLI smoke는 성공: `codex validate`, `hermes validate`, project-scoped `codex import`, `hermes import`, `stats`, `search`가 exit 0.
+- MCP native tool smoke는 실패: 같은 `projectPath`로 `mem-context-pack query=continue` 및 `mem-search` 호출 시 `No vector column found to match with the query vector dimension: 384` 발생.
+- CLI stats는 `Vector Count: 0`, MCP stats는 `Total Vectors: 23`으로 관측되어 CLI/MCP storage 또는 long-lived service view가 불일치했다.
+- Hermes validation은 66개 session에 project context가 없다고 경고했다. Import/refresh 시 no-context session이 잘못 매칭되어 project pack에 섞이지 않도록 해야 한다.
+- 이전 direct handler smoke에서 `containsOtherProject: true`가 관측되었으므로 project isolation 회귀 테스트가 필요하다.
+
+## 10. 성공 기준
 
 - [ ] `code-memory mcp install` 명령 동작
 - [ ] Claude Desktop에서 `mem-search` 도구 사용 가능
@@ -492,3 +520,6 @@ function handleError(error: Error): ToolResult {
 - [ ] CLI와 동일한 메모리 저장소 공유
 - [ ] Privacy 필터 적용
 - [ ] 에러 시 적절한 메시지 반환
+- [ ] `mem-context-pack`이 실제 project data에서 vector 오류 없이 continuation pack을 반환
+- [ ] `mem-import-latest`가 absolute `projectPath`에서만 mutating import 수행
+- [ ] project-scoped MCP 결과에 다른 workspace 프로젝트 내용이 섞이지 않음
