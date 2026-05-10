@@ -4,13 +4,13 @@
  */
 
 import { Hono } from 'hono';
-import { getServiceFromQuery, getWritableServiceFromQuery } from './utils.js';
+import { getLightweightServiceFromQuery, getWritableServiceFromQuery } from './utils.js';
 
 export const healthRouter = new Hono();
 
 // GET /api/health
 healthRouter.get('/', async (c) => {
-  const memoryService = getServiceFromQuery(c);
+  const memoryService = getLightweightServiceFromQuery(c);
   try {
     await memoryService.initialize();
 

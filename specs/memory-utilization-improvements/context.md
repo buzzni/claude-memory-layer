@@ -146,8 +146,9 @@ Session-start의 백필 메커니즘도 요약을 생성하지 못하고 있음.
   - vector nodes 0이라 의미있는 semantic recall 판단은 불가, keyword-only recall 상태
 - **대시보드 안정성 이슈**:
   - legacy DB schema에서 stats 500을 유발했던 `query_rewrite_kind` missing 문제는 `v1.0.35`에서 수정됨
-  - dashboard read-only endpoints(`/api/events`, `/api/sessions`, `/api/stats`, `/api/stats/shared`, `/api/stats/endless`, `/api/stats/levels/:level`, `/api/stats/most-accessed`, `/api/stats/timeline`, `/api/stats/helpfulness`, `/api/stats/usefulness`, `/api/stats/retrieval-traces`, `/api/stats/retrieval-review-queue`, `/api/stats/kpi`)도 full embedder init 대신 lightweight service를 써야 함
+  - dashboard read-only endpoints(`/api/health`, `/api/events`, `/api/sessions`, `/api/stats`, `/api/stats/shared`, `/api/stats/endless`, `/api/stats/levels/:level`, `/api/stats/most-accessed`, `/api/stats/timeline`, `/api/stats/helpfulness`, `/api/stats/usefulness`, `/api/stats/retrieval-traces`, `/api/stats/retrieval-review-queue`, `/api/stats/kpi`)도 full embedder init 대신 lightweight service를 써야 함
   - published `1.0.38` fresh-install UI smoke에서 stats subroutes가 embedder/model init failure로 500을 낸 것을 재현했고, `1.0.39`에서는 POST `/api/stats/graduation/run`을 제외한 dashboard read stats subroutes를 SQLite/read-only path로 고정함
+  - published `1.0.39` smoke에서 `/api/health`도 같은 full-service init 문제로 500을 낸 것을 재현했고, `1.0.40`에서는 GET `/api/health`도 lightweight read path로 고정함
   - disclosure search `auto`는 embedding backend unavailable 시 lightweight fast fallback이 필요함
 - **메모리 의미성 이슈**:
   - `claude-memory-layer` project DB 안에 legacy unscoped Hermes imports가 들어 있어 `predictor`, `Streamlit`, `alpha-ai-trader` snippets가 project view에 보일 수 있음

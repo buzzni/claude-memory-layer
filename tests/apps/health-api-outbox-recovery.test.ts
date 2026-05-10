@@ -13,12 +13,14 @@ const mocks = vi.hoisted(() => {
   return {
     service,
     getServiceFromQuery: vi.fn(() => service),
+    getLightweightServiceFromQuery: vi.fn(() => service),
     getWritableServiceFromQuery: vi.fn(() => service)
   };
 });
 
 vi.mock('../../src/apps/server/api/utils.js', () => ({
   getServiceFromQuery: mocks.getServiceFromQuery,
+  getLightweightServiceFromQuery: mocks.getLightweightServiceFromQuery,
   getWritableServiceFromQuery: mocks.getWritableServiceFromQuery
 }));
 
@@ -47,8 +49,25 @@ describe('health API outbox recovery', () => {
       embedding: { recoveredProcessing: 34, retriedFailed: 0 },
       vector: { recoveredProcessing: 2, retriedFailed: 1 }
     });
-    mocks.getServiceFromQuery.mockClear();
-    mocks.getWritableServiceFromQuery.mockClear();
+    mocks.getServiceFromQuery.mockReset().mockImplementation(() => {
+      throw new Error('full service must not initialize dashboard read health');
+    });
+    mocks.getLightweightServiceFromQuery.mockReset().mockImplementation(() => mocks.service);
+    mocks.getWritableServiceFromQuery.mockReset().mockImplementation(() => mocks.service);
+  });
+
+  it('reads dashboard health through the lightweight service instead of full embedder initialization', async () => {
+    const res = await createApp().request('/api/health?project=abc12345');
+
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.status).toBe('ok');
+    expect(json.storage).toEqual({ totalEvents: 51, vectorCount: 0 });
+    expect(json.outbox.totals).toEqual({ pending: 1, failed: 0 });
+    expect(mocks.getLightweightServiceFromQuery).toHaveBeenCalledTimes(1);
+    expect(mocks.getServiceFromQuery).not.toHaveBeenCalled();
+    expect(mocks.getWritableServiceFromQuery).not.toHaveBeenCalled();
+    expect(mocks.service.shutdown).toHaveBeenCalledTimes(1);
   });
 
   it('recovers stuck outbox items through an authenticated dashboard-safe API seam', async () => {

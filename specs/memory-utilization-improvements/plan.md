@@ -461,7 +461,7 @@ cascade failure를 단계적으로 수정한다.
 - dashboard/API smoke: `/health` 200, unauth `/`/`/api/stats` 401, login 200, authenticated `/`, `/api/health`, `/api/stats`, `/api/stats/shared`, `/api/stats/endless`, `/api/stats/levels/L0`, `/api/stats/most-accessed`, `/api/stats/timeline`, `/api/stats/helpfulness`, `/api/stats/usefulness`, `/api/stats/retrieval-traces`, `/api/stats/retrieval-review-queue`, `/api/stats/kpi`, `/api/events`, `/api/sessions`, `/api/search/disclosure`, `/api/chat` memory-only all 200
 - dashboard UI smoke: `/memory legacy project scope repair quarantine` submits through `/api/chat` 200, page remains on dashboard, console/js errors 0
 - privacy smoke: CLI `--password ...` / `--password=...`, prefixed options(`--client-secret ...`, `--db-password ...`, `--access-token ...`), hyphenated assignments, and URL-next-line password paste are redacted before future memory storage; benign URL-next-line status words are not over-redacted; existing live DB credential-like rows cleaned to 0 unredacted matches
-- split tests: core 44 files / 240 tests, apps 22 files / 100 tests, extensions+adapters 14 files / 82 tests passed
+- split tests: core 44 files / 240 tests, apps 22 files / 101 tests, extensions+adapters 14 files / 82 tests passed
 - replay: Precision@1 1.0, MRR 1.0, forbidden hits 0, failed queries 0
 
 **완료 조건**: live CML project dashboard memory-only query에서 unrelated Alpha AI Trader/Streamlit memories가 기본 top results에 섞이지 않음
