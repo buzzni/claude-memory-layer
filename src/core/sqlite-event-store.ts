@@ -9,7 +9,9 @@ import {
   MemoryEventInput,
   Session,
   AppendResult,
-  OutboxItem
+  OutboxItem,
+  OutboxRecoveryOptions,
+  OutboxRecoveryResult
 } from './types.js';
 import { makeCanonicalKey, makeDedupeKey } from './canonical-key.js';
 import {
@@ -39,6 +41,15 @@ function normalizeQueryRewriteKind(value?: string | null): QueryRewriteKind {
 }
 
 const REWRITTEN_QUERY_REWRITE_KIND_SQL = `LOWER(TRIM(COALESCE(query_rewrite_kind, 'none'))) IN ('follow-up-context', 'intent-rewrite')`;
+const DEFAULT_OUTBOX_STUCK_THRESHOLD_MS = 5 * 60 * 1000;
+const DEFAULT_OUTBOX_MAX_RETRIES = 3;
+
+function emptyOutboxRecoveryResult(): OutboxRecoveryResult {
+  return {
+    embedding: { recoveredProcessing: 0, retriedFailed: 0 },
+    vector: { recoveredProcessing: 0, retriedFailed: 0 }
+  };
+}
 
 export class SQLiteEventStore {
   private db: SQLiteDatabase;
@@ -883,12 +894,14 @@ export class SQLiteEventStore {
 
     if (pending.length === 0) return [];
 
-    // Update status to processing
+    // Update status to processing and stamp the claim time so abandoned workers can be recovered safely.
     const ids = pending.map(r => r.id as string);
     const placeholders = ids.map(() => '?').join(',');
     sqliteRun(
       this.db,
-      `UPDATE embedding_outbox SET status = 'processing' WHERE id IN (${placeholders})`,
+      `UPDATE embedding_outbox
+       SET status = 'processing', processed_at = datetime('now'), error_message = NULL
+       WHERE id IN (${placeholders})`,
       ids
     );
 
@@ -965,6 +978,69 @@ export class SQLiteEventStore {
        WHERE id IN (${placeholders})`,
       [error, ...ids]
     );
+  }
+
+  /**
+   * Recover abandoned outbox work after a worker/process crash.
+   *
+   * Rows in `processing` are claimed work. If the process exits before marking
+   * them done/failed, they otherwise remain invisible to future processing.
+   * Recovery is deliberately age-gated so an active worker is not disturbed.
+   */
+  async recoverStuckOutboxItems(options: OutboxRecoveryOptions = {}): Promise<OutboxRecoveryResult> {
+    await this.initialize();
+
+    const thresholdMs = Number.isFinite(options.stuckThresholdMs) && (options.stuckThresholdMs ?? 0) >= 0
+      ? options.stuckThresholdMs!
+      : DEFAULT_OUTBOX_STUCK_THRESHOLD_MS;
+    const maxRetries = Number.isFinite(options.maxRetries) && (options.maxRetries ?? 0) > 0
+      ? options.maxRetries!
+      : DEFAULT_OUTBOX_MAX_RETRIES;
+    const now = options.now ?? new Date();
+    const threshold = new Date(now.getTime() - thresholdMs).toISOString();
+    const result = emptyOutboxRecoveryResult();
+
+    const embeddingRecovered = sqliteRun(
+      this.db,
+      `UPDATE embedding_outbox
+       SET status = 'pending', processed_at = NULL, error_message = NULL
+       WHERE status = 'processing'
+         AND datetime(COALESCE(processed_at, created_at)) < datetime(?)`,
+      [threshold]
+    );
+    result.embedding.recoveredProcessing = Number(embeddingRecovered.changes ?? 0);
+
+    const embeddingRetried = sqliteRun(
+      this.db,
+      `UPDATE embedding_outbox
+       SET status = 'pending', error_message = NULL
+       WHERE status = 'failed'
+         AND retry_count < ?`,
+      [maxRetries]
+    );
+    result.embedding.retriedFailed = Number(embeddingRetried.changes ?? 0);
+
+    const vectorRecovered = sqliteRun(
+      this.db,
+      `UPDATE vector_outbox
+       SET status = 'pending', updated_at = ?, error = NULL
+       WHERE status = 'processing'
+         AND datetime(updated_at) < datetime(?)`,
+      [now.toISOString(), threshold]
+    );
+    result.vector.recoveredProcessing = Number(vectorRecovered.changes ?? 0);
+
+    const vectorRetried = sqliteRun(
+      this.db,
+      `UPDATE vector_outbox
+       SET status = 'pending', updated_at = ?, error = NULL
+       WHERE status = 'failed'
+         AND retry_count < ?`,
+      [now.toISOString(), maxRetries]
+    );
+    result.vector.retriedFailed = Number(vectorRetried.changes ?? 0);
+
+    return result;
   }
 
 

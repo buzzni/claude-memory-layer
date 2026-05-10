@@ -564,3 +564,43 @@ src/cli/index.ts             # CLI 커맨드 추가
 | M6 | reconcile + recoverStuck |
 | M7 | CLI 커맨드 |
 | M8 | 테스트 통과 |
+
+## 2026-05-10 구현 업데이트 — stuck outbox recovery + vector count 검증
+
+### 완료된 항목
+
+- [x] `SQLiteEventStore.recoverStuckOutboxItems()` 추가
+  - stale `embedding_outbox.status='processing'` row를 `pending`으로 복구
+  - stale `vector_outbox.status='processing'` row를 `pending`으로 복구
+  - retry 가능한 `failed` row를 `pending`으로 재시도 가능 상태로 전환
+- [x] `MemoryQueryService` / `MemoryService`에 recovery delegation 추가
+- [x] CLI `process` 기본 동작에 stuck recovery 선행 실행 추가
+- [x] CLI `process --no-recover-stuck` 추가
+- [x] Dashboard maintenance API `POST /api/health/recover` 추가
+  - read-only dashboard resolver가 아니라 writable lightweight resolver 사용
+  - response에 before/after outbox 상태와 post-recovery storage stats 포함
+- [x] `VectorStore.count()`가 lazy table initialization 후 실제 LanceDB row count를 반환하도록 수정
+
+### 실제 프로젝트 검증 결과
+
+대상 projectPath: `/Users/namsangboy/workspace/claude-memory-layer`
+
+- 수정 전 dry-run 성격의 `process --no-recover-stuck`: `Processed 0 embeddings`
+- recovery 적용 후 `process`: `Recovered stuck outbox work: embedding=34/0, vector=0/0`, `Processed 32 embeddings`
+- 이후 outbox 상태: embedding/vector `pending=0`, `processing=0`, `failed=0`
+- vector count 표시 회귀 수정 후 CLI/API stats 모두 `eventCount=51`, `vectorCount=51`
+
+### 추가 테스트
+
+- `tests/core/sqlite-event-store-outbox-recovery.test.ts`
+- `tests/core/memory-query-service.test.ts`
+- `tests/apps/health-api-outbox-recovery.test.ts`
+- `tests/core/vector-store-count.test.ts`
+
+### 남은 후속 계획
+
+- [ ] legacy/mis-scoped imported events repair CLI 설계/구현
+  - 이번 dogfood에서 project DB 내부에 과거 Hermes import가 다른 프로젝트 내용을 CML project scope로 저장한 사례를 확인했다.
+  - storage-level project filter만으로는 이 데이터를 배제할 수 없으므로 repair 또는 quarantine 경로가 필요하다.
+- [ ] dashboard에 outbox/vector health card 추가
+  - `vectorCount`, outbox pending/processing/failed, last recovery result를 한 화면에서 확인한다.

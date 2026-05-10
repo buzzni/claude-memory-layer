@@ -350,6 +350,25 @@ export interface OutboxItem {
   errorMessage?: string;
 }
 
+export interface OutboxRecoveryOptions {
+  /** Processing rows older than this threshold are considered abandoned. */
+  stuckThresholdMs?: number;
+  /** Retry failed rows whose retry_count is still below this value. */
+  maxRetries?: number;
+  /** Test hook for deterministic recovery cutoffs. */
+  now?: Date;
+}
+
+export interface OutboxRecoveryBucket {
+  recoveredProcessing: number;
+  retriedFailed: number;
+}
+
+export interface OutboxRecoveryResult {
+  embedding: OutboxRecoveryBucket;
+  vector: OutboxRecoveryBucket;
+}
+
 // ============================================================
 // Entity Types (Task, Condition, Artifact)
 // ============================================================

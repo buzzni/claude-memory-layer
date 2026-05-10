@@ -35,6 +35,33 @@ export function getServiceFromQuery(c: Context): MemoryService {
   return getReadOnlyMemoryService();
 }
 
+/**
+ * Writable lightweight service for explicit maintenance endpoints.
+ * Dashboard read endpoints intentionally use read-only services; recovery needs
+ * a write-capable SQLite store but still avoids vector/embedder initialization.
+ */
+export function getWritableServiceFromQuery(c: Context): MemoryService {
+  const project = c.req.query('project') || c.req.query('projectId');
+  if (project) {
+    const storagePath = resolveProjectStoragePath(project);
+
+    return new MemoryService({
+      storagePath,
+      readOnly: false,
+      lightweightMode: true,
+      analyticsEnabled: false,
+      sharedStoreConfig: DISABLED_SHARED_STORE_CONFIG
+    });
+  }
+
+  return new MemoryService({
+    storagePath: '~/.claude-code/memory',
+    readOnly: false,
+    lightweightMode: true,
+    analyticsEnabled: false,
+    sharedStoreConfig: DISABLED_SHARED_STORE_CONFIG
+  });
+}
 
 /**
  * Read-only lightweight service for API paths that only need sqlite/keyword reads.

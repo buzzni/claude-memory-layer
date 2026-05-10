@@ -7,13 +7,37 @@ import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import { spawn } from 'child_process';
 import type { ChildProcess } from 'child_process';
-import { getServiceFromQuery } from './utils.js';
+import { getLightweightServiceFromQuery, getServiceFromQuery } from './utils.js';
 
 export const chatRouter = new Hono();
 
 interface ChatRequest {
   message: string;
   history?: Array<{ role: 'user' | 'assistant'; content: string }>;
+  mode?: 'assistant' | 'memory-only';
+  memoryOnly?: boolean;
+}
+
+type SseStream = { writeSSE: (msg: { event?: string; data: string }) => Promise<void> };
+
+interface MemoryHit {
+  event: {
+    eventType?: string;
+    timestamp?: Date | string;
+    content?: string;
+  };
+  score: number;
+  sessionContext?: string;
+}
+
+class ProviderFailure extends Error {
+  constructor(
+    readonly code: string,
+    message: string
+  ) {
+    super(message);
+    this.name = 'ProviderFailure';
+  }
 }
 
 const CLAUDE_TIMEOUT_MS = 120_000;
@@ -30,51 +54,14 @@ chatRouter.post('/', async (c) => {
     return c.json({ error: 'Message is required' }, 400);
   }
 
-  const memoryService = getServiceFromQuery(c);
+  const memoryOnly = body.mode === 'memory-only' || body.memoryOnly === true;
+  const memoryService = memoryOnly ? getLightweightServiceFromQuery(c) : getServiceFromQuery(c);
 
   try {
     await memoryService.initialize();
 
-    // Retrieve relevant memories for context
-    let memoryContext = '';
-    let statsContext = '';
-
-    try {
-      const result = await memoryService.retrieveMemories(body.message, {
-        topK: 8,
-        minScore: 0.5
-      });
-
-      if (result.memories.length > 0) {
-        const parts: string[] = ['## Relevant Memories\n'];
-        for (const m of result.memories) {
-          const date = new Date(m.event.timestamp).toISOString().split('T')[0];
-          const content = m.event.content.slice(0, 500);
-          parts.push(`### [${m.event.eventType}] ${date} (score: ${m.score.toFixed(2)})`);
-          parts.push(content);
-          if (m.sessionContext) {
-            parts.push(`_Context: ${m.sessionContext}_`);
-          }
-          parts.push('');
-        }
-        memoryContext = parts.join('\n');
-      }
-    } catch {
-      // Continue without memory context if retrieval fails
-    }
-
-    try {
-      const stats = await memoryService.getStats();
-      const levels = stats.levelStats.map(l => `${l.level}: ${l.count}`).join(', ');
-      statsContext = [
-        '## Memory Stats',
-        `- Total events: ${stats.totalEvents}`,
-        `- Vector nodes: ${stats.vectorCount}`,
-        `- By level: ${levels}`
-      ].join('\n');
-    } catch {
-      // Continue without stats if it fails
-    }
+    const { memoryContext, memoryHits } = await collectMemoryContext(memoryService, body.message);
+    const statsContext = await collectStatsContext(memoryService);
 
     const fullPrompt = buildPrompt(
       statsContext,
@@ -85,13 +72,24 @@ chatRouter.post('/', async (c) => {
 
     // Stream response via SSE
     return streamSSE(c, async (stream) => {
+      if (memoryOnly) {
+        await streamMemoryOnlyResponse(stream, {
+          memoryContext,
+          memoryHits,
+          reason: 'memory-only-mode'
+        });
+        return;
+      }
+
       try {
         await streamClaudeResponse(fullPrompt, stream);
       } catch (err) {
+        const diagnostic = providerDiagnostic(err);
         await stream.writeSSE({
-          event: 'error',
-          data: JSON.stringify({ error: (err as Error).message })
+          event: 'provider_error',
+          data: JSON.stringify(diagnostic)
         });
+        await streamMemoryOnlyFallback(stream, memoryContext, memoryHits);
       }
     });
   } catch (error) {
@@ -100,6 +98,143 @@ chatRouter.post('/', async (c) => {
     await memoryService.shutdown();
   }
 });
+
+async function collectMemoryContext(
+  memoryService: {
+    retrieveMemories?: (query: string, options?: { topK?: number; minScore?: number }) => Promise<{ memories?: MemoryHit[] }>;
+    keywordSearch?: (query: string, options?: { topK?: number; minScore?: number }) => Promise<MemoryHit[]>;
+  },
+  query: string
+): Promise<{ memoryContext: string; memoryHits: MemoryHit[] }> {
+  let memoryHits: MemoryHit[] = [];
+
+  try {
+    const result = await memoryService.retrieveMemories?.(query, {
+      topK: 8,
+      minScore: 0.5
+    });
+    memoryHits = result?.memories ?? [];
+  } catch {
+    memoryHits = [];
+  }
+
+  if (memoryHits.length === 0) {
+    try {
+      memoryHits = await memoryService.keywordSearch?.(query, { topK: 8, minScore: 0.05 }) ?? [];
+    } catch {
+      memoryHits = [];
+    }
+  }
+
+  return {
+    memoryContext: formatMemoryContext(memoryHits),
+    memoryHits
+  };
+}
+
+async function collectStatsContext(memoryService: {
+  getStats?: () => Promise<{ totalEvents: number; vectorCount: number; levelStats: Array<{ level: string; count: number }> }>;
+}): Promise<string> {
+  try {
+    const stats = await memoryService.getStats?.();
+    if (!stats) return '';
+    const levels = stats.levelStats.map(l => `${l.level}: ${l.count}`).join(', ');
+    return [
+      '## Memory Stats',
+      `- Total events: ${stats.totalEvents}`,
+      `- Vector nodes: ${stats.vectorCount}`,
+      `- By level: ${levels}`
+    ].join('\n');
+  } catch {
+    return '';
+  }
+}
+
+function formatMemoryContext(memoryHits: MemoryHit[]): string {
+  if (memoryHits.length === 0) return '';
+
+  const parts: string[] = ['## Relevant Memories\n'];
+  for (const m of memoryHits) {
+    const date = m.event.timestamp ? new Date(m.event.timestamp).toISOString().split('T')[0] : 'unknown-date';
+    const content = (m.event.content ?? '').slice(0, 500);
+    parts.push(`### [${m.event.eventType ?? 'memory'}] ${date} (score: ${m.score.toFixed(2)})`);
+    parts.push(content);
+    if (m.sessionContext) {
+      parts.push(`_Context: ${m.sessionContext}_`);
+    }
+    parts.push('');
+  }
+  return parts.join('\n');
+}
+
+async function streamMemoryOnlyResponse(
+  stream: SseStream,
+  options: { memoryContext: string; memoryHits: MemoryHit[]; reason: string }
+): Promise<void> {
+  await stream.writeSSE({
+    event: 'diagnostic',
+    data: JSON.stringify({
+      provider: 'claude-cli',
+      status: 'skipped',
+      mode: 'memory-only',
+      reason: options.reason,
+      retrievedMemories: options.memoryHits.length
+    })
+  });
+  await streamMemoryOnlyFallback(stream, options.memoryContext, options.memoryHits);
+}
+
+async function streamMemoryOnlyFallback(
+  stream: SseStream,
+  memoryContext: string,
+  memoryHits: MemoryHit[]
+): Promise<void> {
+  const content = memoryHits.length > 0
+    ? [
+        'Provider unavailable or skipped; showing retrieved memory context directly.',
+        '',
+        memoryContext
+      ].join('\n')
+    : 'Provider unavailable or skipped, and no directly relevant memories were found for this query.';
+
+  await stream.writeSSE({
+    event: 'message',
+    data: JSON.stringify({ content, mode: 'memory-only' })
+  });
+  await stream.writeSSE({ event: 'done', data: '{}' });
+}
+
+function providerDiagnostic(err: unknown): { provider: string; code: string; message: string; fallback: string } {
+  if (err instanceof ProviderFailure) {
+    return {
+      provider: 'claude-cli',
+      code: err.code,
+      message: err.message,
+      fallback: 'memory-only'
+    };
+  }
+
+  return {
+    provider: 'claude-cli',
+    code: 'claude-cli-error',
+    message: err instanceof Error ? err.message : 'Unknown Claude CLI failure',
+    fallback: 'memory-only'
+  };
+}
+
+function classifyProviderFailure(message: string): ProviderFailure {
+  const normalized = message.toLowerCase();
+  if (normalized.includes('401') || normalized.includes('unauthorized') || normalized.includes('auth')) {
+    return new ProviderFailure('claude-cli-auth', 'Claude CLI authentication failed; showing memory-only context.');
+  }
+  if (normalized.includes('not found') || normalized.includes('enoent')) {
+    return new ProviderFailure('claude-cli-not-found', 'Claude CLI was not found; showing memory-only context.');
+  }
+  if (normalized.includes('timed out')) {
+    return new ProviderFailure('claude-cli-timeout', 'Claude CLI timed out; showing memory-only context.');
+  }
+  return new ProviderFailure('claude-cli-error', 'Claude CLI failed; showing memory-only context.');
+}
 
 function buildPrompt(
   statsContext: string,
@@ -159,7 +294,7 @@ function streamClaudeResponse(
 
     const timeout = setTimeout(() => {
       proc.kill('SIGTERM');
-      reject(new Error('Chat response timed out after 2 minutes'));
+      reject(classifyProviderFailure('timed out'));
     }, CLAUDE_TIMEOUT_MS);
 
     // Write prompt to stdin
@@ -168,6 +303,7 @@ function streamClaudeResponse(
 
     let buffer = '';
     let lastSentText = '';
+    let stderrText = '';
 
     proc.stdout!.on('data', async (chunk: Buffer) => {
       buffer += chunk.toString();
@@ -207,6 +343,7 @@ function streamClaudeResponse(
     });
 
     proc.stderr!.on('data', (chunk: Buffer) => {
+      stderrText += chunk.toString();
       if (process.env.CLAUDE_MEMORY_DEBUG) {
         console.error('[chat] claude stderr:', chunk.toString());
       }
@@ -215,7 +352,7 @@ function streamClaudeResponse(
     proc.on('error', (err) => {
       clearTimeout(timeout);
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-        reject(new Error('Claude CLI not found. Install with: npm install -g @anthropic-ai/claude-code'));
+        reject(classifyProviderFailure('ENOENT not found'));
       } else {
         reject(err);
       }
@@ -235,7 +372,7 @@ function streamClaudeResponse(
       }
 
       if (code !== 0 && code !== null) {
-        reject(new Error(`Claude CLI exited with code ${code}`));
+        reject(classifyProviderFailure(stderrText || `Claude CLI exited with code ${code}`));
       } else {
         resolve();
       }

@@ -68,6 +68,14 @@ Application
 
 의미: worker가 pending만 처리하고 오래된 `processing` job을 회수하지 못하면 semantic/vector recall이 영구적으로 비활성화된다. `recoverStuck()`는 설계에 이미 있으므로 CLI/process 시작 경로와 dashboard diagnostics에 반드시 연결해야 한다.
 
+### 2026-05-10 구현/검증 결과
+
+- `process --no-recover-stuck` 기준으로는 stuck work를 회수하지 못해 `Processed 0 embeddings`가 재현됐다.
+- 기본 `process`에 stuck recovery를 연결한 뒤 `embedding=34/0`이 복구됐고, `Processed 32 embeddings`로 실제 vectorization이 진행됐다.
+- 후속 실행에서 outbox는 `pending=0`, `processing=0`, `failed=0` 상태가 됐다.
+- `VectorStore.count()` lazy initialization 누락으로 stats가 `vectorCount=0`을 표시하던 버그도 확인했고, 실제 LanceDB count와 맞도록 수정했다.
+- 현재 검증 기준으로 CML project는 `eventCount=51`, `vectorCount=51`이다.
+
 ---
 
 ### 2.1 핵심 원칙 (섹션 2.6)

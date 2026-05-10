@@ -651,12 +651,20 @@ program
   .command('process')
   .description('Process pending embeddings')
   .option('-p, --project <path>', 'Project path (defaults to cwd)')
+  .option('--no-recover-stuck', 'Skip stale processing outbox recovery before processing')
   .action(async (options) => {
     const projectPath = options.project || process.cwd();
     const service = getMemoryServiceForProject(projectPath);
 
     try {
       await service.initialize();
+      if (options.recoverStuck !== false) {
+        const recovered = await service.recoverStuckOutboxItems();
+        const recoveredCount = recovered.embedding.recoveredProcessing + recovered.embedding.retriedFailed + recovered.vector.recoveredProcessing + recovered.vector.retriedFailed;
+        if (recoveredCount > 0) {
+          console.log(`♻️  Recovered stuck outbox work: embedding=${recovered.embedding.recoveredProcessing}/${recovered.embedding.retriedFailed}, vector=${recovered.vector.recoveredProcessing}/${recovered.vector.retriedFailed}`);
+        }
+      }
       console.log('⏳ Processing pending embeddings...');
       const count = await service.processPendingEmbeddings();
       console.log(`✅ Processed ${count} embeddings`);

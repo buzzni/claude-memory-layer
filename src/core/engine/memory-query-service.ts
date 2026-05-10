@@ -1,4 +1,4 @@
-import type { MemoryEvent } from '../types.js';
+import type { MemoryEvent, OutboxRecoveryOptions, OutboxRecoveryResult } from '../types.js';
 
 interface RankedKeywordResult {
   event: MemoryEvent;
@@ -35,6 +35,7 @@ interface QueryStore {
 interface QueryMaintenanceStore extends QueryStore {
   rebuildFtsIndex(): Promise<number>;
   getOutboxStats(): Promise<MemoryOutboxStats>;
+  recoverStuckOutboxItems(options?: OutboxRecoveryOptions): Promise<OutboxRecoveryResult>;
   getEventsByLevel(level: string, options?: { limit?: number; offset?: number }): Promise<MemoryEvent[]>;
   getEventLevel(eventId: string): Promise<string | null>;
   getSessionTurns(sessionId: string, options?: { limit?: number; offset?: number }): Promise<MemorySessionTurn[]>;
@@ -101,6 +102,11 @@ export class MemoryQueryService {
   async getOutboxStats(): Promise<MemoryOutboxStats> {
     await this.initialize();
     return this.getMaintenanceStore('getOutboxStats').getOutboxStats();
+  }
+
+  async recoverStuckOutboxItems(options?: OutboxRecoveryOptions): Promise<OutboxRecoveryResult> {
+    await this.initialize();
+    return this.getMaintenanceStore('recoverStuckOutboxItems').recoverStuckOutboxItems(options);
   }
 
   async getStats(): Promise<MemoryStats> {

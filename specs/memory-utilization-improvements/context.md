@@ -152,6 +152,25 @@ Session-start의 백필 메커니즘도 요약을 생성하지 못하고 있음.
   - `claude-memory-layer` project DB 안에 legacy unscoped Hermes imports가 들어 있어 `predictor`, `Streamlit`, `alpha-ai-trader` snippets가 project view에 보일 수 있음
   - Ask Memory는 Claude CLI auth 상태에 의존하며, auth failure 시 memory retrieval 품질과 provider 오류가 섞여 보임
 
+### 2026-05-10 구현/검증 업데이트
+
+- **Outbox/vector readiness**:
+  - 기존 `embedding_outbox processing=34` stuck 상태를 recovery로 해소
+  - CLI `process` 실행 후 `Processed 32 embeddings`
+  - CLI/API stats 기준 `eventCount=51`, `vectorCount=51`
+  - outbox aggregate: embedding/vector `pending=0`, `processing=0`, `failed=0`
+- **Ask Memory/provider 분리**:
+  - `/api/chat` memory-only mode 추가
+  - provider 호출 없이 `event: diagnostic` + retrieved context + `event: done` 반환
+  - provider 실패는 `event: provider_error`로 분리하고 memory fallback을 제공
+  - dashboard UI `/memory <query>` command 추가
+- **Live dogfood 결과**:
+  - `/health`, login, `/api/stats`, `/api/events`, `/api/sessions`, `/api/health/recover`, `/api/chat` memory-only 모두 local smoke 200
+  - memory-only query는 retrievedMemories count를 반환하고 context를 직접 보여준다.
+- **남은 품질 이슈**:
+  - generic `dashboard` query에서 Alpha AI Trader/Streamlit legacy imports가 top result로 섞였다.
+  - 원인은 provider/auth가 아니라 project DB 내부의 mis-scoped legacy corpus이며, repair/quarantine 계획이 필요하다.
+
 ---
 
 ### 기존 분석 환경

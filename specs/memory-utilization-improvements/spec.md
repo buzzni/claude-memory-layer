@@ -430,3 +430,22 @@ Week 3 (Feedback Loop):
 | IMP-02로 중요 tool observation 누락 | 중 | 중 | 키워드 필터 화이트리스트 설정 |
 | IMP-04 graduation repair로 L0 과잉 승격 | 저 | 중 | dry-run 모드 먼저 실행 |
 | IMP-01 sync 변환으로 hook 응답 지연 | 저 | 저 | trace INSERT는 < 1ms (SQLite sync) |
+
+## 2026-05-10 구현 업데이트 — Ask Memory diagnostics + memory-only
+
+### 추가된 기능 contract
+
+- `POST /api/chat` body는 `mode: 'assistant' | 'memory-only'`와 `memoryOnly: boolean`을 지원한다.
+- memory-only request는 provider process를 spawn하지 않고 memory retrieval 결과와 diagnostic만 stream한다.
+- provider/generation 실패는 retrieval 실패와 분리해 `event: provider_error`로 stream한다.
+- provider 실패 시 retrieval 결과가 있으면 context를 직접 보여주는 fallback message를 반환한다.
+- provider 실패 시 retrieval 결과가 없으면 "provider skipped/unavailable + no relevant memories"를 명확히 표시한다.
+- dashboard UI는 `/memory <query>` slash command를 memory-only mode로 보낸다.
+
+### Acceptance criteria
+
+- [x] Claude CLI auth/provider failure가 있어도 dashboard가 검색된 memory context와 provider diagnostic을 구분해 보여준다.
+- [x] memory-only mode는 provider 호출 없이 deterministic하게 동작한다.
+- [x] SSE stream은 `diagnostic` 또는 `provider_error` 후 `message`/`done`을 반환한다.
+- [x] local dashboard smoke에서 selected CML project의 memory-only query가 retrievedMemories count와 context를 반환한다.
+- [ ] project DB 내부 mis-scoped legacy imports를 repair/quarantine하여 generic query noise를 줄인다.

@@ -207,6 +207,10 @@ async function sendChatMessage() {
   const message = input.value.trim();
   if (!message) return;
 
+  const memoryOnlyCommand = /^\/memory\s+/i.test(message);
+  const requestMessage = memoryOnlyCommand ? message.replace(/^\/memory\s+/i, '').trim() : message;
+  if (!requestMessage) return;
+
   input.value = '';
   input.style.height = 'auto';
   document.getElementById('chat-send-btn').disabled = true;
@@ -230,8 +234,9 @@ async function sendChatMessage() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        message,
-        history: state.chatMessages.slice(-10)
+        message: requestMessage,
+        history: state.chatMessages.slice(-10),
+        mode: memoryOnlyCommand ? 'memory-only' : 'assistant'
       }),
       signal: state.chatAbortController.signal
     });
@@ -248,6 +253,7 @@ async function sendChatMessage() {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let sseBuffer = '';
+    let pendingEvent = 'message';
 
     while (true) {
       const { done, value } = await reader.read();
@@ -258,11 +264,22 @@ async function sendChatMessage() {
       sseBuffer = lines.pop() || '';
 
       for (const line of lines) {
+        if (line.startsWith('event: ')) {
+          pendingEvent = line.slice(7).trim() || 'message';
+          continue;
+        }
+
         if (line.startsWith('data: ')) {
           const dataStr = line.slice(6);
           try {
             const data = JSON.parse(dataStr);
-            if (data.content) {
+            if (pendingEvent === 'diagnostic' && data.mode === 'memory-only') {
+              fullContent += `\n\n> Memory-only mode: Claude provider ${data.status || 'skipped'}; showing ${data.retrievedMemories || 0} retrieved memories.\n\n`;
+              updateChatMessageContent(msgEl, fullContent);
+            } else if (pendingEvent === 'provider_error') {
+              fullContent += `\n\n> Provider diagnostic (${data.code || 'error'}): ${data.message || 'falling back to memory-only context'}\n\n`;
+              updateChatMessageContent(msgEl, fullContent);
+            } else if (data.content) {
               fullContent += data.content;
               updateChatMessageContent(msgEl, fullContent);
               scrollChatToBottom();
@@ -272,6 +289,7 @@ async function sendChatMessage() {
               updateChatMessageContent(msgEl, fullContent);
             }
           } catch { /* skip */ }
+          pendingEvent = 'message';
         }
       }
     }

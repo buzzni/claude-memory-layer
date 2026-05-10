@@ -189,6 +189,7 @@ export class VectorStore {
    * Get total count of vectors
    */
   async count(): Promise<number> {
+    await this.initialize();
     if (!this.table) return 0;
     const result = await this.table.countRows();
     return result;

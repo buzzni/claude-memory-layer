@@ -19,7 +19,9 @@ import type {
   EndlessModeStatus,
   ContinuityScore,
   SharedStoreConfig,
-  Entry
+  Entry,
+  OutboxRecoveryOptions,
+  OutboxRecoveryResult
 } from '../core/types.js';
 import type { EndlessMemoryServices } from '../extensions/endless-memory/index.js';
 import {
@@ -307,6 +309,10 @@ export class MemoryService {
     vector: { pending: number; processing: number; failed: number; total: number };
   }> {
     return this.queryService.getOutboxStats();
+  }
+
+  async recoverStuckOutboxItems(options?: OutboxRecoveryOptions): Promise<OutboxRecoveryResult> {
+    return this.queryService.recoverStuckOutboxItems(options);
   }
 
   async getRetrievalTraceStats(): Promise<RetrievalTraceStats> {

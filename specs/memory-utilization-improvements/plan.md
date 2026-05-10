@@ -381,6 +381,8 @@ cascade failure를 단계적으로 수정한다.
 
 ### Task 3.6 — Ask Memory provider diagnostic + memory-only mode (IMP-10b)
 
+**Status (2026-05-10)**: implemented and dogfooded locally.
+
 **목표**: Ask Memory가 Claude CLI 인증/프로바이더 문제와 memory retrieval 품질을 분리해서 보여준다.
 
 **작업 단계**:
@@ -403,6 +405,44 @@ cascade failure를 단계적으로 수정한다.
    - memory retrieval success + provider failure fixture
 
 **완료 조건**: Claude auth가 깨져도 사용자가 "검색된 기억은 무엇이고, 왜 답변 생성이 안 됐는지"를 dashboard에서 이해할 수 있음
+
+**2026-05-10 구현 결과**:
+
+- [x] API `POST /api/chat`가 `mode: 'memory-only'` 또는 `memoryOnly: true`를 지원한다.
+- [x] memory-only mode에서는 Claude CLI/provider를 호출하지 않고 retrieval diagnostic + retrieved context만 SSE로 반환한다.
+- [x] provider failure는 generic stream error가 아니라 `event: provider_error`로 분리한다.
+- [x] provider failure 시에도 retrieved memory context 기반 fallback message를 제공한다.
+- [x] dashboard chat UI에서 `/memory <query>` slash command로 memory-only mode를 사용할 수 있다.
+- [x] SSE parser가 named event(`diagnostic`, `provider_error`)를 처리해 UI notice로 표시한다.
+- [x] local dashboard smoke에서 `/api/chat` memory-only가 `event: diagnostic`, `event: message`, `event: done`을 반환한다.
+
+**Dogfood에서 확인한 남은 품질 이슈**:
+
+- project DB 내부에 legacy/mis-scoped Hermes imports가 남아 있어, generic query(`dashboard`)가 CML project view에서 Alpha AI Trader/Streamlit 관련 기억을 high score로 반환할 수 있었다.
+- 이는 provider 문제가 아니라 candidate corpus 품질 문제이며, IMP-09의 legacy project-scope repair/quarantine 후속으로 추적한다.
+
+---
+
+### Task 3.7 — Legacy project-scope repair/quarantine (IMP-10c)
+
+**목표**: project-scoped store 내부에 이미 잘못 들어온 다른 프로젝트 memory를 기본 검색/Ask Memory에서 제외한다.
+
+**작업 단계**:
+
+1. Mis-scoped row detector를 설계한다.
+   - metadata `scope.project.path/hash`와 content 안의 명시적 workspace path가 충돌하는지 확인
+   - content에 다른 repo slug(`alpha-ai-trader`, `predictor`, `Streamlit`)가 반복적으로 등장하는 suspect row를 privacy-safe aggregate로 집계
+2. `repair legacy-project-scope --project <path|hash> --dry-run` CLI를 추가한다.
+   - raw content 출력 금지
+   - counts/session IDs/safe previews만 표시
+3. 기본 query path에서 quarantine flag 또는 scope confidence를 반영한다.
+4. dashboard에 "suspected cross-project memories" aggregate card를 추가한다.
+5. regression fixture:
+   - target project: `claude-memory-layer`
+   - distractor content: `alpha-ai-trader` dashboard memory
+   - assertion: generic `dashboard` query가 distractor를 기본 result로 반환하지 않음
+
+**완료 조건**: live CML project dashboard memory-only query에서 unrelated Alpha AI Trader/Streamlit memories가 기본 top results에 섞이지 않음
 
 ---
 

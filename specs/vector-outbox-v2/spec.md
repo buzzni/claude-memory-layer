@@ -464,3 +464,24 @@ async function cleanup(): Promise<void> {
 - [ ] failed job 재시도 (reconcile) 동작
 - [ ] processing 상태 stuck 복구 동작
 - [ ] 기존 vector-worker.ts와 호환 유지
+
+## 11. 2026-05-10 dogfood 반영 요구사항
+
+### 11.1 Stuck recovery API/CLI contract
+
+실제 프로젝트 데이터에서 `embedding_outbox`가 `processing` 상태로 stuck 되어 semantic/vector memory가 비활성화되는 문제가 확인되었다. V2는 아래 contract를 보장해야 한다.
+
+- CLI `process`는 기본적으로 stale `processing` work를 복구한 뒤 pending embeddings를 처리한다.
+- `--no-recover-stuck`은 recovery를 명시적으로 비활성화해 smoke/dry-run 비교에 사용할 수 있다.
+- `POST /api/health/recover`는 인증된 dashboard session에서만 호출되며, writable lightweight service로 outbox 상태를 복구한다.
+- recovery response는 raw transcript/path 없이 aggregate만 반환한다.
+- `VectorStore.count()`는 lazy initialization 전에도 실제 vector table row count를 반환해야 한다.
+
+### 11.2 Acceptance criteria 추가
+
+- [x] stale `embedding_outbox.processing` row가 threshold 이후 `pending`으로 복구된다.
+- [x] stale `vector_outbox.processing` row가 threshold 이후 `pending`으로 복구된다.
+- [x] fresh `processing` row는 threshold 전에는 복구하지 않는다.
+- [x] dashboard recovery endpoint가 read-only DB write error 없이 200을 반환한다.
+- [x] CLI/API stats의 `vectorCount`가 실제 LanceDB row count와 일치한다.
+- [ ] legacy mis-scoped import repair/quarantine으로 project DB 내부 오염 데이터를 제거하거나 기본 검색에서 제외한다.
