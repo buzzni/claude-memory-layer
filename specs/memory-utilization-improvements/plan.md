@@ -345,8 +345,64 @@ cascade failure를 단계적으로 수정한다.
    - assertion: `containsOtherProject === false`
 5. CLI/MCP parity test 추가:
    - 같은 `projectPath`의 stats/search storage label과 event/vector count가 일치
+6. Dashboard dogfood 후속:
+   - project DB 안에 이미 들어온 legacy unscoped Hermes imports를 기본 project view에서 제외하거나 `legacy/unscoped` bucket으로 분리
+   - dry-run repair CLI 계획: `claude-memory-layer repair legacy-project-scope --project <hash> --dry-run`
+   - dashboard keyword smoke: selected `claude-memory-layer` project에서 `predictor`, `Streamlit`, `alpha-ai-trader`가 일반 project 결과로 섞이지 않음
 
-**완료 조건**: `mem-context-pack(projectPath=...)`, `mem-project-timeline(projectPath=...)`, CLI `search -p ...`가 모두 same-project 결과만 반환
+**완료 조건**: `mem-context-pack(projectPath=...)`, `mem-project-timeline(projectPath=...)`, CLI `search -p ...`, dashboard project filter가 모두 same-project 결과만 반환
+
+---
+
+### Task 3.5 — Dashboard read/search resilience (IMP-10a)
+
+**목표**: Dashboard browsing/search가 embedder/vector backend 문제 때문에 500으로 깨지지 않게 한다.
+
+**작업 단계**:
+
+1. `/api/events`, `/api/sessions`가 SQLite-only 화면임을 확인하고 lightweight read service로 전환한다.
+2. `tests/apps/dashboard-read-api-lightweight.test.ts` 추가:
+   - events/sessions router가 `getLightweightServiceFromQuery()`를 사용
+   - full `getServiceFromQuery()`가 호출되지 않음
+3. `/api/search/disclosure` `strategy=auto`가 embedding backend init/query 실패 시 lightweight `strategy=fast`로 fallback한다.
+4. `tests/apps/search-api-disclosure.test.ts`에 embedding backend unavailable fixture 추가:
+   - primary initialize throws `Unable to get model file path or buffer.`
+   - response 200
+   - fallback service receives `{ strategy: 'fast' }`
+5. Live dashboard dogfood:
+   - login
+   - project select
+   - `/api/stats`, `/api/events`, `/api/sessions`, `/api/search/disclosure` 200
+   - browser console error 0
+
+**완료 조건**: fresh/local dashboard에서 exact keyword search가 200으로 동작하고, embedder unavailable 상태도 dashboard 전체를 막지 않음
+
+---
+
+### Task 3.6 — Ask Memory provider diagnostic + memory-only mode (IMP-10b)
+
+**목표**: Ask Memory가 Claude CLI 인증/프로바이더 문제와 memory retrieval 품질을 분리해서 보여준다.
+
+**작업 단계**:
+
+1. `src/apps/server/api/chat.ts`에 provider preflight 추가:
+   - `claude --version` 확인
+   - auth failure를 감지하면 사용자 친화 diagnostic 반환
+2. memory retrieval 단계와 LLM generation 단계를 분리해 response metadata에 표시:
+   - `retrievedMemoryCount`
+   - `searchMode`
+   - `providerStatus`
+3. LLM 없이도 검색 근거를 확인할 수 있는 memory-only mode 추가:
+   - API: `POST /api/chat?mode=memory-only`
+   - UI toggle: `Memory-only`
+4. SSE error protocol 정리:
+   - auth failure에서 `done`과 `error`를 동시에 보내지 않음
+   - raw provider stderr/request id를 그대로 노출하지 않음
+5. Test 추가:
+   - Claude CLI auth failure fixture
+   - memory retrieval success + provider failure fixture
+
+**완료 조건**: Claude auth가 깨져도 사용자가 "검색된 기억은 무엇이고, 왜 답변 생성이 안 됐는지"를 dashboard에서 이해할 수 있음
 
 ---
 

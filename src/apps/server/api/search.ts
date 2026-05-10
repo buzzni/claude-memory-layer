@@ -33,6 +33,11 @@ interface DisclosureSearchRequest {
   };
 }
 
+function isEmbeddingBackendUnavailable(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /model file path or buffer|onnxruntime|transformers|embedding backend/i.test(message);
+}
+
 // POST /api/search - Search memories
 searchRouter.post('/', async (c) => {
   const memoryService = getServiceFromQuery(c);
@@ -83,20 +88,46 @@ searchRouter.post('/', async (c) => {
 // POST /api/search/disclosure - Progressive disclosure search (Search layer)
 searchRouter.post('/disclosure', async (c) => {
   let memoryService: ReturnType<typeof getServiceFromQuery> | undefined;
+  let body: DisclosureSearchRequest;
   try {
-    const body = await c.req.json<DisclosureSearchRequest>();
+    body = await c.req.json<DisclosureSearchRequest>();
 
     if (!body.query) {
       return c.json({ error: 'Query is required' }, 400);
     }
 
-    memoryService = body.options?.strategy === 'fast'
+    const useFastStrategy = body.options?.strategy === 'fast';
+    memoryService = useFastStrategy
       ? getLightweightServiceFromQuery(c)
       : getServiceFromQuery(c);
 
-    await memoryService.initialize();
-    const result = await memoryService.searchDisclosure(body.query, body.options);
-    return c.json(result);
+    try {
+      await memoryService.initialize();
+      const result = await memoryService.searchDisclosure(body.query, body.options);
+      return c.json(result);
+    } catch (error) {
+      if (!useFastStrategy && isEmbeddingBackendUnavailable(error)) {
+        await memoryService.shutdown();
+        memoryService = getLightweightServiceFromQuery(c);
+        await memoryService.initialize();
+        const result = await memoryService.searchDisclosure(body.query, {
+          ...body.options,
+          strategy: 'fast'
+        });
+        return c.json({
+          ...result,
+          meta: {
+            ...result.meta,
+            fallbackApplied: true,
+            fallbackTrace: [
+              ...(result.meta.fallbackTrace || []),
+              'fallback:embedding-backend-unavailable:fast'
+            ]
+          }
+        });
+      }
+      throw error;
+    }
   } catch (error) {
     return c.json({ error: (error as Error).message }, 500);
   } finally {
@@ -106,7 +137,7 @@ searchRouter.post('/disclosure', async (c) => {
 
 // GET /api/search/disclosure/:resultId/expand - Expand a disclosure search result
 searchRouter.get('/disclosure/:resultId/expand', async (c) => {
-  const memoryService = getServiceFromQuery(c);
+  const memoryService = getLightweightServiceFromQuery(c);
   try {
     const resultId = c.req.param('resultId');
     const rawWindowSize = c.req.query('windowSize');
@@ -130,7 +161,7 @@ searchRouter.get('/disclosure/:resultId/expand', async (c) => {
 
 // GET /api/search/disclosure/:resultId/source - Resolve source for a disclosure search result
 searchRouter.get('/disclosure/:resultId/source', async (c) => {
-  const memoryService = getServiceFromQuery(c);
+  const memoryService = getLightweightServiceFromQuery(c);
   try {
     const resultId = c.req.param('resultId');
     const result = await memoryService.sourceDisclosure(resultId);

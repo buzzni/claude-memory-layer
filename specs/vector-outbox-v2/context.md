@@ -58,6 +58,18 @@ Application
 
 ## 2. Memo.txt 참고 사항
 
+### 2026-05-10 live dashboard dogfood 추가 관측
+
+`/Users/namsangboy/workspace/claude-memory-layer` project dashboard에서 다음 상태가 확인됐다.
+
+- `embedding_outbox`: `processing` 34건
+- `node dist/cli/index.js process -p /Users/namsangboy/workspace/claude-memory-layer`: exit 0, `Processed 0 embeddings`
+- dashboard vector nodes: 0
+
+의미: worker가 pending만 처리하고 오래된 `processing` job을 회수하지 못하면 semantic/vector recall이 영구적으로 비활성화된다. `recoverStuck()`는 설계에 이미 있으므로 CLI/process 시작 경로와 dashboard diagnostics에 반드시 연결해야 한다.
+
+---
+
 ### 2.1 핵심 원칙 (섹션 2.6)
 
 > **6. Vector store 정합성**

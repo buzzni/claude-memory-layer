@@ -285,6 +285,10 @@ async recoverStuck(stuckThresholdMs: number = 5 * 60 * 1000): Promise<number> {
 - [ ] reconcileFailed() 재시도 메서드
 - [ ] recoverStuck() stuck 복구 메서드
 - [ ] cleanupDone() 정리 메서드
+- [ ] CLI `process` 시작 전에 `recoverStuck()`을 호출하거나 `--recover-stuck` 옵션 제공
+- [ ] dashboard stats에 `processing` outbox count와 stuck threshold 초과 count 표시
+- [ ] 2026-05-10 dogfood 회귀 fixture: `claude-memory-layer` project에서 `embedding_outbox.status='processing'` 34건인데 `process -p ...`가 `Processed 0 embeddings`로 끝난 사례
+- [ ] stuck recovery dry-run 출력: recovered count, oldest processing age, next command
 
 ## Phase 4: VectorStore Upsert (P0)
 

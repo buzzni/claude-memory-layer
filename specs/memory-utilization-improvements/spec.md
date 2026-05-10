@@ -308,16 +308,46 @@ score = 0.35 × semanticScore +
 **문제**:
 - Direct handler smoke에서 `projectPath=/Users/namsangboy/workspace/claude-memory-layer`인데 `predictor`, Streamlit 등 다른 workspace 내용이 context pack에 섞인 사례가 있었다.
 - Hermes validation에서 project context 없는 session 66개가 관측되어 auto-refresh/import에서 오매칭 위험이 있다.
+- 2026-05-10 dashboard dogfood에서 `claude-memory-layer` project storage 자체에 legacy unscoped Hermes imports가 남아 `predictor`, `Streamlit`, `alpha-ai-trader` snippets가 보였다. MCP context-pack은 strict metadata filter로 보호되지만 dashboard events/search는 project DB contents를 그대로 보여주므로 사용자-facing contamination으로 보일 수 있다.
 
 **해결 방안**:
 1. Imported event/session metadata에 canonical `projectPath`, `projectHash`, `sourceAgent`를 저장하고 retrieval query에 same-project filter를 강제한다.
 2. Project context가 없는 Hermes sessions는 explicit `sessionId` import가 아닌 한 `mem-import-latest`/auto-refresh 대상에서 제외한다.
 3. Generic continuation query는 same-project recent timeline을 먼저 구성하고 semantic results는 same-project 필터를 통과한 경우에만 병합한다.
 4. Test fixture에 다른 project keywords(`predictor`, `Streamlit`)를 넣고 `containsOtherProject=false`를 검증한다.
+5. Dashboard read APIs/events/search에서도 project DB 안의 legacy unscoped imported history를 별도 `legacy/unscoped` bucket으로 표시하거나 기본 project view에서 제외한다.
+6. 기존 project DB를 안전하게 재분류하는 dry-run repair CLI를 제공한다: `claude-memory-layer repair legacy-project-scope --project <hash> --dry-run`.
 
 **검증**:
 - `mem-project-timeline(projectPath=...)`와 `mem-context-pack(projectPath=...)` 결과에 다른 workspace path/topic이 포함되지 않음.
 - CLI/MCP stats/search가 같은 `projectPath`에서 같은 storage scope와 event/vector count를 보고.
+- Dashboard project filter에서 `claude-memory-layer` 선택 후 `predictor`, `Streamlit`, `alpha-ai-trader` keyword smoke가 0건 또는 legacy bucket warning으로 표시됨.
+
+---
+
+### IMP-10: Dashboard read/search resilience and memory-only usefulness mode
+
+**우선순위**: P0 (Dashboard dogfood blocker)
+
+**문제**:
+- Live dashboard dogfood에서 read-only 화면은 정상 렌더됐지만, explicit `auto` disclosure search가 embedding/model backend 상태에 따라 500을 낼 수 있었다.
+- `/api/events`와 `/api/sessions`는 SQLite-only 화면임에도 full vector/embedder service를 초기화해 dashboard browsing을 불필요하게 깨뜨릴 수 있었다.
+- Ask Memory는 서버의 Claude CLI 인증 상태에 의존한다. 인증이 깨지면 memory retrieval 여부와 무관하게 SSE에 auth failure가 표시되어 "메모리가 의미 있게 쓰이는지"를 확인하기 어렵다.
+- 현재 실측 project는 vector nodes 0, embedding_outbox pending, helpfulness 0건이라 의미있는 semantic recall/feedback-loop 판단이 불가능하고 keyword-only recall에 의존한다.
+
+**해결 방안**:
+1. Dashboard read-only APIs(`/api/events`, `/api/sessions`, stats 계열)는 lightweight read service를 사용한다.
+2. `/api/search/disclosure` `strategy=auto`가 embedding backend init/query 실패 시 lightweight `strategy=fast` keyword search로 fallback하고 500 대신 fallback trace를 반환한다.
+3. Ask Memory에 provider/auth preflight와 memory-only fallback summary mode를 추가한다.
+   - Claude CLI auth 실패 시 raw provider error만 노출하지 말고 "retrieved memories + provider auth diagnostic"을 반환한다.
+   - `?mode=memory-only` 또는 UI toggle로 LLM 없이 검색 결과/근거만 요약한다.
+4. Dashboard stats에 `vectorReady`, `pendingEmbeddings`, `searchMode(keyword-only|hybrid|semantic)`, `providerAuth`를 노출한다.
+5. 실데이터 dogfood smoke script를 추가해 login → project select → stats/events/sessions/search/Ask Memory diagnostic을 자동 검증한다.
+
+**검증**:
+- Fresh install dashboard smoke에서 `/api/events`, `/api/sessions`, `/api/search/disclosure(strategy=auto)`가 embedding backend unavailable fixture에서도 200.
+- Ask Memory Claude auth failure fixture에서 SSE가 사용자 친화적 diagnostic과 retrieved-memory evidence를 반환.
+- `claude-memory-layer` project dogfood에서 search가 exact/keyword queries를 반환하고, semantic/vector 준비 안 됨 상태가 dashboard에 명확히 표시됨.
 
 ---
 

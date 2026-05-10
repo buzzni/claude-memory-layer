@@ -126,6 +126,36 @@ Session-start의 백필 메커니즘도 요약을 생성하지 못하고 있음.
 
 ## 시스템 환경
 
+### 2026-05-10 claude-memory-layer dashboard dogfood 추가 관측
+
+- **대상 URL**: live dashboard on port 37777 (password redacted)
+- **대상 project**: `/Users/namsangboy/workspace/claude-memory-layer` (`b7f03a73`)
+- **상태**: login/root dashboard 렌더 정상, browser console error 0
+- **Project stats**:
+  - total events: 47
+  - active sessions: 10
+  - retrieval queries: 15
+  - retrieval selection rate: 93.3%
+  - vector nodes: 0
+  - embedding_outbox: 34 pending
+  - memory usefulness score: 33.9 / low confidence 0.45
+  - helpfulness evaluations: 0
+- **검색 품질**:
+  - exact/keyword queries(`publish`, `mcp 서버`, `ouroboros skill`)는 200과 관련 source result를 반환
+  - semantic/current-issue query(`dashboard Internal Server Error query_rewrite_kind`)는 현재 DB에 아직 ingest되지 않아 0건
+  - vector nodes 0이라 의미있는 semantic recall 판단은 불가, keyword-only recall 상태
+- **대시보드 안정성 이슈**:
+  - legacy DB schema에서 stats 500을 유발했던 `query_rewrite_kind` missing 문제는 `v1.0.35`에서 수정됨
+  - dashboard read-only endpoints(`/api/events`, `/api/sessions`)도 full embedder init 대신 lightweight service를 써야 함
+  - disclosure search `auto`는 embedding backend unavailable 시 lightweight fast fallback이 필요함
+- **메모리 의미성 이슈**:
+  - `claude-memory-layer` project DB 안에 legacy unscoped Hermes imports가 들어 있어 `predictor`, `Streamlit`, `alpha-ai-trader` snippets가 project view에 보일 수 있음
+  - Ask Memory는 Claude CLI auth 상태에 의존하며, auth failure 시 memory retrieval 품질과 provider 오류가 섞여 보임
+
+---
+
+### 기존 분석 환경
+
 - **OS**: Linux 5.15 (Ubuntu)
 - **런타임**: Node.js (TSX)
 - **DB**: SQLite (better-sqlite3)
