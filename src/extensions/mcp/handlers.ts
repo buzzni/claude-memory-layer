@@ -116,22 +116,23 @@ async function handleExternalMarketContext(args: Record<string, unknown>): Promi
 async function handleMemSearch(memoryService: MemoryService, args: Record<string, unknown>): Promise<ToolResult> {
   const query = args.query as string;
   const topK = Math.min((args.topK as number) || 5, 20);
+  const sessionId = args.sessionId as string | undefined;
 
-  const result = await memoryService.retrieveMemories(query, {
-    topK,
-    sessionId: args.sessionId as string,
-    recordTrace: false
-  });
+  const search = await retrieveMcpMemories(memoryService, query, { topK, sessionId });
 
   const lines: string[] = [
     '## Memory Search Results',
     '',
-    `Found ${result.memories.length} relevant memories:`,
+    `Found ${search.memories.length} relevant memories:`,
     ''
   ];
 
-  for (let i = 0; i < result.memories.length; i++) {
-    const m = result.memories[i];
+  if (search.warning) {
+    lines.push(search.warning, '');
+  }
+
+  for (let i = 0; i < search.memories.length; i++) {
+    const m = search.memories[i];
     const citationId = generateCitationId(m.event.id);
     const date = m.event.timestamp.toISOString().split('T')[0];
     const preview = m.event.content.slice(0, 100) + (m.event.content.length > 100 ? '...' : '');
@@ -148,6 +149,91 @@ async function handleMemSearch(memoryService: MemoryService, args: Record<string
   return {
     content: [{ type: 'text', text: lines.join('\n') }]
   };
+}
+
+interface McpMemoryRetrievalOptions {
+  topK: number;
+  sessionId?: string;
+}
+
+interface McpMemoryRetrievalResult {
+  memories: ContextPackMemory[];
+  warning?: string;
+}
+
+const SEMANTIC_VECTOR_FALLBACK_WARNING = 'Warning: semantic/vector retrieval unavailable; used keyword fallback.';
+const SEMANTIC_VECTOR_FALLBACK_FAILED_WARNING = 'Warning: semantic/vector retrieval unavailable; keyword fallback failed.';
+
+async function retrieveMcpMemories(
+  memoryService: MemoryService,
+  query: string,
+  options: McpMemoryRetrievalOptions
+): Promise<McpMemoryRetrievalResult> {
+  try {
+    const result = await memoryService.retrieveMemories(query, {
+      topK: options.topK,
+      sessionId: options.sessionId,
+      recordTrace: false
+    });
+    return { memories: result.memories };
+  } catch (error) {
+    if (!isVectorSchemaMismatchError(error)) {
+      throw error;
+    }
+
+    try {
+      const memories = options.sessionId
+        ? rankSessionKeywordMatches(
+          query,
+          await memoryService.getSessionHistory(options.sessionId),
+          options.topK
+        )
+        : await memoryService.keywordSearch(query, { topK: options.topK });
+      return { memories, warning: SEMANTIC_VECTOR_FALLBACK_WARNING };
+    } catch {
+      return { memories: [], warning: SEMANTIC_VECTOR_FALLBACK_FAILED_WARNING };
+    }
+  }
+}
+
+function isVectorSchemaMismatchError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /no vector column/i.test(message)
+    || /query vector dimension/i.test(message)
+    || /vector[^\n]{0,80}dimension/i.test(message)
+    || /dimension[^\n]{0,80}vector/i.test(message)
+    || /lancedb[^\n]{0,120}schema/i.test(message);
+}
+
+function rankSessionKeywordMatches(
+  query: string,
+  events: MemoryEvent[],
+  topK: number
+): ContextPackMemory[] {
+  const queryTokens = tokenizeKeywordQuery(query);
+  if (queryTokens.length === 0) return [];
+
+  return events
+    .map((event) => ({ event, score: scoreKeywordMatch(event.content, queryTokens) }))
+    .filter((match) => match.score > 0)
+    .sort((a, b) => b.score - a.score || b.event.timestamp.getTime() - a.event.timestamp.getTime())
+    .slice(0, topK);
+}
+
+function tokenizeKeywordQuery(value: string): string[] {
+  return Array.from(new Set(
+    value
+      .toLowerCase()
+      .split(/[^a-z0-9가-힣_]+/)
+      .map((token) => token.trim())
+      .filter((token) => token.length > 1)
+  ));
+}
+
+function scoreKeywordMatch(content: string, queryTokens: string[]): number {
+  const haystack = content.toLowerCase();
+  const hits = queryTokens.filter((token) => haystack.includes(token)).length;
+  return hits / queryTokens.length;
 }
 
 async function handleMemTimeline(memoryService: MemoryService, args: Record<string, unknown>): Promise<ToolResult> {
@@ -273,10 +359,8 @@ async function handleMemContextPack(memoryService: MemoryService, args: Record<s
     })
     : undefined;
 
-  const [searchResult, recentEvents] = await Promise.all([
-    memoryService.retrieveMemories(query, { topK: retrievalTopK, sessionId, recordTrace: false }),
-    memoryService.getRecentEvents(recentLimit)
-  ]);
+  const search = await retrieveMcpMemories(memoryService, query, { topK: retrievalTopK, sessionId });
+  const recentEvents = await memoryService.getRecentEvents(recentLimit);
 
   const timelineEvents = selectContextPackTimelineEvents(
     recentEvents,
@@ -285,7 +369,7 @@ async function handleMemContextPack(memoryService: MemoryService, args: Record<s
   );
   const sessions = summarizeSessions(timelineEvents, sessionLimit);
   const recentSessionIds = new Set(sessions.map((session) => session.sessionId));
-  const relevantMemories = selectContextPackMemories(searchResult.memories, {
+  const relevantMemories = selectContextPackMemories(search.memories, {
     genericContinuationQuery,
     topK,
     recentSessionIds,
@@ -307,6 +391,10 @@ async function handleMemContextPack(memoryService: MemoryService, args: Record<s
       `- Freshness refresh: ${refreshMode} before retrieval (${freshnessRun.sources.join(', ')})`,
       `- Refresh limits: sessions=${freshnessRun.sessionLimit} messages=${freshnessRun.messageLimit} force=${freshnessRun.force ? 'yes' : 'no'} embeddings=${freshnessRun.processEmbeddings ? `processed ${freshnessRun.embeddingsProcessed ?? 0}` : 'skipped'}`
     );
+  }
+
+  if (search.warning) {
+    lines.push(`- ${search.warning}`);
   }
 
   if (genericContinuationQuery) {
@@ -652,7 +740,7 @@ function shouldShowContextPackTimelineEvent(
   const content = event.content || '';
   if (isLowSignalContextContent(content)) return false;
   if (event.eventType === 'tool_observation') return false;
-  if (mentionsDifferentWorkspaceProject(content, projectPath)) return false;
+  if (eventBelongsToDifferentProject(event, projectPath)) return false;
   if (genericContinuationQuery && isGenericContinuationQuery(content)) return false;
   return true;
 }
@@ -661,13 +749,69 @@ function shouldShowContextPackMemory(memory: ContextPackMemory, options: Context
   const content = memory.event.content || '';
   if (isLowSignalContextContent(content)) return false;
   if (memory.event.eventType === 'tool_observation') return false;
-  if (mentionsDifferentWorkspaceProject(content, options.projectPath)) return false;
+  if (eventBelongsToDifferentProject(memory.event, options.projectPath)) return false;
   if (!options.genericContinuationQuery) return true;
 
   if (isGenericContinuationQuery(content)) return false;
   if (memory.event.eventType === 'session_summary') return memory.score >= GENERIC_SESSION_SUMMARY_MIN_SCORE;
   if (options.recentSessionIds.has(memory.event.sessionId)) return memory.score >= GENERIC_RECENT_MEMORY_MIN_SCORE;
   return memory.score >= GENERIC_STALE_MEMORY_MIN_SCORE;
+}
+
+function eventBelongsToDifferentProject(event: MemoryEvent, projectPath?: string): boolean {
+  if (!projectPath) return false;
+  const metadata = event.metadata || {};
+  const metadataProjectRefs = metadataProjectReferenceValues(metadata);
+
+  if (metadataProjectRefs.length > 0) {
+    return !metadataProjectRefs.some((value) => projectReferenceMatches(value, projectPath));
+  }
+
+  if (isUnscopedImportedHistory(metadata)) return true;
+
+  return mentionsDifferentWorkspaceProject(event.content || '', projectPath);
+}
+
+function isUnscopedImportedHistory(metadata: Record<string, unknown>): boolean {
+  return typeof metadata.importedFrom === 'string'
+    || typeof metadata.sourceSessionId === 'string'
+    || typeof metadata.sourceSessionHash === 'string'
+    || typeof metadata.transcriptPath === 'string';
+}
+
+const PROJECT_METADATA_KEYS = new Set([
+  'projectPath',
+  'sourceProjectPath',
+  'workspacePath',
+  'sourceWorkspacePath',
+  'cwd',
+  'sourceCwd',
+  'currentWorkingDirectory',
+  'projectRoot',
+  'repoPath',
+  'repositoryPath'
+]);
+
+function metadataProjectReferenceValues(metadata: Record<string, unknown>): string[] {
+  const values: string[] = [];
+  for (const [key, value] of Object.entries(metadata)) {
+    if (!PROJECT_METADATA_KEYS.has(key)) continue;
+    if (typeof value === 'string' && value.trim().length > 0) {
+      values.push(value.trim());
+    }
+  }
+  return values;
+}
+
+function projectReferenceMatches(reference: string, projectPath: string): boolean {
+  const normalizedReference = normalizeProjectReference(reference);
+  const normalizedProjectPath = normalizeProjectReference(projectPath);
+  if (normalizedReference === normalizedProjectPath) return true;
+  return normalizedReference.startsWith(`${normalizedProjectPath}/`);
+}
+
+function normalizeProjectReference(value: string): string {
+  return value.trim().replace(/\\/g, '/').replace(/\/+$/g, '').toLowerCase();
 }
 
 function mentionsDifferentWorkspaceProject(content: string, projectPath?: string): boolean {

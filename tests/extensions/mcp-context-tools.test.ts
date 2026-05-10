@@ -8,7 +8,9 @@ const mocks = vi.hoisted(() => {
     return {
       initialize: vi.fn(async () => undefined),
       retrieveMemories: vi.fn(),
+      keywordSearch: vi.fn(),
       getRecentEvents: vi.fn(),
+      getSessionHistory: vi.fn(),
       getStats: vi.fn(),
       processPendingEmbeddings: vi.fn()
     };
@@ -64,7 +66,9 @@ const { tools } = await import('../../src/extensions/mcp/tools.js');
 function resetService(service: typeof mocks.defaultService) {
   service.initialize.mockReset().mockResolvedValue(undefined);
   service.retrieveMemories.mockReset().mockResolvedValue({ memories: [] });
+  service.keywordSearch.mockReset().mockResolvedValue([]);
   service.getRecentEvents.mockReset().mockResolvedValue([]);
+  service.getSessionHistory.mockReset().mockResolvedValue([]);
   service.getStats.mockReset().mockResolvedValue({ totalEvents: 0, vectorCount: 0, levelStats: [] });
   service.processPendingEmbeddings.mockReset().mockResolvedValue(0);
 }
@@ -493,7 +497,7 @@ describe('MCP project context tools', () => {
         eventType: 'agent_response',
         timestamp: new Date('2026-05-05T02:00:00.000Z'),
         content: 'Hermes adapter verification passed with targeted tests.',
-        metadata: { importedFrom: 'hermes' }
+        metadata: { importedFrom: 'hermes', projectPath: '/repo/app' }
       }),
       relevant,
       event({
@@ -532,6 +536,144 @@ describe('MCP project context tools', () => {
     expect(text).toContain('Hermes adapter verification');
     expect(text).toContain(`[mem:${generateCitationId(relevant.id)}]`);
     expect(text.length).toBeLessThan(5000);
+  });
+
+  it('uses keyword fallback and still returns recent timeline when context-pack semantic/vector retrieval hits a stale vector schema', async () => {
+    const fallbackMemory = event({
+      id: '99990000-0000-4000-8000-000000000001',
+      sessionId: 'session-fallback',
+      eventType: 'agent_response',
+      timestamp: new Date('2026-05-05T01:00:00.000Z'),
+      content: 'Keyword fallback recovered the MCP vector schema mismatch implementation note.'
+    });
+    const recent = event({
+      id: '99990000-0000-4000-8000-000000000002',
+      sessionId: 'session-current',
+      eventType: 'agent_response',
+      timestamp: new Date('2026-05-05T02:00:00.000Z'),
+      content: 'Recent project timeline remains available even when LanceDB semantic retrieval is stale.'
+    });
+
+    mocks.projectService.retrieveMemories.mockRejectedValue(new Error(
+      'Failed to execute query stream: Invalid input, No vector column found to match with the query vector dimension: 384'
+    ));
+    mocks.projectService.keywordSearch.mockResolvedValue([{ event: fallbackMemory, score: 0.45 }]);
+    mocks.projectService.getRecentEvents.mockResolvedValue([recent]);
+
+    const result = await handleToolCall('mem-context-pack', {
+      projectPath: '/repo/app',
+      query: 'vector schema mismatch fallback',
+      topK: 2,
+      recentLimit: 5,
+      sessionLimit: 2
+    });
+
+    const text = textOf(result);
+    expect(result.isError).not.toBe(true);
+    expect(mocks.projectService.retrieveMemories).toHaveBeenCalledWith('vector schema mismatch fallback', {
+      topK: 6,
+      sessionId: undefined,
+      recordTrace: false
+    });
+    expect(mocks.projectService.keywordSearch).toHaveBeenCalledWith('vector schema mismatch fallback', { topK: 6 });
+    expect(text).toContain('Warning: semantic/vector retrieval unavailable; used keyword fallback.');
+    expect(text).toContain('Keyword fallback recovered');
+    expect(text).toContain('Recent project timeline remains available');
+    expect(text).not.toContain('query vector dimension: 384');
+  });
+
+  it('filters context-pack memories and timeline events whose project metadata belongs to another project', async () => {
+    const currentProjectMemory = event({
+      id: '99990000-0000-4000-8000-000000000003',
+      sessionId: 'session-current',
+      eventType: 'agent_response',
+      timestamp: new Date('2026-05-05T03:00:00.000Z'),
+      content: 'Current project MCP isolation implementation detail.',
+      metadata: { source: 'hermes', projectPath: '/repo/app' }
+    });
+    const otherProjectMemory = event({
+      id: '99990000-0000-4000-8000-000000000004',
+      sessionId: 'session-other',
+      eventType: 'agent_response',
+      timestamp: new Date('2026-05-05T03:01:00.000Z'),
+      content: 'Predictor Streamlit dashboard debugging note from a different repository.',
+      metadata: { source: 'hermes', projectPath: '/repo/predictor' }
+    });
+    const unscopedImportedMemory = event({
+      id: '99990000-0000-4000-8000-000000000007',
+      sessionId: 'session-legacy-unscoped',
+      eventType: 'agent_response',
+      timestamp: new Date('2026-05-05T03:01:30.000Z'),
+      content: 'Legacy Hermes imported session without project metadata should not enter project-scoped packs.',
+      metadata: { source: 'hermes', importedFrom: '/tmp/hermes-state.db' }
+    });
+    const sameBasenameOtherRootMemory = event({
+      id: '99990000-0000-4000-8000-000000000009',
+      sessionId: 'session-same-basename-other-root',
+      eventType: 'agent_response',
+      timestamp: new Date('2026-05-05T03:01:45.000Z'),
+      content: 'Same basename but different absolute project root must not leak into scoped packs.',
+      metadata: { source: 'hermes', projectPath: '/different/workspace/app' }
+    });
+    const currentProjectTimeline = event({
+      id: '99990000-0000-4000-8000-000000000005',
+      sessionId: 'session-current',
+      eventType: 'agent_response',
+      timestamp: new Date('2026-05-05T03:02:00.000Z'),
+      content: 'Timeline confirms current project scoped retrieval only.',
+      metadata: { source: 'codex', sourceProjectPath: '/repo/app' }
+    });
+    const otherProjectTimeline = event({
+      id: '99990000-0000-4000-8000-000000000006',
+      sessionId: 'session-other',
+      eventType: 'agent_response',
+      timestamp: new Date('2026-05-05T03:03:00.000Z'),
+      content: 'Streamlit port 3003 predictor smoke test should not leak into this pack.',
+      metadata: { source: 'codex', sourceProjectPath: '/repo/predictor' }
+    });
+    const unscopedImportedTimeline = event({
+      id: '99990000-0000-4000-8000-000000000008',
+      sessionId: 'session-legacy-unscoped',
+      eventType: 'agent_response',
+      timestamp: new Date('2026-05-05T03:04:00.000Z'),
+      content: 'Legacy no-context imported timeline should be excluded from project-scoped packs.',
+      metadata: { source: 'hermes', importedFrom: '/tmp/hermes-state.db' }
+    });
+
+    mocks.projectService.retrieveMemories.mockResolvedValue({
+      memories: [
+        { event: otherProjectMemory, score: 0.99 },
+        { event: unscopedImportedMemory, score: 0.93 },
+        { event: sameBasenameOtherRootMemory, score: 0.91 },
+        { event: currentProjectMemory, score: 0.86 }
+      ]
+    });
+    mocks.projectService.getRecentEvents.mockResolvedValue([
+      unscopedImportedTimeline,
+      otherProjectTimeline,
+      currentProjectTimeline
+    ]);
+
+    const result = await handleToolCall('mem-context-pack', {
+      projectPath: '/repo/app',
+      query: 'project isolation',
+      topK: 3,
+      recentLimit: 10,
+      sessionLimit: 3
+    });
+
+    const text = textOf(result);
+    expect(result.isError).not.toBe(true);
+    expect(text).toContain('Current project MCP isolation');
+    expect(text).toContain('Timeline confirms current project scoped retrieval only');
+    expect(text).not.toContain('Predictor Streamlit');
+    expect(text).not.toContain('Streamlit port 3003');
+    expect(text).not.toContain('Legacy Hermes imported session');
+    expect(text).not.toContain('Legacy no-context imported timeline');
+    expect(text).not.toContain('Same basename but different absolute project root');
+    expect(text).not.toContain('session-same-basename-other-root');
+    expect(text).not.toContain('session-legacy-unscoped');
+    expect(text).not.toContain('session-other');
   });
 
   it('prioritizes recent project timeline and suppresses low-signal search noise for generic continuation queries', async () => {

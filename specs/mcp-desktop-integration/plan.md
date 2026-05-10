@@ -543,20 +543,20 @@ src/cli/index.ts           # mcp 명령 등록
 **문제**: 2026-05-10 실제 `claude-memory-layer` project data에서 MCP `mem-context-pack`/`mem-search`가 LanceDB vector dimension mismatch(`No vector column found to match with the query vector dimension: 384`)로 실패했다. CLI `search`는 같은 프로젝트에서 fallback/keyword 기반으로 성공했다.
 
 **작업 항목**:
-- [ ] `ProgressiveRetriever.smartSearch()` 또는 MCP handler 경계에서 vector query 예외를 잡고 keyword/recent timeline fallback을 수행한다.
-- [ ] fallback 응답에 `warning: semantic vector search unavailable; using keyword/timeline fallback`을 포함한다.
+- [x] `ProgressiveRetriever.smartSearch()` 또는 MCP handler 경계에서 vector query 예외를 잡고 keyword/recent timeline fallback을 수행한다.
+- [x] fallback 응답에 `warning: semantic vector search unavailable; using keyword/timeline fallback`을 포함한다.
 - [ ] embedder 모델/차원 변경 시 오래된 LanceDB table을 detect하고 rebuild/reopen 안내를 제공한다.
-- [ ] 회귀 테스트: vector table dimension mismatch fixture에서도 `mem-context-pack`은 `isError=false`와 recent timeline을 반환한다.
+- [x] 회귀 테스트: vector table dimension mismatch fixture에서도 `mem-context-pack`은 `isError=false`와 recent timeline을 반환한다.
 
 ### 5.2 Project isolation 보강
 
 **문제**: direct handler smoke에서 `projectPath=/Users/namsangboy/workspace/claude-memory-layer`인데 `predictor`, Streamlit 등 다른 workspace signal이 context pack에 섞인 사례가 있었다. Hermes validation도 project context가 없는 66개 session을 경고했다.
 
 **작업 항목**:
-- [ ] Hermes/Codex imported session metadata에 canonical `projectPath`/`projectHash`를 저장하고 retrieval/timeline 쿼리에서 필수 필터로 사용한다.
-- [ ] project context가 없는 Hermes session은 explicit session import가 아닌 한 project-scoped auto-refresh 대상에서 제외한다.
-- [ ] `mem-project-timeline`/`mem-context-pack`에 `containsOtherProject` 회귀 테스트를 추가한다.
-- [ ] Generic continuation query는 semantic relevance보다 same-project recent timeline을 우선한다.
+- [x] Hermes imported session metadata에 canonical `projectPath`를 저장하고 retrieval/timeline 쿼리에서 필수 필터로 사용한다. Codex metadata parity는 기존 importer 경로와 함께 별도 parity 검증을 이어간다.
+- [x] project context가 없는 Hermes session은 explicit session import가 아닌 한 project-scoped auto-refresh 대상에서 제외한다.
+- [x] `mem-project-timeline`/`mem-context-pack`에 `containsOtherProject` 회귀 테스트를 추가한다.
+- [x] Generic continuation query는 semantic relevance보다 same-project recent timeline을 우선한다.
 
 ### 5.3 CLI/MCP parity 및 long-lived service freshness
 
@@ -584,9 +584,10 @@ node dist/cli/index.js search "claude-memory-layer MCP context pack refreshLates
 ```
 
 **완료 조건**:
-- [ ] CLI smoke 명령이 모두 exit 0.
-- [ ] MCP native `mem-context-pack`와 `mem-search`가 실제 project data에서 exit/error 없이 결과를 반환.
-- [ ] Smoke report가 `/tmp/cml-realdata-verify-*` 또는 CI artifact로 남고, secret redaction을 통과.
+- [x] CLI smoke 명령이 모두 exit 0.
+- [x] MCP native `mem-context-pack`와 `mem-search`가 실제 project data에서 fallback/safe output을 반환.
+- [x] Smoke report가 `/tmp/cml-mcp-realdata-smoke-final.json`로 남고 raw vector error 및 cross-project signal 검사를 통과.
+- [ ] Follow-up: ad-hoc `tsx` direct handler smoke는 결과 파일 생성 후에도 LanceDB/native shutdown 경로에서 `libc++abi: mutex lock failed` / exit 134가 발생할 수 있다. 정식 smoke runner는 MCP server lifecycle 또는 controlled `process.exit(0)` 방식으로 native shutdown을 안정화한다.
 
 ## 마일스톤
 

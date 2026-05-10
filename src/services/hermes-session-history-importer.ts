@@ -643,7 +643,8 @@ export class HermesSessionHistoryImporter {
           source: 'hermes',
           hermesSource: session.source,
           sourceSessionId: session.id,
-          sourceSessionHash: hashLabel(session.id)
+          sourceSessionHash: hashLabel(session.id),
+          projectPath: effectiveProjectPath
         }
       );
 
@@ -683,7 +684,8 @@ export class HermesSessionHistoryImporter {
             source: 'hermes',
             hermesSource: session.source,
             sourceSessionId: session.id,
-            sourceSessionHash: hashLabel(session.id)
+            sourceSessionHash: hashLabel(session.id),
+            projectPath: effectiveProjectPath
           }
         );
 

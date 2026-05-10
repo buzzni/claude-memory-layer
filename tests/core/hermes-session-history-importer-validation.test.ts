@@ -228,6 +228,7 @@ describe('Hermes SessionDB validation/import', () => {
       source: 'hermes',
       hermesSource: 'discord',
       sourceSessionId: 'session-a',
+      projectPath: projectA,
       importedFrom: stateDbPath
     });
 
@@ -238,6 +239,7 @@ describe('Hermes SessionDB validation/import', () => {
       source: 'hermes',
       hermesSource: 'discord',
       sourceSessionId: 'session-a',
+      projectPath: projectA,
       importedFrom: stateDbPath
     });
 
