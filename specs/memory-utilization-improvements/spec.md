@@ -331,12 +331,13 @@ score = 0.35 × semanticScore +
 
 **문제**:
 - Live dashboard dogfood에서 read-only 화면은 정상 렌더됐지만, explicit `auto` disclosure search가 embedding/model backend 상태에 따라 500을 낼 수 있었다.
-- `/api/events`와 `/api/sessions`는 SQLite-only 화면임에도 full vector/embedder service를 초기화해 dashboard browsing을 불필요하게 깨뜨릴 수 있었다.
+- `/api/events`, `/api/sessions`, `/api/stats/*` read subroutes는 SQLite-only 화면임에도 full vector/embedder service를 초기화해 dashboard browsing을 불필요하게 깨뜨릴 수 있었다.
+- Published `1.0.38` fresh-install dashboard UI smoke에서 `/api/stats/usefulness`는 200이었지만 `/api/stats/shared`, `/endless`, `/levels`, `/most-accessed`, `/timeline`, `/helpfulness`, `/retrieval-traces`, `/retrieval-review-queue`, `/kpi` 같은 stats subroute가 embedder/model 초기화 실패(`Unable to get model file path or buffer`)로 500을 낼 수 있음을 재현했다.
 - Ask Memory는 서버의 Claude CLI 인증 상태에 의존한다. 인증이 깨지면 memory retrieval 여부와 무관하게 SSE에 auth failure가 표시되어 "메모리가 의미 있게 쓰이는지"를 확인하기 어렵다.
 - 현재 실측 project는 vector nodes 0, embedding_outbox pending, helpfulness 0건이라 의미있는 semantic recall/feedback-loop 판단이 불가능하고 keyword-only recall에 의존한다.
 
 **해결 방안**:
-1. Dashboard read-only APIs(`/api/events`, `/api/sessions`, stats 계열)는 lightweight read service를 사용한다.
+1. Dashboard read-only APIs(`/api/events`, `/api/sessions`, `/api/stats`, `/api/stats/shared`, `/api/stats/endless`, `/api/stats/levels/:level`, `/api/stats/most-accessed`, `/api/stats/timeline`, `/api/stats/helpfulness`, `/api/stats/usefulness`, `/api/stats/retrieval-traces`, `/api/stats/retrieval-review-queue`, `/api/stats/kpi`)는 lightweight read service를 사용한다.
 2. `/api/search/disclosure` `strategy=auto`가 embedding backend init/query 실패 시 lightweight `strategy=fast` keyword search로 fallback하고 500 대신 fallback trace를 반환한다.
 3. Ask Memory에 provider/auth preflight와 memory-only fallback summary mode를 추가한다.
    - Claude CLI auth 실패 시 raw provider error만 노출하지 말고 "retrieved memories + provider auth diagnostic"을 반환한다.
@@ -345,7 +346,7 @@ score = 0.35 × semanticScore +
 5. 실데이터 dogfood smoke script를 추가해 login → project select → stats/events/sessions/search/Ask Memory diagnostic을 자동 검증한다.
 
 **검증**:
-- Fresh install dashboard smoke에서 `/api/events`, `/api/sessions`, `/api/search/disclosure(strategy=auto)`가 embedding backend unavailable fixture에서도 200.
+- Fresh install dashboard smoke에서 `/api/events`, `/api/sessions`, `/api/search/disclosure(strategy=auto)`, `/api/stats/*` read subroutes가 embedding backend unavailable fixture에서도 200.
 - Ask Memory Claude auth failure fixture에서 SSE가 사용자 친화적 diagnostic과 retrieved-memory evidence를 반환.
 - `claude-memory-layer` project dogfood에서 search가 exact/keyword queries를 반환하고, semantic/vector 준비 안 됨 상태가 dashboard에 명확히 표시됨.
 
