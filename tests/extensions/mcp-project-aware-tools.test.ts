@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => {
       keywordSearch: vi.fn(),
       getRecentEvents: vi.fn(),
       getSessionHistory: vi.fn(),
+      getOutboxStats: vi.fn(),
       getStats: vi.fn()
     };
   }
@@ -37,6 +38,10 @@ function resetService(service: typeof mocks.defaultService) {
   service.keywordSearch.mockReset().mockResolvedValue([]);
   service.getRecentEvents.mockReset().mockResolvedValue([]);
   service.getSessionHistory.mockReset().mockResolvedValue([]);
+  service.getOutboxStats.mockReset().mockResolvedValue({
+    embedding: { pending: 0, processing: 0, failed: 0, total: 0 },
+    vector: { pending: 0, processing: 0, failed: 0, total: 0 }
+  });
   service.getStats.mockReset().mockResolvedValue({ totalEvents: 0, vectorCount: 0 });
 }
 
@@ -161,6 +166,44 @@ describe('MCP project-aware memory tools', () => {
     expect(text).toContain('Found 1 relevant memories');
     expect(text).toContain('target session fallback result');
     expect(text).not.toContain('higher ranked fallback from another session');
+  });
+
+  it('renders project-scoped mem-stats safe storage metadata and freshness guidance', async () => {
+    mocks.projectService.getStats.mockResolvedValue({
+      totalEvents: 7,
+      vectorCount: 3,
+      levelStats: [{ level: 'working', count: 7 }]
+    });
+    mocks.projectService.getRecentEvents.mockResolvedValue([
+      {
+        id: 'event-stats-1',
+        sessionId: 'session-stats-a',
+        eventType: 'user_prompt',
+        timestamp: new Date('2026-05-05T01:00:00.000Z'),
+        content: 'stats event',
+        metadata: {}
+      }
+    ]);
+    mocks.projectService.getOutboxStats.mockResolvedValue({
+      embedding: { pending: 2, processing: 1, failed: 0, total: 5 },
+      vector: { pending: 1, processing: 0, failed: 1, total: 4 }
+    });
+
+    const result = await handleToolCall('mem-stats', { projectPath: '/repo/app' });
+
+    const text = String(result.content[0]?.text ?? '');
+    expect(result.isError).not.toBe(true);
+    expect(mocks.getMemoryServiceForProject).toHaveBeenCalledWith('/repo/app');
+    expect(mocks.projectService.getOutboxStats).toHaveBeenCalledTimes(1);
+    expect(text).toContain('Storage View: project:');
+    expect(text).toContain('Storage Path Label: ~/.claude-code/memory/projects/');
+    expect(text).toContain('Embedder Model: Xenova/multilingual-e5-small');
+    expect(text).toContain('Vector Table Dimension: unknown');
+    expect(text).toContain('Pending Embeddings: 2');
+    expect(text).toContain('Vector Outbox Pending: 1');
+    expect(text).toContain('MCP/CLI parity');
+    expect(text).toContain('restart');
+    expect(text).not.toContain('/repo/app');
   });
 
   it('falls back to the global memory service when projectPath is absent', async () => {

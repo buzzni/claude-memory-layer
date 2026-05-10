@@ -19,7 +19,9 @@ import {
   type ExternalMarketProvider
 } from '../../core/external-market-context.js';
 import { generateCitationId } from '../../core/citation-generator.js';
+import { hashProjectPath } from '../../core/registry/project-path.js';
 import { applyPrivacyFilter, maskSensitiveInput } from '../../core/privacy/filter.js';
+import { DEFAULT_EMBEDDING_MODEL } from '../../extensions/vector/embedder.js';
 import {
   isGenericContinuationQuery,
   isLowSignalContextContent
@@ -73,7 +75,7 @@ export async function handleToolCall(
         return await handleMemDetails(memoryService, args);
 
       case 'mem-stats':
-        return await handleMemStats(memoryService);
+        return await handleMemStats(memoryService, args);
 
       case 'mem-context-pack':
         return await handleMemContextPack(memoryService, args);
@@ -1080,9 +1082,23 @@ function textResult(text: string): ToolResult {
   return { content: [{ type: 'text', text }] };
 }
 
-async function handleMemStats(memoryService: MemoryService): Promise<ToolResult> {
+interface McpOutboxStats {
+  embedding: { pending: number; processing: number; failed: number; total: number };
+  vector: { pending: number; processing: number; failed: number; total: number };
+}
+
+interface McpStatsStorageView {
+  storageView: string;
+  storagePathLabel: string;
+  embedderModel: string;
+  vectorTableDimension: string;
+}
+
+async function handleMemStats(memoryService: MemoryService, args: Record<string, unknown>): Promise<ToolResult> {
   const stats = await memoryService.getStats();
   const recentEvents = await memoryService.getRecentEvents(10000);
+  const outboxStats = await readMcpOutboxStats(memoryService);
+  const storageView = buildMcpStatsStorageView(optionalString(args.projectPath));
 
   const uniqueSessions = new Set(recentEvents.map(e => e.sessionId));
 
@@ -1092,6 +1108,19 @@ async function handleMemStats(memoryService: MemoryService): Promise<ToolResult>
     `- **Total Events**: ${stats.totalEvents}`,
     `- **Total Vectors**: ${stats.vectorCount}`,
     `- **Sessions**: ${uniqueSessions.size}`,
+    '',
+    '### Storage View / Freshness',
+    '',
+    `- Storage View: ${storageView.storageView}`,
+    `- Storage Path Label: ${storageView.storagePathLabel}`,
+    `- Embedder Model: ${storageView.embedderModel}`,
+    `- Vector Table Dimension: ${storageView.vectorTableDimension}`,
+    `- Pending Embeddings: ${outboxStats.embedding.pending}`,
+    `- Embedding Outbox: pending=${outboxStats.embedding.pending}, processing=${outboxStats.embedding.processing}, failed=${outboxStats.embedding.failed}, total=${outboxStats.embedding.total}`,
+    `- Vector Outbox Pending: ${outboxStats.vector.pending}`,
+    `- Vector Outbox: pending=${outboxStats.vector.pending}, processing=${outboxStats.vector.processing}, failed=${outboxStats.vector.failed}, total=${outboxStats.vector.total}`,
+    '- MCP/CLI parity: CLI `stats -p <project>` and MCP `mem-stats(projectPath=...)` should use this same storage view label.',
+    '- Restart guidance: if CLI and MCP counts differ for this storage view after import/build, restart the long-lived MCP/Hermes gateway process.',
     '',
     '### Events by Type',
     ''
@@ -1108,5 +1137,37 @@ async function handleMemStats(memoryService: MemoryService): Promise<ToolResult>
 
   return {
     content: [{ type: 'text', text: lines.join('\n') }]
+  };
+}
+
+async function readMcpOutboxStats(memoryService: MemoryService): Promise<McpOutboxStats> {
+  try {
+    return await memoryService.getOutboxStats();
+  } catch {
+    return {
+      embedding: { pending: 0, processing: 0, failed: 0, total: 0 },
+      vector: { pending: 0, processing: 0, failed: 0, total: 0 }
+    };
+  }
+}
+
+function buildMcpStatsStorageView(projectPath?: string): McpStatsStorageView {
+  const embedderModel = process.env.CLAUDE_MEMORY_EMBEDDING_MODEL || DEFAULT_EMBEDDING_MODEL;
+  const requestedProjectPath = projectPath?.trim();
+  if (requestedProjectPath) {
+    const projectHash = hashProjectPath(requestedProjectPath);
+    return {
+      storageView: `project:${projectHash}`,
+      storagePathLabel: `~/.claude-code/memory/projects/${projectHash}`,
+      embedderModel,
+      vectorTableDimension: 'unknown (not recorded in current vector metadata)'
+    };
+  }
+
+  return {
+    storageView: 'global',
+    storagePathLabel: '~/.claude-code/memory',
+    embedderModel,
+    vectorTableDimension: 'unknown (not recorded in current vector metadata)'
   };
 }

@@ -174,6 +174,18 @@ describe('createMemoryServiceRegistry', () => {
     });
   });
 
+  it('uses the same project storage view for full MCP services and lightweight CLI read services', () => {
+    const { registry } = createRegistry();
+
+    const fullProjectService = registry.getMemoryServiceForProject('/workspace/app');
+    const lightweightProjectService = registry.getLightweightMemoryServiceForProject('/workspace/app');
+
+    expect(lightweightProjectService).not.toBe(fullProjectService);
+    expect(lightweightProjectService.config.storagePath).toBe(fullProjectService.config.storagePath);
+    expect(lightweightProjectService.config.projectHash).toBe(fullProjectService.config.projectHash);
+    expect(lightweightProjectService.config.projectPath).toBe(fullProjectService.config.projectPath);
+  });
+
   it('caches lightweight project services for CLI read paths without reusing the full project service', () => {
     const { registry, createdConfigs } = createRegistry();
 

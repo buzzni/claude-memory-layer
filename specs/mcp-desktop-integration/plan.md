@@ -563,9 +563,10 @@ src/cli/index.ts           # mcp 명령 등록
 **문제**: 같은 `projectPath`에 대해 CLI stats는 `Vector Count: 0`, MCP stats는 `Total Vectors: 23`으로 관측되었다. Long-lived MCP server가 오래된 index/schema/service instance를 유지할 수 있다.
 
 **작업 항목**:
-- [ ] CLI와 MCP가 동일한 project registry/storage path를 사용하는지 parity test를 추가한다.
-- [ ] MCP tool call 전 storage schema/version/embedding model metadata를 검사하고 mismatch 시 service를 reopen하거나 명확한 restart 안내를 반환한다.
-- [ ] `mem-stats`에 embedder model, vector table dimension, pending embeddings, storage path label을 safe metadata로 표시한다.
+- [x] CLI와 MCP가 동일한 project registry/storage path를 사용하는지 parity test를 추가한다.
+- [x] `mem-stats`에 embedder model, vector table dimension 상태, pending embeddings, storage path label을 safe metadata로 표시한다.
+- [x] MCP `mem-stats`에 CLI/MCP count mismatch 시 long-lived MCP/Hermes gateway restart 안내를 표시한다.
+- [ ] Follow-up: LanceDB table schema/vector dimension을 실제 vector metadata에서 introspect하고 mismatch 시 service reopen 또는 deterministic repair guidance를 반환한다.
 
 ### 5.4 Real-data smoke script
 
