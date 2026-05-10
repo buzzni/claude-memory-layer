@@ -369,6 +369,34 @@ export interface OutboxRecoveryResult {
   vector: OutboxRecoveryBucket;
 }
 
+export interface ProjectScopeRepairOptions {
+  /** Absolute or logical project path used to derive the expected project hash. */
+  projectPath?: string;
+  /** Explicit project hash override for hash-only repair flows. */
+  projectHash?: string;
+  /** Inspect and count changes without mutating event metadata. */
+  dryRun?: boolean;
+  /** Test hook for deterministic repair metadata. */
+  now?: Date;
+}
+
+export interface ProjectScopeRepairSample {
+  eventId: string;
+  action: 'repaired' | 'quarantined';
+  reason: 'same-project-path' | 'session-project-path' | 'project-path-mismatch' | 'missing-project-scope' | 'scope-hash-mismatch' | 'content-project-mismatch';
+}
+
+export interface ProjectScopeRepairResult {
+  dryRun: boolean;
+  projectHash: string;
+  scanned: number;
+  repaired: number;
+  quarantined: number;
+  alreadyScoped: number;
+  skipped: number;
+  samples: ProjectScopeRepairSample[];
+}
+
 // ============================================================
 // Entity Types (Task, Condition, Artifact)
 // ============================================================

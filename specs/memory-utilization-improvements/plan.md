@@ -429,18 +429,40 @@ cascade failure를 단계적으로 수정한다.
 
 **작업 단계**:
 
-1. Mis-scoped row detector를 설계한다.
+1. Mis-scoped row detector를 설계한다. ✅
    - metadata `scope.project.path/hash`와 content 안의 명시적 workspace path가 충돌하는지 확인
+   - GitHub repo URL 또는 workspace path가 현재 project basename과 충돌하는 already-scoped legacy import도 탐지
    - content에 다른 repo slug(`alpha-ai-trader`, `predictor`, `Streamlit`)가 반복적으로 등장하는 suspect row를 privacy-safe aggregate로 집계
-2. `repair legacy-project-scope --project <path|hash> --dry-run` CLI를 추가한다.
-   - raw content 출력 금지
-   - counts/session IDs/safe previews만 표시
-3. 기본 query path에서 quarantine flag 또는 scope confidence를 반영한다.
-4. dashboard에 "suspected cross-project memories" aggregate card를 추가한다.
-5. regression fixture:
+2. `repair legacy-project-scope --project <path|hash> --dry-run` CLI를 추가한다. ✅
+   - 기본은 dry-run, `--apply`일 때만 metadata mutation
+   - raw content/local path 출력 금지
+   - counts/event IDs/action reason만 bounded sample로 표시
+3. 기본 query path에서 quarantine flag 또는 scope confidence를 반영한다. ✅
+   - `keywordSearch`, `getRecentEvents`, `getEvent`, `getSessionEvents`, `getEventsSince`, `getEventsSinceRowid`, `getEventsPage`, `getEventsByTurn`, `getSessionTurns`, `countSessionTurns`, `getMostAccessed`, `getHelpfulMemories`, `countEvents`, `getEventsByLevel`, `getLevelStats`는 active quarantine rows를 제외
+   - invalid legacy metadata JSON은 default read에서 crash하지 않고 metadata를 비워 읽으며, session project path evidence가 있으면 repair/quarantine 대상이 된다
+   - explicit foreign `projectPath`/`sourceProjectPath`/session project path evidence는 current hash/tag보다 우선해 `project-path-mismatch` quarantine으로 처리
+   - core repair API와 CLI helper 모두 `projectPath`/`projectHash` mismatch를 fail-closed 처리
+   - maintenance/audit callers만 `includeQuarantined` opt-in 사용
+4. dashboard에 "suspected cross-project memories" aggregate card를 추가한다. ⏳
+   - 이번 릴리스는 CLI/API repair와 기본 view suppression 우선
+   - 다음 단계에서 quarantine review/aggregate card 추가
+5. regression fixture: ✅
    - target project: `claude-memory-layer`
-   - distractor content: `alpha-ai-trader` dashboard memory
-   - assertion: generic `dashboard` query가 distractor를 기본 result로 반환하지 않음
+   - distractor content: `alpha-ai-trader` / `predictor` / `Streamlit` legacy memory
+   - assertion: default search/recent/level reads가 distractor를 반환하지 않음
+
+**검증 결과(2026-05-10, project `b7f03a73`)**:
+
+- dry-run: scanned 61, already scoped 50, quarantined 11, repaired 0
+- apply 후 재 dry-run: quarantined 0, skipped 11
+- ongoing live import 후 재 dry-run: scanned 73, already scoped 62, quarantined 0, skipped 11
+- `justinbuzzni predictor pull ac48518` raw contamination is no longer returned; current CML repair explanation memories may still match predictor-contamination audit queries and are intentionally kept searchable
+- stats after quarantine filtering: active Total Events 62, Vector Count 51, Memory Levels L0 43 / L1 19 after ongoing live imports; first apply baseline was active Total Events 50, L0 31 / L1 19
+- dashboard/API smoke: `/health` 200, unauth `/`/`/api/stats` 401, login 200, authenticated `/`, `/api/health`, `/api/stats`, `/api/events`, `/api/sessions`, `/api/search/disclosure`, `/api/chat` memory-only all 200
+- dashboard UI smoke: `/memory legacy project scope repair quarantine` submits through `/api/chat` 200, page remains on dashboard, console/js errors 0
+- privacy smoke: CLI `--password ...` / `--password=...`, prefixed options(`--client-secret ...`, `--db-password ...`, `--access-token ...`), hyphenated assignments, and URL-next-line password paste are redacted before future memory storage; benign URL-next-line status words are not over-redacted; existing live DB credential-like rows cleaned to 0 unredacted matches
+- split tests: core 44 files / 240 tests, apps 22 files / 99 tests, extensions+adapters 14 files / 82 tests passed
+- replay: Precision@1 1.0, MRR 1.0, forbidden hits 0, failed queries 0
 
 **완료 조건**: live CML project dashboard memory-only query에서 unrelated Alpha AI Trader/Streamlit memories가 기본 top results에 섞이지 않음
 

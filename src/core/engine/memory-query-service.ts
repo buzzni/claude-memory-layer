@@ -1,4 +1,10 @@
-import type { MemoryEvent, OutboxRecoveryOptions, OutboxRecoveryResult } from '../types.js';
+import type {
+  MemoryEvent,
+  OutboxRecoveryOptions,
+  OutboxRecoveryResult,
+  ProjectScopeRepairOptions,
+  ProjectScopeRepairResult
+} from '../types.js';
 
 interface RankedKeywordResult {
   event: MemoryEvent;
@@ -36,6 +42,7 @@ interface QueryMaintenanceStore extends QueryStore {
   rebuildFtsIndex(): Promise<number>;
   getOutboxStats(): Promise<MemoryOutboxStats>;
   recoverStuckOutboxItems(options?: OutboxRecoveryOptions): Promise<OutboxRecoveryResult>;
+  repairLegacyProjectScope(options?: ProjectScopeRepairOptions): Promise<ProjectScopeRepairResult>;
   getEventsByLevel(level: string, options?: { limit?: number; offset?: number }): Promise<MemoryEvent[]>;
   getEventLevel(eventId: string): Promise<string | null>;
   getSessionTurns(sessionId: string, options?: { limit?: number; offset?: number }): Promise<MemorySessionTurn[]>;
@@ -107,6 +114,11 @@ export class MemoryQueryService {
   async recoverStuckOutboxItems(options?: OutboxRecoveryOptions): Promise<OutboxRecoveryResult> {
     await this.initialize();
     return this.getMaintenanceStore('recoverStuckOutboxItems').recoverStuckOutboxItems(options);
+  }
+
+  async repairLegacyProjectScope(options?: ProjectScopeRepairOptions): Promise<ProjectScopeRepairResult> {
+    await this.initialize();
+    return this.getMaintenanceStore('repairLegacyProjectScope').repairLegacyProjectScope(options);
   }
 
   async getStats(): Promise<MemoryStats> {

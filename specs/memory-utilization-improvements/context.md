@@ -167,9 +167,19 @@ Session-start의 백필 메커니즘도 요약을 생성하지 못하고 있음.
 - **Live dogfood 결과**:
   - `/health`, login, `/api/stats`, `/api/events`, `/api/sessions`, `/api/health/recover`, `/api/chat` memory-only 모두 local smoke 200
   - memory-only query는 retrievedMemories count를 반환하고 context를 직접 보여준다.
-- **남은 품질 이슈**:
+- **남은 품질 이슈(해소됨)**:
   - generic `dashboard` query에서 Alpha AI Trader/Streamlit legacy imports가 top result로 섞였다.
-  - 원인은 provider/auth가 아니라 project DB 내부의 mis-scoped legacy corpus이며, repair/quarantine 계획이 필요하다.
+  - 원인은 provider/auth가 아니라 project DB 내부의 mis-scoped legacy corpus였다.
+  - `repair legacy-project-scope -p /Users/namsangboy/workspace/claude-memory-layer --apply`로 content-project-mismatch 11건을 quarantine했다.
+  - 이후 raw predictor PR contamination memory는 기본 검색에서 제외됐다.
+  - CML repair 설명/회고 메모리가 predictor-contamination audit query에 매칭되는 것은 정상으로 보고, detector가 이런 설명 메모리를 quarantine하지 않도록 false-positive를 보정했다.
+  - `getLevelStats`/`getEventsByLevel`뿐 아니라 `getEvent`, `getSessionEvents`, `getRecentEvents`, `getEventsSince*`, `getEventsPage`, `getEventsByTurn`, `getSessionTurns`, `countSessionTurns`, `getMostAccessed`, `getHelpfulMemories`, `countEvents`, `keywordSearch` 기본 path에서 active quarantine rows를 제외한다. quarantine audit은 명시적 `includeQuarantined` opt-in만 사용한다.
+  - invalid legacy metadata JSON은 default read에서 crash하지 않고 metadata를 비워 읽으며, session project path evidence가 있으면 repair/quarantine 대상이 된다.
+  - 이미 current hash/tag가 있더라도 explicit `projectPath`/`sourceProjectPath`/session project path가 foreign project를 가리키면 `project-path-mismatch`로 quarantine한다.
+  - core repair API와 CLI helper는 `projectPath`/`projectHash` mismatch를 fail-closed 처리하고, CLI는 명시적 빈 `--project` 및 hash-only missing-store dry-run side effect를 막는다.
+- **Privacy dogfood 보강**:
+  - dashboard smoke command의 `--password ...`, prefixed CLI secret options(`--client-secret ...`, `--db-password ...`, `--access-token ...`), hyphenated secret assignment(`db-password=...` 등), URL 다음 줄에 붙여넣은 password-looking 문자열이 memory event에 저장되기 전 `[REDACTED]` 처리되도록 privacy filter를 확장했다. URL 다음 줄의 일반 상태 단어는 과잉 redact하지 않는다.
+  - 이미 실데이터 DB에 들어간 credential-like smoke rows는 content cleanup을 적용했고, conservative scan 기준 unredacted credential-like row 0건을 확인했다.
 
 ---
 

@@ -21,7 +21,9 @@ import type {
   SharedStoreConfig,
   Entry,
   OutboxRecoveryOptions,
-  OutboxRecoveryResult
+  OutboxRecoveryResult,
+  ProjectScopeRepairOptions,
+  ProjectScopeRepairResult
 } from '../core/types.js';
 import type { EndlessMemoryServices } from '../extensions/endless-memory/index.js';
 import {
@@ -313,6 +315,10 @@ export class MemoryService {
 
   async recoverStuckOutboxItems(options?: OutboxRecoveryOptions): Promise<OutboxRecoveryResult> {
     return this.queryService.recoverStuckOutboxItems(options);
+  }
+
+  async repairLegacyProjectScope(options?: ProjectScopeRepairOptions): Promise<ProjectScopeRepairResult> {
+    return this.queryService.repairLegacyProjectScope(options);
   }
 
   async getRetrievalTraceStats(): Promise<RetrievalTraceStats> {

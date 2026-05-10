@@ -11,9 +11,14 @@ import {
   AppendResult,
   OutboxItem,
   OutboxRecoveryOptions,
-  OutboxRecoveryResult
+  OutboxRecoveryResult,
+  ProjectScopeRepairOptions,
+  ProjectScopeRepairResult,
+  ProjectScopeRepairSample
 } from './types.js';
 import { makeCanonicalKey, makeDedupeKey } from './canonical-key.js';
+import * as nodePath from 'path';
+import { hashProjectPath } from './registry/project-path.js';
 import {
   createSQLiteDatabase,
   sqliteRun,
@@ -49,6 +54,157 @@ function emptyOutboxRecoveryResult(): OutboxRecoveryResult {
     embedding: { recoveredProcessing: 0, retriedFailed: 0 },
     vector: { recoveredProcessing: 0, retriedFailed: 0 }
   };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function getNestedRecord(root: Record<string, unknown> | undefined, path: string[]): Record<string, unknown> | undefined {
+  let cursor: unknown = root;
+  for (const key of path) {
+    if (!isRecord(cursor)) return undefined;
+    cursor = cursor[key];
+  }
+  return isRecord(cursor) ? cursor : undefined;
+}
+
+function getNestedString(root: Record<string, unknown> | undefined, path: string[]): string | undefined {
+  let cursor: unknown = root;
+  for (const key of path) {
+    if (!isRecord(cursor)) return undefined;
+    cursor = cursor[key];
+  }
+  return typeof cursor === 'string' && cursor.length > 0 ? cursor : undefined;
+}
+
+function metadataProjectHash(metadata: Record<string, unknown> | undefined): string | undefined {
+  return getNestedString(metadata, ['scope', 'project', 'hash']);
+}
+
+function metadataProjectPaths(metadata: Record<string, unknown> | undefined): string[] {
+  const candidates = [
+    getNestedString(metadata, ['projectPath']),
+    getNestedString(metadata, ['sourceProjectPath']),
+    getNestedString(metadata, ['scope', 'project', 'path'])
+  ];
+  const paths: string[] = [];
+  for (const value of candidates) {
+    if (value && !paths.includes(value)) paths.push(value);
+  }
+  return paths;
+}
+
+function metadataProjectPath(metadata: Record<string, unknown> | undefined): string | undefined {
+  return metadataProjectPaths(metadata)[0];
+}
+
+function isActiveQuarantinedMetadata(metadata: Record<string, unknown> | undefined): boolean {
+  const quarantine = getNestedRecord(metadata, ['quarantine']);
+  return quarantine?.status === 'active';
+}
+
+function activeQuarantineStatusExpression(column = 'metadata'): string {
+  return `COALESCE(json_extract(CASE WHEN json_valid(${column}) THEN ${column} ELSE '{}' END, '$.quarantine.status'), '')`;
+}
+
+function notActiveQuarantinedSql(column = 'metadata'): string {
+  return `${activeQuarantineStatusExpression(column)} != 'active'`;
+}
+
+interface QuarantineReadOptions {
+  includeQuarantined?: boolean;
+}
+
+function maybeQuarantinePredicate(options?: QuarantineReadOptions, column = 'metadata'): string {
+  return options?.includeQuarantined ? '1=1' : notActiveQuarantinedSql(column);
+}
+
+function safeParseMetadataValue(value: unknown): Record<string, unknown> | undefined {
+  if (!value) return undefined;
+  if (typeof value === 'object') return isRecord(value) ? value : undefined;
+  if (typeof value !== 'string') return undefined;
+  try {
+    const parsed = JSON.parse(value);
+    return isRecord(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isImportedOrLegacyScopedMetadata(metadata: Record<string, unknown> | undefined): boolean {
+  if (!metadata) return false;
+  return Boolean(
+    metadata.importedFrom
+    || metadata.sourceSessionId
+    || metadata.sourceSessionHash
+    || metadata.hermesSource
+    || metadata.projectPath
+    || metadata.sourceProjectPath
+    || metadata.source === 'hermes'
+    || metadata.source === 'claude'
+    || metadata.source === 'codex'
+  );
+}
+
+function addMetadataTag(metadata: Record<string, unknown>, tag: string): void {
+  const current = Array.isArray(metadata.tags)
+    ? metadata.tags.filter((value): value is string => typeof value === 'string')
+    : [];
+  if (!current.includes(tag)) metadata.tags = [...current, tag];
+}
+
+function buildRepairResult(projectHash: string, dryRun: boolean): ProjectScopeRepairResult {
+  return {
+    dryRun,
+    projectHash,
+    scanned: 0,
+    repaired: 0,
+    quarantined: 0,
+    alreadyScoped: 0,
+    skipped: 0,
+    samples: []
+  };
+}
+
+function normalizeRepoName(value: string): string {
+  return value.replace(/\.git$/i, '').trim().toLowerCase();
+}
+
+function projectBasename(projectPath?: string): string | undefined {
+  if (!projectPath) return undefined;
+  const trimmed = projectPath.replace(/[\\/]+$/, '');
+  const basename = nodePath.basename(trimmed);
+  return basename ? normalizeRepoName(basename) : undefined;
+}
+
+function isProjectScopeRepairExplanation(content: string): boolean {
+  const normalized = content.toLowerCase();
+  const hasRepairContext = /project[- ]scope|mis[- ]scoped|quarantine|contamination|legacy|오염|격리|repair/.test(normalized);
+  const hasExplanationContext = /example|detector|trap|not a .*project task|기억|메모리|설명|수정|검증/.test(normalized);
+  return hasRepairContext && hasExplanationContext;
+}
+
+function hasConflictingContentProjectHint(content: string, projectPath?: string): boolean {
+  const currentName = projectBasename(projectPath);
+  if (!currentName) return false;
+  if (isProjectScopeRepairExplanation(content)) return false;
+
+  const githubRepoPattern = /github\.com[:/]([^/\s`'"#)]+)\/([^/\s`'"#)]+)(?:\.git)?/gi;
+  let githubMatch: RegExpExecArray | null;
+  while ((githubMatch = githubRepoPattern.exec(content)) !== null) {
+    const repo = normalizeRepoName(githubMatch[2] || '');
+    if (repo && repo !== currentName) return true;
+  }
+
+  const workspacePathPattern = /\/workspace\/([^/\s`'"#)]+)/gi;
+  let workspaceMatch: RegExpExecArray | null;
+  while ((workspaceMatch = workspacePathPattern.exec(content)) !== null) {
+    const repo = normalizeRepoName(workspaceMatch[1] || '');
+    if (repo && repo !== currentName) return true;
+  }
+
+  return false;
 }
 
 export class SQLiteEventStore {
@@ -597,12 +753,12 @@ export class SQLiteEventStore {
   /**
    * Get events by session ID
    */
-  async getSessionEvents(sessionId: string): Promise<MemoryEvent[]> {
+  async getSessionEvents(sessionId: string, options?: QuarantineReadOptions): Promise<MemoryEvent[]> {
     await this.initialize();
 
     const rows = sqliteAll<Record<string, unknown>>(
       this.db,
-      `SELECT * FROM events WHERE session_id = ? ORDER BY timestamp ASC`,
+      `SELECT * FROM events WHERE session_id = ? AND ${maybeQuarantinePredicate(options)} ORDER BY timestamp ASC`,
       [sessionId]
     );
 
@@ -612,12 +768,12 @@ export class SQLiteEventStore {
   /**
    * Get recent events
    */
-  async getRecentEvents(limit: number = 100): Promise<MemoryEvent[]> {
+  async getRecentEvents(limit: number = 100, options?: QuarantineReadOptions): Promise<MemoryEvent[]> {
     await this.initialize();
 
     const rows = sqliteAll<Record<string, unknown>>(
       this.db,
-      `SELECT * FROM events ORDER BY timestamp DESC LIMIT ?`,
+      `SELECT * FROM events WHERE ${maybeQuarantinePredicate(options)} ORDER BY timestamp DESC LIMIT ?`,
       [limit]
     );
 
@@ -627,12 +783,12 @@ export class SQLiteEventStore {
   /**
    * Get event by ID
    */
-  async getEvent(id: string): Promise<MemoryEvent | null> {
+  async getEvent(id: string, options?: QuarantineReadOptions): Promise<MemoryEvent | null> {
     await this.initialize();
 
     const row = sqliteGet<Record<string, unknown>>(
       this.db,
-      `SELECT * FROM events WHERE id = ?`,
+      `SELECT * FROM events WHERE id = ? AND ${maybeQuarantinePredicate(options)}`,
       [id]
     );
 
@@ -643,12 +799,12 @@ export class SQLiteEventStore {
   /**
    * Get events since a timestamp (for sync)
    */
-  async getEventsSince(timestamp: string, limit: number = 1000): Promise<MemoryEvent[]> {
+  async getEventsSince(timestamp: string, limit: number = 1000, options?: QuarantineReadOptions): Promise<MemoryEvent[]> {
     await this.initialize();
 
     const rows = sqliteAll<Record<string, unknown>>(
       this.db,
-      `SELECT * FROM events WHERE timestamp > ? ORDER BY timestamp ASC LIMIT ?`,
+      `SELECT * FROM events WHERE timestamp > ? AND ${maybeQuarantinePredicate(options)} ORDER BY timestamp ASC LIMIT ?`,
       [timestamp, limit]
     );
 
@@ -661,13 +817,14 @@ export class SQLiteEventStore {
    */
   async getEventsSinceRowid(
     lastRowid: number,
-    limit: number = 1000
+    limit: number = 1000,
+    options?: QuarantineReadOptions
   ): Promise<Array<{ rowid: number; event: MemoryEvent }>> {
     await this.initialize();
 
     const rows = sqliteAll<Record<string, unknown>>(
       this.db,
-      `SELECT rowid as _rowid, * FROM events WHERE rowid > ? ORDER BY rowid ASC LIMIT ?`,
+      `SELECT rowid as _rowid, * FROM events WHERE rowid > ? AND ${maybeQuarantinePredicate(options)} ORDER BY rowid ASC LIMIT ?`,
       [lastRowid, limit]
     );
 
@@ -941,21 +1098,21 @@ export class SQLiteEventStore {
   /**
    * Count total events
    */
-  async countEvents(): Promise<number> {
+  async countEvents(options?: QuarantineReadOptions): Promise<number> {
     await this.initialize();
-    const row = sqliteGet<{ count: number }>(this.db, `SELECT COUNT(*) as count FROM events`);
+    const row = sqliteGet<{ count: number }>(this.db, `SELECT COUNT(*) as count FROM events WHERE ${maybeQuarantinePredicate(options)}`);
     return row?.count || 0;
   }
 
   /**
    * Get events page in timestamp ascending order (stable migration/reindex scans)
    */
-  async getEventsPage(limit: number = 1000, offset: number = 0): Promise<MemoryEvent[]> {
+  async getEventsPage(limit: number = 1000, offset: number = 0, options?: QuarantineReadOptions): Promise<MemoryEvent[]> {
     await this.initialize();
 
     const rows = sqliteAll<Record<string, unknown>>(
       this.db,
-      `SELECT * FROM events ORDER BY timestamp ASC LIMIT ? OFFSET ?`,
+      `SELECT * FROM events WHERE ${maybeQuarantinePredicate(options)} ORDER BY timestamp ASC LIMIT ? OFFSET ?`,
       [limit, offset]
     );
 
@@ -1045,6 +1202,168 @@ export class SQLiteEventStore {
 
 
   /**
+   * Repair legacy imported events that predate canonical project scope metadata.
+   *
+   * Same-project legacy rows are tagged with scope.project.hash. Rows that look
+   * imported but cannot be proven to belong to this project are quarantined so
+   * dashboard default reads/search do not surface cross-project contamination.
+   */
+  async repairLegacyProjectScope(options: ProjectScopeRepairOptions = {}): Promise<ProjectScopeRepairResult> {
+    await this.initialize();
+
+    const projectHash = options.projectHash || (options.projectPath ? hashProjectPath(options.projectPath) : undefined);
+    if (!projectHash) {
+      throw new Error('repairLegacyProjectScope requires projectPath or projectHash');
+    }
+    if (options.projectPath && options.projectHash && hashProjectPath(options.projectPath) !== options.projectHash) {
+      throw new Error('repairLegacyProjectScope projectPath and projectHash refer to different project stores');
+    }
+
+    const dryRun = options.dryRun === true;
+    const nowIso = (options.now || new Date()).toISOString();
+    const result = buildRepairResult(projectHash, dryRun);
+
+    const rows = sqliteAll<{
+      id: string;
+      content: string;
+      metadata: string | null;
+      session_project_path: string | null;
+    }>(
+      this.db,
+      `SELECT e.id, e.content, e.metadata, s.project_path as session_project_path
+       FROM events e
+       LEFT JOIN sessions s ON s.id = e.session_id
+       ORDER BY e.timestamp ASC`,
+      []
+    );
+
+    const sample = (entry: ProjectScopeRepairSample) => {
+      if (result.samples.length < 20) result.samples.push(entry);
+    };
+
+    for (const row of rows) {
+      result.scanned++;
+
+      let metadata: Record<string, unknown> = {};
+      let metadataParseInvalid = false;
+      if (row.metadata) {
+        const parsed = safeParseMetadataValue(row.metadata);
+        if (parsed) {
+          metadata = parsed;
+        } else {
+          metadataParseInvalid = true;
+        }
+      }
+
+      if (isActiveQuarantinedMetadata(metadata)) {
+        result.skipped++;
+        continue;
+      }
+
+      const currentHash = metadataProjectHash(metadata);
+      const explicitPath = metadataProjectPath(metadata);
+      const sessionProjectPath = typeof row.session_project_path === 'string' && row.session_project_path.length > 0
+        ? row.session_project_path
+        : undefined;
+      const candidatePaths = metadataProjectPaths(metadata);
+      if (sessionProjectPath && !candidatePaths.includes(sessionProjectPath)) {
+        candidatePaths.push(sessionProjectPath);
+      }
+      const importedOrLegacy = metadataParseInvalid || isImportedOrLegacyScopedMetadata(metadata) || Boolean(sessionProjectPath);
+      const pathHashes = candidatePaths.map((candidate) => {
+        try {
+          return { path: candidate, hash: hashProjectPath(candidate) };
+        } catch {
+          return { path: candidate, hash: undefined };
+        }
+      });
+      const matchingPath = pathHashes.find((candidate) => candidate.hash === projectHash);
+      const foreignPath = pathHashes.find((candidate) => candidate.hash && candidate.hash !== projectHash);
+
+      let action: 'repaired' | 'quarantined' | 'skipped' = 'skipped';
+      let reason: ProjectScopeRepairSample['reason'] | undefined;
+      let observedProjectHash: string | undefined;
+
+      if (foreignPath) {
+        action = 'quarantined';
+        reason = 'project-path-mismatch';
+        observedProjectHash = foreignPath.hash;
+      } else if (currentHash === projectHash && importedOrLegacy && hasConflictingContentProjectHint(row.content, options.projectPath)) {
+        action = 'quarantined';
+        reason = 'content-project-mismatch';
+      } else if (currentHash === projectHash) {
+        result.alreadyScoped++;
+        continue;
+      } else if (currentHash && currentHash !== projectHash) {
+        action = 'quarantined';
+        reason = 'scope-hash-mismatch';
+        observedProjectHash = currentHash;
+      } else if (matchingPath) {
+        action = 'repaired';
+        reason = matchingPath.path === sessionProjectPath && matchingPath.path !== explicitPath
+          ? 'session-project-path'
+          : 'same-project-path';
+      } else if (candidatePaths.length > 0) {
+        action = 'quarantined';
+        reason = 'project-path-mismatch';
+      } else if (importedOrLegacy) {
+        action = 'quarantined';
+        reason = 'missing-project-scope';
+      }
+
+      if (action === 'skipped' || !reason) {
+        result.skipped++;
+        continue;
+      }
+
+      if (action === 'repaired') {
+        const scope = isRecord(metadata.scope) ? { ...metadata.scope } : {};
+        const project = isRecord(scope.project) ? { ...scope.project } : {};
+        project.hash = projectHash;
+        scope.project = project;
+        metadata.scope = scope;
+        metadata.repair = {
+          ...(isRecord(metadata.repair) ? metadata.repair : {}),
+          legacyProjectScope: {
+            action,
+            reason,
+            repairedAt: nowIso
+          }
+        };
+        addMetadataTag(metadata, `proj:${projectHash}`);
+        result.repaired++;
+      } else {
+        metadata.quarantine = {
+          ...(isRecord(metadata.quarantine) ? metadata.quarantine : {}),
+          status: 'active',
+          category: 'project-scope',
+          reason,
+          detectedAt: nowIso,
+          expectedProjectHash: projectHash,
+          ...(observedProjectHash ? { observedProjectHash } : {})
+        };
+        metadata.repair = {
+          ...(isRecord(metadata.repair) ? metadata.repair : {}),
+          legacyProjectScope: {
+            action,
+            reason,
+            repairedAt: nowIso
+          }
+        };
+        addMetadataTag(metadata, 'quarantine:project-scope');
+        result.quarantined++;
+      }
+
+      sample({ eventId: row.id, action, reason });
+      if (!dryRun) {
+        sqliteRun(this.db, `UPDATE events SET metadata = ? WHERE id = ?`, [JSON.stringify(metadata), row.id]);
+      }
+    }
+
+    return result;
+  }
+
+  /**
    * Get embedding/vector outbox health statistics
    */
   async getOutboxStats(): Promise<{
@@ -1101,7 +1420,11 @@ export class SQLiteEventStore {
 
     const rows = sqliteAll<{ level: string; count: number }>(
       this.db,
-      `SELECT level, COUNT(*) as count FROM memory_levels GROUP BY level`
+      `SELECT ml.level, COUNT(*) as count
+       FROM memory_levels ml
+       INNER JOIN events e ON e.id = ml.event_id
+       WHERE ${notActiveQuarantinedSql('e.metadata')}
+       GROUP BY ml.level`
     );
 
     return rows;
@@ -1121,6 +1444,7 @@ export class SQLiteEventStore {
       `SELECT e.* FROM events e
        INNER JOIN memory_levels ml ON e.id = ml.event_id
        WHERE ml.level = ?
+         AND ${notActiveQuarantinedSql('e.metadata')}
        ORDER BY e.timestamp DESC
        LIMIT ? OFFSET ?`,
       [level, limit, offset]
@@ -1230,7 +1554,7 @@ export class SQLiteEventStore {
   /**
    * Get most accessed memories (falls back to recent events if none accessed)
    */
-  async getMostAccessed(limit: number = 10): Promise<MemoryEvent[]> {
+  async getMostAccessed(limit: number = 10, options?: QuarantineReadOptions): Promise<MemoryEvent[]> {
     await this.initialize();
 
     // First try events with access_count > 0
@@ -1238,6 +1562,7 @@ export class SQLiteEventStore {
       this.db,
       `SELECT * FROM events
        WHERE access_count > 0
+         AND ${maybeQuarantinePredicate(options)}
        ORDER BY access_count DESC, last_accessed_at DESC
        LIMIT ?`,
       [limit]
@@ -1248,6 +1573,7 @@ export class SQLiteEventStore {
       rows = sqliteAll<Record<string, unknown>>(
         this.db,
         `SELECT * FROM events
+         WHERE ${maybeQuarantinePredicate(options)}
          ORDER BY timestamp DESC
          LIMIT ?`,
         [limit]
@@ -1405,6 +1731,7 @@ export class SQLiteEventStore {
        FROM memory_helpfulness mh
        JOIN events e ON e.id = mh.event_id
        WHERE mh.measured_at IS NOT NULL
+         AND ${notActiveQuarantinedSql('e.metadata')}
        GROUP BY mh.event_id
        ORDER BY avg_score DESC
        LIMIT ?`,
@@ -1496,6 +1823,7 @@ export class SQLiteEventStore {
          FROM events_fts fts
          JOIN events e ON e.id = fts.event_id
          WHERE events_fts MATCH ?
+           AND ${notActiveQuarantinedSql('e.metadata')}
          ORDER BY fts.rank
          LIMIT ?`,
         [searchTerms, limit]
@@ -1513,6 +1841,7 @@ export class SQLiteEventStore {
         this.db,
         `SELECT *, 0 as rank FROM events
          WHERE content LIKE ?
+           AND ${notActiveQuarantinedSql()}
          ORDER BY timestamp DESC
          LIMIT ?`,
         [likePattern, limit]
@@ -1800,7 +2129,7 @@ export class SQLiteEventStore {
    * Get events grouped by turn_id for a session
    * Returns turns ordered by first event timestamp (newest first)
    */
-  async getSessionTurns(sessionId: string, options?: { limit?: number; offset?: number }): Promise<Array<{
+  async getSessionTurns(sessionId: string, options?: { limit?: number; offset?: number } & QuarantineReadOptions): Promise<Array<{
     turnId: string;
     events: MemoryEvent[];
     startedAt: Date;
@@ -1820,6 +2149,7 @@ export class SQLiteEventStore {
       `SELECT turn_id, MIN(timestamp) as min_ts
        FROM events
        WHERE session_id = ? AND turn_id IS NOT NULL
+         AND ${maybeQuarantinePredicate(options)}
        GROUP BY turn_id
        ORDER BY min_ts DESC
        LIMIT ? OFFSET ?`,
@@ -1837,7 +2167,7 @@ export class SQLiteEventStore {
     }> = [];
 
     for (const turnRow of turnRows) {
-      const events = await this.getEventsByTurn(turnRow.turn_id);
+      const events = await this.getEventsByTurn(turnRow.turn_id, options);
 
       const promptEvent = events.find(e => e.eventType === 'user_prompt');
       const toolEvents = events.filter(e => e.eventType === 'tool_observation');
@@ -1862,12 +2192,12 @@ export class SQLiteEventStore {
   /**
    * Get all events for a specific turn_id
    */
-  async getEventsByTurn(turnId: string): Promise<MemoryEvent[]> {
+  async getEventsByTurn(turnId: string, options?: QuarantineReadOptions): Promise<MemoryEvent[]> {
     await this.initialize();
 
     const rows = sqliteAll<Record<string, unknown>>(
       this.db,
-      `SELECT * FROM events WHERE turn_id = ? ORDER BY timestamp ASC`,
+      `SELECT * FROM events WHERE turn_id = ? AND ${maybeQuarantinePredicate(options)} ORDER BY timestamp ASC`,
       [turnId]
     );
 
@@ -1877,14 +2207,15 @@ export class SQLiteEventStore {
   /**
    * Count total turns for a session
    */
-  async countSessionTurns(sessionId: string): Promise<number> {
+  async countSessionTurns(sessionId: string, options?: QuarantineReadOptions): Promise<number> {
     await this.initialize();
 
     const row = sqliteGet<{ count: number }>(
       this.db,
       `SELECT COUNT(DISTINCT turn_id) as count
        FROM events
-       WHERE session_id = ? AND turn_id IS NOT NULL`,
+       WHERE session_id = ? AND turn_id IS NOT NULL
+         AND ${maybeQuarantinePredicate(options)}`,
       [sessionId]
     );
 
@@ -2003,7 +2334,7 @@ export class SQLiteEventStore {
       content: row.content as string,
       canonicalKey: row.canonical_key as string,
       dedupeKey: row.dedupe_key as string,
-      metadata: row.metadata ? JSON.parse(row.metadata as string) : undefined
+      metadata: safeParseMetadataValue(row.metadata)
     };
 
     // Include access tracking fields if present

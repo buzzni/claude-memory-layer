@@ -24,10 +24,10 @@ const SENSITIVE_PATTERNS = [
   // Redact the whole URI so usernames, credentials, hosts, paths, and query
   // params do not leak either.
   /\b[a-z][a-z0-9+.-]*:\/\/[^\s'"`<>/@]+@[^\s'"`<>]+/gi,
-  /password\s*[:=]\s*['"]?[^\s'"]+/gi,
-  /api[_-]?key\s*[:=]\s*['"]?[^\s'"]+/gi,
-  /secret\s*[:=]\s*['"]?[^\s'"]+/gi,
-  /token\s*[:=]\s*['"]?[^\s'"]+/gi,
+  /(?:[\w.-]+[-_])?password\s*[:=]\s*(?!\[REDACTED\])['"]?[^\s'"]+/gi,
+  /(?:[\w.-]+[-_])?api[-_]?key\s*[:=]\s*(?!\[REDACTED\])['"]?[^\s'"]+/gi,
+  /(?:[\w.-]+[-_])?secret\s*[:=]\s*(?!\[REDACTED\])['"]?[^\s'"]+/gi,
+  /(?:[\w.-]+[-_])?token\s*[:=]\s*(?!\[REDACTED\])['"]?[^\s'"]+/gi,
   /bearer\s+[a-zA-Z0-9\-_.]+/gi,
   /AWS[_-]?ACCESS[_-]?KEY[_-]?ID\s*[:=]\s*['"]?[A-Z0-9]+/gi,
   /AWS[_-]?SECRET[_-]?ACCESS[_-]?KEY\s*[:=]\s*['"]?[^\s'"]+/gi,
@@ -36,8 +36,43 @@ const SENSITIVE_PATTERNS = [
   /sk-[a-zA-Z0-9]{48}/g,   // OpenAI API Key
 ];
 
-function maskSensitiveString(value: string): string {
+const CLI_SECRET_OPTION_PATTERNS = [
+  /(--(?:[a-z0-9]+[-_])*(?:password|secret|api[-_]?key|token|bearer)(?:[-_][a-z0-9]+)*(?:\s+|=))(?:"[^"]*"|'[^']*'|[^\s'"`<>]+)/gi
+];
+
+const URL_FOLLOWING_SECRET_PATTERN = /((?:https?:\/\/[^\s'"`<>]+)\s*\r?\n\s*)([A-Za-z0-9!@#$%^&*._+\-~:=/]{6,})(?=\s*(?:\r?\n|$))/gi;
+
+function looksLikePastedSecret(value: string): boolean {
+  // Reduce false positives for benign status words pasted after URLs while still
+  // catching common dashboard passwords such as alpha-numeric throwaway secrets.
+  return value.length >= 8 && /(?:\d|[^A-Za-z0-9])/.test(value);
+}
+
+function maskUrlFollowingSecret(value: string): { content: string; count: number } {
+  let count = 0;
+  const content = value.replace(URL_FOLLOWING_SECRET_PATTERN, (_match, prefix: string, secret: string) => {
+    if (!looksLikePastedSecret(secret)) return `${prefix}${secret}`;
+    count++;
+    return `${prefix}[REDACTED]`;
+  });
+  return { content, count };
+}
+
+function maskCliSecretOptions(value: string): { content: string; count: number } {
+  let count = 0;
   let filtered = value;
+  for (const pattern of CLI_SECRET_OPTION_PATTERNS) {
+    pattern.lastIndex = 0;
+    filtered = filtered.replace(pattern, (_match, prefix: string) => {
+      count++;
+      return `${prefix}[REDACTED]`;
+    });
+  }
+  return { content: filtered, count };
+}
+
+function maskSensitiveString(value: string): string {
+  let filtered = maskCliSecretOptions(value).content;
   for (const pattern of SENSITIVE_PATTERNS) {
     pattern.lastIndex = 0;
     filtered = filtered.replace(pattern, '[REDACTED]');
@@ -67,7 +102,17 @@ export function applyPrivacyFilter(
     privateTagCount = tagResult.stats.count;
   }
 
-  // 2. Built-in sensitive pattern filtering
+  // 2. CLI option filtering (`--password value`, `--password=value`, etc.)
+  const cliResult = maskCliSecretOptions(filtered);
+  filtered = cliResult.content;
+  patternMatchCount += cliResult.count;
+
+  // 3. Contextual paste filtering (URL followed by a password-looking line)
+  const urlSecretResult = maskUrlFollowingSecret(filtered);
+  filtered = urlSecretResult.content;
+  patternMatchCount += urlSecretResult.count;
+
+  // 4. Built-in sensitive pattern filtering
   for (const pattern of SENSITIVE_PATTERNS) {
     // Reset lastIndex for global regex
     pattern.lastIndex = 0;
@@ -82,13 +127,13 @@ export function applyPrivacyFilter(
   for (const patternStr of config.excludePatterns || []) {
     try {
       const regex = new RegExp(
-        `(${patternStr})\\s*[:=]\\s*['"]?[^\\s'"]+`,
+        `(^|[^\\w-])(${patternStr})\\s*[:=]\\s*['"]?[^\\s'"]+`,
         'gi'
       );
       const matches = filtered.match(regex);
       if (matches) {
         patternMatchCount += matches.length;
-        filtered = filtered.replace(regex, '[REDACTED]');
+        filtered = filtered.replace(regex, '$1[REDACTED]');
       }
     } catch {
       // Invalid regex pattern, skip

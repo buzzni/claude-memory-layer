@@ -448,4 +448,35 @@ Week 3 (Feedback Loop):
 - [x] memory-only mode는 provider 호출 없이 deterministic하게 동작한다.
 - [x] SSE stream은 `diagnostic` 또는 `provider_error` 후 `message`/`done`을 반환한다.
 - [x] local dashboard smoke에서 selected CML project의 memory-only query가 retrievedMemories count와 context를 반환한다.
-- [ ] project DB 내부 mis-scoped legacy imports를 repair/quarantine하여 generic query noise를 줄인다.
+- [x] project DB 내부 mis-scoped legacy imports를 repair/quarantine하여 generic query noise를 줄인다.
+
+## 2026-05-10 구현 업데이트 — Legacy project-scope repair/quarantine
+
+### 추가된 기능 contract
+
+- `MemoryService.repairLegacyProjectScope()`와 `SQLiteEventStore.repairLegacyProjectScope()`는 project-scoped store 내부의 legacy/imported rows를 검사한다.
+- same-project legacy rows는 canonical `scope.project.hash`, `projectScopeConfidence`, `proj:<hash>` tag로 repair한다.
+- 다른 project path/hash 또는 content 안의 GitHub repo/workspace basename이 현재 project와 충돌하는 row는 `quarantine.status = active`로 표시한다.
+- project scope를 증명할 수 없는 legacy imported row는 `missing_project_scope` reason으로 quarantine한다.
+- 기본 read path(`keywordSearch`, `getRecentEvents`, `getEvent`, `getSessionEvents`, `getEventsSince`, `getEventsSinceRowid`, `getEventsPage`, `getEventsByTurn`, `getSessionTurns`, `countSessionTurns`, `getMostAccessed`, `getHelpfulMemories`, `countEvents`, `getEventsByLevel`, `getLevelStats`)는 active quarantine rows를 제외한다. 유지보수/감사용으로만 `includeQuarantined` opt-in을 허용한다.
+- CLI `repair legacy-project-scope -p <project>`는 기본 dry-run이며, `--apply`일 때만 mutation한다.
+- `--project`와 `--project-hash`가 함께 주어졌을 때 hash가 path-derived hash와 다르면 CLI helper와 core store boundary 모두 실패해 foreign hash로 target store를 repair하지 않는다.
+- 이미 current hash/tag가 있더라도 explicit `projectPath`/`sourceProjectPath`/session project path가 foreign project를 가리키면 `project-path-mismatch`로 quarantine한다.
+- invalid legacy metadata JSON row는 default read에서 crash하지 않고, session project path evidence가 있으면 repair/quarantine 대상이 된다.
+- hash-only dry-run에서 missing store는 empty aggregate로 보고하고 readonly open으로 storage directory를 만들지 않는다.
+- repair CLI output은 raw local path/raw content를 출력하지 않고 aggregate count와 bounded sample만 보여준다.
+- privacy filter는 memory 저장 전 CLI `--password ...`/`--password=...`, prefixed CLI secret options(`--client-secret ...`, `--db-password ...`, `--access-token ...`), hyphenated secret assignments(`db-password=...` 등), URL 다음 줄에 붙여넣은 password-looking 문자열을 `[REDACTED]` 처리한다. URL 다음 줄의 일반 상태 단어(`success` 등)는 과잉 redact하지 않는다.
+
+### Acceptance criteria
+
+- [x] mis-scoped legacy rows are excluded from search/recent/level dashboard reads after repair/quarantine.
+- [x] already-scoped but content-conflicting legacy imports are detected as `content-project-mismatch`.
+- [x] dry-run does not mutate; `--apply` mutates only the target project store.
+- [x] live CML dogfood query for a predictor PR contamination trap returns 0 default results after apply.
+- [x] stats/level distribution are consistent after quarantine filtering.
+- [x] access/helpfulness/turn read paths also suppress active quarantined rows by default, while `includeQuarantined` stays available for explicit audit reads.
+- [x] invalid legacy metadata JSON does not crash default event reads and can still be quarantined from session project path evidence.
+- [x] explicit foreign project path evidence wins over current hash/tag so wrongly-current-scoped legacy rows are quarantined.
+- [x] core repair API and CLI helper both fail closed on `projectPath`/`projectHash` mismatch.
+- [x] explicit empty `--project` is rejected; hash-only dry-run on a missing store has no storage directory side effect.
+- [x] password-bearing dashboard smoke commands, prefixed CLI secret options, and pasted URL+password prompts are redacted before future memory storage without over-redacting benign URL-next-line status words.

@@ -14,7 +14,7 @@ import {
   getMemoryServiceForProject,
   getLightweightMemoryServiceForProject
 } from '../../services/memory-service.js';
-import { getProjectStoragePath } from '../../core/registry/project-path.js';
+import { getProjectStoragePath, resolveProjectStoragePath, hashProjectPath } from '../../core/registry/project-path.js';
 import { createSessionHistoryImporter, type ProgressEvent } from '../../services/session-history-importer.js';
 import {
   createCodexSessionHistoryImporter,
@@ -55,6 +55,10 @@ import {
 import { runCodexImportOnce } from './codex-import-runner.js';
 import { runHermesImportOnce } from './hermes-import-runner.js';
 import { resolveDashboardCommandOptions } from './dashboard-command.js';
+import {
+  formatLegacyProjectScopeRepairResult,
+  resolveLegacyProjectScopeRepairOptions
+} from './repair-command.js';
 import {
   fetchExternalMarketContext,
   renderExternalMarketContextReport,
@@ -672,6 +676,63 @@ program
       await service.shutdown();
     } catch (error) {
       console.error('Process failed:', error);
+      process.exit(1);
+    }
+  });
+
+/**
+ * Repair command - maintenance operations for legacy memory data
+ */
+const repairCommand = program
+  .command('repair')
+  .description('Repair or quarantine legacy memory metadata');
+
+repairCommand
+  .command('legacy-project-scope')
+  .description('Dry-run or apply project-scope repair/quarantine for legacy imported events')
+  .option('-p, --project <path>', 'Project path (defaults to cwd unless --project-hash is used)')
+  .option('--project-hash <hash>', 'Project storage hash for hash-only repair flows')
+  .option('--apply', 'Apply metadata changes (default is dry-run)')
+  .action(async (options) => {
+    try {
+      const projectPath = options.project !== undefined
+        ? options.project
+        : (!options.projectHash ? process.cwd() : undefined);
+      const repairOptions = resolveLegacyProjectScopeRepairOptions({
+        project: projectPath,
+        projectHash: options.projectHash,
+        apply: options.apply
+      });
+      const storagePath = projectPath
+        ? getProjectStoragePath(projectPath)
+        : resolveProjectStoragePath(repairOptions.projectHash!);
+      const dbPath = path.join(storagePath, 'events.sqlite');
+      if (repairOptions.dryRun && !fs.existsSync(dbPath)) {
+        const projectHash = repairOptions.projectHash || hashProjectPath(repairOptions.projectPath!);
+        console.log(formatLegacyProjectScopeRepairResult({
+          dryRun: true,
+          projectHash,
+          scanned: 0,
+          repaired: 0,
+          quarantined: 0,
+          alreadyScoped: 0,
+          skipped: 0,
+          samples: []
+        }));
+        return;
+      }
+      const store = new SQLiteEventStore(dbPath, {
+        readonly: repairOptions.dryRun
+      });
+      try {
+        const result = await store.repairLegacyProjectScope(repairOptions);
+        console.log(formatLegacyProjectScopeRepairResult(result));
+      } finally {
+        await store.close().catch(() => undefined);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Repair failed: ${message}`);
       process.exit(1);
     }
   });

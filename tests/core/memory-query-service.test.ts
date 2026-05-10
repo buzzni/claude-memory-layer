@@ -37,6 +37,16 @@ function createService() {
     embedding: { recoveredProcessing: 1, retriedFailed: 0 },
     vector: { recoveredProcessing: 2, retriedFailed: 1 }
   };
+  const projectScopeRepair = {
+    dryRun: true,
+    projectHash: 'abc12345',
+    scanned: 4,
+    repaired: 1,
+    quarantined: 2,
+    alreadyScoped: 1,
+    skipped: 0,
+    samples: []
+  };
   const queryStore = {
     keywordSearch: vi.fn(async () => [{ event: events[0], rank: -0.5 }]),
     getSessionEvents: vi.fn(async () => events),
@@ -44,6 +54,7 @@ function createService() {
     rebuildFtsIndex: vi.fn(async () => 7),
     getOutboxStats: vi.fn(async () => outboxStats),
     recoverStuckOutboxItems: vi.fn(async () => outboxRecovery),
+    repairLegacyProjectScope: vi.fn(async () => projectScopeRepair),
     getEventsByLevel: vi.fn(async () => events),
     getEventLevel: vi.fn(async () => 'working'),
     getSessionTurns: vi.fn(async () => [turn]),
@@ -68,17 +79,19 @@ function createService() {
     events,
     turn,
     outboxStats,
-    outboxRecovery
+    outboxRecovery,
+    projectScopeRepair
   };
 }
 
 describe('MemoryQueryService', () => {
   it('delegates read and maintenance methods through the initialized store boundary', async () => {
-    const { service, initialize, queryStore, events, turn, outboxStats, outboxRecovery } = createService();
+    const { service, initialize, queryStore, events, turn, outboxStats, outboxRecovery, projectScopeRepair } = createService();
 
     await expect(service.rebuildFtsIndex()).resolves.toBe(7);
     await expect(service.getOutboxStats()).resolves.toEqual(outboxStats);
     await expect(service.recoverStuckOutboxItems({ stuckThresholdMs: 1234 })).resolves.toEqual(outboxRecovery);
+    await expect(service.repairLegacyProjectScope({ projectPath: '/repo/app', dryRun: true })).resolves.toEqual(projectScopeRepair);
     await expect(service.getEventsByLevel('working', { limit: 2, offset: 3 })).resolves.toEqual(events);
     await expect(service.getEventLevel('event-1')).resolves.toBe('working');
     await expect(service.getSessionTurns('session-1', { limit: 5, offset: 8 })).resolves.toEqual([turn]);
@@ -87,10 +100,11 @@ describe('MemoryQueryService', () => {
     await expect(service.backfillTurnIds()).resolves.toBe(13);
     await expect(service.deleteSessionEvents('session-1')).resolves.toBe(17);
 
-    expect(initialize).toHaveBeenCalledTimes(10);
+    expect(initialize).toHaveBeenCalledTimes(11);
     expect(queryStore.rebuildFtsIndex).toHaveBeenCalledOnce();
     expect(queryStore.getOutboxStats).toHaveBeenCalledOnce();
     expect(queryStore.recoverStuckOutboxItems).toHaveBeenCalledWith({ stuckThresholdMs: 1234 });
+    expect(queryStore.repairLegacyProjectScope).toHaveBeenCalledWith({ projectPath: '/repo/app', dryRun: true });
     expect(queryStore.getEventsByLevel).toHaveBeenCalledWith('working', { limit: 2, offset: 3 });
     expect(queryStore.getEventLevel).toHaveBeenCalledWith('event-1');
     expect(queryStore.getSessionTurns).toHaveBeenCalledWith('session-1', { limit: 5, offset: 8 });
