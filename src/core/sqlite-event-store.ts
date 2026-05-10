@@ -1502,6 +1502,16 @@ export class SQLiteEventStore {
     return this.db;
   }
 
+  private hasTableColumn(tableName: string, columnName: string): boolean {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(tableName)) return false;
+    try {
+      const rows = sqliteAll<{ name: string }>(this.db, `PRAGMA table_info("${tableName}")`, []);
+      return rows.some((row) => row.name === columnName);
+    } catch {
+      return false;
+    }
+  }
+
 
   async recordRetrievalTrace(input: {
     sessionId?: string;
@@ -1640,17 +1650,20 @@ export class SQLiteEventStore {
     await this.initialize();
 
     try {
+      const rewrittenQueryRewriteKindSql = this.hasTableColumn('retrieval_traces', 'query_rewrite_kind')
+        ? REWRITTEN_QUERY_REWRITE_KIND_SQL
+        : '0';
       const row = sqliteGet<Record<string, unknown>>(
         this.db,
         `SELECT
           COUNT(*) as total_queries,
           AVG(candidate_count) as avg_candidate_count,
           AVG(selected_count) as avg_selected_count,
-          SUM(CASE WHEN ${REWRITTEN_QUERY_REWRITE_KIND_SQL} THEN 1 ELSE 0 END) as rewritten_queries,
-          SUM(CASE WHEN ${REWRITTEN_QUERY_REWRITE_KIND_SQL} AND selected_count > 0 THEN 1 ELSE 0 END) as rewritten_queries_with_selection,
-          SUM(CASE WHEN NOT (${REWRITTEN_QUERY_REWRITE_KIND_SQL}) AND selected_count > 0 THEN 1 ELSE 0 END) as raw_queries_with_selection,
-          AVG(CASE WHEN ${REWRITTEN_QUERY_REWRITE_KIND_SQL} THEN selected_count END) as avg_selected_count_for_rewritten_queries,
-          AVG(CASE WHEN NOT (${REWRITTEN_QUERY_REWRITE_KIND_SQL}) THEN selected_count END) as avg_selected_count_for_raw_queries,
+          SUM(CASE WHEN ${rewrittenQueryRewriteKindSql} THEN 1 ELSE 0 END) as rewritten_queries,
+          SUM(CASE WHEN ${rewrittenQueryRewriteKindSql} AND selected_count > 0 THEN 1 ELSE 0 END) as rewritten_queries_with_selection,
+          SUM(CASE WHEN NOT (${rewrittenQueryRewriteKindSql}) AND selected_count > 0 THEN 1 ELSE 0 END) as raw_queries_with_selection,
+          AVG(CASE WHEN ${rewrittenQueryRewriteKindSql} THEN selected_count END) as avg_selected_count_for_rewritten_queries,
+          AVG(CASE WHEN NOT (${rewrittenQueryRewriteKindSql}) THEN selected_count END) as avg_selected_count_for_raw_queries,
           CASE
             WHEN SUM(candidate_count) > 0 THEN (SUM(selected_count) * 1.0 / SUM(candidate_count))
             ELSE 0
