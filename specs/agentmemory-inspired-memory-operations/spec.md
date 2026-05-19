@@ -1,7 +1,7 @@
 # AgentMemory-Inspired Memory Operations Layer Specification
 
 > **Version**: 0.1.0
-> **Status**: Draft — Phase 4 retention policy v1 implemented
+> **Status**: Draft — Phase 4 retention score repository implemented
 > **Created**: 2026-05-18
 > **Reference**: `agentmemory` analysis
 > **Related specs**: `endless-mode`, `entity-edge-model`, `task-entity-system`, `progressive-disclosure`, `memory-utilization-improvements`, `mcp-desktop-integration`, `vector-outbox-v2`

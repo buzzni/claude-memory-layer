@@ -567,6 +567,25 @@ export class SQLiteEventStore {
         expires_at TEXT
       );
 
+      -- Memory Operations: retention lifecycle score projection
+      CREATE TABLE IF NOT EXISTS memory_retention_scores (
+        score_id TEXT PRIMARY KEY,
+        target_type TEXT NOT NULL,
+        target_id TEXT NOT NULL,
+        project_hash TEXT NOT NULL,
+        policy_version TEXT NOT NULL,
+        decision TEXT NOT NULL,
+        lifecycle_score REAL NOT NULL,
+        factors_json TEXT NOT NULL,
+        reasons_json TEXT NOT NULL,
+        dry_run_diff_json TEXT NOT NULL,
+        source_event_ids TEXT NOT NULL DEFAULT '[]',
+        evaluated_at TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(target_type, target_id, project_hash, policy_version)
+      );
+
       -- Memory Operations: governance/audit trail for state-changing operations
       CREATE TABLE IF NOT EXISTS memory_governance_audit (
         audit_id TEXT PRIMARY KEY,
@@ -616,6 +635,9 @@ export class SQLiteEventStore {
       CREATE INDEX IF NOT EXISTS idx_memory_leases_target_expires ON memory_leases(target_type, target_id, expires_at);
       CREATE INDEX IF NOT EXISTS idx_memory_checkpoints_project_action_created ON memory_checkpoints(project_hash, action_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_memory_checkpoints_project_session_created ON memory_checkpoints(project_hash, session_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_memory_retention_scores_project_decision_score ON memory_retention_scores(project_hash, decision, lifecycle_score ASC, evaluated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_memory_retention_scores_target ON memory_retention_scores(target_type, target_id, project_hash);
+      CREATE INDEX IF NOT EXISTS idx_memory_retention_scores_policy_evaluated ON memory_retention_scores(policy_version, evaluated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_memory_governance_audit_project_operation ON memory_governance_audit(project_hash, operation, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_memory_governance_audit_target ON memory_governance_audit(target_type, target_id, created_at DESC);
 

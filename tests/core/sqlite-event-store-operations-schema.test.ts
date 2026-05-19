@@ -53,6 +53,38 @@ describe('SQLiteEventStore memory operations schema', () => {
     expect(indexes).toContain('idx_memory_facets_dimension_value_confidence');
   });
 
+  it('creates memory retention score table and lifecycle lookup indexes', async () => {
+    const dbPath = tempDbPath();
+    const store = new SQLiteEventStore(dbPath);
+    await store.initialize();
+
+    const db = new Database(dbPath);
+    const columns = db.prepare(`PRAGMA table_info(memory_retention_scores)`).all().map((row: any) => row.name);
+    const indexes = db.prepare(`PRAGMA index_list(memory_retention_scores)`).all().map((row: any) => row.name).sort();
+    db.close();
+    await store.close();
+
+    expect(columns).toEqual([
+      'score_id',
+      'target_type',
+      'target_id',
+      'project_hash',
+      'policy_version',
+      'decision',
+      'lifecycle_score',
+      'factors_json',
+      'reasons_json',
+      'dry_run_diff_json',
+      'source_event_ids',
+      'evaluated_at',
+      'created_at',
+      'updated_at'
+    ]);
+    expect(indexes).toContain('idx_memory_retention_scores_project_decision_score');
+    expect(indexes).toContain('idx_memory_retention_scores_target');
+    expect(indexes).toContain('idx_memory_retention_scores_policy_evaluated');
+  });
+
   it('creates memory governance audit table scoped by project and operation', async () => {
     const dbPath = tempDbPath();
     const store = new SQLiteEventStore(dbPath);

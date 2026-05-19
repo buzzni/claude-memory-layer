@@ -349,7 +349,7 @@ interface FrontierItem {
 npm test -- --run tests/core/retention-policy.test.ts
 ```
 
-### Task 4.2 — Add `memory_retention_scores`
+### [x] Task 4.2 — Add `memory_retention_scores`
 
 **Objective:** Store computed scores and policy version.
 
@@ -357,6 +357,19 @@ npm test -- --run tests/core/retention-policy.test.ts
 - Modify: `src/core/sqlite-event-store.ts`
 - Create: `src/core/operations/retention-repository.ts`
 - Test: `tests/core/retention-repository.test.ts`
+
+**Implemented:**
+
+- `memory_retention_scores` table stores target, project scope, policy version, decision, lifecycle score, reasons, dry-run diff, source event ids, and timestamps.
+- `RetentionRepository.upsert()` is idempotent by `(target_type, target_id, project_hash, policy_version)` and writes `retention_score` governance audit rows.
+- Repository reads are project-scoped and decision-filterable; unscoped writes fail closed.
+- Cross-project wrapper/result mismatches are rejected before persistence.
+
+**Verification:**
+
+```bash
+npm test -- --run tests/core/sqlite-event-store-operations-schema.test.ts tests/core/retention-repository.test.ts
+```
 
 ### Task 4.3 — Add dry-run audit command
 
