@@ -6,6 +6,7 @@ export const RetrievalReasonSchema = z.enum([
   'recent_relevance',
   'continuity_link',
   'entity_overlap',
+  'facet_match',
   'tool_followup',
   'summary_fallback'
 ]);

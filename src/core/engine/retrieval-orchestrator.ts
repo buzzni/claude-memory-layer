@@ -9,6 +9,7 @@
 import {
   Retriever,
   type ProjectScopeMode,
+  type RetrievalFacetFilter,
   type RetrievalResult,
   type RetrievalStrategy,
   type UnifiedRetrievalResult
@@ -23,6 +24,7 @@ export interface RetrieveMemoriesOptions {
   intentRewrite?: boolean;
   projectScopeMode?: ProjectScopeMode;
   allowedProjectHashes?: string[];
+  facets?: RetrievalFacetFilter[];
   strategy?: RetrievalStrategy;
   /**
    * Disable automatic retrieval trace writes for read-only/navigation callers

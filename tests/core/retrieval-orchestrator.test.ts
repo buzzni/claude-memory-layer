@@ -103,6 +103,40 @@ describe('RetrievalOrchestrator', () => {
     });
   });
 
+  it('forwards facet filters through retrieveMemories without changing default scoping', async () => {
+    let retrieveArgs: { query: string; options: Record<string, unknown> } | null = null;
+    const facetFilters = [{ dimension: 'workflow' as const, value: 'debugging' }];
+
+    const fakeRetriever = {
+      setQueryRewriter() {},
+      async retrieve(query: string, options: Record<string, unknown>) {
+        retrieveArgs = { query, options };
+        return retrievalResult('facet-e1');
+      }
+    } as unknown as Retriever;
+
+    const orchestrator = new RetrievalOrchestrator({
+      initialize: async () => {},
+      retriever: fakeRetriever,
+      traceStore: {
+        getHelpfulnessStats: async () => stats(),
+        recordRetrievalTrace: async () => {}
+      },
+      accessStore: noopAccessStore(),
+      getProjectHash: () => 'project-1',
+      hasSharedStore: () => false
+    });
+
+    await orchestrator.retrieveMemories('facet filtered query', {
+      topK: 3,
+      facets: facetFilters
+    });
+
+    expect(retrieveArgs?.options.facets).toEqual(facetFilters);
+    expect(retrieveArgs?.options.projectHash).toBe('project-1');
+    expect(retrieveArgs?.options.projectScopeMode).toBe('strict');
+  });
+
   it('records automatic intent-rewrite metadata when retriever rewrites a query', async () => {
     const traces: Array<Record<string, unknown>> = [];
     const fakeRetriever = {

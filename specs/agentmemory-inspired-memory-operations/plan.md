@@ -117,10 +117,10 @@ CREATE TABLE IF NOT EXISTS memory_facets (
   confidence REAL NOT NULL DEFAULT 1.0,
   source TEXT NOT NULL DEFAULT 'manual',
   evidence_event_ids TEXT NOT NULL DEFAULT '[]',
-  project_hash TEXT,
+  project_hash TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
-  UNIQUE(target_type, target_id, dimension, value, source)
+  UNIQUE(target_type, target_id, dimension, value, source, project_hash)
 );
 CREATE INDEX IF NOT EXISTS idx_memory_facets_project_dimension_value
   ON memory_facets(project_hash, dimension, value);
@@ -172,15 +172,16 @@ npm test -- --run tests/core/facet-repository.test.ts
 
 ## Phase 2: Facet-aware retrieval and disclosure (P0)
 
-### Task 2.1 — Add retrieval option types
+### [x] Task 2.1 — Add retrieval option types
 
 **Objective:** Let retriever callers pass facet filters without changing default behavior.
 
 **Files:**
 - Modify: `src/core/retriever.ts`
-- Modify: `src/core/engine/retrieval-services.ts`
 - Modify: `src/core/engine/retrieval-orchestrator.ts`
+- No code change required: `src/core/engine/retrieval-services.ts` already forwards orchestrator/disclosure option types
 - Test: `tests/core/retriever-facet-filter.test.ts`
+- Test: `tests/core/retrieval-orchestrator.test.ts`
 
 **Option sketch:**
 
@@ -190,7 +191,7 @@ facets?: Array<{ dimension: string; value: string }>;
 
 **Important:** If `facets` is absent, existing retrieval output must be byte-for-byte equivalent where practical.
 
-### Task 2.2 — Filter/rerank candidates by facets
+### [x] Task 2.2 — Filter/rerank candidates by facets
 
 **Objective:** Apply facet filters in a bounded, explainable way.
 

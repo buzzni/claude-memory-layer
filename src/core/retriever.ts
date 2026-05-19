@@ -10,6 +10,9 @@ import { Matcher } from './matcher.js';
 import { SharedStore } from './shared-store.js';
 import { SharedVectorStore } from './shared-vector-store.js';
 import { GraduationPipeline } from './graduation.js';
+import { FacetRepository } from './operations/facet-repository.js';
+import { FacetDimensionSchema, type FacetDimension } from './operations/facets.js';
+import type { SQLiteDatabase } from './sqlite-wrapper.js';
 import {
   hasTechnicalTermOverlap,
   isCommandArtifactQuery,
@@ -34,6 +37,27 @@ export type RetrievalStrategy = 'auto' | 'fast' | 'deep';
 export type ProjectScopeMode = 'strict' | 'prefer' | 'global';
 type DecayPolicy = NonNullable<RetrievalOptions['decayPolicy']>;
 type GraphHopOptions = NonNullable<RetrievalOptions['graphHop']>;
+
+export interface RetrievalFacetFilter {
+  dimension: FacetDimension;
+  value: string;
+}
+
+export interface RetrievalDebugDetail {
+  eventId: string;
+  score: number;
+  semanticScore?: number;
+  lexicalScore?: number;
+  recencyScore?: number;
+  facetMatches?: RetrievalFacetFilter[];
+}
+
+type DebuggableSearchResult = SearchResult & {
+  semanticScore?: number;
+  lexicalScore?: number;
+  recencyScore?: number;
+  facetMatches?: RetrievalFacetFilter[];
+};
 
 export interface RetrievalOptions {
   topK: number;
@@ -63,6 +87,7 @@ export interface RetrievalOptions {
   projectScopeMode?: ProjectScopeMode;
   projectHash?: string;
   allowedProjectHashes?: string[];
+  facets?: RetrievalFacetFilter[];
 }
 
 export interface RetrievalResult {
@@ -71,20 +96,8 @@ export interface RetrievalResult {
   totalTokens: number;
   context: string;
   fallbackTrace?: string[];
-  selectedDebug?: Array<{
-    eventId: string;
-    score: number;
-    semanticScore?: number;
-    lexicalScore?: number;
-    recencyScore?: number;
-  }>;
-  candidateDebug?: Array<{
-    eventId: string;
-    score: number;
-    semanticScore?: number;
-    lexicalScore?: number;
-    recencyScore?: number;
-  }>;
+  selectedDebug?: RetrievalDebugDetail[];
+  candidateDebug?: RetrievalDebugDetail[];
   rawQueryText?: string;
   effectiveQueryText?: string;
   queryRewriteKind?: string;
@@ -132,6 +145,7 @@ export interface SharedStoreOptions {
 
 type EventStoreLike = EventStore & {
   keywordSearch?: (query: string, limit?: number) => Promise<Array<{ event: MemoryEvent; rank: number }>>;
+  getDatabase?: () => SQLiteDatabase;
 };
 
 export class Retriever {
@@ -213,7 +227,8 @@ export class Retriever {
       graphHop: opts.graphHop,
       projectScopeMode: opts.projectScopeMode,
       projectHash: opts.projectHash,
-      allowedProjectHashes: opts.allowedProjectHashes
+      allowedProjectHashes: opts.allowedProjectHashes,
+      facets: opts.facets
     });
     fallbackTrace.push(`stage:primary:${primaryStrategy}`);
 
@@ -232,7 +247,8 @@ export class Retriever {
         graphHop: opts.graphHop,
         projectScopeMode: opts.projectScopeMode,
         projectHash: opts.projectHash,
-        allowedProjectHashes: opts.allowedProjectHashes
+        allowedProjectHashes: opts.allowedProjectHashes,
+        facets: opts.facets
       });
       fallbackTrace.push('fallback:deep');
     }
@@ -252,7 +268,8 @@ export class Retriever {
         graphHop: opts.graphHop,
         projectScopeMode: opts.projectScopeMode,
         projectHash: opts.projectHash,
-        allowedProjectHashes: opts.allowedProjectHashes
+        allowedProjectHashes: opts.allowedProjectHashes,
+        facets: opts.facets
       });
       fallbackTrace.push('fallback:scope-expanded');
     }
@@ -264,7 +281,8 @@ export class Retriever {
         scope: opts.scope,
         projectScopeMode: opts.projectScopeMode,
         projectHash: opts.projectHash,
-        allowedProjectHashes: opts.allowedProjectHashes
+        allowedProjectHashes: opts.allowedProjectHashes,
+        facets: opts.facets
       });
       const filteredSummary = this.applyQualityFilters(scopedSummary, {
         query,
@@ -287,20 +305,8 @@ export class Retriever {
       totalTokens: this.estimateTokens(context),
       context,
       fallbackTrace,
-      selectedDebug: current.results.slice(0, opts.topK).map((r: SearchResult & { semanticScore?: number; lexicalScore?: number; recencyScore?: number }) => ({
-        eventId: r.eventId,
-        score: r.score,
-        semanticScore: r.semanticScore,
-        lexicalScore: r.lexicalScore,
-        recencyScore: r.recencyScore,
-      })),
-      candidateDebug: (current.candidateResults || []).slice(0, Math.max(opts.topK * 3, 20)).map((r: SearchResult & { semanticScore?: number; lexicalScore?: number; recencyScore?: number }) => ({
-        eventId: r.eventId,
-        score: r.score,
-        semanticScore: r.semanticScore,
-        lexicalScore: r.lexicalScore,
-        recencyScore: r.recencyScore,
-      })),
+      selectedDebug: current.results.slice(0, opts.topK).map((r: DebuggableSearchResult) => this.debugDetailForResult(r)),
+      candidateDebug: (current.candidateResults || []).slice(0, Math.max(opts.topK * 3, 20)).map((r: DebuggableSearchResult) => this.debugDetailForResult(r)),
       rawQueryText: current.queryRewriteKind ? query : undefined,
       effectiveQueryText: current.effectiveQueryText,
       queryRewriteKind: current.queryRewriteKind
@@ -369,10 +375,11 @@ export class Retriever {
       projectScopeMode?: ProjectScopeMode;
       projectHash?: string;
       allowedProjectHashes?: string[];
+      facets?: RetrievalFacetFilter[];
     }
   ): Promise<{
-    results: SearchResult[];
-    candidateResults: SearchResult[];
+    results: DebuggableSearchResult[];
+    candidateResults: DebuggableSearchResult[];
     matchResult: MatchResult;
     effectiveQueryText?: string;
     queryRewriteKind?: string;
@@ -421,7 +428,8 @@ export class Retriever {
       scope: input.scope,
       projectScopeMode: input.projectScopeMode,
       projectHash: input.projectHash,
-      allowedProjectHashes: input.allowedProjectHashes
+      allowedProjectHashes: input.allowedProjectHashes,
+      facets: input.facets
     });
     const qualityFiltered = this.applyQualityFilters(filtered, {
       query,
@@ -434,9 +442,9 @@ export class Retriever {
   }
 
   private applyQualityFilters(
-    results: Array<SearchResult & { semanticScore?: number; lexicalScore?: number; recencyScore?: number }>,
+    results: DebuggableSearchResult[],
     options: { query: string; minScore: number }
-  ): Array<SearchResult & { semanticScore?: number; lexicalScore?: number; recencyScore?: number }> {
+  ): DebuggableSearchResult[] {
     let filtered = [...results];
 
     if (isCurrentStateQuery(options.query)) {
@@ -644,26 +652,28 @@ export class Retriever {
   }
 
   private async applyScopeFilters(
-    results: SearchResult[],
+    results: DebuggableSearchResult[],
     options?: {
       scope?: RetrievalScope;
       projectScopeMode?: ProjectScopeMode;
       projectHash?: string;
       allowedProjectHashes?: string[];
+      facets?: RetrievalFacetFilter[];
     }
-  ): Promise<SearchResult[]> {
+  ): Promise<DebuggableSearchResult[]> {
     const scope = options?.scope;
     const projectScopeMode = options?.projectScopeMode ?? 'global';
+    const facetFilters = this.normalizeFacetFilters(options?.facets);
     const allowedProjectHashes = new Set(
       [options?.projectHash, ...(options?.allowedProjectHashes || [])].filter(
         (value): value is string => typeof value === 'string' && value.length > 0
       )
     );
 
-    if (!scope && projectScopeMode === 'global') return results;
+    if (!scope && projectScopeMode === 'global' && facetFilters === null) return results;
 
     const normalizedIncludes = (scope?.contentIncludes || []).map((s) => s.toLowerCase());
-    const filtered: Array<{ result: SearchResult; projectHash?: string }> = [];
+    const filtered: Array<{ result: DebuggableSearchResult; projectHash?: string }> = [];
 
     for (const result of results) {
       if (scope?.sessionId && result.sessionId !== scope.sessionId) continue;
@@ -684,17 +694,86 @@ export class Retriever {
       filtered.push({ result, projectHash });
     }
 
+    let scopedResults: DebuggableSearchResult[];
     if (projectScopeMode === 'global' || allowedProjectHashes.size === 0) {
-      return filtered.map((x) => x.result);
+      scopedResults = filtered.map((x) => x.result);
+    } else {
+      const projectMatched = filtered.filter((x) => x.projectHash && allowedProjectHashes.has(x.projectHash));
+      scopedResults = projectScopeMode === 'strict'
+        ? projectMatched.map((x) => x.result)
+        : (projectMatched.length > 0 ? projectMatched : filtered).map((x) => x.result);
     }
 
-    const projectMatched = filtered.filter((x) => x.projectHash && allowedProjectHashes.has(x.projectHash));
+    return this.applyFacetFilters(scopedResults, {
+      facets: facetFilters,
+      projectHash: options?.projectHash
+    });
+  }
 
-    if (projectScopeMode === 'strict') {
-      return projectMatched.map((x) => x.result);
+  private normalizeFacetFilters(facets: RetrievalFacetFilter[] | undefined): RetrievalFacetFilter[] | null {
+    if (!facets || facets.length === 0) return null;
+
+    const normalized: RetrievalFacetFilter[] = [];
+    for (const facet of facets) {
+      const parsedDimension = FacetDimensionSchema.safeParse(facet.dimension);
+      const value = typeof facet.value === 'string' ? facet.value.trim() : '';
+      if (!parsedDimension.success || !value) return [];
+      normalized.push({ dimension: parsedDimension.data, value });
     }
 
-    return (projectMatched.length > 0 ? projectMatched : filtered).map((x) => x.result);
+    return normalized;
+  }
+
+  private async applyFacetFilters(
+    results: DebuggableSearchResult[],
+    options: { facets: RetrievalFacetFilter[] | null; projectHash?: string }
+  ): Promise<DebuggableSearchResult[]> {
+    if (options.facets === null) return results;
+    if (options.facets.length === 0) return [];
+    if (!options.projectHash) return [];
+    if (!this.eventStore.getDatabase) return [];
+
+    const repo = new FacetRepository(this.eventStore.getDatabase());
+    const filtered: DebuggableSearchResult[] = [];
+
+    for (const result of results) {
+      const matches: RetrievalFacetFilter[] = [];
+      let matchedAll = true;
+      for (const facet of options.facets) {
+        const rows = await repo.query({
+          targetType: 'event',
+          targetId: result.eventId,
+          dimension: facet.dimension,
+          value: facet.value,
+          projectHash: options.projectHash
+        });
+        if (rows.length === 0) {
+          matchedAll = false;
+          break;
+        }
+        matches.push(facet);
+      }
+
+      if (matchedAll) {
+        filtered.push({ ...result, facetMatches: matches });
+      }
+    }
+
+    return filtered;
+  }
+
+  private debugDetailForResult(result: DebuggableSearchResult): RetrievalDebugDetail {
+    const detail: RetrievalDebugDetail = {
+      eventId: result.eventId,
+      score: result.score,
+      semanticScore: result.semanticScore,
+      lexicalScore: result.lexicalScore,
+      recencyScore: result.recencyScore
+    };
+    if (result.facetMatches && result.facetMatches.length > 0) {
+      detail.facetMatches = result.facetMatches;
+    }
+    return detail;
   }
 
   private extractProjectHash(metadata: Record<string, unknown> | undefined): string | undefined {

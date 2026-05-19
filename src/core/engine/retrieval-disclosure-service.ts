@@ -8,7 +8,7 @@
  */
 
 import type { RetrievalReason, RetrievalResultEnvelope, RetrievalResultType } from '../model/retrieval-result.js';
-import type { UnifiedRetrievalResult, MemoryWithContext } from '../retriever.js';
+import type { UnifiedRetrievalResult, MemoryWithContext, RetrievalDebugDetail } from '../retriever.js';
 import type { MemoryEvent, SharedTroubleshootingEntry } from '../types.js';
 import type { RetrieveMemoriesOptions } from './retrieval-orchestrator.js';
 
@@ -213,7 +213,8 @@ export class RetrievalDisclosureService {
       {
         semanticScore: debug?.semanticScore,
         lexicalScore: debug?.lexicalScore,
-        recencyScore: debug?.recencyScore
+        recencyScore: debug?.recencyScore,
+        ...(debug?.facetMatches && debug.facetMatches.length > 0 ? { facetMatches: debug.facetMatches } : {})
       }
     );
   }
@@ -290,6 +291,7 @@ export class RetrievalDisclosureService {
     if (usedVector && (debug?.semanticScore ?? 0) > 0) reasons.add('semantic_match');
     if ((debug?.lexicalScore ?? 0) > 0 || usedKeyword) reasons.add('keyword_match');
     if ((debug?.recencyScore ?? 0) > 0) reasons.add('recent_relevance');
+    if ((debug?.facetMatches || []).length > 0) reasons.add('facet_match');
     if ((result.fallbackTrace || []).some((step) => step === 'fallback:summary')) reasons.add('summary_fallback');
     if (memory.sessionContext) reasons.add('continuity_link');
     if (memory.event.eventType === 'tool_observation') reasons.add('tool_followup');
@@ -381,14 +383,6 @@ export class RetrievalDisclosureService {
     if (normalized.length <= maxLength) return normalized;
     return `${normalized.slice(0, Math.max(0, maxLength - 3))}...`;
   }
-}
-
-interface RetrievalDebugDetail {
-  eventId: string;
-  score: number;
-  semanticScore?: number;
-  lexicalScore?: number;
-  recencyScore?: number;
 }
 
 export function toDisclosureResultId(eventId: string): string {

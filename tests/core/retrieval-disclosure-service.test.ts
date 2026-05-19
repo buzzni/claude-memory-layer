@@ -138,6 +138,35 @@ describe('RetrievalDisclosureService', () => {
     expect(out.results[0].reasons).not.toContain('summary_fallback');
   });
 
+  it('includes facet_match when retriever debug metadata shows a facet filter match', async () => {
+    const facetResult: UnifiedRetrievalResult = {
+      ...retrievalResult(),
+      selectedDebug: [{
+        eventId: 'e2',
+        score: 0.93,
+        semanticScore: 0.82,
+        lexicalScore: 0.41,
+        recencyScore: 0.12,
+        facetMatches: [{ dimension: 'workflow', value: 'debugging' }]
+      }],
+      candidateDebug: [{
+        eventId: 'e2',
+        score: 0.93,
+        semanticScore: 0.82,
+        lexicalScore: 0.41,
+        recencyScore: 0.12,
+        facetMatches: [{ dimension: 'workflow', value: 'debugging' }]
+      }]
+    };
+
+    const out = await service(facetResult).search('checkout fix', {
+      facets: [{ dimension: 'workflow', value: 'debugging' }]
+    });
+
+    expect(out.results[0].reasons).toContain('facet_match');
+    expect(out.results[0].metadata?.facetMatches).toEqual([{ dimension: 'workflow', value: 'debugging' }]);
+  });
+
   it('search includes shared memories instead of silently dropping them', async () => {
     const out = await service(retrievalResult([sharedEntry])).search('checkout fix', { includeShared: true });
 

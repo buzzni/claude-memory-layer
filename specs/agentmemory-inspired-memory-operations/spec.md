@@ -1,7 +1,7 @@
 # AgentMemory-Inspired Memory Operations Layer Specification
 
 > **Version**: 0.1.0
-> **Status**: Draft — Phase 1 facet repository implemented
+> **Status**: Draft — Phase 2 facet-aware retrieval implemented
 > **Created**: 2026-05-18
 > **Reference**: `agentmemory` analysis
 > **Related specs**: `endless-mode`, `entity-edge-model`, `task-entity-system`, `progressive-disclosure`, `memory-utilization-improvements`, `mcp-desktop-integration`, `vector-outbox-v2`
@@ -353,9 +353,9 @@ Retrieval MUST support optional facet filters and return facet-based reasons.
 
 Acceptance criteria:
 
-- `retrieveMemories(query, { facets: [{ dimension, value }] })` narrows candidates before final selection or reranking.
-- Disclosure envelopes include `facet_match` reason when a facet contributes to ranking.
-- Default context-pack behavior remains unchanged when facets are absent.
+- [x] `retrieveMemories(query, { facets: [{ dimension, value }] })` narrows candidates before final selection or reranking.
+- [x] Disclosure envelopes include `facet_match` reason when a facet contributes to ranking.
+- [x] Default context-pack behavior remains unchanged when facets are absent.
 
 ### AMO-03 Action model
 
