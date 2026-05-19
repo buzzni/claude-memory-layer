@@ -1,7 +1,7 @@
 # AgentMemory-Inspired Memory Operations Layer Specification
 
 > **Version**: 0.1.0
-> **Status**: Draft — Phase 3 action/lease/checkpoint repositories implemented
+> **Status**: Draft — Phase 3 frontier service implemented
 > **Created**: 2026-05-18
 > **Reference**: `agentmemory` analysis
 > **Related specs**: `endless-mode`, `entity-edge-model`, `task-entity-system`, `progressive-disclosure`, `memory-utilization-improvements`, `mcp-desktop-integration`, `vector-outbox-v2`
@@ -373,9 +373,9 @@ CML MUST expose a frontier query that ranks next actions.
 
 Acceptance criteria:
 
-- Completed/cancelled actions are excluded by default.
-- Blocked actions are deprioritized unless `includeBlocked=true`.
-- Ranking explains at least three factors: priority, recency, blockers/edges, or lease status.
+- [x] Completed/cancelled actions are excluded by default.
+- [x] Blocked actions are deprioritized unless `includeBlocked=true`.
+- [x] Ranking explains at least three factors: priority, recency, blockers/edges, or lease status.
 
 ### AMO-05 Lease safety
 

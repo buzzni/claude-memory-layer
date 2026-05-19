@@ -259,12 +259,13 @@ npm test -- --run tests/core/retriever-facet-filter.test.ts tests/core/retrieval
 - expired leases can be reclaimed.
 - `renew()` and `release()` are idempotent and audited.
 
-### Task 3.3 — Implement frontier service
+### [x] Task 3.3 — Implement frontier service
 
 **Objective:** Rank next actions with explanations.
 
 **Files:**
 - Create: `src/core/operations/frontier-service.ts`
+- Modify: `src/core/operations/index.ts`
 - Test: `tests/core/frontier-service.test.ts`
 
 **Scoring inputs:**
