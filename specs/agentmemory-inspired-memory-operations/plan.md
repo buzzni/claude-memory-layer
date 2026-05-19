@@ -308,7 +308,7 @@ interface FrontierItem {
 
 ## Phase 4: Retention and governance (P0/P1)
 
-### Task 4.1 — Implement retention policy v1
+### [x] Task 4.1 — Implement retention policy v1
 
 **Objective:** Compute explainable lifecycle scores in dry-run mode.
 
@@ -334,6 +334,20 @@ interface FrontierItem {
 - `downgrade`
 - `quarantine`
 - `tombstone_candidate`
+
+**Implemented:**
+
+- Pure dry-run evaluator `evaluateRetentionPolicy()` in `src/core/operations/retention-policy.ts`.
+- Score factors include level, recency, retrieval count, helpfulness/adherence, evidence confidence, event type, privacy/quarantine metadata, and manual retention facets.
+- Active quarantine takes precedence over manual keep; private low-signal memories route to review instead of tombstone.
+- Manual `retention:discard` produces a non-destructive tombstone candidate only.
+- Results include policy version, reasons, factor breakdown, and dry-run diff.
+
+**Verification:**
+
+```bash
+npm test -- --run tests/core/retention-policy.test.ts
+```
 
 ### Task 4.2 — Add `memory_retention_scores`
 
