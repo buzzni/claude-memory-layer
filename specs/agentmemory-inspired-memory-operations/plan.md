@@ -230,7 +230,7 @@ npm test -- --run tests/core/retriever-facet-filter.test.ts tests/core/retrieval
 **Tables:**
 
 - `memory_actions`
-- `memory_action_edges`
+- `memory_action_edges` (includes `source` ownership so projection-generated dependencies can be stale-synced without deleting manual edges)
 - `memory_leases`
 - `memory_checkpoints`
 
@@ -288,15 +288,21 @@ interface FrontierItem {
 }
 ```
 
-### Task 3.4 — Optional projection from task entities
+### Task 3.4 — Optional projection from task entities [x]
 
 **Objective:** Seed actions from existing task entities without making task entity a hard dependency.
 
 **Files:**
-- Create: `src/core/operations/action-projector.ts`
+- Created: `src/core/operations/action-projector.ts`
+- Modified: `src/core/operations/index.ts`
 - Test: `tests/core/action-projector.test.ts`
 
-**Rule:** `memory_actions` is a projection. It may reference `entities.entity_id` but should not replace `task-entity-system`.
+**Implemented rules:**
+- `memory_actions` remains a projection and references task entities through `relatedEntityIds`.
+- Projection is fail-closed unless both `projectHash` and task `project` scope are supplied.
+- Projected action IDs are deterministic from task entity IDs, so repeated projection is idempotent.
+- Task blocker edges are converted to `depends_on` action edges while preserving non-task blockers as entity references.
+- Projector-owned action edges use `source='task_projector'`; stale sync removes only projector-owned edges and preserves manual dependencies.
 
 ---
 

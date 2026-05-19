@@ -149,7 +149,9 @@ describe('ActionRepository', () => {
 
     expect(second.edgeId).toBe(first.edgeId);
     expect(second.confidence).toBe(0.6);
+    expect(second.source).toBe('manual');
     expect(rows).toHaveLength(1);
+    expect(rows[0].source).toBe('manual');
   });
 
   it('rejects invalid action status without writing projection rows', async () => {

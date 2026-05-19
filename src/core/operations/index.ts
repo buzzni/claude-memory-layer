@@ -6,3 +6,4 @@ export * from './action-repository.js';
 export * from './lease-repository.js';
 export * from './checkpoint-repository.js';
 export * from './frontier-service.js';
+export * from './action-projector.js';

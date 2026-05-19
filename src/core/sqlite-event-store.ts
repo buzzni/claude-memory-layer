@@ -535,8 +535,9 @@ export class SQLiteEventStore {
         dst_type TEXT NOT NULL,
         dst_id TEXT NOT NULL,
         confidence REAL NOT NULL DEFAULT 1.0,
+        source TEXT NOT NULL DEFAULT 'manual',
         created_at TEXT NOT NULL,
-        UNIQUE(src_action_id, rel_type, dst_type, dst_id)
+        UNIQUE(src_action_id, rel_type, dst_type, dst_id, source)
       );
 
       -- Memory Operations: short-lived leases for operational work
@@ -640,6 +641,56 @@ export class SQLiteEventStore {
       END;
     `);
 
+
+    // Best-effort forward migration for action edge source ownership
+    try {
+      sqliteExec(this.db, `ALTER TABLE memory_action_edges ADD COLUMN source TEXT NOT NULL DEFAULT 'manual';`);
+    } catch {
+      // column may already exist
+    }
+    try {
+      const edgeIndexes = sqliteAll<{ name: string; unique: number }>(this.db, `PRAGMA index_list(memory_action_edges)`, []);
+      const hasSourceAwareUnique = edgeIndexes.some((index) => {
+        if (Number(index.unique) !== 1) return false;
+        if (!/^[A-Za-z0-9_]+$/.test(index.name)) return false;
+        const escapedName = index.name.replace(/"/g, '""');
+        const columns = sqliteAll<{ name: string }>(this.db, 'PRAGMA index_info("' + escapedName + '")', [])
+          .map((column) => column.name);
+        return columns.length === 5
+          && columns[0] === 'src_action_id'
+          && columns[1] === 'rel_type'
+          && columns[2] === 'dst_type'
+          && columns[3] === 'dst_id'
+          && columns[4] === 'source';
+      });
+      if (!hasSourceAwareUnique) {
+        sqliteExec(this.db, `
+          DROP TABLE IF EXISTS memory_action_edges_v2;
+          CREATE TABLE memory_action_edges_v2 (
+            edge_id TEXT PRIMARY KEY,
+            src_action_id TEXT NOT NULL,
+            rel_type TEXT NOT NULL,
+            dst_type TEXT NOT NULL,
+            dst_id TEXT NOT NULL,
+            confidence REAL NOT NULL DEFAULT 1.0,
+            source TEXT NOT NULL DEFAULT 'manual',
+            created_at TEXT NOT NULL,
+            UNIQUE(src_action_id, rel_type, dst_type, dst_id, source)
+          );
+          INSERT OR IGNORE INTO memory_action_edges_v2 (
+            edge_id, src_action_id, rel_type, dst_type, dst_id, confidence, source, created_at
+          )
+          SELECT edge_id, src_action_id, rel_type, dst_type, dst_id, confidence, source, created_at
+          FROM memory_action_edges;
+          DROP TABLE memory_action_edges;
+          ALTER TABLE memory_action_edges_v2 RENAME TO memory_action_edges;
+          CREATE INDEX IF NOT EXISTS idx_memory_action_edges_src ON memory_action_edges(src_action_id, rel_type);
+          CREATE INDEX IF NOT EXISTS idx_memory_action_edges_dst ON memory_action_edges(dst_type, dst_id);
+        `);
+      }
+    } catch {
+      // action edge table may not exist in partial migrations
+    }
 
     // Best-effort forward migration for retrieval trace detail column
     try {

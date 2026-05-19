@@ -1,7 +1,7 @@
 # AgentMemory-Inspired Memory Operations Layer Specification
 
 > **Version**: 0.1.0
-> **Status**: Draft — Phase 3 frontier service implemented
+> **Status**: Draft — Phase 3 action/frontier layer implemented
 > **Created**: 2026-05-18
 > **Reference**: `agentmemory` analysis
 > **Related specs**: `endless-mode`, `entity-edge-model`, `task-entity-system`, `progressive-disclosure`, `memory-utilization-improvements`, `mcp-desktop-integration`, `vector-outbox-v2`
@@ -364,7 +364,7 @@ CML MUST support explicit action list/update operations independent of the trans
 Acceptance criteria:
 
 - [x] Actions have statuses and source event evidence.
-- [ ] Actions can be derived from existing `task` entities where available. *(Remaining: Task 3.4 action projector.)*
+- [x] Actions can be derived from existing `task` entities where available.
 - [x] Action updates are append/audit friendly and do not mutate raw event content.
 
 ### AMO-04 Frontier ranking

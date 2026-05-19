@@ -13,6 +13,9 @@ export type MemoryActionEdgeRelType = z.infer<typeof MemoryActionEdgeRelTypeSche
 export const MemoryActionEdgeDstTypeSchema = z.enum(['action', 'entity', 'event', 'source_ref']);
 export type MemoryActionEdgeDstType = z.infer<typeof MemoryActionEdgeDstTypeSchema>;
 
+export const MemoryActionEdgeSourceSchema = z.enum(['manual', 'task_projector']);
+export type MemoryActionEdgeSource = z.infer<typeof MemoryActionEdgeSourceSchema>;
+
 export const LeaseTargetTypeSchema = z.enum(['action', 'checkpoint', 'routine']);
 export type LeaseTargetType = z.infer<typeof LeaseTargetTypeSchema>;
 
@@ -37,6 +40,7 @@ export interface MemoryActionEdge {
   dstType: MemoryActionEdgeDstType;
   dstId: string;
   confidence: number;
+  source: MemoryActionEdgeSource;
   createdAt: Date;
 }
 
@@ -106,7 +110,8 @@ export const ActionEdgeInputSchema = z.object({
   relType: MemoryActionEdgeRelTypeSchema,
   dstType: MemoryActionEdgeDstTypeSchema,
   dstId: NonEmptyStringSchema,
-  confidence: z.number().min(0).max(1).default(1)
+  confidence: z.number().min(0).max(1).default(1),
+  source: MemoryActionEdgeSourceSchema.default('manual')
 });
 export type ActionEdgeInput = z.infer<typeof ActionEdgeInputSchema>;
 

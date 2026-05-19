@@ -11,6 +11,7 @@ import {
   ActionEdgeInputSchema,
   MemoryActionEdgeDstTypeSchema,
   MemoryActionEdgeRelTypeSchema,
+  MemoryActionEdgeSourceSchema,
   MemoryActionStatusSchema,
   ListActionsInputSchema,
   UpsertActionInputSchema,
@@ -44,6 +45,7 @@ interface MemoryActionEdgeRow {
   dst_type: string;
   dst_id: string;
   confidence: number;
+  source: string;
   created_at: string;
 }
 
@@ -81,6 +83,7 @@ function rowToEdge(row: MemoryActionEdgeRow): MemoryActionEdge {
     dstType: MemoryActionEdgeDstTypeSchema.parse(row.dst_type),
     dstId: row.dst_id,
     confidence: Number(row.confidence),
+    source: MemoryActionEdgeSourceSchema.parse(row.source ?? 'manual'),
     createdAt: toDateFromSQLite(row.created_at)
   };
 }
@@ -229,9 +232,18 @@ export class ActionRepository {
     const edgeId = randomUUID();
     sqliteRun(
       this.db,
-      `INSERT INTO memory_action_edges (edge_id, src_action_id, rel_type, dst_type, dst_id, confidence, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [edgeId, parsed.srcActionId, parsed.relType, parsed.dstType, parsed.dstId, parsed.confidence, new Date().toISOString()]
+      `INSERT INTO memory_action_edges (edge_id, src_action_id, rel_type, dst_type, dst_id, confidence, source, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        edgeId,
+        parsed.srcActionId,
+        parsed.relType,
+        parsed.dstType,
+        parsed.dstId,
+        parsed.confidence,
+        parsed.source,
+        new Date().toISOString()
+      ]
     );
     return this.requireEdge(edgeId);
   }
@@ -251,8 +263,8 @@ export class ActionRepository {
   private findEdge(input: ActionEdgeInput): MemoryActionEdge | null {
     const row = sqliteGet<MemoryActionEdgeRow>(
       this.db,
-      `SELECT * FROM memory_action_edges WHERE src_action_id = ? AND rel_type = ? AND dst_type = ? AND dst_id = ?`,
-      [input.srcActionId, input.relType, input.dstType, input.dstId]
+      `SELECT * FROM memory_action_edges WHERE src_action_id = ? AND rel_type = ? AND dst_type = ? AND dst_id = ? AND source = ?`,
+      [input.srcActionId, input.relType, input.dstType, input.dstId, input.source]
     );
     return row ? rowToEdge(row) : null;
   }

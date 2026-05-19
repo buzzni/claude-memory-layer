@@ -116,6 +116,7 @@ describe('SQLiteEventStore memory operations schema', () => {
       'dst_type',
       'dst_id',
       'confidence',
+      'source',
       'created_at'
     ]);
     expect(leases).toEqual([
@@ -144,5 +145,60 @@ describe('SQLiteEventStore memory operations schema', () => {
     expect(actionIndexes).toContain('idx_memory_actions_project_status_priority');
     expect(leaseIndexes).toContain('idx_memory_leases_target_expires');
     expect(checkpointIndexes).toContain('idx_memory_checkpoints_project_action_created');
+  });
+
+  it('upgrades legacy action edge uniqueness so manual and projector edges can coexist', async () => {
+    const dbPath = tempDbPath();
+    const legacyDb = new Database(dbPath);
+    legacyDb.prepare(`
+      CREATE TABLE memory_action_edges (
+        edge_id TEXT PRIMARY KEY,
+        src_action_id TEXT NOT NULL,
+        rel_type TEXT NOT NULL,
+        dst_type TEXT NOT NULL,
+        dst_id TEXT NOT NULL,
+        confidence REAL NOT NULL DEFAULT 1.0,
+        created_at TEXT NOT NULL,
+        UNIQUE(src_action_id, rel_type, dst_type, dst_id)
+      )
+    `).run();
+    legacyDb.prepare(`
+      INSERT INTO memory_action_edges (
+        edge_id, src_action_id, rel_type, dst_type, dst_id, confidence, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      'manual-edge',
+      'action-a',
+      'depends_on',
+      'action',
+      'action-b',
+      1.0,
+      '2026-05-19T00:00:00.000Z'
+    );
+    legacyDb.close();
+
+    const store = new SQLiteEventStore(dbPath);
+    await store.initialize();
+
+    const db = new Database(dbPath);
+    const columns = db.prepare(`PRAGMA table_info(memory_action_edges)`).all().map((row: any) => row.name);
+    db.prepare(`
+      INSERT INTO memory_action_edges (
+        edge_id, src_action_id, rel_type, dst_type, dst_id, confidence, source, created_at
+      ) VALUES ('projector-edge', 'action-a', 'depends_on', 'action', 'action-b', 1.0, 'task_projector', '2026-05-19T00:00:01.000Z')
+    `).run();
+    const rows = db.prepare(`
+      SELECT edge_id, source FROM memory_action_edges
+      WHERE src_action_id = 'action-a' AND rel_type = 'depends_on' AND dst_id = 'action-b'
+      ORDER BY source
+    `).all();
+    db.close();
+    await store.close();
+
+    expect(columns).toContain('source');
+    expect(rows).toEqual([
+      { edge_id: 'manual-edge', source: 'manual' },
+      { edge_id: 'projector-edge', source: 'task_projector' }
+    ]);
   });
 });
