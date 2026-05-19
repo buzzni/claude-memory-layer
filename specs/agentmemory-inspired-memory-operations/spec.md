@@ -1,7 +1,7 @@
 # AgentMemory-Inspired Memory Operations Layer Specification
 
 > **Version**: 0.1.0
-> **Status**: Draft — Phase 2 facet-aware retrieval implemented
+> **Status**: Draft — Phase 3 action/lease/checkpoint repositories implemented
 > **Created**: 2026-05-18
 > **Reference**: `agentmemory` analysis
 > **Related specs**: `endless-mode`, `entity-edge-model`, `task-entity-system`, `progressive-disclosure`, `memory-utilization-improvements`, `mcp-desktop-integration`, `vector-outbox-v2`
@@ -363,9 +363,9 @@ CML MUST support explicit action list/update operations independent of the trans
 
 Acceptance criteria:
 
-- Actions have statuses and source event evidence.
-- Actions can be derived from existing `task` entities where available.
-- Action updates are append/audit friendly and do not mutate raw event content.
+- [x] Actions have statuses and source event evidence.
+- [ ] Actions can be derived from existing `task` entities where available. *(Remaining: Task 3.4 action projector.)*
+- [x] Action updates are append/audit friendly and do not mutate raw event content.
 
 ### AMO-04 Frontier ranking
 
@@ -383,9 +383,9 @@ CML MUST support short-lived leases for actions/checkpoints.
 
 Acceptance criteria:
 
-- Active lease prevents another holder from acquiring the same target.
-- Expired lease can be reclaimed.
-- Lease acquire/release/renew writes audit entries.
+- [x] Active lease prevents another holder from acquiring the same target.
+- [x] Expired lease can be reclaimed.
+- [x] Lease acquire/release/renew writes audit entries.
 
 ### AMO-06 Checkpoints
 
@@ -393,9 +393,9 @@ CML MUST support project-scoped checkpoints for long-running or delegated work.
 
 Acceptance criteria:
 
-- Checkpoints store compact `summary` and redacted `stateJson`.
-- Checkpoints can be listed by project/action/session.
-- Checkpoint details expose source refs, not raw secret-bearing content.
+- [x] Checkpoints store compact `summary` and redacted `stateJson`.
+- [x] Checkpoints can be listed by project/action/session.
+- [x] Checkpoint details expose source refs, not raw secret-bearing content.
 
 ### AMO-07 Retention scoring
 

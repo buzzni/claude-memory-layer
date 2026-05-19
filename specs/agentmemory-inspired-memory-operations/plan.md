@@ -217,13 +217,14 @@ npm test -- --run tests/core/retriever-facet-filter.test.ts tests/core/retrieval
 
 ## Phase 3: Operational actions, frontier, leases, checkpoints (P0/P1)
 
-### Task 3.1 — Add action/checkpoint/lease types and schema
+### [x] Task 3.1 — Add action/checkpoint/lease types and schema
 
 **Objective:** Add minimal projection tables for operational state.
 
 **Files:**
-- Modify: `src/core/types.ts`
+- Create: `src/core/operations/actions.ts`
 - Modify: `src/core/sqlite-event-store.ts`
+- Modify: `src/core/operations/index.ts`
 - Test: `tests/core/sqlite-event-store-operations-schema.test.ts`
 
 **Tables:**
@@ -239,7 +240,7 @@ npm test -- --run tests/core/retriever-facet-filter.test.ts tests/core/retrieval
 - `memory_leases(target_type, target_id, expires_at)`
 - `memory_checkpoints(project_hash, action_id, created_at DESC)`
 
-### Task 3.2 — Implement repositories
+### [x] Task 3.2 — Implement repositories
 
 **Objective:** Add repository classes with atomic lease behavior.
 

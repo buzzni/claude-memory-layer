@@ -1,3 +1,7 @@
 export * from './facets.js';
 export * from './facet-repository.js';
 export * from './governance-audit.js';
+export * from './actions.js';
+export * from './action-repository.js';
+export * from './lease-repository.js';
+export * from './checkpoint-repository.js';

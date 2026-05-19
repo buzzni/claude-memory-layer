@@ -512,6 +512,60 @@ export class SQLiteEventStore {
         UNIQUE(target_type, target_id, dimension, value, source, project_hash)
       );
 
+      -- Memory Operations: operational action projection
+      CREATE TABLE IF NOT EXISTS memory_actions (
+        action_id TEXT PRIMARY KEY,
+        project_hash TEXT NOT NULL,
+        title TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        priority INTEGER NOT NULL DEFAULT 0,
+        source_event_ids TEXT NOT NULL DEFAULT '[]',
+        related_entity_ids TEXT NOT NULL DEFAULT '[]',
+        current_checkpoint_id TEXT,
+        lease_id TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      -- Memory Operations: action dependency/reference edges
+      CREATE TABLE IF NOT EXISTS memory_action_edges (
+        edge_id TEXT PRIMARY KEY,
+        src_action_id TEXT NOT NULL,
+        rel_type TEXT NOT NULL,
+        dst_type TEXT NOT NULL,
+        dst_id TEXT NOT NULL,
+        confidence REAL NOT NULL DEFAULT 1.0,
+        created_at TEXT NOT NULL,
+        UNIQUE(src_action_id, rel_type, dst_type, dst_id)
+      );
+
+      -- Memory Operations: short-lived leases for operational work
+      CREATE TABLE IF NOT EXISTS memory_leases (
+        lease_id TEXT PRIMARY KEY,
+        target_type TEXT NOT NULL,
+        target_id TEXT NOT NULL,
+        holder TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        metadata_json TEXT,
+        created_at TEXT NOT NULL,
+        renewed_at TEXT,
+        released_at TEXT
+      );
+
+      -- Memory Operations: resumable checkpoints for delegated or long-running work
+      CREATE TABLE IF NOT EXISTS memory_checkpoints (
+        checkpoint_id TEXT PRIMARY KEY,
+        project_hash TEXT NOT NULL,
+        action_id TEXT,
+        session_id TEXT,
+        title TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        state_json TEXT NOT NULL,
+        source_event_ids TEXT NOT NULL DEFAULT '[]',
+        created_at TEXT NOT NULL,
+        expires_at TEXT
+      );
+
       -- Memory Operations: governance/audit trail for state-changing operations
       CREATE TABLE IF NOT EXISTS memory_governance_audit (
         audit_id TEXT PRIMARY KEY,
@@ -555,6 +609,12 @@ export class SQLiteEventStore {
       CREATE INDEX IF NOT EXISTS idx_memory_facets_project_dimension_value ON memory_facets(project_hash, dimension, value);
       CREATE INDEX IF NOT EXISTS idx_memory_facets_target ON memory_facets(target_type, target_id);
       CREATE INDEX IF NOT EXISTS idx_memory_facets_dimension_value_confidence ON memory_facets(dimension, value, confidence DESC);
+      CREATE INDEX IF NOT EXISTS idx_memory_actions_project_status_priority ON memory_actions(project_hash, status, priority DESC, updated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_memory_action_edges_src ON memory_action_edges(src_action_id, rel_type);
+      CREATE INDEX IF NOT EXISTS idx_memory_action_edges_dst ON memory_action_edges(dst_type, dst_id);
+      CREATE INDEX IF NOT EXISTS idx_memory_leases_target_expires ON memory_leases(target_type, target_id, expires_at);
+      CREATE INDEX IF NOT EXISTS idx_memory_checkpoints_project_action_created ON memory_checkpoints(project_hash, action_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_memory_checkpoints_project_session_created ON memory_checkpoints(project_hash, session_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_memory_governance_audit_project_operation ON memory_governance_audit(project_hash, operation, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_memory_governance_audit_target ON memory_governance_audit(target_type, target_id, created_at DESC);
 

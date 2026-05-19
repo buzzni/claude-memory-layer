@@ -69,7 +69,7 @@ function sanitizeAuditString(value: string): string {
     .replace(credentialAssignmentPattern, `$1${REDACTED}`);
 }
 
-function sanitizeAuditValue(value: unknown, key?: string): unknown {
+export function sanitizeGovernanceAuditValue(value: unknown, key?: string): unknown {
   if (key && sensitiveKeyPattern.test(key)) {
     return REDACTED;
   }
@@ -80,12 +80,12 @@ function sanitizeAuditValue(value: unknown, key?: string): unknown {
     return sanitizeAuditString(value.toISOString());
   }
   if (Array.isArray(value)) {
-    return value.map((item) => sanitizeAuditValue(item));
+    return value.map((item) => sanitizeGovernanceAuditValue(item));
   }
   if (value && typeof value === 'object') {
     const sanitized: Record<string, unknown> = {};
     for (const [entryKey, entryValue] of Object.entries(value as Record<string, unknown>)) {
-      sanitized[sanitizeAuditString(entryKey)] = sanitizeAuditValue(entryValue, entryKey);
+      sanitized[sanitizeAuditString(entryKey)] = sanitizeGovernanceAuditValue(entryValue, entryKey);
     }
     return sanitized;
   }
@@ -94,7 +94,7 @@ function sanitizeAuditValue(value: unknown, key?: string): unknown {
 
 function sanitizeAuditJson(value: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
   if (value === undefined) return undefined;
-  return sanitizeAuditValue(value) as Record<string, unknown>;
+  return sanitizeGovernanceAuditValue(value) as Record<string, unknown>;
 }
 
 function normalizeSourceEventIds(sourceEventIds: string[] | undefined): string[] {

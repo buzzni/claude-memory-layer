@@ -79,4 +79,70 @@ describe('SQLiteEventStore memory operations schema', () => {
     expect(indexes).toContain('idx_memory_governance_audit_project_operation');
     expect(indexes).toContain('idx_memory_governance_audit_target');
   });
+
+  it('creates memory action, lease, and checkpoint projection tables with lookup indexes', async () => {
+    const dbPath = tempDbPath();
+    const store = new SQLiteEventStore(dbPath);
+    await store.initialize();
+
+    const db = new Database(dbPath);
+    const actions = db.prepare(`PRAGMA table_info(memory_actions)`).all().map((row: any) => row.name);
+    const actionEdges = db.prepare(`PRAGMA table_info(memory_action_edges)`).all().map((row: any) => row.name);
+    const leases = db.prepare(`PRAGMA table_info(memory_leases)`).all().map((row: any) => row.name);
+    const checkpoints = db.prepare(`PRAGMA table_info(memory_checkpoints)`).all().map((row: any) => row.name);
+    const actionIndexes = db.prepare(`PRAGMA index_list(memory_actions)`).all().map((row: any) => row.name).sort();
+    const leaseIndexes = db.prepare(`PRAGMA index_list(memory_leases)`).all().map((row: any) => row.name).sort();
+    const checkpointIndexes = db.prepare(`PRAGMA index_list(memory_checkpoints)`).all().map((row: any) => row.name).sort();
+    db.close();
+    await store.close();
+
+    expect(actions).toEqual([
+      'action_id',
+      'project_hash',
+      'title',
+      'status',
+      'priority',
+      'source_event_ids',
+      'related_entity_ids',
+      'current_checkpoint_id',
+      'lease_id',
+      'created_at',
+      'updated_at'
+    ]);
+    expect(actionEdges).toEqual([
+      'edge_id',
+      'src_action_id',
+      'rel_type',
+      'dst_type',
+      'dst_id',
+      'confidence',
+      'created_at'
+    ]);
+    expect(leases).toEqual([
+      'lease_id',
+      'target_type',
+      'target_id',
+      'holder',
+      'expires_at',
+      'metadata_json',
+      'created_at',
+      'renewed_at',
+      'released_at'
+    ]);
+    expect(checkpoints).toEqual([
+      'checkpoint_id',
+      'project_hash',
+      'action_id',
+      'session_id',
+      'title',
+      'summary',
+      'state_json',
+      'source_event_ids',
+      'created_at',
+      'expires_at'
+    ]);
+    expect(actionIndexes).toContain('idx_memory_actions_project_status_priority');
+    expect(leaseIndexes).toContain('idx_memory_leases_target_expires');
+    expect(checkpointIndexes).toContain('idx_memory_checkpoints_project_action_created');
+  });
 });
