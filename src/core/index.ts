@@ -32,6 +32,7 @@ export * from './sync-worker.js';
 export * from './mongo-sync-worker.js';
 export * from './entity-repo.js';
 export * from './edge-repo.js';
+export * from './operations/index.js';
 
 // Vector
 export * from './vector-store.js';

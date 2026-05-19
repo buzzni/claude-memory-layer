@@ -496,6 +496,36 @@ export class SQLiteEventStore {
         updated_at TEXT DEFAULT (datetime('now'))
       );
 
+      -- Memory Operations: facet assignments (derived, rebuildable projection)
+      CREATE TABLE IF NOT EXISTS memory_facets (
+        id TEXT PRIMARY KEY,
+        target_type TEXT NOT NULL,
+        target_id TEXT NOT NULL,
+        dimension TEXT NOT NULL,
+        value TEXT NOT NULL,
+        confidence REAL NOT NULL DEFAULT 1.0,
+        source TEXT NOT NULL DEFAULT 'manual',
+        evidence_event_ids TEXT NOT NULL DEFAULT '[]',
+        project_hash TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(target_type, target_id, dimension, value, source, project_hash)
+      );
+
+      -- Memory Operations: governance/audit trail for state-changing operations
+      CREATE TABLE IF NOT EXISTS memory_governance_audit (
+        audit_id TEXT PRIMARY KEY,
+        operation TEXT NOT NULL,
+        actor TEXT NOT NULL,
+        project_hash TEXT,
+        target_type TEXT NOT NULL,
+        target_id TEXT NOT NULL,
+        before_json TEXT,
+        after_json TEXT,
+        source_event_ids TEXT NOT NULL DEFAULT '[]',
+        created_at TEXT NOT NULL
+      );
+
       -- Create indexes
       CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id);
       CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp);
@@ -522,6 +552,11 @@ export class SQLiteEventStore {
       CREATE INDEX IF NOT EXISTS idx_retrieval_traces_created_at ON retrieval_traces(created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_retrieval_traces_project_hash ON retrieval_traces(project_hash);
       CREATE INDEX IF NOT EXISTS idx_retrieval_traces_session_id ON retrieval_traces(session_id);
+      CREATE INDEX IF NOT EXISTS idx_memory_facets_project_dimension_value ON memory_facets(project_hash, dimension, value);
+      CREATE INDEX IF NOT EXISTS idx_memory_facets_target ON memory_facets(target_type, target_id);
+      CREATE INDEX IF NOT EXISTS idx_memory_facets_dimension_value_confidence ON memory_facets(dimension, value, confidence DESC);
+      CREATE INDEX IF NOT EXISTS idx_memory_governance_audit_project_operation ON memory_governance_audit(project_hash, operation, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_memory_governance_audit_target ON memory_governance_audit(target_type, target_id, created_at DESC);
 
       -- FTS5 Full-Text Search for fast keyword search
       CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(

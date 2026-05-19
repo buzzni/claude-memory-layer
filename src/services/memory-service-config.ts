@@ -1,7 +1,7 @@
 import * as os from 'os';
 import * as path from 'path';
 
-import type { SharedStoreConfig } from '../core/types.js';
+import type { MemoryOperationsConfig, SharedStoreConfig } from '../core/types.js';
 
 export interface MemoryServiceConfig {
   storagePath: string;
@@ -34,3 +34,17 @@ export const DEFAULT_ENABLED_SHARED_STORE_CONFIG: SharedStoreConfig = {
 };
 
 export const DEFAULT_SHARED_STORAGE_PATH = SHARED_STORAGE_PATH;
+
+export const DISABLED_MEMORY_OPERATIONS_CONFIG: MemoryOperationsConfig = {
+  enabled: false,
+  facets: { enabled: true },
+  actions: { enabled: true },
+  retention: { enabled: false, policyVersion: 'v1' },
+  graphExpansion: { enabled: false, maxHops: 1 },
+  lessons: { enabled: false }
+};
+
+export const DEFAULT_ENABLED_MEMORY_OPERATIONS_CONFIG: MemoryOperationsConfig = {
+  ...DISABLED_MEMORY_OPERATIONS_CONFIG,
+  enabled: true
+};

@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
+import { ConfigSchema } from '../../src/core/types.js';
 import {
+  DEFAULT_ENABLED_MEMORY_OPERATIONS_CONFIG,
   DEFAULT_ENABLED_SHARED_STORE_CONFIG as CONFIG_DEFAULT_ENABLED_SHARED_STORE_CONFIG,
+  DISABLED_MEMORY_OPERATIONS_CONFIG,
   DISABLED_SHARED_STORE_CONFIG as CONFIG_DISABLED_SHARED_STORE_CONFIG,
   DEFAULT_SHARED_STORAGE_PATH as CONFIG_DEFAULT_SHARED_STORAGE_PATH
 } from '../../src/services/memory-service-config.js';
@@ -37,5 +40,27 @@ describe('memory-service-config', () => {
       sharedStoragePath: CONFIG_DEFAULT_SHARED_STORAGE_PATH
     });
     expect(FACADE_DEFAULT_ENABLED_SHARED_STORE_CONFIG).toBe(CONFIG_DEFAULT_ENABLED_SHARED_STORE_CONFIG);
+  });
+
+  it('ships memory operations disabled by default with safe subfeatures', () => {
+    expect(DISABLED_MEMORY_OPERATIONS_CONFIG).toEqual({
+      enabled: false,
+      facets: { enabled: true },
+      actions: { enabled: true },
+      retention: { enabled: false, policyVersion: 'v1' },
+      graphExpansion: { enabled: false, maxHops: 1 },
+      lessons: { enabled: false }
+    });
+
+    expect(DEFAULT_ENABLED_MEMORY_OPERATIONS_CONFIG).toEqual({
+      ...DISABLED_MEMORY_OPERATIONS_CONFIG,
+      enabled: true
+    });
+  });
+
+  it('parses memory operations config defaults without enabling ranking-changing features', () => {
+    const parsed = ConfigSchema.parse({});
+
+    expect(parsed.operations).toEqual(DISABLED_MEMORY_OPERATIONS_CONFIG);
   });
 });

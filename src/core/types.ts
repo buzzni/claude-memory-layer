@@ -142,6 +142,32 @@ export const EvidenceSpanSchema = z.object({
 export type EvidenceSpan = z.infer<typeof EvidenceSpanSchema>;
 
 // ============================================================
+// Memory Operations Config (AgentMemory-inspired operations layer)
+// ============================================================
+
+export const MemoryOperationsConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  facets: z.object({
+    enabled: z.boolean().default(true)
+  }).default({}),
+  actions: z.object({
+    enabled: z.boolean().default(true)
+  }).default({}),
+  retention: z.object({
+    enabled: z.boolean().default(false),
+    policyVersion: z.string().default('v1')
+  }).default({}),
+  graphExpansion: z.object({
+    enabled: z.boolean().default(false),
+    maxHops: z.number().int().min(0).max(5).default(1)
+  }).default({}),
+  lessons: z.object({
+    enabled: z.boolean().default(false)
+  }).default({})
+}).default({});
+export type MemoryOperationsConfig = z.infer<typeof MemoryOperationsConfigSchema>;
+
+// ============================================================
 // Configuration
 // ============================================================
 
@@ -204,6 +230,7 @@ export const ConfigSchema = z.object({
       sharedStoragePath: z.string().default('~/.claude-code/memory/shared')
     }).default({})
   }).default({}),
+  operations: MemoryOperationsConfigSchema,
   mode: z.enum(['session', 'endless']).default('session'),
   endless: z.object({
     enabled: z.boolean().default(false),
