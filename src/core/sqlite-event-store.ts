@@ -586,6 +586,23 @@ export class SQLiteEventStore {
         UNIQUE(target_type, target_id, project_hash, policy_version)
       );
 
+      -- Memory Operations: procedural lessons derived from successful workflows
+      CREATE TABLE IF NOT EXISTS memory_lessons (
+        lesson_id TEXT PRIMARY KEY,
+        project_hash TEXT NOT NULL DEFAULT '',
+        name TEXT NOT NULL,
+        trigger TEXT NOT NULL,
+        steps_json TEXT NOT NULL,
+        confidence REAL NOT NULL,
+        source_session_ids TEXT NOT NULL DEFAULT '[]',
+        source_event_ids TEXT NOT NULL DEFAULT '[]',
+        failure_modes_json TEXT NOT NULL DEFAULT '[]',
+        skill_candidate INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(project_hash, name)
+      );
+
       -- Memory Operations: governance/audit trail for state-changing operations
       CREATE TABLE IF NOT EXISTS memory_governance_audit (
         audit_id TEXT PRIMARY KEY,
@@ -638,6 +655,9 @@ export class SQLiteEventStore {
       CREATE INDEX IF NOT EXISTS idx_memory_retention_scores_project_decision_score ON memory_retention_scores(project_hash, decision, lifecycle_score ASC, evaluated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_memory_retention_scores_target ON memory_retention_scores(target_type, target_id, project_hash);
       CREATE INDEX IF NOT EXISTS idx_memory_retention_scores_policy_evaluated ON memory_retention_scores(policy_version, evaluated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_memory_lessons_project_confidence ON memory_lessons(project_hash, confidence DESC, updated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_memory_lessons_skill_candidate ON memory_lessons(project_hash, skill_candidate, confidence DESC);
+      CREATE INDEX IF NOT EXISTS idx_memory_lessons_updated ON memory_lessons(updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_memory_governance_audit_project_operation ON memory_governance_audit(project_hash, operation, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_memory_governance_audit_target ON memory_governance_audit(target_type, target_id, created_at DESC);
 

@@ -168,6 +168,67 @@ export const MemoryOperationsConfigSchema = z.object({
 export type MemoryOperationsConfig = z.infer<typeof MemoryOperationsConfigSchema>;
 
 // ============================================================
+// Procedural Lesson Types (AgentMemory-inspired operations layer)
+// ============================================================
+
+const MemoryLessonNonEmptyStringSchema = z.string()
+  .transform((value) => value.trim())
+  .pipe(z.string().min(1));
+
+const MemoryLessonStringArraySchema = z.preprocess((value) => {
+  if (!Array.isArray(value)) return value;
+  return value
+    .map((item) => typeof item === 'string' ? item.trim() : item)
+    .filter((item) => typeof item !== 'string' || item.length > 0);
+}, z.array(MemoryLessonNonEmptyStringSchema)).default([]);
+
+export const MemoryLessonSchema = z.object({
+  lessonId: z.string().uuid(),
+  projectHash: MemoryLessonNonEmptyStringSchema.optional(),
+  name: MemoryLessonNonEmptyStringSchema,
+  trigger: MemoryLessonNonEmptyStringSchema,
+  steps: MemoryLessonStringArraySchema.refine((steps) => steps.length > 0, 'steps must contain at least one step'),
+  confidence: z.number().min(0).max(1),
+  sourceSessionIds: MemoryLessonStringArraySchema,
+  sourceEventIds: MemoryLessonStringArraySchema,
+  failureModes: MemoryLessonStringArraySchema,
+  skillCandidate: z.boolean().default(false),
+  createdAt: z.date(),
+  updatedAt: z.date()
+});
+export type MemoryLesson = z.infer<typeof MemoryLessonSchema>;
+
+export const UpsertMemoryLessonInputSchema = z.object({
+  lessonId: z.string().uuid().optional(),
+  projectHash: MemoryLessonNonEmptyStringSchema.optional(),
+  name: MemoryLessonNonEmptyStringSchema,
+  trigger: MemoryLessonNonEmptyStringSchema,
+  steps: MemoryLessonStringArraySchema.refine((steps) => steps.length > 0, 'steps must contain at least one step'),
+  confidence: z.number().min(0).max(1).default(0.5),
+  sourceSessionIds: MemoryLessonStringArraySchema,
+  sourceEventIds: MemoryLessonStringArraySchema,
+  failureModes: MemoryLessonStringArraySchema,
+  skillCandidate: z.boolean().default(false),
+  actor: MemoryLessonNonEmptyStringSchema.optional()
+}).superRefine((value, ctx) => {
+  if (value.sourceSessionIds.length === 0 && value.sourceEventIds.length === 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['sourceEventIds'],
+      message: 'sourceSessionIds or sourceEventIds is required'
+    });
+  }
+});
+export type UpsertMemoryLessonInput = z.input<typeof UpsertMemoryLessonInputSchema>;
+
+export const ListMemoryLessonsInputSchema = z.object({
+  projectHash: MemoryLessonNonEmptyStringSchema.optional(),
+  skillCandidate: z.boolean().optional(),
+  limit: z.number().int().positive().max(500).default(50)
+});
+export type ListMemoryLessonsInput = z.input<typeof ListMemoryLessonsInputSchema>;
+
+// ============================================================
 // Configuration
 // ============================================================
 

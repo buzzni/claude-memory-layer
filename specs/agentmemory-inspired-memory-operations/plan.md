@@ -545,15 +545,32 @@ npm test -- --run
 
 ## Phase 6: Procedural lessons (P1)
 
-### Task 6.1 — Add lesson types and schema
+### [x] Task 6.1 — Add lesson types and schema
 
 **Objective:** Store workflow lessons as first-class derived memories.
 
 **Files:**
-- Modify: `src/core/types.ts`
-- Modify: `src/core/sqlite-event-store.ts`
-- Create: `src/core/operations/lesson-repository.ts`
-- Test: `tests/core/lesson-repository.test.ts`
+- Modified: `src/core/types.ts`
+- Modified: `src/core/sqlite-event-store.ts`
+- Created: `src/core/operations/lesson-repository.ts`
+- Tested: `tests/core/lesson-repository.test.ts`
+
+**Implemented:**
+
+- Added typed `MemoryLesson`, `UpsertMemoryLessonInput`, and `ListMemoryLessonsInput` schemas with normalized trigger, ordered steps, source session/event refs, confidence, failure modes, and manual skill-candidate metadata.
+- Added `memory_lessons` as an additive SQLite projection table with project/name uniqueness and project/confidence + skill-candidate indexes.
+- Added `LessonRepository` for idempotent create/update, project-scoped list/get behavior, project mismatch protection, privacy-safe string sanitization, and `lesson_promote` governance audit entries.
+
+**Verification:**
+
+```bash
+npm test -- --run tests/core/lesson-repository.test.ts
+npm run typecheck
+npm run build
+npm test -- --run
+# staged static/privacy scan: STAGED_STATIC_SCAN_FINDINGS=0
+# independent pre-commit review: PASS
+```
 
 ### Task 6.2 — Implement rule-based lesson candidates
 
