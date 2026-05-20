@@ -434,7 +434,7 @@ npm run build
 
 ## Phase 5: Graph-powered retrieval (P1)
 
-### Task 5.1 — Add graph path service
+### [x] Task 5.1 — Add graph path service
 
 **Objective:** Add weighted bounded path expansion over existing `entities`/`edges`.
 
@@ -448,6 +448,21 @@ npm run build
 - Use cost `1 / weight` when edge metadata has weight; default weight = 0.5.
 - Bound `maxHops <= 2` for MCP/API calls.
 - Return path explanation, not just IDs.
+
+**Implemented:**
+
+- Added `GraphPathService.expand()` over current `edges` plus active `entities` labels, with one adjacency build per request.
+- Supports outgoing, incoming, and bidirectional traversal so query entities can expand to related entries while preserving original edge direction in explanations.
+- Uses weighted cost (`1 / weight`) with safe default weight `0.5`, picks the lowest-cost bounded path per target, applies deterministic edge-id tie breaks, and returns `scoreContribution` values for paths and steps.
+- Clamps requested traversal to `maxHops <= 2`; no temporal/history table is introduced in this task.
+- Retrieval ranking/disclosure integration remains explicitly deferred to Task 5.3.
+
+**Verification:**
+
+```bash
+npm test -- --run tests/core/graph-path-service.test.ts
+npm run typecheck
+```
 
 ### Task 5.2 — Add rule-based entity extraction
 

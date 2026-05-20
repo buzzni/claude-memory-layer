@@ -433,9 +433,9 @@ CML MUST support bounded weighted graph expansion for retrieval.
 
 Acceptance criteria:
 
-- Graph expansion is disabled by default or bounded by `maxHops <= 2`.
-- Path explanations include node names, relation types, and score contribution.
-- It uses existing `edges`/`entities` first and adds history only in a later migration.
+- [x] Graph expansion is disabled by default or bounded by `maxHops <= 2`.
+- [x] Path explanations include node names, relation types, and score contribution.
+- [x] It uses existing `edges`/`entities` first and adds history only in a later migration.
 
 ### AMO-11 Temporal graph state
 
