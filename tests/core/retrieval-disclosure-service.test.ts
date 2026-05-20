@@ -167,6 +167,56 @@ describe('RetrievalDisclosureService', () => {
     expect(out.results[0].metadata?.facetMatches).toEqual([{ dimension: 'workflow', value: 'debugging' }]);
   });
 
+  it('discloses graph-path retrieval as entity overlap with bounded path metadata', async () => {
+    const graphPathResult: UnifiedRetrievalResult = {
+      ...retrievalResult(),
+      selectedDebug: [{
+        eventId: 'e2',
+        score: 0.88,
+        semanticScore: 0.7,
+        lexicalScore: 0,
+        recencyScore: 0.1,
+        graphPaths: [{
+          startEntityId: 'entity-graph-expansion',
+          startEntityTitle: 'Graph Expansion',
+          targetId: 'e2',
+          targetType: 'event',
+          hops: 1,
+          relationPath: ['evidence_of']
+        }]
+      } as any],
+      candidateDebug: [{
+        eventId: 'e2',
+        score: 0.88,
+        semanticScore: 0.7,
+        lexicalScore: 0,
+        recencyScore: 0.1,
+        graphPaths: [{
+          startEntityId: 'entity-graph-expansion',
+          startEntityTitle: 'Graph Expansion',
+          targetId: 'e2',
+          targetType: 'event',
+          hops: 1,
+          relationPath: ['evidence_of']
+        }]
+      } as any]
+    };
+
+    const out = await service(graphPathResult).search('Graph Expansion', { strategy: 'fast' });
+
+    expect(out.results[0].reasons).toContain('entity_overlap');
+    expect(out.results[0].metadata?.graphPaths).toEqual([
+      expect.objectContaining({
+        startEntityId: 'entity-graph-expansion',
+        startEntityTitle: 'Graph Expansion',
+        targetId: 'e2',
+        targetType: 'event',
+        hops: 1,
+        relationPath: ['evidence_of']
+      })
+    ]);
+  });
+
   it('search includes shared memories instead of silently dropping them', async () => {
     const out = await service(retrievalResult([sharedEntry])).search('checkout fix', { includeShared: true });
 

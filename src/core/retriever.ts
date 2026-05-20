@@ -12,6 +12,11 @@ import { SharedVectorStore } from './shared-vector-store.js';
 import { GraduationPipeline } from './graduation.js';
 import { FacetRepository } from './operations/facet-repository.js';
 import { FacetDimensionSchema, type FacetDimension } from './operations/facets.js';
+import {
+  GraphPathService,
+  type GraphPathResult
+} from './operations/graph-path-service.js';
+import { QueryEntityExtractor } from './operations/query-entity-extractor.js';
 import type { SQLiteDatabase } from './sqlite-wrapper.js';
 import {
   hasTechnicalTermOverlap,
@@ -22,7 +27,7 @@ import {
   hasDiscriminativeTermOverlap,
   shouldApplyTechnicalGuard
 } from './retrieval-quality.js';
-import type { MemoryEvent, MatchResult, SharedTroubleshootingEntry } from './types.js';
+import type { MemoryEvent, MatchResult, NodeType, SharedTroubleshootingEntry } from './types.js';
 
 export interface RetrievalScope {
   sessionId?: string;
@@ -50,6 +55,16 @@ export interface RetrievalDebugDetail {
   lexicalScore?: number;
   recencyScore?: number;
   facetMatches?: RetrievalFacetFilter[];
+  graphPaths?: RetrievalGraphPathDebug[];
+}
+
+export interface RetrievalGraphPathDebug {
+  startEntityId: string;
+  startEntityTitle?: string;
+  targetId: string;
+  targetType: NodeType;
+  hops: number;
+  relationPath: string[];
 }
 
 type DebuggableSearchResult = SearchResult & {
@@ -57,6 +72,7 @@ type DebuggableSearchResult = SearchResult & {
   lexicalScore?: number;
   recencyScore?: number;
   facetMatches?: RetrievalFacetFilter[];
+  graphPaths?: RetrievalGraphPathDebug[];
 };
 
 export interface RetrievalOptions {
@@ -141,6 +157,7 @@ const DEFAULT_OPTIONS: RetrievalOptions = {
 export interface SharedStoreOptions {
   sharedStore?: SharedStore;
   sharedVectorStore?: SharedVectorStore;
+  queryGraphExpansionEnabled?: boolean;
 }
 
 type EventStoreLike = EventStore & {
@@ -157,6 +174,7 @@ export class Retriever {
   private sharedVectorStore?: SharedVectorStore;
   private graduation?: GraduationPipeline;
   private queryRewriter?: (query: string) => Promise<string | null>;
+  private readonly queryGraphExpansionEnabled: boolean;
 
   constructor(
     eventStore: EventStore,
@@ -171,6 +189,7 @@ export class Retriever {
     this.matcher = matcher;
     this.sharedStore = sharedOptions?.sharedStore;
     this.sharedVectorStore = sharedOptions?.sharedVectorStore;
+    this.queryGraphExpansionEnabled = sharedOptions?.queryGraphExpansionEnabled === true;
   }
 
   setGraduationPipeline(graduation: GraduationPipeline): void {
@@ -415,7 +434,9 @@ export class Retriever {
     const expandedResults = input.graphHop?.enabled === false
       ? initialResults
       : await this.expandGraphHops(initialResults, {
-          maxHops: Math.max(1, input.graphHop?.maxHops ?? 1),
+          query,
+          queryGraphEnabled: this.queryGraphExpansionEnabled,
+          maxHops: clampGraphHops(input.graphHop?.maxHops ?? 1),
           hopPenalty: Math.max(0, input.graphHop?.hopPenalty ?? 0.08),
           limit: input.topK * 4,
         });
@@ -451,10 +472,14 @@ export class Retriever {
       filtered = filtered.filter((result) => !isStaleOrSupersededContent(result.content));
     }
 
-    filtered = filtered.filter((result) => hasDiscriminativeTermOverlap(options.query, result.content));
+    filtered = filtered.filter((result) =>
+      this.isGraphPathResult(result) || hasDiscriminativeTermOverlap(options.query, result.content)
+    );
 
     if (shouldApplyTechnicalGuard(options.query)) {
-      filtered = filtered.filter((result) => hasTechnicalTermOverlap(options.query, result.content));
+      filtered = filtered.filter((result) =>
+        this.isGraphPathResult(result) || hasTechnicalTermOverlap(options.query, result.content)
+      );
     }
 
     if (filtered.length <= 2) return filtered;
@@ -480,9 +505,9 @@ export class Retriever {
 
   private async expandGraphHops(
     seeds: SearchResult[],
-    opts: { maxHops: number; hopPenalty: number; limit: number }
-  ): Promise<SearchResult[]> {
-    const byId = new Map<string, SearchResult>();
+    opts: { query: string; queryGraphEnabled: boolean; maxHops: number; hopPenalty: number; limit: number }
+  ): Promise<DebuggableSearchResult[]> {
+    const byId = new Map<string, DebuggableSearchResult>();
     for (const s of seeds) byId.set(s.eventId, s);
 
     let frontier = seeds.map((s) => ({ row: s, hop: 0 }));
@@ -525,7 +550,72 @@ export class Retriever {
       if (frontier.length === 0 || byId.size >= opts.limit) break;
     }
 
-    return [...byId.values()].sort((a, b) => b.score - a.score).slice(0, opts.limit);
+    if (opts.queryGraphEnabled) {
+      await this.expandQueryGraphPaths(opts.query, byId, opts);
+    }
+
+    return [...byId.values()]
+      .sort((a, b) => b.score - a.score || compareStable(a.eventId, b.eventId))
+      .slice(0, opts.limit);
+  }
+
+  private async expandQueryGraphPaths(
+    query: string,
+    byId: Map<string, DebuggableSearchResult>,
+    opts: { maxHops: number; hopPenalty: number; limit: number }
+  ): Promise<void> {
+    if (!query.trim() || !this.eventStore.getDatabase) return;
+
+    try {
+      const db = this.eventStore.getDatabase();
+      const extraction = new QueryEntityExtractor(db).extract(query, {
+        maxCandidates: Math.min(8, opts.limit),
+        includeAliases: true
+      });
+      const startCandidates = extraction.candidates
+        .filter((candidate) => candidate.entityId)
+        .slice(0, 8);
+      const startNodes = uniqueEntityStartNodes(startCandidates);
+      if (startNodes.length === 0) return;
+
+      const expansion = new GraphPathService(db).expand({
+        startNodes: startNodes.map((node) => ({ type: 'entity' as const, id: node.entityId })),
+        maxHops: opts.maxHops,
+        maxResults: opts.limit,
+        direction: 'both'
+      });
+      const titleByEntityId = new Map(startNodes.map((node) => [node.entityId, node.title] as const));
+
+      for (const path of expansion.paths) {
+        if (path.target.type !== 'event') continue;
+        const target = await this.eventStore.getEvent(path.target.id);
+        if (!target) continue;
+
+        const graphPath = toRetrievalGraphPathDebug(path, titleByEntityId);
+        const score = graphPathScore(path, opts.hopPenalty);
+        const existing = byId.get(target.id);
+        const graphPaths = mergeGraphPaths(existing?.graphPaths ?? [], [graphPath]);
+        const row: DebuggableSearchResult = {
+          id: existing?.id ?? `graph-path-${path.hops}-${target.id}`,
+          eventId: target.id,
+          content: target.content,
+          score: Math.max(existing?.score ?? 0, score),
+          sessionId: target.sessionId,
+          eventType: target.eventType,
+          timestamp: target.timestamp.toISOString(),
+          semanticScore: existing?.semanticScore,
+          lexicalScore: existing?.lexicalScore,
+          recencyScore: existing?.recencyScore,
+          facetMatches: existing?.facetMatches,
+          graphPaths
+        };
+        byId.set(row.eventId, row);
+        if (byId.size >= opts.limit) break;
+      }
+    } catch {
+      // Legacy SQLite stores may not have operations graph tables yet. Retrieval
+      // must remain available even when graph expansion cannot run.
+    }
   }
 
   private shouldFallback(matchResult: MatchResult, results: SearchResult[]): boolean {
@@ -773,7 +863,14 @@ export class Retriever {
     if (result.facetMatches && result.facetMatches.length > 0) {
       detail.facetMatches = result.facetMatches;
     }
+    if (result.graphPaths && result.graphPaths.length > 0) {
+      detail.graphPaths = result.graphPaths;
+    }
     return detail;
+  }
+
+  private isGraphPathResult(result: DebuggableSearchResult): boolean {
+    return (result.graphPaths || []).length > 0;
   }
 
   private extractProjectHash(metadata: Record<string, unknown> | undefined): string | undefined {
@@ -932,11 +1029,79 @@ export class Retriever {
   }
 }
 
+function uniqueEntityStartNodes(
+  candidates: Array<{ entityId?: string; text: string }>
+): Array<{ entityId: string; title: string }> {
+  const seen = new Set<string>();
+  const nodes: Array<{ entityId: string; title: string }> = [];
+  for (const candidate of candidates) {
+    if (!candidate.entityId || seen.has(candidate.entityId)) continue;
+    seen.add(candidate.entityId);
+    nodes.push({ entityId: candidate.entityId, title: candidate.text });
+  }
+  return nodes;
+}
+
+function toRetrievalGraphPathDebug(
+  path: GraphPathResult,
+  titleByEntityId: Map<string, string>
+): RetrievalGraphPathDebug {
+  const firstStep = path.steps[0];
+  const startNode = firstStep?.direction === 'incoming'
+    ? firstStep.to
+    : firstStep?.from;
+  const startEntityId = startNode?.type === 'entity' ? startNode.id : '';
+
+  return {
+    startEntityId,
+    startEntityTitle: titleByEntityId.get(startEntityId) ?? startNode?.name,
+    targetId: path.target.id,
+    targetType: path.target.type,
+    hops: path.hops,
+    relationPath: path.steps.map((step) => step.relationType)
+  };
+}
+
+function graphPathScore(path: GraphPathResult, hopPenalty: number): number {
+  const base = Math.min(0.95, Math.max(0, path.scoreContribution));
+  return Math.max(0.05, base - hopPenalty * Math.max(0, path.hops - 1));
+}
+
+function clampGraphHops(maxHops: number): number {
+  if (!Number.isFinite(maxHops)) return 2;
+  return Math.min(Math.max(0, Math.trunc(maxHops)), 2);
+}
+
+function mergeGraphPaths(
+  existing: RetrievalGraphPathDebug[],
+  incoming: RetrievalGraphPathDebug[]
+): RetrievalGraphPathDebug[] {
+  const byKey = new Map<string, RetrievalGraphPathDebug>();
+  for (const path of [...existing, ...incoming]) {
+    const key = [path.startEntityId, path.targetType, path.targetId, path.hops, ...path.relationPath].join('\u0000');
+    if (!byKey.has(key)) byKey.set(key, path);
+  }
+  return [...byKey.values()]
+    .sort((a, b) => a.hops - b.hops || compareStable(graphPathSignature(a), graphPathSignature(b)))
+    .slice(0, 3);
+}
+
+function graphPathSignature(path: RetrievalGraphPathDebug): string {
+  return [path.startEntityId, path.targetType, path.targetId, path.hops, ...path.relationPath].join('|');
+}
+
+function compareStable(a: string, b: string): number {
+  if (a < b) return -1;
+  if (a > b) return 1;
+  return 0;
+}
+
 export function createRetriever(
   eventStore: EventStore,
   vectorStore: VectorStore,
   embedder: Embedder,
-  matcher: Matcher
+  matcher: Matcher,
+  sharedOptions?: SharedStoreOptions
 ): Retriever {
-  return new Retriever(eventStore, vectorStore, embedder, matcher);
+  return new Retriever(eventStore, vectorStore, embedder, matcher, sharedOptions);
 }

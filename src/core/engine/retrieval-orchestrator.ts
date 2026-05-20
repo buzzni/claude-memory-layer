@@ -14,6 +14,7 @@ import {
   type RetrievalStrategy,
   type UnifiedRetrievalResult
 } from '../retriever.js';
+import type { MemoryOperationsConfig } from '../types.js';
 
 export interface RetrieveMemoriesOptions {
   topK?: number;
@@ -26,6 +27,11 @@ export interface RetrieveMemoriesOptions {
   allowedProjectHashes?: string[];
   facets?: RetrievalFacetFilter[];
   strategy?: RetrievalStrategy;
+  graphHop?: {
+    enabled?: boolean;
+    maxHops?: number;
+    hopPenalty?: number;
+  };
   /**
    * Disable automatic retrieval trace writes for read-only/navigation callers
    * that may receive secret-bearing ad-hoc queries.
@@ -97,6 +103,7 @@ export interface RetrievalOrchestratorDeps {
   accessStore: RetrievalAccessStore;
   getProjectHash: () => string | null;
   hasSharedStore: () => boolean;
+  memoryOperationsConfig?: MemoryOperationsConfig;
 }
 
 export class RetrievalOrchestrator {
@@ -124,6 +131,7 @@ export class RetrievalOrchestrator {
       : await this.getRerankWeights(options?.adaptiveRerank === true);
     const projectHash = this.deps.getProjectHash();
     const projectScopeMode = retrieverOptions.projectScopeMode ?? (projectHash ? 'strict' : 'global');
+    const graphHop = this.resolveGraphHopOptions(retrieverOptions.graphHop);
 
     let result: UnifiedRetrievalResult;
 
@@ -133,6 +141,7 @@ export class RetrievalOrchestrator {
         intentRewrite: retrieverOptions.intentRewrite === true,
         rerankWeights,
         includeShared: true,
+        graphHop,
         projectHash: projectHash || undefined,
         projectScopeMode,
         allowedProjectHashes: retrieverOptions.allowedProjectHashes
@@ -142,6 +151,7 @@ export class RetrievalOrchestrator {
         ...retrieverOptions,
         intentRewrite: retrieverOptions.intentRewrite === true,
         rerankWeights,
+        graphHop,
         projectHash: projectHash || undefined,
         projectScopeMode,
         allowedProjectHashes: retrieverOptions.allowedProjectHashes
@@ -217,6 +227,34 @@ export class RetrievalOrchestrator {
   ): Promise<void> {
     await this.deps.initialize();
     await this.deps.accessStore.recordRetrieval(eventId, sessionId, score, query);
+  }
+
+  private resolveGraphHopOptions(
+    callerOptions: RetrieveMemoriesOptions['graphHop'] | undefined
+  ): RetrieveMemoriesOptions['graphHop'] | undefined {
+    const graphExpansion = this.deps.memoryOperationsConfig?.graphExpansion;
+    const durableOptions = graphExpansion?.enabled === true
+      ? { enabled: true, maxHops: graphExpansion.maxHops }
+      : undefined;
+
+    if (!callerOptions) return durableOptions;
+    if (!graphExpansion) return callerOptions;
+    if (graphExpansion.enabled !== true) {
+      return {
+        ...callerOptions,
+        enabled: false,
+        maxHops: graphExpansion.maxHops ?? callerOptions.maxHops
+      };
+    }
+
+    return {
+      enabled: callerOptions.enabled === false ? false : true,
+      maxHops: Math.min(
+        graphExpansion.maxHops ?? Number.POSITIVE_INFINITY,
+        callerOptions.maxHops ?? graphExpansion.maxHops ?? 1
+      ),
+      hopPenalty: callerOptions.hopPenalty
+    };
   }
 
   private async recordAutomaticTrace(

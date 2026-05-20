@@ -8,6 +8,7 @@
  */
 
 import type { RetrievalReason, RetrievalResultEnvelope, RetrievalResultType } from '../model/retrieval-result.js';
+import { sanitizeGovernanceAuditValue } from '../operations/governance-audit.js';
 import type { UnifiedRetrievalResult, MemoryWithContext, RetrievalDebugDetail } from '../retriever.js';
 import type { MemoryEvent, SharedTroubleshootingEntry } from '../types.js';
 import type { RetrieveMemoriesOptions } from './retrieval-orchestrator.js';
@@ -214,9 +215,14 @@ export class RetrievalDisclosureService {
         semanticScore: debug?.semanticScore,
         lexicalScore: debug?.lexicalScore,
         recencyScore: debug?.recencyScore,
-        ...(debug?.facetMatches && debug.facetMatches.length > 0 ? { facetMatches: debug.facetMatches } : {})
+        ...(debug?.facetMatches && debug.facetMatches.length > 0 ? { facetMatches: debug.facetMatches } : {}),
+        ...(debug?.graphPaths && debug.graphPaths.length > 0 ? { graphPaths: this.sanitizeGraphPaths(debug.graphPaths) } : {})
       }
     );
+  }
+
+  private sanitizeGraphPaths(graphPaths: RetrievalDebugDetail['graphPaths']): unknown {
+    return sanitizeGovernanceAuditValue(graphPaths ?? []);
   }
 
   private eventToEnvelope(
@@ -292,6 +298,7 @@ export class RetrievalDisclosureService {
     if ((debug?.lexicalScore ?? 0) > 0 || usedKeyword) reasons.add('keyword_match');
     if ((debug?.recencyScore ?? 0) > 0) reasons.add('recent_relevance');
     if ((debug?.facetMatches || []).length > 0) reasons.add('facet_match');
+    if ((debug?.graphPaths || []).length > 0) reasons.add('entity_overlap');
     if ((result.fallbackTrace || []).some((step) => step === 'fallback:summary')) reasons.add('summary_fallback');
     if (memory.sessionContext) reasons.add('continuity_link');
     if (memory.event.eventType === 'tool_observation') reasons.add('tool_followup');

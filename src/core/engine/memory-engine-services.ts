@@ -15,7 +15,7 @@ import { getDefaultMatcher, type Matcher } from '../matcher.js';
 import { MarkdownMirror } from '../md-mirror.js';
 import type { Retriever } from '../retriever.js';
 import { SQLiteEventStore } from '../sqlite-event-store.js';
-import type { ToolObservationPayload } from '../types.js';
+import type { ToolObservationPayload, MemoryOperationsConfig } from '../types.js';
 import { VectorStore } from '../vector-store.js';
 import { MemoryIngestService } from './memory-ingest-service.js';
 import { MemoryQueryService } from './memory-query-service.js';
@@ -39,6 +39,7 @@ export interface MemoryEngineServicesOptions {
   getProjectHash: () => string | null;
   getProjectPath?: () => string | null;
   hasSharedStore: () => boolean;
+  memoryOperationsConfig?: MemoryOperationsConfig;
   sharedStore?: RetrievalDisclosureSharedStore;
   createToolObservationEmbedding: (payload: ToolObservationPayload) => string;
   factories?: MemoryEngineServicesFactories;
@@ -112,6 +113,7 @@ export function createMemoryEngineServices(options: MemoryEngineServicesOptions)
     matcher,
     getProjectHash: options.getProjectHash,
     hasSharedStore: options.hasSharedStore,
+    memoryOperationsConfig: options.memoryOperationsConfig,
     sharedStore: options.sharedStore
   });
 

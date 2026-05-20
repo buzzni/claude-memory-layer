@@ -79,6 +79,7 @@ describe('createRetrievalServices', () => {
       vectorStore: unknown;
       embedder: unknown;
       matcher: unknown;
+      options: unknown;
     } | null = null;
     let registeredRewriter: ((query: string) => Promise<string | null>) | null = null;
     const fakeRetriever = {
@@ -99,19 +100,26 @@ describe('createRetrievalServices', () => {
       matcher,
       getProjectHash: () => 'project-1',
       hasSharedStore: () => false,
-      createRetriever: (eventStore, vectorStoreArg, embedderArg, matcherArg) => {
+      createRetriever: (eventStore, vectorStoreArg, embedderArg, matcherArg, options) => {
         createArgs = {
           eventStore,
           vectorStore: vectorStoreArg,
           embedder: embedderArg,
-          matcher: matcherArg
+          matcher: matcherArg,
+          options
         };
         return fakeRetriever;
       }
     });
 
     expect(services.retriever).toBe(fakeRetriever);
-    expect(createArgs).toEqual({ eventStore: store, vectorStore, embedder, matcher });
+    expect(createArgs).toEqual({
+      eventStore: store,
+      vectorStore,
+      embedder,
+      matcher,
+      options: { queryGraphExpansionEnabled: false }
+    });
     expect(registeredRewriter).toEqual(expect.any(Function));
 
     await services.retrievalOrchestrator.retrieveMemories('thin core', { sessionId: 's1', topK: 2 });

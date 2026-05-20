@@ -9,10 +9,11 @@
 import type { Embedder } from '../embedder.js';
 import type { EventStore } from '../event-store.js';
 import type { Matcher } from '../matcher.js';
-import type { MemoryEvent } from '../types.js';
+import type { MemoryEvent, MemoryOperationsConfig } from '../types.js';
 import {
   createRetriever as createCoreRetriever,
-  type Retriever
+  type Retriever,
+  type SharedStoreOptions
 } from '../retriever.js';
 import type { VectorStore } from '../vector-store.js';
 import {
@@ -47,7 +48,8 @@ export type CreateRetrieverFn = (
   eventStore: RetrievalEventStore,
   vectorStore: VectorStore,
   embedder: Embedder,
-  matcher: Matcher
+  matcher: Matcher,
+  options?: SharedStoreOptions
 ) => Retriever;
 
 export interface RetrievalServicesDeps {
@@ -58,6 +60,7 @@ export interface RetrievalServicesDeps {
   matcher: Matcher;
   getProjectHash: () => string | null;
   hasSharedStore: () => boolean;
+  memoryOperationsConfig?: MemoryOperationsConfig;
   sharedStore?: RetrievalDisclosureSharedStore;
   createRetriever?: CreateRetrieverFn;
 }
@@ -75,7 +78,8 @@ export function createRetrievalServices(deps: RetrievalServicesDeps): RetrievalS
     deps.eventStore,
     deps.vectorStore,
     deps.embedder,
-    deps.matcher
+    deps.matcher,
+    { queryGraphExpansionEnabled: deps.memoryOperationsConfig?.graphExpansion?.enabled === true }
   );
   const retrievalOrchestrator = createRetrievalOrchestrator({
     initialize: deps.initialize,
@@ -83,7 +87,8 @@ export function createRetrievalServices(deps: RetrievalServicesDeps): RetrievalS
     traceStore: deps.eventStore,
     accessStore: deps.eventStore,
     getProjectHash: deps.getProjectHash,
-    hasSharedStore: deps.hasSharedStore
+    hasSharedStore: deps.hasSharedStore,
+    memoryOperationsConfig: deps.memoryOperationsConfig
   });
   const retrievalDisclosureService = createRetrievalDisclosureService({
     initialize: deps.initialize,
@@ -108,14 +113,16 @@ function defaultCreateRetriever(
   eventStore: RetrievalEventStore,
   vectorStore: VectorStore,
   embedder: Embedder,
-  matcher: Matcher
+  matcher: Matcher,
+  options?: SharedStoreOptions
 ): Retriever {
   assertDefaultRetrieverStore(eventStore);
   return createCoreRetriever(
     eventStore as unknown as EventStore,
     vectorStore,
     embedder,
-    matcher
+    matcher,
+    options
   );
 }
 

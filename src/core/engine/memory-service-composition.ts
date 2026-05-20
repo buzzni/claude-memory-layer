@@ -14,7 +14,7 @@ import type { GraduationPipeline } from '../graduation.js';
 import { createToolObservationEmbedding as defaultCreateToolObservationEmbedding } from '../metadata-extractor.js';
 import type { Retriever } from '../retriever.js';
 import type { SQLiteEventStore } from '../sqlite-event-store.js';
-import type { ToolObservationPayload, SharedStoreConfig } from '../types.js';
+import type { ToolObservationPayload, SharedStoreConfig, MemoryOperationsConfig } from '../types.js';
 import type { VectorStore } from '../vector-store.js';
 import {
   createEmbeddingMaintenanceService as defaultCreateEmbeddingMaintenanceService,
@@ -62,6 +62,7 @@ export interface MemoryServiceCompositionConfig {
   projectHash?: string;
   projectPath?: string;
   sharedStoreConfig?: SharedStoreConfig;
+  operations?: MemoryOperationsConfig;
 }
 
 export interface MemoryServiceCompositionFactories {
@@ -142,6 +143,7 @@ export function createMemoryServiceComposition(
     getProjectHash: options.getProjectHash,
     getProjectPath: options.getProjectPath,
     hasSharedStore: () => sharedMemoryServices?.isEnabled() ?? false,
+    memoryOperationsConfig: options.config.operations,
     sharedStore: {
       get: (entryId: string) => sharedMemoryServices?.getEntryForDisclosure(entryId) ?? Promise.resolve(null)
     },

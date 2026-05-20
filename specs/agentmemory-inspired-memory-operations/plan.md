@@ -494,7 +494,7 @@ npm test -- --run tests/core/query-entity-extractor.test.ts
 npm run typecheck
 ```
 
-### Task 5.3 — Integrate graph path reasons into disclosure
+### [x] Task 5.3 — Integrate graph path reasons into disclosure
 
 **Objective:** Show why graph expansion selected a result.
 
@@ -505,6 +505,22 @@ npm run typecheck
 - Test: `tests/core/retrieval-disclosure-service.test.ts`
 
 **Feature flag:** `operations.graphExpansion.enabled` must gate ranking changes.
+
+**Implemented:**
+
+- Wired `operations.graphExpansion` through memory service composition → retrieval services → retrieval orchestrator so default retrieval calls only enable query-entity graph path ranking when the operations feature flag is enabled.
+- Integrated `QueryEntityExtractor` and `GraphPathService` into retriever graph expansion with bounded `maxHops`, bounded candidate/path counts, legacy-schema fail-closed fallback, and deterministic sorting.
+- Added `selectedDebug/candidateDebug.graphPaths` metadata for graph-expanded event results, preserving start entity, target, hop count, and relation path.
+- Exposed graph path selections in retrieval disclosure envelopes as `entity_overlap` reasons with compact `metadata.graphPaths`; existing related-event graph-hop behavior remains unchanged.
+
+**Verification:**
+
+```bash
+npm test -- --run tests/core/retriever-graph-path.test.ts tests/core/retrieval-disclosure-service.test.ts
+npm run typecheck
+npm run build
+npm test -- --run
+```
 
 ### Task 5.4 — Temporal edge history design spike
 

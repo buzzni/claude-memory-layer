@@ -13,6 +13,8 @@ export interface MemoryServiceConfig {
   lightweightMode?: boolean;
   /** Start only VectorWorker, skip GraduationWorker and SyncWorker (default: false) */
   embeddingOnly?: boolean;
+  /** AgentMemory-inspired operations feature config (default: disabled). */
+  operations?: MemoryOperationsConfig;
 }
 
 const SHARED_STORAGE_PATH = path.join(os.homedir(), '.claude-code', 'memory', 'shared');
