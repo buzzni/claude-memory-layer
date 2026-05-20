@@ -9,3 +9,4 @@ export * from './frontier-service.js';
 export * from './action-projector.js';
 export * from './retention-policy.js';
 export * from './retention-repository.js';
+export * from './retention-audit.js';

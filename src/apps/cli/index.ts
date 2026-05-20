@@ -27,6 +27,7 @@ import {
 import { bootstrapKnowledgeBase } from '../../services/bootstrap-organizer.js';
 import { startServer, stopServer, isServerRunning } from '../server/index.js';
 import { SQLiteEventStore } from '../../core/sqlite-event-store.js';
+import { createSQLiteDatabase, sqliteClose } from '../../core/sqlite-wrapper.js';
 import { MongoSyncWorker, type MongoSyncDirection } from '../../core/mongo-sync-worker.js';
 import {
   formatDisclosureExpansion,
@@ -59,6 +60,14 @@ import {
   formatLegacyProjectScopeRepairResult,
   resolveLegacyProjectScopeRepairOptions
 } from './repair-command.js';
+import {
+  formatRetentionAuditReport,
+  resolveRetentionAuditOptions
+} from './retention-audit-command.js';
+import {
+  emptyRetentionAuditReport,
+  runRetentionAudit
+} from '../../core/operations/retention-audit.js';
 import {
   fetchExternalMarketContext,
   renderExternalMarketContextReport,
@@ -733,6 +742,64 @@ repairCommand
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`Repair failed: ${message}`);
+      process.exit(1);
+    }
+  });
+
+/**
+ * Retention command - dry-run lifecycle audits for project-scoped memory
+ */
+const retentionCommand = program
+  .command('retention')
+  .description('Audit retention/governance lifecycle state without mutating memory data');
+
+retentionCommand
+  .command('audit')
+  .description('Run a dry-run retention audit for project-scoped memories')
+  .option('-p, --project <path>', 'Project path (defaults to cwd unless --project-hash is used)')
+  .option('--project-hash <hash>', 'Project storage hash for hash-only audit flows')
+  .option('--dry-run', 'Dry-run only; accepted for explicitness and enabled by default')
+  .option('--limit <count>', 'Maximum event rows to scan', '100')
+  .option('--json', 'Print machine-readable JSON')
+  .action(async (options) => {
+    try {
+      const projectPath = options.project !== undefined
+        ? options.project
+        : (!options.projectHash ? process.cwd() : undefined);
+      const auditOptions = resolveRetentionAuditOptions({
+        project: projectPath,
+        projectHash: options.projectHash,
+        dryRun: true,
+        limit: options.limit,
+        json: options.json
+      });
+      const projectHash = auditOptions.projectHash ?? hashProjectPath(auditOptions.projectPath!);
+      const storagePath = auditOptions.projectPath
+        ? getProjectStoragePath(auditOptions.projectPath)
+        : resolveProjectStoragePath(projectHash);
+      const dbPath = path.join(storagePath, 'events.sqlite');
+
+      if (!fs.existsSync(dbPath)) {
+        const emptyReport = emptyRetentionAuditReport(projectHash, auditOptions.limit);
+        console.log(formatRetentionAuditReport(emptyReport, { json: auditOptions.json }));
+        return;
+      }
+
+      const db = createSQLiteDatabase(dbPath, { readonly: true, walMode: false });
+      try {
+        const report = runRetentionAudit(db, {
+          projectHash,
+          projectPath: auditOptions.projectPath,
+          dryRun: true,
+          limit: auditOptions.limit
+        });
+        console.log(formatRetentionAuditReport(report, { json: auditOptions.json }));
+      } finally {
+        sqliteClose(db);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Retention audit failed: ${message}`);
       process.exit(1);
     }
   });

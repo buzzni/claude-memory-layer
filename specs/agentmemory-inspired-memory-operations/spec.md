@@ -1,7 +1,7 @@
 # AgentMemory-Inspired Memory Operations Layer Specification
 
 > **Version**: 0.1.0
-> **Status**: Draft — Phase 4 retention score repository implemented
+> **Status**: Draft — Phase 4 dry-run retention audit CLI/API implemented
 > **Created**: 2026-05-18
 > **Reference**: `agentmemory` analysis
 > **Related specs**: `endless-mode`, `entity-edge-model`, `task-entity-system`, `progressive-disclosure`, `memory-utilization-improvements`, `mcp-desktop-integration`, `vector-outbox-v2`
@@ -404,7 +404,7 @@ CML MUST compute explainable lifecycle scores in dry-run mode first.
 Acceptance criteria:
 
 - [x] Score combines recency, retrieval count, helpfulness, level, evidence/citation confidence, privacy/quarantine status, and manual facets.
-- [ ] CLI/API can run retention audit without modifying data.
+- [x] CLI/API can run retention audit without modifying data.
 - [x] Results include reasons and policy version.
 
 ### AMO-08 Governance actions
@@ -569,12 +569,14 @@ Output:
 {
   "dryRun": true,
   "policyVersion": "v1",
-  "summary": {
+  "decisions": {
     "keep": 70,
     "review": 20,
+    "downgrade": 0,
     "quarantine": 0,
     "tombstone_candidate": 0
   },
+  "wouldChange": 20,
   "samples": [
     {
       "targetRef": "event:...",

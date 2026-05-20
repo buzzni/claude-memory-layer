@@ -371,7 +371,7 @@ npm test -- --run tests/core/retention-policy.test.ts
 npm test -- --run tests/core/sqlite-event-store-operations-schema.test.ts tests/core/retention-repository.test.ts
 ```
 
-### Task 4.3 — Add dry-run audit command
+### [x] Task 4.3 — Add dry-run audit command
 
 **Objective:** Provide non-destructive CLI for lifecycle review.
 
@@ -386,6 +386,21 @@ claude-memory-layer retention audit --project "$PWD" --dry-run --limit 100 --jso
 ```
 
 **Expected:** JSON summary with decisions and redacted samples.
+
+**Implemented:**
+
+- Added `runRetentionAudit()` in `src/core/operations/retention-audit.ts` as a read-only, project-scoped audit helper over existing SQLite event/facet/telemetry data.
+- Added `claude-memory-layer retention audit --project "$PWD" --dry-run --limit 100 --json` with strict project/hash and positive-integer option validation.
+- JSON/text output includes policy version, decision counts, would-change count, reason codes, lifecycle scores, dry-run actions, and privacy-filtered samples without raw local paths or secret-bearing payloads.
+- Missing project stores return an empty dry-run report instead of initializing storage or running migrations.
+
+**Verification:**
+
+```bash
+npm test -- --run tests/apps/retention-audit-cli.test.ts tests/core/retention-policy.test.ts tests/core/retention-repository.test.ts tests/core/sqlite-event-store-operations-schema.test.ts
+npm run typecheck
+npm run build
+```
 
 ### Task 4.4 — Add quarantine governance action
 
