@@ -295,3 +295,23 @@ CML에는 다음 기반이 있다.
 4. **Privacy by default**: raw content 대신 source-ref/preview를 우선 노출한다.
 5. **Small MCP, rich internals**: MCP tool은 적게, 내부 service는 재사용 가능하게 만든다.
 6. **Evaluation first**: new surface마다 replay fixture와 CLI smoke를 만든다.
+
+## 9. Task 5.4 temporal edge history decision
+
+Task 5.4의 세부 설계는 `docs/graph-temporal-edge-spike.md`에 정리했다. 결론은 **새 append-only `edge_history` 테이블을 temporal graph source로 두고, 기존 `edges` 테이블은 현재 상태 projection으로 유지**하는 것이다.
+
+판단 근거:
+
+- `edges.meta_json`만으로 history를 저장하면 valid time / commit time / status / weight를 색인하기 어렵고, append-only audit 성격이 약해진다.
+- raw event-derived projection만으로 시작하면 source-of-truth 순수성은 좋지만, 현재 event ontology가 temporal relationship update를 안정적으로 표현하지 못하고 `asOf` query 비용이 커진다.
+- `edge_history` + current `edges` projection은 Task 5.1/5.3의 빠른 현재 그래프 검색을 유지하면서 AgentMemory의 `tcommit`, `tvalid`, `tvalidEnd`, `version`, `supersededBy`, `isLatest` 모델을 SQLite에 맞게 이식할 수 있다.
+
+후속 구현 권장 순서:
+
+1. `edge_history` migration/backfill + `EdgeHistoryRepo` unit tests.
+2. `EdgeService` 또는 `EdgeRepo` write path 정리로 current/history drift 방지.
+3. `TemporalGraphService`에서 `asOf`(valid time)와 `knownAt`(commit time) query를 지원하고 `maxHops <= 2`를 유지.
+4. service-level tests 후 `mem-graph-query`에 `asOf`를 추가.
+5. replay/privacy fixture 통과 후에만 broader retrieval ranking과 temporal graph를 연결한다.
+
+주요 migration risk는 legacy duplicate edges, backfill valid time 추정, current/history drift, user-facing evidence leak이다. 대응은 physical `edge_id` 우선 backfill, 보수적 `valid_from=NULL`, 단일 write service, source-ref/bounded evidence only 정책으로 문서화했다.

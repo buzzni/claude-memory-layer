@@ -420,7 +420,7 @@ npm run build
 - Each successful quarantine writes a `memory_governance_audit` row with actor, target, before/after metadata, reason/category, source evidence IDs, and redacted payloads.
 - Quarantine validation and metadata/audit writes happen in one transaction; stale row metadata fails closed before audit persistence.
 - Default event read/search/count/session paths continue suppressing active-quarantine rows; explicit `includeQuarantined` remains the audit opt-in.
-- Governance audit redaction now covers POSIX, Windows drive, and UNC local-path-shaped payloads, not only `/Users/...` paths.
+- Governance audit redaction now covers POSIX, Windows drive, and UNC local-path-shaped payloads, not only `[POSIX_PATH]` paths.
 
 **Verification:**
 
@@ -522,15 +522,24 @@ npm run build
 npm test -- --run
 ```
 
-### Task 5.4 — Temporal edge history design spike
+### [x] Task 5.4 — Temporal edge history design spike
 
 **Objective:** Decide whether edge history belongs in `edges` metadata, a new `edge_history` table, or event-derived projection.
 
 **Files:**
-- Create or update: `specs/agentmemory-inspired-memory-operations/context.md`
-- Optional create: `docs/graph-temporal-edge-spike.md`
+- Updated: `specs/agentmemory-inspired-memory-operations/context.md`
+- Created: `docs/graph-temporal-edge-spike.md`
 
 **Done when:** a follow-up implementation decision is documented with migration risks.
+
+**Decision:** Use a new append-only `edge_history` table as the temporal graph source and keep existing `edges` as the current-state projection.
+
+**Implementation notes:**
+
+- Rejected `edges.meta_json`-only history because it is hard to index, validate, and audit for `asOf` queries.
+- Deferred pure event-derived projection as a rebuild/repair source because current events do not yet encode temporal relationship updates with enough structure for runtime queries.
+- Proposed bitemporal fields: `valid_from`/`valid_to` for modeled-world validity, `committed_at` for system/update time, plus `status`, `weight`, source event IDs, bounded evidence, and current projection linkage.
+- Documented migration/backfill risks and mitigations: legacy duplicate edges, conservative validity defaults, current/history drift, query performance, and privacy-safe evidence handling.
 
 ---
 
