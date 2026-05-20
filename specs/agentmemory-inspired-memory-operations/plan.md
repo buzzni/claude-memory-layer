@@ -572,20 +572,31 @@ npm test -- --run
 # independent pre-commit review: PASS
 ```
 
-### Task 6.2 — Implement rule-based lesson candidates
+### [x] Task 6.2 — Implement rule-based lesson candidates
 
 **Objective:** Generate review candidates from repeated successful workflows without LLM.
 
 **Files:**
-- Create: `src/core/operations/lesson-candidate-service.ts`
-- Test: `tests/core/lesson-candidate-service.test.ts`
+- Created: `src/core/operations/lesson-candidate-service.ts`
+- Tested: `tests/core/lesson-candidate-service.test.ts`
 
-**Candidate rules:**
+**Implemented:**
 
-- at least two sessions share similar tool/file/task patterns
-- ended with successful build/test/commit signal where available
-- no active privacy/quarantine conflict
-- source refs available
+- Added deterministic `LessonCandidateService.findCandidates(...)` with project-hash scoped event scanning and no LLM dependency.
+- Groups sessions by shared tool, file-category, and task-pattern signatures; emits candidates only when at least two eligible sessions support the same pattern.
+- Requires successful validation/commit signals, bounded source refs, and skips sessions with active privacy or quarantine conflicts.
+- Returns compact privacy-safe candidate envelopes with generated trigger, ordered steps, confidence, failure modes, reasons, and skill-candidate metadata without exposing raw transcript content or paths.
+
+**Verification:**
+
+```bash
+npm test -- --run tests/core/lesson-candidate-service.test.ts
+npm run typecheck
+npm run build
+npm test -- --run
+# staged static/privacy scan: STAGED_STATIC_SCAN_FINDINGS=0
+# independent pre-commit review: PASS
+```
 
 ### Task 6.3 — Add manual promotion
 
