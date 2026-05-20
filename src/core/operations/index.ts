@@ -13,3 +13,6 @@ export * from './retention-audit.js';
 export * from './governance-service.js';
 export * from './graph-path-service.js';
 export * from './query-entity-extractor.js';
+export * from './lesson-repository.js';
+export * from './lesson-candidate-service.js';
+export * from './lesson-service.js';

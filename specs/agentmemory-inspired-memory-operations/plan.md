@@ -598,15 +598,32 @@ npm test -- --run
 # independent pre-commit review: PASS
 ```
 
-### Task 6.3 — Add manual promotion
+### [x] Task 6.3 — Add manual promotion
 
 **Objective:** Promote a candidate to lesson only after explicit request or high-confidence rule.
 
 **Files:**
-- Create: `src/core/operations/lesson-service.ts`
-- Test: `tests/core/lesson-service.test.ts`
+- Created: `src/core/operations/lesson-service.ts`
+- Modified: `src/core/operations/index.ts`
+- Tested: `tests/core/lesson-service.test.ts`
 
-**Output:** lesson with trigger, steps, evidence source refs, confidence, failure modes.
+**Implemented:**
+
+- Added `LessonService.promoteCandidate(...)` as the explicit mutation boundary between read-only candidates and persisted `memory_lessons` rows.
+- Supports promotion by generated `candidateId` or reviewed candidate payload, but requires explicit approval or an enabled high-confidence rule.
+- Re-validates candidate project scope, source event availability, source event project metadata, privacy-filter metadata, and privacy/quarantine conflicts before writing.
+- Delegates persistence to `LessonRepository.upsert(...)`, preserving bounded source refs, sanitized trigger/steps/failure modes, idempotent project/name updates, and `lesson_promote` governance audit rows.
+
+**Verification:**
+
+```bash
+npm test -- --run tests/core/lesson-repository.test.ts tests/core/lesson-candidate-service.test.ts tests/core/lesson-service.test.ts
+npm run typecheck
+npm run build
+npm test -- --run
+# staged static/privacy scan: STAGED_STATIC_SCAN_FINDINGS=0
+# independent pre-commit review: PASS
+```
 
 ---
 
