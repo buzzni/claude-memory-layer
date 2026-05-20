@@ -12,3 +12,4 @@ export * from './retention-repository.js';
 export * from './retention-audit.js';
 export * from './governance-service.js';
 export * from './graph-path-service.js';
+export * from './query-entity-extractor.js';

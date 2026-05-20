@@ -464,7 +464,7 @@ npm test -- --run tests/core/graph-path-service.test.ts
 npm run typecheck
 ```
 
-### Task 5.2 — Add rule-based entity extraction
+### [x] Task 5.2 — Add rule-based entity extraction
 
 **Objective:** Extract candidate entity names from query without LLM dependency.
 
@@ -479,6 +479,20 @@ npm run typecheck
 - package identifiers
 - capitalized technical terms
 - known entity aliases from `entity_aliases`
+
+**Implemented:**
+
+- Added `QueryEntityExtractor.extract()` with deterministic source priority and capped result counts.
+- Extracts quoted phrases, relative/source file paths, npm-style package identifiers, and capitalized technical terms without LLM calls.
+- Resolves active entity title/canonical-key aliases from existing `entity_aliases` joined to `entities`, skipping deprecated entities.
+- Deduplicates heuristic candidates while preserving distinct alias evidence, prefers entity alias matches over duplicate heuristic matches, uses locale-independent tie-breaks, and drops oversized heuristic candidates.
+
+**Verification:**
+
+```bash
+npm test -- --run tests/core/query-entity-extractor.test.ts
+npm run typecheck
+```
 
 ### Task 5.3 — Integrate graph path reasons into disclosure
 
