@@ -629,27 +629,30 @@ npm test -- --run
 
 ## Phase 7: MCP tools and API surface (P0/P1)
 
-### Task 7.1 — Add MCP tool definitions
+### [x] Task 7.1 — Add MCP tool definitions
 
 **Objective:** Register curated operational tools.
 
 **Files:**
-- Modify: `src/extensions/mcp/tools.ts`
-- Test: `tests/extensions/mcp-context-tools.test.ts`
-- Test: `tests/extensions/mcp-operation-tools.test.ts`
+- Modified: `src/extensions/mcp/tools.ts`
+- Tested: `tests/extensions/mcp-context-tools.test.ts`
+- Tested: `tests/extensions/mcp-operation-tools.test.ts`
 
-**Initial tools:**
+**Implemented:**
 
-- `mem-facet-query`
-- `mem-facet-tag`
-- `mem-action-list`
-- `mem-action-update`
-- `mem-frontier`
-- `mem-checkpoint-create`
-- `mem-checkpoint-list`
-- `mem-retention-audit`
-- `mem-graph-query`
-- `mem-lesson-list`
+- Registered the curated operations MCP tool surface: `mem-facet-query`, `mem-facet-tag`, `mem-action-list`, `mem-action-update`, `mem-frontier`, `mem-checkpoint-create`, `mem-checkpoint-list`, `mem-retention-audit`, `mem-graph-query`, and `mem-lesson-list`.
+- Added project-scoped schemas requiring `projectPath` for each operation tool to avoid cross-project leakage.
+- Marked mutating schemas with explicit `actor` requirements and bounded/sanitized evidence fields for future handler/audit wiring.
+- Aligned target-type schemas with existing operation models: facet/retention targets use `event/entity/edge/consolidated_memory/lesson/action`, while checkpoint targets are limited to `action/session`.
+- Kept P0 governance conservative: retention tooling exposes dry-run audit fields only (`dryRun: true`), graph query is bounded to `maxHops <= 2`, and lesson listing is read-only/compact.
+
+**Verification:**
+
+```bash
+npm test -- --run tests/extensions/mcp-operation-tools.test.ts
+npm test -- --run tests/extensions/mcp-operation-tools.test.ts tests/extensions/mcp-project-aware-tools.test.ts tests/extensions/mcp-context-tools.test.ts
+# full validation/static scan/review completed before commit
+```
 
 **Rule:** if this list is reduced during implementation, update spec and tests in the same commit.
 
