@@ -88,8 +88,8 @@ function rowToEdge(row: MemoryActionEdgeRow): MemoryActionEdge {
   };
 }
 
-function actionToAuditJson(action: MemoryAction): Record<string, unknown> {
-  return {
+function actionToAuditJson(action: MemoryAction, note?: string): Record<string, unknown> {
+  const auditJson: Record<string, unknown> = {
     actionId: action.actionId,
     projectHash: action.projectHash,
     title: action.title,
@@ -102,6 +102,8 @@ function actionToAuditJson(action: MemoryAction): Record<string, unknown> {
     createdAt: action.createdAt.toISOString(),
     updatedAt: action.updatedAt.toISOString()
   };
+  if (note) auditJson.note = note;
+  return auditJson;
 }
 
 export class ActionRepository {
@@ -281,7 +283,7 @@ export class ActionRepository {
       targetType: 'action',
       targetId: after.actionId,
       beforeJson: before ? actionToAuditJson(before) : undefined,
-      afterJson: actionToAuditJson(after),
+      afterJson: actionToAuditJson(after, 'note' in input ? input.note : undefined),
       sourceEventIds: 'sourceEventIds' in input ? input.sourceEventIds : []
     });
   }

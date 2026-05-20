@@ -93,7 +93,8 @@ export const UpdateActionInputSchema = z.object({
   relatedEntityIds: StringArraySchema.optional(),
   currentCheckpointId: NonEmptyStringSchema.nullish(),
   leaseId: NonEmptyStringSchema.nullish(),
-  actor: NonEmptyStringSchema.optional()
+  actor: NonEmptyStringSchema.optional(),
+  note: NonEmptyStringSchema.optional()
 });
 export type UpdateActionInput = z.infer<typeof UpdateActionInputSchema>;
 

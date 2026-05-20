@@ -124,7 +124,7 @@ export async function writeGovernanceAuditEntry(
   const entry: MemoryGovernanceAuditEntry = {
     auditId: randomUUID(),
     operation: normalizeOperation(input.operation),
-    actor: normalizeRequiredString(input.actor, 'actor'),
+    actor: sanitizeAuditString(normalizeRequiredString(input.actor, 'actor')),
     projectHash: normalizeOptionalString(input.projectHash),
     targetType: normalizeRequiredString(input.targetType, 'targetType'),
     targetId: sanitizeAuditString(normalizeRequiredString(input.targetId, 'targetId')),

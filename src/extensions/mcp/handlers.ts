@@ -10,6 +10,8 @@ import {
   getMemoryServiceForProject,
   type MemoryService
 } from '../../services/memory-service.js';
+import { SQLiteEventStore } from '../../core/sqlite-event-store.js';
+import type { SQLiteDatabase } from '../../core/sqlite-wrapper.js';
 import { createSessionHistoryImporter, type ImportResult } from '../../services/session-history-importer.js';
 import { createCodexSessionHistoryImporter } from '../../services/codex-session-history-importer.js';
 import { createHermesSessionHistoryImporter } from '../../services/hermes-session-history-importer.js';
@@ -19,8 +21,25 @@ import {
   type ExternalMarketProvider
 } from '../../core/external-market-context.js';
 import { generateCitationId } from '../../core/citation-generator.js';
-import { hashProjectPath } from '../../core/registry/project-path.js';
+import { getProjectStoragePath, hashProjectPath } from '../../core/registry/project-path.js';
 import { applyPrivacyFilter, maskSensitiveInput } from '../../core/privacy/filter.js';
+import {
+  ActionRepository,
+  CheckpointRepository,
+  FacetRepository,
+  FrontierService,
+  GraphPathService,
+  LessonRepository,
+  QueryEntityExtractor,
+  RETENTION_POLICY_VERSION,
+  runRetentionAudit,
+  type FrontierItem,
+  type GraphPathExpandResult,
+  type MemoryAction,
+  type MemoryCheckpoint,
+  type MemoryFacetAssignment,
+  type QueryEntityCandidate
+} from '../../core/operations/index.js';
 import { DEFAULT_EMBEDDING_MODEL } from '../../extensions/vector/embedder.js';
 import {
   isGenericContinuationQuery,
@@ -48,6 +67,10 @@ export async function handleToolCall(
   try {
     if (name === 'external-market-context') {
       return await handleExternalMarketContext(args);
+    }
+
+    if (MEMORY_OPERATION_TOOL_NAMES.has(name)) {
+      return await handleMemoryOperationTool(name, args);
     }
 
     if (name === 'mem-import-latest' || (name === 'mem-context-pack' && args.refreshLatest === true)) {
@@ -101,6 +124,496 @@ export async function handleToolCall(
       isError: true
     };
   }
+}
+
+const MEMORY_OPERATION_TOOL_NAMES = new Set([
+  'mem-facet-query',
+  'mem-facet-tag',
+  'mem-action-list',
+  'mem-action-update',
+  'mem-frontier',
+  'mem-checkpoint-create',
+  'mem-checkpoint-list',
+  'mem-retention-audit',
+  'mem-graph-query',
+  'mem-lesson-list'
+]);
+
+interface MemoryOperationContext {
+  projectPath: string;
+  projectHash: string;
+  db: SQLiteDatabase;
+}
+
+async function handleMemoryOperationTool(name: string, args: Record<string, unknown>): Promise<ToolResult> {
+  if (name === 'mem-retention-audit' && args.dryRun === false) {
+    throw new Error('mem-retention-audit is dry-run only; hard delete and mutating retention actions are not exposed');
+  }
+
+  return await withMemoryOperationContext(args, async (context) => {
+    switch (name) {
+      case 'mem-facet-query':
+        return jsonResult(await handleFacetQuery(context, args));
+      case 'mem-facet-tag':
+        return jsonResult(await handleFacetTag(context, args));
+      case 'mem-action-list':
+        return jsonResult(await handleActionList(context, args));
+      case 'mem-action-update':
+        return jsonResult(await handleActionUpdate(context, args));
+      case 'mem-frontier':
+        return jsonResult(await handleFrontier(context, args));
+      case 'mem-checkpoint-create':
+        return jsonResult(await handleCheckpointCreate(context, args));
+      case 'mem-checkpoint-list':
+        return jsonResult(await handleCheckpointList(context, args));
+      case 'mem-retention-audit':
+        return jsonResult(handleRetentionAudit(context, args));
+      case 'mem-graph-query':
+        return jsonResult(handleGraphQuery(context, args));
+      case 'mem-lesson-list':
+        return jsonResult(await handleLessonList(context, args));
+      default:
+        throw new Error(`Unknown memory operation tool: ${name}`);
+    }
+  });
+}
+
+async function withMemoryOperationContext<T>(
+  args: Record<string, unknown>,
+  callback: (context: MemoryOperationContext) => Promise<T> | T
+): Promise<T> {
+  const projectPath = requiredProjectPath(args);
+  const projectHash = hashProjectPath(projectPath);
+  const storagePath = getProjectStoragePath(projectPath);
+  const store = new SQLiteEventStore(path.join(storagePath, 'events.sqlite'), { readonly: false });
+  await store.initialize();
+  try {
+    return await callback({ projectPath, projectHash, db: store.getDatabase() });
+  } finally {
+    await store.close();
+  }
+}
+
+async function handleFacetQuery(context: MemoryOperationContext, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const repository = new FacetRepository(context.db);
+  const facets = await repository.query(omitUndefined({
+    projectHash: context.projectHash,
+    targetType: optionalString(args.targetType),
+    targetId: optionalString(args.targetId),
+    dimension: optionalString(args.dimension),
+    value: optionalString(args.value),
+    source: optionalString(args.source),
+    limit: numberArg(args.limit, 50, 1, 100)
+  }));
+  return {
+    operation: 'mem-facet-query',
+    projectHash: context.projectHash,
+    count: facets.length,
+    facets: facets.map(formatFacet)
+  };
+}
+
+async function handleFacetTag(context: MemoryOperationContext, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const repository = new FacetRepository(context.db);
+  const sourceEventIds = stringArrayOperationArg(args.sourceEventIds, 20);
+  const facet = await repository.assign({
+    projectHash: context.projectHash,
+    targetType: requiredOperationString(args.targetType, 'targetType'),
+    targetId: requiredOperationString(args.targetId, 'targetId'),
+    dimension: requiredOperationString(args.dimension, 'dimension'),
+    value: sanitizeOperationString(requiredOperationString(args.value, 'value'), 240),
+    confidence: numberArg(args.confidence, 1, 0, 1),
+    source: optionalString(args.source) ?? 'manual',
+    evidenceEventIds: sourceEventIds,
+    actor: sanitizeOperationString(requiredOperationString(args.actor, 'actor'), 120)
+  });
+  return {
+    operation: 'mem-facet-tag',
+    projectHash: context.projectHash,
+    facet: formatFacet(facet)
+  };
+}
+
+async function handleActionList(context: MemoryOperationContext, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const repository = new ActionRepository(context.db);
+  const actions = await repository.list(omitUndefined({
+    projectHash: context.projectHash,
+    status: optionalString(args.status),
+    includeTerminal: booleanArg(args.includeTerminal, false),
+    limit: numberArg(args.limit, 50, 1, 100)
+  }));
+  return {
+    operation: 'mem-action-list',
+    projectHash: context.projectHash,
+    count: actions.length,
+    actions: actions.map(formatAction)
+  };
+}
+
+async function handleActionUpdate(context: MemoryOperationContext, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const repository = new ActionRepository(context.db);
+  const updateInput: Record<string, unknown> = {
+    actionId: requiredOperationString(args.actionId, 'actionId'),
+    projectHash: context.projectHash,
+    status: requiredOperationString(args.status, 'status'),
+    actor: sanitizeOperationString(requiredOperationString(args.actor, 'actor'), 120)
+  };
+  const sourceEventIds = stringArrayOperationArg(args.sourceEventIds, 20);
+  if (sourceEventIds.length > 0) updateInput.sourceEventIds = sourceEventIds;
+  const note = optionalString(args.note);
+  if (note) updateInput.note = sanitizeOperationString(note, 500);
+
+  const action = await repository.update(updateInput);
+  return {
+    operation: 'mem-action-update',
+    projectHash: context.projectHash,
+    action: formatAction(action)
+  };
+}
+
+async function handleFrontier(context: MemoryOperationContext, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const service = new FrontierService(context.db);
+  const frontier = await service.rank({
+    projectHash: context.projectHash,
+    includeBlocked: booleanArg(args.includeBlocked, false),
+    limit: numberArg(args.limit, 50, 1, 100)
+  });
+  return {
+    operation: 'mem-frontier',
+    projectHash: context.projectHash,
+    count: frontier.length,
+    frontier: frontier.map(formatFrontierItem)
+  };
+}
+
+async function handleCheckpointCreate(context: MemoryOperationContext, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const repository = new CheckpointRepository(context.db);
+  const targetType = requiredOperationString(args.targetType, 'targetType');
+  const targetId = requiredOperationString(args.targetId, 'targetId');
+  if (targetType !== 'action' && targetType !== 'session') {
+    throw new Error('mem-checkpoint-create targetType must be action or session');
+  }
+  const label = sanitizeOperationString(requiredOperationString(args.label, 'label'), 240);
+  const createInput: Record<string, unknown> = {
+    projectHash: context.projectHash,
+    title: label,
+    summary: label,
+    stateJson: sanitizeOperationRecord(isPlainRecord(args.state) ? args.state : {}),
+    sourceEventIds: stringArrayOperationArg(args.sourceEventIds, 20),
+    actor: sanitizeOperationString(requiredOperationString(args.actor, 'actor'), 120)
+  };
+  if (targetType === 'action') createInput.actionId = targetId;
+  if (targetType === 'session') createInput.sessionId = targetId;
+
+  const checkpoint = await repository.create(createInput);
+  return {
+    operation: 'mem-checkpoint-create',
+    projectHash: context.projectHash,
+    checkpoint: formatCheckpoint(checkpoint)
+  };
+}
+
+async function handleCheckpointList(context: MemoryOperationContext, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const repository = new CheckpointRepository(context.db);
+  const targetType = optionalString(args.targetType);
+  const targetId = optionalString(args.targetId);
+  const listInput: Record<string, unknown> = {
+    projectHash: context.projectHash,
+    limit: numberArg(args.limit, 50, 1, 100)
+  };
+  if (targetType || targetId) {
+    if (targetType !== 'action' && targetType !== 'session') {
+      throw new Error('mem-checkpoint-list targetType must be action or session when targetId is provided');
+    }
+    if (!targetId) throw new Error('mem-checkpoint-list targetId is required when targetType is provided');
+    if (targetType === 'action') listInput.actionId = targetId;
+    if (targetType === 'session') listInput.sessionId = targetId;
+  }
+
+  const checkpoints = await repository.list(listInput);
+  return {
+    operation: 'mem-checkpoint-list',
+    projectHash: context.projectHash,
+    count: checkpoints.length,
+    checkpoints: checkpoints.map(formatCheckpoint)
+  };
+}
+
+function handleRetentionAudit(context: MemoryOperationContext, args: Record<string, unknown>): Record<string, unknown> {
+  const policyVersion = optionalString(args.policyVersion);
+  if (policyVersion && policyVersion !== RETENTION_POLICY_VERSION) {
+    throw new Error(`mem-retention-audit only supports retention policy ${RETENTION_POLICY_VERSION}`);
+  }
+  const report = runRetentionAudit(context.db, {
+    projectHash: context.projectHash,
+    dryRun: true,
+    targetType: optionalString(args.targetType),
+    targetId: optionalString(args.targetId),
+    limit: numberArg(args.limit, 50, 1, 500),
+    sampleLimit: numberArg(args.sampleLimit, 10, 0, 100),
+    projectPath: context.projectPath
+  });
+  return {
+    operation: 'mem-retention-audit',
+    projectHash: context.projectHash,
+    report
+  };
+}
+
+function handleGraphQuery(context: MemoryOperationContext, args: Record<string, unknown>): Record<string, unknown> {
+  const query = requiredOperationString(args.query, 'query');
+  const extractor = new QueryEntityExtractor(context.db);
+  const extraction = extractor.extract(
+    [query, optionalString(args.startEntityTitle)].filter(Boolean).join(' '),
+    { maxCandidates: numberArg(args.candidateLimit, 20, 1, 50) }
+  );
+  const startNodes = uniqueEntityStartNodes(extraction.candidates);
+  const graph = new GraphPathService(context.db).expand({
+    startNodes,
+    direction: graphDirectionArg(args.direction),
+    maxHops: numberArg(args.maxHops, 1, 1, 2),
+    maxResults: numberArg(args.limit, 20, 1, 100)
+  });
+  return {
+    operation: 'mem-graph-query',
+    projectHash: context.projectHash,
+    query: sanitizeOperationString(query, 500),
+    candidates: extraction.candidates.map(formatQueryEntityCandidate),
+    graph: formatGraphResult(graph)
+  };
+}
+
+async function handleLessonList(context: MemoryOperationContext, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const repository = new LessonRepository(context.db);
+  const lessons = await repository.list(omitUndefined({
+    projectHash: context.projectHash,
+    skillCandidate: typeof args.skillCandidate === 'boolean' ? args.skillCandidate : undefined,
+    limit: numberArg(args.limit, 50, 1, 100)
+  }));
+  const minConfidence = typeof args.minConfidence === 'number' ? Math.min(1, Math.max(0, args.minConfidence)) : undefined;
+  const filtered = minConfidence === undefined
+    ? lessons
+    : lessons.filter((lesson) => Number(lesson.confidence ?? 0) >= minConfidence);
+  return {
+    operation: 'mem-lesson-list',
+    projectHash: context.projectHash,
+    count: filtered.length,
+    lessons: filtered.map((lesson) => ({
+      lessonId: sanitizeOperationString(String(lesson.lessonId ?? ''), 120),
+      name: sanitizeOperationString(String(lesson.name ?? ''), 240),
+      trigger: lesson.trigger ? sanitizeOperationString(String(lesson.trigger), 500) : undefined,
+      confidence: Number(lesson.confidence ?? 0),
+      skillCandidate: Boolean(lesson.skillCandidate),
+      steps: Array.isArray(lesson.steps) ? lesson.steps.slice(0, 10).map((step) => sanitizeOperationString(String(step), 500)) : [],
+      failureModes: Array.isArray(lesson.failureModes) ? lesson.failureModes.slice(0, 10).map((mode) => sanitizeOperationString(String(mode), 300)) : [],
+      sourceEventIds: Array.isArray(lesson.sourceEventIds) ? lesson.sourceEventIds.slice(0, 10).map((id) => sanitizeOperationString(String(id), 120)) : [],
+      sourceSessionIds: Array.isArray(lesson.sourceSessionIds) ? lesson.sourceSessionIds.slice(0, 10).map((id) => sanitizeOperationString(String(id), 120)) : [],
+      createdAt: isoDate(lesson.createdAt),
+      updatedAt: isoDate(lesson.updatedAt)
+    }))
+  };
+}
+
+function requiredProjectPath(args: Record<string, unknown>): string {
+  const projectPath = optionalString(args.projectPath);
+  if (!projectPath || (!path.isAbsolute(projectPath) && !path.win32.isAbsolute(projectPath))) {
+    throw new Error('memory operation tools require an explicit absolute projectPath');
+  }
+  return projectPath;
+}
+
+function requiredOperationString(value: unknown, field: string): string {
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    throw new Error(`${field} is required`);
+  }
+  return value.trim();
+}
+
+function booleanArg(value: unknown, fallback: boolean): boolean {
+  return typeof value === 'boolean' ? value : fallback;
+}
+
+function stringArrayOperationArg(value: unknown, maxItems: number): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => typeof item === 'string' ? item.trim() : '')
+    .filter(Boolean)
+    .slice(0, Math.max(0, maxItems));
+}
+
+function graphDirectionArg(value: unknown): 'outgoing' | 'incoming' | 'both' {
+  return value === 'outgoing' || value === 'incoming' || value === 'both' ? value : 'both';
+}
+
+function uniqueEntityStartNodes(candidates: QueryEntityCandidate[]): Array<{ type: 'entity'; id: string }> {
+  const seen = new Set<string>();
+  const startNodes: Array<{ type: 'entity'; id: string }> = [];
+  for (const candidate of candidates) {
+    if (!candidate.entityId) continue;
+    if (seen.has(candidate.entityId)) continue;
+    seen.add(candidate.entityId);
+    startNodes.push({ type: 'entity', id: candidate.entityId });
+  }
+  return startNodes;
+}
+
+function omitUndefined<T extends Record<string, unknown>>(value: T): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined));
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value) && !(value instanceof Date);
+}
+
+function formatFacet(facet: MemoryFacetAssignment): Record<string, unknown> {
+  return {
+    id: facet.id,
+    targetType: facet.targetType,
+    targetId: facet.targetId,
+    dimension: facet.dimension,
+    value: facet.value,
+    confidence: facet.confidence,
+    source: facet.source,
+    evidenceEventIds: compactStringArray(facet.evidenceEventIds, 10, 120),
+    projectHash: facet.projectHash,
+    createdAt: isoDate(facet.createdAt),
+    updatedAt: isoDate(facet.updatedAt)
+  };
+}
+
+function formatAction(action: MemoryAction): Record<string, unknown> {
+  return {
+    actionId: action.actionId,
+    projectHash: action.projectHash,
+    title: action.title,
+    status: action.status,
+    priority: action.priority,
+    sourceEventIds: compactStringArray(action.sourceEventIds, 10, 120),
+    relatedEntityIds: compactStringArray(action.relatedEntityIds, 10, 120),
+    currentCheckpointId: action.currentCheckpointId,
+    leaseId: action.leaseId,
+    createdAt: isoDate(action.createdAt),
+    updatedAt: isoDate(action.updatedAt)
+  };
+}
+
+function formatFrontierItem(item: FrontierItem): Record<string, unknown> {
+  return {
+    action: formatAction(item.action),
+    score: item.score,
+    reasons: compactStringArray(item.reasons, 10, 300),
+    sourceRefs: compactArray(item.sourceRefs, 10)
+  };
+}
+
+function formatCheckpoint(checkpoint: MemoryCheckpoint): Record<string, unknown> {
+  return {
+    checkpointId: checkpoint.checkpointId,
+    projectHash: checkpoint.projectHash,
+    actionId: checkpoint.actionId,
+    sessionId: checkpoint.sessionId,
+    title: checkpoint.title,
+    summary: checkpoint.summary,
+    stateJson: compactRecord(checkpoint.stateJson, 8),
+    sourceEventIds: compactStringArray(checkpoint.sourceEventIds, 10, 120),
+    createdAt: isoDate(checkpoint.createdAt),
+    expiresAt: isoDate(checkpoint.expiresAt)
+  };
+}
+
+function formatQueryEntityCandidate(candidate: QueryEntityCandidate): Record<string, unknown> {
+  return omitUndefined({
+    text: candidate.text,
+    normalized: candidate.normalized,
+    source: candidate.source,
+    confidence: candidate.confidence,
+    entityId: candidate.entityId,
+    entityType: candidate.entityType,
+    canonicalKey: candidate.canonicalKey,
+    matchedAlias: candidate.matchedAlias
+  });
+}
+
+function formatGraphResult(result: GraphPathExpandResult): Record<string, unknown> {
+  return {
+    startNodes: compactArray(result.startNodes, 10),
+    effectiveMaxHops: result.effectiveMaxHops,
+    paths: compactArray(result.paths, 20)
+  };
+}
+
+function isoDate(value: unknown): string | undefined {
+  if (!value) return undefined;
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value === 'string') return value;
+  return undefined;
+}
+
+function jsonResult(payload: Record<string, unknown>): ToolResult {
+  return textResult(JSON.stringify(sanitizeOperationOutput(payload), null, 2));
+}
+
+function sanitizeOperationRecord(input: Record<string, unknown>): Record<string, unknown> {
+  return compactRecord(maskSensitiveInput(input), 30);
+}
+
+function compactStringArray(value: unknown, maxItems: number, maxLength: number): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .slice(0, Math.max(0, maxItems))
+    .map((item) => sanitizeOperationString(String(item), maxLength))
+    .filter((item) => item.length > 0);
+}
+
+function compactArray(value: unknown, maxItems: number): unknown[] {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, Math.max(0, maxItems)).map((item) => sanitizeOperationOutput(item, 1));
+}
+
+function compactRecord(input: unknown, maxEntries: number): Record<string, unknown> {
+  if (!isPlainRecord(input)) return {};
+  const entries = Object.entries(input);
+  const compacted = Object.fromEntries(
+    entries
+      .slice(0, Math.max(0, maxEntries))
+      .map(([key, item]) => [sanitizeOperationKey(key), sanitizeOperationOutput(item, 1)])
+  );
+  if (entries.length > maxEntries) {
+    compacted.__truncated = entries.length - maxEntries;
+  }
+  return compacted;
+}
+
+function sanitizeOperationOutput(value: unknown, depth = 0): unknown {
+  if (typeof value === 'string') return sanitizeOperationString(value, 1000);
+  if (value instanceof Date) return value.toISOString();
+  if (depth >= 4) return '[truncated]';
+  if (Array.isArray(value)) return value.slice(0, 25).map((item) => sanitizeOperationOutput(item, depth + 1));
+  if (isPlainRecord(value)) {
+    return Object.fromEntries(
+      Object.entries(value)
+        .slice(0, 30)
+        .map(([key, item]) => [sanitizeOperationKey(key), sanitizeOperationOutput(item, depth + 1)])
+    );
+  }
+  return value;
+}
+
+function sanitizeOperationKey(key: string): string {
+  if (/(api.*key|api.*token|access.*token|refresh.*token|client.*secret|private.*key|secret|password|passwd)/i.test(key)) {
+    return '[REDACTED_KEY]';
+  }
+  return sanitizeOperationString(key, 120);
+}
+
+function sanitizeOperationString(value: string, maxLength: number): string {
+  const masked = maskSensitiveInput({ value }).value;
+  const asString = typeof masked === 'string' ? masked : String(value);
+  const scrubbed = asString
+    .replace(/[A-Za-z]:[\\/][^\s'"`<>)]*/g, '[path]')
+    .replace(/~[\\/][^\s'"`<>)]*/g, '[path]')
+    .replace(/(^|[\s([{=,:;])\/(?!\/)[^\s'"`<>)]*/g, '$1[path]');
+  return safeInline(scrubbed, maxLength);
 }
 
 async function handleExternalMarketContext(args: Record<string, unknown>): Promise<ToolResult> {

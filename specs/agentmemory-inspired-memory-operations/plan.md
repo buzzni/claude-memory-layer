@@ -656,22 +656,42 @@ npm test -- --run tests/extensions/mcp-operation-tools.test.ts tests/extensions/
 
 **Rule:** if this list is reduced during implementation, update spec and tests in the same commit.
 
-### Task 7.2 — Add MCP handlers
+### [x] Task 7.2 — Add MCP handlers
 
 **Objective:** Wire tools to services with strict validation and privacy-safe output.
 
 **Files:**
-- Modify: `src/extensions/mcp/handlers.ts`
-- Test: `tests/extensions/mcp-operation-tools.test.ts`
+- Modified: `src/extensions/mcp/handlers.ts`
+- Modified: `src/extensions/mcp/tools.ts`
+- Modified: `src/core/operations/action-repository.ts`
+- Modified: `src/core/operations/actions.ts`
+- Modified: `src/core/operations/governance-audit.ts`
+- Modified: `src/core/operations/retention-audit.ts`
+- Tested: `tests/extensions/mcp-operation-tools.test.ts`
+- Tested: `tests/core/action-repository.test.ts`
+- Tested: `tests/core/governance-audit.test.ts`
+- Tested: `tests/core/retention-audit.test.ts`
 
-**Handler requirements:**
+**Implemented:**
 
-- validate required args and types
-- resolve projectPath → projectHash with existing registry helpers
-- reject state-changing calls without project scope
-- redact previews
-- return compact JSON
-- audit state-changing operations
+- Routed all ten curated operation MCP tools through project-scoped handlers backed by the project operation SQLite store.
+- Required absolute `projectPath`, derived project hashes with existing registry helpers, and avoided raw local path disclosure in operation responses/errors.
+- Added compact JSON formatters for facets, actions, frontier candidates, checkpoints, graph paths, retention reports, and lessons with bounded arrays/records.
+- Preserved P0 governance boundaries: retention MCP calls remain dry-run only, target filters do not widen scope, and graph traversal is clamped to `maxHops <= 2`.
+- Wired state-changing handlers to actor/evidence metadata and sanitized mutation notes/audit actors before governance audit persistence.
+
+**Verification:**
+
+```bash
+npm test -- --run tests/core/governance-audit.test.ts tests/core/retention-audit.test.ts tests/core/action-repository.test.ts tests/extensions/mcp-operation-tools.test.ts
+npm test -- --run tests/extensions/mcp-operation-tools.test.ts tests/extensions/mcp-project-aware-tools.test.ts tests/extensions/mcp-context-tools.test.ts
+npm run typecheck
+npm run build
+npm test -- --run
+# git diff --check: pass
+# WORKTREE_STATIC_SCAN_FINDINGS=0
+# Independent review: PASS
+```
 
 ### Task 7.3 — Add CLI equivalents
 

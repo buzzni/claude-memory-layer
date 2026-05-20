@@ -24,9 +24,12 @@ const WINDOWS_DRIVE_PATH_PATTERN = /(^|[^A-Za-z0-9._\/\\-])(?:[A-Za-z]:[\\/][^\n
 const WINDOWS_UNC_PATH_PATTERN = /(^|[^A-Za-z0-9._\/\\-])(?:\\\\[^\\/\s"'<>|`]+[\\/][^\n\r"'<>|`]*)/g;
 const PRIVACY_CONFIG = ConfigSchema.parse({}).privacy;
 const MEMORY_LEVELS = new Set<RetentionMemoryLevel>(['L0', 'L1', 'L2', 'L3', 'L4']);
+const RETENTION_AUDIT_TARGET_TYPES = new Set(['event', 'entity', 'edge', 'consolidated_memory', 'lesson', 'action']);
 
 export interface RetentionAuditOptions {
   projectHash: string;
+  targetType?: string;
+  targetId?: string;
   dryRun?: boolean;
   limit?: number;
   sampleLimit?: number;
@@ -105,9 +108,19 @@ export function runRetentionAudit(db: SQLiteDatabase, options: RetentionAuditOpt
 
   const limit = normalizePositiveInteger(options.limit, DEFAULT_AUDIT_LIMIT, 'retention audit limit');
   const sampleLimit = normalizePositiveInteger(options.sampleLimit, DEFAULT_SAMPLE_LIMIT, 'retention audit sample limit');
+  const targetType = normalizeOptionalRetentionTargetType(options.targetType);
+  const targetId = normalizeOptionalTargetId(options.targetId);
+  if (targetType && targetType !== 'event') {
+    return emptyRetentionAuditReport(projectHash, limit);
+  }
   const facetsByTarget = loadFacetsByTarget(db, projectHash);
   const helpfulnessByEvent = loadHelpfulnessByEvent(db);
   const retrievalCounts = loadRetrievalCounts(db, projectHash);
+  const eventQueryParams: Array<string | number> = [projectHash];
+  const targetIdClause = targetId ? ' AND id = ?' : '';
+  if (targetId) eventQueryParams.push(targetId);
+  eventQueryParams.push(limit);
+
   const eventRows = sqliteAll<EventRow>(
     db,
     `SELECT id, event_type, timestamp, content, metadata, access_count, last_accessed_at
@@ -115,10 +128,10 @@ export function runRetentionAudit(db: SQLiteDatabase, options: RetentionAuditOpt
      WHERE COALESCE(
        json_extract(CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END, '$.scope.project.hash'),
        json_extract(CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END, '$.projectHash')
-     ) = ?
+     ) = ?${targetIdClause}
      ORDER BY timestamp DESC
      LIMIT ?`,
-    [projectHash, limit]
+    eventQueryParams
   );
 
   const decisions = emptyDecisionCounts();
@@ -329,6 +342,21 @@ function normalizeProjectHash(value: string): string {
     throw new Error('retention audit projectHash must be an 8-character lowercase hex hash');
   }
   return projectHash;
+}
+
+function normalizeOptionalRetentionTargetType(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const targetType = value.trim();
+  if (!RETENTION_AUDIT_TARGET_TYPES.has(targetType)) {
+    throw new Error('retention audit targetType is not supported');
+  }
+  return targetType;
+}
+
+function normalizeOptionalTargetId(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const targetId = value.trim();
+  return targetId.length > 0 ? targetId : undefined;
 }
 
 function normalizePositiveInteger(value: number | undefined, fallback: number, label: string): number {

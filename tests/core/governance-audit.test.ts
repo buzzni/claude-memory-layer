@@ -99,7 +99,7 @@ describe('writeGovernanceAuditEntry', () => {
 
     const entry = await writeGovernanceAuditEntry(db, {
       operation: 'facet_tag',
-      actor: 'system',
+      actor: `${localPath}?${tokenParam}`,
       targetType: 'event',
       targetId: `${localPath}?${tokenParam}`,
       beforeJson: {
@@ -123,6 +123,8 @@ describe('writeGovernanceAuditEntry', () => {
 
     const unredactedUserPathPrefix = ['/Users', 'fixture-user'].join('/');
 
+    expect(String(row?.actor)).not.toContain(unredactedUserPathPrefix);
+    expect(String(row?.actor)).not.toContain(tokenParam);
     expect(String(row?.target_id)).not.toContain(unredactedUserPathPrefix);
     expect(String(row?.target_id)).not.toContain(tokenParam);
     expect(beforeJson.apiKey).toBe('[REDACTED]');

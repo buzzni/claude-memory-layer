@@ -144,4 +144,53 @@ describe('runRetentionAudit', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it('applies optional target filters without widening project scope', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'cml-retention-audit-target-'));
+    const dbPath = path.join(dir, 'events.sqlite');
+    const store = new SQLiteEventStore(dbPath, { markdownMirrorRoot: dir });
+
+    try {
+      await store.initialize();
+      const first = await store.append({
+        eventType: 'tool_observation',
+        sessionId: 'target-test',
+        timestamp: new Date('2024-01-01T00:00:00.000Z'),
+        content: 'matching target event',
+        metadata: { scope: { project: { hash: 'abc12345' } } }
+      });
+      const second = await store.append({
+        eventType: 'tool_observation',
+        sessionId: 'target-test',
+        timestamp: new Date('2024-01-02T00:00:00.000Z'),
+        content: 'same project but not the requested target',
+        metadata: { scope: { project: { hash: 'abc12345' } } }
+      });
+      if (first.success !== true || second.success !== true) throw new Error('append failed');
+
+      const targeted = runRetentionAudit(store.getDatabase(), {
+        projectHash: 'abc12345',
+        targetType: 'event',
+        targetId: first.eventId,
+        limit: 10,
+        now: new Date('2024-01-10T00:00:00.000Z')
+      });
+      const unsupportedTarget = runRetentionAudit(store.getDatabase(), {
+        projectHash: 'abc12345',
+        targetType: 'action',
+        targetId: 'action-1',
+        limit: 10,
+        now: new Date('2024-01-10T00:00:00.000Z')
+      });
+
+      expect(targeted.scanned).toBe(1);
+      expect(targeted.samples.map((sample) => sample.targetId)).toEqual([first.eventId]);
+      expect(targeted.samples.map((sample) => sample.targetId)).not.toContain(second.eventId);
+      expect(unsupportedTarget.scanned).toBe(0);
+      expect(unsupportedTarget.samples).toEqual([]);
+    } finally {
+      await store.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

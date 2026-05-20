@@ -350,9 +350,9 @@ export const tools: Tool[] = [
           enum: ['pending', 'in_progress', 'done', 'blocked', 'cancelled'],
           description: 'Optional action status filter.'
         },
-        assignee: {
-          type: 'string',
-          description: 'Optional assignee/agent filter.'
+        includeTerminal: {
+          type: 'boolean',
+          description: 'Whether to include terminal done/cancelled actions (default: false).'
         },
         limit: operationLimitProperty
       },

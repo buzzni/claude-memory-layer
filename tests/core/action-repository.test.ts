@@ -73,6 +73,32 @@ describe('ActionRepository', () => {
     expect(JSON.parse(String(auditRows[1].source_event_ids))).toEqual([sourceEventId]);
   });
 
+  it('records sanitized update notes in governance audit metadata without changing the action projection', async () => {
+    const { store, repo, cleanup } = await createFixture();
+    const action = await repo.upsert({ projectHash: 'project-1', title: 'Document handler notes', actor: 'tester' });
+
+    const updated = await repo.update({
+      actionId: action.actionId,
+      projectHash: 'project-1',
+      status: 'done',
+      actor: 'tester',
+      note: 'Validated from /tmp/private-plan.md with api_key=dk'
+    });
+
+    const auditRows = sqliteAll<Record<string, unknown>>(
+      store.getDatabase(),
+      `SELECT after_json FROM memory_governance_audit WHERE target_type = 'action' ORDER BY created_at ASC`
+    );
+    await cleanup();
+
+    const updateAfterJson = JSON.parse(String(auditRows[1].after_json));
+    expect(updated.status).toBe('done');
+    expect(updated).not.toHaveProperty('note');
+    expect(updateAfterJson.note).toContain('[REDACTED]');
+    expect(updateAfterJson.note).not.toContain('/tmp/private-plan.md');
+    expect(updateAfterJson.note).not.toContain('api_key=dk');
+  });
+
   it('lists actions by project without leaking other project rows or terminal rows by default', async () => {
     const { repo, cleanup } = await createFixture();
     await repo.upsert({ projectHash: 'project-1', title: 'Open action', priority: 1 });
