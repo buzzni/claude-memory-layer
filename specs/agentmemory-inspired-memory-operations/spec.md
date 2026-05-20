@@ -413,9 +413,9 @@ CML MUST provide governed state transitions for quarantine/tombstone candidates.
 
 Acceptance criteria:
 
-- P0 supports dry-run and quarantine only; hard delete is not implemented.
-- Every governance action records actor, target, before/after, reasons, source evidence.
-- Default read paths continue suppressing quarantined rows unless explicit audit opt-in is set.
+- [x] P0 supports dry-run and quarantine only; hard delete is not implemented.
+- [x] Every governance action records actor, target, before/after, reasons, source evidence.
+- [x] Default read paths continue suppressing quarantined rows unless explicit audit opt-in is set.
 
 ### AMO-09 Verification
 

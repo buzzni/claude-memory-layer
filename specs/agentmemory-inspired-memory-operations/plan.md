@@ -402,7 +402,7 @@ npm run typecheck
 npm run build
 ```
 
-### Task 4.4 — Add quarantine governance action
+### [x] Task 4.4 — Add quarantine governance action
 
 **Objective:** Allow explicit quarantine with audit, no hard delete.
 
@@ -412,6 +412,23 @@ npm run build
 - Test: `tests/core/governance-service.test.ts`
 
 **Rule:** P0 never hard-deletes source events.
+
+**Implemented:**
+
+- Added `GovernanceService.quarantine()` for explicit project-scoped event quarantine with fail-closed target/project validation.
+- Quarantine mutates event metadata only, preserving source rows and adding active quarantine metadata plus a `quarantine:<category>` tag.
+- Each successful quarantine writes a `memory_governance_audit` row with actor, target, before/after metadata, reason/category, source evidence IDs, and redacted payloads.
+- Quarantine validation and metadata/audit writes happen in one transaction; stale row metadata fails closed before audit persistence.
+- Default event read/search/count/session paths continue suppressing active-quarantine rows; explicit `includeQuarantined` remains the audit opt-in.
+- Governance audit redaction now covers POSIX, Windows drive, and UNC local-path-shaped payloads, not only `/Users/...` paths.
+
+**Verification:**
+
+```bash
+npm test -- --run tests/core/governance-service.test.ts tests/core/governance-audit.test.ts tests/core/sqlite-event-store-project-scope-repair.test.ts
+npm run typecheck
+npm run build
+```
 
 ---
 

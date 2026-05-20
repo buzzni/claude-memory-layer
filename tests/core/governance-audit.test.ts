@@ -92,6 +92,9 @@ describe('writeGovernanceAuditEntry', () => {
     const { store, cleanup } = await createStore();
     const db = store.getDatabase();
     const localPath = ['/Users', 'fixture-user', 'workspace', 'private-note.md'].join('/');
+    const nonUserLocalPath = ['/opt', 'cml-governance-private', 'note with spaces.md'].join('/');
+    const windowsDrivePath = String.raw`C:\Users\fixture-user\secret.txt`;
+    const windowsUncPath = String.raw`\\fileserver\private-share\secret.txt`;
     const tokenParam = ['token', 'fixture'].join('=');
 
     const entry = await writeGovernanceAuditEntry(db, {
@@ -99,9 +102,12 @@ describe('writeGovernanceAuditEntry', () => {
       actor: 'system',
       targetType: 'event',
       targetId: `${localPath}?${tokenParam}`,
-      beforeJson: { apiKey: 'fixture', nested: { note: `read ${localPath}?${tokenParam}` } },
+      beforeJson: {
+        apiKey: 'fixture',
+        nested: { note: `read ${localPath}, ${nonUserLocalPath}, ${windowsDrivePath}, ${windowsUncPath}?${tokenParam}` }
+      },
       afterJson: { clientSecret: 'fixture', url: `https://example.invalid/callback?${tokenParam}` },
-      sourceEventIds: [`${localPath}#event`, tokenParam]
+      sourceEventIds: [`${localPath}#event`, nonUserLocalPath, windowsDrivePath, windowsUncPath, tokenParam]
     });
 
     const row = sqliteGet<Record<string, unknown>>(
@@ -121,10 +127,16 @@ describe('writeGovernanceAuditEntry', () => {
     expect(String(row?.target_id)).not.toContain(tokenParam);
     expect(beforeJson.apiKey).toBe('[REDACTED]');
     expect(beforeJson.nested.note).not.toContain(unredactedUserPathPrefix);
+    expect(beforeJson.nested.note).not.toContain(nonUserLocalPath);
+    expect(beforeJson.nested.note).not.toContain(windowsDrivePath);
+    expect(beforeJson.nested.note).not.toContain(windowsUncPath);
     expect(beforeJson.nested.note).not.toContain(tokenParam);
     expect(afterJson.clientSecret).toBe('[REDACTED]');
     expect(afterJson.url).not.toContain(tokenParam);
     expect(sourceEventIds.join(' ')).not.toContain(unredactedUserPathPrefix);
+    expect(sourceEventIds.join(' ')).not.toContain(nonUserLocalPath);
+    expect(sourceEventIds.join(' ')).not.toContain(windowsDrivePath);
+    expect(sourceEventIds.join(' ')).not.toContain(windowsUncPath);
     expect(sourceEventIds.join(' ')).not.toContain(tokenParam);
   });
 });
