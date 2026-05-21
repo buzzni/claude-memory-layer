@@ -77,8 +77,10 @@ function setupEventListeners() {
       });
       await loadKpiData();
       await loadMemoryUsefulnessData();
+      await loadOperationsStatsData();
       updateKpiCardsUI();
       updateMemoryUsefulnessUI();
+      updateOperationsStatsUI();
       renderKpiTrendChart();
     });
   });

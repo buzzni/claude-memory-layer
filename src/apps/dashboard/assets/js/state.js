@@ -14,6 +14,7 @@ const state = {
   memoryUsefulness: null,
   retrievalTraces: null,
   retrievalReviewQueue: null,
+  operationsStats: null,
   adherenceSummary: null,
   adherenceWindow: '24h',
   userPromptSearchQuery: '',

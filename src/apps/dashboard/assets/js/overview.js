@@ -10,6 +10,16 @@ async function loadMemoryUsefulnessData() {
     .catch(() => null);
 }
 
+function operationStatsWindowDays() {
+  return state.kpiWindow === '30d' ? 30 : 7;
+}
+
+async function loadOperationsStatsData() {
+  state.operationsStats = await fetch(apiUrl(`${API_BASE}/stats/operations`, { windowDays: operationStatsWindowDays() }))
+    .then(r => r.ok ? r.json() : null)
+    .catch(() => null);
+}
+
 async function refreshData() {
   const btn = document.getElementById('refresh-btn');
   if(btn) btn.classList.add('loading');
@@ -19,7 +29,7 @@ async function refreshData() {
   const kpiWindowAtStart = state.kpiWindow;
 
   try {
-    const [stats, shared, mostAccessed, helpfulness, memoryUsefulness, retrievalTraces, retrievalReviewQueue, adherenceSummary] = await Promise.all([
+    const [stats, shared, mostAccessed, helpfulness, memoryUsefulness, retrievalTraces, retrievalReviewQueue, operationsStats, adherenceSummary] = await Promise.all([
       fetch(apiUrl(`${API_BASE}/stats`)).then(r => r.json()).catch(() => null),
       fetch(apiUrl(`${API_BASE}/stats/shared`)).then(r => r.json()).catch(() => null),
       fetch(apiUrl(`${API_BASE}/stats/most-accessed`, { limit: 10 })).then(r => r.json()).catch(() => null),
@@ -27,6 +37,7 @@ async function refreshData() {
       fetch(apiUrl(`${API_BASE}/stats/usefulness`, { window: state.kpiWindow })).then(r => r.json()).catch(() => null),
       fetch(apiUrl(`${API_BASE}/stats/retrieval-traces`, { limit: 20 })).then(r => r.json()).catch(() => null),
       fetch(apiUrl(`${API_BASE}/stats/retrieval-review-queue`, { limit: 10 })).then(r => r.json()).catch(() => null),
+      fetch(apiUrl(`${API_BASE}/stats/operations`, { windowDays: operationStatsWindowDays() })).then(r => r.ok ? r.json() : null).catch(() => null),
       fetchAdherenceSummary().catch(() => null)
     ]);
 
@@ -45,6 +56,7 @@ async function refreshData() {
     state.memoryUsefulness = memoryUsefulness;
     state.retrievalTraces = retrievalTraces;
     state.retrievalReviewQueue = retrievalReviewQueue;
+    state.operationsStats = operationsStats;
     state.adherenceSummary = adherenceSummary;
 
     await loadKpiData();
@@ -365,6 +377,130 @@ function updateMemoryUsageUI() {
   updateTopAccessedEventsUI();
   updateAdherenceSummaryUI();
   updateRetrievalTraceUI();
+  updateOperationsStatsUI();
+}
+
+function operationCount(value) {
+  const count = Number(value || 0);
+  return Number.isFinite(count) && count > 0 ? count : 0;
+}
+
+function operationEmpty(message) {
+  return `<div style="padding:12px; text-align:center; color:var(--text-muted); font-size:13px;">${escapeHtml(message)}</div>`;
+}
+
+function operationRows(rows, labelKey, countKey, emptyMessage, labelFormatter) {
+  const safeRows = Array.isArray(rows) ? rows : [];
+  if (safeRows.length === 0) return operationEmpty(emptyMessage);
+  return safeRows.map(row => {
+    const label = labelFormatter ? labelFormatter(row) : row?.[labelKey];
+    return `
+      <div class="shared-item">
+        <div class="shared-info" style="min-width:0;">
+          <span style="font-size:12px; color:var(--text-secondary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(label || 'unknown')}</span>
+        </div>
+        <div class="shared-count">${formatNumber(operationCount(row?.[countKey]))}</div>
+      </div>
+    `;
+  }).join('');
+}
+
+function updateOperationsStatsUI() {
+  const payload = state.operationsStats;
+  const summaryEl = document.getElementById('operations-stats-summary');
+  const facetsEl = document.getElementById('operations-facets-list');
+  const actionsEl = document.getElementById('operations-actions-list');
+  const leasesEl = document.getElementById('operations-leases-list');
+  const retentionEl = document.getElementById('operations-retention-list');
+  const governanceEl = document.getElementById('operations-governance-list');
+  const lessonsEl = document.getElementById('operations-lessons-list');
+
+  if (!summaryEl && !facetsEl && !actionsEl && !leasesEl && !retentionEl && !governanceEl && !lessonsEl) return;
+
+  if (!payload) {
+    if (summaryEl) summaryEl.innerHTML = '<span style="color:var(--text-muted);">Operation aggregates unavailable</span>';
+    if (facetsEl) facetsEl.innerHTML = operationEmpty('Operation aggregate data unavailable');
+    if (actionsEl) actionsEl.innerHTML = operationEmpty('Operation aggregate data unavailable');
+    if (leasesEl) leasesEl.innerHTML = operationEmpty('Operation aggregate data unavailable');
+    if (retentionEl) retentionEl.innerHTML = operationEmpty('Operation aggregate data unavailable');
+    if (governanceEl) governanceEl.innerHTML = operationEmpty('Operation aggregate data unavailable');
+    if (lessonsEl) lessonsEl.innerHTML = operationEmpty('Operation aggregate data unavailable');
+    return;
+  }
+
+  const available = payload.projection?.available !== false && payload.projection?.databaseExists !== false;
+  if (summaryEl) {
+    if (!available) {
+      summaryEl.innerHTML = '<span style="color:var(--text-muted);">Operation projections unavailable</span>';
+    } else {
+      summaryEl.innerHTML = `
+        <div style="display:flex; gap:10px; flex-wrap:wrap; font-size:13px; color:var(--text-secondary);">
+          <span><strong>${formatNumber(operationCount(payload.facets?.totalAssignments))} facets</strong></span>
+          <span><strong>${formatNumber(operationCount(payload.actions?.total))} actions</strong></span>
+          <span><strong>${formatNumber(operationCount(payload.leases?.totalActive))} active leases</strong></span>
+          <span><strong>${formatNumber(operationCount(payload.retention?.total))} retention decisions</strong></span>
+          <span><strong>${formatNumber(operationCount(payload.governanceAudit?.total))} audits</strong></span>
+          <span><strong>${formatNumber(operationCount(payload.lessons?.total))} lessons</strong></span>
+        </div>
+      `;
+    }
+  }
+
+  if (!available) {
+    if (facetsEl) facetsEl.innerHTML = operationEmpty('No facet aggregates');
+    if (actionsEl) actionsEl.innerHTML = operationEmpty('No action status data');
+    if (leasesEl) leasesEl.innerHTML = operationEmpty('No active leases');
+    if (retentionEl) retentionEl.innerHTML = operationEmpty('No retention decisions');
+    if (governanceEl) governanceEl.innerHTML = operationEmpty('No governance audit activity');
+    if (lessonsEl) lessonsEl.innerHTML = operationEmpty('No lesson confidence data');
+    return;
+  }
+
+  if (facetsEl) {
+    const distributions = Array.isArray(payload.facets?.distribution) ? payload.facets.distribution : [];
+    facetsEl.innerHTML = distributions.length === 0
+      ? operationEmpty('No facet aggregates')
+      : distributions.map(item => {
+          const valueCount = Array.isArray(item?.values) ? item.values.reduce((sum, row) => sum + operationCount(row?.count), 0) : 0;
+          const otherCount = operationCount(item?.other);
+          const bucketCount = (Array.isArray(item?.values) ? item.values.length : 0) + (otherCount > 0 ? 1 : 0);
+          return `
+            <div class="shared-item">
+              <div class="shared-info" style="min-width:0;">
+                <span style="font-size:12px; color:var(--text-secondary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(item?.dimension || 'unknown')}</span>
+              </div>
+              <div style="display:flex; flex-direction:column; align-items:flex-end; gap:2px; min-width:72px;">
+                <span style="font-size:15px; font-weight:700; color:var(--accent-primary);">${formatNumber(valueCount + otherCount)}</span>
+                <span style="font-size:10px; color:var(--text-muted);">${bucketCount} value buckets</span>
+              </div>
+            </div>
+          `;
+        }).join('');
+  }
+
+  if (actionsEl) actionsEl.innerHTML = operationRows(payload.actions?.byStatus, 'status', 'count', 'No action status data');
+  if (leasesEl) leasesEl.innerHTML = operationRows(payload.leases?.activeByTargetType, 'targetType', 'count', 'No active leases');
+  if (retentionEl) retentionEl.innerHTML = operationRows(payload.retention?.byDecision, 'decision', 'count', 'No retention decisions');
+  if (governanceEl) {
+    const days = Array.isArray(payload.governanceAudit?.operationsByDay) ? payload.governanceAudit.operationsByDay : [];
+    governanceEl.innerHTML = days.length === 0
+      ? operationEmpty('No governance audit activity')
+      : days.map(day => {
+          const operations = (Array.isArray(day?.operations) ? day.operations : [])
+            .map(op => `${escapeHtml(op?.operation || 'unknown')}: ${formatNumber(operationCount(op?.count))}`)
+            .join(' · ');
+          return `
+            <div class="shared-item">
+              <div class="shared-info" style="flex-direction:column; align-items:flex-start; gap:2px; min-width:0;">
+                <span style="font-size:12px; color:var(--text-secondary);">${escapeHtml(day?.date || 'unknown')}</span>
+                <span style="font-size:10px; color:var(--text-muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:220px;">${operations || 'no operations'}</span>
+              </div>
+              <div class="shared-count">${formatNumber(operationCount(day?.total))}</div>
+            </div>
+          `;
+        }).join('');
+  }
+  if (lessonsEl) lessonsEl.innerHTML = operationRows(payload.lessons?.confidenceBuckets, 'bucket', 'count', 'No lesson confidence data');
 }
 
 function adherenceWindowToMs(window) {
