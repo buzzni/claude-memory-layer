@@ -309,6 +309,56 @@ describe('replay fixture evaluator', () => {
     );
   });
 
+  it('ships operations replay fixture categories for operation-layer retrieval and privacy gates', async () => {
+    const operationsFixture = JSON.parse(
+      readFileSync('benchmarks/replay/memory-operations-v1.json', 'utf8')
+    ) as ReplayEvaluationFixture;
+    const requiredCategories = [
+      'facet-filter-positive',
+      'facet-filter-no-match',
+      'graph-path-explanation',
+      'retention-quarantine-suppression',
+      'source-ref-redaction',
+      'action-frontier-relevance'
+    ];
+    const categories = new Set(operationsFixture.queries.map((query) => query.category));
+    const serializedFixture = JSON.stringify(operationsFixture);
+
+    expect(operationsFixture.name).toBe('memory-operations-v1');
+    expect(operationsFixture.metadata).toMatchObject({ rawContentIncluded: false });
+    expect(operationsFixture.queries.length).toBeGreaterThanOrEqual(requiredCategories.length);
+    expect(operationsFixture.memories.length).toBeGreaterThanOrEqual(requiredCategories.length);
+    expect([...categories]).toEqual(expect.arrayContaining(requiredCategories));
+    for (const category of requiredCategories) {
+      expect(operationsFixture.queries.some((query) => query.category === category)).toBe(true);
+    }
+    expect(operationsFixture.queries.some(
+      (query) => query.category === 'facet-filter-no-match' && query.expectation === 'no_match'
+    )).toBe(true);
+    expect(serializedFixture).not.toMatch(/\/Users\//);
+    expect(serializedFixture).not.toMatch(/PRIVATE_|SECRET|TOKEN|PASSWORD/i);
+
+    const report = await evaluateReplayFixture(operationsFixture, {
+      generatedAt: '2026-05-21T00:00:00.000Z',
+      includePerQuery: false,
+      retrievalOptions: { strategy: 'auto' }
+    });
+    const markdown = formatReplayEvaluationMarkdown(report, {
+      qrelsPath: 'benchmarks/replay/memory-operations-v1.json'
+    });
+
+    expect(report.summary.queryYieldRate).toBe(1);
+    expect(report.summary.noMatchAccuracy).toBe(1);
+    expect(report.summary.forbiddenHitCount).toBe(0);
+    expect(report.summary.failedQueryCount).toBe(0);
+    for (const category of requiredCategories) {
+      expect(report.summary.categoryBreakdown[category]).toBeDefined();
+    }
+    expect(markdown).toContain('memory-operations-v1');
+    expect(markdown).toContain('facet-filter-positive');
+    expect(markdown).not.toMatch(/PRIVATE_|SECRET|TOKEN|PASSWORD/i);
+  });
+
   it('ships a privacy-safe golden replay fixture and npm eval script', () => {
     const fixture = JSON.parse(
       readFileSync('benchmarks/replay/golden-memory-usefulness-v1.json', 'utf8')

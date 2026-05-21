@@ -1,0 +1,93 @@
+{
+  "name": "memory-operations-v1",
+  "description": "Privacy-safe replay set for AgentMemory-inspired memory operations: facets, graph explanations, retention governance, source refs, and action frontier recall.",
+  "metadata": {
+    "sourceFileCount": 0,
+    "rawContentIncluded": false,
+    "generatedAt": "2026-05-21T00:00:00.000Z"
+  },
+  "ks": [1, 3, 5],
+  "queries": [
+    {
+      "queryId": "q-operations-facet-filter-positive",
+      "category": "facet-filter-positive",
+      "query": "facet dimension storefront apparel replay operation",
+      "expectation": "match",
+      "expectedIds": ["m-operations-facet-filter-positive"],
+      "expectedRelevance": { "m-operations-facet-filter-positive": 3 }
+    },
+    {
+      "queryId": "q-operations-facet-filter-no-match",
+      "category": "facet-filter-no-match",
+      "query": "zqx orphanvalue absentbucket",
+      "expectation": "no_match",
+      "expectedIds": [],
+      "expectedRelevance": {},
+      "forbiddenIds": [
+        "m-operations-facet-filter-positive",
+        "m-operations-graph-path-explanation",
+        "m-operations-retention-quarantine-suppression",
+        "m-operations-source-ref-redaction",
+        "m-operations-action-frontier-relevance"
+      ]
+    },
+    {
+      "queryId": "q-operations-graph-path-explanation",
+      "category": "graph-path-explanation",
+      "query": "graph path explanation bounded relation path evidence",
+      "expectation": "match",
+      "expectedIds": ["m-operations-graph-path-explanation"],
+      "expectedRelevance": { "m-operations-graph-path-explanation": 3 }
+    },
+    {
+      "queryId": "q-operations-retention-quarantine-suppression",
+      "category": "retention-quarantine-suppression",
+      "query": "retention quarantine suppression dry run governance decision",
+      "expectation": "match",
+      "expectedIds": ["m-operations-retention-quarantine-suppression"],
+      "expectedRelevance": { "m-operations-retention-quarantine-suppression": 3 }
+    },
+    {
+      "queryId": "q-operations-source-ref-redaction",
+      "category": "source-ref-redaction",
+      "query": "source ref redaction preview citation safe user facing output",
+      "expectation": "match",
+      "expectedIds": ["m-operations-source-ref-redaction"],
+      "expectedRelevance": { "m-operations-source-ref-redaction": 3 }
+    },
+    {
+      "queryId": "q-operations-action-frontier-relevance",
+      "category": "action-frontier-relevance",
+      "query": "action frontier relevance active lease checkpoint next action",
+      "expectation": "match",
+      "expectedIds": ["m-operations-action-frontier-relevance"],
+      "expectedRelevance": { "m-operations-action-frontier-relevance": 3 }
+    }
+  ],
+  "memories": [
+    {
+      "id": "m-operations-facet-filter-positive",
+      "content": "Facet filter positive replay operation: product memories tagged with dimension storefront apparel should be included when the facet filter value matches."
+    },
+    {
+      "id": "m-operations-graph-path-explanation",
+      "content": "Graph path explanation replay requires bounded relation path evidence with sanitized labels and stable hop counts for memory operation retrieval."
+    },
+    {
+      "id": "m-operations-retention-quarantine-suppression",
+      "content": "Retention quarantine suppression is governed by dry run retention decisions; quarantined candidates stay out of default user-facing recall until reviewed."
+    },
+    {
+      "id": "m-operations-source-ref-redaction",
+      "content": "Source ref redaction returns safe previews and citation handles for user facing output while omitting full transcript text, local paths, and credential-shaped strings."
+    },
+    {
+      "id": "m-operations-action-frontier-relevance",
+      "content": "Action frontier relevance ranks active lease checkpoint next action records so agents can continue pending memory operation work without exposing action bodies."
+    },
+    {
+      "id": "m-operations-dashboard-noise",
+      "content": "Unrelated dashboard spacing note for card rhythm, accent colors, and visual density."
+    }
+  ]
+}
