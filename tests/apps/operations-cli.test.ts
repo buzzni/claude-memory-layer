@@ -137,7 +137,7 @@ describe('memory operations CLI commands', () => {
         actionId: action.actionId,
         title: 'Resume operations CLI',
         summary: 'Resume operations CLI',
-        stateJson: { step: 'verify', cwd: fixture.projectDir, apiToken: 'token=dk' },
+        stateJson: { step: 'verify', cwd: fixture.projectDir, apiToken: 'dk' },
         sourceEventIds: [event.eventId],
         actor: 'test'
       });
@@ -253,7 +253,7 @@ describe('memory operations CLI commands', () => {
         '--target-type', 'action',
         '--target-id', action.actionId,
         '--label', `resume ${fixture.projectDir}`,
-        '--state-json', JSON.stringify({ cwd: fixture.projectDir, apiToken: 'token=dk' }),
+        '--state-json', JSON.stringify({ cwd: fixture.projectDir, apiToken: 'dk' }),
         '--source-event-ids', event.eventId,
         '--actor', 'test',
         '--json'
