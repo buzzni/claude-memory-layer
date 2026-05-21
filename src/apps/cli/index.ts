@@ -27,8 +27,27 @@ import {
 import { bootstrapKnowledgeBase } from '../../services/bootstrap-organizer.js';
 import { startServer, stopServer, isServerRunning } from '../server/index.js';
 import { SQLiteEventStore } from '../../core/sqlite-event-store.js';
-import { createSQLiteDatabase, sqliteClose } from '../../core/sqlite-wrapper.js';
+import { createSQLiteDatabase, sqliteClose, sqliteGet, type SQLiteDatabase } from '../../core/sqlite-wrapper.js';
 import { MongoSyncWorker, type MongoSyncDirection } from '../../core/mongo-sync-worker.js';
+import { applyPrivacyFilter, maskSensitiveInput } from '../../core/privacy/filter.js';
+import type { Config } from '../../core/types.js';
+import {
+  ActionRepository,
+  CheckpointRepository,
+  FacetRepository,
+  FrontierService,
+  type FrontierItem,
+  type MemoryAction,
+  type MemoryCheckpoint,
+  type MemoryFacetAssignment
+} from '../../core/operations/index.js';
+import {
+  CreateCheckpointInputSchema,
+  ListActionsInputSchema,
+  ListCheckpointsInputSchema,
+  UpdateActionInputSchema
+} from '../../core/operations/actions.js';
+import { parseFacetAssignmentInput, parseFacetQuery } from '../../core/operations/facets.js';
 import {
   formatDisclosureExpansion,
   formatDisclosureSearch,
@@ -265,6 +284,291 @@ async function runMarketContextCommand(options: MarketContextCommandOptions): Pr
     process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
   } else {
     process.stdout.write(`${renderExternalMarketContextReport(report)}\n`);
+  }
+}
+
+type OperationProjectContext = {
+  projectPath: string;
+  projectHash: string;
+  storagePath: string;
+  dbPath: string;
+};
+
+type OperationJsonOption = { json?: boolean };
+
+const OPERATION_PRIVACY_CONFIG: Config['privacy'] = {
+  excludePatterns: ['password', 'secret', 'api_key', 'api-key', 'token', 'bearer'],
+  anonymize: false,
+  privateTags: {
+    enabled: true,
+    marker: '[REDACTED]',
+    preserveLineCount: false,
+    supportedFormats: ['xml', 'bracket', 'comment']
+  }
+};
+
+function resolveOperationProject(project: string | undefined): OperationProjectContext {
+  const projectPath = path.resolve(project ?? process.cwd());
+  const projectHash = hashProjectPath(projectPath);
+  const storagePath = getProjectStoragePath(projectPath);
+  return {
+    projectPath,
+    projectHash,
+    storagePath,
+    dbPath: path.join(storagePath, 'events.sqlite')
+  };
+}
+
+function openOperationReadDatabase(context: OperationProjectContext): SQLiteDatabase | null {
+  if (!fs.existsSync(context.dbPath)) return null;
+  return createSQLiteDatabase(context.dbPath, { readonly: true, walMode: false });
+}
+
+async function withOperationWriteDatabase<T>(
+  context: OperationProjectContext,
+  callback: (db: SQLiteDatabase) => Promise<T>
+): Promise<T> {
+  const store = new SQLiteEventStore(context.dbPath, { markdownMirrorRoot: context.storagePath });
+  await store.initialize();
+  try {
+    return await callback(store.getDatabase());
+  } finally {
+    await store.close();
+  }
+}
+
+async function withOperationExistingDatabase<T>(
+  context: OperationProjectContext,
+  emptyValue: T,
+  requiredTables: string[],
+  callback: (db: SQLiteDatabase) => Promise<T>
+): Promise<T> {
+  const db = openOperationReadDatabase(context);
+  if (!db) return emptyValue;
+  try {
+    if (!requiredTables.every((table) => operationTableExists(db, table))) {
+      return emptyValue;
+    }
+    return await callback(db);
+  } finally {
+    sqliteClose(db);
+  }
+}
+
+function operationTableExists(db: SQLiteDatabase, table: string): boolean {
+  const row = sqliteGet<{ name: string }>(
+    db,
+    `SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`,
+    [table]
+  );
+  return Boolean(row?.name);
+}
+
+function parseOperationLimit(value: string | undefined, fallback: number, min: number, max: number): number {
+  if (value === undefined) return fallback;
+  if (!/^\d+$/.test(value.trim())) {
+    throw new Error(`limit must be an integer between ${min} and ${max}`);
+  }
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
+    throw new Error(`limit must be an integer between ${min} and ${max}`);
+  }
+  return parsed;
+}
+
+function parseOperationNumber(value: string | undefined, fallback: number, min: number, max: number, field: string): number {
+  if (value === undefined) return fallback;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < min || parsed > max) {
+    throw new Error(`${field} must be a number between ${min} and ${max}`);
+  }
+  return parsed;
+}
+
+function requiredOperationOption(value: string | undefined, field: string): string {
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    throw new Error(`${field} is required`);
+  }
+  return value.trim();
+}
+
+function optionalOperationOption(value: string | undefined): string | undefined {
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function splitOperationList(value: string | string[] | undefined, maxItems: number): string[] {
+  const raw = Array.isArray(value) ? value : (value ? [value] : []);
+  return Array.from(new Set(
+    raw.flatMap((item) => item.split(','))
+      .map((item) => sanitizeOperationString(item.trim(), 120))
+      .filter(Boolean)
+  )).slice(0, maxItems);
+}
+
+function parseOperationStateJson(value: string | undefined): Record<string, unknown> {
+  if (!value) return {};
+  const parsed = JSON.parse(value) as unknown;
+  if (!isOperationRecord(parsed)) {
+    throw new Error('state-json must be a JSON object');
+  }
+  return sanitizeOperationRecord(parsed);
+}
+
+function isOperationRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function omitUndefinedRecord(input: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(input).filter(([, value]) => value !== undefined));
+}
+
+function isoOperationDate(value: unknown): string | undefined {
+  if (!value) return undefined;
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value === 'string') return value;
+  return undefined;
+}
+
+function compactOperationArray(value: unknown, maxItems: number): unknown[] {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, Math.max(0, maxItems)).map((item) => sanitizeOperationOutput(item, 1));
+}
+
+function compactOperationStringArray(value: unknown, maxItems: number, maxLength: number): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .slice(0, Math.max(0, maxItems))
+    .map((item) => sanitizeOperationString(String(item), maxLength))
+    .filter(Boolean);
+}
+
+function compactOperationRecord(input: unknown, maxEntries: number): Record<string, unknown> {
+  if (!isOperationRecord(input)) return {};
+  const entries = Object.entries(input);
+  const compacted = Object.fromEntries(
+    entries
+      .slice(0, Math.max(0, maxEntries))
+      .map(([key, value]) => [sanitizeOperationKey(key), sanitizeOperationOutput(value, 1)])
+  );
+  if (entries.length > maxEntries) {
+    compacted.__truncated = entries.length - maxEntries;
+  }
+  return compacted;
+}
+
+function sanitizeOperationRecord(input: Record<string, unknown>): Record<string, unknown> {
+  return compactOperationRecord(maskSensitiveInput(input), 30);
+}
+
+function sanitizeOperationOutput(value: unknown, depth = 0): unknown {
+  if (typeof value === 'string') return sanitizeOperationString(value, 1000);
+  if (value instanceof Date) return value.toISOString();
+  if (depth >= 4) return '[truncated]';
+  if (Array.isArray(value)) return value.slice(0, 25).map((item) => sanitizeOperationOutput(item, depth + 1));
+  if (isOperationRecord(value)) {
+    return Object.fromEntries(
+      Object.entries(value)
+        .slice(0, 30)
+        .map(([key, item]) => [sanitizeOperationKey(key), sanitizeOperationOutput(item, depth + 1)])
+    );
+  }
+  return value;
+}
+
+function sanitizeOperationKey(key: string): string {
+  if (/(api.*key|api.*token|access.*token|refresh.*token|client.*secret|private.*key|secret|password|passwd)/i.test(key)) {
+    return '[REDACTED_KEY]';
+  }
+  return sanitizeOperationString(key, 120);
+}
+
+function sanitizeOperationString(value: string, maxLength: number): string {
+  const masked = maskSensitiveInput({ value }).value;
+  const asString = typeof masked === 'string' ? masked : String(value);
+  const privacyFiltered = applyPrivacyFilter(asString, OPERATION_PRIVACY_CONFIG).content;
+  const scrubbed = privacyFiltered
+    .replace(/[A-Za-z]:[\\/][^\s'"`<>)]*/g, '[path]')
+    .replace(/~[\\/][^\s'"`<>)]*/g, '[path]')
+    .replace(/(^|[\s([{=,:;])\/(?!\/)[^\s'"`<>)]*/g, '$1[path]');
+  const normalized = scrubbed.replace(/\s+/g, ' ').trim();
+  if (normalized.length <= maxLength) return normalized;
+  return `${normalized.slice(0, Math.max(0, maxLength - 3))}...`;
+}
+
+function formatOperationFacet(facet: MemoryFacetAssignment): Record<string, unknown> {
+  return {
+    id: facet.id,
+    targetType: facet.targetType,
+    targetId: facet.targetId,
+    dimension: facet.dimension,
+    value: facet.value,
+    confidence: facet.confidence,
+    source: facet.source,
+    evidenceEventIds: compactOperationStringArray(facet.evidenceEventIds, 10, 120),
+    projectHash: facet.projectHash,
+    createdAt: isoOperationDate(facet.createdAt),
+    updatedAt: isoOperationDate(facet.updatedAt)
+  };
+}
+
+function formatOperationAction(action: MemoryAction): Record<string, unknown> {
+  return {
+    actionId: action.actionId,
+    projectHash: action.projectHash,
+    title: action.title,
+    status: action.status,
+    priority: action.priority,
+    sourceEventIds: compactOperationStringArray(action.sourceEventIds, 10, 120),
+    relatedEntityIds: compactOperationStringArray(action.relatedEntityIds, 10, 120),
+    currentCheckpointId: action.currentCheckpointId,
+    leaseId: action.leaseId,
+    createdAt: isoOperationDate(action.createdAt),
+    updatedAt: isoOperationDate(action.updatedAt)
+  };
+}
+
+function formatOperationFrontierItem(item: FrontierItem): Record<string, unknown> {
+  return {
+    action: formatOperationAction(item.action),
+    score: item.score,
+    reasons: compactOperationStringArray(item.reasons, 10, 300),
+    sourceRefs: compactOperationArray(item.sourceRefs, 10)
+  };
+}
+
+function formatOperationCheckpoint(checkpoint: MemoryCheckpoint): Record<string, unknown> {
+  return {
+    checkpointId: checkpoint.checkpointId,
+    projectHash: checkpoint.projectHash,
+    actionId: checkpoint.actionId,
+    sessionId: checkpoint.sessionId,
+    title: checkpoint.title,
+    summary: checkpoint.summary,
+    stateJson: compactOperationRecord(checkpoint.stateJson, 8),
+    sourceEventIds: compactOperationStringArray(checkpoint.sourceEventIds, 10, 120),
+    createdAt: isoOperationDate(checkpoint.createdAt),
+    expiresAt: isoOperationDate(checkpoint.expiresAt)
+  };
+}
+
+function writeOperationOutput(payload: Record<string, unknown>, options: OperationJsonOption): void {
+  const safePayload = sanitizeOperationOutput(payload) as Record<string, unknown>;
+  if (options.json) {
+    process.stdout.write(`${JSON.stringify(safePayload, null, 2)}\n`);
+    return;
+  }
+  const operation = typeof safePayload.operation === 'string' ? safePayload.operation : 'memory-operation';
+  const count = typeof safePayload.count === 'number' ? ` (${safePayload.count} item${safePayload.count === 1 ? '' : 's'})` : '';
+  process.stdout.write(`${operation}${count}\n${JSON.stringify(safePayload, null, 2)}\n`);
+}
+
+async function runOperationCli(action: () => Promise<void>, label: string): Promise<void> {
+  try {
+    await action();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`${label} failed: ${sanitizeOperationString(message, 500)}`);
+    process.exit(1);
   }
 }
 
@@ -745,6 +1049,271 @@ repairCommand
       process.exit(1);
     }
   });
+
+/**
+ * Memory operation commands - CLI equivalents for MCP operation tools
+ */
+const facetCommand = program
+  .command('facet')
+  .description('Query and tag project-scoped memory facets');
+
+facetCommand
+  .command('query')
+  .description('Query project-scoped memory facets')
+  .requiredOption('-p, --project <path>', 'Project path')
+  .option('--target-type <type>', 'Facet target type')
+  .option('--target-id <id>', 'Facet target id')
+  .option('--dimension <dimension>', 'Facet dimension')
+  .option('--value <value>', 'Facet value')
+  .option('--source <source>', 'Facet source')
+  .option('--limit <count>', 'Maximum facets to return', '50')
+  .option('--json', 'Print machine-readable JSON')
+  .action((options) => runOperationCli(async () => {
+    const context = resolveOperationProject(options.project);
+    const query = parseFacetQuery(omitUndefinedRecord({
+      projectHash: context.projectHash,
+      targetType: optionalOperationOption(options.targetType),
+      targetId: optionalOperationOption(options.targetId),
+      dimension: optionalOperationOption(options.dimension),
+      value: optionalOperationOption(options.value),
+      source: optionalOperationOption(options.source),
+      limit: parseOperationLimit(options.limit, 50, 1, 100)
+    }));
+    const emptyPayload = { operation: 'mem-facet-query', projectHash: context.projectHash, count: 0, facets: [] as unknown[] };
+    const payload = await withOperationExistingDatabase(context, emptyPayload, ['memory_facets'], async (db) => {
+      const facets = await new FacetRepository(db).query(query);
+      return {
+        operation: 'mem-facet-query',
+        projectHash: context.projectHash,
+        count: facets.length,
+        facets: facets.map(formatOperationFacet)
+      };
+    });
+    writeOperationOutput(payload, options);
+  }, 'Facet query'));
+
+facetCommand
+  .command('tag')
+  .description('Assign a project-scoped facet; dry-run unless --apply is supplied')
+  .requiredOption('-p, --project <path>', 'Project path')
+  .requiredOption('--target-type <type>', 'Facet target type')
+  .requiredOption('--target-id <id>', 'Facet target id')
+  .requiredOption('--dimension <dimension>', 'Facet dimension')
+  .requiredOption('--value <value>', 'Facet value')
+  .option('--confidence <number>', 'Facet confidence between 0 and 1', '1')
+  .option('--source <source>', 'Facet source', 'manual')
+  .option('--source-event-ids <ids>', 'Comma-separated source/evidence event ids')
+  .option('--actor <actor>', 'Actor for governance audit', 'cml-cli')
+  .option('--apply', 'Apply the mutation; omitted means dry-run')
+  .option('--json', 'Print machine-readable JSON')
+  .action((options) => runOperationCli(async () => {
+    const context = resolveOperationProject(options.project);
+    const input = parseFacetAssignmentInput({
+      projectHash: context.projectHash,
+      targetType: requiredOperationOption(options.targetType, 'targetType'),
+      targetId: sanitizeOperationString(requiredOperationOption(options.targetId, 'targetId'), 120),
+      dimension: sanitizeOperationString(requiredOperationOption(options.dimension, 'dimension'), 120),
+      value: sanitizeOperationString(requiredOperationOption(options.value, 'value'), 240),
+      confidence: parseOperationNumber(options.confidence, 1, 0, 1, 'confidence'),
+      source: sanitizeOperationString(optionalOperationOption(options.source) ?? 'manual', 80),
+      evidenceEventIds: splitOperationList(options.sourceEventIds, 20),
+      actor: sanitizeOperationString(optionalOperationOption(options.actor) ?? 'cml-cli', 120)
+    });
+    if (!options.apply) {
+      writeOperationOutput({ operation: 'mem-facet-tag', projectHash: context.projectHash, dryRun: true, wouldAssign: input }, options);
+      return;
+    }
+    const facet = await withOperationWriteDatabase(context, async (db) => new FacetRepository(db).assign(input));
+    writeOperationOutput({
+      operation: 'mem-facet-tag',
+      projectHash: context.projectHash,
+      dryRun: false,
+      facet: formatOperationFacet(facet)
+    }, options);
+  }, 'Facet tag'));
+
+const actionCommand = program
+  .command('action')
+  .description('List and update project-scoped memory actions');
+
+actionCommand
+  .command('list')
+  .description('List project-scoped memory actions')
+  .requiredOption('-p, --project <path>', 'Project path')
+  .option('--status <status>', 'Filter by action status')
+  .option('--include-terminal', 'Include terminal statuses such as done/cancelled')
+  .option('--limit <count>', 'Maximum actions to return', '50')
+  .option('--json', 'Print machine-readable JSON')
+  .action((options) => runOperationCli(async () => {
+    const context = resolveOperationProject(options.project);
+    const listInput = ListActionsInputSchema.parse(omitUndefinedRecord({
+      projectHash: context.projectHash,
+      status: optionalOperationOption(options.status),
+      includeTerminal: Boolean(options.includeTerminal),
+      limit: parseOperationLimit(options.limit, 50, 1, 100)
+    }));
+    const emptyPayload = { operation: 'mem-action-list', projectHash: context.projectHash, count: 0, actions: [] as unknown[] };
+    const payload = await withOperationExistingDatabase(context, emptyPayload, ['memory_actions'], async (db) => {
+      const actions = await new ActionRepository(db).list(listInput);
+      return {
+        operation: 'mem-action-list',
+        projectHash: context.projectHash,
+        count: actions.length,
+        actions: actions.map(formatOperationAction)
+      };
+    });
+    writeOperationOutput(payload, options);
+  }, 'Action list'));
+
+actionCommand
+  .command('update')
+  .description('Update a project-scoped memory action; dry-run unless --apply is supplied')
+  .requiredOption('-p, --project <path>', 'Project path')
+  .requiredOption('--action-id <id>', 'Action id to update')
+  .requiredOption('--status <status>', 'Next action status')
+  .option('--note <note>', 'Governance audit note')
+  .option('--source-event-ids <ids>', 'Comma-separated source/evidence event ids')
+  .option('--actor <actor>', 'Actor for governance audit', 'cml-cli')
+  .option('--apply', 'Apply the mutation; omitted means dry-run')
+  .option('--json', 'Print machine-readable JSON')
+  .action((options) => runOperationCli(async () => {
+    const context = resolveOperationProject(options.project);
+    const sourceEventIds = splitOperationList(options.sourceEventIds, 20);
+    const note = optionalOperationOption(options.note);
+    const input = UpdateActionInputSchema.parse(omitUndefinedRecord({
+      actionId: requiredOperationOption(options.actionId, 'actionId'),
+      projectHash: context.projectHash,
+      status: requiredOperationOption(options.status, 'status'),
+      actor: sanitizeOperationString(optionalOperationOption(options.actor) ?? 'cml-cli', 120),
+      sourceEventIds: sourceEventIds.length > 0 ? sourceEventIds : undefined,
+      note: note ? sanitizeOperationString(note, 500) : undefined
+    }));
+    if (!options.apply) {
+      writeOperationOutput({ operation: 'mem-action-update', projectHash: context.projectHash, dryRun: true, wouldUpdate: input }, options);
+      return;
+    }
+    const action = await withOperationWriteDatabase(context, async (db) => new ActionRepository(db).update(input));
+    writeOperationOutput({
+      operation: 'mem-action-update',
+      projectHash: context.projectHash,
+      dryRun: false,
+      action: formatOperationAction(action)
+    }, options);
+  }, 'Action update'));
+
+program
+  .command('frontier')
+  .description('Rank the project-scoped operational action frontier')
+  .requiredOption('-p, --project <path>', 'Project path')
+  .option('--include-blocked', 'Do not penalize blocked actions')
+  .option('--limit <count>', 'Maximum frontier items to return', '50')
+  .option('--json', 'Print machine-readable JSON')
+  .action((options) => runOperationCli(async () => {
+    const context = resolveOperationProject(options.project);
+    const rankInput = {
+      projectHash: context.projectHash,
+      includeBlocked: Boolean(options.includeBlocked),
+      limit: parseOperationLimit(options.limit, 50, 1, 100)
+    };
+    const emptyPayload = { operation: 'mem-frontier', projectHash: context.projectHash, count: 0, frontier: [] as unknown[] };
+    const payload = await withOperationExistingDatabase(
+      context,
+      emptyPayload,
+      ['memory_actions', 'memory_action_edges', 'memory_leases', 'memory_facets'],
+      async (db) => {
+        const frontier = await new FrontierService(db).rank(rankInput);
+        return {
+          operation: 'mem-frontier',
+          projectHash: context.projectHash,
+          count: frontier.length,
+          frontier: frontier.map(formatOperationFrontierItem)
+        };
+      }
+    );
+    writeOperationOutput(payload, options);
+  }, 'Frontier'));
+
+const checkpointCommand = program
+  .command('checkpoint')
+  .description('Create and list project-scoped memory checkpoints');
+
+checkpointCommand
+  .command('create')
+  .description('Create an action/session checkpoint; dry-run unless --apply is supplied')
+  .requiredOption('-p, --project <path>', 'Project path')
+  .requiredOption('--target-type <type>', 'Checkpoint target type: action or session')
+  .requiredOption('--target-id <id>', 'Checkpoint target id')
+  .requiredOption('--label <label>', 'Checkpoint label')
+  .option('--state-json <json>', 'Checkpoint state JSON object')
+  .option('--source-event-ids <ids>', 'Comma-separated source/evidence event ids')
+  .option('--actor <actor>', 'Actor for governance audit', 'cml-cli')
+  .option('--apply', 'Apply the mutation; omitted means dry-run')
+  .option('--json', 'Print machine-readable JSON')
+  .action((options) => runOperationCli(async () => {
+    const context = resolveOperationProject(options.project);
+    const targetType = requiredOperationOption(options.targetType, 'targetType');
+    if (targetType !== 'action' && targetType !== 'session') {
+      throw new Error('targetType must be action or session');
+    }
+    const targetId = sanitizeOperationString(requiredOperationOption(options.targetId, 'targetId'), 120);
+    const label = sanitizeOperationString(requiredOperationOption(options.label, 'label'), 240);
+    const input = CreateCheckpointInputSchema.parse(omitUndefinedRecord({
+      projectHash: context.projectHash,
+      actionId: targetType === 'action' ? targetId : undefined,
+      sessionId: targetType === 'session' ? targetId : undefined,
+      title: label,
+      summary: label,
+      stateJson: parseOperationStateJson(options.stateJson),
+      sourceEventIds: splitOperationList(options.sourceEventIds, 20),
+      actor: sanitizeOperationString(optionalOperationOption(options.actor) ?? 'cml-cli', 120)
+    }));
+    if (!options.apply) {
+      writeOperationOutput({ operation: 'mem-checkpoint-create', projectHash: context.projectHash, dryRun: true, wouldCreate: input }, options);
+      return;
+    }
+    const checkpoint = await withOperationWriteDatabase(context, async (db) => new CheckpointRepository(db).create(input));
+    writeOperationOutput({
+      operation: 'mem-checkpoint-create',
+      projectHash: context.projectHash,
+      dryRun: false,
+      checkpoint: formatOperationCheckpoint(checkpoint)
+    }, options);
+  }, 'Checkpoint create'));
+
+checkpointCommand
+  .command('list')
+  .description('List project-scoped memory checkpoints')
+  .requiredOption('-p, --project <path>', 'Project path')
+  .option('--target-type <type>', 'Checkpoint target type: action or session')
+  .option('--target-id <id>', 'Checkpoint target id')
+  .option('--limit <count>', 'Maximum checkpoints to return', '50')
+  .option('--json', 'Print machine-readable JSON')
+  .action((options) => runOperationCli(async () => {
+    const context = resolveOperationProject(options.project);
+    const targetType = optionalOperationOption(options.targetType);
+    const targetId = optionalOperationOption(options.targetId);
+    const listInputDraft: Record<string, unknown> = { projectHash: context.projectHash, limit: parseOperationLimit(options.limit, 50, 1, 100) };
+    if (targetType || targetId) {
+      if (targetType !== 'action' && targetType !== 'session') {
+        throw new Error('targetType must be action or session when targetId is provided');
+      }
+      if (!targetId) throw new Error('targetId is required when targetType is provided');
+      if (targetType === 'action') listInputDraft.actionId = targetId;
+      if (targetType === 'session') listInputDraft.sessionId = targetId;
+    }
+    const listInput = ListCheckpointsInputSchema.parse(listInputDraft);
+    const emptyPayload = { operation: 'mem-checkpoint-list', projectHash: context.projectHash, count: 0, checkpoints: [] as unknown[] };
+    const payload = await withOperationExistingDatabase(context, emptyPayload, ['memory_checkpoints'], async (db) => {
+      const checkpoints = await new CheckpointRepository(db).list(listInput);
+      return {
+        operation: 'mem-checkpoint-list',
+        projectHash: context.projectHash,
+        count: checkpoints.length,
+        checkpoints: checkpoints.map(formatOperationCheckpoint)
+      };
+    });
+    writeOperationOutput(payload, options);
+  }, 'Checkpoint list'));
 
 /**
  * Retention command - dry-run lifecycle audits for project-scoped memory
