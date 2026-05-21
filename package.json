@@ -29,7 +29,7 @@
     "ops:heartbeat": "bash scripts/heartbeat-memory-orchestrator.sh",
     "ops:health": "npm run ops:sync-gap:report && npm run ops:sync-gap:heal && npm run ops:review:resolve",
     "ops:projects:clean-unknown": "node scripts/delete-unknown-projects.js",
-    "benchmark:replay": "tsx scripts/replay-retrieval-benchmark.ts",
+    "benchmark:replay": "tsx scripts/replay-retrieval-benchmark.ts --min-query-yield 1 --min-no-match-accuracy 1 --max-forbidden-hits 0 --max-failed-queries 0",
     "eval:retrieval-replay": "tsx scripts/replay-retrieval-benchmark.ts --fixture benchmarks/replay/golden-memory-usefulness-v1.json --format markdown --no-per-query --min-query-yield 1 --min-no-match-accuracy 1 --max-forbidden-hits 0 --max-failed-queries 0",
     "eval:retrieval-replay:report": "tsx scripts/replay-retrieval-benchmark.ts --fixture benchmarks/replay/golden-memory-usefulness-v1.json --format markdown --no-per-query",
     "benchmark:replay:promote-review": "tsx scripts/promote-retrieval-review-queue.ts",

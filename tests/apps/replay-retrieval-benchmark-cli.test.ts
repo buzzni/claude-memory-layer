@@ -19,7 +19,52 @@ function runReplayCli(args: string[]) {
   });
 }
 
+function runBenchmarkReplayScript(args: string[]) {
+  return spawnSync('npm', ['run', 'benchmark:replay', '--', ...args], {
+    cwd: process.cwd(),
+    encoding: 'utf8'
+  });
+}
+
 describe('replay retrieval benchmark CLI threshold gate', () => {
+  it('wires npm benchmark:replay to fail closed when replay thresholds are violated', () => {
+    const fixturePath = writeFixture('npm-threshold-failure', {
+      name: 'npm-threshold-failure-fixture',
+      ks: [1, 3],
+      metadata: { rawContentIncluded: false },
+      queries: [
+        {
+          queryId: 'q-npm-forbidden-hit',
+          category: 'topic-shift-no-match',
+          query: 'npm replay threshold marker',
+          expectation: 'no_match',
+          expectedIds: [],
+          expectedRelevance: {},
+          forbiddenIds: ['m-forbidden']
+        }
+      ],
+      memories: [
+        {
+          id: 'm-forbidden',
+          content: 'npm replay threshold marker should trip the default gate'
+        }
+      ]
+    });
+
+    const result = runBenchmarkReplayScript([
+      '--fixture', fixturePath,
+      '--format', 'json'
+    ]);
+
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('"failedQueryCount"');
+    expect(result.stdout).not.toContain('npm replay threshold marker');
+    expect(result.stderr).toContain('Replay threshold gate failed');
+    expect(result.stderr).toContain('failedQueryCount');
+    expect(result.stderr).toContain('forbiddenHitCount');
+    expect(result.stderr).toContain('noMatchAccuracy');
+  });
+
   it('exits non-zero when configured golden thresholds are violated', () => {
     const fixturePath = writeFixture('threshold-failure', {
       name: 'threshold-failure-fixture',
