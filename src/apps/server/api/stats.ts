@@ -5,11 +5,233 @@
 
 import { Hono } from 'hono';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import { getLightweightServiceFromQuery, getServiceFromQuery } from './utils.js';
+import { hashProjectPath } from '../../../core/registry/project-path.js';
+import { sanitizeGovernanceAuditValue } from '../../../core/operations/governance-audit.js';
+import {
+  createSQLiteDatabase,
+  sqliteAll,
+  sqliteGet,
+  type SQLiteDatabase
+} from '../../../core/sqlite-wrapper.js';
 import type { MemoryEvent } from '../../../core/types.js';
 
 export const statsRouter = new Hono();
+
+const OPERATION_STATS_TABLES = [
+  'memory_facets',
+  'memory_actions',
+  'memory_leases',
+  'memory_retention_scores',
+  'memory_governance_audit',
+  'memory_lessons'
+] as const;
+
+const LESSON_CONFIDENCE_BUCKETS = [
+  { bucket: '0.00-0.25', min: 0, max: 0.25 },
+  { bucket: '0.25-0.50', min: 0.25, max: 0.5 },
+  { bucket: '0.50-0.75', min: 0.5, max: 0.75 },
+  { bucket: '0.75-1.00', min: 0.75, max: 1.0000001 }
+] as const;
+
+type OperationsStatsContext = {
+  projectHash?: string;
+  storagePath: string;
+  dbPath: string;
+};
+
+type CountByLabelRow = {
+  label: string;
+  count: number;
+};
+
+type FacetCountRow = {
+  dimension: string;
+  value: string;
+  count: number;
+};
+
+type AuditOperationRow = {
+  date: string;
+  operation: string;
+  count: number;
+};
+
+type LessonConfidenceRow = {
+  confidence: number;
+};
+
+function operationsStatsHomeDir(): string {
+  return process.env.HOME || os.homedir();
+}
+
+function projectStoragePathForOperationsStats(projectOrHash: string): string {
+  const projectHash = /^[a-f0-9]{8}$/.test(projectOrHash)
+    ? projectOrHash
+    : hashProjectPath(projectOrHash);
+  return path.join(operationsStatsHomeDir(), '.claude-code', 'memory', 'projects', projectHash);
+}
+
+function getOperationsStatsContext(project: string | undefined): OperationsStatsContext {
+  if (project && project.trim().length > 0) {
+    const normalizedProject = project.trim();
+    const projectHash = /^[a-f0-9]{8}$/.test(normalizedProject)
+      ? normalizedProject
+      : hashProjectPath(normalizedProject);
+    const storagePath = projectStoragePathForOperationsStats(normalizedProject);
+    return {
+      projectHash,
+      storagePath,
+      dbPath: path.join(storagePath, 'events.sqlite')
+    };
+  }
+
+  const storagePath = path.join(operationsStatsHomeDir(), '.claude-code', 'memory');
+  return {
+    storagePath,
+    dbPath: path.join(storagePath, 'events.sqlite')
+  };
+}
+
+function countRowValue(db: SQLiteDatabase, sql: string, params: unknown[] = []): number {
+  const row = sqliteGet<{ count: number }>(db, sql, params);
+  return Number(row?.count ?? 0);
+}
+
+function projectFilter(projectHash: string | undefined, column = 'project_hash'): { clause: string; params: unknown[] } {
+  if (!projectHash) return { clause: '', params: [] };
+  return { clause: `WHERE ${column} = ?`, params: [projectHash] };
+}
+
+function sanitizeAggregateLabel(value: unknown): string {
+  const raw = typeof value === 'string' ? value : String(value ?? 'unknown');
+  const sanitized = String(sanitizeGovernanceAuditValue(raw));
+  if (sanitized !== raw || sanitized.includes('[REDACTED]')) return '[REDACTED]';
+  const trimmed = sanitized.trim();
+  return trimmed.length > 0 ? trimmed.slice(0, 96) : 'unknown';
+}
+
+function emptyOperationsStatsPayload(context: OperationsStatsContext, databaseExists: boolean, missingTables: readonly string[], windowDays: number) {
+  return {
+    generatedAt: new Date().toISOString(),
+    windowDays,
+    projectHash: context.projectHash,
+    projection: {
+      databaseExists,
+      available: databaseExists && missingTables.length === 0,
+      missingTables
+    },
+    facets: { totalAssignments: 0, distribution: [] },
+    actions: { total: 0, byStatus: [] },
+    leases: { totalActive: 0, activeByTargetType: [] },
+    retention: { total: 0, byDecision: [] },
+    governanceAudit: { total: 0, operationsByDay: [] },
+    lessons: {
+      total: 0,
+      confidenceBuckets: LESSON_CONFIDENCE_BUCKETS.map((bucket) => ({ bucket: bucket.bucket, count: 0 }))
+    }
+  };
+}
+
+function getMissingOperationTables(db: SQLiteDatabase): string[] {
+  const placeholders = OPERATION_STATS_TABLES.map(() => '?').join(', ');
+  const rows = sqliteAll<{ name: string }>(
+    db,
+    `SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (${placeholders})`,
+    [...OPERATION_STATS_TABLES]
+  );
+  const present = new Set(rows.map((row) => row.name));
+  return OPERATION_STATS_TABLES.filter((table) => !present.has(table));
+}
+
+function sortCountRows<T extends Record<string, unknown>>(rows: T[], labelKey: keyof T): T[] {
+  return [...rows].sort((a, b) => {
+    const countDiff = Number(b.count ?? 0) - Number(a.count ?? 0);
+    if (countDiff !== 0) return countDiff;
+    return String(a[labelKey] ?? '').localeCompare(String(b[labelKey] ?? ''));
+  });
+}
+
+function buildFacetDistribution(db: SQLiteDatabase, projectHash: string | undefined, topFacetValues: number) {
+  const filter = projectFilter(projectHash);
+  const rows = sqliteAll<FacetCountRow>(
+    db,
+    `SELECT dimension, value, COUNT(*) AS count
+     FROM memory_facets
+     ${filter.clause}
+     GROUP BY dimension, value
+     ORDER BY dimension ASC, count DESC, value ASC`,
+    filter.params
+  );
+  const dimensionMap = new Map<string, Map<string, number>>();
+
+  for (const row of rows) {
+    const dimension = sanitizeAggregateLabel(row.dimension);
+    const value = sanitizeAggregateLabel(row.value);
+    const values = dimensionMap.get(dimension) ?? new Map<string, number>();
+    values.set(value, (values.get(value) ?? 0) + Number(row.count ?? 0));
+    dimensionMap.set(dimension, values);
+  }
+
+  return Array.from(dimensionMap.entries())
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([dimension, values]) => {
+      const sortedValues = Array.from(values.entries())
+        .map(([value, count]) => ({ value, count }))
+        .sort((a, b) => b.count - a.count || a.value.localeCompare(b.value));
+      const visible = sortedValues.slice(0, topFacetValues);
+      const other = sortedValues.slice(topFacetValues).reduce((sum, row) => sum + row.count, 0);
+      return { dimension, values: visible, other };
+    });
+}
+
+function buildCountRows(db: SQLiteDatabase, sql: string, params: unknown[], labelKey: string): Array<Record<string, string | number>> {
+  const rows = sqliteAll<CountByLabelRow>(db, sql, params);
+  return sortCountRows(rows, 'label').map((row) => ({ [labelKey]: sanitizeAggregateLabel(row.label), count: Number(row.count ?? 0) }));
+}
+
+function buildOperationsByDay(db: SQLiteDatabase, projectHash: string | undefined, windowStartIso: string) {
+  const clauses = ['created_at >= ?'];
+  const params: unknown[] = [windowStartIso];
+  if (projectHash) {
+    clauses.push('project_hash = ?');
+    params.push(projectHash);
+  }
+  const rows = sqliteAll<AuditOperationRow>(
+    db,
+    `SELECT date(created_at) AS date, operation, COUNT(*) AS count
+     FROM memory_governance_audit
+     WHERE ${clauses.join(' AND ')}
+     GROUP BY date(created_at), operation
+     ORDER BY date ASC, operation ASC`,
+    params
+  );
+  const byDay = new Map<string, Array<{ operation: string; count: number }>>();
+  for (const row of rows) {
+    const operations = byDay.get(row.date) ?? [];
+    operations.push({ operation: sanitizeAggregateLabel(row.operation), count: Number(row.count ?? 0) });
+    byDay.set(row.date, operations);
+  }
+  return Array.from(byDay.entries()).map(([date, operations]) => ({
+    date,
+    total: operations.reduce((sum, row) => sum + row.count, 0),
+    operations
+  }));
+}
+
+function buildLessonConfidenceBuckets(db: SQLiteDatabase, projectHash: string | undefined) {
+  const filter = projectFilter(projectHash);
+  const rows = sqliteAll<LessonConfidenceRow>(db, `SELECT confidence FROM memory_lessons ${filter.clause}`, filter.params);
+  return LESSON_CONFIDENCE_BUCKETS.map((bucket) => ({
+    bucket: bucket.bucket,
+    count: rows.filter((row) => {
+      const confidence = Number(row.confidence ?? 0);
+      return confidence >= bucket.min && confidence < bucket.max;
+    }).length
+  }));
+}
 
 type KpiWindow = '24h' | '7d' | '30d';
 
@@ -816,6 +1038,100 @@ statsRouter.get('/levels/:level', async (c) => {
     return c.json({ error: (error as Error).message }, 500);
   } finally {
     await memoryService.shutdown();
+  }
+});
+
+// GET /api/stats/operations - Aggregate-only operation-layer observability stats
+statsRouter.get('/operations', async (c) => {
+  const context = getOperationsStatsContext(c.req.query('project') || c.req.query('projectId'));
+  const windowDays = parseStatsLimit(c.req.query('windowDays'), 30, 365);
+  const topFacetValues = parseStatsLimit(c.req.query('topFacetValues'), 5, 25);
+  const databaseExists = fs.existsSync(context.dbPath);
+
+  if (!databaseExists) {
+    return c.json(emptyOperationsStatsPayload(context, false, [...OPERATION_STATS_TABLES], windowDays));
+  }
+
+  let db: SQLiteDatabase | null = null;
+  try {
+    db = createSQLiteDatabase(context.dbPath, { readonly: true, walMode: false });
+    const missingTables = getMissingOperationTables(db);
+    if (missingTables.length > 0) {
+      return c.json(emptyOperationsStatsPayload(context, true, missingTables, windowDays));
+    }
+
+    const now = Date.now();
+    const windowStartIso = new Date(now - windowDays * 24 * 60 * 60 * 1000).toISOString();
+    const projectScoped = projectFilter(context.projectHash);
+    const auditClauses = ['created_at >= ?'];
+    const auditParams: unknown[] = [windowStartIso];
+    if (context.projectHash) {
+      auditClauses.push('project_hash = ?');
+      auditParams.push(context.projectHash);
+    }
+    const auditWhere = `WHERE ${auditClauses.join(' AND ')}`;
+
+    const facets = {
+      totalAssignments: countRowValue(db, `SELECT COUNT(*) AS count FROM memory_facets ${projectScoped.clause}`, projectScoped.params),
+      distribution: buildFacetDistribution(db, context.projectHash, topFacetValues)
+    };
+    const actions = {
+      total: countRowValue(db, `SELECT COUNT(*) AS count FROM memory_actions ${projectScoped.clause}`, projectScoped.params),
+      byStatus: buildCountRows(
+        db,
+        `SELECT status AS label, COUNT(*) AS count FROM memory_actions ${projectScoped.clause} GROUP BY status`,
+        projectScoped.params,
+        'status'
+      )
+    };
+    const leases = {
+      totalActive: countRowValue(db, 'SELECT COUNT(*) AS count FROM memory_leases WHERE released_at IS NULL AND expires_at > ?', [new Date(now).toISOString()]),
+      activeByTargetType: buildCountRows(
+        db,
+        'SELECT target_type AS label, COUNT(*) AS count FROM memory_leases WHERE released_at IS NULL AND expires_at > ? GROUP BY target_type',
+        [new Date(now).toISOString()],
+        'targetType'
+      )
+    };
+    const retention = {
+      total: countRowValue(db, `SELECT COUNT(*) AS count FROM memory_retention_scores ${projectScoped.clause}`, projectScoped.params),
+      byDecision: buildCountRows(
+        db,
+        `SELECT decision AS label, COUNT(*) AS count FROM memory_retention_scores ${projectScoped.clause} GROUP BY decision`,
+        projectScoped.params,
+        'decision'
+      )
+    };
+    const governanceAudit = {
+      total: countRowValue(db, `SELECT COUNT(*) AS count FROM memory_governance_audit ${auditWhere}`, auditParams),
+      operationsByDay: buildOperationsByDay(db, context.projectHash, windowStartIso)
+    };
+    const lessons = {
+      total: countRowValue(db, `SELECT COUNT(*) AS count FROM memory_lessons ${projectScoped.clause}`, projectScoped.params),
+      confidenceBuckets: buildLessonConfidenceBuckets(db, context.projectHash)
+    };
+
+    return c.json({
+      generatedAt: new Date(now).toISOString(),
+      windowDays,
+      projectHash: context.projectHash,
+      projection: {
+        databaseExists: true,
+        available: true,
+        missingTables: []
+      },
+      facets,
+      actions,
+      leases,
+      retention,
+      governanceAudit,
+      lessons
+    });
+  } catch (error) {
+    console.error('[stats/operations] Failed to load aggregate stats:', error);
+    return c.json({ error: 'Failed to load operations stats' }, 500);
+  } finally {
+    db?.close();
   }
 });
 
