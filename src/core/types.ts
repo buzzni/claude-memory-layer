@@ -229,6 +229,259 @@ export const ListMemoryLessonsInputSchema = z.object({
 export type ListMemoryLessonsInput = z.input<typeof ListMemoryLessonsInputSchema>;
 
 // ============================================================
+// Honcho-inspired Perspective Memory Types
+// ============================================================
+
+const PerspectiveMemoryNonEmptyStringSchema = z.string()
+  .transform((value) => value.trim())
+  .pipe(z.string().min(1));
+
+const PerspectiveMemoryOptionalStringSchema = z.preprocess((value) => {
+  if (typeof value !== 'string') return value;
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : undefined;
+}, PerspectiveMemoryNonEmptyStringSchema.optional());
+
+const PerspectiveMemoryStringArraySchema = z.preprocess((value) => {
+  if (!Array.isArray(value)) return value;
+  return value
+    .map((item) => typeof item === 'string' ? item.trim() : item)
+    .filter((item) => typeof item !== 'string' || item.length > 0);
+}, z.array(PerspectiveMemoryNonEmptyStringSchema)).default([]);
+
+const ActorCardSensitivePattern = /(?:\b(?:api[_-]?key|secret|password|passwd|token|access[_-]?token|client[_-]?secret|bearer)\b\s*[:=])|(?:\b(?:api[_-]?key|secret|password|passwd|token|access[_-]?token|client[_-]?secret|bearer)=)|(?:^|\s)(?:\/[A-Za-z0-9._-][^\s`'\"]*)/i;
+
+export const MemoryActorKindSchema = z.enum([
+  'user',
+  'assistant',
+  'subagent',
+  'tool',
+  'system',
+  'integration',
+  'unknown'
+]);
+export type MemoryActorKind = z.infer<typeof MemoryActorKindSchema>;
+
+export const SessionActorRoleSchema = z.enum([
+  'speaker',
+  'assistant',
+  'observer',
+  'tool',
+  'system',
+  'unknown'
+]);
+export type SessionActorRole = z.infer<typeof SessionActorRoleSchema>;
+
+export const PerspectiveObservationLevelSchema = z.enum([
+  'explicit',
+  'deductive',
+  'inductive',
+  'contradiction'
+]);
+export type PerspectiveObservationLevel = z.infer<typeof PerspectiveObservationLevelSchema>;
+
+export const PerspectiveObservationCreatedBySchema = z.enum(['rule', 'llm', 'manual', 'import']);
+export type PerspectiveObservationCreatedBy = z.infer<typeof PerspectiveObservationCreatedBySchema>;
+
+export const ActorCardEntryPrefixSchema = z.enum([
+  'IDENTITY',
+  'ATTRIBUTE',
+  'RELATIONSHIP',
+  'INSTRUCTION'
+]);
+export type ActorCardEntryPrefix = z.infer<typeof ActorCardEntryPrefixSchema>;
+
+export const ActorCardEntrySchema = z.string()
+  .transform((value) => value.trim())
+  .pipe(
+    z.string()
+      .min(1)
+      .max(200, 'actor card entry must be at most 200 characters')
+      .refine(
+        (value) => /^(IDENTITY|ATTRIBUTE|RELATIONSHIP|INSTRUCTION):\s*\S/.test(value),
+        'actor card entry prefix must be one of IDENTITY:, ATTRIBUTE:, RELATIONSHIP:, or INSTRUCTION:'
+      )
+      .refine(
+        (value) => !ActorCardSensitivePattern.test(value),
+        'actor card entry contains secret, redacted, sensitive, or path-like content'
+      )
+  );
+export type ActorCardEntry = z.infer<typeof ActorCardEntrySchema>;
+
+export const MemoryActorSchema = z.object({
+  actorId: PerspectiveMemoryNonEmptyStringSchema,
+  projectHash: PerspectiveMemoryOptionalStringSchema,
+  kind: MemoryActorKindSchema,
+  displayName: PerspectiveMemoryNonEmptyStringSchema,
+  source: PerspectiveMemoryNonEmptyStringSchema,
+  metadata: z.record(z.unknown()).optional(),
+  createdAt: z.date(),
+  updatedAt: z.date()
+});
+export type MemoryActor = z.infer<typeof MemoryActorSchema>;
+
+export const UpsertMemoryActorInputSchema = z.object({
+  actorId: PerspectiveMemoryOptionalStringSchema,
+  projectHash: PerspectiveMemoryOptionalStringSchema,
+  kind: MemoryActorKindSchema.default('unknown'),
+  displayName: PerspectiveMemoryNonEmptyStringSchema,
+  source: PerspectiveMemoryNonEmptyStringSchema,
+  metadata: z.record(z.unknown()).optional()
+});
+export type UpsertMemoryActorInput = z.input<typeof UpsertMemoryActorInputSchema>;
+
+export const ListMemoryActorsInputSchema = z.object({
+  projectHash: PerspectiveMemoryOptionalStringSchema,
+  kind: MemoryActorKindSchema.optional(),
+  source: PerspectiveMemoryOptionalStringSchema,
+  limit: z.number().int().positive().max(500).default(100)
+});
+export type ListMemoryActorsInput = z.input<typeof ListMemoryActorsInputSchema>;
+
+export const SessionActorSchema = z.object({
+  projectHash: PerspectiveMemoryOptionalStringSchema,
+  sessionId: PerspectiveMemoryNonEmptyStringSchema,
+  actorId: PerspectiveMemoryNonEmptyStringSchema,
+  roleInSession: SessionActorRoleSchema,
+  observeSelf: z.boolean().default(true),
+  observeOthers: z.boolean().default(false),
+  joinedAt: z.date(),
+  leftAt: z.date().optional(),
+  metadata: z.record(z.unknown()).optional()
+});
+export type SessionActor = z.infer<typeof SessionActorSchema>;
+
+export const UpsertSessionActorInputSchema = z.object({
+  projectHash: PerspectiveMemoryOptionalStringSchema,
+  sessionId: PerspectiveMemoryNonEmptyStringSchema,
+  actorId: PerspectiveMemoryNonEmptyStringSchema,
+  roleInSession: SessionActorRoleSchema.default('unknown'),
+  observeSelf: z.boolean().default(true),
+  observeOthers: z.boolean().default(false),
+  joinedAt: z.date().optional(),
+  leftAt: z.date().optional(),
+  metadata: z.record(z.unknown()).optional()
+});
+export type UpsertSessionActorInput = z.input<typeof UpsertSessionActorInputSchema>;
+
+export const ListSessionActorsInputSchema = z.object({
+  projectHash: PerspectiveMemoryOptionalStringSchema,
+  sessionId: PerspectiveMemoryNonEmptyStringSchema,
+  limit: z.number().int().positive().max(500).default(100)
+});
+export type ListSessionActorsInput = z.input<typeof ListSessionActorsInputSchema>;
+
+export const SetSessionActorObservationPolicyInputSchema = z.object({
+  projectHash: PerspectiveMemoryOptionalStringSchema,
+  sessionId: PerspectiveMemoryNonEmptyStringSchema,
+  actorId: PerspectiveMemoryNonEmptyStringSchema,
+  observeSelf: z.boolean(),
+  observeOthers: z.boolean()
+});
+export type SetSessionActorObservationPolicyInput = z.input<typeof SetSessionActorObservationPolicyInputSchema>;
+
+export const ActorCardSchema = z.object({
+  cardId: z.string().uuid(),
+  projectHash: PerspectiveMemoryOptionalStringSchema,
+  observerActorId: PerspectiveMemoryNonEmptyStringSchema,
+  observedActorId: PerspectiveMemoryNonEmptyStringSchema,
+  entries: z.array(ActorCardEntrySchema).max(40),
+  sourceEventIds: PerspectiveMemoryStringArraySchema,
+  updatedBy: PerspectiveMemoryOptionalStringSchema,
+  createdAt: z.date(),
+  updatedAt: z.date()
+});
+export type ActorCard = z.infer<typeof ActorCardSchema>;
+
+export const UpsertActorCardInputSchema = z.object({
+  projectHash: PerspectiveMemoryOptionalStringSchema,
+  observerActorId: PerspectiveMemoryNonEmptyStringSchema,
+  observedActorId: PerspectiveMemoryNonEmptyStringSchema,
+  entries: z.array(ActorCardEntrySchema).min(1).max(40, 'actor card supports at most 40 entries'),
+  sourceEventIds: PerspectiveMemoryStringArraySchema,
+  updatedBy: PerspectiveMemoryOptionalStringSchema
+});
+export type UpsertActorCardInput = z.input<typeof UpsertActorCardInputSchema>;
+
+export const GetActorCardInputSchema = z.object({
+  projectHash: PerspectiveMemoryOptionalStringSchema,
+  observerActorId: PerspectiveMemoryNonEmptyStringSchema,
+  observedActorId: PerspectiveMemoryNonEmptyStringSchema
+});
+export type GetActorCardInput = z.input<typeof GetActorCardInputSchema>;
+
+export const PerspectiveObservationSchema = z.object({
+  observationId: z.string().uuid(),
+  projectHash: PerspectiveMemoryOptionalStringSchema,
+  observerActorId: PerspectiveMemoryNonEmptyStringSchema,
+  observedActorId: PerspectiveMemoryNonEmptyStringSchema,
+  sessionId: PerspectiveMemoryOptionalStringSchema,
+  level: PerspectiveObservationLevelSchema,
+  content: PerspectiveMemoryNonEmptyStringSchema,
+  confidence: z.number().min(0).max(1),
+  sourceEventIds: PerspectiveMemoryStringArraySchema,
+  sourceObservationIds: PerspectiveMemoryStringArraySchema,
+  createdBy: PerspectiveObservationCreatedBySchema,
+  metadata: z.record(z.unknown()).optional(),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+  deletedAt: z.date().optional()
+});
+export type PerspectiveObservation = z.infer<typeof PerspectiveObservationSchema>;
+
+export const CreatePerspectiveObservationInputSchema = z.object({
+  observationId: z.string().uuid().optional(),
+  projectHash: PerspectiveMemoryOptionalStringSchema,
+  observerActorId: PerspectiveMemoryNonEmptyStringSchema,
+  observedActorId: PerspectiveMemoryNonEmptyStringSchema,
+  sessionId: PerspectiveMemoryOptionalStringSchema,
+  level: PerspectiveObservationLevelSchema.default('explicit'),
+  content: PerspectiveMemoryNonEmptyStringSchema,
+  confidence: z.number().min(0).max(1).default(0.5),
+  sourceEventIds: PerspectiveMemoryStringArraySchema,
+  sourceObservationIds: PerspectiveMemoryStringArraySchema,
+  createdBy: PerspectiveObservationCreatedBySchema.default('manual'),
+  metadata: z.record(z.unknown()).optional(),
+  actor: PerspectiveMemoryOptionalStringSchema
+}).superRefine((value, ctx) => {
+  const hasEvidence = value.sourceEventIds.length > 0 || value.sourceObservationIds.length > 0;
+  if ((value.createdBy !== 'manual' || value.level !== 'explicit') && !hasEvidence) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['sourceEventIds'],
+      message: 'source evidence is required for non-manual or derived perspective observations'
+    });
+  }
+});
+export type CreatePerspectiveObservationInput = z.input<typeof CreatePerspectiveObservationInputSchema>;
+
+export const QueryPerspectiveObservationsInputSchema = z.object({
+  projectHash: PerspectiveMemoryOptionalStringSchema,
+  observerActorId: PerspectiveMemoryOptionalStringSchema,
+  observedActorId: PerspectiveMemoryOptionalStringSchema,
+  sessionId: PerspectiveMemoryOptionalStringSchema,
+  levels: z.array(PerspectiveObservationLevelSchema).optional(),
+  query: PerspectiveMemoryOptionalStringSchema,
+  includeDeleted: z.boolean().default(false),
+  limit: z.number().int().positive().max(500).default(50)
+});
+export type QueryPerspectiveObservationsInput = z.input<typeof QueryPerspectiveObservationsInputSchema>;
+
+export const DeletePerspectiveObservationInputSchema = z.object({
+  projectHash: PerspectiveMemoryOptionalStringSchema,
+  observationId: PerspectiveMemoryNonEmptyStringSchema,
+  actor: PerspectiveMemoryNonEmptyStringSchema
+});
+export type DeletePerspectiveObservationInput = z.input<typeof DeletePerspectiveObservationInputSchema>;
+
+export const ListPerspectiveObservationsBySourceInputSchema = z.object({
+  projectHash: PerspectiveMemoryOptionalStringSchema,
+  sourceEventId: PerspectiveMemoryNonEmptyStringSchema,
+  limit: z.number().int().positive().max(500).default(100)
+});
+export type ListPerspectiveObservationsBySourceInput = z.input<typeof ListPerspectiveObservationsBySourceInputSchema>;
+
+// ============================================================
 // Configuration
 // ============================================================
 

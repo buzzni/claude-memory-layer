@@ -603,6 +603,68 @@ export class SQLiteEventStore {
         UNIQUE(project_hash, name)
       );
 
+      -- Perspective Memory: privacy-safe actors/peers
+      CREATE TABLE IF NOT EXISTS memory_actors (
+        actor_id TEXT PRIMARY KEY,
+        project_hash TEXT NOT NULL DEFAULT '',
+        kind TEXT NOT NULL,
+        display_name TEXT NOT NULL,
+        source TEXT NOT NULL,
+        metadata_json TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      -- Perspective Memory: actors participating in a session and observation policy
+      CREATE TABLE IF NOT EXISTS session_actors (
+        project_hash TEXT NOT NULL DEFAULT '',
+        session_id TEXT NOT NULL,
+        actor_id TEXT NOT NULL,
+        role_in_session TEXT NOT NULL,
+        observe_self INTEGER NOT NULL DEFAULT 1,
+        observe_others INTEGER NOT NULL DEFAULT 0,
+        joined_at TEXT NOT NULL,
+        left_at TEXT,
+        metadata_json TEXT,
+        PRIMARY KEY(project_hash, session_id, actor_id)
+      );
+
+      -- Perspective Memory: compact Honcho-style actor cards
+      CREATE TABLE IF NOT EXISTS actor_cards (
+        card_id TEXT PRIMARY KEY,
+        project_hash TEXT NOT NULL DEFAULT '',
+        observer_actor_id TEXT NOT NULL,
+        observed_actor_id TEXT NOT NULL,
+        entries_json TEXT NOT NULL,
+        source_event_ids_json TEXT NOT NULL DEFAULT '[]',
+        updated_by TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(project_hash, observer_actor_id, observed_actor_id)
+      );
+
+      -- Perspective Memory: observer -> observed claims with evidence pointers
+      CREATE TABLE IF NOT EXISTS perspective_observations (
+        observation_id TEXT PRIMARY KEY,
+        project_hash TEXT NOT NULL DEFAULT '',
+        observer_actor_id TEXT NOT NULL,
+        observed_actor_id TEXT NOT NULL,
+        session_id TEXT,
+        level TEXT NOT NULL,
+        content TEXT NOT NULL,
+        confidence REAL NOT NULL,
+        source_event_ids_json TEXT NOT NULL DEFAULT '[]',
+        source_observation_ids_json TEXT NOT NULL DEFAULT '[]',
+        created_by TEXT NOT NULL,
+        metadata_json TEXT,
+        content_hash TEXT NOT NULL,
+        source_hash TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        deleted_at TEXT,
+        UNIQUE(project_hash, observer_actor_id, observed_actor_id, level, content_hash, source_hash)
+      );
+
       -- Memory Operations: governance/audit trail for state-changing operations
       CREATE TABLE IF NOT EXISTS memory_governance_audit (
         audit_id TEXT PRIMARY KEY,
@@ -658,6 +720,16 @@ export class SQLiteEventStore {
       CREATE INDEX IF NOT EXISTS idx_memory_lessons_project_confidence ON memory_lessons(project_hash, confidence DESC, updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_memory_lessons_skill_candidate ON memory_lessons(project_hash, skill_candidate, confidence DESC);
       CREATE INDEX IF NOT EXISTS idx_memory_lessons_updated ON memory_lessons(updated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_memory_actors_project_kind ON memory_actors(project_hash, kind, updated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_memory_actors_source ON memory_actors(source, kind);
+      CREATE INDEX IF NOT EXISTS idx_session_actors_session ON session_actors(project_hash, session_id, role_in_session);
+      CREATE INDEX IF NOT EXISTS idx_session_actors_actor ON session_actors(actor_id, project_hash, session_id);
+      CREATE INDEX IF NOT EXISTS idx_actor_cards_perspective ON actor_cards(project_hash, observer_actor_id, observed_actor_id);
+      CREATE INDEX IF NOT EXISTS idx_actor_cards_updated ON actor_cards(updated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_perspective_observations_perspective_level ON perspective_observations(project_hash, observer_actor_id, observed_actor_id, level, confidence DESC, updated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_perspective_observations_session ON perspective_observations(project_hash, session_id, level, updated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_perspective_observations_source_hash ON perspective_observations(project_hash, source_hash);
+      CREATE INDEX IF NOT EXISTS idx_perspective_observations_deleted ON perspective_observations(deleted_at);
       CREATE INDEX IF NOT EXISTS idx_memory_governance_audit_project_operation ON memory_governance_audit(project_hash, operation, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_memory_governance_audit_target ON memory_governance_audit(target_type, target_id, created_at DESC);
 

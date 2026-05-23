@@ -16,3 +16,7 @@ export * from './query-entity-extractor.js';
 export * from './lesson-repository.js';
 export * from './lesson-candidate-service.js';
 export * from './lesson-service.js';
+export * from './actor-repository.js';
+export * from './session-actor-repository.js';
+export * from './actor-card-repository.js';
+export * from './perspective-observation-repository.js';

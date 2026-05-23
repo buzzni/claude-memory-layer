@@ -25,11 +25,14 @@ import { getProjectStoragePath, hashProjectPath } from '../../core/registry/proj
 import { applyPrivacyFilter, maskSensitiveInput } from '../../core/privacy/filter.js';
 import {
   ActionRepository,
+  ActorCardRepository,
+  ActorRepository,
   CheckpointRepository,
   FacetRepository,
   FrontierService,
   GraphPathService,
   LessonRepository,
+  PerspectiveObservationRepository,
   QueryEntityExtractor,
   RETENTION_POLICY_VERSION,
   runRetentionAudit,
@@ -45,7 +48,15 @@ import {
   isGenericContinuationQuery,
   isLowSignalContextContent
 } from '../../core/retrieval-quality.js';
-import type { Config, EventType, MemoryEvent } from '../../core/types.js';
+import type {
+  ActorCard,
+  Config,
+  EventType,
+  MemoryActor,
+  MemoryEvent,
+  PerspectiveObservation,
+  PerspectiveObservationLevel
+} from '../../core/types.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 
 type ToolResult = CallToolResult;
@@ -60,6 +71,35 @@ function resolveMemoryService(args: MemoryToolArgs): MemoryService {
   return getDefaultMemoryService();
 }
 
+const CONTEXT_PACK_PERSPECTIVE_ARG_NAMES = [
+  'observerActorId',
+  'targetActorId',
+  'observedActorId',
+  'includeActorCard',
+  'includePerspectiveObservations',
+  'limitToSession',
+  'reasoningLevel'
+] as const;
+
+function hasMemContextPackPerspectiveArgs(args: Record<string, unknown>): boolean {
+  return CONTEXT_PACK_PERSPECTIVE_ARG_NAMES.some((name) =>
+    Object.prototype.hasOwnProperty.call(args, name) && args[name] !== undefined
+  );
+}
+
+function isAbsoluteProjectPath(value: string): boolean {
+  return path.isAbsolute(value) || path.win32.isAbsolute(value);
+}
+
+function validateMemContextPackPerspectiveArgs(args: Record<string, unknown>): void {
+  const projectPath = optionalString(args.projectPath);
+  if (!projectPath || !isAbsoluteProjectPath(projectPath)) {
+    throw new Error('mem-context-pack perspective context requires an explicit absolute projectPath before memory access');
+  }
+  requiredOperationString(args.observerActorId, 'observerActorId');
+  requiredOperationString(args.targetActorId ?? args.observedActorId, 'targetActorId');
+}
+
 export async function handleToolCall(
   name: string,
   args: Record<string, unknown>
@@ -67,6 +107,10 @@ export async function handleToolCall(
   try {
     if (name === 'external-market-context') {
       return await handleExternalMarketContext(args);
+    }
+
+    if (name === 'mem-context-pack' && hasMemContextPackPerspectiveArgs(args)) {
+      validateMemContextPackPerspectiveArgs(args);
     }
 
     if (MEMORY_OPERATION_TOOL_NAMES.has(name)) {
@@ -136,7 +180,14 @@ const MEMORY_OPERATION_TOOL_NAMES = new Set([
   'mem-checkpoint-list',
   'mem-retention-audit',
   'mem-graph-query',
-  'mem-lesson-list'
+  'mem-lesson-list',
+  'mem-actor-list',
+  'mem-actor-card-get',
+  'mem-actor-card-upsert',
+  'mem-perspective-query',
+  'mem-perspective-context',
+  'mem-perspective-observation-create',
+  'mem-perspective-observation-delete'
 ]);
 
 interface MemoryOperationContext {
@@ -172,6 +223,20 @@ async function handleMemoryOperationTool(name: string, args: Record<string, unkn
         return jsonResult(handleGraphQuery(context, args));
       case 'mem-lesson-list':
         return jsonResult(await handleLessonList(context, args));
+      case 'mem-actor-list':
+        return jsonResult(await handleActorList(context, args));
+      case 'mem-actor-card-get':
+        return jsonResult(await handleActorCardGet(context, args));
+      case 'mem-actor-card-upsert':
+        return jsonResult(await handleActorCardUpsert(context, args));
+      case 'mem-perspective-query':
+        return jsonResult(await handlePerspectiveQuery(context, args));
+      case 'mem-perspective-context':
+        return jsonResult(await handlePerspectiveContext(context, args));
+      case 'mem-perspective-observation-create':
+        return jsonResult(await handlePerspectiveObservationCreate(context, args));
+      case 'mem-perspective-observation-delete':
+        return jsonResult(await handlePerspectiveObservationDelete(context, args));
       default:
         throw new Error(`Unknown memory operation tool: ${name}`);
     }
@@ -414,9 +479,121 @@ async function handleLessonList(context: MemoryOperationContext, args: Record<st
   };
 }
 
+async function handleActorList(context: MemoryOperationContext, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const repository = new ActorRepository(context.db);
+  const actors = await repository.list(omitUndefined({
+    projectHash: context.projectHash,
+    kind: actorKindArg(args.kind),
+    source: optionalString(args.source),
+    limit: numberArg(args.limit, 50, 1, 100)
+  }));
+  return {
+    operation: 'mem-actor-list',
+    projectHash: context.projectHash,
+    count: actors.length,
+    actors: actors.map(formatActor)
+  };
+}
+
+async function handleActorCardGet(context: MemoryOperationContext, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const repository = new ActorCardRepository(context.db);
+  const card = await repository.get({
+    projectHash: context.projectHash,
+    observerActorId: requiredOperationString(args.observerActorId, 'observerActorId'),
+    observedActorId: requiredOperationString(args.observedActorId ?? args.targetActorId, 'observedActorId')
+  });
+  return {
+    operation: 'mem-actor-card-get',
+    projectHash: context.projectHash,
+    found: Boolean(card),
+    card: card ? formatActorCard(card) : undefined
+  };
+}
+
+async function handleActorCardUpsert(context: MemoryOperationContext, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const repository = new ActorCardRepository(context.db);
+  const card = await repository.upsert({
+    projectHash: context.projectHash,
+    observerActorId: requiredOperationString(args.observerActorId, 'observerActorId'),
+    observedActorId: requiredOperationString(args.observedActorId ?? args.targetActorId, 'observedActorId'),
+    entries: actorCardEntriesArg(args.entries),
+    sourceEventIds: stringArrayOperationArg(args.sourceEventIds, 20),
+    updatedBy: sanitizeOperationString(requiredOperationString(args.actor, 'actor'), 120)
+  });
+  return {
+    operation: 'mem-actor-card-upsert',
+    projectHash: context.projectHash,
+    card: formatActorCard(card)
+  };
+}
+
+async function handlePerspectiveQuery(context: MemoryOperationContext, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const repository = new PerspectiveObservationRepository(context.db);
+  const observations = await repository.query(buildPerspectiveObservationQuery(context, args));
+  return {
+    operation: 'mem-perspective-query',
+    projectHash: context.projectHash,
+    count: observations.length,
+    observations: observations.map(formatPerspectiveObservation)
+  };
+}
+
+async function handlePerspectiveContext(context: MemoryOperationContext, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const bundle = await loadPerspectiveContextBundle(context, args, {
+    query: optionalString(args.query),
+    defaultLimit: numberArg(args.limit, perspectiveObservationLimit(args.reasoningLevel), 1, 100)
+  });
+  return {
+    operation: 'mem-perspective-context',
+    projectHash: context.projectHash,
+    observerActorId: bundle.observerActorId,
+    targetActorId: bundle.targetActorId,
+    actorCard: bundle.card ? formatActorCard(bundle.card) : undefined,
+    observations: bundle.observations.map(formatPerspectiveObservation),
+    count: bundle.observations.length
+  };
+}
+
+async function handlePerspectiveObservationCreate(context: MemoryOperationContext, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const repository = new PerspectiveObservationRepository(context.db);
+  const observation = await repository.create({
+    projectHash: context.projectHash,
+    observerActorId: requiredOperationString(args.observerActorId, 'observerActorId'),
+    observedActorId: requiredOperationString(args.observedActorId ?? args.targetActorId, 'observedActorId'),
+    sessionId: optionalString(args.sessionId),
+    level: perspectiveLevelArg(args.level, 'explicit'),
+    content: sanitizeOperationString(requiredOperationString(args.content, 'content'), 1000),
+    confidence: boundedNumberArg(args.confidence, 0.5, 0, 1),
+    sourceEventIds: stringArrayOperationArg(args.sourceEventIds, 20),
+    sourceObservationIds: stringArrayOperationArg(args.sourceObservationIds, 20),
+    createdBy: perspectiveCreatedByArg(args.createdBy),
+    metadata: isPlainRecord(args.metadata) ? sanitizeOperationRecord(args.metadata) : undefined,
+    actor: sanitizeOperationString(requiredOperationString(args.actor, 'actor'), 120)
+  });
+  return {
+    operation: 'mem-perspective-observation-create',
+    projectHash: context.projectHash,
+    observation: formatPerspectiveObservation(observation)
+  };
+}
+
+async function handlePerspectiveObservationDelete(context: MemoryOperationContext, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const repository = new PerspectiveObservationRepository(context.db);
+  const observation = await repository.deleteSoft({
+    projectHash: context.projectHash,
+    observationId: requiredOperationString(args.observationId, 'observationId'),
+    actor: sanitizeOperationString(requiredOperationString(args.actor, 'actor'), 120)
+  });
+  return {
+    operation: 'mem-perspective-observation-delete',
+    projectHash: context.projectHash,
+    observation: formatPerspectiveObservation(observation)
+  };
+}
+
 function requiredProjectPath(args: Record<string, unknown>): string {
   const projectPath = optionalString(args.projectPath);
-  if (!projectPath || (!path.isAbsolute(projectPath) && !path.win32.isAbsolute(projectPath))) {
+  if (!projectPath || !isAbsoluteProjectPath(projectPath)) {
     throw new Error('memory operation tools require an explicit absolute projectPath');
   }
   return projectPath;
@@ -445,6 +622,136 @@ function graphDirectionArg(value: unknown): 'outgoing' | 'incoming' | 'both' {
   return value === 'outgoing' || value === 'incoming' || value === 'both' ? value : 'both';
 }
 
+const MEMORY_ACTOR_KINDS = new Set(['user', 'assistant', 'subagent', 'tool', 'system', 'integration', 'unknown']);
+const PERSPECTIVE_LEVELS = new Set<PerspectiveObservationLevel>(['explicit', 'deductive', 'inductive', 'contradiction']);
+const PERSPECTIVE_CREATED_BY = new Set(['rule', 'llm', 'manual', 'import']);
+const ACTOR_CARD_ENTRY_PATTERN = /^(IDENTITY|ATTRIBUTE|RELATIONSHIP|INSTRUCTION):\s*\S/;
+
+type PerspectiveCreatedBy = 'rule' | 'llm' | 'manual' | 'import';
+
+interface PerspectiveContextBundle {
+  observerActorId: string;
+  targetActorId: string;
+  card: ActorCard | null;
+  observations: PerspectiveObservation[];
+}
+
+function actorKindArg(value: unknown): MemoryActor['kind'] | undefined {
+  return typeof value === 'string' && MEMORY_ACTOR_KINDS.has(value) ? value as MemoryActor['kind'] : undefined;
+}
+
+function actorCardEntriesArg(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    throw new Error('entries must be a non-empty array of actor card entries');
+  }
+  if (value.length === 0) {
+    throw new Error('entries must contain at least one actor card entry');
+  }
+  if (value.length > 40) {
+    throw new Error('actor card supports at most 40 entries');
+  }
+
+  return value.map((item) => {
+    if (typeof item !== 'string' || item.trim().length === 0) {
+      throw new Error('actor card entries must be non-empty strings');
+    }
+    const normalized = item.replace(/\s+/g, ' ').trim();
+    if (normalized.length > 200) {
+      throw new Error('actor card entries must be 200 characters or fewer');
+    }
+    const sanitized = sanitizeOperationString(normalized, 200);
+    if (!ACTOR_CARD_ENTRY_PATTERN.test(sanitized)) {
+      throw new Error('actor card entry prefix must be one of IDENTITY:, ATTRIBUTE:, RELATIONSHIP:, or INSTRUCTION:');
+    }
+    if (/\[REDACTED(?:_KEY)?\]|\[path\]/i.test(sanitized)) {
+      throw new Error('actor card entries must not contain secrets, redacted values, or private paths');
+    }
+    return sanitized;
+  });
+}
+
+function perspectiveLevelArg(value: unknown, fallback: PerspectiveObservationLevel): PerspectiveObservationLevel {
+  return typeof value === 'string' && PERSPECTIVE_LEVELS.has(value as PerspectiveObservationLevel)
+    ? value as PerspectiveObservationLevel
+    : fallback;
+}
+
+function perspectiveLevelsArg(value: unknown): PerspectiveObservationLevel[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const selected = value
+    .map((item) => typeof item === 'string' ? item : '')
+    .filter((item): item is PerspectiveObservationLevel => PERSPECTIVE_LEVELS.has(item as PerspectiveObservationLevel));
+  return selected.length > 0 ? Array.from(new Set(selected)) : undefined;
+}
+
+function perspectiveCreatedByArg(value: unknown): PerspectiveCreatedBy {
+  return typeof value === 'string' && PERSPECTIVE_CREATED_BY.has(value) ? value as PerspectiveCreatedBy : 'manual';
+}
+
+function perspectiveObservationLimit(reasoningLevel: unknown): number {
+  if (reasoningLevel === 'minimal') return 3;
+  if (reasoningLevel === 'low') return 6;
+  if (reasoningLevel === 'high') return 20;
+  return 12;
+}
+
+function sourceRefHints(sourceEventIds: string[]): string[] {
+  return sourceEventIds
+    .slice(0, 5)
+    .map((id) => `mem-source-ref ids=['${generateCitationId(id)}']`);
+}
+
+function buildPerspectiveObservationQuery(
+  context: MemoryOperationContext,
+  args: Record<string, unknown>,
+  overrides: { query?: string; sessionId?: string; limit?: number } = {}
+): Record<string, unknown> {
+  const query = overrides.query ?? optionalString(args.query);
+  const sessionId = overrides.sessionId ?? optionalString(args.sessionId);
+  const observedActorId = optionalString(args.observedActorId) ?? optionalString(args.targetActorId);
+  return omitUndefined({
+    projectHash: context.projectHash,
+    observerActorId: optionalString(args.observerActorId),
+    observedActorId,
+    sessionId,
+    levels: perspectiveLevelsArg(args.levels),
+    query: query ? sanitizeOperationString(query, 500) : undefined,
+    includeDeleted: typeof args.includeDeleted === 'boolean' && args.includeDeleted ? true : undefined,
+    limit: overrides.limit ?? numberArg(args.limit, 50, 1, 100)
+  });
+}
+
+async function loadPerspectiveContextBundle(
+  context: MemoryOperationContext,
+  args: Record<string, unknown>,
+  options: { query?: string; defaultLimit: number }
+): Promise<PerspectiveContextBundle> {
+  const observerActorId = requiredOperationString(args.observerActorId, 'observerActorId');
+  const targetActorId = requiredOperationString(args.targetActorId ?? args.observedActorId, 'targetActorId');
+  const includeActorCard = args.includeActorCard !== false;
+  const includePerspectiveObservations = args.includePerspectiveObservations !== false;
+  const cardRepository = includeActorCard ? new ActorCardRepository(context.db) : undefined;
+  const observationRepository = includePerspectiveObservations ? new PerspectiveObservationRepository(context.db) : undefined;
+  const limitToSession = booleanArg(args.limitToSession, false);
+  const sessionId = limitToSession ? optionalString(args.sessionId) : undefined;
+
+  const card = cardRepository
+    ? await cardRepository.get({ projectHash: context.projectHash, observerActorId, observedActorId: targetActorId })
+    : null;
+  const observations = observationRepository
+    ? await observationRepository.query(omitUndefined({
+      projectHash: context.projectHash,
+      observerActorId,
+      observedActorId: targetActorId,
+      sessionId,
+      query: options.query ? sanitizeOperationString(options.query, 500) : undefined,
+      limit: options.defaultLimit
+    }))
+    : [];
+
+  return { observerActorId, targetActorId, card, observations };
+}
+
 function uniqueEntityStartNodes(candidates: QueryEntityCandidate[]): Array<{ type: 'entity'; id: string }> {
   const seen = new Set<string>();
   const startNodes: Array<{ type: 'entity'; id: string }> = [];
@@ -463,6 +770,55 @@ function omitUndefined<T extends Record<string, unknown>>(value: T): Record<stri
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value) && !(value instanceof Date);
+}
+
+function formatActor(actor: MemoryActor): Record<string, unknown> {
+  return omitUndefined({
+    actorId: sanitizeOperationString(actor.actorId, 160),
+    projectHash: actor.projectHash,
+    kind: actor.kind,
+    displayName: sanitizeOperationString(actor.displayName, 160),
+    source: sanitizeOperationString(actor.source, 120),
+    metadata: actor.metadata ? compactRecord(actor.metadata, 10) : undefined,
+    createdAt: isoDate(actor.createdAt),
+    updatedAt: isoDate(actor.updatedAt)
+  });
+}
+
+function formatActorCard(card: ActorCard): Record<string, unknown> {
+  return {
+    cardId: card.cardId,
+    projectHash: card.projectHash,
+    observerActorId: sanitizeOperationString(card.observerActorId, 160),
+    observedActorId: sanitizeOperationString(card.observedActorId, 160),
+    entries: compactStringArray(card.entries, 40, 200),
+    sourceEventIds: compactStringArray(card.sourceEventIds, 10, 120),
+    sourceRefs: sourceRefHints(card.sourceEventIds),
+    updatedBy: card.updatedBy ? sanitizeOperationString(card.updatedBy, 120) : undefined,
+    createdAt: isoDate(card.createdAt),
+    updatedAt: isoDate(card.updatedAt)
+  };
+}
+
+function formatPerspectiveObservation(observation: PerspectiveObservation): Record<string, unknown> {
+  return omitUndefined({
+    observationId: observation.observationId,
+    projectHash: observation.projectHash,
+    observerActorId: sanitizeOperationString(observation.observerActorId, 160),
+    observedActorId: sanitizeOperationString(observation.observedActorId, 160),
+    sessionId: observation.sessionId ? sanitizeOperationString(observation.sessionId, 160) : undefined,
+    level: observation.level,
+    content: sanitizeOperationString(observation.content, 1000),
+    confidence: observation.confidence,
+    sourceEventIds: compactStringArray(observation.sourceEventIds, 10, 120),
+    sourceObservationIds: compactStringArray(observation.sourceObservationIds, 10, 120),
+    sourceRefs: sourceRefHints(observation.sourceEventIds),
+    createdBy: observation.createdBy,
+    metadata: observation.metadata ? compactRecord(observation.metadata, 10) : undefined,
+    createdAt: isoDate(observation.createdAt),
+    updatedAt: isoDate(observation.updatedAt),
+    deletedAt: isoDate(observation.deletedAt)
+  });
 }
 
 function formatFacet(facet: MemoryFacetAssignment): Record<string, unknown> {
@@ -890,6 +1246,15 @@ async function handleMemContextPack(memoryService: MemoryService, args: Record<s
     recentSessionIds,
     projectPath
   });
+  const hasPerspectiveContext = optionalString(args.observerActorId) !== undefined
+    || optionalString(args.targetActorId) !== undefined
+    || optionalString(args.observedActorId) !== undefined;
+  const perspectiveBundle = hasPerspectiveContext
+    ? await withMemoryOperationContext(args, (context) => loadPerspectiveContextBundle(context, args, {
+      query,
+      defaultLimit: perspectiveObservationLimit(args.reasoningLevel)
+    }))
+    : undefined;
 
   const lines: string[] = [
     '## Project Context Pack',
@@ -939,6 +1304,10 @@ async function handleMemContextPack(memoryService: MemoryService, args: Record<s
   } else {
     appendRelevantMemories(lines, relevantMemories);
     appendRecentTimeline(lines, sessions);
+  }
+
+  if (perspectiveBundle) {
+    appendPerspectiveContext(lines, perspectiveBundle);
   }
 
   const sourceIds = relevantMemories
@@ -1391,6 +1760,35 @@ function appendRecentTimeline(lines: string[], sessions: SessionSummary[]): void
   }
 }
 
+function appendPerspectiveContext(lines: string[], bundle: PerspectiveContextBundle): void {
+  lines.push('### Perspective Context', '');
+  lines.push(`- Observer: ${sanitizeOperationString(bundle.observerActorId, 160)}`);
+  lines.push(`- Target: ${sanitizeOperationString(bundle.targetActorId, 160)}`);
+  if (!bundle.card && bundle.observations.length === 0) {
+    lines.push('- No actor card or perspective observations found.', '');
+    return;
+  }
+
+  if (bundle.card) {
+    lines.push('', 'Actor Card:');
+    for (const entry of bundle.card.entries.slice(0, 40)) {
+      lines.push(`- ${sanitizeOperationString(entry, 200)}`);
+    }
+    const refs = sourceRefHints(bundle.card.sourceEventIds);
+    if (refs.length > 0) lines.push(`- Source refs: ${refs.join('; ')}`);
+  }
+
+  if (bundle.observations.length > 0) {
+    lines.push('', 'Observations:');
+    for (const observation of bundle.observations.slice(0, 20)) {
+      const sourceRefs = sourceRefHints(observation.sourceEventIds);
+      const refSuffix = sourceRefs.length > 0 ? ` | ${sourceRefs.join('; ')}` : '';
+      lines.push(`- [${observation.level} ${observation.confidence.toFixed(2)}] ${sanitizeOperationString(observation.content, 500)}${refSuffix}`);
+    }
+  }
+  lines.push('');
+}
+
 function countEventTypes(events: MemoryEvent[]): Record<EventType, number> {
   return events.reduce((acc, event) => {
     acc[event.eventType] = (acc[event.eventType] || 0) + 1;
@@ -1583,6 +1981,12 @@ function numberArg(value: unknown, fallback: number, min: number, max: number): 
   const parsed = typeof value === 'number' ? value : Number(value);
   if (!Number.isFinite(parsed)) return fallback;
   return Math.min(max, Math.max(min, Math.floor(parsed)));
+}
+
+function boundedNumberArg(value: unknown, fallback: number, min: number, max: number): number {
+  const parsed = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, parsed));
 }
 
 function formatMetadataValue(value: unknown): string {

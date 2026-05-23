@@ -20,6 +20,11 @@ const actorProperty = {
   description: 'Actor identifier recorded in governance audit metadata for state-changing operations.'
 } as const;
 
+const targetActorAliasAnyOf = [
+  { required: ['targetActorId'] },
+  { required: ['observedActorId'] }
+] as const;
+
 const memoryOperationTargetTypeProperty = {
   type: 'string',
   enum: ['event', 'entity', 'edge', 'consolidated_memory', 'lesson', 'action'],
@@ -188,6 +193,35 @@ export const tools: Tool[] = [
         stateDb: {
           type: 'string',
           description: 'Optional Hermes state database path override for refreshLatest'
+        },
+        observerActorId: {
+          type: 'string',
+          description: 'Optional perspective observer actor id. When supplied with targetActorId, adds an actor-card/perspective lane.'
+        },
+        targetActorId: {
+          type: 'string',
+          description: 'Optional perspective target actor id (the observed actor). Requires observerActorId for perspective context.'
+        },
+        observedActorId: {
+          type: 'string',
+          description: 'Alias for targetActorId.'
+        },
+        includeActorCard: {
+          type: 'boolean',
+          description: 'Include the compact actor card for observerActorId -> targetActorId when available (default: true when perspective actors are supplied).'
+        },
+        includePerspectiveObservations: {
+          type: 'boolean',
+          description: 'Include relevant perspective observations for observerActorId -> targetActorId when available (default: true when perspective actors are supplied).'
+        },
+        limitToSession: {
+          type: 'boolean',
+          description: 'When true and sessionId is supplied, restrict perspective observations to session-scoped plus durable observations.'
+        },
+        reasoningLevel: {
+          type: 'string',
+          enum: ['minimal', 'low', 'medium', 'high'],
+          description: 'Perspective context breadth hint: minimal/low return fewer observations, medium/high return more derived context.'
         }
       }
     }
@@ -537,6 +571,257 @@ export const tools: Tool[] = [
         }
       },
       required: ['projectPath']
+    }
+  },
+  {
+    name: 'mem-actor-list',
+    description: 'List project-scoped or global memory actors with compact privacy-safe identity metadata.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectPath: requiredProjectPathProperty,
+        kind: {
+          type: 'string',
+          enum: ['user', 'assistant', 'subagent', 'tool', 'system', 'integration', 'unknown'],
+          description: 'Optional actor kind filter.'
+        },
+        source: {
+          type: 'string',
+          description: 'Optional actor source filter such as hermes, claude, codex, discord, telegram, mcp, or tool.'
+        },
+        limit: operationLimitProperty
+      },
+      required: ['projectPath']
+    }
+  },
+  {
+    name: 'mem-actor-card-get',
+    description: 'Read the compact actor card for one observer -> observed perspective without raw transcript disclosure.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectPath: requiredProjectPathProperty,
+        observerActorId: {
+          type: 'string',
+          description: 'Observer actor id for the perspective card.'
+        },
+        observedActorId: {
+          type: 'string',
+          description: 'Observed/target actor id for the perspective card.'
+        },
+        targetActorId: {
+          type: 'string',
+          description: 'Alias for observedActorId.'
+        }
+      },
+      required: ['projectPath', 'observerActorId'],
+      anyOf: targetActorAliasAnyOf
+    }
+  },
+  {
+    name: 'mem-actor-card-upsert',
+    description: 'Create or replace a compact actor card through an audited state-changing perspective operation.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectPath: requiredProjectPathProperty,
+        observerActorId: {
+          type: 'string',
+          description: 'Observer actor id for the perspective card.'
+        },
+        observedActorId: {
+          type: 'string',
+          description: 'Observed/target actor id for the perspective card.'
+        },
+        targetActorId: {
+          type: 'string',
+          description: 'Alias for observedActorId.'
+        },
+        entries: {
+          type: 'array',
+          items: { type: 'string' },
+          maxItems: 40,
+          description: 'Actor-card entries. Each entry must start with IDENTITY:, ATTRIBUTE:, RELATIONSHIP:, or INSTRUCTION:.'
+        },
+        sourceEventIds: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Optional bounded source event references used as evidence.'
+        },
+        actor: actorProperty
+      },
+      required: ['projectPath', 'observerActorId', 'entries', 'actor'],
+      anyOf: targetActorAliasAnyOf
+    }
+  },
+  {
+    name: 'mem-perspective-query',
+    description: 'Query observer -> observed perspective observations as a separate retrieval lane with source-reference hints.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectPath: requiredProjectPathProperty,
+        observerActorId: {
+          type: 'string',
+          description: 'Optional observer actor id filter.'
+        },
+        targetActorId: {
+          type: 'string',
+          description: 'Optional observed/target actor id filter.'
+        },
+        observedActorId: {
+          type: 'string',
+          description: 'Alias for targetActorId.'
+        },
+        sessionId: {
+          type: 'string',
+          description: 'Optional session id filter; durable observations are also eligible.'
+        },
+        levels: {
+          type: 'array',
+          items: { type: 'string', enum: ['explicit', 'deductive', 'inductive', 'contradiction'] },
+          description: 'Optional observation levels to include.'
+        },
+        query: {
+          type: 'string',
+          description: 'Optional natural-language filter over observation content.'
+        },
+        includeDeleted: {
+          type: 'boolean',
+          description: 'Include soft-deleted observations (default: false).'
+        },
+        limit: operationLimitProperty
+      },
+      required: ['projectPath']
+    }
+  },
+  {
+    name: 'mem-perspective-context',
+    description: 'Build a compact actor-card plus perspective-observation context bundle for one observer -> target actor pair.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectPath: requiredProjectPathProperty,
+        observerActorId: {
+          type: 'string',
+          description: 'Observer actor id for the context bundle.'
+        },
+        targetActorId: {
+          type: 'string',
+          description: 'Observed/target actor id for the context bundle.'
+        },
+        observedActorId: {
+          type: 'string',
+          description: 'Alias for targetActorId.'
+        },
+        sessionId: {
+          type: 'string',
+          description: 'Optional session id filter when limitToSession is true.'
+        },
+        query: {
+          type: 'string',
+          description: 'Optional natural-language filter over observation content.'
+        },
+        includeActorCard: {
+          type: 'boolean',
+          description: 'Include actor card entries when available (default: true).'
+        },
+        includePerspectiveObservations: {
+          type: 'boolean',
+          description: 'Include observations when available (default: true).'
+        },
+        limitToSession: {
+          type: 'boolean',
+          description: 'When true and sessionId is supplied, restrict observations to session-scoped plus durable observations.'
+        },
+        reasoningLevel: {
+          type: 'string',
+          enum: ['minimal', 'low', 'medium', 'high'],
+          description: 'Context breadth hint controlling observation limit.'
+        },
+        limit: operationLimitProperty
+      },
+      required: ['projectPath', 'observerActorId'],
+      anyOf: targetActorAliasAnyOf
+    }
+  },
+  {
+    name: 'mem-perspective-observation-create',
+    description: 'Create an audited observer -> observed perspective observation with bounded evidence references.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectPath: requiredProjectPathProperty,
+        observerActorId: {
+          type: 'string',
+          description: 'Observer actor id.'
+        },
+        observedActorId: {
+          type: 'string',
+          description: 'Observed/target actor id.'
+        },
+        targetActorId: {
+          type: 'string',
+          description: 'Alias for observedActorId.'
+        },
+        sessionId: {
+          type: 'string',
+          description: 'Optional session id that scoped the observation.'
+        },
+        level: {
+          type: 'string',
+          enum: ['explicit', 'deductive', 'inductive', 'contradiction'],
+          description: 'Observation level (default: explicit).'
+        },
+        content: {
+          type: 'string',
+          description: 'Observation content. Handler sanitizes before persistence.'
+        },
+        confidence: {
+          type: 'number',
+          minimum: 0,
+          maximum: 1,
+          description: 'Optional confidence for the observation.'
+        },
+        sourceEventIds: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Bounded source event references used as evidence.'
+        },
+        sourceObservationIds: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Bounded source observation references used as evidence for derived observations.'
+        },
+        createdBy: {
+          type: 'string',
+          enum: ['rule', 'llm', 'manual', 'import'],
+          description: 'Creation source label (default: manual).'
+        },
+        metadata: {
+          type: 'object',
+          description: 'Optional sanitized metadata.'
+        },
+        actor: actorProperty
+      },
+      required: ['projectPath', 'observerActorId', 'content', 'actor'],
+      anyOf: targetActorAliasAnyOf
+    }
+  },
+  {
+    name: 'mem-perspective-observation-delete',
+    description: 'Soft-delete an audited perspective observation by id; hard deletion is not exposed.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectPath: requiredProjectPathProperty,
+        observationId: {
+          type: 'string',
+          description: 'Perspective observation id to soft-delete.'
+        },
+        actor: actorProperty
+      },
+      required: ['projectPath', 'observationId', 'actor']
     }
   }
 ];

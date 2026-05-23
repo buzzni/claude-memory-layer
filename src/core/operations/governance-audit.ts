@@ -13,7 +13,10 @@ export const MEMORY_GOVERNANCE_AUDIT_OPERATIONS = [
   'retention_score',
   'quarantine',
   'verify',
-  'lesson_promote'
+  'lesson_promote',
+  'actor_card_upsert',
+  'perspective_observation_create',
+  'perspective_observation_delete'
 ] as const;
 
 export type MemoryGovernanceAuditOperation = typeof MEMORY_GOVERNANCE_AUDIT_OPERATIONS[number];
