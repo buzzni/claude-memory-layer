@@ -489,10 +489,18 @@ describe('MCP perspective memory handlers', () => {
       limit: 12
     });
     expect(text).toContain('### Perspective Context');
+    expect(text).toContain('Continue the perspective memory work.');
+    expect(text).toContain('Perspective Retrieval Lanes');
+    expect(text).toContain('actor_card=1');
+    expect(text).toContain('explicit_observations=1');
+    expect(text).toContain('derived_observations=1');
+    expect(text).toContain('contradiction_observations=0');
     expect(text).toContain('Actor Card');
-    expect(text).toContain('ATTRIBUTE: Prefers Korean updates');
-    expect(text).toContain('explicit');
-    expect(text).toContain('deductive');
+    expect(text).toContain('[actor_card] ATTRIBUTE: Prefers Korean updates');
+    expect(text).toContain('Explicit observations:');
+    expect(text).toContain('[perspective:explicit 0.95]');
+    expect(text).toContain('Derived observations:');
+    expect(text).toContain('[perspective:deductive 0.82]');
     expect(text).toContain('mem-source-ref');
     expect(text).not.toContain('/repo/app');
   });

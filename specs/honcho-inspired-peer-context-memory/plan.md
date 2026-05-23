@@ -235,6 +235,7 @@ Acceptance:
 - [x] Existing `mem-context-pack` tests pass unchanged.
 - [x] New test verifies graceful empty perspective output.
 - [x] New test verifies actor card + observation inclusion.
+- [x] Context-pack output exposes perspective retrieval lane counts and separated actor-card/explicit/derived/contradiction sections for debugging.
 
 ## Phase 3 — MCP/CLI operations (P1)
 

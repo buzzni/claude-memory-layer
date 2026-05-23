@@ -1769,24 +1769,50 @@ function appendPerspectiveContext(lines: string[], bundle: PerspectiveContextBun
     return;
   }
 
+  const lanes = partitionPerspectiveObservationLanes(bundle.observations);
+  lines.push('', 'Perspective Retrieval Lanes:');
+  lines.push(`- actor_card=${bundle.card ? 1 : 0}; explicit_observations=${lanes.explicit.length}; derived_observations=${lanes.derived.length}; contradiction_observations=${lanes.contradiction.length}`);
+
   if (bundle.card) {
     lines.push('', 'Actor Card:');
     for (const entry of bundle.card.entries.slice(0, 40)) {
-      lines.push(`- ${sanitizeOperationString(entry, 200)}`);
+      lines.push(`- [actor_card] ${sanitizeOperationString(entry, 200)}`);
     }
     const refs = sourceRefHints(bundle.card.sourceEventIds);
     if (refs.length > 0) lines.push(`- Source refs: ${refs.join('; ')}`);
   }
 
-  if (bundle.observations.length > 0) {
-    lines.push('', 'Observations:');
-    for (const observation of bundle.observations.slice(0, 20)) {
-      const sourceRefs = sourceRefHints(observation.sourceEventIds);
-      const refSuffix = sourceRefs.length > 0 ? ` | ${sourceRefs.join('; ')}` : '';
-      lines.push(`- [${observation.level} ${observation.confidence.toFixed(2)}] ${sanitizeOperationString(observation.content, 500)}${refSuffix}`);
-    }
-  }
+  appendPerspectiveObservationLane(lines, 'Contradiction observations:', lanes.contradiction);
+  appendPerspectiveObservationLane(lines, 'Explicit observations:', lanes.explicit);
+  appendPerspectiveObservationLane(lines, 'Derived observations:', lanes.derived);
   lines.push('');
+}
+
+function partitionPerspectiveObservationLanes(observations: PerspectiveObservation[]): {
+  contradiction: PerspectiveObservation[];
+  explicit: PerspectiveObservation[];
+  derived: PerspectiveObservation[];
+} {
+  return {
+    contradiction: observations.filter((observation) => observation.level === 'contradiction'),
+    explicit: observations.filter((observation) => observation.level === 'explicit'),
+    derived: observations.filter((observation) => observation.level === 'deductive' || observation.level === 'inductive')
+  };
+}
+
+function appendPerspectiveObservationLane(
+  lines: string[],
+  title: string,
+  observations: PerspectiveObservation[]
+): void {
+  if (observations.length === 0) return;
+
+  lines.push('', title);
+  for (const observation of observations.slice(0, 20)) {
+    const sourceRefs = sourceRefHints(observation.sourceEventIds);
+    const refSuffix = sourceRefs.length > 0 ? ` | ${sourceRefs.join('; ')}` : '';
+    lines.push(`- [perspective:${observation.level} ${observation.confidence.toFixed(2)}] ${sanitizeOperationString(observation.content, 500)}${refSuffix}`);
+  }
 }
 
 function countEventTypes(events: MemoryEvent[]): Record<EventType, number> {
