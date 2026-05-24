@@ -516,22 +516,72 @@ function perspectiveLevelRows(rows, emptyMessage) {
   return operationRows(rows, 'level', 'count', emptyMessage);
 }
 
+function perspectiveGraphRows(edges) {
+  const safeEdges = Array.isArray(edges) ? edges : [];
+  if (safeEdges.length === 0) return operationEmpty('No perspective graph edges');
+  return safeEdges.map(edge => {
+    const confidence = `${(Number(edge?.averageConfidence || 0) * 100).toFixed(0)}% avg confidence`;
+    const levels = (Array.isArray(edge?.levelCounts) ? edge.levelCounts : [])
+      .map(level => `${escapeHtml(level?.level || 'unknown')}: ${formatNumber(operationCount(level?.count))}`)
+      .join(' · ');
+    return `
+      <div class="shared-item">
+        <div class="shared-info" style="flex-direction:column; align-items:flex-start; gap:2px; min-width:0;">
+          <span style="font-size:12px; color:var(--text-secondary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:240px;">${escapeHtml(edge?.observerActorId || 'unknown')} → ${escapeHtml(edge?.observedActorId || 'unknown')}</span>
+          <span style="font-size:10px; color:var(--text-muted);">${formatNumber(operationCount(edge?.observationCount))} observations · ${formatNumber(operationCount(edge?.actorCardCount))} actor cards · ${confidence}</span>
+          <span style="font-size:10px; color:var(--text-muted);">sources: ${formatNumber(operationCount(edge?.sourceEventCount))} events · ${formatNumber(operationCount(edge?.sourceObservationCount))} observations</span>
+          <span style="font-size:10px; color:var(--text-muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:240px;">${levels || 'no levels'}</span>
+        </div>
+        <div class="shared-count">${formatNumber(operationCount(edge?.observationCount))}</div>
+      </div>
+    `;
+  }).join('');
+}
+
+function perspectiveSourceEvidenceRows(sourceEvidence) {
+  const rows = Array.isArray(sourceEvidence?.byLevel) ? sourceEvidence.byLevel : [];
+  const summary = sourceEvidence?.summary || {};
+  if (rows.length === 0) return operationEmpty('No source evidence aggregates');
+  return `
+    <div class="shared-item">
+      <div class="shared-info" style="flex-direction:column; align-items:flex-start; gap:2px; min-width:0;">
+        <span style="font-size:12px; color:var(--text-secondary);">Evidence coverage</span>
+        <span style="font-size:10px; color:var(--text-muted);">${formatNumber(operationCount(summary.totalSourceEvents))} source events · ${formatNumber(operationCount(summary.totalSourceObservations))} source observations · ${formatNumber(operationCount(summary.observationsMissingEvidence))} missing evidence</span>
+      </div>
+      <div class="shared-count">${formatNumber(operationCount(summary.totalObservations))}</div>
+    </div>
+    ${rows.map(row => `
+      <div class="shared-item">
+        <div class="shared-info" style="flex-direction:column; align-items:flex-start; gap:2px; min-width:0;">
+          <span style="font-size:12px; color:var(--text-secondary);">${escapeHtml(row?.level || 'unknown')}</span>
+          <span style="font-size:10px; color:var(--text-muted);">sources: ${formatNumber(operationCount(row?.sourceEventCount))} events · ${formatNumber(operationCount(row?.sourceObservationCount))} observations · missing: ${formatNumber(operationCount(row?.missingEvidenceCount))}</span>
+        </div>
+        <div class="shared-count">${formatNumber(operationCount(row?.count))}</div>
+      </div>
+    `).join('')}
+  `;
+}
+
 function updatePerspectiveStatsUI() {
   const payload = state.perspectiveStats;
   const summaryEl = document.getElementById('perspective-stats-summary');
   const actorsEl = document.getElementById('perspective-actors-list');
   const cardsEl = document.getElementById('perspective-cards-list');
   const observationsEl = document.getElementById('perspective-observations-list');
+  const graphEl = document.getElementById('perspective-graph-list');
+  const evidenceEl = document.getElementById('perspective-evidence-list');
   const contradictionsEl = document.getElementById('perspective-contradictions-list');
   const activityEl = document.getElementById('perspective-activity-list');
 
-  if (!summaryEl && !actorsEl && !cardsEl && !observationsEl && !contradictionsEl && !activityEl) return;
+  if (!summaryEl && !actorsEl && !cardsEl && !observationsEl && !graphEl && !evidenceEl && !contradictionsEl && !activityEl) return;
 
   if (!payload) {
     if (summaryEl) summaryEl.innerHTML = '<span style="color:var(--text-muted);">Perspective aggregates unavailable</span>';
     if (actorsEl) actorsEl.innerHTML = operationEmpty('Perspective aggregate data unavailable');
     if (cardsEl) cardsEl.innerHTML = operationEmpty('Perspective aggregate data unavailable');
     if (observationsEl) observationsEl.innerHTML = operationEmpty('Perspective aggregate data unavailable');
+    if (graphEl) graphEl.innerHTML = operationEmpty('Perspective aggregate data unavailable');
+    if (evidenceEl) evidenceEl.innerHTML = operationEmpty('Perspective aggregate data unavailable');
     if (contradictionsEl) contradictionsEl.innerHTML = operationEmpty('Perspective aggregate data unavailable');
     if (activityEl) activityEl.innerHTML = operationEmpty('Perspective aggregate data unavailable');
     return;
@@ -548,6 +598,7 @@ function updatePerspectiveStatsUI() {
           <span><strong>${formatNumber(operationCount(payload.sessionActors?.total))} session actors</strong></span>
           <span><strong>${formatNumber(operationCount(payload.actorCards?.total))} actor cards</strong></span>
           <span><strong>${formatNumber(operationCount(payload.observations?.total))} observations</strong></span>
+          <span><strong>${formatNumber(operationCount(payload.perspectiveGraph?.summary?.totalEdges))} perspective edges</strong></span>
           <span><strong>${formatNumber(operationCount(payload.contradictions?.summary?.total))} contradictions</strong></span>
         </div>
       `;
@@ -558,6 +609,8 @@ function updatePerspectiveStatsUI() {
     if (actorsEl) actorsEl.innerHTML = operationEmpty('No actor kind data');
     if (cardsEl) cardsEl.innerHTML = operationEmpty('No actor card aggregates');
     if (observationsEl) observationsEl.innerHTML = operationEmpty('No perspective observation data');
+    if (graphEl) graphEl.innerHTML = operationEmpty('No perspective graph edges');
+    if (evidenceEl) evidenceEl.innerHTML = operationEmpty('No source evidence aggregates');
     if (contradictionsEl) contradictionsEl.innerHTML = operationEmpty('No contradictions queued');
     if (activityEl) activityEl.innerHTML = operationEmpty('No perspective activity');
     return;
@@ -610,6 +663,14 @@ function updatePerspectiveStatsUI() {
       <div class="section-label" style="font-size:11px; margin:12px 0 6px;">Created By</div>
       ${byCreatedBy}
     `;
+  }
+
+  if (graphEl) {
+    graphEl.innerHTML = perspectiveGraphRows(payload.perspectiveGraph?.edges);
+  }
+
+  if (evidenceEl) {
+    evidenceEl.innerHTML = perspectiveSourceEvidenceRows(payload.sourceEvidence);
   }
 
   if (contradictionsEl) {

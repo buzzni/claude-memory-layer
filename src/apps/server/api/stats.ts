@@ -99,6 +99,40 @@ type PerspectiveContradictionRow = {
   updatedAt: string;
 };
 
+type PerspectiveGraphRow = {
+  observerActorId: string;
+  observedActorId: string;
+  observationCount: number;
+  averageConfidence: number;
+  sourceEventCount: number;
+  sourceObservationCount: number;
+  latestUpdatedAt: string;
+  actorCardCount: number;
+};
+
+type PerspectiveGraphLevelRow = {
+  observerActorId: string;
+  observedActorId: string;
+  level: string;
+  count: number;
+};
+
+type PerspectiveGraphEdgeKeyRow = {
+  observerActorId: string;
+  observedActorId: string;
+  count: number;
+};
+
+type PerspectiveSourceEvidenceRow = {
+  level: string;
+  count: number;
+  sourceEventCount: number;
+  sourceObservationCount: number;
+  observationsWithEventEvidence: number;
+  observationsWithObservationEvidence: number;
+  missingEvidenceCount: number;
+};
+
 function operationsStatsHomeDir(): string {
   return process.env.HOME || os.homedir();
 }
@@ -209,6 +243,21 @@ function emptyPerspectiveStatsPayload(context: OperationsStatsContext, databaseE
       total: 0,
       byLevel: [],
       byCreatedBy: []
+    },
+    perspectiveGraph: {
+      summary: { totalEdges: 0, returnedEdges: 0, totalObservations: 0, selfEdges: 0, crossActorEdges: 0 },
+      edges: []
+    },
+    sourceEvidence: {
+      summary: {
+        totalObservations: 0,
+        observationsWithEventEvidence: 0,
+        observationsWithObservationEvidence: 0,
+        observationsMissingEvidence: 0,
+        totalSourceEvents: 0,
+        totalSourceObservations: 0
+      },
+      byLevel: []
     },
     contradictions: {
       summary: { total: 0, returnedItems: 0 },
@@ -347,6 +396,144 @@ function buildPerspectiveContradictions(db: SQLiteDatabase, projectHash: string 
   return {
     summary: { total, returnedItems: items.length },
     items
+  };
+}
+
+function perspectivePairKey(observerActorId: string, observedActorId: string): string {
+  return `${observerActorId}\u0000${observedActorId}`;
+}
+
+function buildPerspectiveGraph(db: SQLiteDatabase, projectHash: string | undefined, limit: number, totalObservations: number) {
+  const filter = activeObservationFilter(projectHash);
+  const edgeRows = sqliteAll<PerspectiveGraphEdgeKeyRow>(
+    db,
+    `SELECT observer_actor_id AS observerActorId,
+            observed_actor_id AS observedActorId,
+            COUNT(*) AS count
+     FROM perspective_observations
+     ${filter.clause}
+     GROUP BY observer_actor_id, observed_actor_id`,
+    filter.params
+  );
+  const totalEdges = edgeRows.length;
+  const selfEdges = edgeRows.filter((row) => row.observerActorId === row.observedActorId).length;
+
+  const levelRows = sqliteAll<PerspectiveGraphLevelRow>(
+    db,
+    `SELECT observer_actor_id AS observerActorId,
+            observed_actor_id AS observedActorId,
+            level,
+            COUNT(*) AS count
+     FROM perspective_observations
+     ${filter.clause}
+     GROUP BY observer_actor_id, observed_actor_id, level`,
+    filter.params
+  );
+  const levelCountsByEdge = new Map<string, Array<{ level: string; count: number }>>();
+  for (const row of levelRows) {
+    const key = perspectivePairKey(row.observerActorId, row.observedActorId);
+    const levels = levelCountsByEdge.get(key) ?? [];
+    levels.push({ level: sanitizeAggregateLabel(row.level), count: Number(row.count ?? 0) });
+    levelCountsByEdge.set(key, levels);
+  }
+
+  const topRows = sqliteAll<PerspectiveGraphRow>(
+    db,
+    `SELECT
+       p.observer_actor_id AS observerActorId,
+       p.observed_actor_id AS observedActorId,
+       COUNT(*) AS observationCount,
+       AVG(p.confidence) AS averageConfidence,
+       COALESCE(SUM(CASE WHEN json_valid(p.source_event_ids_json) THEN json_array_length(p.source_event_ids_json) ELSE 0 END), 0) AS sourceEventCount,
+       COALESCE(SUM(CASE WHEN json_valid(p.source_observation_ids_json) THEN json_array_length(p.source_observation_ids_json) ELSE 0 END), 0) AS sourceObservationCount,
+       MAX(p.updated_at) AS latestUpdatedAt,
+       (
+         SELECT COUNT(*)
+         FROM actor_cards c
+         WHERE c.observer_actor_id = p.observer_actor_id
+           AND c.observed_actor_id = p.observed_actor_id
+           AND (? IS NULL OR c.project_hash = ?)
+       ) AS actorCardCount
+     FROM perspective_observations p
+     ${filter.clause.replace(/\bproject_hash\b/g, 'p.project_hash')}
+     GROUP BY p.observer_actor_id, p.observed_actor_id
+     ORDER BY observationCount DESC, latestUpdatedAt DESC, p.observer_actor_id ASC, p.observed_actor_id ASC
+     LIMIT ?`,
+    [projectHash ?? null, projectHash ?? null, ...filter.params, limit]
+  );
+
+  const edges = topRows.map((row) => {
+    const observerActorId = sanitizeAggregateLabel(row.observerActorId);
+    const observedActorId = sanitizeAggregateLabel(row.observedActorId);
+    return {
+      observerActorId,
+      observedActorId,
+      observationCount: Number(row.observationCount ?? 0),
+      actorCardCount: Number(row.actorCardCount ?? 0),
+      averageConfidence: round(Number(row.averageConfidence ?? 0), 4),
+      sourceEventCount: Number(row.sourceEventCount ?? 0),
+      sourceObservationCount: Number(row.sourceObservationCount ?? 0),
+      latestUpdatedAt: row.latestUpdatedAt,
+      levelCounts: sortCountRows(levelCountsByEdge.get(perspectivePairKey(row.observerActorId, row.observedActorId)) ?? [], 'level')
+    };
+  });
+
+  return {
+    summary: {
+      totalEdges,
+      returnedEdges: edges.length,
+      totalObservations,
+      selfEdges,
+      crossActorEdges: totalEdges - selfEdges
+    },
+    edges
+  };
+}
+
+function buildPerspectiveSourceEvidence(db: SQLiteDatabase, projectHash: string | undefined) {
+  const filter = activeObservationFilter(projectHash);
+  const rows = sqliteAll<PerspectiveSourceEvidenceRow>(
+    db,
+    `WITH evidence AS (
+       SELECT
+         level,
+         CASE WHEN json_valid(source_event_ids_json) THEN json_array_length(source_event_ids_json) ELSE 0 END AS sourceEventCount,
+         CASE WHEN json_valid(source_observation_ids_json) THEN json_array_length(source_observation_ids_json) ELSE 0 END AS sourceObservationCount
+       FROM perspective_observations
+       ${filter.clause}
+     )
+     SELECT
+       level,
+       COUNT(*) AS count,
+       COALESCE(SUM(sourceEventCount), 0) AS sourceEventCount,
+       COALESCE(SUM(sourceObservationCount), 0) AS sourceObservationCount,
+       COALESCE(SUM(CASE WHEN sourceEventCount > 0 THEN 1 ELSE 0 END), 0) AS observationsWithEventEvidence,
+       COALESCE(SUM(CASE WHEN sourceObservationCount > 0 THEN 1 ELSE 0 END), 0) AS observationsWithObservationEvidence,
+       COALESCE(SUM(CASE WHEN sourceEventCount = 0 AND sourceObservationCount = 0 THEN 1 ELSE 0 END), 0) AS missingEvidenceCount
+     FROM evidence
+     GROUP BY level`,
+    filter.params
+  );
+  const byLevel = sortCountRows(rows, 'level').map((row) => ({
+    level: sanitizeAggregateLabel(row.level),
+    count: Number(row.count ?? 0),
+    sourceEventCount: Number(row.sourceEventCount ?? 0),
+    sourceObservationCount: Number(row.sourceObservationCount ?? 0),
+    observationsWithEventEvidence: Number(row.observationsWithEventEvidence ?? 0),
+    observationsWithObservationEvidence: Number(row.observationsWithObservationEvidence ?? 0),
+    missingEvidenceCount: Number(row.missingEvidenceCount ?? 0)
+  }));
+
+  return {
+    summary: {
+      totalObservations: byLevel.reduce((sum, row) => sum + row.count, 0),
+      observationsWithEventEvidence: byLevel.reduce((sum, row) => sum + row.observationsWithEventEvidence, 0),
+      observationsWithObservationEvidence: byLevel.reduce((sum, row) => sum + row.observationsWithObservationEvidence, 0),
+      observationsMissingEvidence: byLevel.reduce((sum, row) => sum + row.missingEvidenceCount, 0),
+      totalSourceEvents: byLevel.reduce((sum, row) => sum + row.sourceEventCount, 0),
+      totalSourceObservations: byLevel.reduce((sum, row) => sum + row.sourceObservationCount, 0)
+    },
+    byLevel
   };
 }
 
@@ -1344,6 +1531,7 @@ statsRouter.get('/perspective', async (c) => {
   const context = getOperationsStatsContext(c.req.query('project') || c.req.query('projectId'));
   const windowDays = parseStatsLimit(c.req.query('windowDays'), 30, 365);
   const contradictionLimit = parseStatsLimit(c.req.query('contradictionLimit'), 10, 50);
+  const graphLimit = parseStatsLimit(c.req.query('graphLimit'), 10, 50);
   const databaseExists = fs.existsSync(context.dbPath);
 
   if (!databaseExists) {
@@ -1390,6 +1578,8 @@ statsRouter.get('/perspective', async (c) => {
       )
     };
     const contradictions = buildPerspectiveContradictions(db, context.projectHash, contradictionLimit);
+    const perspectiveGraph = buildPerspectiveGraph(db, context.projectHash, graphLimit, observations.total);
+    const sourceEvidence = buildPerspectiveSourceEvidence(db, context.projectHash);
     const recentActivity = {
       byDay: buildPerspectiveActivityByDay(db, context.projectHash, windowStartIso)
     };
@@ -1407,6 +1597,8 @@ statsRouter.get('/perspective', async (c) => {
       sessionActors,
       actorCards,
       observations,
+      perspectiveGraph,
+      sourceEvidence,
       contradictions,
       recentActivity
     });

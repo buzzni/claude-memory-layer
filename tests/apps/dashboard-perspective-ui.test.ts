@@ -78,19 +78,64 @@ function perspectivePayload() {
       entries: ['PRIVATE_CARD_ENTRY_SENTINEL']
     },
     observations: {
-      total: 4,
+      total: 5,
       byLevel: [
-        { level: 'explicit', count: 1 },
+        { level: 'explicit', count: 2 },
         { level: 'deductive', count: 1 },
         { level: 'inductive', count: 1 },
         { level: 'contradiction', count: 1 }
       ],
       byCreatedBy: [
         { createdBy: 'rule', count: 2 },
-        { createdBy: 'manual', count: 1 },
+        { createdBy: 'manual', count: 2 },
         { createdBy: 'llm', count: 1 }
       ],
       content: 'PRIVATE_OBSERVATION_CONTENT_SENTINEL'
+    },
+    perspectiveGraph: {
+      summary: { totalEdges: 2, returnedEdges: 2, totalObservations: 5, selfEdges: 0, crossActorEdges: 2 },
+      edges: [
+        {
+          observerActorId: 'actor:assistant:hermes',
+          observedActorId: 'actor:user:founder',
+          observationCount: 4,
+          actorCardCount: 1,
+          averageConfidence: 0.84,
+          sourceEventCount: 3,
+          sourceObservationCount: 2,
+          latestUpdatedAt: '2026-05-21T12:00:00.000Z',
+          levelCounts: [
+            { level: 'explicit', count: 1 },
+            { level: 'contradiction', count: 1 }
+          ],
+          content: 'PRIVATE_GRAPH_CONTENT_SENTINEL'
+        },
+        {
+          observerActorId: 'actor:subagent:reviewer',
+          observedActorId: 'actor:user:founder',
+          observationCount: 1,
+          actorCardCount: 0,
+          averageConfidence: 0.67,
+          sourceEventCount: 2,
+          sourceObservationCount: 0,
+          latestUpdatedAt: '2026-05-21T12:00:00.000Z',
+          levelCounts: [{ level: 'explicit', count: 1 }]
+        }
+      ]
+    },
+    sourceEvidence: {
+      summary: {
+        totalObservations: 5,
+        observationsWithEventEvidence: 4,
+        observationsWithObservationEvidence: 2,
+        observationsMissingEvidence: 0,
+        totalSourceEvents: 5,
+        totalSourceObservations: 2
+      },
+      byLevel: [
+        { level: 'explicit', count: 2, sourceEventCount: 3, sourceObservationCount: 0, missingEvidenceCount: 0, rawSourceEventIds: ['PRIVATE_EVIDENCE_SOURCE_SENTINEL'] },
+        { level: 'contradiction', count: 1, sourceEventCount: 1, sourceObservationCount: 1, missingEvidenceCount: 0 }
+      ]
     },
     contradictions: {
       summary: { total: 1, returnedItems: 1 },
@@ -112,9 +157,9 @@ function perspectivePayload() {
       byDay: [
         {
           date: '2026-05-21',
-          total: 4,
+          total: 5,
           levels: [
-            { level: 'explicit', count: 1 },
+            { level: 'explicit', count: 2 },
             { level: 'contradiction', count: 1 }
           ],
           rawSourceEventIds: ['event-private-sentinel']
@@ -131,6 +176,8 @@ describe('dashboard perspective memory panel', () => {
       'perspective-actors-list': new TestElement(),
       'perspective-cards-list': new TestElement(),
       'perspective-observations-list': new TestElement(),
+      'perspective-graph-list': new TestElement(),
+      'perspective-evidence-list': new TestElement(),
       'perspective-contradictions-list': new TestElement(),
       'perspective-activity-list': new TestElement(),
     };
@@ -142,7 +189,8 @@ describe('dashboard perspective memory panel', () => {
     const html = Object.values(elements).map(el => `${el.innerHTML} ${el.textContent}`).join('\n');
     expect(elements['perspective-stats-summary'].innerHTML).toContain('3 actors');
     expect(elements['perspective-stats-summary'].innerHTML).toContain('1 actor cards');
-    expect(elements['perspective-stats-summary'].innerHTML).toContain('4 observations');
+    expect(elements['perspective-stats-summary'].innerHTML).toContain('5 observations');
+    expect(elements['perspective-stats-summary'].innerHTML).toContain('2 perspective edges');
     expect(elements['perspective-stats-summary'].innerHTML).toContain('1 contradictions');
     expect(elements['perspective-actors-list'].innerHTML).toContain('assistant');
     expect(elements['perspective-actors-list'].innerHTML).toContain('speaker');
@@ -150,6 +198,10 @@ describe('dashboard perspective memory panel', () => {
     expect(elements['perspective-cards-list'].innerHTML).toContain('0 full cards');
     expect(elements['perspective-observations-list'].innerHTML).toContain('explicit');
     expect(elements['perspective-observations-list'].innerHTML).toContain('rule');
+    expect(elements['perspective-graph-list'].innerHTML).toContain('actor:assistant:hermes → actor:user:founder');
+    expect(elements['perspective-graph-list'].innerHTML).toContain('84% avg confidence');
+    expect(elements['perspective-evidence-list'].innerHTML).toContain('5 source events');
+    expect(elements['perspective-evidence-list'].innerHTML).toContain('explicit');
     expect(elements['perspective-contradictions-list'].innerHTML).toContain('obs-safe-id');
     expect(elements['perspective-contradictions-list'].innerHTML).toContain('88%');
     expect(elements['perspective-activity-list'].innerHTML).toContain('2026-05-21');
@@ -159,6 +211,8 @@ describe('dashboard perspective memory panel', () => {
     expect(html).not.toContain('PRIVATE_CARD_ENTRY_SENTINEL');
     expect(html).not.toContain('PRIVATE_OBSERVATION_CONTENT_SENTINEL');
     expect(html).not.toContain('PRIVATE_CONTRADICTION_CONTENT_SENTINEL');
+    expect(html).not.toContain('PRIVATE_GRAPH_CONTENT_SENTINEL');
+    expect(html).not.toContain('PRIVATE_EVIDENCE_SOURCE_SENTINEL');
     expect(html).not.toContain('event-private-sentinel');
   });
 
@@ -194,6 +248,8 @@ describe('dashboard perspective memory panel', () => {
       'perspective-actors-list': new TestElement(),
       'perspective-cards-list': new TestElement(),
       'perspective-observations-list': new TestElement(),
+      'perspective-graph-list': new TestElement(),
+      'perspective-evidence-list': new TestElement(),
       'perspective-contradictions-list': new TestElement(),
       'perspective-activity-list': new TestElement(),
     };
@@ -210,6 +266,8 @@ describe('dashboard perspective memory panel', () => {
     expect(elements['perspective-stats-summary'].innerHTML).toContain('Perspective aggregates unavailable');
     expect(elements['perspective-actors-list'].innerHTML).toContain('Perspective aggregate data unavailable');
     expect(elements['perspective-observations-list'].innerHTML).toContain('Perspective aggregate data unavailable');
+    expect(elements['perspective-graph-list'].innerHTML).toContain('Perspective aggregate data unavailable');
+    expect(elements['perspective-evidence-list'].innerHTML).toContain('Perspective aggregate data unavailable');
     expect(html).not.toContain('assistant');
     expect(html).not.toContain('obs-safe-id');
   });
@@ -220,6 +278,8 @@ describe('dashboard perspective memory panel', () => {
       'perspective-actors-list': new TestElement(),
       'perspective-cards-list': new TestElement(),
       'perspective-observations-list': new TestElement(),
+      'perspective-graph-list': new TestElement(),
+      'perspective-evidence-list': new TestElement(),
       'perspective-contradictions-list': new TestElement(),
       'perspective-activity-list': new TestElement(),
     };
@@ -231,6 +291,8 @@ describe('dashboard perspective memory panel', () => {
       sessionActors: { total: 0, observeSelfEnabled: 0, observeOthersEnabled: 0, byRole: [] },
       actorCards: { total: 0, totalEntries: 0, averageEntries: 0, fullCards: 0 },
       observations: { total: 0, byLevel: [], byCreatedBy: [] },
+      perspectiveGraph: { summary: { totalEdges: 0, returnedEdges: 0, totalObservations: 0, selfEdges: 0, crossActorEdges: 0 }, edges: [] },
+      sourceEvidence: { summary: { totalObservations: 0, observationsWithEventEvidence: 0, observationsWithObservationEvidence: 0, observationsMissingEvidence: 0, totalSourceEvents: 0, totalSourceObservations: 0 }, byLevel: [] },
       contradictions: { summary: { total: 0, returnedItems: 0 }, items: [] },
       recentActivity: { byDay: [] }
     };
@@ -239,6 +301,8 @@ describe('dashboard perspective memory panel', () => {
     expect(elements['perspective-stats-summary'].innerHTML).toContain('Perspective projections unavailable');
     expect(elements['perspective-actors-list'].innerHTML).toContain('No actor kind data');
     expect(elements['perspective-cards-list'].innerHTML).toContain('No actor card aggregates');
+    expect(elements['perspective-graph-list'].innerHTML).toContain('No perspective graph edges');
+    expect(elements['perspective-evidence-list'].innerHTML).toContain('No source evidence aggregates');
     expect(elements['perspective-contradictions-list'].innerHTML).toContain('No contradictions queued');
   });
 
@@ -261,6 +325,8 @@ describe('dashboard perspective memory panel', () => {
       'perspective-actors-list',
       'perspective-cards-list',
       'perspective-observations-list',
+      'perspective-graph-list',
+      'perspective-evidence-list',
       'perspective-contradictions-list',
       'perspective-activity-list'
     ]) {

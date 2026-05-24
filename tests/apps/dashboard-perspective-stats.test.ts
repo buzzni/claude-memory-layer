@@ -202,6 +202,18 @@ async function seedPerspectiveRows(fixture: PerspectiveStatsFixture): Promise<vo
       actor: 'actor:assistant:hermes'
     });
     await observations.create({
+      projectHash: fixture.projectHash,
+      observerActorId: 'actor:subagent:reviewer',
+      observedActorId: 'actor:user:founder',
+      sessionId: 'session-alpha',
+      level: 'explicit',
+      content: 'PRIVATE_REVIEWER_OBSERVATION_CONTENT_SENTINEL',
+      confidence: 0.67,
+      sourceEventIds: ['event-reviewer-private-sentinel-1', 'event-reviewer-private-sentinel-2'],
+      createdBy: 'manual',
+      actor: 'actor:subagent:reviewer'
+    });
+    await observations.create({
       projectHash: otherProjectHash,
       observerActorId: 'actor:assistant:hermes',
       observedActorId: 'actor:user:other-project',
@@ -279,17 +291,17 @@ describe('dashboard perspective stats API', () => {
       averageEntries: 2,
       fullCards: 0
     });
-    expect(body.observations.total).toBe(4);
+    expect(body.observations.total).toBe(5);
     expect(body.observations.byLevel).toEqual([
+      { level: 'explicit', count: 2 },
       { level: 'contradiction', count: 1 },
       { level: 'deductive', count: 1 },
-      { level: 'explicit', count: 1 },
       { level: 'inductive', count: 1 }
     ]);
     expect(body.observations.byCreatedBy).toEqual([
+      { createdBy: 'manual', count: 2 },
       { createdBy: 'rule', count: 2 },
-      { createdBy: 'llm', count: 1 },
-      { createdBy: 'manual', count: 1 }
+      { createdBy: 'llm', count: 1 }
     ]);
     expect(body.contradictions.summary).toEqual({ total: 1, returnedItems: 1 });
     expect(body.contradictions.items).toEqual([
@@ -305,14 +317,62 @@ describe('dashboard perspective stats API', () => {
     expect(body.recentActivity.byDay).toEqual([
       {
         date: '2026-05-21',
-        total: 4,
+        total: 5,
         levels: [
+          { level: 'explicit', count: 2 },
+          { level: 'contradiction', count: 1 },
+          { level: 'deductive', count: 1 },
+          { level: 'inductive', count: 1 }
+        ]
+      }
+    ]);
+    expect(body.perspectiveGraph.summary).toEqual({
+      totalEdges: 2,
+      returnedEdges: 2,
+      totalObservations: 5,
+      selfEdges: 0,
+      crossActorEdges: 2
+    });
+    expect(body.perspectiveGraph.edges).toEqual([
+      expect.objectContaining({
+        observerActorId: 'actor:assistant:hermes',
+        observedActorId: 'actor:user:founder',
+        observationCount: 4,
+        actorCardCount: 1,
+        averageConfidence: 0.84,
+        sourceEventCount: 3,
+        sourceObservationCount: 2,
+        levelCounts: [
           { level: 'contradiction', count: 1 },
           { level: 'deductive', count: 1 },
           { level: 'explicit', count: 1 },
           { level: 'inductive', count: 1 }
         ]
-      }
+      }),
+      expect.objectContaining({
+        observerActorId: 'actor:subagent:reviewer',
+        observedActorId: 'actor:user:founder',
+        observationCount: 1,
+        actorCardCount: 0,
+        averageConfidence: 0.67,
+        sourceEventCount: 2,
+        sourceObservationCount: 0,
+        levelCounts: [{ level: 'explicit', count: 1 }]
+      })
+    ]);
+    expect(body.sourceEvidence.summary).toEqual({
+      totalObservations: 5,
+      observationsWithEventEvidence: 4,
+      observationsWithObservationEvidence: 2,
+      observationsMissingEvidence: 0,
+      totalSourceEvents: 5,
+      totalSourceObservations: 2
+    });
+    expect(body.sourceEvidence.byLevel).toEqual([
+      expect.objectContaining({ level: 'explicit', count: 2, sourceEventCount: 3, sourceObservationCount: 0, missingEvidenceCount: 0 }),
+      expect.objectContaining({ level: 'contradiction', count: 1, sourceEventCount: 1, sourceObservationCount: 1, missingEvidenceCount: 0 }),
+      expect.objectContaining({ level: 'deductive', count: 1, sourceEventCount: 0, sourceObservationCount: 1, missingEvidenceCount: 0 }),
+      expect.objectContaining({ level: 'inductive', count: 1, sourceEventCount: 1, sourceObservationCount: 0, missingEvidenceCount: 0 })
     ]);
 
     const json = JSON.stringify(body);
@@ -324,8 +384,10 @@ describe('dashboard perspective stats API', () => {
     expect(json).not.toContain('PRIVATE_DEDUCTIVE_CONTENT_SENTINEL');
     expect(json).not.toContain('PRIVATE_INDUCTIVE_CONTENT_SENTINEL');
     expect(json).not.toContain('PRIVATE_CONTRADICTION_CONTENT_SENTINEL');
+    expect(json).not.toContain('PRIVATE_REVIEWER_OBSERVATION_CONTENT_SENTINEL');
     expect(json).not.toContain('OTHER_PROJECT_PRIVATE_CONTENT_SENTINEL');
     expect(json).not.toContain('event-alpha-private-sentinel');
+    expect(json).not.toContain('event-reviewer-private-sentinel');
     expect(json).not.toContain('event-other-private-sentinel');
     expect(json).not.toContain('founder and primary user');
     expect(json).not.toContain('autonomous Continue execution');

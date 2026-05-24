@@ -423,8 +423,10 @@ Potential UI additions:
   - Implemented as privacy-safe actor-card panel showing counts, observer/observed ids, evidence counts, and timestamps without raw card entry content.
 - [x] perspective observation timeline
   - Implemented as observation timeline/filter aggregates by level/creator/session without raw observation content.
-- [ ] observer → observed graph
-- [ ] source evidence expansion
+- [x] observer → observed graph
+  - Implemented as aggregate-only `/api/stats/perspective` `perspectiveGraph` edges with observation counts, actor-card counts, average confidence, per-level counts, and source-count metadata; dashboard renders an "Observer → Observed Graph" panel without raw memory text.
+- [x] source evidence expansion
+  - Implemented as aggregate-only `sourceEvidence` coverage by level plus summary totals for source events/source observations/missing evidence; dashboard renders a source-evidence coverage panel without raw source ids or observation content.
 - [x] contradiction review queue
   - Implemented as aggregate contradiction/review rows with source counts and timestamps, not raw memory text.
 - [x] "what changed after consolidation?" diff
