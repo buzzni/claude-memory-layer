@@ -78,9 +78,11 @@ function setupEventListeners() {
       await loadKpiData();
       await loadMemoryUsefulnessData();
       await loadOperationsStatsData();
+      await loadPerspectiveStatsData();
       updateKpiCardsUI();
       updateMemoryUsefulnessUI();
       updateOperationsStatsUI();
+      updatePerspectiveStatsUI();
       renderKpiTrendChart();
     });
   });

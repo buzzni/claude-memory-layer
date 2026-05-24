@@ -8,7 +8,9 @@ import {
   ActorCardRepository,
   ActorRepository,
   PerspectiveObservationRepository,
-  SessionActorRepository
+  SessionActorRepository,
+  createPerspectiveConsolidator,
+  createPerspectiveQueryAgent
 } from '../../src/core/operations/index.js';
 
 const tempDirs: string[] = [];
@@ -236,5 +238,155 @@ describe('Perspective memory multi-actor scenarios', () => {
     expect(alphaContents).not.toContain('Other session observation');
     expect(alphaContents).not.toContain('Beta-only');
     expect(betaPerspective.map((item) => item.content).join('\n')).toContain('Beta-only project observation');
+  });
+
+  it('covers session membership, consolidation output, and perspective query in one multi-agent scenario', async () => {
+    const { actors, sessions, cards, observations, cleanup } = await createFixture();
+
+    const user = await actors.upsert({
+      actorId: 'actor:user:founder',
+      projectHash: 'project-alpha',
+      kind: 'user',
+      displayName: 'Founder',
+      source: 'discord'
+    });
+    const assistant = await actors.upsert({
+      actorId: 'actor:assistant:hermes',
+      projectHash: 'project-alpha',
+      kind: 'assistant',
+      displayName: 'Hermes',
+      source: 'hermes'
+    });
+    const coder = await actors.upsert({
+      actorId: 'actor:subagent:coder',
+      projectHash: 'project-alpha',
+      kind: 'subagent',
+      displayName: 'Coder',
+      source: 'delegate_task'
+    });
+
+    await sessions.upsertMembership({
+      projectHash: 'project-alpha',
+      sessionId: 'session-multi-agent',
+      actorId: user.actorId,
+      roleInSession: 'speaker',
+      observeSelf: true,
+      observeOthers: false
+    });
+    await sessions.upsertMembership({
+      projectHash: 'project-alpha',
+      sessionId: 'session-multi-agent',
+      actorId: assistant.actorId,
+      roleInSession: 'assistant',
+      observeSelf: true,
+      observeOthers: true
+    });
+    await sessions.upsertMembership({
+      projectHash: 'project-alpha',
+      sessionId: 'session-multi-agent',
+      actorId: coder.actorId,
+      roleInSession: 'observer',
+      observeSelf: false,
+      observeOthers: true
+    });
+
+    const prefers = await observations.create({
+      projectHash: 'project-alpha',
+      observerActorId: assistant.actorId,
+      observedActorId: user.actorId,
+      sessionId: 'session-multi-agent',
+      level: 'explicit',
+      content: 'User prefers focused validation before commit.',
+      confidence: 0.94,
+      sourceEventIds: ['event-prefers-validation'],
+      createdBy: 'manual',
+      actor: assistant.actorId
+    });
+    const doesNotPrefer = await observations.create({
+      projectHash: 'project-alpha',
+      observerActorId: assistant.actorId,
+      observedActorId: user.actorId,
+      sessionId: 'session-multi-agent',
+      level: 'explicit',
+      content: 'User does not prefer focused validation before commit.',
+      confidence: 0.91,
+      sourceEventIds: ['event-does-not-prefer-validation'],
+      createdBy: 'manual',
+      actor: coder.actorId
+    });
+
+    const consolidator = createPerspectiveConsolidator({
+      observations,
+      actorCards: cards,
+      config: {
+        enabled: true,
+        enabledProjectHashes: ['project-alpha'],
+        enabledKinds: ['contradiction', 'actor_card_maintenance'],
+        maxSourceObservations: 20,
+        maxDerivedObservations: 3,
+        maxCardUpdates: 2
+      }
+    });
+    const consolidation = await consolidator.run({
+      projectHash: 'project-alpha',
+      observerActorId: assistant.actorId,
+      observedActorId: user.actorId,
+      sessionId: 'session-multi-agent',
+      actor: assistant.actorId
+    });
+
+    const contradictionRows = await observations.query({
+      projectHash: 'project-alpha',
+      observerActorId: assistant.actorId,
+      observedActorId: user.actorId,
+      sessionId: 'session-multi-agent',
+      levels: ['contradiction'],
+      limit: 5
+    });
+    const card = await cards.get({
+      projectHash: 'project-alpha',
+      observerActorId: assistant.actorId,
+      observedActorId: user.actorId
+    });
+    const agent = createPerspectiveQueryAgent({
+      tools: {
+        searchPerspectiveObservations: (input) => observations.query(input),
+        searchRawEvents: async () => [],
+        readActorCard: (input) => cards.get(input),
+        listSessionActors: (input) => sessions.listBySession(input),
+        expandSourceRefs: async () => []
+      }
+    });
+    const answer = await agent.answer({
+      projectHash: 'project-alpha',
+      observerActorId: assistant.actorId,
+      observedActorId: user.actorId,
+      sessionId: 'session-multi-agent',
+      question: 'What changed after consolidation about focused validation?',
+      reasoningLevel: 'high'
+    });
+    await cleanup();
+
+    expect(consolidation.status).toBe('ok');
+    expect(consolidation.metrics.specialists.contradiction.observationsCreated).toBe(1);
+    expect(contradictionRows).toHaveLength(1);
+    expect(contradictionRows[0].sourceObservationIds).toEqual(expect.arrayContaining([
+      prefers.observationId,
+      doesNotPrefer.observationId
+    ]));
+    expect(contradictionRows[0].sourceEventIds).toEqual(expect.arrayContaining([
+      'event-prefers-validation',
+      'event-does-not-prefer-validation'
+    ]));
+    expect(card?.entries).toContain('INSTRUCTION: Prefers focused validation before commit.');
+    expect(card?.sourceEventIds).toContain('event-prefers-validation');
+    expect(answer.answer).toContain('Contradiction');
+    expect(answer.answer).toContain('session_actor');
+    expect(answer.answer).toContain('actor_card');
+    expect(answer.sourceRefs).toEqual(expect.arrayContaining([
+      `session-actor:session-multi-agent:${assistant.actorId}`,
+      `session-actor:session-multi-agent:${coder.actorId}`
+    ]));
+    expect(answer.sourceRefs.some((ref) => ref.startsWith('mem:'))).toBe(true);
   });
 });

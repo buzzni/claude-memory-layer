@@ -417,12 +417,18 @@ Acceptance:
 
 Potential UI additions:
 
-- actor list per project/session
-- actor card view
-- perspective observation timeline
-- observer → observed graph
-- source evidence expansion
-- contradiction review queue
+- [x] actor list per project/session
+  - Implemented as aggregate-only `/api/stats/perspective` actor/session-membership summary and dashboard "Actors & Session Membership" panel.
+- [x] actor card view
+  - Implemented as privacy-safe actor-card panel showing counts, observer/observed ids, evidence counts, and timestamps without raw card entry content.
+- [x] perspective observation timeline
+  - Implemented as observation timeline/filter aggregates by level/creator/session without raw observation content.
+- [ ] observer → observed graph
+- [ ] source evidence expansion
+- [x] contradiction review queue
+  - Implemented as aggregate contradiction/review rows with source counts and timestamps, not raw memory text.
+- [x] "what changed after consolidation?" diff
+  - Implemented as aggregate consolidation activity over derived levels/card updates plus dashboard activity list.
 
 ### 8.2 Unified scenario tests
 
@@ -451,6 +457,8 @@ Required scenarios:
 - [x] contradiction observation appears before generic derived observations
 - [x] project-scope isolation prevents actor facts leaking across projects
 - [x] privacy filter redacts secret-like values in card/observation outputs
+- [x] multi-agent session actor membership/query/consolidation flow
+  - Added scenario coverage for user/assistant/subagent membership, contradiction consolidation with source chains, actor-card maintenance, and read-only perspective query source refs.
 
 ## Suggested first implementation slice
 

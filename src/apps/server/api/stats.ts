@@ -29,6 +29,13 @@ const OPERATION_STATS_TABLES = [
   'memory_lessons'
 ] as const;
 
+const PERSPECTIVE_STATS_TABLES = [
+  'memory_actors',
+  'session_actors',
+  'actor_cards',
+  'perspective_observations'
+] as const;
+
 const LESSON_CONFIDENCE_BUCKETS = [
   { bucket: '0.00-0.25', min: 0, max: 0.25 },
   { bucket: '0.25-0.50', min: 0.25, max: 0.5 },
@@ -61,6 +68,35 @@ type AuditOperationRow = {
 
 type LessonConfidenceRow = {
   confidence: number;
+};
+
+type ActorCardAggregateRow = {
+  total: number;
+  totalEntries: number;
+  fullCards: number;
+};
+
+type SessionActorAggregateRow = {
+  total: number;
+  observeSelfEnabled: number;
+  observeOthersEnabled: number;
+};
+
+type PerspectiveActivityRow = {
+  date: string;
+  level: string;
+  count: number;
+};
+
+type PerspectiveContradictionRow = {
+  observationId: string;
+  observerActorId: string;
+  observedActorId: string;
+  confidence: number;
+  sourceEventCount: number;
+  sourceObservationCount: number;
+  createdAt: string;
+  updatedAt: string;
 };
 
 function operationsStatsHomeDir(): string {
@@ -144,6 +180,174 @@ function getMissingOperationTables(db: SQLiteDatabase): string[] {
   );
   const present = new Set(rows.map((row) => row.name));
   return OPERATION_STATS_TABLES.filter((table) => !present.has(table));
+}
+
+function emptyPerspectiveStatsPayload(context: OperationsStatsContext, databaseExists: boolean, missingTables: readonly string[], windowDays: number) {
+  return {
+    generatedAt: new Date().toISOString(),
+    windowDays,
+    projectHash: context.projectHash,
+    projection: {
+      databaseExists,
+      available: databaseExists && missingTables.length === 0,
+      missingTables
+    },
+    actors: { total: 0, byKind: [] },
+    sessionActors: {
+      total: 0,
+      observeSelfEnabled: 0,
+      observeOthersEnabled: 0,
+      byRole: []
+    },
+    actorCards: {
+      total: 0,
+      totalEntries: 0,
+      averageEntries: 0,
+      fullCards: 0
+    },
+    observations: {
+      total: 0,
+      byLevel: [],
+      byCreatedBy: []
+    },
+    contradictions: {
+      summary: { total: 0, returnedItems: 0 },
+      items: []
+    },
+    recentActivity: { byDay: [] }
+  };
+}
+
+function getMissingPerspectiveTables(db: SQLiteDatabase): string[] {
+  const placeholders = PERSPECTIVE_STATS_TABLES.map(() => '?').join(', ');
+  const rows = sqliteAll<{ name: string }>(
+    db,
+    `SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (${placeholders})`,
+    [...PERSPECTIVE_STATS_TABLES]
+  );
+  const present = new Set(rows.map((row) => row.name));
+  return PERSPECTIVE_STATS_TABLES.filter((table) => !present.has(table));
+}
+
+function activeObservationFilter(projectHash: string | undefined, extraClauses: string[] = [], extraParams: unknown[] = []): { clause: string; params: unknown[] } {
+  const clauses = ['deleted_at IS NULL', ...extraClauses];
+  const params = [...extraParams];
+  if (projectHash) {
+    clauses.push('project_hash = ?');
+    params.push(projectHash);
+  }
+  return { clause: `WHERE ${clauses.join(' AND ')}`, params };
+}
+
+function buildSessionActorStats(db: SQLiteDatabase, projectHash: string | undefined) {
+  const filter = projectFilter(projectHash);
+  const row = sqliteGet<SessionActorAggregateRow>(
+    db,
+    `SELECT
+       COUNT(*) AS total,
+       COALESCE(SUM(CASE WHEN observe_self = 1 THEN 1 ELSE 0 END), 0) AS observeSelfEnabled,
+       COALESCE(SUM(CASE WHEN observe_others = 1 THEN 1 ELSE 0 END), 0) AS observeOthersEnabled
+     FROM session_actors
+     ${filter.clause}`,
+    filter.params
+  );
+  return {
+    total: Number(row?.total ?? 0),
+    observeSelfEnabled: Number(row?.observeSelfEnabled ?? 0),
+    observeOthersEnabled: Number(row?.observeOthersEnabled ?? 0),
+    byRole: buildCountRows(
+      db,
+      `SELECT role_in_session AS label, COUNT(*) AS count FROM session_actors ${filter.clause} GROUP BY role_in_session`,
+      filter.params,
+      'role'
+    )
+  };
+}
+
+function buildActorCardStats(db: SQLiteDatabase, projectHash: string | undefined) {
+  const filter = projectFilter(projectHash);
+  const row = sqliteGet<ActorCardAggregateRow>(
+    db,
+    `SELECT
+       COUNT(*) AS total,
+       COALESCE(SUM(CASE WHEN json_valid(entries_json) THEN json_array_length(entries_json) ELSE 0 END), 0) AS totalEntries,
+       COALESCE(SUM(CASE WHEN json_valid(entries_json) AND json_array_length(entries_json) >= 40 THEN 1 ELSE 0 END), 0) AS fullCards
+     FROM actor_cards
+     ${filter.clause}`,
+    filter.params
+  );
+  const total = Number(row?.total ?? 0);
+  const totalEntries = Number(row?.totalEntries ?? 0);
+  return {
+    total,
+    totalEntries,
+    averageEntries: total > 0 ? round(totalEntries / total, 2) : 0,
+    fullCards: Number(row?.fullCards ?? 0)
+  };
+}
+
+function buildPerspectiveActivityByDay(db: SQLiteDatabase, projectHash: string | undefined, windowStartIso: string) {
+  const filter = activeObservationFilter(projectHash, ['updated_at >= ?'], [windowStartIso]);
+  const rows = sqliteAll<PerspectiveActivityRow>(
+    db,
+    `SELECT date(updated_at) AS date, level, COUNT(*) AS count
+     FROM perspective_observations
+     ${filter.clause}
+     GROUP BY date(updated_at), level
+     ORDER BY date ASC, level ASC`,
+    filter.params
+  );
+  const byDay = new Map<string, Array<{ level: string; count: number }>>();
+  for (const row of rows) {
+    const levels = byDay.get(row.date) ?? [];
+    levels.push({ level: sanitizeAggregateLabel(row.level), count: Number(row.count ?? 0) });
+    byDay.set(row.date, levels);
+  }
+  return Array.from(byDay.entries()).map(([date, levels]) => ({
+    date,
+    total: levels.reduce((sum, row) => sum + row.count, 0),
+    levels: sortCountRows(levels, 'level')
+  }));
+}
+
+function buildPerspectiveContradictions(db: SQLiteDatabase, projectHash: string | undefined, limit: number) {
+  const totalFilter = activeObservationFilter(projectHash, ['level = ?'], ['contradiction']);
+  const total = countRowValue(
+    db,
+    `SELECT COUNT(*) AS count FROM perspective_observations ${totalFilter.clause}`,
+    totalFilter.params
+  );
+  const rows = sqliteAll<PerspectiveContradictionRow>(
+    db,
+    `SELECT
+       observation_id AS observationId,
+       observer_actor_id AS observerActorId,
+       observed_actor_id AS observedActorId,
+       confidence,
+       CASE WHEN json_valid(source_event_ids_json) THEN json_array_length(source_event_ids_json) ELSE 0 END AS sourceEventCount,
+       CASE WHEN json_valid(source_observation_ids_json) THEN json_array_length(source_observation_ids_json) ELSE 0 END AS sourceObservationCount,
+       created_at AS createdAt,
+       updated_at AS updatedAt
+     FROM perspective_observations
+     ${totalFilter.clause}
+     ORDER BY updated_at DESC, confidence DESC
+     LIMIT ?`,
+    [...totalFilter.params, limit]
+  );
+  const items = rows.map((row) => ({
+    observationId: sanitizeAggregateLabel(row.observationId),
+    observerActorId: sanitizeAggregateLabel(row.observerActorId),
+    observedActorId: sanitizeAggregateLabel(row.observedActorId),
+    confidence: round(Number(row.confidence ?? 0), 4),
+    sourceEventCount: Number(row.sourceEventCount ?? 0),
+    sourceObservationCount: Number(row.sourceObservationCount ?? 0),
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt
+  }));
+  return {
+    summary: { total, returnedItems: items.length },
+    items
+  };
 }
 
 function sortCountRows<T extends Record<string, unknown>>(rows: T[], labelKey: keyof T): T[] {
@@ -1130,6 +1334,85 @@ statsRouter.get('/operations', async (c) => {
   } catch (error) {
     console.error('[stats/operations] Failed to load aggregate stats:', error);
     return c.json({ error: 'Failed to load operations stats' }, 500);
+  } finally {
+    db?.close();
+  }
+});
+
+// GET /api/stats/perspective - Aggregate-only perspective-memory observability stats
+statsRouter.get('/perspective', async (c) => {
+  const context = getOperationsStatsContext(c.req.query('project') || c.req.query('projectId'));
+  const windowDays = parseStatsLimit(c.req.query('windowDays'), 30, 365);
+  const contradictionLimit = parseStatsLimit(c.req.query('contradictionLimit'), 10, 50);
+  const databaseExists = fs.existsSync(context.dbPath);
+
+  if (!databaseExists) {
+    return c.json(emptyPerspectiveStatsPayload(context, false, [...PERSPECTIVE_STATS_TABLES], windowDays));
+  }
+
+  let db: SQLiteDatabase | null = null;
+  try {
+    db = createSQLiteDatabase(context.dbPath, { readonly: true, walMode: false });
+    const missingTables = getMissingPerspectiveTables(db);
+    if (missingTables.length > 0) {
+      return c.json(emptyPerspectiveStatsPayload(context, true, missingTables, windowDays));
+    }
+
+    const now = Date.now();
+    const windowStartIso = new Date(now - windowDays * 24 * 60 * 60 * 1000).toISOString();
+    const projectScoped = projectFilter(context.projectHash);
+    const observationScoped = activeObservationFilter(context.projectHash);
+
+    const actors = {
+      total: countRowValue(db, `SELECT COUNT(*) AS count FROM memory_actors ${projectScoped.clause}`, projectScoped.params),
+      byKind: buildCountRows(
+        db,
+        `SELECT kind AS label, COUNT(*) AS count FROM memory_actors ${projectScoped.clause} GROUP BY kind`,
+        projectScoped.params,
+        'kind'
+      )
+    };
+    const sessionActors = buildSessionActorStats(db, context.projectHash);
+    const actorCards = buildActorCardStats(db, context.projectHash);
+    const observations = {
+      total: countRowValue(db, `SELECT COUNT(*) AS count FROM perspective_observations ${observationScoped.clause}`, observationScoped.params),
+      byLevel: buildCountRows(
+        db,
+        `SELECT level AS label, COUNT(*) AS count FROM perspective_observations ${observationScoped.clause} GROUP BY level`,
+        observationScoped.params,
+        'level'
+      ),
+      byCreatedBy: buildCountRows(
+        db,
+        `SELECT created_by AS label, COUNT(*) AS count FROM perspective_observations ${observationScoped.clause} GROUP BY created_by`,
+        observationScoped.params,
+        'createdBy'
+      )
+    };
+    const contradictions = buildPerspectiveContradictions(db, context.projectHash, contradictionLimit);
+    const recentActivity = {
+      byDay: buildPerspectiveActivityByDay(db, context.projectHash, windowStartIso)
+    };
+
+    return c.json({
+      generatedAt: new Date(now).toISOString(),
+      windowDays,
+      projectHash: context.projectHash,
+      projection: {
+        databaseExists: true,
+        available: true,
+        missingTables: []
+      },
+      actors,
+      sessionActors,
+      actorCards,
+      observations,
+      contradictions,
+      recentActivity
+    });
+  } catch {
+    console.error('[stats/perspective] Failed to load aggregate stats');
+    return c.json({ error: 'Failed to load perspective stats' }, 500);
   } finally {
     db?.close();
   }

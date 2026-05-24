@@ -20,6 +20,12 @@ async function loadOperationsStatsData() {
     .catch(() => null);
 }
 
+async function loadPerspectiveStatsData() {
+  state.perspectiveStats = await fetch(apiUrl(`${API_BASE}/stats/perspective`, { windowDays: operationStatsWindowDays() }))
+    .then(r => r.ok ? r.json() : null)
+    .catch(() => null);
+}
+
 async function refreshData() {
   const btn = document.getElementById('refresh-btn');
   if(btn) btn.classList.add('loading');
@@ -29,7 +35,7 @@ async function refreshData() {
   const kpiWindowAtStart = state.kpiWindow;
 
   try {
-    const [stats, shared, mostAccessed, helpfulness, memoryUsefulness, retrievalTraces, retrievalReviewQueue, operationsStats, adherenceSummary] = await Promise.all([
+    const [stats, shared, mostAccessed, helpfulness, memoryUsefulness, retrievalTraces, retrievalReviewQueue, operationsStats, perspectiveStats, adherenceSummary] = await Promise.all([
       fetch(apiUrl(`${API_BASE}/stats`)).then(r => r.json()).catch(() => null),
       fetch(apiUrl(`${API_BASE}/stats/shared`)).then(r => r.json()).catch(() => null),
       fetch(apiUrl(`${API_BASE}/stats/most-accessed`, { limit: 10 })).then(r => r.json()).catch(() => null),
@@ -38,6 +44,7 @@ async function refreshData() {
       fetch(apiUrl(`${API_BASE}/stats/retrieval-traces`, { limit: 20 })).then(r => r.json()).catch(() => null),
       fetch(apiUrl(`${API_BASE}/stats/retrieval-review-queue`, { limit: 10 })).then(r => r.json()).catch(() => null),
       fetch(apiUrl(`${API_BASE}/stats/operations`, { windowDays: operationStatsWindowDays() })).then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch(apiUrl(`${API_BASE}/stats/perspective`, { windowDays: operationStatsWindowDays() })).then(r => r.ok ? r.json() : null).catch(() => null),
       fetchAdherenceSummary().catch(() => null)
     ]);
 
@@ -57,6 +64,7 @@ async function refreshData() {
     state.retrievalTraces = retrievalTraces;
     state.retrievalReviewQueue = retrievalReviewQueue;
     state.operationsStats = operationsStats;
+    state.perspectiveStats = perspectiveStats;
     state.adherenceSummary = adherenceSummary;
 
     await loadKpiData();
@@ -378,6 +386,7 @@ function updateMemoryUsageUI() {
   updateAdherenceSummaryUI();
   updateRetrievalTraceUI();
   updateOperationsStatsUI();
+  updatePerspectiveStatsUI();
 }
 
 function operationCount(value) {
@@ -501,6 +510,146 @@ function updateOperationsStatsUI() {
         }).join('');
   }
   if (lessonsEl) lessonsEl.innerHTML = operationRows(payload.lessons?.confidenceBuckets, 'bucket', 'count', 'No lesson confidence data');
+}
+
+function perspectiveLevelRows(rows, emptyMessage) {
+  return operationRows(rows, 'level', 'count', emptyMessage);
+}
+
+function updatePerspectiveStatsUI() {
+  const payload = state.perspectiveStats;
+  const summaryEl = document.getElementById('perspective-stats-summary');
+  const actorsEl = document.getElementById('perspective-actors-list');
+  const cardsEl = document.getElementById('perspective-cards-list');
+  const observationsEl = document.getElementById('perspective-observations-list');
+  const contradictionsEl = document.getElementById('perspective-contradictions-list');
+  const activityEl = document.getElementById('perspective-activity-list');
+
+  if (!summaryEl && !actorsEl && !cardsEl && !observationsEl && !contradictionsEl && !activityEl) return;
+
+  if (!payload) {
+    if (summaryEl) summaryEl.innerHTML = '<span style="color:var(--text-muted);">Perspective aggregates unavailable</span>';
+    if (actorsEl) actorsEl.innerHTML = operationEmpty('Perspective aggregate data unavailable');
+    if (cardsEl) cardsEl.innerHTML = operationEmpty('Perspective aggregate data unavailable');
+    if (observationsEl) observationsEl.innerHTML = operationEmpty('Perspective aggregate data unavailable');
+    if (contradictionsEl) contradictionsEl.innerHTML = operationEmpty('Perspective aggregate data unavailable');
+    if (activityEl) activityEl.innerHTML = operationEmpty('Perspective aggregate data unavailable');
+    return;
+  }
+
+  const available = payload.projection?.available !== false && payload.projection?.databaseExists !== false;
+  if (summaryEl) {
+    if (!available) {
+      summaryEl.innerHTML = '<span style="color:var(--text-muted);">Perspective projections unavailable</span>';
+    } else {
+      summaryEl.innerHTML = `
+        <div style="display:flex; gap:10px; flex-wrap:wrap; font-size:13px; color:var(--text-secondary);">
+          <span><strong>${formatNumber(operationCount(payload.actors?.total))} actors</strong></span>
+          <span><strong>${formatNumber(operationCount(payload.sessionActors?.total))} session actors</strong></span>
+          <span><strong>${formatNumber(operationCount(payload.actorCards?.total))} actor cards</strong></span>
+          <span><strong>${formatNumber(operationCount(payload.observations?.total))} observations</strong></span>
+          <span><strong>${formatNumber(operationCount(payload.contradictions?.summary?.total))} contradictions</strong></span>
+        </div>
+      `;
+    }
+  }
+
+  if (!available) {
+    if (actorsEl) actorsEl.innerHTML = operationEmpty('No actor kind data');
+    if (cardsEl) cardsEl.innerHTML = operationEmpty('No actor card aggregates');
+    if (observationsEl) observationsEl.innerHTML = operationEmpty('No perspective observation data');
+    if (contradictionsEl) contradictionsEl.innerHTML = operationEmpty('No contradictions queued');
+    if (activityEl) activityEl.innerHTML = operationEmpty('No perspective activity');
+    return;
+  }
+
+  if (actorsEl) {
+    const kindRows = operationRows(payload.actors?.byKind, 'kind', 'count', 'No actor kind data');
+    const roleRows = operationRows(payload.sessionActors?.byRole, 'role', 'count', 'No session actor roles');
+    actorsEl.innerHTML = `
+      <div class="section-label" style="font-size:11px; margin-bottom:6px;">Actor Kinds</div>
+      ${kindRows}
+      <div class="section-label" style="font-size:11px; margin:12px 0 6px;">Session Roles</div>
+      ${roleRows}
+      <div style="font-size:10px; color:var(--text-muted); padding:8px 0;">observe self: ${formatNumber(operationCount(payload.sessionActors?.observeSelfEnabled))} · observe others: ${formatNumber(operationCount(payload.sessionActors?.observeOthersEnabled))}</div>
+    `;
+  }
+
+  if (cardsEl) {
+    const totalCards = operationCount(payload.actorCards?.total);
+    if (totalCards === 0) {
+      cardsEl.innerHTML = operationEmpty('No actor card aggregates');
+    } else {
+      cardsEl.innerHTML = `
+        <div class="shared-item">
+          <div class="shared-info"><span style="font-size:12px; color:var(--text-secondary);">Total cards</span></div>
+          <div class="shared-count">${formatNumber(totalCards)}</div>
+        </div>
+        <div class="shared-item">
+          <div class="shared-info"><span style="font-size:12px; color:var(--text-secondary);">Card entries</span></div>
+          <div class="shared-count">${formatNumber(operationCount(payload.actorCards?.totalEntries))} entries</div>
+        </div>
+        <div class="shared-item">
+          <div class="shared-info"><span style="font-size:12px; color:var(--text-secondary);">Average entries</span></div>
+          <div class="shared-count">${Number(payload.actorCards?.averageEntries || 0).toFixed(2)}</div>
+        </div>
+        <div class="shared-item">
+          <div class="shared-info"><span style="font-size:12px; color:var(--text-secondary);">Full cards</span></div>
+          <div class="shared-count">${formatNumber(operationCount(payload.actorCards?.fullCards))} full cards</div>
+        </div>
+      `;
+    }
+  }
+
+  if (observationsEl) {
+    const byLevel = perspectiveLevelRows(payload.observations?.byLevel, 'No perspective observation data');
+    const byCreatedBy = operationRows(payload.observations?.byCreatedBy, 'createdBy', 'count', 'No observation creator data');
+    observationsEl.innerHTML = `
+      <div class="section-label" style="font-size:11px; margin-bottom:6px;">Timeline / Levels</div>
+      ${byLevel}
+      <div class="section-label" style="font-size:11px; margin:12px 0 6px;">Created By</div>
+      ${byCreatedBy}
+    `;
+  }
+
+  if (contradictionsEl) {
+    const items = Array.isArray(payload.contradictions?.items) ? payload.contradictions.items : [];
+    contradictionsEl.innerHTML = items.length === 0
+      ? operationEmpty('No contradictions queued')
+      : items.map(item => {
+          const confidence = `${(Number(item?.confidence || 0) * 100).toFixed(0)}%`;
+          return `
+            <div class="shared-item">
+              <div class="shared-info" style="flex-direction:column; align-items:flex-start; gap:2px; min-width:0;">
+                <span style="font-size:12px; color:var(--text-secondary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:220px;">${escapeHtml(item?.observationId || 'unknown')}</span>
+                <span style="font-size:10px; color:var(--text-muted);">${escapeHtml(item?.observerActorId || 'unknown')} → ${escapeHtml(item?.observedActorId || 'unknown')}</span>
+                <span style="font-size:10px; color:var(--text-muted);">sources: ${formatNumber(operationCount(item?.sourceEventCount))} events · ${formatNumber(operationCount(item?.sourceObservationCount))} observations</span>
+              </div>
+              <div class="shared-count">${confidence}</div>
+            </div>
+          `;
+        }).join('');
+  }
+
+  if (activityEl) {
+    const days = Array.isArray(payload.recentActivity?.byDay) ? payload.recentActivity.byDay : [];
+    activityEl.innerHTML = days.length === 0
+      ? operationEmpty('No perspective activity')
+      : days.map(day => {
+          const levels = (Array.isArray(day?.levels) ? day.levels : [])
+            .map(level => `${escapeHtml(level?.level || 'unknown')}: ${formatNumber(operationCount(level?.count))}`)
+            .join(' · ');
+          return `
+            <div class="shared-item">
+              <div class="shared-info" style="flex-direction:column; align-items:flex-start; gap:2px; min-width:0;">
+                <span style="font-size:12px; color:var(--text-secondary);">${escapeHtml(day?.date || 'unknown')}</span>
+                <span style="font-size:10px; color:var(--text-muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:220px;">${levels || 'no levels'}</span>
+              </div>
+              <div class="shared-count">${formatNumber(operationCount(day?.total))}</div>
+            </div>
+          `;
+        }).join('');
+  }
 }
 
 function adherenceWindowToMs(window) {
