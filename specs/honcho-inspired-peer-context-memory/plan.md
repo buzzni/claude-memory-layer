@@ -373,9 +373,12 @@ Guardrails:
 
 Acceptance:
 
-- [ ] Minimal reasoning level uses only search tools.
-- [ ] Agent response includes source refs.
-- [ ] Tool iteration cap is enforced.
+- [x] Minimal reasoning level uses only search tools.
+  - `PerspectiveQueryAgent` minimal mode calls only perspective-observation search and raw-event search; expansion, actor-card, and session-actor tools remain unused.
+- [x] Agent response includes source refs.
+  - Evidence-backed answers collect `mem:<citation>` refs from perspective observation source events and raw event results, and render them in a final `Sources:` line.
+- [x] Tool iteration cap is enforced.
+  - Reasoning-level caps are checked before every tool call; tests verify a minimal cap of one prevents the second search call and reports `hitToolIterationCap`.
 
 ## Phase 7 — Dreamer/consolidation specialists (P3)
 

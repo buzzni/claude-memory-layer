@@ -21,3 +21,4 @@ export * from './session-actor-repository.js';
 export * from './actor-card-repository.js';
 export * from './perspective-observation-repository.js';
 export * from './perspective-deriver.js';
+export * from './perspective-query-agent.js';
