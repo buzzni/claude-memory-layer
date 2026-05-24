@@ -145,6 +145,14 @@ export type EvidenceSpan = z.infer<typeof EvidenceSpanSchema>;
 // Memory Operations Config (AgentMemory-inspired operations layer)
 // ============================================================
 
+export const PerspectiveConsolidationSpecialistKindSchema = z.enum([
+  'deduction',
+  'induction',
+  'contradiction',
+  'actor_card_maintenance'
+]);
+export type PerspectiveConsolidationSpecialistKind = z.infer<typeof PerspectiveConsolidationSpecialistKindSchema>;
+
 export const MemoryOperationsConfigSchema = z.object({
   enabled: z.boolean().default(false),
   facets: z.object({
@@ -170,6 +178,19 @@ export const MemoryOperationsConfigSchema = z.object({
       enabled: z.boolean().default(false),
       maxEventsPerBatch: z.number().int().positive().max(100).default(20),
       maxObserversPerSession: z.number().int().positive().max(50).default(5)
+    }).default({}),
+    specialists: z.object({
+      enabled: z.boolean().default(false),
+      enabledProjectHashes: z.array(z.string().trim().min(1)).max(100).default([]),
+      enabledKinds: z.array(PerspectiveConsolidationSpecialistKindSchema).default([
+        'deduction',
+        'induction',
+        'contradiction',
+        'actor_card_maintenance'
+      ]),
+      maxSourceObservations: z.number().int().positive().max(100).default(20),
+      maxDerivedObservations: z.number().int().min(0).max(20).default(5),
+      maxCardUpdates: z.number().int().min(0).max(40).default(3)
     }).default({})
   }).default({})
 }).default({});

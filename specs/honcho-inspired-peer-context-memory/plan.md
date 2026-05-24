@@ -404,9 +404,12 @@ Outputs:
 
 Acceptance:
 
-- [ ] Specialists are opt-in per project.
-- [ ] Specialists emit metrics for created/deleted observations and card updates.
-- [ ] Actor card updates never exceed caps and preserve source evidence.
+- [x] Specialists are opt-in per project.
+  - `PerspectiveConsolidator` requires `memoryOperations.perspectiveMemory.specialists.enabled` and a matching `enabledProjectHashes` entry before querying or writing any perspective records.
+- [x] Specialists emit metrics for created/deleted observations and card updates.
+  - Consolidation results include aggregate and per-specialist metrics for examined observations, created/deleted observations, card updates, and rejected candidates.
+- [x] Actor card updates never exceed caps and preserve source evidence.
+  - Actor-card maintenance respects `maxCardUpdates` plus the 40-entry card cap, writes through existing actor-card validation, and carries forward source event ids from the observations used for new entries.
 
 ## Phase 8 — Dashboard and scenario tests (P1/P2)
 

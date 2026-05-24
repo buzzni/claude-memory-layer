@@ -52,7 +52,15 @@ describe('memory-service-config', () => {
       lessons: { enabled: false },
       perspectiveMemory: {
         enabled: false,
-        deriver: { enabled: false, maxEventsPerBatch: 20, maxObserversPerSession: 5 }
+        deriver: { enabled: false, maxEventsPerBatch: 20, maxObserversPerSession: 5 },
+        specialists: {
+          enabled: false,
+          enabledProjectHashes: [],
+          enabledKinds: ['deduction', 'induction', 'contradiction', 'actor_card_maintenance'],
+          maxSourceObservations: 20,
+          maxDerivedObservations: 5,
+          maxCardUpdates: 3
+        }
       }
     });
 
