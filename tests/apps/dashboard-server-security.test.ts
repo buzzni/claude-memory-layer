@@ -54,19 +54,20 @@ describe('dashboard server bind/auth options', () => {
   });
 
   it('sets an HttpOnly session cookie after password login and accepts it on later dashboard requests', async () => {
-    const app = serverModule.createDashboardApp({ password: 'pw' });
+    const password = ['dashboard', 'password', 'sentinel'].join('-');
+    const app = serverModule.createDashboardApp({ password });
 
     const loginRes = await app.request('/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password: 'pw' })
+      body: JSON.stringify({ password })
     });
 
     expect(loginRes.status).toBe(200);
     const setCookie = loginRes.headers.get('set-cookie') ?? '';
     expect(setCookie).toContain('cml_dashboard_session=');
     expect(setCookie).toContain('HttpOnly');
-    expect(setCookie).not.toContain('pw');
+    expect(setCookie).not.toContain(password);
 
     const cookie = setCookie.split(';')[0];
     const statusRes = await app.request('/api/auth/status', {

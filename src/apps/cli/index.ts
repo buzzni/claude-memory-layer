@@ -36,10 +36,12 @@ import {
   CheckpointRepository,
   FacetRepository,
   FrontierService,
+  backfillPerspectiveSessionActors,
   type FrontierItem,
   type MemoryAction,
   type MemoryCheckpoint,
-  type MemoryFacetAssignment
+  type MemoryFacetAssignment,
+  type PerspectiveSessionActorBackfillResult
 } from '../../core/operations/index.js';
 import {
   CreateCheckpointInputSchema,
@@ -1049,6 +1051,54 @@ repairCommand
       process.exit(1);
     }
   });
+
+const actorsCommand = program
+  .command('actors')
+  .description('Inspect and repair Perspective Memory actors and session memberships');
+
+actorsCommand
+  .command('repair')
+  .description('Backfill Perspective Memory actors and session actor memberships from existing events')
+  .requiredOption('-p, --project <path>', 'Project path')
+  .option('--session-id <id>', 'Restrict backfill to a single session')
+  .option('--limit <count>', 'Maximum events to scan', '10000')
+  .option('--sample-limit <count>', 'Maximum privacy-safe samples to include', '10')
+  .option('--dry-run', 'Inspect without mutating actors or session memberships')
+  .option('--apply', 'Apply actor and membership backfill (default is dry-run)')
+  .option('--json', 'Print machine-readable JSON')
+  .action((options) => runOperationCli(async () => {
+    if (options.apply && options.dryRun) {
+      throw new Error('actors repair accepts either --apply or --dry-run, not both');
+    }
+    const context = resolveOperationProject(options.project);
+    const dryRun = options.apply !== true;
+    const backfillOptions = {
+      projectHash: context.projectHash,
+      dryRun,
+      sessionId: optionalOperationOption(options.sessionId),
+      limit: parseOperationLimit(options.limit, 10000, 1, 100000),
+      sampleLimit: parseOperationLimit(options.sampleLimit, 10, 0, 100)
+    };
+    const emptyPayload: PerspectiveSessionActorBackfillResult = {
+      dryRun,
+      projectHash: context.projectHash,
+      scannedEvents: 0,
+      scannedSessions: 0,
+      existingActors: 0,
+      actorsCreated: 0,
+      actorsWouldCreate: 0,
+      existingMemberships: 0,
+      membershipsCreated: 0,
+      membershipsWouldCreate: 0,
+      samples: []
+    };
+    const result = dryRun
+      ? await withOperationExistingDatabase(context, emptyPayload, ['events', 'memory_actors', 'session_actors'], async (db) => (
+        backfillPerspectiveSessionActors(db, backfillOptions)
+      ))
+      : await withOperationWriteDatabase(context, async (db) => backfillPerspectiveSessionActors(db, backfillOptions));
+    writeOperationOutput({ operation: 'actors-repair', ...result }, options);
+  }, 'Actors repair'));
 
 /**
  * Memory operation commands - CLI equivalents for MCP operation tools

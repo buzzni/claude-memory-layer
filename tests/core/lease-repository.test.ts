@@ -115,7 +115,7 @@ describe('LeaseRepository', () => {
     const active = await repo.getActiveLease('action', 'action-1', new Date('2026-05-19T00:03:00Z'));
     const auditRows = sqliteAll<Record<string, unknown>>(
       store.getDatabase(),
-      `SELECT operation, target_type, target_id, after_json FROM memory_governance_audit WHERE target_type = 'lease' ORDER BY created_at ASC`
+      `SELECT operation, target_type, target_id, after_json FROM memory_governance_audit WHERE target_type = 'lease' ORDER BY rowid ASC`
     );
     await cleanup();
 

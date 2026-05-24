@@ -13,7 +13,8 @@ import {
   UpsertMemoryActorInputSchema,
   type MemoryActor,
   type MemoryActorKind,
-  type MemoryEvent
+  type MemoryEvent,
+  type UpsertMemoryActorInput
 } from '../types.js';
 import { sanitizeGovernanceAuditValue } from './governance-audit.js';
 
@@ -109,6 +110,62 @@ function metadataRecord(value: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
+export interface ProjectMemoryActorFromEventOptions {
+  projectHash?: string;
+}
+
+export function buildMemoryActorId(input: unknown): string {
+  const parsed = UpsertMemoryActorInputSchema.parse(input);
+  return stableActorId(parsed);
+}
+
+export function projectMemoryActorFromEvent(
+  event: MemoryEvent,
+  options: ProjectMemoryActorFromEventOptions = {}
+): UpsertMemoryActorInput {
+  const metadata = metadataRecord(event.metadata);
+  const source = metadataString(metadata, ['source', 'importSource', 'platform', 'provider']) ?? 'event';
+  const model = metadataString(metadata, ['model', 'modelName']);
+
+  if (event.eventType === 'user_prompt') {
+    return {
+      projectHash: options.projectHash,
+      kind: 'user',
+      displayName: metadataString(metadata, ['displayName', 'userName', 'username', 'user_id', 'userId']) ?? 'User',
+      source,
+      metadata: { eventType: event.eventType, ...metadata }
+    };
+  }
+
+  if (event.eventType === 'agent_response') {
+    return {
+      projectHash: options.projectHash,
+      kind: 'assistant',
+      displayName: metadataString(metadata, ['displayName', 'agentName', 'assistantName']) ?? model ?? 'Assistant',
+      source,
+      metadata: { eventType: event.eventType, ...metadata }
+    };
+  }
+
+  if (event.eventType === 'tool_observation') {
+    return {
+      projectHash: options.projectHash,
+      kind: 'tool',
+      displayName: metadataString(metadata, ['toolName', 'tool_name', 'name']) ?? 'Tool',
+      source,
+      metadata: { eventType: event.eventType, ...metadata }
+    };
+  }
+
+  return {
+    projectHash: options.projectHash,
+    kind: 'system',
+    displayName: metadataString(metadata, ['displayName', 'source']) ?? 'Session summary',
+    source,
+    metadata: { eventType: event.eventType, ...metadata }
+  };
+}
+
 export class ActorRepository {
   constructor(private readonly db: SQLiteDatabase) {}
 
@@ -196,46 +253,6 @@ export class ActorRepository {
   }
 
   async resolveFromEvent(event: MemoryEvent, options: { projectHash?: string } = {}): Promise<MemoryActor> {
-    const metadata = metadataRecord(event.metadata);
-    const source = metadataString(metadata, ['source', 'importSource', 'platform', 'provider']) ?? 'event';
-    const model = metadataString(metadata, ['model', 'modelName']);
-
-    if (event.eventType === 'user_prompt') {
-      return this.upsert({
-        projectHash: options.projectHash,
-        kind: 'user',
-        displayName: metadataString(metadata, ['displayName', 'userName', 'username', 'user_id', 'userId']) ?? 'User',
-        source,
-        metadata: { eventType: event.eventType, ...metadata }
-      });
-    }
-
-    if (event.eventType === 'agent_response') {
-      return this.upsert({
-        projectHash: options.projectHash,
-        kind: 'assistant',
-        displayName: metadataString(metadata, ['displayName', 'agentName', 'assistantName']) ?? model ?? 'Assistant',
-        source,
-        metadata: { eventType: event.eventType, ...metadata }
-      });
-    }
-
-    if (event.eventType === 'tool_observation') {
-      return this.upsert({
-        projectHash: options.projectHash,
-        kind: 'tool',
-        displayName: metadataString(metadata, ['toolName', 'tool_name', 'name']) ?? 'Tool',
-        source,
-        metadata: { eventType: event.eventType, ...metadata }
-      });
-    }
-
-    return this.upsert({
-      projectHash: options.projectHash,
-      kind: 'system',
-      displayName: metadataString(metadata, ['displayName', 'source']) ?? 'Session summary',
-      source,
-      metadata: { eventType: event.eventType, ...metadata }
-    });
+    return this.upsert(projectMemoryActorFromEvent(event, options));
   }
 }

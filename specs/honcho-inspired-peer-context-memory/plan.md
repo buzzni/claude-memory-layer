@@ -203,8 +203,8 @@ claude-memory-layer actors repair --project /path/to/project --dry-run
 
 Acceptance:
 
-- [ ] Existing sessions can be backfilled into session actor membership.
-- [ ] Dry-run reports actor/session counts and samples.
+- [x] Existing sessions can be backfilled into session actor membership via `claude-memory-layer actors repair --project <path> --apply`.
+- [x] Dry-run reports actor/session counts and privacy-safe samples via `claude-memory-layer actors repair --project <path> --dry-run`.
 
 ### 2.3 Extend `mem-context-pack`
 

@@ -23,3 +23,4 @@ export * from './perspective-observation-repository.js';
 export * from './perspective-deriver.js';
 export * from './perspective-query-agent.js';
 export * from './perspective-consolidator.js';
+export * from './perspective-session-actor-backfill.js';
