@@ -163,6 +163,14 @@ export const MemoryOperationsConfigSchema = z.object({
   }).default({}),
   lessons: z.object({
     enabled: z.boolean().default(false)
+  }).default({}),
+  perspectiveMemory: z.object({
+    enabled: z.boolean().default(false),
+    deriver: z.object({
+      enabled: z.boolean().default(false),
+      maxEventsPerBatch: z.number().int().positive().max(100).default(20),
+      maxObserversPerSession: z.number().int().positive().max(50).default(5)
+    }).default({})
   }).default({})
 }).default({});
 export type MemoryOperationsConfig = z.infer<typeof MemoryOperationsConfigSchema>;

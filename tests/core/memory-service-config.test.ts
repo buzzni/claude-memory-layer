@@ -49,7 +49,11 @@ describe('memory-service-config', () => {
       actions: { enabled: true },
       retention: { enabled: false, policyVersion: 'v1' },
       graphExpansion: { enabled: false, maxHops: 1 },
-      lessons: { enabled: false }
+      lessons: { enabled: false },
+      perspectiveMemory: {
+        enabled: false,
+        deriver: { enabled: false, maxEventsPerBatch: 20, maxObserversPerSession: 5 }
+      }
     });
 
     expect(DEFAULT_ENABLED_MEMORY_OPERATIONS_CONFIG).toEqual({

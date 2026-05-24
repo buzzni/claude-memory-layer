@@ -337,10 +337,14 @@ memoryOperations:
 
 Acceptance:
 
-- [ ] Deriver is disabled by default.
-- [ ] No LLM call holds an open DB transaction.
-- [ ] Failed derivations do not block normal memory ingestion.
-- [ ] Duplicate observations are deduped by `(projectHash, observer, observed, content/source hash)`.
+- [x] Deriver is disabled by default.
+  - `PerspectiveDeriver` requires both `memoryOperations.perspectiveMemory.enabled` and `memoryOperations.perspectiveMemory.deriver.enabled`; service wiring also avoids constructing it for read-only/disabled configs.
+- [x] No LLM call holds an open DB transaction.
+  - Extraction runs before actor/session/observation persistence; the minimal extractor is rule-based today, while the extractor interface can be LLM-backed without spanning SQLite writes.
+- [x] Failed derivations do not block normal memory ingestion.
+  - `MemoryIngestService` invokes the optional deriver only after successful non-duplicate event writes and swallows derivation failures so embedding/mirror/ingest results remain intact.
+- [x] Duplicate observations are deduped by `(projectHash, observer, observed, content/source hash)`.
+  - Deriver writes through `PerspectiveObservationRepository.create`, preserving the repository unique key and policy-based observer fan-out.
 
 ## Phase 6 — Dialectic query agent (P2/P3)
 

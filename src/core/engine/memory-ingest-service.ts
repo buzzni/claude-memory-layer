@@ -7,6 +7,13 @@ import { normalizeTags } from '../tag-taxonomy.js';
 import { createSummaryDeriver, type SummaryDeriver } from '../derive/summary-deriver.js';
 import type { AppendResult, MemoryEvent, MemoryEventInput, ToolObservationPayload } from '../types.js';
 
+export interface PerspectiveDeriverLike {
+  deriveFromEvent(
+    event: MemoryEvent,
+    options?: { projectHash?: string | null; projectPath?: string | null }
+  ): Promise<unknown>;
+}
+
 interface SessionRecord {
   id: string;
   startedAt?: Date;
@@ -40,6 +47,7 @@ export interface MemoryIngestServiceOptions {
   getProjectHash?: () => string | null;
   getProjectPath?: () => string | null;
   summaryDeriver?: SummaryDeriver;
+  perspectiveDeriver?: PerspectiveDeriverLike;
 }
 
 /**
@@ -57,6 +65,7 @@ export class MemoryIngestService {
   private readonly getProjectHash: () => string | null;
   private readonly getProjectPath: () => string | null;
   private readonly summaryDeriver: SummaryDeriver;
+  private readonly perspectiveDeriver?: PerspectiveDeriverLike;
   private readonly ingestInterceptors = new IngestInterceptorRegistry();
 
   constructor(options: MemoryIngestServiceOptions) {
@@ -67,6 +76,7 @@ export class MemoryIngestService {
     this.getProjectHash = options.getProjectHash ?? (() => null);
     this.getProjectPath = options.getProjectPath ?? (() => null);
     this.summaryDeriver = options.summaryDeriver ?? createSummaryDeriver();
+    this.perspectiveDeriver = options.perspectiveDeriver;
   }
 
   registerIngestBefore(interceptor: IngestInterceptor): () => void {
@@ -244,6 +254,7 @@ export class MemoryIngestService {
         } catch {
           // non-breaking markdown mirror write
         }
+        await this.runPerspectiveDeriver(normalizedInput, result.eventId, options.operation);
       }
 
       await this.ingestInterceptors.run('after', {
@@ -262,6 +273,33 @@ export class MemoryIngestService {
         error: normalizedError
       });
       throw error;
+    }
+  }
+
+  private async runPerspectiveDeriver(
+    input: MemoryEventInput,
+    eventId: string,
+    operation: IngestOperation
+  ): Promise<void> {
+    if (!this.perspectiveDeriver) return;
+    if (operation !== 'user_prompt' && operation !== 'agent_response') return;
+    const event: MemoryEvent = {
+      id: eventId,
+      eventType: input.eventType,
+      sessionId: input.sessionId,
+      timestamp: input.timestamp,
+      content: input.content,
+      canonicalKey: eventId,
+      dedupeKey: eventId,
+      metadata: input.metadata
+    };
+    try {
+      await this.perspectiveDeriver.deriveFromEvent(event, {
+        projectHash: this.getProjectHash(),
+        projectPath: this.getProjectPath()
+      });
+    } catch {
+      // Optional perspective derivation must never block normal memory ingestion.
     }
   }
 

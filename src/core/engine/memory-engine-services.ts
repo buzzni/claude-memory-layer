@@ -15,7 +15,13 @@ import { getDefaultMatcher, type Matcher } from '../matcher.js';
 import { MarkdownMirror } from '../md-mirror.js';
 import type { Retriever } from '../retriever.js';
 import { SQLiteEventStore } from '../sqlite-event-store.js';
-import type { ToolObservationPayload, MemoryOperationsConfig } from '../types.js';
+import type { MemoryOperationsConfig, ToolObservationPayload } from '../types.js';
+import {
+  ActorRepository,
+  PerspectiveObservationRepository,
+  SessionActorRepository,
+  createPerspectiveDeriver
+} from '../operations/index.js';
 import { VectorStore } from '../vector-store.js';
 import { MemoryIngestService } from './memory-ingest-service.js';
 import { MemoryQueryService } from './memory-query-service.js';
@@ -104,6 +110,14 @@ export function createMemoryEngineServices(options: MemoryEngineServicesOptions)
   const graduation = (factories.createGraduationPipeline ?? defaultCreateGraduationPipeline)(
     sqliteStore as unknown as EventStore
   );
+  const perspectiveDeriver = shouldEnablePerspectiveDeriver(options)
+    ? createPerspectiveDeriver({
+        actors: new ActorRepository(sqliteStore.getDatabase()),
+        sessions: new SessionActorRepository(sqliteStore.getDatabase()),
+        observations: new PerspectiveObservationRepository(sqliteStore.getDatabase()),
+        config: options.memoryOperationsConfig?.perspectiveMemory
+      })
+    : undefined;
 
   const retrievalServices = (factories.createRetrievalServices ?? createRetrievalServices)({
     initialize: options.initialize,
@@ -123,7 +137,8 @@ export function createMemoryEngineServices(options: MemoryEngineServicesOptions)
     markdownMirror: mdMirror,
     createToolEmbedding: options.createToolObservationEmbedding,
     getProjectHash: options.getProjectHash,
-    getProjectPath: options.getProjectPath
+    getProjectPath: options.getProjectPath,
+    perspectiveDeriver
   });
   const queryService = new MemoryQueryService(
     () => sqliteStore.initialize(),
@@ -146,6 +161,12 @@ export function createMemoryEngineServices(options: MemoryEngineServicesOptions)
     ingestService,
     queryService
   };
+}
+
+function shouldEnablePerspectiveDeriver(options: MemoryEngineServicesOptions): boolean {
+  if (options.readOnly) return false;
+  const perspectiveMemory = options.memoryOperationsConfig?.perspectiveMemory;
+  return perspectiveMemory?.enabled === true && perspectiveMemory.deriver?.enabled === true;
 }
 
 function defaultCreateSQLiteEventStore(

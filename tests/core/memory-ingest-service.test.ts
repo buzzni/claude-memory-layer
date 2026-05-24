@@ -22,6 +22,9 @@ interface CreateServiceOptions {
   projectHash?: string | null;
   projectPath?: string | null;
   appendResult?: AppendResult;
+  perspectiveDeriver?: {
+    deriveFromEvent: (event: MemoryEvent, options?: { projectHash?: string | null; projectPath?: string | null }) => Promise<unknown>;
+  };
 }
 
 function createService(options: CreateServiceOptions = {}) {
@@ -50,7 +53,8 @@ function createService(options: CreateServiceOptions = {}) {
       markdownMirror,
       createToolEmbedding,
       getProjectHash: () => options.projectHash ?? null,
-      getProjectPath: () => options.projectPath ?? null
+      getProjectPath: () => options.projectPath ?? null,
+      perspectiveDeriver: options.perspectiveDeriver
     }),
     initialize,
     store,
@@ -140,6 +144,35 @@ describe('MemoryIngestService ingest pipeline', () => {
 
     expect(store.enqueueForEmbedding).toHaveBeenCalledWith('event-1', 'summary');
     expect(markdownMirror.append).toHaveBeenCalledOnce();
+  });
+
+  it('keeps perspective derivation failures non-blocking after a successful append', async () => {
+    const perspectiveDeriver = {
+      deriveFromEvent: vi.fn(async () => {
+        throw new Error('optional perspective deriver unavailable');
+      })
+    };
+    const { service, store, markdownMirror } = createService({
+      projectHash: 'project-1',
+      projectPath: '/workspace/project',
+      perspectiveDeriver
+    });
+
+    await expect(service.storeUserPrompt('session-1', 'derive this safely')).resolves.toEqual({
+      success: true,
+      eventId: 'event-1',
+      isDuplicate: false
+    });
+
+    expect(store.append).toHaveBeenCalledOnce();
+    expect(store.enqueueForEmbedding).toHaveBeenCalledWith('event-1', 'derive this safely');
+    expect(markdownMirror.append).toHaveBeenCalledOnce();
+    expect(perspectiveDeriver.deriveFromEvent).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'event-1',
+      eventType: 'user_prompt',
+      sessionId: 'session-1',
+      content: 'derive this safely'
+    }), { projectHash: 'project-1', projectPath: '/workspace/project' });
   });
 
   it('runs error interceptors and skips side effects when append returns a failure result', async () => {
