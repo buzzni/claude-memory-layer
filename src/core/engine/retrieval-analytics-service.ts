@@ -5,6 +5,7 @@
  * MemoryService can remain a thin facade over focused engine services.
  */
 
+import type { RetrievalDebugLane } from '../retrieval-debug-lanes.js';
 import type { MemoryEvent } from '../types.js';
 
 export interface RetrievalTraceStats {
@@ -45,6 +46,7 @@ export interface RetrievalTraceDetail {
   semanticScore?: number;
   lexicalScore?: number;
   recencyScore?: number;
+  lanes?: RetrievalDebugLane[];
 }
 
 export interface RetrievalTrace {

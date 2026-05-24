@@ -14,6 +14,7 @@ import {
   type RetrievalStrategy,
   type UnifiedRetrievalResult
 } from '../retriever.js';
+import type { RetrievalDebugLane } from '../retrieval-debug-lanes.js';
 import type { MemoryOperationsConfig } from '../types.js';
 
 export interface RetrieveMemoriesOptions {
@@ -71,6 +72,7 @@ interface RetrievalTraceDetail {
   semanticScore?: number;
   lexicalScore?: number;
   recencyScore?: number;
+  lanes?: RetrievalDebugLane[];
 }
 
 export interface RetrievalTraceStore {
@@ -270,6 +272,7 @@ export class RetrievalOrchestrator {
       semanticScore: detail.semanticScore,
       lexicalScore: detail.lexicalScore,
       recencyScore: detail.recencyScore,
+      lanes: detail.lanes,
     }));
     const candidateDetails = (result.candidateDebug || []).map((detail) => ({
       eventId: detail.eventId,
@@ -277,6 +280,7 @@ export class RetrievalOrchestrator {
       semanticScore: detail.semanticScore,
       lexicalScore: detail.lexicalScore,
       recencyScore: detail.recencyScore,
+      lanes: detail.lanes,
     }));
     const candidateEventIds = candidateDetails.length > 0
       ? candidateDetails.map((detail) => detail.eventId)

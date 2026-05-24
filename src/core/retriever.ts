@@ -27,7 +27,13 @@ import {
   hasDiscriminativeTermOverlap,
   shouldApplyTechnicalGuard
 } from './retrieval-quality.js';
+import {
+  normalizeRetrievalDebugLanes,
+  type RetrievalDebugLane
+} from './retrieval-debug-lanes.js';
 import type { MemoryEvent, MatchResult, NodeType, SharedTroubleshootingEntry } from './types.js';
+
+export type { RetrievalDebugLane, RetrievalDebugLaneName } from './retrieval-debug-lanes.js';
 
 export interface RetrievalScope {
   sessionId?: string;
@@ -56,6 +62,7 @@ export interface RetrievalDebugDetail {
   recencyScore?: number;
   facetMatches?: RetrievalFacetFilter[];
   graphPaths?: RetrievalGraphPathDebug[];
+  lanes?: RetrievalDebugLane[];
 }
 
 export interface RetrievalGraphPathDebug {
@@ -73,6 +80,7 @@ type DebuggableSearchResult = SearchResult & {
   recencyScore?: number;
   facetMatches?: RetrievalFacetFilter[];
   graphPaths?: RetrievalGraphPathDebug[];
+  lanes?: RetrievalDebugLane[];
 };
 
 export interface RetrievalOptions {
@@ -529,7 +537,7 @@ export class Retriever {
           if (!target) continue;
 
           const score = Math.max(0, f.row.score - opts.hopPenalty * hop);
-          const row: SearchResult = {
+          const row: DebuggableSearchResult = {
             id: `hop-${hop}-${rid}`,
             eventId: target.id,
             content: target.content,
@@ -537,6 +545,7 @@ export class Retriever {
             sessionId: target.sessionId,
             eventType: target.eventType,
             timestamp: target.timestamp.toISOString(),
+            lanes: [{ lane: 'graph_path', reason: 'relatedEventIds', score }]
           };
 
           byId.set(row.eventId, row);
@@ -595,6 +604,11 @@ export class Retriever {
         const score = graphPathScore(path, opts.hopPenalty);
         const existing = byId.get(target.id);
         const graphPaths = mergeGraphPaths(existing?.graphPaths ?? [], [graphPath]);
+        const graphLane: RetrievalDebugLane = {
+          lane: 'graph_path',
+          reason: `query_graph_path:${graphPath.relationPath.join('>') || 'linked'}`,
+          score
+        };
         const row: DebuggableSearchResult = {
           id: existing?.id ?? `graph-path-${path.hops}-${target.id}`,
           eventId: target.id,
@@ -607,7 +621,8 @@ export class Retriever {
           lexicalScore: existing?.lexicalScore,
           recencyScore: existing?.recencyScore,
           facetMatches: existing?.facetMatches,
-          graphPaths
+          graphPaths,
+          lanes: mergeRetrievalLanes(existing?.lanes ?? [], [graphLane])
         };
         byId.set(row.eventId, row);
         if (byId.size >= opts.limit) break;
@@ -624,7 +639,7 @@ export class Retriever {
     return false;
   }
 
-  private async buildSummaryFallback(query: string, topK: number): Promise<SearchResult[]> {
+  private async buildSummaryFallback(query: string, topK: number): Promise<DebuggableSearchResult[]> {
     const recent = await this.eventStore.getRecentEvents(Math.max(topK * 6, 20));
     const q = this.tokenize(query);
 
@@ -633,15 +648,18 @@ export class Retriever {
       .filter((r) => r.overlap > 0)
       .sort((a, b) => b.overlap - a.overlap)
       .slice(0, topK)
-      .map((row, idx) => ({
-        id: `summary-${row.e.id}`,
-        eventId: row.e.id,
-        content: row.e.content,
-        score: Math.max(0.25, 0.6 - idx * 0.05),
-        sessionId: row.e.sessionId,
-        eventType: row.e.eventType,
-        timestamp: row.e.timestamp.toISOString()
-      }));
+      .map((row, idx) => {
+        const score = Math.max(0.25, 0.6 - idx * 0.05);
+        return withRetrievalLane({
+          id: `summary-${row.e.id}`,
+          eventId: row.e.id,
+          content: row.e.content,
+          score,
+          sessionId: row.e.sessionId,
+          eventType: row.e.eventType,
+          timestamp: row.e.timestamp.toISOString()
+        }, { lane: 'session_summary', reason: 'summary_fallback', score });
+      });
 
     return ranked;
   }
@@ -649,7 +667,7 @@ export class Retriever {
   private async searchByStrategy(
     query: string,
     input: { strategy: RetrievalStrategy; topK: number; minScore: number; sessionId?: string }
-  ): Promise<SearchResult[]> {
+  ): Promise<DebuggableSearchResult[]> {
     const strategy = input.strategy === 'auto' ? 'deep' : input.strategy;
 
     if (strategy === 'fast') {
@@ -661,29 +679,37 @@ export class Retriever {
     }
 
     const queryEmbedding = await this.embedder.embed(query);
-    return this.vectorStore.search(queryEmbedding.vector, {
+    const vectorResults = await this.vectorStore.search(queryEmbedding.vector, {
       limit: Math.max(5, input.topK * 3),
       minScore: input.minScore,
       sessionId: input.sessionId
     });
+    return vectorResults.map((result) => withRetrievalLane(result, {
+      lane: 'raw_event',
+      reason: 'vector_search',
+      score: result.score
+    }));
   }
 
   private async searchByKeyword(
     query: string,
     input: { limit: number; sessionId?: string }
-  ): Promise<SearchResult[]> {
+  ): Promise<DebuggableSearchResult[]> {
     if (this.eventStore.keywordSearch) {
       const rows = await this.eventStore.keywordSearch(query, input.limit);
       const filtered = input.sessionId ? rows.filter((r) => r.event.sessionId === input.sessionId) : rows;
-      return filtered.map((row, idx) => ({
-        id: `kw-${row.event.id}`,
-        eventId: row.event.id,
-        content: row.event.content,
-        score: Math.max(0.4, 1 - idx * 0.04),
-        sessionId: row.event.sessionId,
-        eventType: row.event.eventType,
-        timestamp: row.event.timestamp.toISOString()
-      }));
+      return filtered.map((row, idx) => {
+        const score = Math.max(0.4, 1 - idx * 0.04);
+        return withRetrievalLane({
+          id: `kw-${row.event.id}`,
+          eventId: row.event.id,
+          content: row.event.content,
+          score,
+          sessionId: row.event.sessionId,
+          eventType: row.event.eventType,
+          timestamp: row.event.timestamp.toISOString()
+        }, { lane: 'raw_event', reason: 'keyword_search', score });
+      });
     }
 
     const recent = await this.eventStore.getRecentEvents(input.limit * 4);
@@ -695,15 +721,18 @@ export class Retriever {
       .sort((a, b) => b.overlap - a.overlap)
       .slice(0, input.limit);
 
-    return filtered.map((row, idx) => ({
-      id: `kw-fallback-${row.e.id}`,
-      eventId: row.e.id,
-      content: row.e.content,
-      score: Math.max(0.3, 0.9 - idx * 0.05),
-      sessionId: row.e.sessionId,
-      eventType: row.e.eventType,
-      timestamp: row.e.timestamp.toISOString()
-    }));
+    return filtered.map((row, idx) => {
+      const score = Math.max(0.3, 0.9 - idx * 0.05);
+      return withRetrievalLane({
+        id: `kw-fallback-${row.e.id}`,
+        eventId: row.e.id,
+        content: row.e.content,
+        score,
+        sessionId: row.e.sessionId,
+        eventType: row.e.eventType,
+        timestamp: row.e.timestamp.toISOString()
+      }, { lane: 'raw_event', reason: 'keyword_fallback', score });
+    });
   }
 
   private rerankByKeywordOverlap(
@@ -845,7 +874,15 @@ export class Retriever {
       }
 
       if (matchedAll) {
-        filtered.push({ ...result, facetMatches: matches });
+        const facetLanes: RetrievalDebugLane[] = matches.map((match) => ({
+          lane: 'facet_match',
+          reason: `${match.dimension}=${match.value}`
+        }));
+        filtered.push({
+          ...result,
+          facetMatches: matches,
+          lanes: mergeRetrievalLanes(result.lanes ?? [], facetLanes)
+        });
       }
     }
 
@@ -865,6 +902,9 @@ export class Retriever {
     }
     if (result.graphPaths && result.graphPaths.length > 0) {
       detail.graphPaths = result.graphPaths;
+    }
+    if (result.lanes && result.lanes.length > 0) {
+      detail.lanes = result.lanes;
     }
     return detail;
   }
@@ -1027,6 +1067,21 @@ export class Retriever {
   private estimateTokens(text: string): number {
     return Math.ceil(text.length / 4);
   }
+}
+
+function withRetrievalLane(result: SearchResult, lane: RetrievalDebugLane): DebuggableSearchResult {
+  const existing = (result as DebuggableSearchResult).lanes ?? [];
+  return {
+    ...result,
+    lanes: mergeRetrievalLanes(existing, [lane])
+  };
+}
+
+function mergeRetrievalLanes(
+  existing: RetrievalDebugLane[],
+  incoming: RetrievalDebugLane[]
+): RetrievalDebugLane[] {
+  return normalizeRetrievalDebugLanes([...existing, ...incoming]);
 }
 
 function uniqueEntityStartNodes(

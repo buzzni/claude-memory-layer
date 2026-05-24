@@ -143,6 +143,80 @@ describe('SQLiteEventStore replication helpers', () => {
     expect(trace.createdAt.toISOString()).toBe('2026-05-07T16:00:00.000Z');
   });
 
+  it('persists retrieval lane debug metadata in trace details', async () => {
+    await storeA.recordRetrievalTrace({
+      sessionId: 'lane-session',
+      projectHash: 'lane-project',
+      queryText: 'lane debug query',
+      candidateEventIds: ['candidate-1'],
+      selectedEventIds: ['candidate-1'],
+      candidateDetails: [{
+        eventId: 'candidate-1',
+        score: 0.93,
+        lanes: [
+          { lane: 'raw_event', reason: 'vector_search', score: 0.93 },
+          { lane: 'facet_match', reason: 'workflow=debugging' }
+        ]
+      }],
+      selectedDetails: [{
+        eventId: 'candidate-1',
+        score: 0.93,
+        lanes: [{ lane: 'raw_event', reason: 'vector_search', score: 0.93 }]
+      }]
+    });
+
+    const [trace] = await storeA.getRecentRetrievalTraces(1);
+    expect(trace.candidateDetails[0].lanes).toEqual([
+      { lane: 'raw_event', reason: 'vector_search', score: 0.93 },
+      { lane: 'facet_match', reason: 'workflow=debugging' }
+    ]);
+    expect(trace.selectedDetails[0].lanes).toEqual([
+      { lane: 'raw_event', reason: 'vector_search', score: 0.93 }
+    ]);
+  });
+
+  it('sanitizes retrieval lane metadata at the SQLite persistence boundary', async () => {
+    const fixturePath = path.join('/Users', 'fixture-user', 'project', 'trace.txt');
+    const fixtureToken = ['ghp', 'fixtureCredentialShape'].join('_');
+    const fixtureSecret = ['sk', 'fixtureCredentialShape'].join('-');
+    const secretKey = ['client', 'secret'].join('_');
+
+    await storeA.recordRetrievalTrace({
+      sessionId: 'unsafe-lane-session',
+      projectHash: 'lane-project',
+      queryText: 'unsafe lane debug query',
+      candidateEventIds: ['candidate-1'],
+      selectedEventIds: ['candidate-1'],
+      candidateDetails: [{
+        eventId: 'candidate-1',
+        score: 0.5,
+        lanes: [
+          { lane: 'raw_event', reason: `source=${fixturePath} token: ${fixtureToken}`, score: 2 },
+          { lane: 'unsafe_lane', reason: `${secretKey}=${fixtureSecret}` },
+          { lane: 'facet_match', reason: `${secretKey}=${fixtureSecret}` }
+        ] as any
+      }],
+      selectedDetails: [{
+        eventId: 'candidate-1',
+        score: 0.5,
+        lanes: [
+          { lane: 'raw_event', reason: `standalone ${fixtureToken}`, score: Number.NaN },
+          { lane: 'graph_path', reason: `authorization Bearer ${fixtureToken}`, score: -2 }
+        ] as any
+      }]
+    });
+
+    const [trace] = await storeA.getRecentRetrievalTraces(1);
+    expect(trace.candidateDetails[0].lanes).toEqual([
+      { lane: 'raw_event', reason: 'source=[path] token: [REDACTED]', score: 1 },
+      { lane: 'facet_match', reason: 'client_secret=[REDACTED]' }
+    ]);
+    expect(trace.selectedDetails[0].lanes).toEqual([
+      { lane: 'raw_event', reason: 'standalone [REDACTED]' },
+      { lane: 'graph_path', reason: 'authorization Bearer [REDACTED]', score: 0 }
+    ]);
+  });
+
   it('stores query rewrite telemetry and aggregates rewritten query yield', async () => {
     await storeA.recordRetrievalTrace({
       sessionId: 'rewrite-session',

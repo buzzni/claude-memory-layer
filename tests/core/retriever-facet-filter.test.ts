@@ -154,6 +154,42 @@ describe('Retriever facet filters', () => {
     expect(ids).not.toContain(releaseEvent.id);
     expect(ids).not.toContain(otherProjectEvent.id);
     expect(out.selectedDebug?.[0]?.facetMatches).toEqual([{ dimension: 'workflow', value: 'debugging' }]);
+    expect((out.selectedDebug?.[0] as any)?.lanes).toEqual([
+      expect.objectContaining({ lane: 'raw_event', reason: 'vector_search' }),
+      expect.objectContaining({ lane: 'facet_match', reason: 'workflow=debugging' })
+    ]);
+  });
+
+  it('redacts path and secret-shaped facet values from lane debug reasons', async () => {
+    const { retriever, repo, debugEvent, cleanup } = await createFixture();
+    const privatePath = join('/Users', 'alice', 'private');
+    const sensitiveToken = ['super', 'secret', 'value'].join('');
+    const sensitiveFacet = ['artifact ', privatePath, ' ', 'token', '=', sensitiveToken].join('');
+    await repo.assign({
+      targetType: 'event',
+      targetId: debugEvent.id,
+      dimension: 'artifact',
+      value: sensitiveFacet,
+      projectHash: 'project-1'
+    });
+
+    const out = await retriever.retrieve('deployment memory workflow shared terms', {
+      strategy: 'deep',
+      topK: 5,
+      minScore: 0.1,
+      includeSessionContext: false,
+      projectScopeMode: 'global',
+      projectHash: 'project-1',
+      facets: [{ dimension: 'artifact', value: sensitiveFacet }]
+    });
+    await cleanup();
+
+    const serializedLanes = JSON.stringify(out.selectedDebug?.[0]?.lanes ?? []);
+    expect(serializedLanes).toContain('artifact=');
+    expect(serializedLanes).toContain('[path]');
+    expect(serializedLanes).toContain('[REDACTED]');
+    expect(serializedLanes).not.toContain(privatePath);
+    expect(serializedLanes).not.toContain(sensitiveToken);
   });
 
   it('fails closed when a candidate only has the requested facet in another project', async () => {

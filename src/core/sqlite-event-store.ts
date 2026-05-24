@@ -32,12 +32,43 @@ import {
   type SQLiteOptions
 } from './sqlite-wrapper.js';
 import { MarkdownMirror } from './markdown-mirror.js';
+import { normalizeRetrievalDebugLanes, type RetrievalDebugLane } from './retrieval-debug-lanes.js';
 
 export interface SQLiteEventStoreOptions extends SQLiteOptions {
   markdownMirrorRoot?: string;
 }
 
 type QueryRewriteKind = 'none' | 'follow-up-context' | 'intent-rewrite';
+
+type RetrievalTraceDetailRecord = {
+  eventId: string;
+  score: number;
+  semanticScore?: number;
+  lexicalScore?: number;
+  recencyScore?: number;
+  lanes?: RetrievalDebugLane[];
+};
+
+function normalizeRetrievalTraceDetails(details?: RetrievalTraceDetailRecord[]): RetrievalTraceDetailRecord[] {
+  return (details || []).map((detail) => {
+    const lanes = normalizeRetrievalDebugLanes((detail as { lanes?: unknown }).lanes);
+    const normalized: RetrievalTraceDetailRecord = {
+      eventId: detail.eventId,
+      score: detail.score
+    };
+    if (detail.semanticScore !== undefined) normalized.semanticScore = detail.semanticScore;
+    if (detail.lexicalScore !== undefined) normalized.lexicalScore = detail.lexicalScore;
+    if (detail.recencyScore !== undefined) normalized.recencyScore = detail.recencyScore;
+    if (lanes.length > 0) normalized.lanes = lanes;
+    return normalized;
+  });
+}
+
+function parseRetrievalTraceDetails(value: unknown): RetrievalTraceDetailRecord[] {
+  if (typeof value !== 'string' || value.length === 0) return [];
+  const parsed = JSON.parse(value);
+  return Array.isArray(parsed) ? normalizeRetrievalTraceDetails(parsed as RetrievalTraceDetailRecord[]) : [];
+}
 
 function normalizeQueryRewriteKind(value?: string | null): QueryRewriteKind {
   const normalized = (value || '').trim().toLowerCase();
@@ -2193,6 +2224,7 @@ export class SQLiteEventStore {
       semanticScore?: number;
       lexicalScore?: number;
       recencyScore?: number;
+      lanes?: RetrievalDebugLane[];
     }>;
     selectedDetails?: Array<{
       eventId: string;
@@ -2200,6 +2232,7 @@ export class SQLiteEventStore {
       semanticScore?: number;
       lexicalScore?: number;
       recencyScore?: number;
+      lanes?: RetrievalDebugLane[];
     }>;
     confidence?: string;
     fallbackTrace?: string[];
@@ -2208,6 +2241,8 @@ export class SQLiteEventStore {
 
     const traceId = randomUUID();
     const queryRewriteKind = normalizeQueryRewriteKind(input.queryRewriteKind);
+    const candidateDetails = normalizeRetrievalTraceDetails(input.candidateDetails);
+    const selectedDetails = normalizeRetrievalTraceDetails(input.selectedDetails);
     sqliteRun(
       this.db,
       `INSERT INTO retrieval_traces (
@@ -2225,8 +2260,8 @@ export class SQLiteEventStore {
         input.strategy || null,
         JSON.stringify(input.candidateEventIds || []),
         JSON.stringify(input.selectedEventIds || []),
-        JSON.stringify(input.candidateDetails || []),
-        JSON.stringify(input.selectedDetails || []),
+        JSON.stringify(candidateDetails),
+        JSON.stringify(selectedDetails),
         (input.candidateEventIds || []).length,
         (input.selectedEventIds || []).length,
         input.confidence || null,
@@ -2251,6 +2286,7 @@ export class SQLiteEventStore {
       semanticScore?: number;
       lexicalScore?: number;
       recencyScore?: number;
+      lanes?: RetrievalDebugLane[];
     }>;
     selectedDetails: Array<{
       eventId: string;
@@ -2258,6 +2294,7 @@ export class SQLiteEventStore {
       semanticScore?: number;
       lexicalScore?: number;
       recencyScore?: number;
+      lanes?: RetrievalDebugLane[];
     }>;
     candidateCount: number;
     selectedCount: number;
@@ -2284,8 +2321,8 @@ export class SQLiteEventStore {
         strategy: (row.strategy as string) || undefined,
         candidateEventIds: row.candidate_event_ids ? JSON.parse(row.candidate_event_ids as string) : [],
         selectedEventIds: row.selected_event_ids ? JSON.parse(row.selected_event_ids as string) : [],
-        candidateDetails: row.candidate_details_json ? JSON.parse(row.candidate_details_json as string) : [],
-        selectedDetails: row.selected_details_json ? JSON.parse(row.selected_details_json as string) : [],
+        candidateDetails: parseRetrievalTraceDetails(row.candidate_details_json),
+        selectedDetails: parseRetrievalTraceDetails(row.selected_details_json),
         candidateCount: Number(row.candidate_count || 0),
         selectedCount: Number(row.selected_count || 0),
         confidence: (row.confidence as string) || undefined,

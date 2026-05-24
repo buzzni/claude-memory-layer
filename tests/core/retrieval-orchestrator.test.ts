@@ -103,6 +103,62 @@ describe('RetrievalOrchestrator', () => {
     });
   });
 
+  it('preserves retrieval lane debug metadata in automatic traces', async () => {
+    const traces: Array<Record<string, unknown>> = [];
+    const fakeRetriever = {
+      setQueryRewriter() {},
+      async retrieve() {
+        return retrievalResult('lane-e1', {
+          selectedDebug: [
+            {
+              eventId: 'lane-e1',
+              score: 0.93,
+              semanticScore: 0.89,
+              lexicalScore: 0.55,
+              recencyScore: 0.2,
+              lanes: [{ lane: 'raw_event', reason: 'vector_search', score: 0.93 }]
+            } as any
+          ],
+          candidateDebug: [
+            {
+              eventId: 'lane-e1',
+              score: 0.93,
+              semanticScore: 0.89,
+              lexicalScore: 0.55,
+              recencyScore: 0.2,
+              lanes: [
+                { lane: 'raw_event', reason: 'vector_search', score: 0.93 },
+                { lane: 'facet_match', reason: 'workflow=debugging' }
+              ]
+            } as any
+          ]
+        });
+      }
+    } as unknown as Retriever;
+
+    const orchestrator = new RetrievalOrchestrator({
+      initialize: async () => {},
+      retriever: fakeRetriever,
+      traceStore: {
+        getHelpfulnessStats: async () => stats(),
+        recordRetrievalTrace: async (input) => { traces.push(input); }
+      },
+      accessStore: noopAccessStore(),
+      getProjectHash: () => 'project-1',
+      hasSharedStore: () => false
+    });
+
+    await orchestrator.retrieveMemories('debug lane query', { topK: 3, sessionId: 's1' });
+
+    expect((traces[0].selectedDetails as any[])[0].lanes).toEqual([
+      { lane: 'raw_event', reason: 'vector_search', score: 0.93 }
+    ]);
+    expect((traces[0].candidateDetails as any[])[0].lanes).toEqual([
+      { lane: 'raw_event', reason: 'vector_search', score: 0.93 },
+      { lane: 'facet_match', reason: 'workflow=debugging' }
+    ]);
+  });
+
   it('forwards facet filters through retrieveMemories without changing default scoping', async () => {
     let retrieveArgs: { query: string; options: Record<string, unknown> } | null = null;
     const facetFilters = [{ dimension: 'workflow' as const, value: 'debugging' }];

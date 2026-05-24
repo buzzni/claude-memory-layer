@@ -301,7 +301,9 @@ Merge policy:
 
 Acceptance:
 
-- [ ] Debug trace identifies which lane selected each memory.
+- [x] Debug trace identifies which lane selected each memory.
+  - Implemented core trace lane metadata for raw event/vector/keyword retrieval, session-summary fallback, graph-path expansion, and facet-match filtering; automatic retrieval traces persist candidate/selected `lanes` details.
+  - Lane reasons are privacy-safe/truncated and redact local paths plus secret-shaped values before trace persistence.
 - [ ] Retrieval with actor perspective does not suppress existing project memories.
 - [ ] Retrieval without actor perspective is unchanged.
 
