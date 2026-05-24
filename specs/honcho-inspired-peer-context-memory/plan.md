@@ -304,8 +304,10 @@ Acceptance:
 - [x] Debug trace identifies which lane selected each memory.
   - Implemented core trace lane metadata for raw event/vector/keyword retrieval, session-summary fallback, graph-path expansion, and facet-match filtering; automatic retrieval traces persist candidate/selected `lanes` details.
   - Lane reasons are privacy-safe/truncated and redact local paths plus secret-shaped values before trace persistence.
-- [ ] Retrieval with actor perspective does not suppress existing project memories.
-- [ ] Retrieval without actor perspective is unchanged.
+- [x] Retrieval with actor perspective does not suppress existing project memories.
+  - Context-pack perspective loading now degrades fail-open for the project-memory lane: if actor-card or observation retrieval fails, a sanitized warning is emitted and existing relevant memories/timeline still render.
+- [x] Retrieval without actor perspective is unchanged.
+  - Explicitly disabled perspective toggles (`includeActorCard: false`, `includePerspectiveObservations: false`) no longer trigger perspective validation/loading when no actor ids are supplied, preserving baseline context-pack output.
 
 ## Phase 5 — Minimal Perspective Deriver (P2)
 

@@ -71,20 +71,22 @@ function resolveMemoryService(args: MemoryToolArgs): MemoryService {
   return getDefaultMemoryService();
 }
 
-const CONTEXT_PACK_PERSPECTIVE_ARG_NAMES = [
-  'observerActorId',
-  'targetActorId',
-  'observedActorId',
-  'includeActorCard',
-  'includePerspectiveObservations',
-  'limitToSession',
-  'reasoningLevel'
-] as const;
+function hasSuppliedArg(args: Record<string, unknown>, name: string): boolean {
+  return Object.prototype.hasOwnProperty.call(args, name) && args[name] !== undefined;
+}
+
+function hasEnabledOrMalformedBooleanPerspectiveArg(args: Record<string, unknown>, name: string): boolean {
+  return hasSuppliedArg(args, name) && args[name] !== false;
+}
 
 function hasMemContextPackPerspectiveArgs(args: Record<string, unknown>): boolean {
-  return CONTEXT_PACK_PERSPECTIVE_ARG_NAMES.some((name) =>
-    Object.prototype.hasOwnProperty.call(args, name) && args[name] !== undefined
-  );
+  return hasSuppliedArg(args, 'observerActorId')
+    || hasSuppliedArg(args, 'targetActorId')
+    || hasSuppliedArg(args, 'observedActorId')
+    || hasEnabledOrMalformedBooleanPerspectiveArg(args, 'includeActorCard')
+    || hasEnabledOrMalformedBooleanPerspectiveArg(args, 'includePerspectiveObservations')
+    || hasEnabledOrMalformedBooleanPerspectiveArg(args, 'limitToSession')
+    || hasSuppliedArg(args, 'reasoningLevel');
 }
 
 function isAbsoluteProjectPath(value: string): boolean {
@@ -1249,12 +1251,18 @@ async function handleMemContextPack(memoryService: MemoryService, args: Record<s
   const hasPerspectiveContext = optionalString(args.observerActorId) !== undefined
     || optionalString(args.targetActorId) !== undefined
     || optionalString(args.observedActorId) !== undefined;
-  const perspectiveBundle = hasPerspectiveContext
-    ? await withMemoryOperationContext(args, (context) => loadPerspectiveContextBundle(context, args, {
-      query,
-      defaultLimit: perspectiveObservationLimit(args.reasoningLevel)
-    }))
-    : undefined;
+  let perspectiveBundle: PerspectiveContextBundle | undefined;
+  let perspectiveWarning: string | undefined;
+  if (hasPerspectiveContext) {
+    try {
+      perspectiveBundle = await withMemoryOperationContext(args, (context) => loadPerspectiveContextBundle(context, args, {
+        query,
+        defaultLimit: perspectiveObservationLimit(args.reasoningLevel)
+      }));
+    } catch (error) {
+      perspectiveWarning = `Warning: perspective context unavailable; project memories returned without perspective lane (${safeErrorSummary(error)}).`;
+    }
+  }
 
   const lines: string[] = [
     '## Project Context Pack',
@@ -1275,6 +1283,9 @@ async function handleMemContextPack(memoryService: MemoryService, args: Record<s
 
   if (search.warning) {
     lines.push(`- ${search.warning}`);
+  }
+  if (perspectiveWarning) {
+    lines.push(`- ${perspectiveWarning}`);
   }
 
   if (genericContinuationQuery) {

@@ -505,6 +505,93 @@ describe('MCP perspective memory handlers', () => {
     expect(text).not.toContain('/repo/app');
   });
 
+  it('returns project memories even when actor perspective context loading fails', async () => {
+    const survivorMemory = event({
+      id: 'event-survivor',
+      content: 'Project memory should survive perspective repository failure.',
+      metadata: { sourceAgent: 'hermes' }
+    });
+    mocks.projectService.retrieveMemories.mockResolvedValue({
+      memories: [{ event: survivorMemory, score: 0.93 }]
+    });
+    mocks.projectService.getRecentEvents.mockResolvedValue([
+      event({
+        id: 'event-recent',
+        sessionId: 'session-1',
+        content: 'Recent project checkpoint still appears.',
+        metadata: { projectPath: '/repo/app', projectHash: 'deadbeef', sourceAgent: 'hermes' }
+      })
+    ]);
+    const secretKey = ['api', 'token'].join('_');
+    const secretValue = ['fixture', 'secret', 'value'].join('-');
+    mocks.actorCardRepository.get.mockRejectedValue(new Error(`perspective sqlite failure at /repo/app/events.sqlite ${secretKey}=${secretValue}`));
+
+    const result = await handleToolCall('mem-context-pack', {
+      projectPath: '/repo/app',
+      query: 'perspective memory',
+      topK: 2,
+      sessionId: 'session-1',
+      observerActorId: 'actor:assistant',
+      targetActorId: 'actor:user',
+      includeActorCard: true,
+      includePerspectiveObservations: true
+    });
+
+    const text = textOf(result);
+    expect(result.isError).not.toBe(true);
+    expect(text).toContain('Project memory should survive perspective repository failure.');
+    expect(text).toContain('Warning: perspective context unavailable');
+    expect(text).not.toContain('/repo/app');
+    expect(text).not.toContain(secretValue);
+    expect(text).not.toContain(`${secretKey}=${secretValue}`);
+    expect(mocks.sqliteInstances[0].close).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps no-perspective context-pack output unchanged when perspective lanes are explicitly disabled', async () => {
+    const projectMemory = event({
+      id: 'event-project',
+      content: 'No perspective disabled toggles should change this memory.',
+      metadata: { sourceAgent: 'hermes' }
+    });
+    const recent = event({
+      id: 'event-recent',
+      sessionId: 'session-1',
+      content: 'No perspective disabled toggles should change this timeline.',
+      metadata: { projectPath: '/repo/app', projectHash: 'deadbeef', sourceAgent: 'hermes' }
+    });
+    mocks.projectService.retrieveMemories.mockResolvedValue({
+      memories: [{ event: projectMemory, score: 0.91 }]
+    });
+    mocks.projectService.getRecentEvents.mockResolvedValue([recent]);
+
+    const baseline = await handleToolCall('mem-context-pack', {
+      projectPath: '/repo/app',
+      query: 'plain project memory',
+      topK: 2,
+      sessionId: 'session-1'
+    });
+
+    resetMocks();
+    mocks.projectService.retrieveMemories.mockResolvedValue({
+      memories: [{ event: projectMemory, score: 0.91 }]
+    });
+    mocks.projectService.getRecentEvents.mockResolvedValue([recent]);
+
+    const disabled = await handleToolCall('mem-context-pack', {
+      projectPath: '/repo/app',
+      query: 'plain project memory',
+      topK: 2,
+      sessionId: 'session-1',
+      includeActorCard: false,
+      includePerspectiveObservations: false
+    });
+
+    expect(disabled.isError).not.toBe(true);
+    expect(textOf(disabled)).toEqual(textOf(baseline));
+    expect(mocks.ActorCardRepository).not.toHaveBeenCalled();
+    expect(mocks.PerspectiveObservationRepository).not.toHaveBeenCalled();
+  });
+
   it('rejects perspective context-pack args before resolving any memory service or store when scope is invalid', async () => {
     const missingProjectPath = await handleToolCall('mem-context-pack', {
       query: 'perspective memory',
@@ -530,6 +617,28 @@ describe('MCP perspective memory handlers', () => {
 
     expect(missingTarget.isError).toBe(true);
     expect(textOf(missingTarget)).toContain('targetActorId');
+    expect(mocks.getDefaultMemoryService).not.toHaveBeenCalled();
+    expect(mocks.getMemoryServiceForProject).not.toHaveBeenCalled();
+    expect(mocks.SQLiteEventStore).not.toHaveBeenCalled();
+  });
+
+  it('rejects malformed supplied perspective context-pack args before memory access', async () => {
+    const malformedActor = await handleToolCall('mem-context-pack', {
+      projectPath: '/repo/app',
+      query: 'perspective memory',
+      observerActorId: 123,
+      targetActorId: 'actor:user'
+    });
+    const malformedToggle = await handleToolCall('mem-context-pack', {
+      projectPath: '/repo/app',
+      query: 'perspective memory',
+      includeActorCard: 'yes'
+    });
+
+    expect(malformedActor.isError).toBe(true);
+    expect(textOf(malformedActor)).toContain('observerActorId');
+    expect(malformedToggle.isError).toBe(true);
+    expect(textOf(malformedToggle)).toContain('observerActorId');
     expect(mocks.getDefaultMemoryService).not.toHaveBeenCalled();
     expect(mocks.getMemoryServiceForProject).not.toHaveBeenCalled();
     expect(mocks.SQLiteEventStore).not.toHaveBeenCalled();
