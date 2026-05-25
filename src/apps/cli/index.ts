@@ -98,6 +98,10 @@ import {
   DEFAULT_EMBEDDING_FALLBACK_MODEL,
   DEFAULT_EMBEDDING_MODEL
 } from '../../extensions/vector/embedder.js';
+import {
+  formatProcessRecoveryPreview,
+  resolveProcessCommandOptions
+} from './process-command.js';
 
 // ============================================================
 // Hook Installation Utilities
@@ -970,14 +974,31 @@ program
   .command('process')
   .description('Process pending embeddings')
   .option('-p, --project <path>', 'Project path (defaults to cwd)')
+  .option('--dry-run-recovery', 'Preview stale outbox recovery without mutating or processing embeddings')
   .option('--no-recover-stuck', 'Skip stale processing outbox recovery before processing')
   .action(async (options) => {
-    const projectPath = options.project || process.cwd();
-    const service = getMemoryServiceForProject(projectPath);
+    let service: ReturnType<typeof getMemoryServiceForProject> | undefined;
 
     try {
+      const processOptions = resolveProcessCommandOptions(options);
+      service = getMemoryServiceForProject(processOptions.projectPath);
       await service.initialize();
-      if (options.recoverStuck !== false) {
+
+      if (processOptions.dryRunRecovery) {
+        const now = new Date();
+        const [stats, recovery] = await Promise.all([
+          service.getOutboxStats({ now }),
+          service.recoverStuckOutboxItems({ dryRun: true, now })
+        ]);
+        console.log(formatProcessRecoveryPreview({
+          projectPath: processOptions.projectPath,
+          stats,
+          recovery
+        }));
+        return;
+      }
+
+      if (processOptions.recoverStuck) {
         const recovered = await service.recoverStuckOutboxItems();
         const recoveredCount = recovered.embedding.recoveredProcessing + recovered.embedding.retriedFailed + recovered.vector.recoveredProcessing + recovered.vector.retriedFailed;
         if (recoveredCount > 0) {
@@ -987,11 +1008,11 @@ program
       console.log('⏳ Processing pending embeddings...');
       const count = await service.processPendingEmbeddings();
       console.log(`✅ Processed ${count} embeddings`);
-
-      await service.shutdown();
     } catch (error) {
       console.error('Process failed:', error);
       process.exit(1);
+    } finally {
+      await service?.shutdown().catch(() => undefined);
     }
   });
 

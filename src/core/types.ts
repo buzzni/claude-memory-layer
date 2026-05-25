@@ -747,6 +747,8 @@ export interface OutboxRecoveryOptions {
   stuckThresholdMs?: number;
   /** Retry failed rows whose retry_count is still below this value. */
   maxRetries?: number;
+  /** Count rows that would be recovered/retried without mutating them. */
+  dryRun?: boolean;
   /** Test hook for deterministic recovery cutoffs. */
   now?: Date;
 }

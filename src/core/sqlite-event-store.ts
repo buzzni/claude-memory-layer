@@ -1479,6 +1479,46 @@ export class SQLiteEventStore {
     const threshold = new Date(now.getTime() - thresholdMs).toISOString();
     const result = emptyOutboxRecoveryResult();
 
+    if (options.dryRun === true) {
+      const embeddingRecovered = sqliteGet<{ count: number }>(
+        this.db,
+        `SELECT COUNT(*) AS count FROM embedding_outbox
+         WHERE status = 'processing'
+           AND datetime(COALESCE(processed_at, created_at)) < datetime(?)`,
+        [threshold]
+      );
+      result.embedding.recoveredProcessing = Number(embeddingRecovered?.count ?? 0);
+
+      const embeddingRetried = sqliteGet<{ count: number }>(
+        this.db,
+        `SELECT COUNT(*) AS count FROM embedding_outbox
+         WHERE status = 'failed'
+           AND retry_count < ?`,
+        [maxRetries]
+      );
+      result.embedding.retriedFailed = Number(embeddingRetried?.count ?? 0);
+
+      const vectorRecovered = sqliteGet<{ count: number }>(
+        this.db,
+        `SELECT COUNT(*) AS count FROM vector_outbox
+         WHERE status = 'processing'
+           AND datetime(updated_at) < datetime(?)`,
+        [threshold]
+      );
+      result.vector.recoveredProcessing = Number(vectorRecovered?.count ?? 0);
+
+      const vectorRetried = sqliteGet<{ count: number }>(
+        this.db,
+        `SELECT COUNT(*) AS count FROM vector_outbox
+         WHERE status = 'failed'
+           AND retry_count < ?`,
+        [maxRetries]
+      );
+      result.vector.retriedFailed = Number(vectorRetried?.count ?? 0);
+
+      return result;
+    }
+
     const embeddingRecovered = sqliteRun(
       this.db,
       `UPDATE embedding_outbox
