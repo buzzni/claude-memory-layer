@@ -7,7 +7,7 @@ import { SQLiteEventStore } from '../../src/core/sqlite-event-store.js';
 import { PerspectiveObservationRepository } from '../../src/core/operations/perspective-observation-repository.js';
 import { TaskResolver } from '../../src/core/task/task-resolver.js';
 import type { MemoryEvent, OutboxItemKind } from '../../src/core/types.js';
-import { DefaultContentProvider } from '../../src/core/vector-worker.js';
+import { DefaultContentProvider, VectorWorkerV2, type ContentProvider } from '../../src/core/vector-worker.js';
 import { VectorOutbox } from '../../src/core/vector-outbox.js';
 
 const dbs: Database.Database[] = [];
@@ -496,6 +496,68 @@ describe('VectorOutbox V2', () => {
     expect(deleted).toBe(1);
     expect(db.prepare("SELECT job_id FROM vector_outbox WHERE status = 'done' ORDER BY job_id").all()).toEqual([
       { job_id: 'fresh-done' }
+    ]);
+  });
+});
+
+describe('VectorWorkerV2 runtime processing', () => {
+  it('processes pending V2 jobs through content lookup, embedding, versioned upsert, and done marking', async () => {
+    const db = createDb();
+    const outbox = new VectorOutbox(db, { embeddingVersion: 'worker-v2' });
+    const jobId = await outbox.enqueue('event', 'event-runtime-1');
+    const upsertedRecords: unknown[] = [];
+    const contentProvider: ContentProvider = {
+      getContent: async (itemKind, itemId) => ({
+        content: 'worker-content-under-test should be embedded but never stored in outbox rows',
+        metadata: {
+          itemKind,
+          eventType: 'user_prompt',
+          sessionId: 'session-runtime-1',
+          sourceEventCount: 2
+        }
+      })
+    };
+    const embedder = {
+      embed: async (content: string) => ({
+        vector: content.includes('worker-content-under-test') ? [0.11, 0.22, 0.33] : [0]
+      })
+    };
+    const vectorStore = {
+      upsertBatch: async (records: unknown[]) => {
+        upsertedRecords.push(...records);
+      }
+    };
+    const worker = new VectorWorkerV2(
+      db,
+      vectorStore as never,
+      embedder as never,
+      { batchSize: 10, embeddingVersion: 'worker-v2' },
+      contentProvider
+    );
+
+    await expect(worker.processAll()).resolves.toBe(1);
+
+    expect(db.prepare('SELECT job_id, status, retry_count, error FROM vector_outbox').all()).toEqual([
+      { job_id: jobId, status: 'done', retry_count: 0, error: null }
+    ]);
+    expect(upsertedRecords).toEqual([
+      expect.objectContaining({
+        id: 'event_event-runtime-1_worker-v2',
+        eventId: 'event-runtime-1',
+        sessionId: 'session-runtime-1',
+        eventType: 'user_prompt',
+        content: 'worker-content-under-test should be embedded but never stored in outbox rows',
+        vector: [0.11, 0.22, 0.33],
+        metadata: expect.objectContaining({
+          itemKind: 'event',
+          embeddingVersion: 'worker-v2',
+          sourceEventCount: 2
+        })
+      })
+    ]);
+    expectPrivateSentinelsAbsent(readOutboxRows(db), [
+      'worker-content-under-test',
+      'session-runtime-1'
     ]);
   });
 });

@@ -16,12 +16,16 @@ import type { Retriever } from '../retriever.js';
 import type { VectorStore } from '../vector-store.js';
 import {
   createVectorWorker as defaultCreateVectorWorker,
-  type VectorWorker
+  createVectorWorkerV2 as defaultCreateVectorWorkerV2,
+  type VectorWorker,
+  type VectorWorkerV2
 } from '../vector-worker.js';
+import type { Database } from '../db-wrapper.js';
 
 export interface RuntimeSQLiteStore {
   initialize(): Promise<void>;
   close(): Promise<void>;
+  getDatabase?(): Database;
 }
 
 export interface RuntimeEndlessMemoryServices {
@@ -36,6 +40,7 @@ export interface RuntimeSharedMemoryServices {
 
 export interface MemoryRuntimeServicesFactories {
   createVectorWorker?: typeof defaultCreateVectorWorker;
+  createVectorWorkerV2?: typeof defaultCreateVectorWorkerV2;
   createGraduationWorker?: typeof defaultCreateGraduationWorker;
 }
 
@@ -61,6 +66,7 @@ export interface MemoryRuntimeService {
   forceGraduation(): Promise<GraduationRunResult>;
   recordMemoryAccess(eventId: string, sessionId: string, confidence?: number): void;
   getVectorWorker(): VectorWorker | null;
+  getVectorWorkerV2(): VectorWorkerV2 | null;
   isInitialized(): boolean;
 }
 
@@ -70,10 +76,12 @@ function createEmptyGraduationResult(): GraduationRunResult {
 
 export function createMemoryRuntimeService(deps: MemoryRuntimeServicesDeps): MemoryRuntimeService {
   const createVectorWorker = deps.factories?.createVectorWorker ?? defaultCreateVectorWorker;
+  const createVectorWorkerV2 = deps.factories?.createVectorWorkerV2 ?? defaultCreateVectorWorkerV2;
   const createGraduationWorker = deps.factories?.createGraduationWorker ?? defaultCreateGraduationWorker;
 
   let initialized = false;
   let vectorWorker: VectorWorker | null = null;
+  let vectorWorkerV2: VectorWorkerV2 | null = null;
   let graduationWorker: GraduationWorker | null = null;
 
   return {
@@ -102,6 +110,16 @@ export function createMemoryRuntimeService(deps: MemoryRuntimeServicesDeps): Mem
         );
         vectorWorker.start();
 
+        const sqliteDb = deps.sqliteStore.getDatabase?.();
+        if (sqliteDb) {
+          vectorWorkerV2 = createVectorWorkerV2(
+            sqliteDb,
+            deps.vectorStore,
+            deps.embedder
+          );
+          vectorWorkerV2.start();
+        }
+
         if (!deps.embeddingOnly) {
           deps.retriever.setGraduationPipeline(deps.graduation);
           graduationWorker = createGraduationWorker(
@@ -128,16 +146,23 @@ export function createMemoryRuntimeService(deps: MemoryRuntimeServicesDeps): Mem
       if (vectorWorker) {
         vectorWorker.stop();
       }
+      if (vectorWorkerV2) {
+        vectorWorkerV2.stop();
+      }
 
       await deps.sharedMemoryServices.close();
       await deps.sqliteStore.close();
     },
 
     async processPendingEmbeddings(): Promise<number> {
+      let processed = 0;
       if (vectorWorker) {
-        return vectorWorker.processAll();
+        processed += await vectorWorker.processAll();
       }
-      return 0;
+      if (vectorWorkerV2) {
+        processed += await vectorWorkerV2.processAll();
+      }
+      return processed;
     },
 
     async forceGraduation(): Promise<GraduationRunResult> {
@@ -153,6 +178,10 @@ export function createMemoryRuntimeService(deps: MemoryRuntimeServicesDeps): Mem
 
     getVectorWorker(): VectorWorker | null {
       return vectorWorker;
+    },
+
+    getVectorWorkerV2(): VectorWorkerV2 | null {
+      return vectorWorkerV2;
     },
 
     isInitialized(): boolean {

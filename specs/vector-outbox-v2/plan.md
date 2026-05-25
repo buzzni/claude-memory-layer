@@ -449,6 +449,20 @@ export class WorkerLock {
 - [x] `process` 커맨드가 recovery/embedding 처리 전 project-scoped lock 획득
 - [x] lock contention 출력은 aggregate/sanitized 정보만 포함
 
+### 5.3 Runtime/process worker 연결
+
+**파일**: `src/core/engine/memory-runtime-service.ts` 수정
+
+**작업 항목**:
+- [x] Runtime service가 SQLite DB handle이 있을 때 `VectorWorkerV2`를 생성/시작
+  - 2026-05-25: `RuntimeSQLiteStore.getDatabase?.()`가 제공되는 production SQLite store에서는 기존 legacy `VectorWorker` 시작 직후 V2 worker도 같은 `VectorStore`/`Embedder`로 시작한다.
+- [x] `processPendingEmbeddings()`가 legacy embedding worker와 V2 `vector_outbox` worker를 모두 drain
+  - 반환값은 legacy `embedding_outbox` 처리 건수와 V2 `vector_outbox` 처리 건수의 합계로 유지되어 기존 `process` flow가 두 큐를 함께 비운다.
+- [x] shutdown lifecycle에서 V2 worker도 명시적으로 stop
+- [x] Runtime/process integration 테스트
+  - `tests/core/memory-runtime-service.test.ts`는 legacy worker 보존, V2 worker start/stop, combined drain count를 검증한다.
+  - `tests/core/vector-outbox-v2.test.ts`는 pending V2 job이 content lookup → embedding → versioned vector upsert → done marking으로 처리되고, outbox rows에 content/session sentinel이 남지 않음을 검증한다.
+
 ## Phase 6: CLI 및 모니터링 (P1)
 
 ### 6.1 CLI 커맨드

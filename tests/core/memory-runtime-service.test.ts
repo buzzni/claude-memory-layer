@@ -9,10 +9,12 @@ import type { Embedder } from '../../src/core/embedder.js';
 import type { GraduationPipeline } from '../../src/core/graduation.js';
 import type { Retriever } from '../../src/core/retriever.js';
 import type { VectorStore } from '../../src/core/vector-store.js';
+import type { Database } from '../../src/core/db-wrapper.js';
 
-function makeHarness(options?: { readOnly?: boolean; lightweightMode?: boolean; embeddingOnly?: boolean }) {
+function makeHarness(options?: { readOnly?: boolean; lightweightMode?: boolean; embeddingOnly?: boolean; enableV2?: boolean }) {
   const calls: string[] = [];
   const eventStore = { marker: 'event-store' } as unknown as EventStore;
+  const sqliteDb = { marker: 'sqlite-db' } as unknown as Database;
   const vectorStore = {
     initialize: async () => { calls.push('vector.initialize'); }
   } as unknown as VectorStore;
@@ -39,6 +41,14 @@ function makeHarness(options?: { readOnly?: boolean; lightweightMode?: boolean; 
       return 3;
     }
   };
+  const vectorWorkerV2 = {
+    start: () => { calls.push('vectorWorkerV2.start'); },
+    stop: () => { calls.push('vectorWorkerV2.stop'); },
+    processAll: async () => {
+      calls.push('vectorWorkerV2.processAll');
+      return 5;
+    }
+  };
   const graduationWorker = {
     start: () => { calls.push('graduationWorker.start'); },
     stop: () => { calls.push('graduationWorker.stop'); },
@@ -48,7 +58,7 @@ function makeHarness(options?: { readOnly?: boolean; lightweightMode?: boolean; 
     }
   };
 
-  const factories: MemoryRuntimeServicesFactories = {
+  const factories = {
     createVectorWorker: (receivedEventStore, receivedVectorStore, receivedEmbedder) => {
       calls.push(
         receivedEventStore === eventStore && receivedVectorStore === vectorStore && receivedEmbedder === embedder
@@ -57,6 +67,16 @@ function makeHarness(options?: { readOnly?: boolean; lightweightMode?: boolean; 
       );
       return vectorWorker as unknown as ReturnType<NonNullable<MemoryRuntimeServicesFactories['createVectorWorker']>>;
     },
+    ...(options?.enableV2 ? {
+      createVectorWorkerV2: (receivedDb: Database, receivedVectorStore: VectorStore, receivedEmbedder: Embedder) => {
+        calls.push(
+          receivedDb === sqliteDb && receivedVectorStore === vectorStore && receivedEmbedder === embedder
+            ? 'createVectorWorkerV2'
+            : 'createVectorWorkerV2:unknown'
+        );
+        return vectorWorkerV2;
+      }
+    } : {}),
     createGraduationWorker: (receivedEventStore, receivedGraduation) => {
       calls.push(
         receivedEventStore === eventStore && receivedGraduation === graduation
@@ -65,13 +85,16 @@ function makeHarness(options?: { readOnly?: boolean; lightweightMode?: boolean; 
       );
       return graduationWorker as unknown as ReturnType<NonNullable<MemoryRuntimeServicesFactories['createGraduationWorker']>>;
     }
+  } as unknown as MemoryRuntimeServicesFactories;
+
+  const sqliteStore = {
+    initialize: async () => { calls.push('sqlite.initialize'); },
+    close: async () => { calls.push('sqlite.close'); },
+    ...(options?.enableV2 ? { getDatabase: () => sqliteDb } : {})
   };
 
   const service = createMemoryRuntimeService({
-    sqliteStore: {
-      initialize: async () => { calls.push('sqlite.initialize'); },
-      close: async () => { calls.push('sqlite.close'); }
-    },
+    sqliteStore,
     eventStore,
     vectorStore,
     embedder,
@@ -91,7 +114,7 @@ function makeHarness(options?: { readOnly?: boolean; lightweightMode?: boolean; 
     factories
   });
 
-  return { service, calls, vectorWorker };
+  return { service, calls, vectorWorker, vectorWorkerV2 };
 }
 
 describe('createMemoryRuntimeService', () => {
@@ -136,6 +159,46 @@ describe('createMemoryRuntimeService', () => {
     expect(harness.service.getVectorWorker()).toBe(harness.vectorWorker);
     await expect(harness.service.processPendingEmbeddings()).resolves.toBe(3);
     await expect(harness.service.forceGraduation()).resolves.toEqual({ evaluated: 2, graduated: 1, byLevel: { L0: 1 } });
+  });
+
+  it('starts and drains V2 vector outbox work alongside legacy embedding work when a SQLite database is available', async () => {
+    const harness = makeHarness({ enableV2: true });
+
+    await harness.service.initialize();
+
+    expect(harness.calls).toEqual([
+      'sqlite.initialize',
+      'vector.initialize',
+      'embedder.initialize',
+      'createVectorWorker',
+      'vectorWorker.start',
+      'createVectorWorkerV2',
+      'vectorWorkerV2.start',
+      'retriever.setGraduationPipeline',
+      'createGraduationWorker',
+      'graduationWorker.start',
+      'endless.initializeFromSavedMode',
+      'shared.initialize'
+    ]);
+    expect(harness.service.getVectorWorker()).toBe(harness.vectorWorker);
+    harness.calls.length = 0;
+
+    await expect(harness.service.processPendingEmbeddings()).resolves.toBe(8);
+    expect(harness.calls).toEqual([
+      'vectorWorker.processAll',
+      'vectorWorkerV2.processAll'
+    ]);
+
+    harness.calls.length = 0;
+    await harness.service.shutdown();
+    expect(harness.calls).toEqual([
+      'graduationWorker.stop',
+      'endless.shutdown',
+      'vectorWorker.stop',
+      'vectorWorkerV2.stop',
+      'shared.close',
+      'sqlite.close'
+    ]);
   });
 
   it('skips workers and write lifecycle services in read-only mode', async () => {
