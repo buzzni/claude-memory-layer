@@ -1,15 +1,24 @@
+import * as path from 'node:path';
+
 import type { OutboxRecoveryResult, OutboxStats } from '../../core/types.js';
+import { getProjectStoragePath as defaultGetProjectStoragePath } from '../../core/registry/project-path.js';
 
 export interface RawProcessCommandOptions {
   project?: string;
   recoverStuck?: boolean;
   dryRunRecovery?: boolean;
+  lockPath?: string;
 }
 
 export interface ProcessCommandOptions {
   projectPath: string;
   recoverStuck: boolean;
   dryRunRecovery: boolean;
+  lockPath: string;
+}
+
+export interface ProcessCommandDeps {
+  getProjectStoragePath?: (projectPath: string) => string;
 }
 
 export interface ProcessRecoveryPreviewInput {
@@ -18,26 +27,52 @@ export interface ProcessRecoveryPreviewInput {
   recovery: OutboxRecoveryResult;
 }
 
+export interface ProcessLockBusyInput {
+  projectPath: string;
+  lockPath: string;
+  holderPid: number | null;
+}
+
 export function resolveProcessCommandOptions(
   options: RawProcessCommandOptions,
-  cwd: string = process.cwd()
+  cwd: string = process.cwd(),
+  deps: ProcessCommandDeps = {}
 ): ProcessCommandOptions {
   const explicitProject = options.project;
   if (explicitProject !== undefined && explicitProject.trim().length === 0) {
     throw new Error('--project must not be empty');
   }
 
+  const explicitLockPath = options.lockPath;
+  if (explicitLockPath !== undefined && explicitLockPath.trim().length === 0) {
+    throw new Error('--lock-path must not be empty');
+  }
+
+  const projectPath = explicitProject ?? cwd;
   const dryRunRecovery = options.dryRunRecovery === true;
   const recoverStuck = options.recoverStuck !== false;
   if (dryRunRecovery && !recoverStuck) {
     throw new Error('--dry-run-recovery cannot be combined with --no-recover-stuck');
   }
 
+  const getProjectStoragePath = deps.getProjectStoragePath ?? defaultGetProjectStoragePath;
   return {
-    projectPath: explicitProject ?? cwd,
+    projectPath,
     recoverStuck,
-    dryRunRecovery
+    dryRunRecovery,
+    lockPath: explicitLockPath ?? path.join(getProjectStoragePath(projectPath), 'vector-worker.lock')
   };
+}
+
+export function formatProcessLockBusy(input: ProcessLockBusyInput): string {
+  const holder = input.holderPid === null ? 'unknown' : String(input.holderPid);
+  return [
+    'Another vector worker is already running; skipping process command.',
+    `Project: ${input.projectPath}`,
+    `holderPid=${holder}`,
+    `lockPath=${input.lockPath}`,
+    'No outbox rows were recovered or processed.'
+  ].join('\n');
 }
 
 export function formatProcessRecoveryPreview(input: ProcessRecoveryPreviewInput): string {

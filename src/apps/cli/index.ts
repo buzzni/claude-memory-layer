@@ -99,9 +99,11 @@ import {
   DEFAULT_EMBEDDING_MODEL
 } from '../../extensions/vector/embedder.js';
 import {
+  formatProcessLockBusy,
   formatProcessRecoveryPreview,
   resolveProcessCommandOptions
 } from './process-command.js';
+import { WorkerLock } from '../../core/worker-lock.js';
 
 // ============================================================
 // Hook Installation Utilities
@@ -976,11 +978,27 @@ program
   .option('-p, --project <path>', 'Project path (defaults to cwd)')
   .option('--dry-run-recovery', 'Preview stale outbox recovery without mutating or processing embeddings')
   .option('--no-recover-stuck', 'Skip stale processing outbox recovery before processing')
+  .option('--lock-path <path>', 'Override process lock path (advanced)')
   .action(async (options) => {
     let service: ReturnType<typeof getMemoryServiceForProject> | undefined;
+    let workerLock: WorkerLock | undefined;
 
     try {
       const processOptions = resolveProcessCommandOptions(options);
+
+      if (!processOptions.dryRunRecovery) {
+        workerLock = new WorkerLock(processOptions.lockPath);
+        const lockResult = workerLock.acquire();
+        if (!lockResult.acquired) {
+          console.log(formatProcessLockBusy({
+            projectPath: processOptions.projectPath,
+            lockPath: processOptions.lockPath,
+            holderPid: 'holderPid' in lockResult ? lockResult.holderPid : null
+          }));
+          return;
+        }
+      }
+
       service = getMemoryServiceForProject(processOptions.projectPath);
       await service.initialize();
 
@@ -1012,6 +1030,7 @@ program
       console.error('Process failed:', error);
       process.exit(1);
     } finally {
+      workerLock?.release();
       await service?.shutdown().catch(() => undefined);
     }
   });

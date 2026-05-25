@@ -433,9 +433,11 @@ export class WorkerLock {
 ```
 
 **작업 항목**:
-- [ ] WorkerLock 클래스
-- [ ] acquire/release 메서드
-- [ ] stale lock 처리
+- [x] WorkerLock 클래스
+- [x] acquire/release 메서드
+- [x] stale lock 처리
+- [x] `process` 커맨드가 recovery/embedding 처리 전 project-scoped lock 획득
+- [x] lock contention 출력은 aggregate/sanitized 정보만 포함
 
 ## Phase 6: CLI 및 모니터링 (P1)
 

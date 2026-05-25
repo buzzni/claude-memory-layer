@@ -4,6 +4,7 @@ import * as path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
+  formatProcessLockBusy,
   formatProcessRecoveryPreview,
   resolveProcessCommandOptions
 } from '../../src/apps/cli/process-command.js';
@@ -36,17 +37,58 @@ afterEach(async () => {
 
 describe('process command recovery preview', () => {
   it('resolves dry-run recovery options without disabling normal recovery defaults', () => {
-    expect(resolveProcessCommandOptions({ project: '/repo/app', dryRunRecovery: true })).toEqual({
+    expect(resolveProcessCommandOptions({ project: '/repo/app', dryRunRecovery: true })).toMatchObject({
       projectPath: '/repo/app',
       recoverStuck: true,
       dryRunRecovery: true
     });
 
-    expect(resolveProcessCommandOptions({ project: '/repo/app', recoverStuck: false })).toEqual({
+    expect(resolveProcessCommandOptions({ project: '/repo/app', recoverStuck: false })).toMatchObject({
       projectPath: '/repo/app',
       recoverStuck: false,
       dryRunRecovery: false
     });
+  });
+
+  it('derives a project-scoped worker lock path and allows explicit test override', () => {
+    const resolved = resolveProcessCommandOptions(
+      { project: '/repo/private app' },
+      '/cwd',
+      { getProjectStoragePath: () => '/tmp/cml-private-store' }
+    );
+    expect(resolved).toEqual({
+      projectPath: '/repo/private app',
+      recoverStuck: true,
+      dryRunRecovery: false,
+      lockPath: '/tmp/cml-private-store/vector-worker.lock'
+    });
+
+    expect(resolveProcessCommandOptions(
+      { project: '/repo/private app', lockPath: '/tmp/custom.lock' },
+      '/cwd',
+      { getProjectStoragePath: () => '/tmp/cml-private-store' }
+    ).lockPath).toBe('/tmp/custom.lock');
+
+    expect(() => resolveProcessCommandOptions(
+      { project: '/repo/private app', lockPath: '   ' },
+      '/cwd',
+      { getProjectStoragePath: () => '/tmp/cml-private-store' }
+    )).toThrow('--lock-path must not be empty');
+  });
+
+  it('formats aggregate-only lock contention output without outbox row details', () => {
+    const output = formatProcessLockBusy({
+      projectPath: '/repo/private-app',
+      lockPath: '/tmp/cml-private-store/vector-worker.lock',
+      holderPid: 1234
+    });
+
+    expect(output).toContain('Another vector worker is already running');
+    expect(output).toContain('holderPid=1234');
+    expect(output).toContain('lockPath=/tmp/cml-private-store/vector-worker.lock');
+    expect(output).toContain('Project: /repo/private-app');
+    expect(output).not.toContain('PRIVATE_CONTENT_SENTINEL');
+    expect(output).not.toContain('event-private');
   });
 
   it('formats aggregate-only dry-run recovery output with the next command', () => {
