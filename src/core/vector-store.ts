@@ -16,73 +16,48 @@ export interface SearchResult {
   timestamp: string;
 }
 
+type LanceTable = lancedb.Table;
+
+type VectorRow = {
+  id: string;
+  eventId: string;
+  sessionId: string;
+  eventType: string;
+  content: string;
+  vector: number[];
+  timestamp: string;
+  metadata: string;
+};
+
 export class VectorStore {
   private db: lancedb.Connection | null = null;
-  private table: lancedb.Table | null = null;
-  private readonly tableName = 'conversations';
+  private readonly tableCache = new Map<string, LanceTable>();
+  private readonly defaultTableName = 'conversations';
 
   constructor(private dbPath: string) {}
 
   /**
-   * Initialize LanceDB connection
+   * Initialize LanceDB connection.
+   *
+   * Table handles are resolved lazily so Vector Outbox V2 can route records to
+   * item-kind/embedding-version tables without eagerly touching the legacy
+   * conversations table.
    */
   async initialize(): Promise<void> {
     if (this.db) return;
-
     this.db = await lancedb.connect(this.dbPath);
-
-    // Try to open existing table
-    try {
-      const tables = await this.db.tableNames();
-      if (tables.includes(this.tableName)) {
-        this.table = await this.db.openTable(this.tableName);
-      }
-    } catch {
-      // Table doesn't exist yet, will be created on first insert
-      this.table = null;
-    }
   }
 
   /**
-   * Add or update vector record
+   * Add or update vector record. Existing rows with the same stable id are
+   * deleted before insertion to avoid append-only duplicates in LanceDB.
    */
   async upsert(record: VectorRecord): Promise<void> {
-    await this.initialize();
-
-    if (!this.db) {
-      throw new Error('Database not initialized');
-    }
-
-    const data = {
-      id: record.id,
-      eventId: record.eventId,
-      sessionId: record.sessionId,
-      eventType: record.eventType,
-      content: record.content,
-      vector: record.vector,
-      timestamp: record.timestamp,
-      metadata: JSON.stringify(record.metadata || {})
-    };
-
-    if (!this.table) {
-      // Create table with first record (handle race condition)
-      try {
-        this.table = await this.db.createTable(this.tableName, [data]);
-      } catch (e: any) {
-        if (e?.message?.includes('already exists')) {
-          this.table = await this.db.openTable(this.tableName);
-          await this.table.add([data]);
-        } else {
-          throw e;
-        }
-      }
-    } else {
-      await this.table.add([data]);
-    }
+    await this.upsertBatch([record]);
   }
 
   /**
-   * Add multiple vector records in batch
+   * Add or update multiple vector records in batch, grouped by inferred table.
    */
   async upsertBatch(records: VectorRecord[]): Promise<void> {
     if (records.length === 0) return;
@@ -93,35 +68,21 @@ export class VectorStore {
       throw new Error('Database not initialized');
     }
 
-    const data = records.map(record => ({
-      id: record.id,
-      eventId: record.eventId,
-      sessionId: record.sessionId,
-      eventType: record.eventType,
-      content: record.content,
-      vector: record.vector,
-      timestamp: record.timestamp,
-      metadata: JSON.stringify(record.metadata || {})
-    }));
+    const groups = new Map<string, VectorRow[]>();
+    for (const record of records) {
+      const tableName = this.getRecordTableName(record);
+      const rows = groups.get(tableName) ?? [];
+      rows.push(this.toVectorRow(record));
+      groups.set(tableName, rows);
+    }
 
-    if (!this.table) {
-      try {
-        this.table = await this.db.createTable(this.tableName, data);
-      } catch (e: any) {
-        if (e?.message?.includes('already exists')) {
-          this.table = await this.db.openTable(this.tableName);
-          await this.table.add(data);
-        } else {
-          throw e;
-        }
-      }
-    } else {
-      await this.table.add(data);
+    for (const [tableName, rows] of groups) {
+      await this.upsertRows(tableName, rows);
     }
   }
 
   /**
-   * Search for similar vectors
+   * Search for similar vectors in the legacy conversations table.
    */
   async search(
     queryVector: number[],
@@ -133,21 +94,22 @@ export class VectorStore {
   ): Promise<SearchResult[]> {
     await this.initialize();
 
-    if (!this.table) {
+    const table = await this.getExistingTable(this.defaultTableName);
+    if (!table) {
       return [];
     }
 
     const { limit = 5, minScore = 0.7, sessionId } = options;
 
     // Use cosine distance for semantic similarity
-    let query = this.table
+    let query = table
       .search(queryVector)
       .distanceType('cosine')
       .limit(limit * 2); // Get more for filtering
 
     // Apply session filter if specified
     if (sessionId) {
-      query = query.where(`sessionId = '${sessionId}'`);
+      query = query.where(`sessionId = ${toLanceSqlString(sessionId)}`);
     }
 
     const results = await query.toArray();
@@ -178,25 +140,28 @@ export class VectorStore {
   }
 
   /**
-   * Delete vector by event ID
+   * Delete vector by event ID from the legacy conversations table.
    */
   async delete(eventId: string): Promise<void> {
-    if (!this.table) return;
-    await this.table.delete(`eventId = '${eventId}'`);
+    await this.initialize();
+    const table = await this.getExistingTable(this.defaultTableName);
+    if (!table) return;
+    await table.delete(`eventId = ${toLanceSqlString(eventId)}`);
   }
 
   /**
-   * Get total count of vectors
+   * Get total count of vectors in the legacy conversations table.
    */
   async count(): Promise<number> {
     await this.initialize();
-    if (!this.table) return 0;
-    const result = await this.table.countRows();
+    const table = await this.getExistingTable(this.defaultTableName);
+    if (!table) return 0;
+    const result = await table.countRows();
     return result;
   }
 
   /**
-   * Clear all vectors (used for embedding model migration)
+   * Clear all legacy vectors (used for embedding model migration).
    */
   async clearAll(): Promise<void> {
     await this.initialize();
@@ -204,29 +169,127 @@ export class VectorStore {
 
     try {
       if (typeof (this.db as any).dropTable === 'function') {
-        await (this.db as any).dropTable(this.tableName);
+        await (this.db as any).dropTable(this.defaultTableName);
       } else if (typeof (this.db as any).drop_table === 'function') {
-        await (this.db as any).drop_table(this.tableName);
+        await (this.db as any).drop_table(this.defaultTableName);
       }
     } catch {
       // Ignore if table does not exist
     }
 
-    this.table = null;
+    this.tableCache.delete(this.defaultTableName);
   }
 
   /**
-   * Check if vector exists for event
+   * Check if vector exists for event in the legacy conversations table.
    */
   async exists(eventId: string): Promise<boolean> {
-    if (!this.table) return false;
+    await this.initialize();
+    const table = await this.getExistingTable(this.defaultTableName);
+    if (!table) return false;
 
-    const results = await this.table
+    const results = await table
       .search([])
-      .where(`eventId = '${eventId}'`)
+      .where(`eventId = ${toLanceSqlString(eventId)}`)
       .limit(1)
       .toArray();
 
     return results.length > 0;
   }
+
+  private async upsertRows(tableName: string, rows: VectorRow[]): Promise<void> {
+    if (!this.db) {
+      throw new Error('Database not initialized');
+    }
+
+    const existingTable = await this.getExistingTable(tableName);
+    if (existingTable) {
+      for (const row of rows) {
+        await existingTable.delete(`id = ${toLanceSqlString(row.id)}`);
+      }
+      await existingTable.add(rows);
+      return;
+    }
+
+    try {
+      const created = await this.db.createTable(tableName, rows);
+      this.tableCache.set(tableName, created);
+    } catch (error) {
+      if (!isAlreadyExistsError(error)) {
+        throw error;
+      }
+      const racedTable = await this.openTable(tableName);
+      for (const row of rows) {
+        await racedTable.delete(`id = ${toLanceSqlString(row.id)}`);
+      }
+      await racedTable.add(rows);
+    }
+  }
+
+  private async getExistingTable(tableName: string): Promise<LanceTable | null> {
+    if (!this.db) {
+      throw new Error('Database not initialized');
+    }
+
+    const cached = this.tableCache.get(tableName);
+    if (cached) return cached;
+
+    const tableNames = await this.db.tableNames();
+    if (!tableNames.includes(tableName)) {
+      return null;
+    }
+
+    return this.openTable(tableName);
+  }
+
+  private async openTable(tableName: string): Promise<LanceTable> {
+    if (!this.db) {
+      throw new Error('Database not initialized');
+    }
+    const table = await this.db.openTable(tableName);
+    this.tableCache.set(tableName, table);
+    return table;
+  }
+
+  private getRecordTableName(record: VectorRecord): string {
+    const metadata = record.metadata ?? {};
+    const itemKind = typeof metadata.itemKind === 'string' ? metadata.itemKind : null;
+    const embeddingVersion = typeof metadata.embeddingVersion === 'string' ? metadata.embeddingVersion : null;
+
+    if (!itemKind || !embeddingVersion) {
+      return this.defaultTableName;
+    }
+
+    return `${slugifyTablePart(itemKind)}_vectors_${slugifyTablePart(embeddingVersion)}`;
+  }
+
+  private toVectorRow(record: VectorRecord): VectorRow {
+    return {
+      id: record.id,
+      eventId: record.eventId,
+      sessionId: record.sessionId,
+      eventType: record.eventType,
+      content: record.content,
+      vector: record.vector,
+      timestamp: record.timestamp,
+      metadata: JSON.stringify(record.metadata || {})
+    };
+  }
+}
+
+function slugifyTablePart(value: string): string {
+  return value
+    .trim()
+    .replace(/[^a-z0-9]+/gi, '_')
+    .replace(/^_+|_+$/g, '')
+    .toLowerCase() || 'default';
+}
+
+function toLanceSqlString(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+function isAlreadyExistsError(error: unknown): boolean {
+  const message = String(error instanceof Error ? error.message : error).toLowerCase();
+  return message.includes('already exists');
 }

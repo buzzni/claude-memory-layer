@@ -340,9 +340,12 @@ async upsert(record: VectorRecord): Promise<void> {
 ```
 
 **작업 항목**:
-- [ ] upsert() 메서드 구현
-- [ ] delete + add 패턴 적용
-- [ ] 기존 add()와 구분
+- [x] upsert() 메서드 구현
+- [x] delete + add 패턴 적용
+- [x] 기존 add()와 구분
+  - 2026-05-25: `VectorStore.upsert()`/`upsertBatch()` now perform delete+add for existing LanceDB tables instead of append-only writes.
+  - V2 outbox records infer table routing from privacy-minimal metadata (`itemKind`, `embeddingVersion`); legacy records without those fields continue to use the `conversations` table.
+  - `tests/core/vector-store-v2.test.ts` covers delete+add, SQL-string escaping, and grouped batch behavior.
 
 ### 4.2 테이블 버전 관리
 
@@ -368,8 +371,10 @@ async getOrCreateTable(itemKind: ItemKind, version: string): Promise<Table> {
 ```
 
 **작업 항목**:
-- [ ] getTableName() 버전별 테이블명
-- [ ] getOrCreateTable() lazy 생성
+- [x] getTableName() 버전별 테이블명
+- [x] getOrCreateTable() lazy 생성
+  - 2026-05-25: deterministic V2 table names use `<itemKind>_vectors_<embeddingVersionSlug>` (example: `perspective_observation_vectors_minilm_l6_v2_0`).
+  - Tables are opened/created lazily per inferred route, avoiding eager access to the legacy `conversations` table for V2 writes.
 
 ## Phase 5: 통합 및 트리거 (P0)
 
