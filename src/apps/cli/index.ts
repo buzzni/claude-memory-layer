@@ -103,6 +103,10 @@ import {
   formatProcessRecoveryPreview,
   resolveProcessCommandOptions
 } from './process-command.js';
+import {
+  formatVectorStatusReport,
+  resolveVectorStatusCommandOptions
+} from './vector-command.js';
 import { WorkerLock } from '../../core/worker-lock.js';
 
 // ============================================================
@@ -929,6 +933,35 @@ program
     } catch (error) {
       console.error('Stats failed:', error);
       process.exit(1);
+    }
+  });
+
+/**
+ * Vector status command - aggregate-only vector/outbox health
+ */
+program
+  .command('vector-status')
+  .description('Show aggregate vector outbox status')
+  .option('-p, --project <path>', 'Project path (defaults to cwd)')
+  .action(async (options) => {
+    let service: ReturnType<typeof getLightweightMemoryServiceForProject> | undefined;
+
+    try {
+      const vectorOptions = resolveVectorStatusCommandOptions(options);
+      service = getLightweightMemoryServiceForProject(vectorOptions.projectPath);
+      const [stats, outbox] = await Promise.all([
+        service.getStats(),
+        service.getOutboxStats()
+      ]);
+      console.log(formatVectorStatusReport({ stats, outbox }));
+    } catch (error) {
+      const message = error instanceof Error && error.message.startsWith('--')
+        ? error.message
+        : 'Vector status failed';
+      console.error(message);
+      process.exit(1);
+    } finally {
+      await service?.shutdown().catch(() => undefined);
     }
   });
 

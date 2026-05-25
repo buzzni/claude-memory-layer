@@ -506,7 +506,8 @@ program
 
 **작업 항목**:
 - [ ] `cli vector-worker` 커맨드
-- [ ] `cli vector-status` 통계 조회
+- [x] `cli vector-status` 통계 조회
+  - 2026-05-26: added aggregate-only `vector-status` command using the lightweight project service. Output shows vector count, total events, embedding/vector queue bucket counts, totals, oldest processing age, and attention status without row ids, item ids, raw errors, content, or project paths.
 - [ ] `cli vector-reconcile` 수동 복구
 - [x] Dashboard vector health card
   - 2026-05-26: overview dashboard loads `/api/health` with current project scope and renders aggregate-only vector counts, outbox pending/processing/failed/stuck totals, oldest processing age, and last dashboard recovery result.
@@ -532,8 +533,9 @@ program
 ```
 
 **작업 항목**:
-- [ ] 상태 조회 커맨드
-- [ ] 테이블 형식 출력
+- [x] 상태 조회 커맨드
+- [x] 테이블 형식 출력
+  - 2026-05-26: `formatVectorStatusReport()` renders a bounded aggregate table for embedding/vector/total queues plus overall status and recovery guidance. Tests include sentinel-rich payloads to assert private paths, raw row/item ids, source content, and raw errors are ignored.
 
 ## 파일 목록
 
