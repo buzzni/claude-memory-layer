@@ -33,6 +33,16 @@ export interface OutboxMetrics {
   oldestPendingAge: number | null;
 }
 
+export interface OutboxEnqueueInput {
+  itemKind: OutboxItemKind;
+  itemId: string;
+  embeddingVersion?: string;
+}
+
+export type EnqueueResult =
+  | { success: true; jobId: string; isNew: boolean }
+  | { success: false; error: string };
+
 export class VectorOutbox {
   private config: OutboxConfig;
 
@@ -44,27 +54,62 @@ export class VectorOutbox {
   }
 
   /**
-   * Enqueue item for vectorization (idempotent)
+   * Enqueue item for vectorization (idempotent).
+   * Returns the already-existing job id when the same item/version has been enqueued before.
    */
   async enqueue(
     itemKind: OutboxItemKind,
     itemId: string,
     embeddingVersion?: string
   ): Promise<string> {
-    const version = embeddingVersion ?? this.config.embeddingVersion;
+    const result = await this.enqueueWithResult({ itemKind, itemId, embeddingVersion });
+    if (result.success === false) {
+      throw new Error(result.error);
+    }
+    return result.jobId;
+  }
+
+  async enqueueBatch(inputs: OutboxEnqueueInput[]): Promise<EnqueueResult[]> {
+    const results: EnqueueResult[] = [];
+    for (const input of inputs) {
+      results.push(await this.enqueueWithResult(input));
+    }
+    return results;
+  }
+
+  async enqueueWithResult(input: OutboxEnqueueInput): Promise<EnqueueResult> {
+    const version = input.embeddingVersion ?? this.config.embeddingVersion;
     const jobId = randomUUID();
     const now = new Date().toISOString();
 
-    await dbRun(
-      this.db,
-      `INSERT INTO vector_outbox (
+    try {
+      const result = this.db.prepare(`INSERT INTO vector_outbox (
         job_id, item_kind, item_id, embedding_version, status, retry_count, created_at, updated_at
       ) VALUES (?, ?, ?, ?, 'pending', 0, ?, ?)
-      ON CONFLICT (item_kind, item_id, embedding_version) DO NOTHING`,
-      [jobId, itemKind, itemId, version, now, now]
-    );
+      ON CONFLICT (item_kind, item_id, embedding_version) DO NOTHING`).run(
+        jobId,
+        input.itemKind,
+        input.itemId,
+        version,
+        now,
+        now
+      );
 
-    return jobId;
+      const row = this.db.prepare(`SELECT job_id FROM vector_outbox
+        WHERE item_kind = ? AND item_id = ? AND embedding_version = ?`).get(
+          input.itemKind,
+          input.itemId,
+          version
+        ) as { job_id: string } | undefined;
+
+      if (!row) {
+        return { success: false, error: 'vector outbox enqueue did not create or find a job' };
+      }
+
+      return { success: true, jobId: row.job_id, isNew: Number(result.changes ?? 0) > 0 };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
+    }
   }
 
   /**
@@ -166,52 +211,39 @@ export class VectorOutbox {
   /**
    * Reconcile: recover stuck and retry failed jobs
    */
-  async reconcile(): Promise<{ recovered: number; retried: number }> {
-    const now = new Date();
-    const stuckThreshold = new Date(now.getTime() - this.config.stuckThresholdMs);
+  async reconcile(referenceTime: Date = new Date()): Promise<{ recovered: number; retried: number }> {
+    const stuckThreshold = new Date(referenceTime.getTime() - this.config.stuckThresholdMs);
+    const nowIso = referenceTime.toISOString();
 
     // Recover stuck processing jobs
-    await dbRun(
-      this.db,
-      `UPDATE vector_outbox
-       SET status = 'pending', updated_at = ?
+    const recovered = this.db.prepare(`UPDATE vector_outbox
+       SET status = 'pending', updated_at = ?, error = NULL
        WHERE status = 'processing'
-       AND updated_at < ?`,
-      [now.toISOString(), stuckThreshold.toISOString()]
-    );
+       AND updated_at < ?`).run(nowIso, stuckThreshold.toISOString());
 
     // Retry failed jobs that haven't exceeded max retries
-    await dbRun(
-      this.db,
-      `UPDATE vector_outbox
-       SET status = 'pending', updated_at = ?
+    const retried = this.db.prepare(`UPDATE vector_outbox
+       SET status = 'pending', updated_at = ?, error = NULL
        WHERE status = 'failed'
-       AND retry_count < ?`,
-      [now.toISOString(), this.config.maxRetries]
-    );
+       AND retry_count < ?`).run(nowIso, this.config.maxRetries);
 
     return {
-      recovered: 0,  // Approximate
-      retried: 0     // Approximate
+      recovered: Number(recovered.changes ?? 0),
+      retried: Number(retried.changes ?? 0)
     };
   }
 
   /**
    * Cleanup old done jobs
    */
-  async cleanup(): Promise<number> {
-    const threshold = new Date();
-    threshold.setDate(threshold.getDate() - this.config.cleanupDays);
+  async cleanup(referenceTime: Date = new Date()): Promise<number> {
+    const threshold = new Date(referenceTime.getTime() - this.config.cleanupDays * 24 * 60 * 60 * 1000);
 
-    await dbRun(
-      this.db,
-      `DELETE FROM vector_outbox
+    const result = this.db.prepare(`DELETE FROM vector_outbox
        WHERE status = 'done'
-       AND updated_at < ?`,
-      [threshold.toISOString()]
-    );
+       AND updated_at < ?`).run(threshold.toISOString());
 
-    return 0;  // DuckDB doesn't return affected rows easily
+    return Number(result.changes ?? 0);
   }
 
   /**

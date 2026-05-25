@@ -20,6 +20,22 @@ const DEFAULT_CONFIG: WorkerConfig = {
   maxRetries: 3
 };
 
+function parseJsonArray(value: unknown): unknown[] {
+  if (Array.isArray(value)) return value;
+  if (typeof value !== 'string' || value.trim().length === 0) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function isMissingPerspectiveObservationTable(error: unknown): boolean {
+  const message = String(error instanceof Error ? error.message : error).toLowerCase();
+  return message.includes('no such table: perspective_observations');
+}
+
 export class VectorWorker {
   private readonly eventStore: EventStore;
   private readonly vectorStore: VectorStore;
@@ -246,6 +262,8 @@ export class DefaultContentProvider implements ContentProvider {
         return this.getTaskTitleContent(itemId);
       case 'event':
         return this.getEventContent(itemId);
+      case 'perspective_observation':
+        return this.getPerspectiveObservationContent(itemId);
       default:
         return null;
     }
@@ -319,6 +337,48 @@ export class DefaultContentProvider implements ContentProvider {
         itemKind: 'event',
         eventType: row.event_type,
         sessionId: row.session_id
+      }
+    };
+  }
+
+  private async getPerspectiveObservationContent(observationId: string): Promise<{
+    content: string;
+    metadata: Record<string, unknown>;
+  } | null> {
+    let rows: Record<string, unknown>[];
+    try {
+      rows = await dbAll<Record<string, unknown>>(
+        this.db,
+        `SELECT project_hash, observer_actor_id, observed_actor_id, session_id, level, content,
+                source_event_ids_json, source_observation_ids_json
+         FROM perspective_observations
+         WHERE observation_id = ? AND deleted_at IS NULL`,
+        [observationId]
+      );
+    } catch (error) {
+      if (isMissingPerspectiveObservationTable(error)) {
+        return null;
+      }
+      throw error;
+    }
+
+    if (rows.length === 0) return null;
+
+    const row = rows[0];
+    const sourceEventIds = parseJsonArray(row.source_event_ids_json);
+    const sourceObservationIds = parseJsonArray(row.source_observation_ids_json);
+
+    return {
+      content: row.content as string,
+      metadata: {
+        itemKind: 'perspective_observation',
+        level: row.level,
+        projectHash: row.project_hash,
+        observerActorId: row.observer_actor_id,
+        observedActorId: row.observed_actor_id,
+        sessionId: row.session_id,
+        sourceEventCount: sourceEventIds.length,
+        sourceObservationCount: sourceObservationIds.length
       }
     };
   }

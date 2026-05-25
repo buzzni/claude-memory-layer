@@ -1000,7 +1000,7 @@ export type EvidenceAlignResult = z.infer<typeof EvidenceAlignResultSchema>;
 export const OutboxStatusSchema = z.enum(['pending', 'processing', 'done', 'failed']);
 export type OutboxStatus = z.infer<typeof OutboxStatusSchema>;
 
-export const OutboxItemKindSchema = z.enum(['entry', 'task_title', 'event']);
+export const OutboxItemKindSchema = z.enum(['entry', 'task_title', 'event', 'perspective_observation']);
 export type OutboxItemKind = z.infer<typeof OutboxItemKindSchema>;
 
 export const OutboxJobSchema = z.object({

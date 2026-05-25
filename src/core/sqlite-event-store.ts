@@ -750,6 +750,7 @@ export class SQLiteEventStore {
       CREATE INDEX IF NOT EXISTS idx_edges_dst ON edges(dst_id, rel_type);
       CREATE INDEX IF NOT EXISTS idx_edges_rel ON edges(rel_type);
       CREATE INDEX IF NOT EXISTS idx_outbox_status ON vector_outbox(status);
+      CREATE INDEX IF NOT EXISTS idx_outbox_created ON vector_outbox(created_at);
       CREATE INDEX IF NOT EXISTS idx_working_set_expires ON working_set(expires_at);
       CREATE INDEX IF NOT EXISTS idx_working_set_relevance ON working_set(relevance_score);
       CREATE INDEX IF NOT EXISTS idx_consolidated_confidence ON consolidated_memories(confidence);

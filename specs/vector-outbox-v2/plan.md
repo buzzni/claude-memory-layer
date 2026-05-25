@@ -33,10 +33,12 @@ export type OutboxJob = z.infer<typeof OutboxJobSchema>;
 ```
 
 **작업 항목**:
-- [ ] ItemKind 스키마 추가
-- [ ] OutboxStatus 스키마 추가
-- [ ] OutboxJob 스키마 추가
+- [x] ItemKind 스키마 추가
+  - `OutboxItemKindSchema` now covers `entry`, `task_title`, `event`, and `perspective_observation` so Perspective Memory observations can be vectorized through the same outbox seam.
+- [x] OutboxStatus 스키마 추가
+- [x] OutboxJob 스키마 추가
 - [ ] EnqueueResult, ProcessResult 타입 추가
+  - `EnqueueResult`/`OutboxEnqueueInput` are implemented in `src/core/vector-outbox.ts`; `ProcessResult` remains future work for the worker loop API.
 
 ### 1.2 DB 스키마
 
@@ -64,9 +66,10 @@ CREATE INDEX idx_outbox_created ON vector_outbox(created_at);
 ```
 
 **작업 항목**:
-- [ ] vector_outbox 테이블 DDL
-- [ ] 인덱스 생성
-- [ ] UNIQUE 제약 추가
+- [x] vector_outbox 테이블 DDL
+- [x] 인덱스 생성
+  - `idx_outbox_status` and `idx_outbox_created` are created in both SQLite-backed store initialization paths.
+- [x] UNIQUE 제약 추가
 - [ ] 기존 데이터 마이그레이션 스크립트 (필요시)
 
 ## Phase 2: VectorOutbox 클래스 (P0)
@@ -108,9 +111,11 @@ export class VectorOutbox {
 ```
 
 **작업 항목**:
-- [ ] enqueue() 메서드 (중복 처리 포함)
-- [ ] enqueueBatch() 배치 메서드
-- [ ] ON CONFLICT DO NOTHING 처리
+- [x] enqueue() 메서드 (중복 처리 포함)
+  - `enqueue()` now returns the existing job id for duplicate item/version requests instead of a throwaway UUID, preserving idempotent caller semantics.
+- [x] enqueueBatch() 배치 메서드
+  - `enqueueBatch()` returns per-item `EnqueueResult` values with `isNew` for observability.
+- [x] ON CONFLICT DO NOTHING 처리
 
 ### 2.2 조회 메서드
 
@@ -249,7 +254,8 @@ private async processJob(job: OutboxJob): Promise<void> {
 **작업 항목**:
 - [ ] processAll() 메인 루프
 - [ ] processJob() 단일 job 처리
-- [ ] getContent() 콘텐츠 조회 (itemKind별)
+- [x] getContent() 콘텐츠 조회 (itemKind별)
+  - `DefaultContentProvider` now supports `entry`, `task_title`, `event`, and soft-delete-aware/legacy-safe `perspective_observation` content with privacy-minimal metadata counts.
 
 ### 3.3 Reconcile
 
@@ -282,9 +288,12 @@ async recoverStuck(stuckThresholdMs: number = 5 * 60 * 1000): Promise<number> {
 ```
 
 **작업 항목**:
-- [ ] reconcileFailed() 재시도 메서드
-- [ ] recoverStuck() stuck 복구 메서드
-- [ ] cleanupDone() 정리 메서드
+- [x] reconcileFailed() 재시도 메서드
+  - Implemented as `VectorOutbox.reconcile(referenceTime?)`, returning exact `retried` count for failed jobs under `maxRetries`.
+- [x] recoverStuck() stuck 복구 메서드
+  - Implemented as `VectorOutbox.reconcile(referenceTime?)`, returning exact `recovered` count for stale `processing` jobs.
+- [x] cleanupDone() 정리 메서드
+  - `VectorOutbox.cleanup(referenceTime?)` now returns exact deleted-row count for old `done` jobs.
 - [ ] CLI `process` 시작 전에 `recoverStuck()`을 호출하거나 `--recover-stuck` 옵션 제공
 - [ ] dashboard stats에 `processing` outbox count와 stuck threshold 초과 count 표시
 - [ ] 2026-05-10 dogfood 회귀 fixture: `claude-memory-layer` project에서 `embedding_outbox.status='processing'` 34건인데 `process -p ...`가 `Processed 0 embeddings`로 끝난 사례

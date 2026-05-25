@@ -322,6 +322,7 @@ export class EventStore {
 
     // Outbox indexes
     await dbRun(this.db, `CREATE INDEX IF NOT EXISTS idx_outbox_status ON vector_outbox(status)`);
+    await dbRun(this.db, `CREATE INDEX IF NOT EXISTS idx_outbox_created ON vector_outbox(created_at)`);
 
     // Endless Mode indexes
     await dbRun(this.db, `CREATE INDEX IF NOT EXISTS idx_working_set_expires ON working_set(expires_at)`);
