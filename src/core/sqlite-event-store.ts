@@ -34,10 +34,12 @@ import {
   type SQLiteOptions
 } from './sqlite-wrapper.js';
 import { MarkdownMirror } from './markdown-mirror.js';
+import { VectorOutbox, type OutboxConfig } from './vector-outbox.js';
 import { normalizeRetrievalDebugLanes, type RetrievalDebugLane } from './retrieval-debug-lanes.js';
 
 export interface SQLiteEventStoreOptions extends SQLiteOptions {
   markdownMirrorRoot?: string;
+  vectorOutbox?: false | VectorOutbox | Partial<OutboxConfig>;
 }
 
 type QueryRewriteKind = 'none' | 'follow-up-context' | 'intent-rewrite';
@@ -245,6 +247,7 @@ export class SQLiteEventStore {
   private initialized = false;
   private readonly readOnly: boolean;
   private readonly markdownMirror: MarkdownMirror | null;
+  private readonly vectorOutbox: VectorOutbox | null;
 
   constructor(dbPath: string, options?: SQLiteEventStoreOptions) {
     this.readOnly = options?.readonly ?? false;
@@ -255,6 +258,22 @@ export class SQLiteEventStore {
     this.markdownMirror = this.readOnly || !options?.markdownMirrorRoot
       ? null
       : new MarkdownMirror(options.markdownMirrorRoot);
+    this.vectorOutbox = this.createVectorOutbox(options?.vectorOutbox);
+  }
+
+  private createVectorOutbox(option: SQLiteEventStoreOptions['vectorOutbox']): VectorOutbox | null {
+    if (this.readOnly || option === false) return null;
+    if (option instanceof VectorOutbox) return option;
+    return new VectorOutbox(this.db, option ?? {});
+  }
+
+  private enqueueVectorOutboxEventSync(eventId: string): void {
+    if (!this.vectorOutbox) return;
+    this.vectorOutbox.enqueueSync('event', eventId);
+  }
+
+  private async enqueueVectorOutboxEvent(eventId: string): Promise<void> {
+    this.enqueueVectorOutboxEventSync(eventId);
   }
 
   /**
@@ -976,6 +995,14 @@ export class SQLiteEventStore {
     );
 
     if (existing) {
+      try {
+        await this.enqueueVectorOutboxEvent(existing.event_id);
+      } catch (error) {
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : String(error)
+        };
+      }
       return {
         success: true,
         eventId: existing.event_id,
@@ -1019,6 +1046,7 @@ export class SQLiteEventStore {
         );
         insertDedup.run(dedupeKey, id);
         insertLevel.run(id);
+        this.enqueueVectorOutboxEventSync(id);
       });
 
       transaction();
@@ -1224,6 +1252,7 @@ export class SQLiteEventStore {
 
         insertDedup.run(dedupeKey, ev.id);
         insertLevel.run(ev.id);
+        this.enqueueVectorOutboxEventSync(ev.id);
         inserted++;
         insertedEvents.push(ev);
       }

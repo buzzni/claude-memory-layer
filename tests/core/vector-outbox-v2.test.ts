@@ -4,6 +4,9 @@ import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { SQLiteEventStore } from '../../src/core/sqlite-event-store.js';
+import { PerspectiveObservationRepository } from '../../src/core/operations/perspective-observation-repository.js';
+import { TaskResolver } from '../../src/core/task/task-resolver.js';
+import type { MemoryEvent, OutboxItemKind } from '../../src/core/types.js';
 import { DefaultContentProvider } from '../../src/core/vector-worker.js';
 import { VectorOutbox } from '../../src/core/vector-outbox.js';
 
@@ -56,6 +59,34 @@ function createDb(): Database.Database {
   return db;
 }
 
+type OutboxRow = {
+  item_kind: string;
+  item_id: string;
+  embedding_version: string;
+  status: string;
+};
+
+function readOutboxRows(db: Database.Database): OutboxRow[] {
+  return db.prepare(`
+    SELECT item_kind, item_id, embedding_version, status
+    FROM vector_outbox
+    ORDER BY item_kind, item_id, embedding_version
+  `).all() as OutboxRow[];
+}
+
+function expectPrivateSentinelsAbsent(rows: unknown, sentinels: string[]): void {
+  const serialized = JSON.stringify(rows);
+  for (const sentinel of sentinels) {
+    expect(serialized).not.toContain(sentinel);
+  }
+}
+
+class FailingVectorOutbox extends VectorOutbox {
+  enqueueSync(_itemKind: OutboxItemKind, _itemId: string, _embeddingVersion?: string): string {
+    throw new Error('forced vector enqueue failure');
+  }
+}
+
 afterEach(() => {
   while (dbs.length > 0) {
     const db = dbs.pop();
@@ -79,6 +110,308 @@ describe('vector_outbox schema initialization', () => {
     expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?").get('idx_outbox_created')).toEqual({
       name: 'idx_outbox_created'
     });
+  });
+});
+
+describe('automatic vector_outbox enqueue boundaries', () => {
+  it('enqueues event jobs from append() once without storing raw event content', async () => {
+    const dbPath = createTempDbPath();
+    const store = new SQLiteEventStore(dbPath, {
+      vectorOutbox: { embeddingVersion: 'auto-event-v1' }
+    });
+
+    try {
+      await store.initialize();
+      const first = await store.append({
+        eventType: 'user_prompt',
+        sessionId: 'session-auto-event',
+        timestamp: new Date('2026-05-25T00:00:00.000Z'),
+        content: 'PRIVATE_EVENT_CONTENT_SENTINEL PRIVATE_AUTO_EVENT_MARKER /Users/private/event.md',
+        metadata: {
+          rawPath: '/Users/private/event.md',
+          note: 'PRIVATE_EVENT_METADATA_SENTINEL'
+        }
+      });
+      const duplicate = await store.append({
+        eventType: 'user_prompt',
+        sessionId: 'session-auto-event',
+        timestamp: new Date('2026-05-25T00:00:01.000Z'),
+        content: 'PRIVATE_EVENT_CONTENT_SENTINEL PRIVATE_AUTO_EVENT_MARKER /Users/private/event.md',
+        metadata: {
+          rawPath: '/Users/private/event.md',
+          note: 'PRIVATE_EVENT_METADATA_SENTINEL'
+        }
+      });
+
+      expect(first).toMatchObject({ success: true, isDuplicate: false });
+      if (!first.success) throw new Error('append failed');
+      expect(duplicate).toMatchObject({ success: true, eventId: first.eventId, isDuplicate: true });
+      const rows = readOutboxRows(store.getDatabase() as Database.Database);
+      expect(rows).toEqual([
+        {
+          item_kind: 'event',
+          item_id: first.eventId,
+          embedding_version: 'auto-event-v1',
+          status: 'pending'
+        }
+      ]);
+      expectPrivateSentinelsAbsent(rows, [
+        'PRIVATE_EVENT_CONTENT_SENTINEL',
+        'PRIVATE_EVENT_METADATA_SENTINEL',
+        'PRIVATE_AUTO_EVENT_MARKER',
+        '/Users/private/event.md'
+      ]);
+    } finally {
+      await store.close();
+    }
+  });
+
+  it('enqueues only newly imported events and skips imported duplicates', async () => {
+    const dbPath = createTempDbPath();
+    const store = new SQLiteEventStore(dbPath, {
+      vectorOutbox: { embeddingVersion: 'auto-import-v1' }
+    });
+    const eventA: MemoryEvent = {
+      id: '00000000-0000-4000-8000-0000000000a1',
+      eventType: 'agent_response',
+      sessionId: 'session-import',
+      timestamp: new Date('2026-05-25T00:01:00.000Z'),
+      content: 'PRIVATE_IMPORT_EVENT_A_SENTINEL /Users/private/import-a.md',
+      canonicalKey: 'canonical-import-a',
+      dedupeKey: 'dedupe-import-a',
+      metadata: { note: 'PRIVATE_IMPORT_METADATA_A_SENTINEL' }
+    };
+    const eventB: MemoryEvent = {
+      id: '00000000-0000-4000-8000-0000000000b1',
+      eventType: 'session_summary',
+      sessionId: 'session-import',
+      timestamp: new Date('2026-05-25T00:02:00.000Z'),
+      content: 'PRIVATE_IMPORT_SUMMARY_SENTINEL /Users/private/summary.md',
+      canonicalKey: 'canonical-import-b',
+      dedupeKey: 'dedupe-import-b',
+      metadata: { note: 'PRIVATE_IMPORT_METADATA_B_SENTINEL' }
+    };
+    const eventC: MemoryEvent = {
+      id: '00000000-0000-4000-8000-0000000000c1',
+      eventType: 'tool_observation',
+      sessionId: 'session-import',
+      timestamp: new Date('2026-05-25T00:03:00.000Z'),
+      content: 'PRIVATE_IMPORT_EVENT_C_SENTINEL /Users/private/import-c.md',
+      canonicalKey: 'canonical-import-c',
+      dedupeKey: 'dedupe-import-c',
+      metadata: { note: 'PRIVATE_IMPORT_METADATA_C_SENTINEL' }
+    };
+
+    try {
+      expect(await store.importEvents([eventA, eventB])).toEqual({ inserted: 2, skipped: 0 });
+      expect(await store.importEvents([eventA, eventC])).toEqual({ inserted: 1, skipped: 1 });
+
+      const rows = readOutboxRows(store.getDatabase() as Database.Database);
+      expect(rows).toEqual([
+        { item_kind: 'event', item_id: eventA.id, embedding_version: 'auto-import-v1', status: 'pending' },
+        { item_kind: 'event', item_id: eventB.id, embedding_version: 'auto-import-v1', status: 'pending' },
+        { item_kind: 'event', item_id: eventC.id, embedding_version: 'auto-import-v1', status: 'pending' }
+      ]);
+      expectPrivateSentinelsAbsent(rows, [
+        'PRIVATE_IMPORT_EVENT_A_SENTINEL',
+        'PRIVATE_IMPORT_SUMMARY_SENTINEL',
+        'PRIVATE_IMPORT_EVENT_C_SENTINEL',
+        'PRIVATE_IMPORT_METADATA_A_SENTINEL',
+        'PRIVATE_IMPORT_METADATA_B_SENTINEL',
+        'PRIVATE_IMPORT_METADATA_C_SENTINEL',
+        '/Users/private/import-a.md',
+        '/Users/private/summary.md',
+        '/Users/private/import-c.md'
+      ]);
+    } finally {
+      await store.close();
+    }
+  });
+
+  it('enqueues task_title jobs when a new task is materialized and not when it matches an existing task', async () => {
+    const dbPath = createTempDbPath();
+    const store = new SQLiteEventStore(dbPath);
+
+    try {
+      await store.initialize();
+      const db = store.getDatabase() as Database.Database;
+      const resolver = new TaskResolver(db, { sessionId: 'session-task', project: 'phase-5' }, {
+        vectorOutbox: new VectorOutbox(db, { embeddingVersion: 'auto-task-v1' })
+      });
+
+      const first = await resolver.processTask({
+        title: 'Ship automatic vector outbox enqueue',
+        description: 'PRIVATE_TASK_DESCRIPTION_SENTINEL PRIVATE_TASK_MARKER /Users/private/task.md',
+        priority: 'high',
+        project: 'phase-5'
+      });
+      const matched = await resolver.processTask({
+        title: 'Ship automatic vector outbox enqueue',
+        description: 'PRIVATE_TASK_DESCRIPTION_SENTINEL PRIVATE_TASK_MARKER /Users/private/task.md',
+        priority: 'high',
+        project: 'phase-5'
+      });
+
+      expect(first.isNew).toBe(true);
+      expect(matched).toMatchObject({ taskId: first.taskId, isNew: false });
+      const rows = readOutboxRows(db);
+      expect(rows).toEqual([
+        {
+          item_kind: 'task_title',
+          item_id: first.taskId,
+          embedding_version: 'auto-task-v1',
+          status: 'pending'
+        }
+      ]);
+      expectPrivateSentinelsAbsent(rows, [
+        'Ship automatic vector outbox enqueue',
+        'PRIVATE_TASK_DESCRIPTION_SENTINEL',
+        'PRIVATE_TASK_MARKER',
+        '/Users/private/task.md'
+      ]);
+    } finally {
+      await store.close();
+    }
+  });
+
+  it('enqueues perspective_observation jobs idempotently without storing raw observation evidence', async () => {
+    const dbPath = createTempDbPath();
+    const store = new SQLiteEventStore(dbPath);
+
+    try {
+      await store.initialize();
+      const db = store.getDatabase() as Database.Database;
+      const repo = new PerspectiveObservationRepository(db, {
+        vectorOutbox: new VectorOutbox(db, { embeddingVersion: 'auto-observation-v1' })
+      });
+      const input = {
+        projectHash: 'project-auto-observation',
+        observerActorId: 'assistant:manager',
+        observedActorId: 'assistant:coder',
+        sessionId: 'session-observation',
+        level: 'explicit',
+        content: 'PRIVATE_OBSERVATION_CONTENT_SENTINEL PRIVATE_OBSERVATION_MARKER /Users/private/observation.md',
+        confidence: 0.92,
+        sourceEventIds: ['event-private-1', 'event-private-2'],
+        sourceObservationIds: ['observation-private-1'],
+        createdBy: 'manual',
+        metadata: {
+          rawPath: '/Users/private/observation.md',
+          privateNote: 'PRIVATE_OBSERVATION_METADATA_SENTINEL'
+        }
+      };
+
+      const first = await repo.create(input);
+      const repeated = await repo.create(input);
+
+      expect(repeated.observationId).toBe(first.observationId);
+      const rows = readOutboxRows(db);
+      expect(rows).toEqual([
+        {
+          item_kind: 'perspective_observation',
+          item_id: first.observationId,
+          embedding_version: 'auto-observation-v1',
+          status: 'pending'
+        }
+      ]);
+      expectPrivateSentinelsAbsent(rows, [
+        'PRIVATE_OBSERVATION_CONTENT_SENTINEL',
+        'PRIVATE_OBSERVATION_METADATA_SENTINEL',
+        'PRIVATE_OBSERVATION_MARKER',
+        'event-private-1',
+        'observation-private-1',
+        '/Users/private/observation.md'
+      ]);
+    } finally {
+      await store.close();
+    }
+  });
+
+  it('rolls back writer rows when automatic vector enqueue fails transactionally', async () => {
+    const eventDbPath = createTempDbPath();
+    const eventStore = new SQLiteEventStore(eventDbPath, {
+      vectorOutbox: new FailingVectorOutbox(createDb(), { embeddingVersion: 'failing-v1' })
+    });
+
+    try {
+      await eventStore.initialize();
+      const result = await eventStore.append({
+        eventType: 'user_prompt',
+        sessionId: 'session-failing-event',
+        timestamp: new Date('2026-05-25T00:05:00.000Z'),
+        content: 'event content that must roll back'
+      });
+      expect(result).toMatchObject({ success: false });
+      const eventDb = eventStore.getDatabase() as Database.Database;
+      expect(eventDb.prepare('SELECT COUNT(*) AS count FROM events').get()).toEqual({ count: 0 });
+      expect(readOutboxRows(eventDb)).toEqual([]);
+    } finally {
+      await eventStore.close();
+    }
+
+    const taskDbPath = createTempDbPath();
+    const taskStore = new SQLiteEventStore(taskDbPath);
+    try {
+      await taskStore.initialize();
+      const taskDb = taskStore.getDatabase() as Database.Database;
+      const resolver = new TaskResolver(taskDb, { sessionId: 'session-failing-task', project: 'phase-5' }, {
+        vectorOutbox: new FailingVectorOutbox(taskDb, { embeddingVersion: 'failing-v1' })
+      });
+      await expect(resolver.processTask({
+        title: 'Task row must roll back with failed enqueue',
+        project: 'phase-5'
+      })).rejects.toThrow('forced vector enqueue failure');
+      expect(taskDb.prepare("SELECT COUNT(*) AS count FROM entities WHERE title = 'Task row must roll back with failed enqueue'").get()).toEqual({ count: 0 });
+      expect(taskDb.prepare("SELECT COUNT(*) AS count FROM events WHERE session_id = 'session-failing-task'").get()).toEqual({ count: 0 });
+      expect(readOutboxRows(taskDb)).toEqual([]);
+    } finally {
+      await taskStore.close();
+    }
+
+    const observationDbPath = createTempDbPath();
+    const observationStore = new SQLiteEventStore(observationDbPath);
+    try {
+      await observationStore.initialize();
+      const observationDb = observationStore.getDatabase() as Database.Database;
+      const repo = new PerspectiveObservationRepository(observationDb, {
+        vectorOutbox: new FailingVectorOutbox(observationDb, { embeddingVersion: 'failing-v1' })
+      });
+      await expect(repo.create({
+        projectHash: 'project-failing-observation',
+        observerActorId: 'assistant:manager',
+        observedActorId: 'assistant:coder',
+        level: 'explicit',
+        content: 'observation row that must roll back',
+        confidence: 0.9,
+        sourceEventIds: [],
+        sourceObservationIds: [],
+        createdBy: 'manual'
+      })).rejects.toThrow('forced vector enqueue failure');
+      expect(observationDb.prepare('SELECT COUNT(*) AS count FROM perspective_observations').get()).toEqual({ count: 0 });
+      expect(readOutboxRows(observationDb)).toEqual([]);
+    } finally {
+      await observationStore.close();
+    }
+  });
+
+  it('leaves writers backwards-compatible when vector enqueue is explicitly disabled', async () => {
+    const dbPath = createTempDbPath();
+    const store = new SQLiteEventStore(dbPath, { vectorOutbox: false });
+
+    try {
+      await store.initialize();
+      const result = await store.append({
+        eventType: 'user_prompt',
+        sessionId: 'session-disabled-outbox',
+        timestamp: new Date('2026-05-25T00:04:00.000Z'),
+        content: 'disabled outbox content'
+      });
+
+      expect(result).toMatchObject({ success: true, isDuplicate: false });
+      expect(readOutboxRows(store.getDatabase() as Database.Database)).toEqual([]);
+    } finally {
+      await store.close();
+    }
   });
 });
 

@@ -57,27 +57,35 @@ export class VectorOutbox {
    * Enqueue item for vectorization (idempotent).
    * Returns the already-existing job id when the same item/version has been enqueued before.
    */
-  async enqueue(
+  enqueueSync(
     itemKind: OutboxItemKind,
     itemId: string,
     embeddingVersion?: string
-  ): Promise<string> {
-    const result = await this.enqueueWithResult({ itemKind, itemId, embeddingVersion });
+  ): string {
+    const result = this.enqueueWithResultSync({ itemKind, itemId, embeddingVersion });
     if (result.success === false) {
       throw new Error(result.error);
     }
     return result.jobId;
   }
 
-  async enqueueBatch(inputs: OutboxEnqueueInput[]): Promise<EnqueueResult[]> {
-    const results: EnqueueResult[] = [];
-    for (const input of inputs) {
-      results.push(await this.enqueueWithResult(input));
-    }
-    return results;
+  async enqueue(
+    itemKind: OutboxItemKind,
+    itemId: string,
+    embeddingVersion?: string
+  ): Promise<string> {
+    return this.enqueueSync(itemKind, itemId, embeddingVersion);
   }
 
-  async enqueueWithResult(input: OutboxEnqueueInput): Promise<EnqueueResult> {
+  enqueueBatchSync(inputs: OutboxEnqueueInput[]): EnqueueResult[] {
+    return inputs.map((input) => this.enqueueWithResultSync(input));
+  }
+
+  async enqueueBatch(inputs: OutboxEnqueueInput[]): Promise<EnqueueResult[]> {
+    return this.enqueueBatchSync(inputs);
+  }
+
+  enqueueWithResultSync(input: OutboxEnqueueInput): EnqueueResult {
     const version = input.embeddingVersion ?? this.config.embeddingVersion;
     const jobId = randomUUID();
     const now = new Date().toISOString();
@@ -110,6 +118,10 @@ export class VectorOutbox {
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : String(error) };
     }
+  }
+
+  async enqueueWithResult(input: OutboxEnqueueInput): Promise<EnqueueResult> {
+    return this.enqueueWithResultSync(input);
   }
 
   /**

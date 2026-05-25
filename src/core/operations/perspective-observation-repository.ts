@@ -20,6 +20,11 @@ import {
   sanitizeGovernanceAuditValue,
   writeGovernanceAuditEntry
 } from './governance-audit.js';
+import { VectorOutbox, type OutboxConfig } from '../vector-outbox.js';
+
+export interface PerspectiveObservationRepositoryOptions {
+  vectorOutbox?: false | VectorOutbox | Partial<OutboxConfig>;
+}
 
 interface PerspectiveObservationRow {
   observation_id: string;
@@ -203,7 +208,37 @@ function isFtsUnavailableError(error: unknown): boolean {
 }
 
 export class PerspectiveObservationRepository {
-  constructor(private readonly db: SQLiteDatabase) {}
+  private vectorOutbox: VectorOutbox | null = null;
+  private readonly vectorOutboxOption: PerspectiveObservationRepositoryOptions['vectorOutbox'];
+
+  constructor(
+    private readonly db: SQLiteDatabase,
+    options: PerspectiveObservationRepositoryOptions = {}
+  ) {
+    this.vectorOutboxOption = options.vectorOutbox;
+    if (options.vectorOutbox instanceof VectorOutbox) {
+      this.vectorOutbox = options.vectorOutbox;
+    }
+  }
+
+  private getVectorOutbox(): VectorOutbox | null {
+    const option = this.vectorOutboxOption;
+    if (option === false) return null;
+    if (option instanceof VectorOutbox) {
+      this.vectorOutbox = option;
+      return option;
+    }
+    if (!this.vectorOutbox) {
+      this.vectorOutbox = new VectorOutbox(this.db, option ?? {});
+    }
+    return this.vectorOutbox;
+  }
+
+  private enqueueObservationSync(observationId: string): void {
+    const outbox = this.getVectorOutbox();
+    if (!outbox) return;
+    outbox.enqueueSync('perspective_observation', observationId);
+  }
 
   async create(input: unknown): Promise<PerspectiveObservation> {
     const parsed = CreatePerspectiveObservationInputSchema.parse(input);
@@ -222,9 +257,11 @@ export class PerspectiveObservationRepository {
     const sourceHash = evidenceHash(sourceEventIds, sourceObservationIds);
     const metadata = sanitizeStoredRecord(parsed.metadata);
 
-    sqliteRun(
-      this.db,
-      `INSERT INTO perspective_observations (
+    let saved: PerspectiveObservation | null = null;
+    const transaction = this.db.transaction(() => {
+      sqliteRun(
+        this.db,
+        `INSERT INTO perspective_observations (
         observation_id, project_hash, observer_actor_id, observed_actor_id, session_id,
         level, content, confidence, source_event_ids_json, source_observation_ids_json,
         created_by, metadata_json, content_hash, source_hash, created_at, updated_at, deleted_at
@@ -236,37 +273,43 @@ export class PerspectiveObservationRepository {
         metadata_json = excluded.metadata_json,
         updated_at = excluded.updated_at,
         deleted_at = NULL`,
-      [
-        observationId,
+        [
+          observationId,
+          projectHash,
+          observerActorId,
+          observedActorId,
+          sessionId ?? null,
+          parsed.level,
+          content,
+          parsed.confidence,
+          JSON.stringify(sourceEventIds),
+          JSON.stringify(sourceObservationIds),
+          createdBy,
+          metadata ? JSON.stringify(metadata) : null,
+          contentHash,
+          sourceHash,
+          now,
+          now
+        ]
+      );
+
+      saved = this.getByUnique(
         projectHash,
         observerActorId,
         observedActorId,
-        sessionId ?? null,
         parsed.level,
-        content,
-        parsed.confidence,
-        JSON.stringify(sourceEventIds),
-        JSON.stringify(sourceObservationIds),
-        createdBy,
-        metadata ? JSON.stringify(metadata) : null,
         contentHash,
-        sourceHash,
-        now,
-        now
-      ]
-    );
+        sourceHash
+      );
+      if (!saved) throw new Error('perspective observation was not saved');
+      this.enqueueObservationSync(saved.observationId);
+    });
+    transaction();
 
-    const saved = this.getByUnique(
-      projectHash,
-      observerActorId,
-      observedActorId,
-      parsed.level,
-      contentHash,
-      sourceHash
-    );
-    if (!saved) throw new Error('perspective observation was not saved');
-    await this.writeCreateAudit({ ...parsed, observerActorId, observedActorId, sessionId, content, sourceEventIds, sourceObservationIds, createdBy, actor, metadata }, saved);
-    return saved;
+    const savedObservation = saved;
+    if (!savedObservation) throw new Error('perspective observation was not saved');
+    await this.writeCreateAudit({ ...parsed, observerActorId, observedActorId, sessionId, content, sourceEventIds, sourceObservationIds, createdBy, actor, metadata }, savedObservation);
+    return savedObservation;
   }
 
   async query(input: unknown): Promise<PerspectiveObservation[]> {

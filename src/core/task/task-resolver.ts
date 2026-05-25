@@ -3,7 +3,7 @@
  * AXIOMMIND: Task state via event fold, no direct updates
  */
 
-import { dbRun, dbAll, type Database } from '../db-wrapper.js';
+import { dbRun, type Database } from '../db-wrapper.js';
 import { randomUUID } from 'crypto';
 import type {
   Entity,
@@ -14,6 +14,7 @@ import type {
 import { makeEntityCanonicalKey, makeTaskEventDedupeKey } from '../canonical-key.js';
 import { TaskMatcher } from './task-matcher.js';
 import { BlockerResolver } from './blocker-resolver.js';
+import { VectorOutbox, type OutboxConfig } from '../vector-outbox.js';
 
 export interface ExtractedTask {
   title: string;
@@ -30,6 +31,10 @@ export interface TaskResolverConfig {
   evidenceAligned?: boolean;
 }
 
+export interface TaskResolverOptions {
+  vectorOutbox?: false | VectorOutbox | Partial<OutboxConfig>;
+}
+
 // Valid status transitions
 const VALID_TRANSITIONS: Record<TaskStatus, TaskStatus[]> = {
   pending: ['in_progress', 'cancelled'],
@@ -42,13 +47,39 @@ const VALID_TRANSITIONS: Record<TaskStatus, TaskStatus[]> = {
 export class TaskResolver {
   private taskMatcher: TaskMatcher;
   private blockerResolver: BlockerResolver;
+  private vectorOutbox: VectorOutbox | null = null;
+  private readonly vectorOutboxOption: TaskResolverOptions['vectorOutbox'];
 
   constructor(
     private db: Database,
-    private config: TaskResolverConfig
+    private config: TaskResolverConfig,
+    options: TaskResolverOptions = {}
   ) {
     this.taskMatcher = new TaskMatcher(db);
     this.blockerResolver = new BlockerResolver(db, { project: config.project });
+    this.vectorOutboxOption = options.vectorOutbox;
+    if (options.vectorOutbox instanceof VectorOutbox) {
+      this.vectorOutbox = options.vectorOutbox;
+    }
+  }
+
+  private getVectorOutbox(): VectorOutbox | null {
+    const option = this.vectorOutboxOption;
+    if (option === false) return null;
+    if (option instanceof VectorOutbox) {
+      this.vectorOutbox = option;
+      return option;
+    }
+    if (!this.vectorOutbox) {
+      this.vectorOutbox = new VectorOutbox(this.db, option ?? {});
+    }
+    return this.vectorOutbox;
+  }
+
+  private enqueueTaskTitleSync(taskId: string): void {
+    const outbox = this.getVectorOutbox();
+    if (!outbox) return;
+    outbox.enqueueSync('task_title', taskId);
   }
 
   /**
@@ -152,14 +183,22 @@ export class TaskResolver {
       project: extracted.project ?? this.config.project
     };
 
-    // Insert entity
-    await dbRun(
-      this.db,
-      `INSERT INTO entities (
+    const taskCreatedPayload = {
+      taskId,
+      title: extracted.title,
+      canonicalKey,
+      initialStatus,
+      priority: extracted.priority ?? 'medium',
+      description: extracted.description,
+      project: extracted.project ?? this.config.project
+    };
+    let eventId = '';
+    const transaction = this.db.transaction(() => {
+      // Insert entity
+      this.db.prepare(`INSERT INTO entities (
         entity_id, entity_type, canonical_key, title, stage, status,
         current_json, title_norm, search_text, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
         taskId,
         'task',
         canonicalKey,
@@ -171,28 +210,18 @@ export class TaskResolver {
         `${extracted.title} ${extracted.description ?? ''}`,
         now.toISOString(),
         now.toISOString()
-      ]
-    );
+      );
 
-    // Create alias
-    await dbRun(
-      this.db,
-      `INSERT INTO entity_aliases (entity_type, canonical_key, entity_id, is_primary)
+      // Create alias
+      this.db.prepare(`INSERT INTO entity_aliases (entity_type, canonical_key, entity_id, is_primary)
        VALUES (?, ?, ?, TRUE)
-       ON CONFLICT (entity_type, canonical_key) DO NOTHING`,
-      ['task', canonicalKey, taskId]
-    );
+       ON CONFLICT (entity_type, canonical_key) DO NOTHING`).run('task', canonicalKey, taskId);
 
-    // Emit task_created event
-    const eventId = await this.emitTaskEvent('task_created', {
-      taskId,
-      title: extracted.title,
-      canonicalKey,
-      initialStatus,
-      priority: extracted.priority ?? 'medium',
-      description: extracted.description,
-      project: extracted.project ?? this.config.project
+      // Emit task_created event and enqueue task title atomically with task materialization.
+      eventId = this.emitTaskEventSync('task_created', taskCreatedPayload);
+      this.enqueueTaskTitleSync(taskId);
     });
+    transaction();
 
     // Return created entity
     const task: Entity = {
@@ -335,10 +364,10 @@ export class TaskResolver {
   /**
    * Emit task event to events table
    */
-  private async emitTaskEvent(
+  private emitTaskEventSync(
     eventType: string,
     payload: Record<string, unknown>
-  ): Promise<string> {
+  ): string {
     const eventId = randomUUID();
     const now = new Date();
 
@@ -351,45 +380,40 @@ export class TaskResolver {
     );
 
     // Check for duplicate
-    const existing = await dbAll<{ event_id: string }>(
-      this.db,
-      `SELECT event_id FROM event_dedup WHERE dedupe_key = ?`,
-      [dedupeKey]
-    );
+    const existing = this.db.prepare(`SELECT event_id FROM event_dedup WHERE dedupe_key = ?`).get(dedupeKey) as { event_id: string } | undefined;
 
-    if (existing.length > 0) {
-      return existing[0].event_id;  // Return existing event ID
+    if (existing) {
+      return existing.event_id;  // Return existing event ID
     }
 
     // Insert event
-    await dbRun(
-      this.db,
-      `INSERT INTO events (
+    this.db.prepare(`INSERT INTO events (
         id, event_type, session_id, timestamp, content,
         canonical_key, dedupe_key, metadata
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        eventId,
-        eventType,
-        this.config.sessionId,
-        now.toISOString(),
-        JSON.stringify(payload),
-        `task_event:${eventType}:${payload.taskId}`,
-        dedupeKey,
-        JSON.stringify({ source: 'task_resolver' })
-      ]
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      eventId,
+      eventType,
+      this.config.sessionId,
+      now.toISOString(),
+      JSON.stringify(payload),
+      `task_event:${eventType}:${payload.taskId}`,
+      dedupeKey,
+      JSON.stringify({ source: 'task_resolver' })
     );
 
     // Insert dedup record
-    await dbRun(
-      this.db,
-      `INSERT INTO event_dedup (dedupe_key, event_id)
+    this.db.prepare(`INSERT INTO event_dedup (dedupe_key, event_id)
        VALUES (?, ?)
-       ON CONFLICT DO NOTHING`,
-      [dedupeKey, eventId]
-    );
+       ON CONFLICT DO NOTHING`).run(dedupeKey, eventId);
 
     return eventId;
+  }
+
+  private async emitTaskEvent(
+    eventType: string,
+    payload: Record<string, unknown>
+  ): Promise<string> {
+    return this.emitTaskEventSync(eventType, payload);
   }
 
   /**

@@ -398,8 +398,18 @@ async function materializeEntry(entry: Entry): Promise<void> {
 
 **작업 항목**:
 - [ ] Entry 저장 후 outbox.enqueue() 호출
-- [ ] Task 생성 시 task_title enqueue
-- [ ] Session 종료 시 session_summary enqueue
+  - 2026-05-25: production `entries` table/content provider exists, but no clear single writer/materializer was found in current source. Do not invent a second writer just to enqueue; wire `entry` only when the actual writer is introduced or located.
+- [x] Event 저장/import 시 `event` enqueue
+  - `SQLiteEventStore.append()` and `importEvents()` enqueue only committed/new events, with source writes and `vector_outbox` rows in the same SQLite transaction for non-duplicate writes.
+- [x] Task 생성 시 task_title enqueue
+  - `TaskResolver` enqueues `task_title` when a new task entity is materialized; high-confidence matched existing tasks do not create duplicate jobs.
+- [x] Perspective observation 저장 시 `perspective_observation` enqueue
+  - `PerspectiveObservationRepository.create()` enqueues the saved/upserted observation id idempotently.
+- [x] Session 종료 시 session_summary enqueue
+  - Current `OutboxItemKindSchema` has no separate `session_summary` kind, so `session_summary` records are covered as `event` jobs when they are appended/imported through the event store.
+- [x] Transactional/privacy guarantees
+  - `VectorOutbox.enqueueSync()`/`enqueueWithResultSync()` support same-transaction enqueue at writer boundaries.
+  - Tests assert enqueue failure rolls back event/task/observation source rows and that `vector_outbox` contains only kind/id/version/status fields, not raw event content, task descriptions, observation text, source ids, paths, or errors.
 
 ### 5.2 단일 Writer 보장
 
