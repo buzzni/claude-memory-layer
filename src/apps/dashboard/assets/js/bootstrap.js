@@ -155,6 +155,11 @@ function setupEventListeners() {
     refreshBtn.addEventListener('click', refreshData);
   }
 
+  const vectorHealthRecoverBtn = document.getElementById('vector-health-recover-btn');
+  if (vectorHealthRecoverBtn) {
+    vectorHealthRecoverBtn.addEventListener('click', recoverVectorHealth);
+  }
+
   // Stat cards
   document.querySelectorAll('.stat-card[data-stat]').forEach(card => {
     card.addEventListener('click', () => {

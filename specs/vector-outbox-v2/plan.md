@@ -508,6 +508,11 @@ program
 - [ ] `cli vector-worker` 커맨드
 - [ ] `cli vector-status` 통계 조회
 - [ ] `cli vector-reconcile` 수동 복구
+- [x] Dashboard vector health card
+  - 2026-05-26: overview dashboard loads `/api/health` with current project scope and renders aggregate-only vector counts, outbox pending/processing/failed/stuck totals, oldest processing age, and last dashboard recovery result.
+  - Recovery button calls `/api/health/recover` and displays only recovered aggregate counts; raw row ids, item ids, source content, storage paths, and error payload fields are ignored.
+  - Recovery display is scoped to the active project hash and derives post-recovery attention state from remaining aggregate failed/stuck outbox counts.
+  - `/api/health` and `/api/health/recover` failure responses now return generic messages so private service errors, paths, row ids, and item ids are not exposed.
 
 ### 6.2 상태 조회
 

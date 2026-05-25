@@ -117,4 +117,44 @@ describe('health API outbox recovery', () => {
     expect(mocks.getServiceFromQuery).not.toHaveBeenCalled();
     expect(mocks.service.shutdown).toHaveBeenCalledTimes(1);
   });
+
+  it('does not leak raw health check errors in dashboard API responses', async () => {
+    mocks.service.getStats.mockRejectedValueOnce(
+      new Error('PRIVATE_HEALTH_ERROR_SENTINEL /Users/private/project/raw-source.txt')
+    );
+
+    const res = await createApp().request('/api/health?project=abc12345');
+
+    expect(res.status).toBe(500);
+    const json = await res.json();
+    expect(json).toEqual({
+      status: 'error',
+      timestamp: expect.any(String),
+      error: 'Health check failed'
+    });
+    expect(JSON.stringify(json)).not.toContain('PRIVATE_HEALTH_ERROR_SENTINEL');
+    expect(JSON.stringify(json)).not.toContain('/Users/private/project/raw-source.txt');
+  });
+
+  it('does not leak raw recovery errors in dashboard API responses', async () => {
+    mocks.service.recoverStuckOutboxItems.mockRejectedValueOnce(
+      new Error('PRIVATE_RECOVERY_ERROR_SENTINEL outbox-row-id=raw-123')
+    );
+
+    const res = await createApp().request('/api/health/recover?project=abc12345', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({})
+    });
+
+    expect(res.status).toBe(500);
+    const json = await res.json();
+    expect(json).toEqual({
+      status: 'error',
+      timestamp: expect.any(String),
+      error: 'Outbox recovery failed'
+    });
+    expect(JSON.stringify(json)).not.toContain('PRIVATE_RECOVERY_ERROR_SENTINEL');
+    expect(JSON.stringify(json)).not.toContain('raw-123');
+  });
 });

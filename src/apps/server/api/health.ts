@@ -50,11 +50,11 @@ healthRouter.get('/', async (c) => {
       },
       levelStats: stats.levelStats
     });
-  } catch (error) {
+  } catch {
     return c.json({
       status: 'error',
       timestamp: new Date().toISOString(),
-      error: (error as Error).message
+      error: 'Health check failed'
     }, 500);
   } finally {
     await memoryService.shutdown();
@@ -102,11 +102,11 @@ healthRouter.post('/recover', async (c) => {
         outbox
       }
     });
-  } catch (error) {
+  } catch {
     return c.json({
       status: 'error',
       timestamp: new Date().toISOString(),
-      error: (error as Error).message
+      error: 'Outbox recovery failed'
     }, 500);
   } finally {
     await memoryService.shutdown();

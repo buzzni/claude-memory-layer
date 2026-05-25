@@ -26,6 +26,12 @@ async function loadPerspectiveStatsData() {
     .catch(() => null);
 }
 
+async function loadVectorHealthData() {
+  state.vectorHealth = await fetch(apiUrl(`${API_BASE}/health`))
+    .then(r => r.ok ? r.json() : null)
+    .catch(() => null);
+}
+
 async function refreshData() {
   const btn = document.getElementById('refresh-btn');
   if(btn) btn.classList.add('loading');
@@ -35,7 +41,7 @@ async function refreshData() {
   const kpiWindowAtStart = state.kpiWindow;
 
   try {
-    const [stats, shared, mostAccessed, helpfulness, memoryUsefulness, retrievalTraces, retrievalReviewQueue, operationsStats, perspectiveStats, adherenceSummary] = await Promise.all([
+    const [stats, shared, mostAccessed, helpfulness, memoryUsefulness, retrievalTraces, retrievalReviewQueue, operationsStats, perspectiveStats, adherenceSummary, vectorHealth] = await Promise.all([
       fetch(apiUrl(`${API_BASE}/stats`)).then(r => r.json()).catch(() => null),
       fetch(apiUrl(`${API_BASE}/stats/shared`)).then(r => r.json()).catch(() => null),
       fetch(apiUrl(`${API_BASE}/stats/most-accessed`, { limit: 10 })).then(r => r.json()).catch(() => null),
@@ -45,7 +51,8 @@ async function refreshData() {
       fetch(apiUrl(`${API_BASE}/stats/retrieval-review-queue`, { limit: 10 })).then(r => r.json()).catch(() => null),
       fetch(apiUrl(`${API_BASE}/stats/operations`, { windowDays: operationStatsWindowDays() })).then(r => r.ok ? r.json() : null).catch(() => null),
       fetch(apiUrl(`${API_BASE}/stats/perspective`, { windowDays: operationStatsWindowDays() })).then(r => r.ok ? r.json() : null).catch(() => null),
-      fetchAdherenceSummary().catch(() => null)
+      fetchAdherenceSummary().catch(() => null),
+      fetch(apiUrl(`${API_BASE}/health`)).then(r => r.ok ? r.json() : null).catch(() => null)
     ]);
 
     if (
@@ -66,6 +73,7 @@ async function refreshData() {
     state.operationsStats = operationsStats;
     state.perspectiveStats = perspectiveStats;
     state.adherenceSummary = adherenceSummary;
+    state.vectorHealth = vectorHealth;
 
     await loadKpiData();
     if (refreshRequestId !== state.refreshRequestId) return;
@@ -385,8 +393,199 @@ function updateMemoryUsageUI() {
   updateTopAccessedEventsUI();
   updateAdherenceSummaryUI();
   updateRetrievalTraceUI();
+  updateVectorHealthUI();
   updateOperationsStatsUI();
   updatePerspectiveStatsUI();
+}
+
+function vectorHealthCount(value) {
+  const count = Number(value || 0);
+  return Number.isFinite(count) && count > 0 ? count : 0;
+}
+
+function vectorHealthEmpty(message) {
+  return `<div style="padding:12px; text-align:center; color:var(--text-muted); font-size:13px;">${escapeHtml(message)}</div>`;
+}
+
+function vectorOutboxTotals(outbox) {
+  const embedding = outbox?.embedding || {};
+  const vector = outbox?.vector || {};
+  const providedTotals = outbox?.totals || null;
+  return {
+    pending: vectorHealthCount(providedTotals?.pending ?? (vectorHealthCount(embedding.pending) + vectorHealthCount(vector.pending))),
+    processing: vectorHealthCount(providedTotals?.processing ?? (vectorHealthCount(embedding.processing) + vectorHealthCount(vector.processing))),
+    failed: vectorHealthCount(providedTotals?.failed ?? (vectorHealthCount(embedding.failed) + vectorHealthCount(vector.failed))),
+    stuckProcessing: vectorHealthCount(providedTotals?.stuckProcessing ?? (vectorHealthCount(embedding.stuckProcessing) + vectorHealthCount(vector.stuckProcessing))),
+    oldestProcessingAgeMs: providedTotals?.oldestProcessingAgeMs ?? maxNullableHealthAge(embedding.oldestProcessingAgeMs, vector.oldestProcessingAgeMs)
+  };
+}
+
+function maxNullableHealthAge(a, b) {
+  const values = [a, b]
+    .map(value => Number(value))
+    .filter(value => Number.isFinite(value) && value >= 0);
+  return values.length > 0 ? Math.max(...values) : null;
+}
+
+function formatVectorHealthAge(ms) {
+  const value = Number(ms);
+  if (!Number.isFinite(value) || value <= 0) return 'none';
+  const seconds = Math.floor(value / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) return `${hours}h`;
+  return `${Math.floor(hours / 24)}d`;
+}
+
+function vectorOutboxQueueRow(label, stats) {
+  const pending = vectorHealthCount(stats?.pending);
+  const processing = vectorHealthCount(stats?.processing);
+  const failed = vectorHealthCount(stats?.failed);
+  const stuck = vectorHealthCount(stats?.stuckProcessing);
+  const total = vectorHealthCount(stats?.total);
+  const age = formatVectorHealthAge(stats?.oldestProcessingAgeMs);
+  const statusColor = failed > 0 || stuck > 0 ? 'var(--warning)' : 'var(--success)';
+  return `
+    <div class="shared-item">
+      <div class="shared-info" style="flex-direction:column; align-items:flex-start; gap:2px; min-width:0;">
+        <span style="font-size:12px; color:var(--text-secondary);">${escapeHtml(label)}</span>
+        <span style="font-size:10px; color:var(--text-muted);">pending ${formatNumber(pending)} · processing ${formatNumber(processing)} · failed ${formatNumber(failed)} · stuck ${formatNumber(stuck)} · oldest ${age}</span>
+      </div>
+      <div style="display:flex; flex-direction:column; align-items:flex-end; gap:2px; min-width:48px;">
+        <span style="font-size:15px; font-weight:700; color:${statusColor};">${formatNumber(total)}</span>
+        <span style="font-size:10px; color:var(--text-muted);">total</span>
+      </div>
+    </div>
+  `;
+}
+
+function recoveryBucketTotal(bucket) {
+  return vectorHealthCount(bucket?.recoveredProcessing) + vectorHealthCount(bucket?.retriedFailed);
+}
+
+function renderVectorHealthRecovery() {
+  const recoveryEl = document.getElementById('vector-health-recovery-result');
+  if (!recoveryEl) return;
+
+  const recovery = state.vectorHealthRecovery;
+  const recoveryProject = state.vectorHealthRecoveryProject;
+  if (recovery && recoveryProject !== null && recoveryProject !== (state.currentProject || '')) {
+    recoveryEl.innerHTML = '<span style="color:var(--text-muted);">No recovery run in this dashboard session.</span>';
+    return;
+  }
+  if (!recovery) {
+    recoveryEl.innerHTML = '<span style="color:var(--text-muted);">No recovery run in this dashboard session.</span>';
+    return;
+  }
+
+  if (recovery.status && recovery.status !== 'ok') {
+    recoveryEl.innerHTML = '<span style="color:var(--warning);">Last recovery request failed. No private error details are shown.</span>';
+    return;
+  }
+
+  const embeddingTotal = recoveryBucketTotal(recovery.recovered?.embedding);
+  const vectorTotal = recoveryBucketTotal(recovery.recovered?.vector);
+  const timestamp = recovery.timestamp ? new Date(recovery.timestamp).toLocaleString() : 'just now';
+  recoveryEl.innerHTML = `
+    <span style="color:var(--text-secondary);">Last recovery ${escapeHtml(timestamp)}</span>
+    <span style="color:var(--text-muted); margin-left:6px;">embedding=${formatNumber(embeddingTotal)} · vector=${formatNumber(vectorTotal)} · total=${formatNumber(embeddingTotal + vectorTotal)}</span>
+  `;
+}
+
+function updateVectorHealthUI() {
+  const payload = state.vectorHealth;
+  const summaryEl = document.getElementById('vector-health-summary');
+  const queueEl = document.getElementById('vector-health-queue-list');
+  const recoveryEl = document.getElementById('vector-health-recovery-result');
+  if (!summaryEl && !queueEl && !recoveryEl) return;
+
+  if (!payload) {
+    if (summaryEl) summaryEl.innerHTML = '<span style="color:var(--text-muted);">Vector health unavailable</span>';
+    if (queueEl) queueEl.innerHTML = vectorHealthEmpty('Vector health aggregate data unavailable');
+    renderVectorHealthRecovery();
+    return;
+  }
+
+  const status = payload.status || 'unknown';
+  const outbox = payload.outbox || {};
+  const totals = vectorOutboxTotals(outbox);
+  const vectorCount = vectorHealthCount(payload.storage?.vectorCount);
+  const statusColor = status === 'ok' ? 'var(--success)' : (status === 'needs-attention' ? 'var(--warning)' : 'var(--text-muted)');
+
+  if (summaryEl) {
+    summaryEl.innerHTML = `
+      <div style="display:flex; gap:10px; flex-wrap:wrap; font-size:13px; color:var(--text-secondary);">
+        <span><strong style="color:${statusColor};">${escapeHtml(status)}</strong></span>
+        <span><strong>${formatNumber(vectorCount)} vectors</strong></span>
+        <span><strong>${formatNumber(totals.pending)} pending</strong></span>
+        <span><strong>${formatNumber(totals.processing)} processing</strong></span>
+        <span><strong>${formatNumber(totals.failed)} failed</strong></span>
+        <span><strong>${formatNumber(totals.stuckProcessing)} stuck</strong></span>
+        <span><strong>${formatVectorHealthAge(totals.oldestProcessingAgeMs)} oldest processing</strong></span>
+      </div>
+    `;
+  }
+
+  if (queueEl) {
+    queueEl.innerHTML = [
+      vectorOutboxQueueRow('Embedding Outbox', outbox.embedding),
+      vectorOutboxQueueRow('Vector Outbox', outbox.vector)
+    ].join('');
+  }
+
+  renderVectorHealthRecovery();
+}
+
+function healthPayloadFromRecovery(payload) {
+  const after = payload?.after || {};
+  if (!after.storage && !after.outbox) return null;
+  const totals = vectorOutboxTotals(after.outbox || {});
+  const status = totals.failed > 0 || totals.stuckProcessing > 0 ? 'needs-attention' : (payload.status || 'ok');
+  return {
+    status,
+    timestamp: payload.timestamp || new Date().toISOString(),
+    storage: after.storage || {},
+    outbox: after.outbox || {},
+    levelStats: []
+  };
+}
+
+async function recoverVectorHealth() {
+  const button = document.getElementById('vector-health-recover-btn');
+  if (state.isVectorRecoveryRunning) return;
+  state.isVectorRecoveryRunning = true;
+  if (button) button.disabled = true;
+
+  try {
+    const response = await fetch(apiUrl(`${API_BASE}/health/recover`), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({})
+    });
+    if (!response.ok) throw new Error('recovery failed');
+    const payload = await response.json();
+    state.vectorHealthRecovery = payload;
+    state.vectorHealthRecoveryProject = state.currentProject || '';
+    const health = healthPayloadFromRecovery(payload);
+    if (health) state.vectorHealth = health;
+    updateVectorHealthUI();
+  } catch {
+    state.vectorHealthRecovery = {
+      status: 'error',
+      timestamp: new Date().toISOString(),
+      recovered: {
+        embedding: { recoveredProcessing: 0, retriedFailed: 0 },
+        vector: { recoveredProcessing: 0, retriedFailed: 0 }
+      }
+    };
+    state.vectorHealthRecoveryProject = state.currentProject || '';
+    updateVectorHealthUI();
+  } finally {
+    state.isVectorRecoveryRunning = false;
+    if (button) button.disabled = false;
+  }
 }
 
 function operationCount(value) {

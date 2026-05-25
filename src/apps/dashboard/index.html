@@ -292,6 +292,22 @@
               </div>
             </div>
 
+            <!-- Vector Health -->
+            <div class="card">
+              <div class="card-header" style="align-items:flex-start;">
+                <div class="card-title">
+                  <i class="ri-pulse-line"></i>
+                  <span>Vector Health</span>
+                </div>
+                <button id="vector-health-recover-btn" class="sort-btn" title="Recover stale processing and retryable failed outbox jobs">Recover</button>
+              </div>
+              <div id="vector-health-summary" style="padding:8px 0; font-size:13px; color:var(--text-muted);">Loading vector health...</div>
+              <div id="vector-health-queue-list" class="shared-list" style="margin-top:10px;">
+                <div style="padding:12px; text-align:center; color:var(--text-muted); font-size:13px;">Loading...</div>
+              </div>
+              <div id="vector-health-recovery-result" style="padding:8px 0 0; font-size:12px; color:var(--text-muted);">No recovery run in this dashboard session.</div>
+            </div>
+
             <!-- Shared Knowledge -->
             <div class="card">
               <div class="card-header">
