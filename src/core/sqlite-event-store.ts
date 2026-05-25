@@ -696,6 +696,34 @@ export class SQLiteEventStore {
         UNIQUE(project_hash, observer_actor_id, observed_actor_id, level, content_hash, source_hash)
       );
 
+      -- Perspective Memory: FTS5 index for observation content queries.
+      -- Use an external-content FTS table so the searchable projection stores the index,
+      -- not a second raw copy of private observation text.
+      CREATE VIRTUAL TABLE IF NOT EXISTS perspective_observations_fts USING fts5(
+        content,
+        observation_id UNINDEXED,
+        content='perspective_observations',
+        content_rowid='rowid',
+        tokenize='porter unicode61'
+      );
+
+      -- Backfill the FTS table for writable legacy stores that predate the FTS projection.
+      INSERT OR IGNORE INTO perspective_observations_fts(rowid, content, observation_id)
+      SELECT rowid, content, observation_id FROM perspective_observations;
+
+      CREATE TRIGGER IF NOT EXISTS perspective_observations_fts_insert AFTER INSERT ON perspective_observations BEGIN
+        INSERT INTO perspective_observations_fts(rowid, content, observation_id) VALUES (NEW.rowid, NEW.content, NEW.observation_id);
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS perspective_observations_fts_delete AFTER DELETE ON perspective_observations BEGIN
+        INSERT INTO perspective_observations_fts(perspective_observations_fts, rowid, content, observation_id) VALUES('delete', OLD.rowid, OLD.content, OLD.observation_id);
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS perspective_observations_fts_update AFTER UPDATE ON perspective_observations BEGIN
+        INSERT INTO perspective_observations_fts(perspective_observations_fts, rowid, content, observation_id) VALUES('delete', OLD.rowid, OLD.content, OLD.observation_id);
+        INSERT INTO perspective_observations_fts(rowid, content, observation_id) VALUES (NEW.rowid, NEW.content, NEW.observation_id);
+      END;
+
       -- Memory Operations: governance/audit trail for state-changing operations
       CREATE TABLE IF NOT EXISTS memory_governance_audit (
         audit_id TEXT PRIMARY KEY,

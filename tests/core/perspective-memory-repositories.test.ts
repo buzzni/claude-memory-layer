@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
+import Database from 'better-sqlite3';
 import { mkdtempSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -57,6 +58,14 @@ describe('Perspective memory schema tables', () => {
       ...sqliteAll<{ name: string }>(db, `PRAGMA index_list(actor_cards)`).map((row) => row.name),
       ...sqliteAll<{ name: string }>(db, `PRAGMA index_list(perspective_observations)`).map((row) => row.name)
     ];
+    const tableNames = sqliteAll<{ name: string }>(
+      db,
+      `SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'perspective_observations_fts%' ORDER BY name`
+    ).map((row) => row.name);
+    const triggerNames = sqliteAll<{ name: string }>(
+      db,
+      `SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'perspective_observations_fts_%' ORDER BY name`
+    ).map((row) => row.name);
     await cleanup();
 
     expect(actorColumns).toEqual(['actor_id', 'project_hash', 'kind', 'display_name', 'source', 'metadata_json', 'created_at', 'updated_at']);
@@ -74,6 +83,145 @@ describe('Perspective memory schema tables', () => {
       'idx_perspective_observations_perspective_level',
       'idx_perspective_observations_session'
     ]));
+    expect(tableNames).toEqual(expect.arrayContaining([
+      'perspective_observations_fts',
+      'perspective_observations_fts_data',
+      'perspective_observations_fts_idx'
+    ]));
+    expect(tableNames).not.toContain('perspective_observations_fts_content');
+    expect(triggerNames).toEqual([
+      'perspective_observations_fts_delete',
+      'perspective_observations_fts_insert',
+      'perspective_observations_fts_update'
+    ]);
+  });
+
+  it('backfills perspective observation FTS for legacy rows during writable initialization', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cml-perspective-memory-legacy-'));
+    tempDirs.push(dir);
+    const dbPath = join(dir, 'events.sqlite');
+    const legacyDb = new Database(dbPath);
+    legacyDb.exec(`
+      CREATE TABLE perspective_observations (
+        observation_id TEXT PRIMARY KEY,
+        project_hash TEXT NOT NULL DEFAULT '',
+        observer_actor_id TEXT NOT NULL,
+        observed_actor_id TEXT NOT NULL,
+        session_id TEXT,
+        level TEXT NOT NULL,
+        content TEXT NOT NULL,
+        confidence REAL NOT NULL,
+        source_event_ids_json TEXT NOT NULL DEFAULT '[]',
+        source_observation_ids_json TEXT NOT NULL DEFAULT '[]',
+        created_by TEXT NOT NULL,
+        metadata_json TEXT,
+        content_hash TEXT NOT NULL,
+        source_hash TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        deleted_at TEXT,
+        UNIQUE(project_hash, observer_actor_id, observed_actor_id, level, content_hash, source_hash)
+      );
+      INSERT INTO perspective_observations (
+        observation_id, project_hash, observer_actor_id, observed_actor_id, session_id,
+        level, content, confidence, source_event_ids_json, source_observation_ids_json,
+        created_by, metadata_json, content_hash, source_hash, created_at, updated_at, deleted_at
+      ) VALUES (
+        '11111111-1111-4111-8111-111111111111', 'project-1', 'assistant:hermes', 'user:default', 'session-a',
+        'explicit', 'Legacy row mentions legacyneedle for FTS migration', 0.4, '["legacy-event"]', '[]',
+        'manual', NULL, 'legacy-content-hash', 'legacy-source-hash', '2026-05-24T00:00:00.000Z', '2026-05-24T00:00:00.000Z', NULL
+      );
+    `);
+    legacyDb.close();
+
+    const store = new SQLiteEventStore(dbPath);
+    await store.initialize();
+    const observations = new PerspectiveObservationRepository(store.getDatabase());
+    const matches = await observations.query({ projectHash: 'project-1', query: 'legacyneedle', limit: 5 });
+    await store.close();
+
+    expect(matches.map((item) => item.observationId)).toEqual(['11111111-1111-4111-8111-111111111111']);
+  });
+
+  it('does not create perspective schemas while initializing a read-only legacy store', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cml-perspective-memory-readonly-'));
+    tempDirs.push(dir);
+    const dbPath = join(dir, 'events.sqlite');
+    const legacyDb = new Database(dbPath);
+    legacyDb.exec(`CREATE TABLE legacy_only (id TEXT PRIMARY KEY);`);
+    legacyDb.close();
+
+    const store = new SQLiteEventStore(dbPath, { readonly: true });
+    await store.initialize();
+    await store.close();
+
+    const inspectDb = new Database(dbPath, { readonly: true });
+    try {
+      const tableNames = sqliteAll<{ name: string }>(
+        inspectDb,
+        `SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name`
+      ).map((row) => row.name);
+      expect(tableNames).toEqual(['legacy_only']);
+    } finally {
+      inspectDb.close();
+    }
+  });
+
+  it('falls back to table-scan query for read-only legacy perspective stores without FTS', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cml-perspective-memory-readonly-fts-'));
+    tempDirs.push(dir);
+    const dbPath = join(dir, 'events.sqlite');
+    const legacyDb = new Database(dbPath);
+    legacyDb.exec(`
+      CREATE TABLE perspective_observations (
+        observation_id TEXT PRIMARY KEY,
+        project_hash TEXT NOT NULL DEFAULT '',
+        observer_actor_id TEXT NOT NULL,
+        observed_actor_id TEXT NOT NULL,
+        session_id TEXT,
+        level TEXT NOT NULL,
+        content TEXT NOT NULL,
+        confidence REAL NOT NULL,
+        source_event_ids_json TEXT NOT NULL DEFAULT '[]',
+        source_observation_ids_json TEXT NOT NULL DEFAULT '[]',
+        created_by TEXT NOT NULL,
+        metadata_json TEXT,
+        content_hash TEXT NOT NULL,
+        source_hash TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        deleted_at TEXT,
+        UNIQUE(project_hash, observer_actor_id, observed_actor_id, level, content_hash, source_hash)
+      );
+      INSERT INTO perspective_observations (
+        observation_id, project_hash, observer_actor_id, observed_actor_id, session_id,
+        level, content, confidence, source_event_ids_json, source_observation_ids_json,
+        created_by, metadata_json, content_hash, source_hash, created_at, updated_at, deleted_at
+      ) VALUES (
+        '22222222-2222-4222-8222-222222222222', 'project-1', 'assistant:hermes', 'user:default', 'session-a',
+        'explicit', 'Read-only legacy row mentions readonlyneedle for fallback search', 0.4, '["readonly-event"]', '[]',
+        'manual', NULL, 'readonly-content-hash', 'readonly-source-hash', '2026-05-24T00:00:00.000Z', '2026-05-24T00:00:00.000Z', NULL
+      );
+    `);
+    legacyDb.close();
+
+    const store = new SQLiteEventStore(dbPath, { readonly: true });
+    await store.initialize();
+    const observations = new PerspectiveObservationRepository(store.getDatabase());
+    const matches = await observations.query({ projectHash: 'project-1', query: 'readonlyneedle', limit: 5 });
+    await store.close();
+
+    const inspectDb = new Database(dbPath, { readonly: true });
+    try {
+      const tableNames = sqliteAll<{ name: string }>(
+        inspectDb,
+        `SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'perspective_observations_fts%' ORDER BY name`
+      ).map((row) => row.name);
+      expect(tableNames).toEqual([]);
+    } finally {
+      inspectDb.close();
+    }
+    expect(matches.map((item) => item.observationId)).toEqual(['22222222-2222-4222-8222-222222222222']);
   });
 });
 
@@ -260,6 +408,45 @@ describe('Perspective memory repositories', () => {
     expect(deleted.deletedAt).toBeDefined();
     expect(afterDelete.map((item) => item.observationId)).toEqual([contradiction.observationId]);
     expect(auditDelete?.actor).toBe('tester');
+  });
+
+  it('uses full-text search to find low-confidence relevant observations beyond the confidence prefetch window', async () => {
+    const { observations, cleanup } = await createFixture();
+    const relevant = await observations.create({
+      projectHash: 'project-1',
+      observerActorId: 'assistant:hermes',
+      observedActorId: 'user:default',
+      level: 'explicit',
+      content: 'Needleword observation should be found by content search even with low confidence',
+      confidence: 0.01,
+      sourceEventIds: ['needle-event'],
+      createdBy: 'manual',
+      actor: 'tester'
+    });
+    for (let i = 0; i < 30; i += 1) {
+      await observations.create({
+        projectHash: 'project-1',
+        observerActorId: 'assistant:hermes',
+        observedActorId: 'user:default',
+        level: 'explicit',
+        content: `High confidence irrelevant observation ${i}`,
+        confidence: 1,
+        sourceEventIds: [`irrelevant-event-${i}`],
+        createdBy: 'manual',
+        actor: 'tester'
+      });
+    }
+
+    const matches = await observations.query({
+      projectHash: 'project-1',
+      observerActorId: 'assistant:hermes',
+      observedActorId: 'user:default',
+      query: 'needleword',
+      limit: 5
+    });
+    await cleanup();
+
+    expect(matches.map((item) => item.observationId)).toEqual([relevant.observationId]);
   });
 
   it('sanitizes persisted perspective observations and matches literal source ids with LIKE wildcard characters', async () => {

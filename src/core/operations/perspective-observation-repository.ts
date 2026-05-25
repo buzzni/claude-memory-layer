@@ -42,6 +42,12 @@ interface PerspectiveObservationRow {
 }
 
 type ParsedObservationCreate = z.output<typeof CreatePerspectiveObservationInputSchema>;
+type ParsedObservationQuery = z.output<typeof QueryPerspectiveObservationsInputSchema>;
+
+type ObservationFilter = {
+  clauses: string[];
+  params: unknown[];
+};
 
 function projectHashToStorage(projectHash: string | undefined): string {
   return projectHash ?? '';
@@ -146,6 +152,56 @@ function queryScore(observation: PerspectiveObservation, terms: string[]): numbe
   return terms.reduce((score, term) => score + (haystack.includes(term) ? 1 : 0), 0);
 }
 
+function columnName(name: string, alias?: string): string {
+  return alias ? `${alias}.${name}` : name;
+}
+
+function buildObservationFilter(parsed: ParsedObservationQuery, alias?: string): ObservationFilter {
+  const clauses = [`${columnName('project_hash', alias)} = ?`];
+  const params: unknown[] = [projectHashToStorage(parsed.projectHash)];
+
+  if (parsed.observerActorId) {
+    clauses.push(`${columnName('observer_actor_id', alias)} = ?`);
+    params.push(parsed.observerActorId);
+  }
+  if (parsed.observedActorId) {
+    clauses.push(`${columnName('observed_actor_id', alias)} = ?`);
+    params.push(parsed.observedActorId);
+  }
+  if (parsed.sessionId) {
+    clauses.push(`(${columnName('session_id', alias)} = ? OR ${columnName('session_id', alias)} IS NULL)`);
+    params.push(parsed.sessionId);
+  }
+  if (parsed.levels && parsed.levels.length > 0) {
+    clauses.push(`${columnName('level', alias)} IN (${parsed.levels.map(() => '?').join(', ')})`);
+    params.push(...parsed.levels);
+  }
+  if (!parsed.includeDeleted) {
+    clauses.push(`${columnName('deleted_at', alias)} IS NULL`);
+  }
+
+  return { clauses, params };
+}
+
+function buildObservationFtsQuery(query: string): string {
+  return query
+    .replace(/['"(){}[\]^~*?:\\/-]/g, ' ')
+    .split(/\s+/)
+    .map((term) => term.trim())
+    .filter((term) => term.length > 0)
+    .slice(0, 32)
+    .map((term) => `"${term.replace(/"/g, '""')}"*`)
+    .join(' OR ');
+}
+
+function isFtsUnavailableError(error: unknown): boolean {
+  const message = String(error instanceof Error ? error.message : error).toLowerCase();
+  return message.includes('no such table: perspective_observations_fts')
+    || message.includes('no such column: perspective_observations_fts')
+    || message.includes('unable to use function match')
+    || message.includes('malformed match expression');
+}
+
 export class PerspectiveObservationRepository {
   constructor(private readonly db: SQLiteDatabase) {}
 
@@ -215,38 +271,48 @@ export class PerspectiveObservationRepository {
 
   async query(input: unknown): Promise<PerspectiveObservation[]> {
     const parsed = QueryPerspectiveObservationsInputSchema.parse(input);
-    const clauses = ['project_hash = ?'];
-    const params: unknown[] = [projectHashToStorage(parsed.projectHash)];
-
-    if (parsed.observerActorId) {
-      clauses.push('observer_actor_id = ?');
-      params.push(parsed.observerActorId);
-    }
-    if (parsed.observedActorId) {
-      clauses.push('observed_actor_id = ?');
-      params.push(parsed.observedActorId);
-    }
-    if (parsed.sessionId) {
-      clauses.push('(session_id = ? OR session_id IS NULL)');
-      params.push(parsed.sessionId);
-    }
-    if (parsed.levels && parsed.levels.length > 0) {
-      clauses.push(`level IN (${parsed.levels.map(() => '?').join(', ')})`);
-      params.push(...parsed.levels);
-    }
-    if (!parsed.includeDeleted) {
-      clauses.push('deleted_at IS NULL');
+    if (parsed.query) {
+      const ftsQuery = buildObservationFtsQuery(parsed.query);
+      if (ftsQuery) {
+        const ftsResult = this.queryWithFts(parsed, ftsQuery);
+        if (ftsResult) return ftsResult;
+      }
     }
 
+    return this.queryWithPrefetch(parsed);
+  }
+
+  private queryWithFts(parsed: ParsedObservationQuery, ftsQuery: string): PerspectiveObservation[] | null {
+    const filter = buildObservationFilter(parsed, 'po');
+    try {
+      const rows = sqliteAll<PerspectiveObservationRow>(
+        this.db,
+        `SELECT po.*
+         FROM perspective_observations_fts fts
+         JOIN perspective_observations po ON po.rowid = fts.rowid
+         WHERE perspective_observations_fts MATCH ?
+           AND ${filter.clauses.join(' AND ')}
+         ORDER BY fts.rank, po.confidence DESC, po.updated_at DESC
+         LIMIT ?`,
+        [ftsQuery, ...filter.params, parsed.limit]
+      );
+      return rows.map(rowToObservation);
+    } catch (error) {
+      if (isFtsUnavailableError(error)) return null;
+      throw error;
+    }
+  }
+
+  private queryWithPrefetch(parsed: ParsedObservationQuery): PerspectiveObservation[] {
+    const filter = buildObservationFilter(parsed);
     const rowLimit = parsed.query ? Math.min(parsed.limit * 5, 500) : parsed.limit;
-    params.push(rowLimit);
     const rows = sqliteAll<PerspectiveObservationRow>(
       this.db,
       `SELECT * FROM perspective_observations
-       WHERE ${clauses.join(' AND ')}
+       WHERE ${filter.clauses.join(' AND ')}
        ORDER BY confidence DESC, updated_at DESC
        LIMIT ?`,
-      params
+      [...filter.params, rowLimit]
     );
     const observations = rows.map(rowToObservation);
     const terms = parsed.query

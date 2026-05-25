@@ -132,12 +132,14 @@ Indexes:
 - [x] `idx_actor_cards_perspective`
 - [x] `idx_perspective_observations_perspective_level`
 - [x] `idx_perspective_observations_session`
-- [ ] optional FTS table for observation content, or integrate with existing vector outbox later
+- [x] optional FTS table for observation content, or integrate with existing vector outbox later
+  - Implemented external-content `perspective_observations_fts` with insert/update/delete triggers, writable legacy backfill, and repository query fallback for older stores without the FTS projection.
 
 Acceptance:
 
 - [x] Existing DB initializes without migration failure.
-- [ ] Read-only stores skip schema writes as today.
+- [x] Read-only stores skip schema writes as today.
+  - Covered by read-only legacy-store initialization tests that assert Perspective Memory tables/FTS projections are not created.
 - [x] `git diff --check` passes.
 
 ### 1.3 Repository layer
