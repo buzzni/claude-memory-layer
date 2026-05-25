@@ -1,5 +1,7 @@
 import type {
   MemoryEvent,
+  OutboxStats,
+  OutboxStatsOptions,
   OutboxRecoveryOptions,
   OutboxRecoveryResult,
   ProjectScopeRepairOptions,
@@ -21,10 +23,7 @@ export interface MemorySessionTurn {
   hasResponse: boolean;
 }
 
-export interface MemoryOutboxStats {
-  embedding: { pending: number; processing: number; failed: number; total: number };
-  vector: { pending: number; processing: number; failed: number; total: number };
-}
+export type MemoryOutboxStats = OutboxStats;
 
 export interface MemoryStats {
   totalEvents: number;
@@ -40,7 +39,7 @@ interface QueryStore {
 
 interface QueryMaintenanceStore extends QueryStore {
   rebuildFtsIndex(): Promise<number>;
-  getOutboxStats(): Promise<MemoryOutboxStats>;
+  getOutboxStats(options?: OutboxStatsOptions): Promise<MemoryOutboxStats>;
   recoverStuckOutboxItems(options?: OutboxRecoveryOptions): Promise<OutboxRecoveryResult>;
   repairLegacyProjectScope(options?: ProjectScopeRepairOptions): Promise<ProjectScopeRepairResult>;
   getEventsByLevel(level: string, options?: { limit?: number; offset?: number }): Promise<MemoryEvent[]>;
@@ -106,9 +105,9 @@ export class MemoryQueryService {
     return this.getMaintenanceStore('rebuildFtsIndex').rebuildFtsIndex();
   }
 
-  async getOutboxStats(): Promise<MemoryOutboxStats> {
+  async getOutboxStats(options?: OutboxStatsOptions): Promise<MemoryOutboxStats> {
     await this.initialize();
-    return this.getMaintenanceStore('getOutboxStats').getOutboxStats();
+    return this.getMaintenanceStore('getOutboxStats').getOutboxStats(options);
   }
 
   async recoverStuckOutboxItems(options?: OutboxRecoveryOptions): Promise<OutboxRecoveryResult> {

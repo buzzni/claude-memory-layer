@@ -30,8 +30,8 @@ function createService() {
     hasResponse: false
   };
   const outboxStats = {
-    embedding: { pending: 1, processing: 2, failed: 3, total: 6 },
-    vector: { pending: 4, processing: 5, failed: 6, total: 15 }
+    embedding: { pending: 1, processing: 2, failed: 3, total: 6, stuckProcessing: 1, oldestProcessingAgeMs: 600000 },
+    vector: { pending: 4, processing: 5, failed: 6, total: 15, stuckProcessing: 2, oldestProcessingAgeMs: 1200000 }
   };
   const outboxRecovery = {
     embedding: { recoveredProcessing: 1, retriedFailed: 0 },

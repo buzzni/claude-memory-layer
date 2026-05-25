@@ -10,6 +10,8 @@ import {
   Session,
   AppendResult,
   OutboxItem,
+  OutboxStats,
+  OutboxStatsOptions,
   OutboxRecoveryOptions,
   OutboxRecoveryResult,
   ProjectScopeRepairOptions,
@@ -1686,11 +1688,14 @@ export class SQLiteEventStore {
   /**
    * Get embedding/vector outbox health statistics
    */
-  async getOutboxStats(): Promise<{
-    embedding: { pending: number; processing: number; failed: number; total: number };
-    vector: { pending: number; processing: number; failed: number; total: number };
-  }> {
+  async getOutboxStats(options: OutboxStatsOptions = {}): Promise<OutboxStats> {
     await this.initialize();
+
+    const thresholdMs = Number.isFinite(options.stuckThresholdMs) && (options.stuckThresholdMs ?? 0) >= 0
+      ? options.stuckThresholdMs!
+      : DEFAULT_OUTBOX_STUCK_THRESHOLD_MS;
+    const now = options.now ?? new Date();
+    const threshold = new Date(now.getTime() - thresholdMs).toISOString();
 
     const embeddingRows = sqliteAll<{ status: string; count: number }>(
       this.db,
@@ -1701,21 +1706,71 @@ export class SQLiteEventStore {
       `SELECT status, COUNT(*) as count FROM vector_outbox GROUP BY status`
     );
 
-    const fromRows = (rows: Array<{ status: string; count: number }>) => {
-      const out = { pending: 0, processing: 0, failed: 0, total: 0 };
+    const processingAgeMs = (value: unknown): number | null => {
+      if (value === null || value === undefined) return null;
+      const date = toDateFromSQLite(value);
+      const time = date.getTime();
+      if (!Number.isFinite(time)) return null;
+      return Math.max(0, now.getTime() - time);
+    };
+
+    const fromRows = (
+      rows: Array<{ status: string; count: number }>,
+      stuckProcessing: number,
+      oldestProcessingAgeMs: number | null
+    ) => {
+      const out = { pending: 0, processing: 0, failed: 0, total: 0, stuckProcessing, oldestProcessingAgeMs };
       for (const row of rows) {
         const key = row.status as 'pending' | 'processing' | 'failed' | 'done';
         if (key === 'pending' || key === 'processing' || key === 'failed') {
-          out[key] += row.count;
+          out[key] += Number(row.count ?? 0);
         }
-        out.total += row.count;
+        out.total += Number(row.count ?? 0);
       }
       return out;
     };
 
+    const embeddingStuck = sqliteGet<{ count: number }>(
+      this.db,
+      `SELECT COUNT(*) as count
+       FROM embedding_outbox
+       WHERE status = 'processing'
+         AND datetime(COALESCE(processed_at, created_at)) < datetime(?)`,
+      [threshold]
+    );
+    const embeddingOldest = sqliteGet<{ oldest: string | null }>(
+      this.db,
+      `SELECT MIN(datetime(COALESCE(processed_at, created_at))) as oldest
+       FROM embedding_outbox
+       WHERE status = 'processing'`
+    );
+
+    const vectorStuck = sqliteGet<{ count: number }>(
+      this.db,
+      `SELECT COUNT(*) as count
+       FROM vector_outbox
+       WHERE status = 'processing'
+         AND datetime(updated_at) < datetime(?)`,
+      [threshold]
+    );
+    const vectorOldest = sqliteGet<{ oldest: string | null }>(
+      this.db,
+      `SELECT MIN(datetime(updated_at)) as oldest
+       FROM vector_outbox
+       WHERE status = 'processing'`
+    );
+
     return {
-      embedding: fromRows(embeddingRows),
-      vector: fromRows(vectorRows)
+      embedding: fromRows(
+        embeddingRows,
+        Number(embeddingStuck?.count ?? 0),
+        processingAgeMs(embeddingOldest?.oldest)
+      ),
+      vector: fromRows(
+        vectorRows,
+        Number(vectorStuck?.count ?? 0),
+        processingAgeMs(vectorOldest?.oldest)
+      )
     };
   }
 

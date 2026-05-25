@@ -54,6 +54,7 @@ import type {
   EventType,
   MemoryActor,
   MemoryEvent,
+  OutboxStats,
   PerspectiveObservation,
   PerspectiveObservationLevel
 } from '../../core/types.js';
@@ -2036,16 +2037,26 @@ function textResult(text: string): ToolResult {
   return { content: [{ type: 'text', text }] };
 }
 
-interface McpOutboxStats {
-  embedding: { pending: number; processing: number; failed: number; total: number };
-  vector: { pending: number; processing: number; failed: number; total: number };
-}
+type McpOutboxStats = OutboxStats;
 
 interface McpStatsStorageView {
   storageView: string;
   storagePathLabel: string;
   embedderModel: string;
   vectorTableDimension: string;
+}
+
+function formatMcpProcessingAge(ageMs: number | null): string {
+  if (ageMs === null || !Number.isFinite(ageMs)) return 'none';
+  const minutes = Math.round(ageMs / 60000);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) return `${hours}h`;
+  return `${Math.round(hours / 24)}d`;
+}
+
+function formatMcpOutboxQueueStats(stats: McpOutboxStats['embedding']): string {
+  return `pending=${stats.pending}, processing=${stats.processing}, failed=${stats.failed}, stuck=${stats.stuckProcessing}, oldestProcessingAge=${formatMcpProcessingAge(stats.oldestProcessingAgeMs)}, total=${stats.total}`;
 }
 
 async function handleMemStats(memoryService: MemoryService, args: Record<string, unknown>): Promise<ToolResult> {
@@ -2070,9 +2081,9 @@ async function handleMemStats(memoryService: MemoryService, args: Record<string,
     `- Embedder Model: ${storageView.embedderModel}`,
     `- Vector Table Dimension: ${storageView.vectorTableDimension}`,
     `- Pending Embeddings: ${outboxStats.embedding.pending}`,
-    `- Embedding Outbox: pending=${outboxStats.embedding.pending}, processing=${outboxStats.embedding.processing}, failed=${outboxStats.embedding.failed}, total=${outboxStats.embedding.total}`,
+    `- Embedding Outbox: ${formatMcpOutboxQueueStats(outboxStats.embedding)}`,
     `- Vector Outbox Pending: ${outboxStats.vector.pending}`,
-    `- Vector Outbox: pending=${outboxStats.vector.pending}, processing=${outboxStats.vector.processing}, failed=${outboxStats.vector.failed}, total=${outboxStats.vector.total}`,
+    `- Vector Outbox: ${formatMcpOutboxQueueStats(outboxStats.vector)}`,
     '- MCP/CLI parity: CLI `stats -p <project>` and MCP `mem-stats(projectPath=...)` should use this same storage view label.',
     '- Restart guidance: if CLI and MCP counts differ for this storage view after import/build, restart the long-lived MCP/Hermes gateway process.',
     '',
@@ -2099,8 +2110,8 @@ async function readMcpOutboxStats(memoryService: MemoryService): Promise<McpOutb
     return await memoryService.getOutboxStats();
   } catch {
     return {
-      embedding: { pending: 0, processing: 0, failed: 0, total: 0 },
-      vector: { pending: 0, processing: 0, failed: 0, total: 0 }
+      embedding: { pending: 0, processing: 0, failed: 0, total: 0, stuckProcessing: 0, oldestProcessingAgeMs: null },
+      vector: { pending: 0, processing: 0, failed: 0, total: 0, stuckProcessing: 0, oldestProcessingAgeMs: null }
     };
   }
 }

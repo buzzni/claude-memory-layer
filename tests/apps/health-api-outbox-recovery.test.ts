@@ -42,8 +42,8 @@ describe('health API outbox recovery', () => {
       levelStats: []
     });
     mocks.service.getOutboxStats.mockReset().mockResolvedValue({
-      embedding: { pending: 1, processing: 0, failed: 0, total: 1 },
-      vector: { pending: 0, processing: 0, failed: 0, total: 0 }
+      embedding: { pending: 1, processing: 0, failed: 0, total: 1, stuckProcessing: 0, oldestProcessingAgeMs: null },
+      vector: { pending: 0, processing: 0, failed: 0, total: 0, stuckProcessing: 0, oldestProcessingAgeMs: null }
     });
     mocks.service.recoverStuckOutboxItems.mockReset().mockResolvedValue({
       embedding: { recoveredProcessing: 34, retriedFailed: 0 },
@@ -63,11 +63,33 @@ describe('health API outbox recovery', () => {
     const json = await res.json();
     expect(json.status).toBe('ok');
     expect(json.storage).toEqual({ totalEvents: 51, vectorCount: 0 });
-    expect(json.outbox.totals).toEqual({ pending: 1, failed: 0 });
+    expect(json.outbox.totals).toEqual({ pending: 1, processing: 0, failed: 0, stuckProcessing: 0, oldestProcessingAgeMs: null });
     expect(mocks.getLightweightServiceFromQuery).toHaveBeenCalledTimes(1);
     expect(mocks.getServiceFromQuery).not.toHaveBeenCalled();
     expect(mocks.getWritableServiceFromQuery).not.toHaveBeenCalled();
     expect(mocks.service.shutdown).toHaveBeenCalledTimes(1);
+  });
+
+  it('marks health as needs-attention and returns aggregate stuck-processing totals', async () => {
+    mocks.service.getOutboxStats.mockResolvedValueOnce({
+      embedding: { pending: 2, processing: 3, failed: 0, total: 5, stuckProcessing: 1, oldestProcessingAgeMs: 600000 },
+      vector: { pending: 1, processing: 2, failed: 0, total: 4, stuckProcessing: 2, oldestProcessingAgeMs: 1200000 }
+    });
+
+    const res = await createApp().request('/api/health?project=abc12345');
+
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.status).toBe('needs-attention');
+    expect(json.outbox.embedding).toMatchObject({ processing: 3, stuckProcessing: 1, oldestProcessingAgeMs: 600000 });
+    expect(json.outbox.vector).toMatchObject({ processing: 2, stuckProcessing: 2, oldestProcessingAgeMs: 1200000 });
+    expect(json.outbox.totals).toEqual({
+      pending: 3,
+      processing: 5,
+      failed: 0,
+      stuckProcessing: 3,
+      oldestProcessingAgeMs: 1200000
+    });
   });
 
   it('recovers stuck outbox items through an authenticated dashboard-safe API seam', async () => {

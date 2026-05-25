@@ -20,6 +20,8 @@ import type {
   ContinuityScore,
   SharedStoreConfig,
   Entry,
+  OutboxStats,
+  OutboxStatsOptions,
   OutboxRecoveryOptions,
   OutboxRecoveryResult,
   ProjectScopeRepairOptions,
@@ -306,11 +308,8 @@ export class MemoryService {
    * Get memory statistics
    */
 
-  async getOutboxStats(): Promise<{
-    embedding: { pending: number; processing: number; failed: number; total: number };
-    vector: { pending: number; processing: number; failed: number; total: number };
-  }> {
-    return this.queryService.getOutboxStats();
+  async getOutboxStats(options?: OutboxStatsOptions): Promise<OutboxStats> {
+    return this.queryService.getOutboxStats(options);
   }
 
   async recoverStuckOutboxItems(options?: OutboxRecoveryOptions): Promise<OutboxRecoveryResult> {

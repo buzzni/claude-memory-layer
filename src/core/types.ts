@@ -720,6 +720,28 @@ export interface OutboxItem {
   errorMessage?: string;
 }
 
+export interface OutboxStatsOptions {
+  /** Processing rows older than this threshold are considered abandoned/stuck. */
+  stuckThresholdMs?: number;
+  /** Test hook for deterministic age calculations. */
+  now?: Date;
+}
+
+export interface OutboxQueueStats {
+  pending: number;
+  processing: number;
+  failed: number;
+  total: number;
+  stuckProcessing: number;
+  /** Age in milliseconds for the oldest processing row, or null when none are processing. */
+  oldestProcessingAgeMs: number | null;
+}
+
+export interface OutboxStats {
+  embedding: OutboxQueueStats;
+  vector: OutboxQueueStats;
+}
+
 export interface OutboxRecoveryOptions {
   /** Processing rows older than this threshold are considered abandoned. */
   stuckThresholdMs?: number;

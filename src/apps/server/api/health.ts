@@ -20,9 +20,15 @@ healthRouter.get('/', async (c) => {
     ]);
 
     const outboxPending = outbox.embedding.pending + outbox.vector.pending;
+    const outboxProcessing = outbox.embedding.processing + outbox.vector.processing;
     const outboxFailed = outbox.embedding.failed + outbox.vector.failed;
+    const outboxStuckProcessing = outbox.embedding.stuckProcessing + outbox.vector.stuckProcessing;
+    const oldestProcessingAgeMs = Math.max(
+      outbox.embedding.oldestProcessingAgeMs ?? 0,
+      outbox.vector.oldestProcessingAgeMs ?? 0
+    ) || null;
 
-    const status = outboxFailed > 0 ? 'needs-attention' : 'ok';
+    const status = outboxFailed > 0 || outboxStuckProcessing > 0 ? 'needs-attention' : 'ok';
 
     return c.json({
       status,
@@ -36,7 +42,10 @@ healthRouter.get('/', async (c) => {
         vector: outbox.vector,
         totals: {
           pending: outboxPending,
-          failed: outboxFailed
+          processing: outboxProcessing,
+          failed: outboxFailed,
+          stuckProcessing: outboxStuckProcessing,
+          oldestProcessingAgeMs
         }
       },
       levelStats: stats.levelStats
