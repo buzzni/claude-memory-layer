@@ -1,7 +1,7 @@
 {
   "name": "claude-memory-layer",
-  "version": "1.0.42",
-  "description": "Claude Code plugin that learns from conversations to provide personalized assistance",
+  "version": "1.0.43",
+  "description": "Project-scoped memory layer for Claude Code, Codex, Hermes, MCP, and dashboards",
   "main": "dist/index.js",
   "bin": {
     "claude-memory-layer": "dist/cli/index.js",
@@ -43,7 +43,16 @@
     "memory",
     "learning",
     "personalization",
-    "context"
+    "context",
+    "mcp",
+    "codex",
+    "hermes",
+    "dashboard",
+    "sqlite",
+    "lancedb",
+    "vector-search",
+    "agent-memory",
+    "perspective-memory"
   ],
   "author": "Buzzni",
   "license": "MIT",
