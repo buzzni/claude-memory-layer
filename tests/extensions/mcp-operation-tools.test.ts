@@ -10,7 +10,7 @@ const mocks = vi.hoisted(() => {
     close: ReturnType<typeof vi.fn>;
   }> = [];
 
-  const SQLiteEventStore = vi.fn((dbPath: string, options: Record<string, unknown>) => {
+  const SQLiteEventStore = vi.fn(function SQLiteEventStoreMock(dbPath: string, options: Record<string, unknown>) {
     const instance = {
       dbPath,
       options,
@@ -71,13 +71,13 @@ const mocks = vi.hoisted(() => {
     lessonRepository,
     graphPathService,
     queryEntityExtractor,
-    FacetRepository: vi.fn(() => facetRepository),
-    ActionRepository: vi.fn(() => actionRepository),
-    FrontierService: vi.fn(() => frontierService),
-    CheckpointRepository: vi.fn(() => checkpointRepository),
-    LessonRepository: vi.fn(() => lessonRepository),
-    GraphPathService: vi.fn(() => graphPathService),
-    QueryEntityExtractor: vi.fn(() => queryEntityExtractor),
+    FacetRepository: vi.fn(function FacetRepositoryMock() { return facetRepository; }),
+    ActionRepository: vi.fn(function ActionRepositoryMock() { return actionRepository; }),
+    FrontierService: vi.fn(function FrontierServiceMock() { return frontierService; }),
+    CheckpointRepository: vi.fn(function CheckpointRepositoryMock() { return checkpointRepository; }),
+    LessonRepository: vi.fn(function LessonRepositoryMock() { return lessonRepository; }),
+    GraphPathService: vi.fn(function GraphPathServiceMock() { return graphPathService; }),
+    QueryEntityExtractor: vi.fn(function QueryEntityExtractorMock() { return queryEntityExtractor; }),
     runRetentionAudit: vi.fn()
   };
 });
@@ -126,7 +126,8 @@ function requiredFor(name: string): string[] {
 }
 
 function textOf(result: Awaited<ReturnType<typeof handleToolCall>>): string {
-  return String(result.content[0]?.text ?? '');
+  const first = result.content[0];
+  return first?.type === 'text' ? String(first.text ?? '') : '';
 }
 
 function jsonOf(result: Awaited<ReturnType<typeof handleToolCall>>): Record<string, unknown> {

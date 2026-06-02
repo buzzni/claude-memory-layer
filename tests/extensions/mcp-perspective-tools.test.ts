@@ -12,7 +12,7 @@ const mocks = vi.hoisted(() => {
     close: ReturnType<typeof vi.fn>;
   }> = [];
 
-  const SQLiteEventStore = vi.fn((dbPath: string, options: Record<string, unknown>) => {
+  const SQLiteEventStore = vi.fn(function SQLiteEventStoreMock(dbPath: string, options: Record<string, unknown>) {
     const instance = {
       dbPath,
       options,
@@ -58,16 +58,16 @@ const mocks = vi.hoisted(() => {
     actorRepository,
     actorCardRepository,
     perspectiveObservationRepository,
-    ActorRepository: vi.fn(() => actorRepository),
-    ActorCardRepository: vi.fn(() => actorCardRepository),
-    PerspectiveObservationRepository: vi.fn(() => perspectiveObservationRepository),
-    FacetRepository: vi.fn(() => noopRepository),
-    ActionRepository: vi.fn(() => noopRepository),
-    FrontierService: vi.fn(() => noopRepository),
-    CheckpointRepository: vi.fn(() => noopRepository),
-    LessonRepository: vi.fn(() => noopRepository),
-    GraphPathService: vi.fn(() => noopRepository),
-    QueryEntityExtractor: vi.fn(() => noopRepository),
+    ActorRepository: vi.fn(function ActorRepositoryMock() { return actorRepository; }),
+    ActorCardRepository: vi.fn(function ActorCardRepositoryMock() { return actorCardRepository; }),
+    PerspectiveObservationRepository: vi.fn(function PerspectiveObservationRepositoryMock() { return perspectiveObservationRepository; }),
+    FacetRepository: vi.fn(function FacetRepositoryMock() { return noopRepository; }),
+    ActionRepository: vi.fn(function ActionRepositoryMock() { return noopRepository; }),
+    FrontierService: vi.fn(function FrontierServiceMock() { return noopRepository; }),
+    CheckpointRepository: vi.fn(function CheckpointRepositoryMock() { return noopRepository; }),
+    LessonRepository: vi.fn(function LessonRepositoryMock() { return noopRepository; }),
+    GraphPathService: vi.fn(function GraphPathServiceMock() { return noopRepository; }),
+    QueryEntityExtractor: vi.fn(function QueryEntityExtractorMock() { return noopRepository; }),
     runRetentionAudit: vi.fn()
   };
 });
@@ -119,7 +119,8 @@ function event(overrides: Partial<MemoryEvent>): MemoryEvent {
 }
 
 function textOf(result: Awaited<ReturnType<typeof handleToolCall>>): string {
-  return String(result.content[0]?.text ?? '');
+  const first = result.content[0];
+  return first?.type === 'text' ? String(first.text ?? '') : '';
 }
 
 function jsonOf(result: Awaited<ReturnType<typeof handleToolCall>>): Record<string, unknown> {
