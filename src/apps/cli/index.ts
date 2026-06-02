@@ -107,6 +107,10 @@ import {
   formatVectorStatusReport,
   resolveVectorStatusCommandOptions
 } from './vector-command.js';
+import {
+  createMongoSyncPostProcessor,
+  resolveMongoSyncProcessOptions
+} from './mongo-sync-command.js';
 import { WorkerLock } from '../../core/worker-lock.js';
 
 // ============================================================
@@ -1510,6 +1514,9 @@ program
   .option('--batch-size <n>', 'Batch size', '500')
   .option('--interval <ms>', 'Watch interval ms', '30000')
   .option('--watch', 'Run continuously')
+  .option('--process-after-sync', 'Process pending embeddings after pull activity')
+  .option('--process-interval <ms>', 'Minimum ms between process runs when --process-after-sync is enabled', '120000')
+  .option('--process-lock-path <path>', 'Override process-after-sync lock path (advanced)')
   .action(async (options) => {
     const projectPath = options.project || process.cwd();
     const mongoUri = options.mongoUri || process.env.CLAUDE_MEMORY_MONGO_URI;
@@ -1528,15 +1535,33 @@ program
       process.exit(1);
     }
 
+    const batchSizeParsed = parseInt(options.batchSize, 10);
+    const intervalParsed = parseInt(options.interval, 10);
+    const batchSize = (Number.isFinite(batchSizeParsed) && batchSizeParsed > 0) ? batchSizeParsed : 500;
+    const intervalMs = (Number.isFinite(intervalParsed) && intervalParsed > 0) ? intervalParsed : 30000;
+    const processOptions = (() => {
+      try {
+        return resolveMongoSyncProcessOptions({
+          project: projectPath,
+          processAfterSync: options.processAfterSync,
+          processInterval: options.processInterval,
+          processLockPath: options.processLockPath
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(`[mongo-sync] Failed: ${message}`);
+        process.exit(1);
+      }
+    })();
+
     const storagePath = getProjectStoragePath(projectPath);
     if (!fs.existsSync(storagePath)) {
       fs.mkdirSync(storagePath, { recursive: true });
     }
 
-    const batchSizeParsed = parseInt(options.batchSize, 10);
-    const intervalParsed = parseInt(options.interval, 10);
-    const batchSize = (Number.isFinite(batchSizeParsed) && batchSizeParsed > 0) ? batchSizeParsed : 500;
-    const intervalMs = (Number.isFinite(intervalParsed) && intervalParsed > 0) ? intervalParsed : 30000;
+    const postProcessor = createMongoSyncPostProcessor(processOptions, {
+      log: (message) => process.stdout.write(`${message}\n`)
+    });
 
     const sqliteStore = new SQLiteEventStore(path.join(storagePath, 'events.sqlite'));
     const worker = new MongoSyncWorker(sqliteStore, {
@@ -1552,6 +1577,7 @@ program
       const { pushed, pulled } = await worker.syncNow();
       const ts = new Date().toISOString();
       process.stdout.write(`[mongo-sync] ${ts} project=${projectKey} pushed=${pushed} pulled=${pulled}\n`);
+      await postProcessor.afterSync({ pushed, pulled });
     };
 
     try {

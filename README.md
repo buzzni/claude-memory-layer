@@ -489,7 +489,7 @@ claude-memory-layer dashboard --bind localhost --port 37777 --password "<local-p
 claude-memory-layer market-context --company 삼성전자 --dart-corp-code 00126380 --symbol 005930.KS --json
 ```
 
-MongoDB 동기화는 선택 기능입니다. 여러 서버에서 같은 프로젝트를 개발할 때, 각 서버의 로컬 SQLite 이벤트를 하나의 MongoDB로 모아 push/pull할 수 있습니다.
+MongoDB 동기화는 선택 기능입니다. 여러 서버에서 같은 프로젝트를 개발할 때, 각 서버의 로컬 SQLite 이벤트를 하나의 MongoDB로 모아 push/pull할 수 있습니다. Pull된 이벤트를 바로 semantic search/context-pack에서 쓰고 싶다면 `--process-after-sync`를 함께 켜서 새 이벤트가 내려온 뒤 pending embedding/vector outbox를 처리하세요.
 
 ```bash
 export CLAUDE_MEMORY_MONGO_URI="mongodb://USER:***@HOST:PORT/"
@@ -497,7 +497,10 @@ export CLAUDE_MEMORY_MONGO_DB="claude_memory_layer"
 export CLAUDE_MEMORY_MONGO_PROJECT="my-project"
 claude-memory-layer mongo-sync
 claude-memory-layer mongo-sync --watch --interval 30000
+claude-memory-layer mongo-sync --watch --interval 30000 --process-after-sync --process-interval 120000
 ```
+
+`--process-after-sync`는 pull된 이벤트가 있을 때만 실행되며, `--process-interval` 동안 debounce되어 매 sync tick마다 불필요하게 임베딩을 재처리하지 않습니다. 내부적으로 project-scoped `vector-worker.lock`을 사용하므로 별도 `process` worker가 이미 실행 중이면 skip합니다.
 
 ### memU-inspired Retrieval 사용 예시
 
