@@ -161,6 +161,19 @@ export const tools: Tool[] = [
           description: 'Optional: filter relevant memories by specific session ID'
         },
         projectPath: projectPathProperty,
+        compression: {
+          type: 'string',
+          enum: ['off', 'safe', 'aggressive'],
+          description: 'Optional context-pack compression mode. safe preserves source refs and high-signal errors/log lines; aggressive is more compact.'
+        },
+        maxChars: {
+          type: 'number',
+          description: 'Maximum final context-pack characters after safe compression (default: no hard cap, max: 50000)'
+        },
+        maxTokens: {
+          type: 'number',
+          description: 'Maximum final context-pack tokens, estimated at ~4 chars/token, after safe compression (default: no hard cap)'
+        },
         refreshLatest: {
           type: 'boolean',
           description: 'Import latest local session history before retrieval. Generic continuation queries auto-refresh when absolute projectPath is supplied and no sessionId filter is set; set false to opt out. Auto-refresh and explicit true both mutate project memory; explicit true also requires absolute projectPath.'

@@ -137,6 +137,18 @@ describe('MCP project context tools', () => {
       type: 'boolean',
       description: expect.stringContaining('auto-refresh')
     });
+    expect(contextPackProperties.compression).toMatchObject({
+      type: 'string',
+      enum: ['off', 'safe', 'aggressive']
+    });
+    expect(contextPackProperties.maxChars).toMatchObject({
+      type: 'number',
+      description: expect.stringContaining('Maximum final context-pack characters')
+    });
+    expect(contextPackProperties.maxTokens).toMatchObject({
+      type: 'number',
+      description: expect.stringContaining('Maximum final context-pack tokens')
+    });
     const marketContextProperties = byName.get('external-market-context')?.inputSchema.properties as Record<string, unknown>;
     expect(marketContextProperties.projectPath).toMatchObject({ type: 'string' });
     expect(marketContextProperties.includeSnapshot).toMatchObject({ type: 'boolean' });
@@ -536,6 +548,68 @@ describe('MCP project context tools', () => {
     expect(text).toContain('Hermes adapter verification');
     expect(text).toContain(`[mem:${generateCitationId(relevant.id)}]`);
     expect(text.length).toBeLessThan(5000);
+  });
+
+  it('compresses noisy context-pack previews within a hard character budget while preserving source refs', async () => {
+    const noisyPrefix = Array.from({ length: 60 }, (_, index) => `NOISE heartbeat line ${index}: cache warm`).join('\n');
+    const noisyMemory = event({
+      id: '44444444-4444-4444-8444-444444444444',
+      sessionId: 'session-noisy',
+      eventType: 'agent_response',
+      timestamp: new Date('2026-05-05T04:00:00.000Z'),
+      content: [
+        noisyPrefix,
+        'ERROR payment sync failed after retry budget exhausted',
+        'Traceback: root cause frame in src/payments/sync.ts:42',
+        'Resolved by compacting tool-output previews before LLM injection.',
+        '<private>',
+        'ERROR private sentinel should never appear in compressed previews',
+        '</private>',
+        '/private/example/path should be redacted before final output',
+        'api_key=fixture should be redacted before final output'
+      ].join('\n'),
+      metadata: { source: 'hermes', projectPath: '/repo/app' }
+    });
+    const recent = event({
+      id: '55555555-5555-4555-8555-555555555555',
+      sessionId: 'session-recent-noisy',
+      eventType: 'agent_response',
+      timestamp: new Date('2026-05-05T04:10:00.000Z'),
+      content: [
+        Array.from({ length: 40 }, (_, index) => `build log ${index}: ok`).join('\n'),
+        'FAIL final smoke detected missing source-ref hint',
+        'Follow-up lookup should remain available after budget trimming.'
+      ].join('\n'),
+      metadata: { source: 'codex', projectPath: '/repo/app' }
+    });
+
+    mocks.projectService.retrieveMemories.mockResolvedValue({ memories: [{ event: noisyMemory, score: 0.97 }] });
+    mocks.projectService.getRecentEvents.mockResolvedValue([recent, noisyMemory]);
+
+    const result = await handleToolCall('mem-context-pack', {
+      projectPath: '/repo/app',
+      query: 'compress noisy payment sync output',
+      topK: 1,
+      recentLimit: 2,
+      sessionLimit: 2,
+      compression: 'safe',
+      maxChars: 1400
+    });
+
+    const text = textOf(result);
+    expect(result.isError).not.toBe(true);
+    expect(text.length).toBeLessThanOrEqual(1400);
+    expect(text).toContain('- Compression: safe');
+    expect(text).toContain('### Compression Notice');
+    expect(text).toContain('ERROR payment sync failed');
+    expect(text).toContain('Traceback: root cause frame');
+    expect(text).toContain('FAIL final smoke detected');
+    expect(text).toContain(`[mem:${generateCitationId(noisyMemory.id)}]`);
+    expect(text).toContain('Source refs: mem-source-ref');
+    expect(text).not.toContain('NOISE heartbeat line 59');
+    expect(text).not.toContain('ERROR private sentinel should never appear');
+    expect(text).not.toContain('/private/example/path');
+    expect(text).not.toContain('api_key=fixture');
   });
 
   it('uses keyword fallback and still returns recent timeline when context-pack semantic/vector retrieval hits a stale vector schema', async () => {

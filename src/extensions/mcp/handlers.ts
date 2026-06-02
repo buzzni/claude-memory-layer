@@ -1211,6 +1211,9 @@ async function handleMemContextPack(memoryService: MemoryService, args: Record<s
   const sessionLimit = numberArg(args.sessionLimit, 5, 1, 20);
   const sessionId = optionalString(args.sessionId);
   const projectPath = optionalString(args.projectPath);
+  const maxContextChars = contextPackMaxCharsArg(args);
+  const compression = contextCompressionModeArg(args.compression, maxContextChars !== undefined);
+  const formatOptions: ContextPackFormatOptions = { compression };
   const genericContinuationQuery = isGenericContinuationQuery(query);
   const explicitFreshnessRefresh = args.refreshLatest === true;
   const autoFreshnessRefresh = args.refreshLatest !== false
@@ -1241,7 +1244,7 @@ async function handleMemContextPack(memoryService: MemoryService, args: Record<s
     projectPath,
     genericContinuationQuery
   );
-  const sessions = summarizeSessions(timelineEvents, sessionLimit);
+  const sessions = summarizeSessions(timelineEvents, sessionLimit, formatOptions);
   const recentSessionIds = new Set(sessions.map((session) => session.sessionId));
   const relevantMemories = selectContextPackMemories(search.memories, {
     genericContinuationQuery,
@@ -1282,6 +1285,11 @@ async function handleMemContextPack(memoryService: MemoryService, args: Record<s
     );
   }
 
+  if (compression !== 'off' || maxContextChars !== undefined) {
+    const budgetLabel = maxContextChars !== undefined ? `; maxChars=${maxContextChars}` : '';
+    lines.push(`- Compression: ${compression}${budgetLabel}`);
+  }
+
   if (search.warning) {
     lines.push(`- ${search.warning}`);
   }
@@ -1293,6 +1301,15 @@ async function handleMemContextPack(memoryService: MemoryService, args: Record<s
     lines.push('- Generic continuation query: recent project timeline prioritized.');
   }
   lines.push('');
+
+  if (compression !== 'off' || maxContextChars !== undefined) {
+    lines.push('### Compression Notice', '');
+    lines.push('- Context-pack compression is applied only to LLM-facing previews; original events remain available through source refs.');
+    if (maxContextChars !== undefined) {
+      lines.push(`- Hard output budget: ${maxContextChars} characters; use follow-up lookups to expand trimmed sources.`);
+    }
+    lines.push('');
+  }
 
   if (freshnessRun) {
     lines.push('### Freshness Refresh', '');
@@ -1312,9 +1329,9 @@ async function handleMemContextPack(memoryService: MemoryService, args: Record<s
 
   if (genericContinuationQuery) {
     appendRecentTimeline(lines, sessions);
-    appendRelevantMemories(lines, relevantMemories);
+    appendRelevantMemories(lines, relevantMemories, formatOptions);
   } else {
-    appendRelevantMemories(lines, relevantMemories);
+    appendRelevantMemories(lines, relevantMemories, formatOptions);
     appendRecentTimeline(lines, sessions);
   }
 
@@ -1332,7 +1349,7 @@ async function handleMemContextPack(memoryService: MemoryService, args: Record<s
     lines.push('');
   }
 
-  return textResult(lines.join('\n'));
+  return textResult(applyContextPackBudget(lines.join('\n'), maxContextChars));
 }
 
 type LatestImportSource = 'claude' | 'codex' | 'hermes';
@@ -1549,6 +1566,14 @@ interface ContextPackMemory {
   score: number;
 }
 
+type ContextCompressionMode = 'off' | 'safe' | 'aggressive';
+
+interface ContextPackFormatOptions {
+  compression: ContextCompressionMode;
+}
+
+const DEFAULT_CONTEXT_PACK_FORMAT_OPTIONS: ContextPackFormatOptions = { compression: 'off' };
+
 interface ContextPackSelectionOptions {
   genericContinuationQuery: boolean;
   topK: number;
@@ -1572,7 +1597,11 @@ interface SessionSummary {
   lastPreview: string;
 }
 
-function summarizeSessions(events: MemoryEvent[], sessionLimit: number): SessionSummary[] {
+function summarizeSessions(
+  events: MemoryEvent[],
+  sessionLimit: number,
+  formatOptions: ContextPackFormatOptions = DEFAULT_CONTEXT_PACK_FORMAT_OPTIONS
+): SessionSummary[] {
   const bySession = new Map<string, MemoryEvent[]>();
   for (const event of events) {
     const sessionEvents = bySession.get(event.sessionId) || [];
@@ -1591,7 +1620,7 @@ function summarizeSessions(events: MemoryEvent[], sessionLimit: number): Session
         events: sorted,
         eventCounts: countEventTypes(sorted),
         source: dominantSource(sorted),
-        lastPreview: safeInline(last.content, 180)
+        lastPreview: contextPackPreview(last.content, 180, formatOptions)
       };
     })
     .sort((a, b) => b.lastAt.getTime() - a.lastAt.getTime())
@@ -1747,7 +1776,11 @@ function contextPackMemoryPriority(memory: ContextPackMemory, options: ContextPa
   return recentBoost + typeBoost + Math.min(memory.score, 1) + memory.event.timestamp.getTime() / 1e15;
 }
 
-function appendRelevantMemories(lines: string[], memories: ContextPackMemory[]): void {
+function appendRelevantMemories(
+  lines: string[],
+  memories: ContextPackMemory[],
+  formatOptions: ContextPackFormatOptions = DEFAULT_CONTEXT_PACK_FORMAT_OPTIONS
+): void {
   lines.push('### Relevant Memories', '');
   if (memories.length === 0) {
     lines.push('No relevant memories found.', '');
@@ -1756,7 +1789,7 @@ function appendRelevantMemories(lines: string[], memories: ContextPackMemory[]):
 
   for (let i = 0; i < memories.length; i++) {
     const match = memories[i];
-    lines.push(formatRelevantMemoryLine(match.event, match.score, i + 1));
+    lines.push(formatRelevantMemoryLine(match.event, match.score, i + 1, formatOptions));
   }
 }
 
@@ -1864,12 +1897,17 @@ function sourceTypeForEvent(event: MemoryEvent): string {
   return 'raw_event';
 }
 
-function formatRelevantMemoryLine(event: MemoryEvent, score: number, index: number): string {
+function formatRelevantMemoryLine(
+  event: MemoryEvent,
+  score: number,
+  index: number,
+  formatOptions: ContextPackFormatOptions = DEFAULT_CONTEXT_PACK_FORMAT_OPTIONS
+): string {
   const citationId = generateCitationId(event.id);
   return [
     `${index}. [mem:${citationId}] score=${score.toFixed(2)} type=${event.eventType} date=${event.timestamp.toISOString()} session=${event.sessionId}`,
     `   source=${sourceForEvent(event)}`,
-    `   ${safeInline(event.content, 260)}`,
+    `   ${contextPackPreview(event.content, 260, formatOptions)}`,
     ''
   ].join('\n');
 }
@@ -1942,6 +1980,114 @@ const MCP_PRIVACY_CONFIG: Config['privacy'] = {
     supportedFormats: ['xml', 'bracket', 'comment']
   }
 };
+
+const CONTEXT_SIGNAL_LINE_PATTERN = /\b(error|failed|failure|fail|traceback|exception|stack trace|stderr|exit code|panic|segfault|timeout|root cause|resolved by|missing source-ref)\b/i;
+const CONTEXT_PACK_MAX_CHARS_CAP = 50000;
+const CONTEXT_PACK_MIN_HARD_BUDGET_CHARS = 1000;
+
+function contextPackPreview(
+  content: string,
+  maxLength: number,
+  options: ContextPackFormatOptions = DEFAULT_CONTEXT_PACK_FORMAT_OPTIONS
+): string {
+  if (options.compression === 'off') return safeInline(content, maxLength);
+  const privacyFiltered = applyPrivacyFilter(content, MCP_PRIVACY_CONFIG).content;
+  return sanitizeOperationString(compactContextSnippet(privacyFiltered, options.compression), maxLength);
+}
+
+function compactContextSnippet(content: string, mode: ContextCompressionMode): string {
+  const lines = content
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  const normalized = content.replace(/\s+/g, ' ').trim();
+  const maxSignalLines = mode === 'aggressive' ? 2 : 4;
+  const maxTailLines = mode === 'aggressive' ? 1 : 2;
+  const signalLines = uniqueStrings(lines.filter((line) => CONTEXT_SIGNAL_LINE_PATTERN.test(line))).slice(0, maxSignalLines);
+  const shouldCompress = signalLines.length > 0 || normalized.length > (mode === 'aggressive' ? 180 : 320) || lines.length > 12;
+  if (!shouldCompress) return content;
+
+  const parts = [`[compressed ${content.length} chars]`];
+  if (signalLines.length > 0) {
+    parts.push(`Signals: ${signalLines.join(' | ')}`);
+  } else {
+    parts.push(`Head: ${lines.slice(0, mode === 'aggressive' ? 1 : 2).join(' | ')}`);
+  }
+
+  const tailLines = uniqueStrings(lines.slice(-maxTailLines).filter((line) => !signalLines.includes(line)));
+  if (tailLines.length > 0) {
+    parts.push(`Tail: ${tailLines.join(' | ')}`);
+  }
+
+  const omitted = Math.max(0, lines.length - signalLines.length - tailLines.length);
+  if (omitted > 0) parts.push(`omittedLines=${omitted}`);
+  return parts.join(' ');
+}
+
+function uniqueStrings(values: string[]): string[] {
+  const seen = new Set<string>();
+  const unique: string[] = [];
+  for (const value of values) {
+    const key = value.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(value);
+  }
+  return unique;
+}
+
+function contextCompressionModeArg(value: unknown, hasBudget: boolean): ContextCompressionMode {
+  if (value === undefined) return hasBudget ? 'safe' : 'off';
+  const normalized = String(value).trim().toLowerCase();
+  if (normalized === 'off' || normalized === 'safe' || normalized === 'aggressive') return normalized;
+  throw new Error('Invalid compression: expected off, safe, or aggressive');
+}
+
+function contextPackMaxCharsArg(args: Record<string, unknown>): number | undefined {
+  const maxChars = optionalNumberArg(args.maxChars, CONTEXT_PACK_MIN_HARD_BUDGET_CHARS, CONTEXT_PACK_MAX_CHARS_CAP);
+  const maxTokens = optionalNumberArg(args.maxTokens, 250, Math.floor(CONTEXT_PACK_MAX_CHARS_CAP / 4));
+  const tokenChars = maxTokens === undefined ? undefined : maxTokens * 4;
+  if (maxChars !== undefined && tokenChars !== undefined) return Math.min(maxChars, tokenChars);
+  return maxChars ?? tokenChars;
+}
+
+function optionalNumberArg(value: unknown, min: number, max: number): number | undefined {
+  if (value === undefined || value === null || value === '') return undefined;
+  const parsed = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(parsed)) return undefined;
+  return Math.min(max, Math.max(min, Math.floor(parsed)));
+}
+
+function applyContextPackBudget(text: string, maxChars: number | undefined): string {
+  if (maxChars === undefined || text.length <= maxChars) return text;
+
+  const followUpMarker = '\n### Follow-up Lookups';
+  const followUpIndex = text.indexOf(followUpMarker);
+  const suffix = followUpIndex >= 0 ? text.slice(followUpIndex) : '';
+  const prefix = followUpIndex >= 0 ? text.slice(0, followUpIndex) : text;
+  const marker = '\n\n[context-pack truncated to fit maxChars; expand with source refs for full content]\n';
+  const prefixBudget = Math.max(0, maxChars - suffix.length - marker.length);
+  let trimmedPrefix = truncateTextAtLineBoundary(prefix, prefixBudget);
+  let output = `${trimmedPrefix}${marker}${suffix}`;
+
+  if (output.length > maxChars) {
+    const excess = output.length - maxChars;
+    trimmedPrefix = truncateTextAtLineBoundary(trimmedPrefix, Math.max(0, trimmedPrefix.length - excess));
+    output = `${trimmedPrefix}${marker}${suffix}`;
+  }
+
+  if (output.length > maxChars) return output.slice(0, maxChars);
+  return output;
+}
+
+function truncateTextAtLineBoundary(text: string, maxChars: number): string {
+  if (maxChars <= 0) return '';
+  if (text.length <= maxChars) return text;
+  const sliced = text.slice(0, Math.max(0, maxChars - 3));
+  const lastLineBreak = sliced.lastIndexOf('\n');
+  const candidate = lastLineBreak > maxChars * 0.6 ? sliced.slice(0, lastLineBreak) : sliced.replace(/\s+\S*$/g, '');
+  return `${candidate.trimEnd()}...`;
+}
 
 function safeInline(content: string, maxLength: number): string {
   const filtered = applyPrivacyFilter(content, MCP_PRIVACY_CONFIG).content;
