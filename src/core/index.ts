@@ -49,6 +49,7 @@ export * from './evidence-aligner.js';
 
 // Retrieval & Graduation
 export * from './retriever.js';
+export * from './context-compressor.js';
 export * from './graduation.js';
 export * from './graduation-worker.js';
 

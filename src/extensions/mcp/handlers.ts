@@ -48,6 +48,12 @@ import {
   isGenericContinuationQuery,
   isLowSignalContextContent
 } from '../../core/retrieval-quality.js';
+import {
+  ContextCompressor,
+  summarizeCompressionTelemetry,
+  type ContextCompressionMetadata,
+  type ContextCompressionMode
+} from '../../core/context-compressor.js';
 import type {
   ActorCard,
   Config,
@@ -1213,7 +1219,12 @@ async function handleMemContextPack(memoryService: MemoryService, args: Record<s
   const projectPath = optionalString(args.projectPath);
   const maxContextChars = contextPackMaxCharsArg(args);
   const compression = contextCompressionModeArg(args.compression, maxContextChars !== undefined);
-  const formatOptions: ContextPackFormatOptions = { compression };
+  const compressionTelemetry: ContextCompressionMetadata[] = [];
+  const formatOptions: ContextPackFormatOptions = {
+    compression,
+    telemetry: compressionTelemetry,
+    telemetryEventIds: new Set<string>()
+  };
   const genericContinuationQuery = isGenericContinuationQuery(query);
   const explicitFreshnessRefresh = args.refreshLatest === true;
   const autoFreshnessRefresh = args.refreshLatest !== false
@@ -1328,16 +1339,18 @@ async function handleMemContextPack(memoryService: MemoryService, args: Record<s
   }
 
   if (genericContinuationQuery) {
-    appendRecentTimeline(lines, sessions);
+    appendRecentTimeline(lines, sessions, formatOptions);
     appendRelevantMemories(lines, relevantMemories, formatOptions);
   } else {
     appendRelevantMemories(lines, relevantMemories, formatOptions);
-    appendRecentTimeline(lines, sessions);
+    appendRecentTimeline(lines, sessions, formatOptions);
   }
 
   if (perspectiveBundle) {
     appendPerspectiveContext(lines, perspectiveBundle);
   }
+
+  appendCompressionTelemetry(lines, compressionTelemetry, maxContextChars);
 
   const sourceIds = relevantMemories
     .slice(0, 5)
@@ -1566,10 +1579,10 @@ interface ContextPackMemory {
   score: number;
 }
 
-type ContextCompressionMode = 'off' | 'safe' | 'aggressive';
-
 interface ContextPackFormatOptions {
   compression: ContextCompressionMode;
+  telemetry?: ContextCompressionMetadata[];
+  telemetryEventIds?: Set<string>;
 }
 
 const DEFAULT_CONTEXT_PACK_FORMAT_OPTIONS: ContextPackFormatOptions = { compression: 'off' };
@@ -1609,7 +1622,7 @@ function summarizeSessions(
     bySession.set(event.sessionId, sessionEvents);
   }
 
-  return Array.from(bySession.entries())
+  const summaries: Array<SessionSummary & { lastEvent: MemoryEvent }> = Array.from(bySession.entries())
     .map(([sessionId, sessionEvents]) => {
       const sorted = sessionEvents.slice().sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
       const last = sorted[sorted.length - 1];
@@ -1620,11 +1633,17 @@ function summarizeSessions(
         events: sorted,
         eventCounts: countEventTypes(sorted),
         source: dominantSource(sorted),
-        lastPreview: contextPackPreview(last.content, 180, formatOptions)
+        lastPreview: '',
+        lastEvent: last
       };
     })
     .sort((a, b) => b.lastAt.getTime() - a.lastAt.getTime())
     .slice(0, sessionLimit);
+
+  return summaries.map(({ lastEvent, ...summary }) => ({
+    ...summary,
+    lastPreview: contextPackPreview(lastEvent, 180, formatOptions)
+  }));
 }
 
 function selectContextPackMemories(
@@ -1793,15 +1812,20 @@ function appendRelevantMemories(
   }
 }
 
-function appendRecentTimeline(lines: string[], sessions: SessionSummary[]): void {
+function appendRecentTimeline(
+  lines: string[],
+  sessions: SessionSummary[],
+  formatOptions: ContextPackFormatOptions = DEFAULT_CONTEXT_PACK_FORMAT_OPTIONS
+): void {
   lines.push('### Recent Project Timeline', '');
   if (sessions.length === 0) {
     lines.push('No recent project events found.', '');
     return;
   }
 
+  const compact = formatOptions.compression !== 'off';
   for (const session of sessions) {
-    lines.push(formatSessionSummary(session));
+    lines.push(formatSessionSummary(session, compact));
   }
 }
 
@@ -1907,15 +1931,23 @@ function formatRelevantMemoryLine(
   return [
     `${index}. [mem:${citationId}] score=${score.toFixed(2)} type=${event.eventType} date=${event.timestamp.toISOString()} session=${event.sessionId}`,
     `   source=${sourceForEvent(event)}`,
-    `   ${contextPackPreview(event.content, 260, formatOptions)}`,
+    `   ${contextPackPreview(event, 260, formatOptions)}`,
     ''
   ].join('\n');
 }
 
-function formatSessionSummary(session: SessionSummary): string {
+function formatSessionSummary(session: SessionSummary, compact = false): string {
   const countSummary = (Object.entries(session.eventCounts) as Array<[EventType, number]>)
     .map(([type, count]) => `${type}: ${count}`)
     .join(', ');
+  if (compact) {
+    return [
+      `- Session: ${session.sessionId}`,
+      `  Events: ${session.events.length}; Source: ${session.source}; Counts: ${countSummary || 'n/a'}`,
+      `  Last: ${session.lastPreview}`,
+      ''
+    ].join('\n');
+  }
   return [
     `- Session: ${session.sessionId}`,
     `  Window: ${session.firstAt.toISOString()} → ${session.lastAt.toISOString()}`,
@@ -1981,59 +2013,54 @@ const MCP_PRIVACY_CONFIG: Config['privacy'] = {
   }
 };
 
-const CONTEXT_SIGNAL_LINE_PATTERN = /\b(error|failed|failure|fail|traceback|exception|stack trace|stderr|exit code|panic|segfault|timeout|root cause|resolved by|missing source-ref)\b/i;
 const CONTEXT_PACK_MAX_CHARS_CAP = 50000;
 const CONTEXT_PACK_MIN_HARD_BUDGET_CHARS = 1000;
+const MCP_CONTEXT_COMPRESSOR = new ContextCompressor();
 
 function contextPackPreview(
-  content: string,
+  event: MemoryEvent,
   maxLength: number,
   options: ContextPackFormatOptions = DEFAULT_CONTEXT_PACK_FORMAT_OPTIONS
 ): string {
-  if (options.compression === 'off') return safeInline(content, maxLength);
-  const privacyFiltered = applyPrivacyFilter(content, MCP_PRIVACY_CONFIG).content;
-  return sanitizeOperationString(compactContextSnippet(privacyFiltered, options.compression), maxLength);
+  if (options.compression === 'off') return safeInline(event.content, maxLength);
+  const privacyFiltered = applyPrivacyFilter(event.content, MCP_PRIVACY_CONFIG).content;
+  const compressed = MCP_CONTEXT_COMPRESSOR.compress(privacyFiltered, {
+    mode: options.compression,
+    source: sourceForEvent(event),
+    metadata: {
+      ...safeCompressionMetadata(event.metadata),
+      eventType: event.eventType
+    }
+  });
+  options.telemetryEventIds ??= new Set<string>();
+  if (!options.telemetryEventIds.has(event.id)) {
+    options.telemetry?.push(compressed.metadata);
+    options.telemetryEventIds.add(event.id);
+  }
+  return sanitizeOperationString(compressed.text, maxLength);
 }
 
-function compactContextSnippet(content: string, mode: ContextCompressionMode): string {
-  const lines = content
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
-  const normalized = content.replace(/\s+/g, ' ').trim();
-  const maxSignalLines = mode === 'aggressive' ? 2 : 4;
-  const maxTailLines = mode === 'aggressive' ? 1 : 2;
-  const signalLines = uniqueStrings(lines.filter((line) => CONTEXT_SIGNAL_LINE_PATTERN.test(line))).slice(0, maxSignalLines);
-  const shouldCompress = signalLines.length > 0 || normalized.length > (mode === 'aggressive' ? 180 : 320) || lines.length > 12;
-  if (!shouldCompress) return content;
-
-  const parts = [`[compressed ${content.length} chars]`];
-  if (signalLines.length > 0) {
-    parts.push(`Signals: ${signalLines.join(' | ')}`);
-  } else {
-    parts.push(`Head: ${lines.slice(0, mode === 'aggressive' ? 1 : 2).join(' | ')}`);
+function safeCompressionMetadata(metadata: Record<string, unknown> | undefined): Record<string, unknown> {
+  if (!metadata) return {};
+  const selected: Record<string, unknown> = {};
+  for (const key of ['contentType', 'content_type', 'mimeType', 'mime_type', 'toolName']) {
+    const value = metadata[key];
+    if (typeof value === 'string') selected[key] = value;
   }
-
-  const tailLines = uniqueStrings(lines.slice(-maxTailLines).filter((line) => !signalLines.includes(line)));
-  if (tailLines.length > 0) {
-    parts.push(`Tail: ${tailLines.join(' | ')}`);
-  }
-
-  const omitted = Math.max(0, lines.length - signalLines.length - tailLines.length);
-  if (omitted > 0) parts.push(`omittedLines=${omitted}`);
-  return parts.join(' ');
+  return selected;
 }
 
-function uniqueStrings(values: string[]): string[] {
-  const seen = new Set<string>();
-  const unique: string[] = [];
-  for (const value of values) {
-    const key = value.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    unique.push(value);
-  }
-  return unique;
+function appendCompressionTelemetry(lines: string[], metadata: ContextCompressionMetadata[], maxChars: number | undefined): void {
+  if (metadata.length === 0) return;
+  if (maxChars !== undefined && maxChars < 1800) return;
+  const summary = summarizeCompressionTelemetry(metadata);
+  const sources = summary.bySource.map((item) => `${item.source}:${item.items}`).join(',');
+  const strategies = summary.byStrategy.map((item) => `${item.strategy}:${item.items}`).join(',');
+  lines.push(
+    '- Compression telemetry: '
+      + `items=${summary.totalItems} originalChars=${summary.totalOriginalChars} compressedChars=${summary.totalCompressedChars} savedChars=${summary.totalSavedChars} sources=${sources || 'n/a'} strategies=${strategies || 'n/a'}`,
+    ''
+  );
 }
 
 function contextCompressionModeArg(value: unknown, hasBudget: boolean): ContextCompressionMode {

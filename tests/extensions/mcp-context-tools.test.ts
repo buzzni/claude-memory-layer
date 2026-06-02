@@ -612,6 +612,108 @@ describe('MCP project context tools', () => {
     expect(text).not.toContain('api_key=fixture');
   });
 
+  it('reports aggregate compression telemetry by source and strategy without raw private content', async () => {
+    const logMemory = event({
+      id: '66666666-6666-4666-8666-666666666666',
+      sessionId: 'session-compress-log',
+      eventType: 'agent_response',
+      timestamp: new Date('2026-05-05T04:20:00.000Z'),
+      content: [
+        Array.from({ length: 35 }, (_, index) => `heartbeat ${index}: ok`).join('\n'),
+        'ERROR telemetry source summary should preserve this signal',
+        'Traceback: compression router frame',
+        '<private>fixture-private-value</private>'
+      ].join('\n'),
+      metadata: { source: 'hermes', contentType: 'text/x-log', projectPath: '/repo/app' }
+    });
+    const markdownRecent = event({
+      id: '77777777-7777-4777-8777-777777777777',
+      sessionId: 'session-compress-md',
+      eventType: 'agent_response',
+      timestamp: new Date('2026-05-05T04:30:00.000Z'),
+      content: [
+        '# Context Compressor Plan',
+        'low signal paragraph that should not be echoed in telemetry',
+        '## Decisions',
+        '- Decision: native ContextCompressor owns routing.',
+        '## Next',
+        '- Next: include metadata counts only.'
+      ].join('\n'),
+      metadata: { source: 'codex', contentType: 'text/markdown', projectPath: '/repo/app' }
+    });
+
+    mocks.projectService.retrieveMemories.mockResolvedValue({ memories: [{ event: logMemory, score: 0.94 }] });
+    mocks.projectService.getRecentEvents.mockResolvedValue([markdownRecent, logMemory]);
+
+    const result = await handleToolCall('mem-context-pack', {
+      projectPath: '/repo/app',
+      query: 'context compressor telemetry',
+      topK: 1,
+      recentLimit: 2,
+      sessionLimit: 2,
+      compression: 'safe',
+      maxChars: 2200
+    });
+
+    const text = textOf(result);
+    expect(result.isError).not.toBe(true);
+    expect(text).toContain('- Compression telemetry:');
+    expect(text).toContain('sources=codex:1,hermes:1');
+    expect(text).toContain('strategies=log_signal:1,markdown_outline:1');
+    expect(text).toContain('ERROR telemetry source summary should preserve this signal');
+    expect(text).toContain('# Context Compressor Plan');
+    expect(text).not.toContain('fixture-private-value');
+    expect(text).not.toContain('low signal paragraph that should not be echoed in telemetry');
+  });
+
+  it('excludes sessions hidden by sessionLimit from compression telemetry', async () => {
+    const shownRecent = event({
+      id: '77777777-7777-4777-8777-777777777701',
+      sessionId: 'session-telemetry-shown',
+      eventType: 'agent_response',
+      timestamp: new Date('2026-05-05T04:50:00.000Z'),
+      content: [
+        Array.from({ length: 25 }, (_, index) => `visible progress ${index}: ok`).join('\n'),
+        'ERROR shown session signal should be visible in telemetry output'
+      ].join('\n'),
+      metadata: { source: 'codex', contentType: 'text/x-log', projectPath: '/repo/app' }
+    });
+    const hiddenRecent = event({
+      id: '77777777-7777-4777-8777-777777777702',
+      sessionId: 'session-telemetry-hidden',
+      eventType: 'agent_response',
+      timestamp: new Date('2026-05-05T04:40:00.000Z'),
+      content: [
+        '# Hidden Session Plan',
+        '- Decision: hidden sessions must not affect visible telemetry.'
+      ].join('\n'),
+      metadata: { source: 'hidden-source', contentType: 'text/markdown', projectPath: '/repo/app' }
+    });
+
+    mocks.projectService.retrieveMemories.mockResolvedValue({ memories: [] });
+    mocks.projectService.getRecentEvents.mockResolvedValue([hiddenRecent, shownRecent]);
+
+    const result = await handleToolCall('mem-context-pack', {
+      projectPath: '/repo/app',
+      query: 'context compressor telemetry hidden sessions',
+      topK: 1,
+      recentLimit: 2,
+      sessionLimit: 1,
+      compression: 'safe',
+      maxChars: 2200
+    });
+
+    const text = textOf(result);
+    expect(result.isError).not.toBe(true);
+    expect(text).toContain('Recent sessions shown: 1');
+    expect(text).toContain('session-telemetry-shown');
+    expect(text).toContain('sources=codex:1');
+    expect(text).toContain('strategies=log_signal:1');
+    expect(text).not.toContain('session-telemetry-hidden');
+    expect(text).not.toContain('hidden-source');
+    expect(text).not.toContain('markdown_outline');
+  });
+
   it('uses keyword fallback and still returns recent timeline when context-pack semantic/vector retrieval hits a stale vector schema', async () => {
     const fallbackMemory = event({
       id: '99990000-0000-4000-8000-000000000001',
