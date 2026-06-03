@@ -207,7 +207,7 @@ export async function evaluateReplayFixture(
       const forbiddenHitIds = findForbiddenHitIds(run.retrievedIds, run.query.forbiddenIds ?? []);
       base.expectation = 'no_match';
       base.forbiddenHitIds = forbiddenHitIds;
-      base.noMatchSatisfied = forbiddenHitIds.length === 0 && run.confidence === 'none';
+      base.noMatchSatisfied = forbiddenHitIds.length === 0 && run.confidence === 'none' && run.retrievedIds.length === 0;
     }
 
     return base;

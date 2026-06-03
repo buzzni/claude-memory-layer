@@ -238,8 +238,46 @@ describe('Retriever fallback chain', () => {
     expect(ids).not.toContain('hop3');
   });
 
-  it('uses summary fallback when both fast and deep fail', async () => {
-    const e = ev('e2', 'keyword overlap fallback candidate');
+  it('excludes low-signal and stale neighbors from default session context', async () => {
+    const handoff = ev('handoff', '[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into an active task handoff.');
+    const current = ev('current', 'memory retrieval provider validation current status is green and source refs are preserved');
+    const stale = ev('stale', 'obsolete stale state should not be injected as current context');
+    const events = new Map([handoff, current, stale].map((event) => [event.id, event] as const));
+
+    const fakeEventStore = {
+      async keywordSearch() { return []; },
+      async getRecentEvents() { return [handoff, current, stale]; },
+      async getEvent(id: string) { return events.get(id) ?? null; },
+      async getSessionEvents() { return [handoff, current, stale]; }
+    };
+
+    const fakeVectorStore = {
+      async search() {
+        return [{
+          id: 'v1',
+          eventId: 'current',
+          content: current.content,
+          score: 0.95,
+          sessionId: current.sessionId,
+          eventType: current.eventType,
+          timestamp: current.timestamp.toISOString()
+        }];
+      }
+    };
+
+    const fakeEmbedder = { async embed() { return { vector: [0.1, 0.2] }; } };
+    const retriever = new Retriever(fakeEventStore as any, fakeVectorStore as any, fakeEmbedder as any, new Matcher());
+    const out = await retriever.retrieve('current status for memory retrieval provider validation', { strategy: 'deep', topK: 3 });
+
+    expect(out.memories[0]?.event.id).toBe('current');
+    expect(out.context).toContain('source refs are preserved');
+    expect(out.context).not.toContain('CONTEXT COMPACTION');
+    expect(out.context).not.toContain('obsolete stale state');
+    expect(out.memories[0]?.sessionContext).toBeUndefined();
+  });
+
+  it('uses summary fallback for low-confidence validation-gate recall when both fast and deep fail', async () => {
+    const e = ev('e2', 'Validation gates before committing memory telemetry changes include typecheck build and replay checks.');
 
     const fakeEventStore = {
       async keywordSearch() { return []; },
@@ -252,7 +290,7 @@ describe('Retriever fallback chain', () => {
     const fakeEmbedder = { async embed() { return { vector: [0.1, 0.2] }; } };
 
     const retriever = new Retriever(fakeEventStore as any, fakeVectorStore as any, fakeEmbedder as any, new Matcher());
-    const out = await retriever.retrieve('fallback candidate', { strategy: 'auto', topK: 3, includeSessionContext: false });
+    const out = await retriever.retrieve('what validation gates should run before committing memory telemetry changes', { strategy: 'auto', topK: 3, includeSessionContext: false });
 
     expect(out.fallbackTrace).toContain('fallback:summary');
     expect(out.memories[0]?.event.id).toBe('e2');

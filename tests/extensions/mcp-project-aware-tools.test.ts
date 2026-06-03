@@ -93,11 +93,132 @@ describe('MCP project-aware memory tools', () => {
     expect(mocks.getDefaultMemoryService).not.toHaveBeenCalled();
     expect(mocks.projectService.initialize).toHaveBeenCalledTimes(1);
     expect(mocks.projectService.retrieveMemories).toHaveBeenCalledWith('project scoped memory', {
-      topK: 7,
+      topK: 20,
       sessionId: 'session-a',
       recordTrace: false
     });
     expect(result.content[0]?.text).toContain('project scoped memory result');
+  });
+
+  it('overfetches then suppresses compaction handoff artifacts from mem-search results', async () => {
+    mocks.projectService.retrieveMemories.mockResolvedValue({
+      memories: [
+        {
+          score: 0.99,
+          event: {
+            id: 'event-handoff-1',
+            sessionId: 'session-handoff',
+            eventType: 'user_prompt',
+            timestamp: new Date('2026-05-05T00:00:00.000Z'),
+            content: '[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. This is a handoff from a previous context window. ## Active Task',
+            metadata: {}
+          }
+        },
+        {
+          score: 0.98,
+          event: {
+            id: 'event-handoff-2',
+            sessionId: 'session-handoff',
+            eventType: 'agent_response',
+            timestamp: new Date('2026-05-05T00:01:00.000Z'),
+            content: '[Your active task list was preserved across context compression]\n- [>] inspect. Inspect retrieval/context-pack/search implementation.',
+            metadata: {}
+          }
+        },
+        {
+          score: 0.63,
+          event: {
+            id: 'event-direct-1',
+            sessionId: 'session-direct',
+            eventType: 'agent_response',
+            timestamp: new Date('2026-05-05T00:02:00.000Z'),
+            content: 'Direct project memory result about retrieval-quality.ts handoff artifact filtering.',
+            metadata: {}
+          }
+        },
+        {
+          score: 0.62,
+          event: {
+            id: 'event-discussion-1',
+            sessionId: 'session-direct',
+            eventType: 'agent_response',
+            timestamp: new Date('2026-05-05T00:03:00.000Z'),
+            content: 'Headroom-inspired ContextCompressor implementation discussion preserves source refs during context compression.',
+            metadata: {}
+          }
+        }
+      ]
+    });
+
+    const result = await handleToolCall('mem-search', {
+      query: 'context compression retrieval filters',
+      projectPath: '/repo/app',
+      topK: 2
+    });
+
+    const text = String(result.content[0]?.text ?? '');
+    expect(result.isError).not.toBe(true);
+    expect(mocks.projectService.retrieveMemories).toHaveBeenCalledWith('context compression retrieval filters', {
+      topK: 6,
+      sessionId: undefined,
+      recordTrace: false
+    });
+    expect(text).toContain('Found 2 relevant memories');
+    expect(text).toContain('Direct project memory result');
+    expect(text).toContain('Headroom-inspired ContextCompressor implementation discussion');
+    expect(text).not.toContain('CONTEXT COMPACTION');
+    expect(text).not.toContain('active task list was preserved');
+  });
+
+  it('suppresses compaction handoff artifacts from mem-timeline windows', async () => {
+    mocks.projectService.getRecentEvents.mockResolvedValue([
+      {
+        id: 'timeline-handoff-before',
+        sessionId: 'session-timeline',
+        eventType: 'user_prompt',
+        timestamp: new Date('2026-05-05T00:00:00.000Z'),
+        content: '[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. This is a handoff from a previous context window. ## Active Task',
+        metadata: {}
+      },
+      {
+        id: 'timeline-target',
+        sessionId: 'session-timeline',
+        eventType: 'agent_response',
+        timestamp: new Date('2026-05-05T00:01:00.000Z'),
+        content: 'Direct project memory: timeline should retain actionable context-pack artifact filter progress.',
+        metadata: {}
+      },
+      {
+        id: 'timeline-handoff-after',
+        sessionId: 'session-timeline',
+        eventType: 'user_prompt',
+        timestamp: new Date('2026-05-05T00:02:00.000Z'),
+        content: '[Your active task list was preserved across context compression]\n- [>] inspect. Inspect retrieval/context-pack/search implementation.',
+        metadata: {}
+      },
+      {
+        id: 'timeline-discussion',
+        sessionId: 'session-timeline',
+        eventType: 'agent_response',
+        timestamp: new Date('2026-05-05T00:03:00.000Z'),
+        content: 'Legitimate context compression implementation discussion remains visible in timeline context.',
+        metadata: {}
+      }
+    ]);
+
+    const result = await handleToolCall('mem-timeline', {
+      projectPath: '/repo/app',
+      ids: ['timeline-target'],
+      windowSize: 2
+    });
+
+    const text = String(result.content[0]?.text ?? '');
+    expect(result.isError).not.toBe(true);
+    expect(text).toContain('Direct project memory');
+    expect(text).toContain('Legitimate context compression implementation discussion');
+    expect(text).not.toContain('CONTEXT COMPACTION');
+    expect(text).not.toContain('active task list was preserved');
+    expect(text).not.toContain('Inspect retrieval/context-pack/search implementation');
   });
 
   it('uses keyword fallback when mem-search semantic/vector retrieval hits a stale vector schema', async () => {
@@ -127,11 +248,11 @@ describe('MCP project-aware memory tools', () => {
     const text = String(result.content[0]?.text ?? '');
     expect(result.isError).not.toBe(true);
     expect(mocks.projectService.retrieveMemories).toHaveBeenCalledWith('stale vector schema', {
-      topK: 3,
+      topK: 9,
       sessionId: undefined,
       recordTrace: false
     });
-    expect(mocks.projectService.keywordSearch).toHaveBeenCalledWith('stale vector schema', { topK: 3 });
+    expect(mocks.projectService.keywordSearch).toHaveBeenCalledWith('stale vector schema', { topK: 9 });
     expect(text).toContain('Warning: semantic/vector retrieval unavailable; used keyword fallback.');
     expect(text).toContain('fallback keyword memory result');
     expect(text).not.toContain('query vector dimension: 384');

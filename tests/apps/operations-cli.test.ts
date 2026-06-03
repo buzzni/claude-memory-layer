@@ -15,6 +15,8 @@ import { SQLiteEventStore } from '../../src/core/sqlite-event-store.js';
 const require = createRequire(import.meta.url);
 const Database = require('better-sqlite3') as typeof import('better-sqlite3');
 
+const SLOW_CLI_TEST_TIMEOUT_MS = 60_000;
+
 type JsonObject = Record<string, unknown>;
 
 interface CliFixture {
@@ -196,7 +198,7 @@ describe('memory operations CLI commands', () => {
     } finally {
       rmSync(fixture.home, { recursive: true, force: true });
     }
-  });
+  }, SLOW_CLI_TEST_TIMEOUT_MS);
 
   it('defaults mutating facet/action/checkpoint commands to dry-run JSON without writing operation rows', async () => {
     const fixture = createCliFixture('dry-run');

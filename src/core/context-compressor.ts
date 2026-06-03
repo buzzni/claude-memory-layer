@@ -11,6 +11,7 @@ export type ContextCompressionStrategy =
 export interface ContextCompressionOptions {
   mode: ContextCompressionMode;
   source?: string;
+  sourceRef?: string;
   metadata?: Record<string, unknown>;
 }
 
@@ -26,6 +27,8 @@ export interface ContextCompressionMetadata {
   originalLines: number;
   omittedLines: number;
   signalCount: number;
+  sourceRef?: string;
+  sourceRefPreserved: boolean;
 }
 
 export interface ContextCompressionResult {
@@ -40,6 +43,8 @@ export interface CompressionGroupSummary {
   originalChars: number;
   compressedChars: number;
   savedChars: number;
+  omittedLines: number;
+  sourceRefsPreserved: number;
 }
 
 export interface CompressionTelemetrySummary {
@@ -47,6 +52,8 @@ export interface CompressionTelemetrySummary {
   totalOriginalChars: number;
   totalCompressedChars: number;
   totalSavedChars: number;
+  totalOmittedLines: number;
+  sourceRefsPreserved: number;
   bySource: Array<CompressionGroupSummary & { source: string }>;
   byStrategy: Array<CompressionGroupSummary & { strategy: ContextCompressionStrategy }>;
 }
@@ -73,11 +80,12 @@ export class ContextCompressor {
   compress(content: string, options: ContextCompressionOptions): ContextCompressionResult {
     const source = safeLabel(options.source) || 'unknown';
     const mode = options.mode;
+    const sourceRef = safeSourceRef(options.sourceRef ?? sourceRefFromMetadata(options.metadata ?? {}));
     const contentType = detectContextContentType(content, options.metadata ?? {});
     const originalLines = nonEmptyLines(content).length;
 
     if (mode === 'off') {
-      return result(content, {
+      return withSourceRefHint(result(content, {
         mode,
         source,
         contentType,
@@ -86,22 +94,22 @@ export class ContextCompressor {
         originalLines,
         omittedLines: 0,
         signalCount: 0
-      });
+      }), sourceRef);
     }
 
     if (contentType === 'log') {
-      return this.compressLog(content, mode, source, contentType);
+      return withSourceRefHint(this.compressLog(content, mode, source, contentType), sourceRef);
     }
     if (contentType === 'markdown') {
-      return this.compressMarkdown(content, mode, source, contentType);
+      return withSourceRefHint(this.compressMarkdown(content, mode, source, contentType), sourceRef);
     }
     if (contentType === 'diff') {
-      return this.compressDiff(content, mode, source, contentType);
+      return withSourceRefHint(this.compressDiff(content, mode, source, contentType), sourceRef);
     }
     if (contentType === 'code') {
-      return this.compressCode(content, mode, source, contentType);
+      return withSourceRefHint(this.compressCode(content, mode, source, contentType), sourceRef);
     }
-    return this.compressPlain(content, mode, source, contentType);
+    return withSourceRefHint(this.compressPlain(content, mode, source, contentType), sourceRef);
   }
 
   private compressLog(
@@ -282,11 +290,15 @@ export function summarizeCompressionTelemetry(metadata: ContextCompressionMetada
   const totalOriginalChars = metadata.reduce((sum, item) => sum + item.originalChars, 0);
   const totalCompressedChars = metadata.reduce((sum, item) => sum + item.compressedChars, 0);
   const totalSavedChars = metadata.reduce((sum, item) => sum + item.savedChars, 0);
+  const totalOmittedLines = metadata.reduce((sum, item) => sum + item.omittedLines, 0);
+  const sourceRefsPreserved = metadata.filter((item) => item.sourceRefPreserved).length;
   return {
     totalItems: metadata.length,
     totalOriginalChars,
     totalCompressedChars,
     totalSavedChars,
+    totalOmittedLines,
+    sourceRefsPreserved,
     bySource: summarizeBy(metadata, 'source') as Array<CompressionGroupSummary & { source: string }>,
     byStrategy: summarizeBy(metadata, 'strategy') as Array<CompressionGroupSummary & { strategy: ContextCompressionStrategy }>
   };
@@ -304,12 +316,16 @@ function summarizeBy(
       items: 0,
       originalChars: 0,
       compressedChars: 0,
-      savedChars: 0
+      savedChars: 0,
+      omittedLines: 0,
+      sourceRefsPreserved: 0
     } as CompressionGroupSummary;
     existing.items += 1;
     existing.originalChars += item.originalChars;
     existing.compressedChars += item.compressedChars;
     existing.savedChars += item.savedChars;
+    existing.omittedLines += item.omittedLines;
+    if (item.sourceRefPreserved) existing.sourceRefsPreserved += 1;
     groups.set(groupKey, existing);
   }
   return Array.from(groups.values()).sort((a, b) => String(a[key] ?? '').localeCompare(String(b[key] ?? '')));
@@ -317,7 +333,7 @@ function summarizeBy(
 
 function result(
   text: string,
-  base: Omit<ContextCompressionMetadata, 'compressedChars' | 'savedChars' | 'compressionRatio'>
+  base: Omit<ContextCompressionMetadata, 'compressedChars' | 'savedChars' | 'compressionRatio' | 'sourceRef' | 'sourceRefPreserved'>
 ): ContextCompressionResult {
   const compressedChars = text.length;
   const savedChars = Math.max(0, base.originalChars - compressedChars);
@@ -328,7 +344,8 @@ function result(
       ...base,
       compressedChars,
       savedChars,
-      compressionRatio
+      compressionRatio,
+      sourceRefPreserved: false
     }
   };
 }
@@ -385,4 +402,80 @@ function safeLabel(value: string | undefined): string | undefined {
   if (!value) return undefined;
   const cleaned = value.replace(/[^A-Za-z0-9_.:-]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 80);
   return cleaned || undefined;
+}
+
+function sourceRefFromMetadata(metadata: Record<string, unknown>): string | undefined {
+  const explicit = firstString(metadata, ['sourceRef', 'source_ref', 'sourceReference', 'source_reference']);
+  if (explicit) return explicit;
+
+  const citation = firstString(metadata, ['citationId', 'citation_id', 'memoryCitationId', 'memory_citation_id']);
+  if (citation) return citation.startsWith('mem:') ? citation : `mem:${citation}`;
+
+  const eventId = firstString(metadata, ['eventId', 'event_id']);
+  if (eventId) return eventId.startsWith('event:') ? eventId : `event:${eventId}`;
+
+  return undefined;
+}
+
+function firstString(metadata: Record<string, unknown>, keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = metadata[key];
+    if (typeof value === 'string' && value.trim().length > 0) return value.trim();
+  }
+  return undefined;
+}
+
+function safeSourceRef(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const normalized = value
+    .trim()
+    .replace(/^\[?(mem|event):/i, (_, prefix: string) => `${prefix.toLowerCase()}:`)
+    .replace(/\]?$/g, '');
+  if (!normalized || /(?:password|secret|api[_-]?key|token|bearer)/i.test(normalized)) return undefined;
+  const cleaned = normalized.replace(/[^A-Za-z0-9_.:-]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 140);
+  return cleaned || undefined;
+}
+
+function withSourceRefHint(compression: ContextCompressionResult, sourceRef: string | undefined): ContextCompressionResult {
+  if (!sourceRef) return compression;
+
+  if (compression.metadata.mode === 'off' || compression.metadata.strategy === 'none') {
+    return {
+      text: compression.text,
+      metadata: {
+        ...compression.metadata,
+        sourceRef,
+        sourceRefPreserved: false
+      }
+    };
+  }
+
+  const hint = `sourceRef=${sourceRef} expand=mem-source-ref`;
+  const text = compression.text.includes(hint)
+    ? compression.text
+    : addSourceRefHint(compression.text, hint);
+  const compressedChars = text.length;
+  const savedChars = Math.max(0, compression.metadata.originalChars - compressedChars);
+  const compressionRatio = compression.metadata.originalChars > 0
+    ? compressedChars / compression.metadata.originalChars
+    : 1;
+
+  return {
+    text,
+    metadata: {
+      ...compression.metadata,
+      sourceRef,
+      sourceRefPreserved: text.includes(`sourceRef=${sourceRef}`) && text.includes('expand=mem-source-ref'),
+      compressedChars,
+      savedChars,
+      compressionRatio
+    }
+  };
+}
+
+function addSourceRefHint(text: string, hint: string): string {
+  if (text.startsWith('[compressed ')) {
+    return text.replace(/^\[([^\]]+)\]/, `[$1; ${hint}]`);
+  }
+  return `[${hint}]\n${text}`;
 }

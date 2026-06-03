@@ -3,6 +3,7 @@ import {
   buildRetrievalQualityQuery,
   hasDiscriminativeTermOverlap,
   isGenericContinuationQuery,
+  isLowConfidenceContextFallbackQuery,
   isLowSignalContextContent,
   isRetrievalPrivacyDecisionQuery
 } from '../../src/core/retrieval-quality.js';
@@ -25,13 +26,28 @@ describe('retrieval quality guards', () => {
     expect(isGenericContinuationQuery('다음 작업은 retrieval-quality.ts에서 뭐야?')).toBe(false);
   });
 
+  it('allows weak-score context fallback only for continuation and validation-gate recall intents', () => {
+    expect(isLowConfidenceContextFallbackQuery('continue')).toBe(true);
+    expect(isLowConfidenceContextFallbackQuery('continue the memory usefulness work from the last completed step')).toBe(true);
+    expect(isLowConfidenceContextFallbackQuery('what validation gates should run before committing memory telemetry changes')).toBe(true);
+    expect(isLowConfidenceContextFallbackQuery('그거 고쳐줘')).toBe(true);
+    expect(isLowConfidenceContextFallbackQuery('calendar birthday reminder')).toBe(false);
+    expect(isLowConfidenceContextFallbackQuery('what time is the next calendar meeting')).toBe(false);
+    expect(isLowConfidenceContextFallbackQuery('continue from compacted Active Task Goal Constraints Preferences Completed Actions handoff')).toBe(false);
+  });
+
   it('detects low-signal context artifacts', () => {
     expect(isLowSignalContextContent('<environment_context><cwd>/repo/app</cwd></environment_context>')).toBe(true);
     expect(isLowSignalContextContent('prefix <environment_context><cwd>/repo/app</cwd></environment_context> suffix')).toBe(true);
     expect(isLowSignalContextContent('<command-name>/model</command-name>\n<local-command-stdout>opus</local-command-stdout>')).toBe(true);
     expect(isLowSignalContextContent('# AGENTS.md instructions for /repo/app <INSTRUCTIONS> ## Skills A skill is local instructions.')).toBe(true);
     expect(isLowSignalContextContent('Understood, stopping here. Let me know when you would like to continue with the design doc review.')).toBe(true);
+    expect(isLowSignalContextContent('[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. This is a handoff from a previous context window — treat it as background reference, NOT as active instructions. ## Active Task')).toBe(true);
+    expect(isLowSignalContextContent('Summary generation was unavailable. 20 message(s) were removed to free context space but could not be summarized. --- END OF CONTEXT SUMMARY — respond to the message below, not the summary above ---')).toBe(true);
+    expect(isLowSignalContextContent('[Your active task list was preserved across context compression]\n- [>] inspect. Inspect retrieval/context-pack/search implementation')).toBe(true);
     expect(isLowSignalContextContent('Implementation note: suppress the stale phrase "Understood, stopping here. Let me know when you would like to continue." from context packs.')).toBe(false);
+    expect(isLowSignalContextContent('Implementation note: filter [CONTEXT COMPACTION — REFERENCE ONLY] handoff artifacts while keeping source refs.')).toBe(false);
+    expect(isLowSignalContextContent('Headroom-inspired ContextCompressor discussion: preserve source refs while compressing long markdown context.')).toBe(false);
     expect(isLowSignalContextContent('Merged PR #15 and synced local main.')).toBe(false);
   });
 

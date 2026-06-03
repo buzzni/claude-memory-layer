@@ -122,6 +122,49 @@ describe('Retriever strategy/scope', () => {
     expect(out.memories).toEqual([]);
   });
 
+  it('keeps no-match confidence candidates out of injected memory context even near the score threshold', async () => {
+    const candidate = ev(
+      'e-low-confidence',
+      'agent:main:alpha',
+      'agent_response',
+      'Calendar birthday reminder should remain only a diagnostic candidate.',
+      'noise/calendar'
+    );
+    const eventStore = {
+      ...fakeEventStore,
+      async getEvent(id: string) {
+        if (id === candidate.id) return candidate;
+        return fakeEventStore.getEvent(id);
+      }
+    };
+    const vectorStore = {
+      async search() {
+        return [{
+          id: 'v-low-confidence',
+          eventId: candidate.id,
+          content: candidate.content,
+          score: 0.55,
+          sessionId: candidate.sessionId,
+          eventType: candidate.eventType,
+          timestamp: candidate.timestamp.toISOString()
+        }];
+      }
+    };
+    const retriever = new Retriever(eventStore as any, vectorStore as any, fakeEmbedder as any, new Matcher());
+
+    const out = await retriever.retrieve('calendar birthday reminder', {
+      strategy: 'deep',
+      topK: 5,
+      minScore: 0.1,
+      includeSessionContext: false
+    });
+
+    expect(out.matchResult.confidence).toBe('none');
+    expect(out.memories).toEqual([]);
+    expect(out.context).toBe('');
+    expect(out.candidateDebug?.map((detail) => detail.eventId)).toContain(candidate.id);
+  });
+
   it('keeps technical identifier matches when candidate content contains the identifier', async () => {
     const technical = ev(
       'e3',
@@ -316,6 +359,53 @@ describe('Retriever strategy/scope', () => {
       includeSessionContext: false
     });
     expect(topicShiftOut.memories.map((memory) => memory.event.id)).not.toContain('e-current-plan');
+  });
+
+  it('keeps stale/superseded terminology when the user asks for historical stale-state details', async () => {
+    const staleLesson = ev(
+      'e-stale-history',
+      'agent:main:history',
+      'session_summary',
+      'Stale operational state migration lesson: recover the replay gate by rerunning validation and preserving source references.',
+      'history/stale-operational-state'
+    );
+    const eventStore = {
+      async keywordSearch() {
+        return [];
+      },
+      async getRecentEvents() {
+        return [staleLesson];
+      },
+      async getEvent(id: string) {
+        return id === staleLesson.id ? staleLesson : null;
+      },
+      async getSessionEvents(sessionId: string) {
+        return [staleLesson].filter((event) => event.sessionId === sessionId);
+      }
+    };
+    const vectorStore = {
+      async search() {
+        return [{
+          id: 'v-stale-history',
+          eventId: staleLesson.id,
+          content: staleLesson.content,
+          score: 0.94,
+          sessionId: staleLesson.sessionId,
+          eventType: staleLesson.eventType,
+          timestamp: staleLesson.timestamp.toISOString()
+        }];
+      }
+    };
+    const retriever = new Retriever(eventStore as any, vectorStore as any, fakeEmbedder as any, new Matcher());
+
+    const out = await retriever.retrieve('stale operational state migration lesson', {
+      strategy: 'deep',
+      topK: 2,
+      minScore: 0.1,
+      includeSessionContext: false
+    });
+
+    expect(out.memories.map((memory) => memory.event.id)).toContain('e-stale-history');
   });
 
   it('keeps continuation and repair candidates that do not contain injected quality vocabulary', async () => {

@@ -58,4 +58,20 @@ describe('product validation matrix', () => {
     expect(markdown).toContain('tests/core/codex-session-history-importer-validation.test.ts');
     expect(markdown).toContain('tests/core/hermes-session-history-importer-validation.test.ts');
   });
+
+  it('documents context-pack budget controls and the MCP-only CLI/API parity boundary', () => {
+    const contextPackSurface = productValidationMatrix.find((surface) => surface.id === 'mcp.context.pack');
+    expect(contextPackSurface).toBeDefined();
+
+    const searchableText = [
+      ...(contextPackSurface?.requirements ?? []),
+      ...(contextPackSurface?.evidence.map((item) => item.note) ?? [])
+    ].join('\n');
+
+    expect(searchableText).toContain('maxChars');
+    expect(searchableText).toContain('maxTokens');
+    expect(searchableText).toContain('compression');
+    expect(searchableText).toContain('MCP-only');
+    expect(searchableText).toContain('CLI/API parity');
+  });
 });

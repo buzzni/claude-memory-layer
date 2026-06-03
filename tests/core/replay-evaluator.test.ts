@@ -162,6 +162,66 @@ describe('replay fixture evaluator', () => {
     });
   });
 
+  it('fails no-match qrels when low-confidence candidates would still be injected', async () => {
+    const retrievalRunner: ReplayRetrievalRunner = async (_query, input) => {
+      if (input.query.queryId === 'q-no-match') {
+        return { retrievedIds: ['m-noise'], candidateIds: ['m-noise'], confidence: 'none' };
+      }
+      return { retrievedIds: ['m-positive'], candidateIds: ['m-positive'], confidence: 'high' };
+    };
+
+    const report = await evaluateReplayFixture({
+      name: 'strict-no-match-fixture',
+      ks: [1],
+      queries: [
+        {
+          queryId: 'q-positive',
+          query: 'positive replay answer',
+          expectation: 'match',
+          expectedIds: ['m-positive'],
+          expectedRelevance: { 'm-positive': 2 }
+        },
+        {
+          queryId: 'q-no-match',
+          query: 'unrelated topic should not inject context',
+          expectation: 'no_match',
+          expectedIds: [],
+          expectedRelevance: {},
+          forbiddenIds: []
+        }
+      ],
+      memories: [
+        { id: 'm-positive', content: 'positive replay answer' },
+        { id: 'm-noise', content: 'low confidence unrelated candidate' }
+      ]
+    }, {
+      generatedAt: '2026-05-05T00:00:00.000Z',
+      retrievalRunner
+    });
+
+    expect(report.summary).toMatchObject({
+      noMatchCorrect: 0,
+      noMatchAccuracy: 0,
+      failedQueryCount: 1
+    });
+    expect(report.perQuery[1]).toMatchObject({
+      queryId: 'q-no-match',
+      retrievedIds: ['m-noise'],
+      forbiddenHitIds: [],
+      noMatchSatisfied: false,
+      confidence: 'none'
+    });
+    expect(report.summary.failedQueries).toEqual([
+      {
+        queryId: 'q-no-match',
+        expectedIds: [],
+        retrievedIds: ['m-noise'],
+        expectation: 'no_match',
+        reason: 'unexpected_match'
+      }
+    ]);
+  });
+
   it('formats markdown reports without raw query or memory content', async () => {
     const report = await evaluateReplayFixture(fixture, {
       generatedAt: '2026-05-05T00:00:00.000Z',
@@ -283,7 +343,10 @@ describe('replay fixture evaluator', () => {
     expect(report.summary.failedQueryCount).toBe(0);
     expect(report.summary.categoryBreakdown['korean-short-follow-up']?.queryYieldRate).toBe(1);
     expect(report.summary.categoryBreakdown['stale-memory-trap']?.noMatchAccuracy).toBe(1);
+    expect(report.summary.categoryBreakdown['stale-continuation-trap']?.noMatchAccuracy).toBe(1);
     expect(report.summary.categoryBreakdown['cross-project-contamination']?.forbiddenHitCount).toBe(0);
+    expect(report.summary.categoryBreakdown['compaction-handoff-noise']?.noMatchAccuracy).toBe(1);
+    expect(report.summary.categoryBreakdown['compaction-handoff-noise']?.forbiddenHitCount).toBe(0);
   });
 
   it('recalls privacy/dashboard decision memories in the golden replay set', async () => {
@@ -381,8 +444,28 @@ describe('replay fixture evaluator', () => {
       'decision-recall',
       'topic-shift-no-match',
       'stale-memory-trap',
-      'cross-project-contamination'
+      'stale-continuation-trap',
+      'cross-project-contamination',
+      'compaction-handoff-noise'
     ]));
+    const compactionTrap = fixture.queries.find(
+      (query) => query.queryId === 'q-compaction-handoff-trap-active-task'
+    );
+    expect(compactionTrap).toMatchObject({
+      category: 'compaction-handoff-noise',
+      expectation: 'no_match',
+      expectedIds: [],
+      forbiddenIds: ['m-compaction-handoff-summary', 'm-compressed-todo-state']
+    });
+    const staleContinuationTrap = fixture.queries.find(
+      (query) => query.queryId === 'q-stale-continuation-trap-compacted-next-step'
+    );
+    expect(staleContinuationTrap).toMatchObject({
+      category: 'stale-continuation-trap',
+      expectation: 'no_match',
+      expectedIds: [],
+      forbiddenIds: ['m-stale-compacted-next-step']
+    });
     expect(packageJson.scripts?.['eval:retrieval-replay']).toBe(
       'tsx scripts/replay-retrieval-benchmark.ts --fixture benchmarks/replay/golden-memory-usefulness-v1.json --format markdown --no-per-query --min-query-yield 1 --min-no-match-accuracy 1 --max-forbidden-hits 0 --max-failed-queries 0'
     );

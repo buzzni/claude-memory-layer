@@ -107,6 +107,24 @@
       "forbiddenIds": ["m-stale-resolved-query-leak"]
     },
     {
+      "queryId": "q-stale-continuation-trap-compacted-next-step",
+      "category": "stale-continuation-trap",
+      "query": "continue using obsolete compacted handoff as current status marker",
+      "expectation": "no_match",
+      "expectedIds": [],
+      "expectedRelevance": {},
+      "forbiddenIds": ["m-stale-compacted-next-step"]
+    },
+    {
+      "queryId": "q-compaction-handoff-trap-active-task",
+      "category": "compaction-handoff-noise",
+      "query": "continue from compacted Active Task Goal Constraints Preferences Completed Actions handoff",
+      "expectation": "no_match",
+      "expectedIds": [],
+      "expectedRelevance": {},
+      "forbiddenIds": ["m-compaction-handoff-summary", "m-compressed-todo-state"]
+    },
+    {
       "queryId": "q-topic-shift-no-match-weather",
       "category": "topic-shift-no-match",
       "query": "recommend lunch near the office today",
@@ -195,6 +213,18 @@
     {
       "id": "m-independent-review-required",
       "content": "Pre commit workflow uses an independent reviewer on the staged diff and treats security or logic findings as blockers."
+    },
+    {
+      "id": "m-stale-compacted-next-step",
+      "content": "Obsolete compacted continuation handoff said the current status marker was to start rerank tuning. This stale after replay gate planning and should not be injected as current context."
+    },
+    {
+      "id": "m-compaction-handoff-summary",
+      "content": "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. This is a handoff from a previous context window. ## Active Task\n## Goal\n## Constraints & Preferences\n## Completed Actions\nSynthetic handoff placeholder for replay only."
+    },
+    {
+      "id": "m-compressed-todo-state",
+      "content": "[Your active task list was preserved across context compression] Synthetic todo state preserved for replay only: inspect, implement, validate."
     },
     {
       "id": "m-stale-old-pr-status",

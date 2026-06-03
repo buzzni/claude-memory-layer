@@ -122,6 +122,10 @@ export async function handleToolCall(
       validateMemContextPackPerspectiveArgs(args);
     }
 
+    if (name === 'mem-context-pack') {
+      validateMemContextPackBudgetArgs(args);
+    }
+
     if (MEMORY_OPERATION_TOOL_NAMES.has(name)) {
       return await handleMemoryOperationTool(name, args);
     }
@@ -996,9 +1000,10 @@ async function handleExternalMarketContext(args: Record<string, unknown>): Promi
 async function handleMemSearch(memoryService: MemoryService, args: Record<string, unknown>): Promise<ToolResult> {
   const query = args.query as string;
   const topK = Math.min((args.topK as number) || 5, 20);
+  const fetchTopK = Math.min(topK * 3, 20);
   const sessionId = args.sessionId as string | undefined;
 
-  const search = await retrieveMcpMemories(memoryService, query, { topK, sessionId });
+  const search = await retrieveMcpMemories(memoryService, query, { topK, fetchTopK, sessionId });
 
   const lines: string[] = [
     '## Memory Search Results',
@@ -1033,6 +1038,7 @@ async function handleMemSearch(memoryService: MemoryService, args: Record<string
 
 interface McpMemoryRetrievalOptions {
   topK: number;
+  fetchTopK?: number;
   sessionId?: string;
 }
 
@@ -1049,31 +1055,38 @@ async function retrieveMcpMemories(
   query: string,
   options: McpMemoryRetrievalOptions
 ): Promise<McpMemoryRetrievalResult> {
+  const fetchTopK = Math.max(options.topK, options.fetchTopK ?? options.topK);
   try {
     const result = await memoryService.retrieveMemories(query, {
-      topK: options.topK,
+      topK: fetchTopK,
       sessionId: options.sessionId,
       recordTrace: false
     });
-    return { memories: result.memories };
+    return { memories: selectMcpMemoryResults(result.memories, options.topK) };
   } catch (error) {
     if (!isVectorSchemaMismatchError(error)) {
       throw error;
     }
 
     try {
-      const memories = options.sessionId
+      const candidates = options.sessionId
         ? rankSessionKeywordMatches(
           query,
           await memoryService.getSessionHistory(options.sessionId),
-          options.topK
+          fetchTopK
         )
-        : await memoryService.keywordSearch(query, { topK: options.topK });
-      return { memories, warning: SEMANTIC_VECTOR_FALLBACK_WARNING };
+        : await memoryService.keywordSearch(query, { topK: fetchTopK });
+      return { memories: selectMcpMemoryResults(candidates, options.topK), warning: SEMANTIC_VECTOR_FALLBACK_WARNING };
     } catch {
       return { memories: [], warning: SEMANTIC_VECTOR_FALLBACK_FAILED_WARNING };
     }
   }
+}
+
+function selectMcpMemoryResults(memories: ContextPackMemory[], topK: number): ContextPackMemory[] {
+  return memories
+    .filter((memory) => !isLowSignalContextContent(memory.event.content || ''))
+    .slice(0, topK);
 }
 
 function isVectorSchemaMismatchError(error: unknown): boolean {
@@ -1138,9 +1151,11 @@ async function handleMemTimeline(memoryService: MemoryService, args: Record<stri
       continue;
     }
 
-    // Get session events
+    // Get session events, keeping raw handoff artifacts available through mem-details
+    // while suppressing them from default timeline context windows.
     const sessionEvents = recentEvents
       .filter(e => e.sessionId === targetEvent.sessionId)
+      .filter(e => e.id === targetEvent.id || !isLowSignalContextContent(e.content || ''))
       .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
 
     const eventIndex = sessionEvents.findIndex(e => e.id === targetEvent.id);
@@ -1155,7 +1170,10 @@ async function handleMemTimeline(memoryService: MemoryService, args: Record<stri
       const isTarget = e.id === targetEvent.id;
       const marker = isTarget ? '**→**' : '   ';
       const time = e.timestamp.toLocaleTimeString();
-      const preview = e.content.slice(0, 60) + (e.content.length > 60 ? '...' : '');
+      const lowSignal = isLowSignalContextContent(e.content || '');
+      const preview = lowSignal
+        ? '[low-signal context artifact suppressed; use mem-details for raw source]'
+        : e.content.slice(0, 60) + (e.content.length > 60 ? '...' : '');
       const citationId = generateCitationId(e.id);
 
       lines.push(`${marker} ${time} [${citationId}] ${e.eventType}: ${preview}`);
@@ -1316,6 +1334,7 @@ async function handleMemContextPack(memoryService: MemoryService, args: Record<s
   if (compression !== 'off' || maxContextChars !== undefined) {
     lines.push('### Compression Notice', '');
     lines.push('- Context-pack compression is applied only to LLM-facing previews; original events remain available through source refs.');
+    lines.push('- Privacy filters run before compression and final preview sanitization runs after compression.');
     if (maxContextChars !== undefined) {
       lines.push(`- Hard output budget: ${maxContextChars} characters; use follow-up lookups to expand trimmed sources.`);
     }
@@ -1507,7 +1526,8 @@ async function handleMemProjectTimeline(memoryService: MemoryService, args: Reco
   const limit = numberArg(args.limit, 50, 1, 500);
   const sessionLimit = numberArg(args.sessionLimit, 10, 1, 50);
   const recentEvents = await memoryService.getRecentEvents(limit);
-  const sessions = summarizeSessions(recentEvents, sessionLimit);
+  const timelineEvents = recentEvents.filter((event) => !isLowSignalContextContent(event.content || ''));
+  const sessions = summarizeSessions(timelineEvents, sessionLimit);
 
   const lines: string[] = [
     '## Project Memory Timeline',
@@ -1928,10 +1948,11 @@ function formatRelevantMemoryLine(
   formatOptions: ContextPackFormatOptions = DEFAULT_CONTEXT_PACK_FORMAT_OPTIONS
 ): string {
   const citationId = generateCitationId(event.id);
+  const previewBudget = formatOptions.compression === 'off' ? 260 : 180;
   return [
     `${index}. [mem:${citationId}] score=${score.toFixed(2)} type=${event.eventType} date=${event.timestamp.toISOString()} session=${event.sessionId}`,
     `   source=${sourceForEvent(event)}`,
-    `   ${contextPackPreview(event, 260, formatOptions)}`,
+    `   ${contextPackPreview(event, previewBudget, formatOptions)}`,
     ''
   ].join('\n');
 }
@@ -2027,6 +2048,7 @@ function contextPackPreview(
   const compressed = MCP_CONTEXT_COMPRESSOR.compress(privacyFiltered, {
     mode: options.compression,
     source: sourceForEvent(event),
+    sourceRef: `mem:${generateCitationId(event.id)}`,
     metadata: {
       ...safeCompressionMetadata(event.metadata),
       eventType: event.eventType
@@ -2056,9 +2078,10 @@ function appendCompressionTelemetry(lines: string[], metadata: ContextCompressio
   const summary = summarizeCompressionTelemetry(metadata);
   const sources = summary.bySource.map((item) => `${item.source}:${item.items}`).join(',');
   const strategies = summary.byStrategy.map((item) => `${item.strategy}:${item.items}`).join(',');
+  const sourceRefsAvailable = metadata.filter((item) => item.sourceRef !== undefined).length;
   lines.push(
     '- Compression telemetry: '
-      + `items=${summary.totalItems} originalChars=${summary.totalOriginalChars} compressedChars=${summary.totalCompressedChars} savedChars=${summary.totalSavedChars} sources=${sources || 'n/a'} strategies=${strategies || 'n/a'}`,
+      + `items=${summary.totalItems} originalChars=${summary.totalOriginalChars} compressedChars=${summary.totalCompressedChars} savedChars=${summary.totalSavedChars} omittedLines=${summary.totalOmittedLines} sourceRefsPreserved=${summary.sourceRefsPreserved}/${sourceRefsAvailable} sources=${sources || 'n/a'} strategies=${strategies || 'n/a'}`,
     ''
   );
 }
@@ -2070,19 +2093,26 @@ function contextCompressionModeArg(value: unknown, hasBudget: boolean): ContextC
   throw new Error('Invalid compression: expected off, safe, or aggressive');
 }
 
+function validateMemContextPackBudgetArgs(args: Record<string, unknown>): void {
+  const maxContextChars = contextPackMaxCharsArg(args);
+  contextCompressionModeArg(args.compression, maxContextChars !== undefined);
+}
+
 function contextPackMaxCharsArg(args: Record<string, unknown>): number | undefined {
-  const maxChars = optionalNumberArg(args.maxChars, CONTEXT_PACK_MIN_HARD_BUDGET_CHARS, CONTEXT_PACK_MAX_CHARS_CAP);
-  const maxTokens = optionalNumberArg(args.maxTokens, 250, Math.floor(CONTEXT_PACK_MAX_CHARS_CAP / 4));
+  const maxChars = optionalNumberArg(args.maxChars, 'maxChars', CONTEXT_PACK_MIN_HARD_BUDGET_CHARS, CONTEXT_PACK_MAX_CHARS_CAP);
+  const maxTokens = optionalNumberArg(args.maxTokens, 'maxTokens', 250, Math.floor(CONTEXT_PACK_MAX_CHARS_CAP / 4));
   const tokenChars = maxTokens === undefined ? undefined : maxTokens * 4;
   if (maxChars !== undefined && tokenChars !== undefined) return Math.min(maxChars, tokenChars);
   return maxChars ?? tokenChars;
 }
 
-function optionalNumberArg(value: unknown, min: number, max: number): number | undefined {
+function optionalNumberArg(value: unknown, name: string, min: number, max: number): number | undefined {
   if (value === undefined || value === null || value === '') return undefined;
   const parsed = typeof value === 'number' ? value : Number(value);
-  if (!Number.isFinite(parsed)) return undefined;
-  return Math.min(max, Math.max(min, Math.floor(parsed)));
+  if (!Number.isFinite(parsed) || parsed < min || parsed > max) {
+    throw new Error(`Invalid ${name}: expected number between ${min} and ${max}`);
+  }
+  return Math.floor(parsed);
 }
 
 function applyContextPackBudget(text: string, maxChars: number | undefined): string {

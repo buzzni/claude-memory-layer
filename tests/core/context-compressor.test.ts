@@ -122,6 +122,103 @@ describe('ContextCompressor', () => {
     expect(result.text).toContain('omittedLines=16');
   });
 
+  it('compresses diff, code, and markdown fixtures deterministically with re-expand source refs', () => {
+    const fixtures = [
+      {
+        contentType: 'text/x-diff',
+        signal: '+export function preserveSourceRefs() {',
+        content: [
+          'diff --git a/src/context.ts b/src/context.ts',
+          '--- a/src/context.ts',
+          '+++ b/src/context.ts',
+          '@@ -1,5 +1,7 @@',
+          '-export function oldPreview() {',
+          '+export function preserveSourceRefs() {',
+          '+  return "mem-source-ref";',
+          ...Array.from({ length: 35 }, (_, index) => ` context filler ${index}`)
+        ].join('\n')
+      },
+      {
+        contentType: 'text/typescript',
+        signal: 'export function preserveSourceRefs()',
+        content: [
+          'import { generateCitationId } from "./citation-generator.js";',
+          'export interface CompressionInput { sourceRef: string; }',
+          'export function preserveSourceRefs() {',
+          '  return "mem-source-ref";',
+          '}',
+          ...Array.from({ length: 35 }, (_, index) => `const lowSignal${index} = ${index};`)
+        ].join('\n')
+      },
+      {
+        contentType: 'text/markdown',
+        signal: '- Decision: preserve citation IDs in compressed previews.',
+        content: [
+          '# Compression Plan',
+          'Long intro paragraph that should not dominate the compressed preview.',
+          '## Decisions',
+          '- Decision: preserve citation IDs in compressed previews.',
+          '- Constraint: privacy filtering runs before compression.',
+          '## Next',
+          '- Next: expand full source via mem-source-ref.',
+          ...Array.from({ length: 35 }, (_, index) => `low signal paragraph ${index}`)
+        ].join('\n')
+      }
+    ];
+
+    const compressor = new ContextCompressor();
+
+    for (const fixture of fixtures) {
+      const first = compressor.compress(fixture.content, {
+        mode: 'safe',
+        source: 'hermes',
+        sourceRef: 'mem:abc123',
+        metadata: { contentType: fixture.contentType }
+      });
+      const second = compressor.compress(fixture.content, {
+        mode: 'safe',
+        source: 'hermes',
+        sourceRef: 'mem:abc123',
+        metadata: { contentType: fixture.contentType }
+      });
+
+      expect(first.text).toEqual(second.text);
+      expect(first.text).toContain('sourceRef=mem:abc123');
+      expect(first.text).toContain('expand=mem-source-ref');
+      expect(first.text).toContain(fixture.signal);
+      expect(first.metadata.sourceRefPreserved).toBe(true);
+      expect(first.metadata.omittedLines).toBeGreaterThan(0);
+      expect(first.metadata.compressedChars).toBeLessThan(first.metadata.originalChars);
+    }
+  });
+
+  it('keeps non-compressed mode backward compatible while retaining source-ref metadata', () => {
+    const content = 'ERROR keep the original text exactly as it was provided';
+
+    const compressor = new ContextCompressor();
+    const result = compressor.compress(content, {
+      mode: 'off',
+      source: 'hermes',
+      sourceRef: 'mem:abc123',
+      metadata: { contentType: 'text/x-log' }
+    });
+
+    expect(result.text).toBe(content);
+    expect(result.text).not.toContain('expand=mem-source-ref');
+    expect(result.metadata).toMatchObject({
+      mode: 'off',
+      source: 'hermes',
+      contentType: 'log',
+      strategy: 'none',
+      sourceRef: 'mem:abc123',
+      sourceRefPreserved: false,
+      originalChars: content.length,
+      compressedChars: content.length,
+      savedChars: 0,
+      omittedLines: 0
+    });
+  });
+
   it('summarizes aggregate compression telemetry without raw content', () => {
     const compressor = new ContextCompressor();
     const log = Array.from({ length: 30 }, (_, index) => `noise ${index}`).concat('ERROR important').join('\n');
@@ -145,6 +242,8 @@ describe('ContextCompressor', () => {
     expect(summary.totalCompressedChars).toBe(first.metadata.compressedChars + second.metadata.compressedChars);
     expect(summary.totalSavedChars).toBe(first.metadata.savedChars + second.metadata.savedChars);
     expect(summary.totalSavedChars).toBe(summary.bySource.reduce((sum, item) => sum + item.savedChars, 0));
+    expect(summary.sourceRefsPreserved).toBe(0);
+    expect(summary.totalOmittedLines).toBe(first.metadata.omittedLines + second.metadata.omittedLines);
     expect(summary.bySource).toEqual([
       expect.objectContaining({ source: 'codex', items: 1 }),
       expect.objectContaining({ source: 'hermes', items: 1 })

@@ -143,12 +143,24 @@ describe('MCP project context tools', () => {
     });
     expect(contextPackProperties.maxChars).toMatchObject({
       type: 'number',
+      minimum: 1000,
+      maximum: 50000,
       description: expect.stringContaining('Maximum final context-pack characters')
     });
+    const maxCharsDescription = String((contextPackProperties.maxChars as { description?: unknown }).description ?? '');
+    expect(maxCharsDescription).toContain('selected compression mode');
+    expect(maxCharsDescription).toContain('final assembly');
+    expect(maxCharsDescription).not.toContain('after safe compression');
     expect(contextPackProperties.maxTokens).toMatchObject({
       type: 'number',
-      description: expect.stringContaining('Maximum final context-pack tokens')
+      minimum: 250,
+      maximum: 12500,
+      description: expect.stringContaining('estimated at ~4 chars/token')
     });
+    const maxTokensDescription = String((contextPackProperties.maxTokens as { description?: unknown }).description ?? '');
+    expect(maxTokensDescription).toContain('selected compression mode');
+    expect(maxTokensDescription).toContain('final assembly');
+    expect(maxTokensDescription).not.toContain('after safe compression');
     const marketContextProperties = byName.get('external-market-context')?.inputSchema.properties as Record<string, unknown>;
     expect(marketContextProperties.projectPath).toMatchObject({ type: 'string' });
     expect(marketContextProperties.includeSnapshot).toMatchObject({ type: 'boolean' });
@@ -495,6 +507,35 @@ describe('MCP project context tools', () => {
     expect(mocks.projectService.retrieveMemories).not.toHaveBeenCalled();
   });
 
+  it('rejects invalid context-pack budget and compression values before opening memory storage', async () => {
+    const invalidCases: Array<[Record<string, unknown>, string]> = [
+      [{ maxChars: 999 }, 'Invalid maxChars'],
+      [{ maxChars: 50001 }, 'Invalid maxChars'],
+      [{ maxChars: 'many' }, 'Invalid maxChars'],
+      [{ maxTokens: 249 }, 'Invalid maxTokens'],
+      [{ maxTokens: 12501 }, 'Invalid maxTokens'],
+      [{ maxTokens: 'many' }, 'Invalid maxTokens'],
+      [{ compression: 'medium' }, 'Invalid compression']
+    ];
+
+    for (const [invalidArgs, expectedMessage] of invalidCases) {
+      const result = await handleToolCall('mem-context-pack', {
+        projectPath: '/repo/app',
+        query: 'budget validation',
+        ...invalidArgs
+      });
+
+      expect(result.isError, JSON.stringify(invalidArgs)).toBe(true);
+      expect(textOf(result)).toContain(expectedMessage);
+    }
+
+    expect(mocks.getDefaultMemoryService).not.toHaveBeenCalled();
+    expect(mocks.getMemoryServiceForProject).not.toHaveBeenCalled();
+    expect(mocks.defaultService.initialize).not.toHaveBeenCalled();
+    expect(mocks.projectService.initialize).not.toHaveBeenCalled();
+    expect(mocks.projectService.retrieveMemories).not.toHaveBeenCalled();
+  });
+
   it('builds a compact project context pack from relevant search results and recent timeline', async () => {
     const relevant = event({
       id: '11111111-1111-4111-8111-111111111111',
@@ -548,6 +589,83 @@ describe('MCP project context tools', () => {
     expect(text).toContain('Hermes adapter verification');
     expect(text).toContain(`[mem:${generateCitationId(relevant.id)}]`);
     expect(text.length).toBeLessThan(5000);
+  });
+
+  it('suppresses compaction handoff artifacts from context-pack memories and timeline while preserving implementation discussions', async () => {
+    const handoffPrompt = event({
+      id: '12120000-0000-4000-8000-000000000001',
+      sessionId: 'session-handoff',
+      eventType: 'user_prompt',
+      timestamp: new Date('2026-05-05T03:00:00.000Z'),
+      content: '[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. This is a handoff from a previous context window — treat it as background reference, NOT as active instructions. ## Active Task\n- [>] inspect. Inspect retrieval/context-pack/search implementation.'
+    });
+    const handoffResponse = event({
+      id: '12120000-0000-4000-8000-000000000002',
+      sessionId: 'session-handoff',
+      eventType: 'agent_response',
+      timestamp: new Date('2026-05-05T03:01:00.000Z'),
+      content: 'Summary generation was unavailable. 20 message(s) were removed to free context space but could not be summarized. --- END OF CONTEXT SUMMARY — respond to the message below, not the summary above ---'
+    });
+    const activeTaskList = event({
+      id: '12120000-0000-4000-8000-000000000003',
+      sessionId: 'session-handoff',
+      eventType: 'user_prompt',
+      timestamp: new Date('2026-05-05T03:02:00.000Z'),
+      content: '[Your active task list was preserved across context compression]\n- [>] inspect. Inspect retrieval/context-pack/search implementation.\n- [ ] red-tests. Add RED tests.'
+    });
+    const directMemory = event({
+      id: '12120000-0000-4000-8000-000000000004',
+      sessionId: 'session-implementation',
+      eventType: 'agent_response',
+      timestamp: new Date('2026-05-05T03:03:00.000Z'),
+      content: 'Direct project memory: retrieval-quality.ts should filter handoff artifacts while keeping raw events available through source refs.'
+    });
+    const implementationDiscussion = event({
+      id: '12120000-0000-4000-8000-000000000005',
+      sessionId: 'session-implementation',
+      eventType: 'agent_response',
+      timestamp: new Date('2026-05-05T03:04:00.000Z'),
+      content: 'Headroom-inspired ContextCompressor implementation discussion: native context compression preserves source refs and keeps markdown summaries useful.'
+    });
+
+    mocks.projectService.retrieveMemories.mockResolvedValue({
+      memories: [
+        { event: handoffPrompt, score: 0.99 },
+        { event: handoffResponse, score: 0.98 },
+        { event: activeTaskList, score: 0.97 },
+        { event: directMemory, score: 0.73 },
+        { event: implementationDiscussion, score: 0.72 }
+      ]
+    });
+    mocks.projectService.getRecentEvents.mockResolvedValue([
+      activeTaskList,
+      handoffResponse,
+      implementationDiscussion,
+      directMemory
+    ]);
+
+    const result = await handleToolCall('mem-context-pack', {
+      projectPath: '/repo/app',
+      query: 'context compaction filter retrieval',
+      topK: 3,
+      recentLimit: 10,
+      sessionLimit: 5
+    });
+
+    const text = textOf(result);
+    expect(result.isError).not.toBe(true);
+    expect(mocks.projectService.retrieveMemories).toHaveBeenCalledWith('context compaction filter retrieval', {
+      topK: 9,
+      sessionId: undefined,
+      recordTrace: false
+    });
+    expect(text).toContain('Direct project memory');
+    expect(text).toContain('Headroom-inspired ContextCompressor implementation discussion');
+    expect(text).not.toContain('CONTEXT COMPACTION');
+    expect(text).not.toContain('Earlier turns were compacted');
+    expect(text).not.toContain('Summary generation was unavailable');
+    expect(text).not.toContain('active task list was preserved');
+    expect(text).not.toContain('red-tests. Add RED tests');
   });
 
   it('compresses noisy context-pack previews within a hard character budget while preserving source refs', async () => {
@@ -612,6 +730,119 @@ describe('MCP project context tools', () => {
     expect(text).not.toContain('api_key=fixture');
   });
 
+  it('honors compression off with a hard budget while keeping follow-up source refs', async () => {
+    const relevant = event({
+      id: '44444444-4444-4444-8444-444444444445',
+      sessionId: 'session-off-budget',
+      eventType: 'agent_response',
+      timestamp: new Date('2026-05-05T04:12:00.000Z'),
+      content: [
+        'Compression off keeps the beginning of the original preview for compatibility.',
+        Array.from({ length: 80 }, (_, index) => `verbose compatibility paragraph ${index}: unchanged mode`).join('\n'),
+        'tail content that may be trimmed by the hard context-pack budget'
+      ].join('\n'),
+      metadata: { source: 'hermes', projectPath: '/repo/app' }
+    });
+
+    mocks.projectService.retrieveMemories.mockResolvedValue({ memories: [{ event: relevant, score: 0.95 }] });
+    mocks.projectService.getRecentEvents.mockResolvedValue([relevant]);
+
+    const result = await handleToolCall('mem-context-pack', {
+      projectPath: '/repo/app',
+      query: 'compression off budget compatibility',
+      topK: 1,
+      recentLimit: 1,
+      sessionLimit: 1,
+      compression: 'off',
+      maxChars: 1200
+    });
+
+    const text = textOf(result);
+    const citation = generateCitationId(relevant.id);
+    expect(result.isError).not.toBe(true);
+    expect(text.length).toBeLessThanOrEqual(1200);
+    expect(text).toContain('- Compression: off; maxChars=1200');
+    expect(text).toContain('Compression off keeps the beginning');
+    expect(text).toContain(`[mem:${citation}]`);
+    expect(text).toContain(`ids=['${citation}']`);
+    expect(text).toContain('[context-pack truncated to fit maxChars; expand with source refs for full content]');
+    expect(text).not.toContain('Compression telemetry:');
+  });
+
+  it('applies approximate maxTokens budgeting and uses the stricter maxChars bound', async () => {
+    const relevant = event({
+      id: '44444444-4444-4444-8444-444444444446',
+      sessionId: 'session-token-budget',
+      eventType: 'agent_response',
+      timestamp: new Date('2026-05-05T04:14:00.000Z'),
+      content: [
+        Array.from({ length: 70 }, (_, index) => `token budget noise ${index}: ok`).join('\n'),
+        'ERROR token budget signal remains visible after approximate budgeting',
+        'Traceback: token budget frame should survive compression'
+      ].join('\n'),
+      metadata: { source: 'codex', contentType: 'text/x-log', projectPath: '/repo/app' }
+    });
+
+    mocks.projectService.retrieveMemories.mockResolvedValue({ memories: [{ event: relevant, score: 0.96 }] });
+    mocks.projectService.getRecentEvents.mockResolvedValue([relevant]);
+
+    const result = await handleToolCall('mem-context-pack', {
+      projectPath: '/repo/app',
+      query: 'max tokens budget',
+      topK: 1,
+      recentLimit: 1,
+      sessionLimit: 1,
+      maxTokens: 350,
+      maxChars: 1200
+    });
+
+    const text = textOf(result);
+    expect(result.isError).not.toBe(true);
+    expect(text.length).toBeLessThanOrEqual(1200);
+    expect(text).toContain('- Compression: safe; maxChars=1200');
+    expect(text).toContain('ERROR token budget signal remains visible');
+    expect(text).toContain('Source refs: mem-source-ref');
+    expect(text).not.toContain('token budget noise 69');
+  });
+
+  it('supports aggressive context-pack compression without losing source-ref expansion hints', async () => {
+    const relevant = event({
+      id: '44444444-4444-4444-8444-444444444447',
+      sessionId: 'session-aggressive-budget',
+      eventType: 'agent_response',
+      timestamp: new Date('2026-05-05T04:16:00.000Z'),
+      content: [
+        Array.from({ length: 90 }, (_, index) => `aggressive budget noise ${index}: ok`).join('\n'),
+        'ERROR aggressive compression keeps the highest-signal failure',
+        'Traceback: aggressive compression source-ref frame'
+      ].join('\n'),
+      metadata: { source: 'hermes', contentType: 'text/x-log', projectPath: '/repo/app' }
+    });
+
+    mocks.projectService.retrieveMemories.mockResolvedValue({ memories: [{ event: relevant, score: 0.96 }] });
+    mocks.projectService.getRecentEvents.mockResolvedValue([relevant]);
+
+    const result = await handleToolCall('mem-context-pack', {
+      projectPath: '/repo/app',
+      query: 'aggressive context-pack compression',
+      topK: 1,
+      recentLimit: 1,
+      sessionLimit: 1,
+      compression: 'aggressive',
+      maxChars: 1800
+    });
+
+    const text = textOf(result);
+    const citation = generateCitationId(relevant.id);
+    expect(result.isError).not.toBe(true);
+    expect(text.length).toBeLessThanOrEqual(1800);
+    expect(text).toContain('- Compression: aggressive; maxChars=1800');
+    expect(text).toContain(`sourceRef=mem:${citation}`);
+    expect(text).toContain('expand=mem-source-ref');
+    expect(text).toContain('ERROR aggressive compression keeps the highest-signal failure');
+    expect(text).not.toContain('aggressive budget noise 89');
+  });
+
   it('reports aggregate compression telemetry by source and strategy without raw private content', async () => {
     const logMemory = event({
       id: '66666666-6666-4666-8666-666666666666',
@@ -664,6 +895,66 @@ describe('MCP project context tools', () => {
     expect(text).toContain('# Context Compressor Plan');
     expect(text).not.toContain('fixture-private-value');
     expect(text).not.toContain('low signal paragraph that should not be echoed in telemetry');
+  });
+
+  it('preserves source refs in compressed relevant and timeline sections while documenting privacy order', async () => {
+    const relevant = event({
+      id: '88888888-8888-4888-8888-888888888881',
+      sessionId: 'session-source-ref-memory',
+      eventType: 'agent_response',
+      timestamp: new Date('2026-05-05T04:40:00.000Z'),
+      content: [
+        Array.from({ length: 45 }, (_, index) => `memory noise ${index}: ok`).join('\n'),
+        'ERROR relevant compressed source-ref signal remains expandable',
+        '<private>private-memory-sentinel</private>',
+        'api_key=dk should be removed before compression'
+      ].join('\n'),
+      metadata: { source: 'hermes', contentType: 'text/x-log', projectPath: '/repo/app' }
+    });
+    const timeline = event({
+      id: '88888888-8888-4888-8888-888888888882',
+      sessionId: 'session-source-ref-timeline',
+      eventType: 'agent_response',
+      timestamp: new Date('2026-05-05T04:45:00.000Z'),
+      content: [
+        Array.from({ length: 45 }, (_, index) => `timeline noise ${index}: ok`).join('\n'),
+        'ERROR timeline compressed source-ref signal remains expandable',
+        '<private>private-timeline-sentinel</private>',
+        'token=dk should be removed before compression'
+      ].join('\n'),
+      metadata: { source: 'codex', contentType: 'text/x-log', projectPath: '/repo/app' }
+    });
+
+    mocks.projectService.retrieveMemories.mockResolvedValue({ memories: [{ event: relevant, score: 0.96 }] });
+    mocks.projectService.getRecentEvents.mockResolvedValue([timeline, relevant]);
+
+    const result = await handleToolCall('mem-context-pack', {
+      projectPath: '/repo/app',
+      query: 'source ref preserving compression',
+      topK: 1,
+      recentLimit: 2,
+      sessionLimit: 2,
+      compression: 'safe',
+      maxChars: 2400
+    });
+
+    const text = textOf(result);
+    const relevantCitation = generateCitationId(relevant.id);
+    const timelineCitation = generateCitationId(timeline.id);
+    expect(result.isError).not.toBe(true);
+    expect(text).toContain('Privacy filters run before compression and final preview sanitization runs after compression.');
+    expect(text).toContain(`[mem:${relevantCitation}]`);
+    expect(text).toContain(`sourceRef=mem:${relevantCitation}`);
+    expect(text).toContain(`sourceRef=mem:${timelineCitation}`);
+    expect(text).toContain('expand=mem-source-ref');
+    expect(text).toContain('sourceRefsPreserved=2/2');
+    expect(text).toContain('omittedLines=');
+    expect(text).toContain('ERROR relevant compressed source-ref signal remains expandable');
+    expect(text).toContain('ERROR timeline compressed source-ref signal remains expandable');
+    expect(text).not.toContain('private-memory-sentinel');
+    expect(text).not.toContain('private-timeline-sentinel');
+    expect(text).not.toContain('api_key=dk');
+    expect(text).not.toContain('token=dk');
   });
 
   it('excludes sessions hidden by sessionLimit from compression telemetry', async () => {
@@ -1273,6 +1564,53 @@ describe('MCP project context tools', () => {
     expect(text).toContain('Source: codex');
     expect(text).not.toContain('/Users/example');
     expect(text).not.toContain('.codex/sessions');
+  });
+
+  it('suppresses compaction handoff artifacts from project timeline summaries', async () => {
+    mocks.projectService.getRecentEvents.mockResolvedValue([
+      event({
+        id: 'timeline-handoff-1',
+        sessionId: 'session-handoff',
+        eventType: 'user_prompt',
+        timestamp: new Date('2026-05-05T05:00:00.000Z'),
+        content: '[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. This is a handoff from a previous context window. ## Active Task'
+      }),
+      event({
+        id: 'timeline-handoff-2',
+        sessionId: 'session-handoff',
+        eventType: 'agent_response',
+        timestamp: new Date('2026-05-05T05:01:00.000Z'),
+        content: '[Your active task list was preserved across context compression]\n- [>] inspect. Inspect retrieval/context-pack/search implementation.'
+      }),
+      event({
+        id: 'timeline-direct-1',
+        sessionId: 'session-direct',
+        eventType: 'agent_response',
+        timestamp: new Date('2026-05-05T05:02:00.000Z'),
+        content: 'Project timeline should show actionable context-pack artifact filter progress.'
+      }),
+      event({
+        id: 'timeline-discussion-1',
+        sessionId: 'session-direct',
+        eventType: 'agent_response',
+        timestamp: new Date('2026-05-05T05:03:00.000Z'),
+        content: 'Legitimate context compression implementation discussion remains actionable timeline context.'
+      })
+    ]);
+
+    const result = await handleToolCall('mem-project-timeline', {
+      projectPath: '/repo/app',
+      limit: 10,
+      sessionLimit: 5
+    });
+
+    const text = textOf(result);
+    expect(result.isError).not.toBe(true);
+    expect(text).toContain('session-direct');
+    expect(text).toContain('Legitimate context compression implementation discussion');
+    expect(text).not.toContain('session-handoff');
+    expect(text).not.toContain('CONTEXT COMPACTION');
+    expect(text).not.toContain('active task list was preserved');
   });
 
   it('redacts sensitive source-agent metadata in timeline summaries', async () => {

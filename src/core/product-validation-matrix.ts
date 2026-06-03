@@ -180,12 +180,13 @@ export const productValidationMatrix: readonly ProductValidationSurface[] = [
     requirements: [
       'Expose an agent-ready project context pack that combines relevant retrieval results with recent project timeline.',
       'Support projectPath scoping so Hermes, Codex, and Claude Code can share the same project memory backend.',
-      'Keep output compact and citation-oriented so agents can follow up with source-ref or timeline tools.'
+      'Keep output compact and citation-oriented so agents can follow up with source-ref or timeline tools.',
+      'Document MCP-only context-pack budget controls (`maxChars`, approximate `maxTokens`, and `compression: off|safe|aggressive`) and make the CLI/API parity boundary explicit.'
     ],
     evidence: [
-      { kind: 'test', ref: 'tests/extensions/mcp-context-tools.test.ts', note: 'Asserts context-pack output, projectPath routing, compact relevant memory citations, and recent timeline inclusion.' },
-      { kind: 'source', ref: 'src/extensions/mcp/handlers.ts', note: 'mem-context-pack handler formats relevant memories plus session summaries.' },
-      { kind: 'source', ref: 'src/extensions/mcp/tools.ts', note: 'MCP tool schema advertises projectPath, topK, recentLimit, and sessionLimit options.' }
+      { kind: 'test', ref: 'tests/extensions/mcp-context-tools.test.ts', note: 'Asserts context-pack output, projectPath routing, compact relevant memory citations, sourceRef preservation, maxChars/maxTokens budget enforcement, compression modes, and recent timeline inclusion.' },
+      { kind: 'source', ref: 'src/extensions/mcp/handlers.ts', note: 'mem-context-pack handler formats relevant memories plus session summaries and validates MCP-only budget/compression arguments before storage access.' },
+      { kind: 'source', ref: 'src/extensions/mcp/tools.ts', note: 'MCP tool schema advertises projectPath, topK, recentLimit, sessionLimit, maxChars, maxTokens, and compression options; CLI/API parity is documented as MCP-only for context-pack generation.' }
     ]
   },
   {

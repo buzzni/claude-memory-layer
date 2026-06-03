@@ -18,6 +18,10 @@ const LOW_SIGNAL_CONTEXT_PATTERNS = [
   /<turn_aborted>/i,
   /^#\s*AGENTS\.md\s+instructions\b[\s\S]*<INSTRUCTIONS>/i,
   /^\s*(?:understood[,\s.]*)?(?:stopping|stopped|pausing|paused)\s+here\b[\s\S]{0,180}\blet\s+me\s+know\s+when\s+you(?:'d|\s+would)?\s+like\s+to\s+continue\b/i,
+  /^\s*\[?CONTEXT\s+COMPACTION\s*[—-]\s*REFERENCE\s+ONLY\]?\b[\s\S]{0,600}\b(?:earlier\s+turns\s+were\s+compacted|handoff\s+from\s+a\s+previous\s+context\s+window|active\s+task)\b/i,
+  /^\s*Summary\s+generation\s+was\s+unavailable\.\s*\d+\s+message\(s\)\s+were\s+removed\s+to\s+free\s+context\s+space\b/i,
+  /^\s*---\s*END\s+OF\s+CONTEXT\s+SUMMARY\b/i,
+  /^\s*\[Your\s+active\s+task\s+list\s+was\s+preserved\s+across\s+context\s+compression\]/i,
   /^➜\s+\S+\s+git:\([^)]*\)\s+/i,
   /^\$\s+\S+/i
 ];
@@ -35,7 +39,7 @@ const SHORT_REPAIR_FOLLOW_UP_PATTERNS = [
 const CURRENT_STATE_QUERY_PATTERNS = [
   /\bcurrent\b.*\b(?:state|status|deployment|blocker|pr|pull request)\b/i,
   /\b(?:still|as current|current)\b.*\b(?:unresolved|open|pending|not completed)\b/i,
-  /\b(?:old|obsolete|stale|resolved|already resolved)\b.*\b(?:current|still|unresolved|open|state|status)\b/i,
+  /\b(?:old|obsolete|stale|resolved|already resolved)\b.*\b(?:current|still|unresolved|open|status)\b/i,
   /(?:현재|아직|이전|오래된|해결된).*(?:상태|미해결|열린|블로커|PR|풀리퀘스트)/i
 ];
 
@@ -228,6 +232,22 @@ export function isShortRepairFollowUpQuery(query: string): boolean {
   const tokens = trimmed.match(/[A-Za-z0-9가-힣#._/-]+/g) ?? [];
   if (tokens.length > 8) return false;
   return SHORT_REPAIR_FOLLOW_UP_PATTERNS.some((pattern) => pattern.test(trimmed));
+}
+
+export function isLowConfidenceContextFallbackQuery(query: string): boolean {
+  const trimmed = query.trim();
+  if (!trimmed) return false;
+  if (isGenericContinuationQuery(trimmed) || isShortRepairFollowUpQuery(trimmed)) return true;
+
+  const terms = new Set(tokenizeQualityText(trimmed));
+  if ((terms.has('compacted') || terms.has('compaction')) && terms.has('handoff')) return false;
+  const hasContinuationRecall = /^(?:continue|resume)\b/i.test(trimmed) &&
+    (terms.has('work') || terms.has('step') || terms.has('task') || terms.has('last') || terms.has('completed'));
+  const hasValidationGateRecall = terms.has('validation') &&
+    (terms.has('gate') || terms.has('check')) &&
+    (terms.has('run') || terms.has('before') || terms.has('commit') || terms.has('committing') || terms.has('change'));
+
+  return hasContinuationRecall || hasValidationGateRecall;
 }
 
 export function isCurrentStateQuery(query: string): boolean {

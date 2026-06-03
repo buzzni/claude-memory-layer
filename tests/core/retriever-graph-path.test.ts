@@ -173,6 +173,38 @@ describe('Retriever graph path expansion', () => {
     }
   });
 
+  it('filters low-signal context artifacts even when graph paths find them', async () => {
+    const store = await createStore();
+    try {
+      const lowSignalEventId = await appendEvent(store, {
+        content: '[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. This is a handoff from a previous context window. ## Active Task'
+      });
+      insertEntity(store, {
+        entityId: 'entity-compaction-handoff',
+        canonicalKey: 'task:default:compaction_handoff',
+        title: 'Compaction Handoff'
+      });
+      insertEvidenceEdge(store, {
+        edgeId: 'edge-low-signal-graph-path',
+        eventId: lowSignalEventId,
+        entityId: 'entity-compaction-handoff',
+        weight: 0.9
+      });
+
+      const out = await createRetriever(store, true).retrieve('Compaction Handoff', {
+        strategy: 'fast',
+        topK: 5,
+        includeSessionContext: false,
+        graphHop: { enabled: true, maxHops: 1, hopPenalty: 0.1 }
+      });
+
+      expect(out.memories.map((memory) => memory.event.id)).not.toContain(lowSignalEventId);
+      expect(out.selectedDebug?.map((detail) => detail.eventId)).not.toContain(lowSignalEventId);
+    } finally {
+      await store.close();
+    }
+  });
+
   it('uses operations.graphExpansion.enabled as the orchestrator feature flag for default retrieval calls', async () => {
     const calls: Array<Record<string, unknown>> = [];
     const fakeRetriever = {

@@ -168,11 +168,15 @@ export const tools: Tool[] = [
         },
         maxChars: {
           type: 'number',
-          description: 'Maximum final context-pack characters after safe compression (default: no hard cap, max: 50000)'
+          minimum: 1000,
+          maximum: 50000,
+          description: 'Maximum final context-pack characters after the selected compression mode and final assembly trimming (default: no hard cap, max: 50000)'
         },
         maxTokens: {
           type: 'number',
-          description: 'Maximum final context-pack tokens, estimated at ~4 chars/token, after safe compression (default: no hard cap)'
+          minimum: 250,
+          maximum: 12500,
+          description: 'Maximum final context-pack tokens, estimated at ~4 chars/token after the selected compression mode and final assembly trimming (default: no hard cap)'
         },
         refreshLatest: {
           type: 'boolean',

@@ -22,6 +22,8 @@ import {
   hasTechnicalTermOverlap,
   isCommandArtifactQuery,
   isCurrentStateQuery,
+  isLowConfidenceContextFallbackQuery,
+  isLowSignalContextContent,
   isStaleOrSupersededContent,
   buildRetrievalQualityQuery,
   hasDiscriminativeTermOverlap,
@@ -323,7 +325,14 @@ export class Retriever {
       fallbackTrace.push('fallback:summary');
     }
 
-    const memories = await this.enrichResults(current.results.slice(0, opts.topK), opts as RetrievalOptions);
+    const selectedResults = current.results.slice(0, opts.topK).filter((result) => {
+      if (current.matchResult.confidence !== 'none') return true;
+      if (isLowConfidenceContextFallbackQuery(query)) {
+        return (result.semanticScore ?? result.score) >= 0.5 || result.score >= 0.5;
+      }
+      return (result.semanticScore ?? result.score) >= 0.62 || result.score >= 0.62;
+    });
+    const memories = await this.enrichResults(selectedResults, opts as RetrievalOptions, query);
     const context = this.buildContext(memories, opts.maxTokens);
 
     return {
@@ -332,7 +341,7 @@ export class Retriever {
       totalTokens: this.estimateTokens(context),
       context,
       fallbackTrace,
-      selectedDebug: current.results.slice(0, opts.topK).map((r: DebuggableSearchResult) => this.debugDetailForResult(r)),
+      selectedDebug: selectedResults.map((r: DebuggableSearchResult) => this.debugDetailForResult(r)),
       candidateDebug: (current.candidateResults || []).slice(0, Math.max(opts.topK * 3, 20)).map((r: DebuggableSearchResult) => this.debugDetailForResult(r)),
       rawQueryText: current.queryRewriteKind ? query : undefined,
       effectiveQueryText: current.effectiveQueryText,
@@ -479,6 +488,8 @@ export class Retriever {
     if (isCurrentStateQuery(options.query)) {
       filtered = filtered.filter((result) => !isStaleOrSupersededContent(result.content));
     }
+
+    filtered = filtered.filter((result) => !isLowSignalContextContent(result.content));
 
     filtered = filtered.filter((result) =>
       this.isGraphPathResult(result) || hasDiscriminativeTermOverlap(options.query, result.content)
@@ -931,7 +942,7 @@ export class Retriever {
     return this.eventStore.getRecentEvents(limit);
   }
 
-  private async enrichResults(results: SearchResult[], options: RetrievalOptions): Promise<MemoryWithContext[]> {
+  private async enrichResults(results: SearchResult[], options: RetrievalOptions, query: string): Promise<MemoryWithContext[]> {
     const memories: MemoryWithContext[] = [];
 
     for (const result of results) {
@@ -944,7 +955,7 @@ export class Retriever {
 
       let sessionContext: string | undefined;
       if (options.includeSessionContext) {
-        sessionContext = await this.getSessionContext(event.sessionId, event.id);
+        sessionContext = await this.getSessionContext(event.sessionId, event.id, query);
       }
 
       memories.push({ event, score: result.score, sessionContext });
@@ -953,7 +964,7 @@ export class Retriever {
     return memories;
   }
 
-  private async getSessionContext(sessionId: string, eventId: string): Promise<string | undefined> {
+  private async getSessionContext(sessionId: string, eventId: string, query: string): Promise<string | undefined> {
     const sessionEvents = await this.eventStore.getSessionEvents(sessionId);
     const eventIndex = sessionEvents.findIndex(e => e.id === eventId);
     if (eventIndex === -1) return undefined;
@@ -963,10 +974,14 @@ export class Retriever {
     const contextEvents = sessionEvents.slice(start, end);
     if (contextEvents.length <= 1) return undefined;
 
-    return contextEvents
+    const suppressStaleState = isCurrentStateQuery(query);
+    const contextLines = contextEvents
       .filter(e => e.id !== eventId)
-      .map(e => `[${e.eventType}]: ${e.content.slice(0, 200)}...`)
-      .join('\n');
+      .filter(e => !isLowSignalContextContent(e.content))
+      .filter(e => !(suppressStaleState && isStaleOrSupersededContent(e.content)))
+      .map(e => `[${e.eventType}]: ${e.content.slice(0, 200)}...`);
+
+    return contextLines.length > 0 ? contextLines.join('\n') : undefined;
   }
 
   private buildUnifiedContext(projectResult: RetrievalResult, sharedMemories: SharedTroubleshootingEntry[]): string {
