@@ -999,11 +999,12 @@ async function handleExternalMarketContext(args: Record<string, unknown>): Promi
 
 async function handleMemSearch(memoryService: MemoryService, args: Record<string, unknown>): Promise<ToolResult> {
   const query = args.query as string;
-  const topK = Math.min((args.topK as number) || 5, 20);
+  const topK = numberArg(args.topK, 5, 1, 20);
   const fetchTopK = Math.min(topK * 3, 20);
   const sessionId = args.sessionId as string | undefined;
+  const eventType = eventTypeArg(args.eventType);
 
-  const search = await retrieveMcpMemories(memoryService, query, { topK, fetchTopK, sessionId });
+  const search = await retrieveMcpMemories(memoryService, query, { topK, fetchTopK, sessionId, eventType });
 
   const lines: string[] = [
     '## Memory Search Results',
@@ -1020,7 +1021,7 @@ async function handleMemSearch(memoryService: MemoryService, args: Record<string
     const m = search.memories[i];
     const citationId = generateCitationId(m.event.id);
     const date = m.event.timestamp.toISOString().split('T')[0];
-    const preview = m.event.content.slice(0, 100) + (m.event.content.length > 100 ? '...' : '');
+    const preview = sanitizeOperationString(m.event.content, 100);
 
     lines.push(`### ${i + 1}. [mem:${citationId}] (score: ${m.score.toFixed(2)})`);
     lines.push(`**Type**: ${m.event.eventType} | **Date**: ${date}`);
@@ -1040,6 +1041,7 @@ interface McpMemoryRetrievalOptions {
   topK: number;
   fetchTopK?: number;
   sessionId?: string;
+  eventType?: EventType;
 }
 
 interface McpMemoryRetrievalResult {
@@ -1062,7 +1064,7 @@ async function retrieveMcpMemories(
       sessionId: options.sessionId,
       recordTrace: false
     });
-    return { memories: selectMcpMemoryResults(result.memories, options.topK) };
+    return { memories: selectMcpMemoryResults(result.memories, options.topK, options.eventType) };
   } catch (error) {
     if (!isVectorSchemaMismatchError(error)) {
       throw error;
@@ -1076,17 +1078,32 @@ async function retrieveMcpMemories(
           fetchTopK
         )
         : await memoryService.keywordSearch(query, { topK: fetchTopK });
-      return { memories: selectMcpMemoryResults(candidates, options.topK), warning: SEMANTIC_VECTOR_FALLBACK_WARNING };
+      return { memories: selectMcpMemoryResults(candidates, options.topK, options.eventType), warning: SEMANTIC_VECTOR_FALLBACK_WARNING };
     } catch {
       return { memories: [], warning: SEMANTIC_VECTOR_FALLBACK_FAILED_WARNING };
     }
   }
 }
 
-function selectMcpMemoryResults(memories: ContextPackMemory[], topK: number): ContextPackMemory[] {
+function selectMcpMemoryResults(memories: ContextPackMemory[], topK: number, eventType?: EventType): ContextPackMemory[] {
   return memories
     .filter((memory) => !isLowSignalContextContent(memory.event.content || ''))
+    .filter((memory) => eventType === undefined || memory.event.eventType === eventType)
     .slice(0, topK);
+}
+
+function eventTypeArg(value: unknown): EventType | undefined {
+  if (value === undefined || value === null || value === '') return undefined;
+  const normalized = String(value).trim();
+  if (
+    normalized === 'user_prompt' ||
+    normalized === 'agent_response' ||
+    normalized === 'tool_observation' ||
+    normalized === 'session_summary'
+  ) {
+    return normalized;
+  }
+  throw new Error('Invalid eventType: expected user_prompt, agent_response, tool_observation, or session_summary');
 }
 
 function isVectorSchemaMismatchError(error: unknown): boolean {
@@ -1173,7 +1190,7 @@ async function handleMemTimeline(memoryService: MemoryService, args: Record<stri
       const lowSignal = isLowSignalContextContent(e.content || '');
       const preview = lowSignal
         ? '[low-signal context artifact suppressed; use mem-details for raw source]'
-        : e.content.slice(0, 60) + (e.content.length > 60 ? '...' : '');
+        : sanitizeOperationString(e.content, 60);
       const citationId = generateCitationId(e.id);
 
       lines.push(`${marker} ${time} [${citationId}] ${e.eventType}: ${preview}`);

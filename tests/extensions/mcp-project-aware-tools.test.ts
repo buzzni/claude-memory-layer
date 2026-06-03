@@ -100,6 +100,139 @@ describe('MCP project-aware memory tools', () => {
     expect(result.content[0]?.text).toContain('project scoped memory result');
   });
 
+  it('redacts sensitive values and private paths from mem-search previews', async () => {
+    mocks.projectService.retrieveMemories.mockResolvedValue({
+      memories: [
+        {
+          score: 0.91,
+          event: {
+            id: 'event-sensitive-search-1',
+            sessionId: 'session-sensitive-search',
+            eventType: 'agent_response',
+            timestamp: new Date('2026-05-05T00:00:00.000Z'),
+            content: 'Debug note api_key=sensitive-fixture-value token=abc123 password=pw stored at /Users/example/.hermes/state.db for MCP context.',
+            metadata: {}
+          }
+        }
+      ]
+    });
+
+    const result = await handleToolCall('mem-search', {
+      query: 'sensitive preview',
+      projectPath: '/repo/app',
+      topK: 1
+    });
+
+    const text = String(result.content[0]?.text ?? '');
+    expect(result.isError).not.toBe(true);
+    expect(text).toContain('[REDACTED]');
+    expect(text).toContain('[path]');
+    expect(text).not.toContain('sensitive-fixture-value');
+    expect(text).not.toContain('abc123');
+    expect(text).not.toContain('password=pw');
+    expect(text).not.toContain('/Users/example');
+    expect(text).not.toContain('.hermes/state.db');
+  });
+
+  it('applies eventType filtering before rendering mem-search results', async () => {
+    mocks.projectService.retrieveMemories.mockResolvedValue({
+      memories: [
+        {
+          score: 0.91,
+          event: {
+            id: 'event-filter-user',
+            sessionId: 'session-filter',
+            eventType: 'user_prompt',
+            timestamp: new Date('2026-05-05T00:00:00.000Z'),
+            content: 'user prompt result should be filtered out',
+            metadata: {}
+          }
+        },
+        {
+          score: 0.88,
+          event: {
+            id: 'event-filter-agent',
+            sessionId: 'session-filter',
+            eventType: 'agent_response',
+            timestamp: new Date('2026-05-05T00:01:00.000Z'),
+            content: 'agent response result should remain visible',
+            metadata: {}
+          }
+        }
+      ]
+    });
+
+    const result = await handleToolCall('mem-search', {
+      query: 'event type filter',
+      projectPath: '/repo/app',
+      topK: 2,
+      eventType: 'agent_response'
+    });
+
+    const text = String(result.content[0]?.text ?? '');
+    expect(result.isError).not.toBe(true);
+    expect(text).toContain('Found 1 relevant memories');
+    expect(text).toContain('agent response result should remain visible');
+    expect(text).not.toContain('user prompt result should be filtered out');
+  });
+
+  it('normalizes invalid mem-search topK values before retrieval', async () => {
+    mocks.projectService.retrieveMemories.mockResolvedValue({ memories: [] });
+
+    await handleToolCall('mem-search', {
+      query: 'negative topK',
+      projectPath: '/repo/app',
+      topK: -7
+    });
+
+    expect(mocks.projectService.retrieveMemories).toHaveBeenLastCalledWith('negative topK', {
+      topK: 3,
+      sessionId: undefined,
+      recordTrace: false
+    });
+
+    await handleToolCall('mem-search', {
+      query: 'malformed topK',
+      projectPath: '/repo/app',
+      topK: 'not-a-number'
+    });
+
+    expect(mocks.projectService.retrieveMemories).toHaveBeenLastCalledWith('malformed topK', {
+      topK: 15,
+      sessionId: undefined,
+      recordTrace: false
+    });
+  });
+
+  it('redacts sensitive values and private paths from mem-timeline previews', async () => {
+    mocks.projectService.getRecentEvents.mockResolvedValue([
+      {
+        id: 'timeline-sensitive-target',
+        sessionId: 'session-sensitive-timeline',
+        eventType: 'agent_response',
+        timestamp: new Date('2026-05-05T00:01:00.000Z'),
+        content: 'Timeline note api_key=sensitive-fixture-value token=abc123 password=pw stored at /Users/example/.hermes/state.db.',
+        metadata: {}
+      }
+    ]);
+
+    const result = await handleToolCall('mem-timeline', {
+      projectPath: '/repo/app',
+      ids: ['timeline-sensitive-target'],
+      windowSize: 1
+    });
+
+    const text = String(result.content[0]?.text ?? '');
+    expect(result.isError).not.toBe(true);
+    expect(text).toContain('[REDACTED]');
+    expect(text).toContain('[path]');
+    expect(text).not.toContain('sensitive-fixture-value');
+    expect(text).not.toContain('abc123');
+    expect(text).not.toContain('password=pw');
+    expect(text).not.toContain('/Users/example');
+    expect(text).not.toContain('.hermes/state.db');
+  });
+
   it('overfetches then suppresses compaction handoff artifacts from mem-search results', async () => {
     mocks.projectService.retrieveMemories.mockResolvedValue({
       memories: [
