@@ -19,6 +19,7 @@ This index gathers the comparison/architecture notes used to guide the claude-me
 - [Memory Stats](../../dist/.claude-plugin/commands/memory-stats.md)
 - [Architecture Comparison And Recommendations](../../docs/ARCHITECTURE_COMPARISON_AND_RECOMMENDATIONS.md)
 - [Mcp Memory Service Comparative Review](../../docs/MCP_MEMORY_SERVICE_COMPARATIVE_REVIEW.md)
+- [MemPalace Targeted Improvement Plan](mempalace-targeted-improvement-plan.md)
 - [Memsearch Project Structure Analysis](../../docs/MEMSEARCH_PROJECT_STRUCTURE_ANALYSIS.md)
 - [Memu Adoption](../../docs/MEMU_ADOPTION.md)
 - [Project Structure Analysis](../../docs/PROJECT_STRUCTURE_ANALYSIS.md)

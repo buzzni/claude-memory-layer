@@ -323,6 +323,16 @@ export const tools: Tool[] = [
           type: 'number',
           description: 'Maximum recent events to scan for ID resolution (default: 10000, max: 50000)'
         },
+        includeNeighbors: {
+          type: 'boolean',
+          description: 'When true, include privacy-safe neighbor events from the same session around each resolved source reference.'
+        },
+        neighborWindow: {
+          type: 'number',
+          minimum: 0,
+          maximum: 5,
+          description: 'Number of before/after session neighbor events to include when includeNeighbors is true (default: 1, max: 5).'
+        },
         projectPath: projectPathProperty
       },
       required: ['ids']

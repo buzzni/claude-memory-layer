@@ -312,6 +312,7 @@ MCP client가 환경에 따라 PATH를 못 찾으면 `command -v claude-memory-l
 ### Advanced Features
 
 - **Citations System**: 검색 결과를 `[mem:abc123]` 형태로 추적하고 `source`/`mem-source-ref`로 근거 확인
+- **Source Neighbor Expansion**: `mem-source-ref(includeNeighbors=true, neighborWindow=1..5)`로 MemPalace식 hit 주변 세션 이벤트를 privacy-safe preview로 함께 확인
 - **Progressive Disclosure**: index → timeline → details 순서로 필요한 만큼만 확장해 토큰 비용 절감
 - **Codex/Hermes Importers**: read-only validate/replay 후 explicit import로만 mutation 수행
 - **Perspective Query Agent**: 관점별 observation + raw memory를 읽기 전용으로 조합하고 source refs를 유지
@@ -681,7 +682,7 @@ node dist/mcp/index.js
 | Context | `mem-context-pack` | 작업 시작용 relevant memory + recent timeline + follow-up refs |
 | Context | `mem-import-latest` | 최신 Claude/Codex/Hermes 세션을 bounded import 후 context-pack freshness 확보 |
 | Context | `mem-project-timeline` | 최근 프로젝트 메모리를 session/source/count/safe-preview로 요약 |
-| Context | `mem-source-ref` | `mem:`/`event:` ref를 redacted preview와 safe metadata로 해석 |
+| Context | `mem-source-ref` | `mem:`/`event:` ref를 redacted preview와 safe metadata로 해석; `includeNeighbors` + `neighborWindow`로 같은 세션의 전후 이벤트를 bounded/privacy-safe preview로 확장 |
 | Operations | `mem-facet-query` / `mem-facet-tag` | project-scoped facet 조회/태깅 |
 | Operations | `mem-action-list` / `mem-action-update` | 다음 작업/action 상태 조회·갱신 |
 | Operations | `mem-frontier` | blocked/next action frontier와 safe resume hints |
@@ -703,7 +704,7 @@ node dist/mcp/index.js
 ```text
 1. 새 작업 시작: mem-context-pack(projectPath, query)
 2. 최근 흐름 확인: mem-project-timeline(projectPath)
-3. 근거가 더 필요할 때: mem-source-ref(projectPath, ids=["mem:abc123"])
+3. 근거가 더 필요할 때: mem-source-ref(projectPath, ids=["mem:abc123"], includeNeighbors=true, neighborWindow=1)
 ```
 
 이 workflow는 Hermes/Codex/Claude Code가 같은 project-scoped memory backend를 공유할 때 특히 유용합니다. `mem-source-ref`는 raw transcript를 그대로 덤프하지 않고 allowlisted metadata와 privacy-filtered preview만 반환합니다.
