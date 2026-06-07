@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "rule": "core-no-forbidden-imports",
+      "from": "src/core/embedder.ts",
+      "to": "src/extensions/vector/index.js",
+      "reason": "Existing P0.1 Packet A import debt documented in docs/architecture/mempalace-targeted-improvement-plan.md; remove during Packet C boundary inversion."
+    },
+    {
+      "rule": "core-no-forbidden-imports",
+      "from": "src/core/engine/endless-memory-services.ts",
+      "to": "src/extensions/endless-memory/index.js",
+      "reason": "Existing P0.1 Packet A import debt documented in docs/architecture/mempalace-targeted-improvement-plan.md; remove during Packet C boundary inversion."
+    },
+    {
+      "rule": "core-no-forbidden-imports",
+      "from": "src/core/engine/shared-memory-services.ts",
+      "to": "src/extensions/shared-memory/index.js",
+      "reason": "Existing P0.1 Packet A import debt documented in docs/architecture/mempalace-targeted-improvement-plan.md; remove during Packet C boundary inversion."
+    },
+    {
+      "rule": "extensions-no-memory-service",
+      "from": "src/extensions/mcp/handlers.ts",
+      "to": "src/services/memory-service.js",
+      "reason": "Existing P0.1 MCP split import debt documented in docs/architecture/mempalace-targeted-improvement-plan.md; remove during Packet C/P1 MCP handler modularization."
+    }
+  ]
+}
