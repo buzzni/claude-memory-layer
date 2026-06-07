@@ -138,7 +138,7 @@ Every new or refactored MCP tool should answer these questions in its schema, re
 
 ## Packet work implications
 
-- Packet B source adapter work should make source identity, privacy class, transformations, incremental ingest, and evidence handles explicit before adding more import sources.
+- Packet B source adapter work should make source identity, privacy class, transformations, incremental ingest, and evidence handles explicit before adding more import sources; see [Source Adapter Contract](source-adapter-contract.md).
 - Packet C retrieval work should keep context-pack/retrieval output anchored to source refs and trace records, not to markdown mirrors or vector rows.
 - Packet D vector/outbox work should preserve the rule that vectors are rebuildable accelerators and outboxes are operational coordination.
 - Packet E MCP/API work should enforce the disclosure checklist above and prevent new tools from hiding which layer they touch.
