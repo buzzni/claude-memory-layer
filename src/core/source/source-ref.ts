@@ -9,6 +9,10 @@ import {
   isSourcePrivacyClass,
   looksLikeLocalAbsolutePath,
   looksLikePrivacySensitiveSourceValue,
+  safeGetOwnPropertyDescriptorForSourceSnapshot,
+  safeOwnKeysForSourceSnapshot,
+  safeReadOwnDataPropertyForSourceSnapshot,
+  snapshotAllowedRecordFields,
   isRecord,
   violation
 } from './source-schema.js';
@@ -26,40 +30,61 @@ export interface SourceRef {
   metadata?: Readonly<Record<string, SourceRefMetadataValue>>;
 }
 
+interface PreparedSourceRef {
+  readonly record?: Record<string, unknown>;
+  readonly metadata?: Readonly<Record<string, SourceRefMetadataValue>>;
+  readonly violations: SourceContractViolation[];
+}
+
 export function createSourceRef(ref: SourceRef): SourceRef {
-  const violations = validateSourceRef(ref);
-  if (violations.length > 0) {
-    throw new SourceContractValidationError(violations);
+  const prepared = prepareSourceRef(ref);
+  if (prepared.violations.length > 0 || !prepared.record) {
+    throw new SourceContractValidationError(prepared.violations);
   }
 
-  const evidenceHandle = getOwnField<string>(ref as unknown as Record<string, unknown>, 'evidenceHandle');
-  const metadata = getOwnField<Record<string, SourceRefMetadataValue>>(ref as unknown as Record<string, unknown>, 'metadata');
+  const kind = getOwnField<SourceRef['kind']>(prepared.record, 'kind');
+  const stableId = getOwnField<string>(prepared.record, 'stableId');
+  const publicHandle = getOwnField<string>(prepared.record, 'publicHandle');
+  const evidenceHandle = getOwnField<string>(prepared.record, 'evidenceHandle');
+  const privacyClass = getOwnField<SourcePrivacyClass>(prepared.record, 'privacyClass');
+  const captureMode = getOwnField<SourceCaptureMode>(prepared.record, 'captureMode');
   return Object.freeze({
-    kind: ref.kind,
-    stableId: ref.stableId,
-    publicHandle: ref.publicHandle,
+    kind: kind!,
+    stableId: stableId!,
+    publicHandle: publicHandle!,
     ...(evidenceHandle !== undefined ? { evidenceHandle } : {}),
-    privacyClass: ref.privacyClass,
-    captureMode: ref.captureMode,
-    ...(metadata ? { metadata: Object.freeze(Object.fromEntries(Object.entries(metadata))) } : {})
+    privacyClass: privacyClass!,
+    captureMode: captureMode!,
+    ...(prepared.metadata !== undefined ? { metadata: prepared.metadata } : {})
   });
 }
 
 export function validateSourceRef(ref: Partial<SourceRef> | undefined, path = 'sourceRef'): SourceContractViolation[] {
-  const violations: SourceContractViolation[] = [];
-  if (!ref || !isRecord(ref)) {
-    return [violation('sourceRef.required', path, 'Source ref is required.')];
+  return prepareSourceRef(ref, path).violations;
+}
+
+function prepareSourceRef(ref: Partial<SourceRef> | undefined, path = 'sourceRef'): PreparedSourceRef {
+  const snapshot = snapshotAllowedRecordFields(ref, ['kind', 'stableId', 'publicHandle', 'evidenceHandle', 'privacyClass', 'captureMode', 'metadata'], {
+    path,
+    requiredCode: 'sourceRef.required',
+    requiredMessage: 'Source ref is required.',
+    unknownCode: 'sourceRef.unknown_field',
+    unknownMessage: 'Source ref contains unsupported fields.',
+    accessorCode: 'sourceRef.accessor_field',
+    accessorMessage: 'Source ref fields must be data properties.'
+  });
+  if (!snapshot.record) {
+    return { violations: snapshot.violations };
   }
 
-  pushUnknownFieldViolation(ref, ['kind', 'stableId', 'publicHandle', 'evidenceHandle', 'privacyClass', 'captureMode', 'metadata'], 'sourceRef.unknown_field', path, violations);
-
-  const kind = getOwnField<string>(ref, 'kind');
-  const stableId = getOwnField<string>(ref, 'stableId');
-  const publicHandle = getOwnField<string>(ref, 'publicHandle');
-  const evidenceHandle = getOwnField<string>(ref, 'evidenceHandle');
-  const privacyClass = getOwnField(ref, 'privacyClass');
-  const captureMode = getOwnField(ref, 'captureMode');
-  const metadata = getOwnField(ref, 'metadata');
+  const violations: SourceContractViolation[] = [...snapshot.violations];
+  const kind = getOwnField<string>(snapshot.record, 'kind');
+  const stableId = getOwnField<string>(snapshot.record, 'stableId');
+  const publicHandle = getOwnField<string>(snapshot.record, 'publicHandle');
+  const evidenceHandle = getOwnField<string>(snapshot.record, 'evidenceHandle');
+  const privacyClass = getOwnField(snapshot.record, 'privacyClass');
+  const captureMode = getOwnField(snapshot.record, 'captureMode');
+  const metadata = getOwnField(snapshot.record, 'metadata');
 
   if (!hasText(kind)) {
     violations.push(violation('sourceRef.kind.required', `${path}.kind`, 'Source ref kind must be non-empty.'));
@@ -89,9 +114,14 @@ export function validateSourceRef(ref: Partial<SourceRef> | undefined, path = 's
     violations.push(violation('sourceRef.captureMode.invalid', `${path}.captureMode`, 'Source ref captureMode must be one of the bounded source capture modes.'));
   }
 
-  validateMetadata(metadata, `${path}.metadata`, violations);
+  const metadataSnapshot = snapshotSourceRefMetadata(metadata, `${path}.metadata`);
+  violations.push(...metadataSnapshot.violations);
 
-  return violations;
+  return {
+    record: snapshot.record,
+    metadata: metadataSnapshot.record,
+    violations
+  };
 }
 
 function validatePublicHandle(value: unknown, path: string, violations: SourceContractViolation[]): void {
@@ -121,30 +151,64 @@ function validateEvidenceHandle(value: unknown, path: string, violations: Source
   }
 }
 
-function validateMetadata(metadata: unknown, path: string, violations: SourceContractViolation[]): void {
-  if (metadata === undefined) return;
+function snapshotSourceRefMetadata(
+  metadata: unknown,
+  path: string
+): { record?: Readonly<Record<string, SourceRefMetadataValue>>; violations: SourceContractViolation[] } {
+  if (metadata === undefined) return { violations: [] };
   if (!isRecord(metadata)) {
-    violations.push(violation('sourceRef.metadata.invalid', path, 'Source ref metadata must be an object when present.'));
-    return;
+    return {
+      violations: [violation('sourceRef.metadata.invalid', path, 'Source ref metadata must be an object when present.')]
+    };
   }
 
-  const symbolKeys = Object.getOwnPropertySymbols(metadata);
-  symbolKeys.forEach((key, index) => {
-    const value = (metadata as Record<symbol, unknown>)[key];
-    const valuePath = `${path}.[symbol-${index}]`;
-    violations.push(violation('sourceRef.metadata.invalid_key', valuePath, 'Source ref metadata keys must be strings.'));
-    validateMetadataValue(value, valuePath, String(key.description ?? ''), violations);
-  });
+  const snapshot: Record<string, SourceRefMetadataValue> = Object.create(null);
+  const keySnapshot = safeOwnKeysForSourceSnapshot(metadata, path, 'sourceRef.metadata.accessor_field', 'Source ref metadata values must be data properties.');
+  const violations: SourceContractViolation[] = [...keySnapshot.violations];
 
-  Object.getOwnPropertyNames(metadata).forEach((key, index) => {
-    const value = (metadata as Record<string, unknown>)[key];
+  keySnapshot.keys.forEach((key, index) => {
+    if (typeof key !== 'string') {
+      const valuePath = `${path}.[symbol-${index}]`;
+      violations.push(violation('sourceRef.metadata.invalid_key', valuePath, 'Source ref metadata keys must be strings.'));
+      const descriptorSnapshot = safeGetOwnPropertyDescriptorForSourceSnapshot(metadata, key, valuePath, 'sourceRef.metadata.accessor_field', 'Source ref metadata values must be data properties.');
+      violations.push(...descriptorSnapshot.violations);
+      const descriptor = descriptorSnapshot.descriptor;
+      if (!descriptor || !('value' in descriptor)) {
+        violations.push(violation('sourceRef.metadata.accessor_field', valuePath, 'Source ref metadata values must be data properties.'));
+        return;
+      }
+      const readSnapshot = safeReadOwnDataPropertyForSourceSnapshot(metadata, key, descriptor, valuePath, 'sourceRef.metadata.accessor_field', 'Source ref metadata values must be data properties.');
+      violations.push(...readSnapshot.violations);
+      if (readSnapshot.violations.length > 0) return;
+      validateMetadataValue(readSnapshot.value, valuePath, propertyKeyDescription(key), violations);
+      return;
+    }
+
     const valuePath = metadataEntryPath(path, key, index);
     if (looksLikePrivacySensitiveSourceValue(key)) {
       violations.push(violation('sourceRef.metadata.privacy_sensitive', valuePath, 'Source ref metadata keys must not leak local state handles or credential-shaped values.'));
     }
-
-    validateMetadataValue(value, valuePath, key, violations);
+    const descriptorSnapshot = safeGetOwnPropertyDescriptorForSourceSnapshot(metadata, key, valuePath, 'sourceRef.metadata.accessor_field', 'Source ref metadata values must be data properties.');
+    violations.push(...descriptorSnapshot.violations);
+    const descriptor = descriptorSnapshot.descriptor;
+    if (!descriptor || !('value' in descriptor)) {
+      violations.push(violation('sourceRef.metadata.accessor_field', valuePath, 'Source ref metadata values must be data properties.'));
+      return;
+    }
+    const readSnapshot = safeReadOwnDataPropertyForSourceSnapshot(metadata, key, descriptor, valuePath, 'sourceRef.metadata.accessor_field', 'Source ref metadata values must be data properties.');
+    violations.push(...readSnapshot.violations);
+    if (readSnapshot.violations.length > 0) return;
+    validateMetadataValue(readSnapshot.value, valuePath, key, violations);
+    if (isSourceRefMetadataValue(readSnapshot.value)) {
+      snapshot[key] = readSnapshot.value;
+    }
   });
+
+  return { record: Object.freeze(snapshot), violations };
+}
+
+function isSourceRefMetadataValue(value: unknown): value is SourceRefMetadataValue {
+  return value === null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean';
 }
 
 function validateMetadataValue(value: unknown, valuePath: string, key: string, violations: SourceContractViolation[]): void {
@@ -174,23 +238,14 @@ function validateMetadataValue(value: unknown, valuePath: string, key: string, v
   violations.push(violation('sourceRef.metadata.invalid_value', valuePath, 'Source ref metadata values must be scalar strings, finite numbers, booleans, or null.'));
 }
 
+function propertyKeyDescription(key: PropertyKey): string {
+  return typeof key === 'symbol' ? String(key.description ?? '') : '';
+}
+
 function metadataEntryPath(path: string, key: string, index: number): string {
   if (looksLikePrivacySensitiveSourceValue(key)) {
     return `${path}.[redacted-key-${index}]`;
   }
   const sanitizedKey = key.replace(/[^A-Za-z0-9._:-]+/g, '_').slice(0, 64);
   return sanitizedKey ? `${path}.${sanitizedKey}` : `${path}.${index}`;
-}
-
-function pushUnknownFieldViolation(
-  record: Record<string, unknown>,
-  allowedFields: readonly string[],
-  code: string,
-  path: string,
-  violations: SourceContractViolation[]
-): void {
-  const allowed = new Set(allowedFields);
-  if (Reflect.ownKeys(record).some((key) => typeof key !== 'string' || !allowed.has(key))) {
-    violations.push(violation(code, path, 'Source ref contains unsupported fields.'));
-  }
 }

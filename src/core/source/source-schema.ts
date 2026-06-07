@@ -29,6 +29,21 @@ export interface SourceSchemaDeclaration {
   metadataSchema?: string;
 }
 
+export interface SourceRecordSnapshot {
+  readonly record?: Record<string, unknown>;
+  readonly violations: SourceContractViolation[];
+}
+
+export interface SourceRecordSnapshotOptions {
+  readonly path: string;
+  readonly requiredCode: string;
+  readonly requiredMessage: string;
+  readonly unknownCode: string;
+  readonly unknownMessage: string;
+  readonly accessorCode: string;
+  readonly accessorMessage: string;
+}
+
 export function isSourcePrivacyClass(value: unknown): value is SourcePrivacyClass {
   return isOneOf(SOURCE_PRIVACY_CLASSES, value);
 }
@@ -38,33 +53,42 @@ export function isSourceCaptureMode(value: unknown): value is SourceCaptureMode 
 }
 
 export function defineSourceSchema(schema: SourceSchemaDeclaration): SourceSchemaDeclaration {
-  const violations = validateSourceSchema(schema);
-  if (violations.length > 0) {
-    throw new SourceContractValidationError(violations);
+  const prepared = prepareSourceSchema(schema);
+  if (prepared.violations.length > 0 || !prepared.record) {
+    throw new SourceContractValidationError(prepared.violations);
   }
 
-  const ownDescription = getOwnField<string>(schema as unknown as Record<string, unknown>, 'description');
-  const ownMetadataSchema = getOwnField<string>(schema as unknown as Record<string, unknown>, 'metadataSchema');
-  const defined: SourceSchemaDeclaration = {
-    id: schema.id,
-    version: schema.version,
-    privacyClass: schema.privacyClass,
-    captureMode: schema.captureMode
-  };
-  if (ownDescription !== undefined) defined.description = ownDescription;
-  if (ownMetadataSchema !== undefined) defined.metadataSchema = ownMetadataSchema;
-
-  return Object.freeze(defined);
+  return Object.freeze(freezeSourceSchemaDeclaration(prepared.record));
 }
 
 export function validateSourceSchema(schema: Partial<SourceSchemaDeclaration> | undefined, path = 'source'): SourceContractViolation[] {
-  const violations: SourceContractViolation[] = [];
-  if (!isRecord(schema)) {
-    return [violation('source.required', path, 'Source schema declaration is required.')];
-  }
+  return prepareSourceSchema(schema, path).violations;
+}
 
-  pushUnknownFieldViolation(schema, ['id', 'version', 'privacyClass', 'captureMode', 'description', 'metadataSchema'], 'source.unknown_field', path, violations);
+export function prepareSourceSchema(schema: Partial<SourceSchemaDeclaration> | undefined, path = 'source'): SourceRecordSnapshot {
+  const snapshot = snapshotAllowedRecordFields(schema, ['id', 'version', 'privacyClass', 'captureMode', 'description', 'metadataSchema'], {
+    path,
+    requiredCode: 'source.required',
+    requiredMessage: 'Source schema declaration is required.',
+    unknownCode: 'source.unknown_field',
+    unknownMessage: 'Source schema declaration contains unsupported fields.',
+    accessorCode: 'source.accessor_field',
+    accessorMessage: 'Source schema declaration fields must be data properties.'
+  });
+  if (!snapshot.record) return snapshot;
 
+  return {
+    record: snapshot.record,
+    violations: validateSourceSchemaRecord(snapshot.record, path, snapshot.violations)
+  };
+}
+
+function validateSourceSchemaRecord(
+  schema: Record<string, unknown>,
+  path: string,
+  initialViolations: readonly SourceContractViolation[]
+): SourceContractViolation[] {
+  const violations: SourceContractViolation[] = [...initialViolations];
   const id = getOwnField<string>(schema, 'id');
   const version = getOwnField<string>(schema, 'version');
   const privacyClass = getOwnField(schema, 'privacyClass');
@@ -112,12 +136,38 @@ export function validateSourceSchema(schema: Partial<SourceSchemaDeclaration> | 
   return violations;
 }
 
+function freezeSourceSchemaDeclaration(schema: Record<string, unknown>): SourceSchemaDeclaration {
+  const id = getOwnField<string>(schema, 'id');
+  const version = getOwnField<string>(schema, 'version');
+  const privacyClass = getOwnField<SourcePrivacyClass>(schema, 'privacyClass');
+  const captureMode = getOwnField<SourceCaptureMode>(schema, 'captureMode');
+  const ownDescription = getOwnField<string>(schema, 'description');
+  const ownMetadataSchema = getOwnField<string>(schema, 'metadataSchema');
+  const defined: SourceSchemaDeclaration = {
+    id: id!,
+    version: version!,
+    privacyClass: privacyClass!,
+    captureMode: captureMode!
+  };
+  if (ownDescription !== undefined) defined.description = ownDescription;
+  if (ownMetadataSchema !== undefined) defined.metadataSchema = ownMetadataSchema;
+  return defined;
+}
+
 export function hasText(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0;
 }
 
+export function isArrayForSourceSnapshot(value: unknown): value is readonly unknown[] {
+  try {
+    return Array.isArray(value);
+  } catch {
+    return false;
+  }
+}
+
 export function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
+  return typeof value === 'object' && value !== null && !isArrayForSourceSnapshot(value);
 }
 
 export function hasOwnField(record: Record<string, unknown>, key: string): boolean {
@@ -125,7 +175,98 @@ export function hasOwnField(record: Record<string, unknown>, key: string): boole
 }
 
 export function getOwnField<T = unknown>(record: Record<string, unknown>, key: string): T | undefined {
-  return hasOwnField(record, key) ? (record[key] as T) : undefined;
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(record, key);
+    return descriptor && 'value' in descriptor ? (descriptor.value as T) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function safeOwnKeysForSourceSnapshot(
+  value: object,
+  path: string,
+  code: string,
+  message: string
+): { keys: PropertyKey[]; violations: SourceContractViolation[] } {
+  try {
+    return { keys: Reflect.ownKeys(value), violations: [] };
+  } catch {
+    return { keys: [], violations: [violation(code, path, message)] };
+  }
+}
+
+export function safeGetOwnPropertyDescriptorForSourceSnapshot(
+  value: object,
+  key: PropertyKey,
+  path: string,
+  code: string,
+  message: string
+): { descriptor?: PropertyDescriptor; violations: SourceContractViolation[] } {
+  try {
+    return { descriptor: Object.getOwnPropertyDescriptor(value, key), violations: [] };
+  } catch {
+    return { violations: [violation(code, path, message)] };
+  }
+}
+
+export function safeReadOwnDataPropertyForSourceSnapshot(
+  value: object,
+  key: PropertyKey,
+  descriptor: PropertyDescriptor,
+  path: string,
+  code: string,
+  message: string
+): { value?: unknown; violations: SourceContractViolation[] } {
+  if (!('value' in descriptor)) {
+    return { violations: [violation(code, path, message)] };
+  }
+  try {
+    const readValue = Reflect.get(value, key, value);
+    if (!Object.is(readValue, descriptor.value)) {
+      return { violations: [violation(code, path, message)] };
+    }
+    return { value: descriptor.value, violations: [] };
+  } catch {
+    return { violations: [violation(code, path, message)] };
+  }
+}
+
+export function snapshotAllowedRecordFields(
+  value: unknown,
+  allowedFields: readonly string[],
+  options: SourceRecordSnapshotOptions
+): SourceRecordSnapshot {
+  if (!isRecord(value)) {
+    return {
+      record: undefined,
+      violations: [violation(options.requiredCode, options.path, options.requiredMessage)]
+    };
+  }
+
+  const allowed = new Set(allowedFields);
+  const record: Record<string, unknown> = Object.create(null);
+  const keySnapshot = safeOwnKeysForSourceSnapshot(value, options.path, options.accessorCode, options.accessorMessage);
+  const violations: SourceContractViolation[] = [...keySnapshot.violations];
+  for (const key of keySnapshot.keys) {
+    if (typeof key !== 'string' || !allowed.has(key)) {
+      violations.push(violation(options.unknownCode, options.path, options.unknownMessage));
+      continue;
+    }
+    const descriptorSnapshot = safeGetOwnPropertyDescriptorForSourceSnapshot(value, key, `${options.path}.${key}`, options.accessorCode, options.accessorMessage);
+    violations.push(...descriptorSnapshot.violations);
+    const descriptor = descriptorSnapshot.descriptor;
+    if (!descriptor || !('value' in descriptor)) {
+      violations.push(violation(options.accessorCode, `${options.path}.${key}`, options.accessorMessage));
+      continue;
+    }
+    const readSnapshot = safeReadOwnDataPropertyForSourceSnapshot(value, key, descriptor, `${options.path}.${key}`, options.accessorCode, options.accessorMessage);
+    violations.push(...readSnapshot.violations);
+    if (readSnapshot.violations.length > 0) continue;
+    record[key] = readSnapshot.value;
+  }
+
+  return { record, violations };
 }
 
 export function isStableContractIdentifier(value: string): boolean {
@@ -192,7 +333,7 @@ function looksLikeBareCredentialToken(value: string): boolean {
     new RegExp(`${tokenBoundary}glpat-[A-Za-z0-9_-]{3,}${tokenEnd}`),
     new RegExp(`${tokenBoundary}(?:AKIA|ASIA)[A-Z0-9]{8,}${tokenEnd}`),
     new RegExp(`${tokenBoundary}AIza[A-Za-z0-9_-]{3,}${tokenEnd}`),
-    new RegExp(`${tokenBoundary}eyJ[A-Za-z0-9_-]*\\.[A-Za-z0-9_-]{3,}\\.[A-Za-z0-9_-]{3,}${tokenEnd}`)
+    new RegExp(`${tokenBoundary}eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]{3,}\.[A-Za-z0-9_-]{3,}${tokenEnd}`)
   ].some((pattern) => pattern.test(value));
 }
 
@@ -223,17 +364,4 @@ function looksLikeCredentialFieldValue(fieldName: string, value: string): boolea
 
 function isOneOf<T extends readonly string[]>(values: T, value: unknown): value is T[number] {
   return typeof value === 'string' && (values as readonly string[]).includes(value);
-}
-
-function pushUnknownFieldViolation(
-  record: Record<string, unknown>,
-  allowedFields: readonly string[],
-  code: string,
-  path: string,
-  violations: SourceContractViolation[]
-): void {
-  const allowed = new Set(allowedFields);
-  if (Reflect.ownKeys(record).some((key) => typeof key !== 'string' || !allowed.has(key))) {
-    violations.push(violation(code, path, 'Source schema declaration contains unsupported fields.'));
-  }
 }

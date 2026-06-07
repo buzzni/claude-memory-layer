@@ -14,8 +14,12 @@ import {
   isSourceTransformationKind,
   validateSourceAdapterContract,
   validateSourceRef,
+  validateSourceSchema,
+  validateSourceTransformationDeclarations,
   type SourceAdapterContract
 } from '../../src/core/source/index.js';
+import * as corePublicApi from '../../src/core/index.js';
+import * as sourcePublicApi from '../../src/core/source/index.js';
 import { assertSourceAdapterContract as exportedAssertSourceAdapterContract } from '../../src/core/index.js';
 
 function validAdapter(overrides: Partial<SourceAdapterContract> = {}): SourceAdapterContract {
@@ -61,8 +65,19 @@ function validAdapter(overrides: Partial<SourceAdapterContract> = {}): SourceAda
 
 describe('source adapter core contract', () => {
   it('requires stable adapter identity and version and exports the contract from core', () => {
-    expect(() => assertSourceAdapterContract(validAdapter())).not.toThrow();
+    const asserted = assertSourceAdapterContract(validAdapter());
+    expect(asserted.identity.id).toBe('codex-session-importer');
+    expect(Object.isFrozen(asserted)).toBe(true);
     expect(exportedAssertSourceAdapterContract).toBe(assertSourceAdapterContract);
+
+    expect(sourcePublicApi).not.toHaveProperty('prepareSourceAdapterIdentity');
+    expect(sourcePublicApi).not.toHaveProperty('prepareSourceAdapterCapabilities');
+    expect(sourcePublicApi).not.toHaveProperty('freezeSourceAdapterIdentity');
+    expect(sourcePublicApi).not.toHaveProperty('freezeSourceAdapterCapabilities');
+    expect(corePublicApi).not.toHaveProperty('prepareSourceAdapterIdentity');
+    expect(corePublicApi).not.toHaveProperty('prepareSourceAdapterCapabilities');
+    expect(corePublicApi).not.toHaveProperty('freezeSourceAdapterIdentity');
+    expect(corePublicApi).not.toHaveProperty('freezeSourceAdapterCapabilities');
 
     expect(validateSourceAdapterContract(validAdapter({ identity: { id: '', version: '1.0.0' } })).map((v) => v.code))
       .toContain('identity.id.required');
@@ -443,6 +458,17 @@ describe('source adapter core contract', () => {
     expect(validateSourceAdapterContract(validAdapter({
       capabilities: prototypeCapabilities
     })).map((v) => v.code)).toContain('capabilities.currentnessStrategy.required');
+
+    const nonEnumerableCapabilities = { supportsIncrementalImport: true } as Record<string, unknown>;
+    Object.defineProperty(nonEnumerableCapabilities, 'currentnessStrategy', {
+      enumerable: false,
+      value: 'session-id-and-message-cursor'
+    });
+    const adapterWithNonEnumerableCurrentness = defineSourceAdapter(validAdapter({
+      capabilities: nonEnumerableCapabilities as never
+    }));
+    expect(adapterWithNonEnumerableCurrentness.capabilities.currentnessStrategy).toBe('session-id-and-message-cursor');
+    expect(validateSourceAdapterContract(adapterWithNonEnumerableCurrentness)).toEqual([]);
   });
 
   it('rejects prototype-inherited required contract fields instead of accepting polluted declarations', () => {
@@ -509,6 +535,587 @@ describe('source adapter core contract', () => {
       'transformation.inputSchema.required',
       'transformation.outputSchema.required'
     ]));
+  });
+
+  it('rejects accessor-backed contract fields to avoid validation-to-freeze value swaps', () => {
+    const sourceWithSwappingId = {
+      version: '1',
+      privacyClass: 'internal',
+      captureMode: 'snapshot'
+    } as Record<string, unknown>;
+    let sourceIdReads = 0;
+    Object.defineProperty(sourceWithSwappingId, 'id', {
+      enumerable: true,
+      get: () => {
+        sourceIdReads += 1;
+        return sourceIdReads === 1 ? 'safe-source' : '/Users/person/.hermes/state.db';
+      }
+    });
+    expect(() => defineSourceSchema(sourceWithSwappingId as never)).toThrow(/source\.id\.required/);
+
+    const sourceWithAccessorOptionalFields = {
+      id: 'safe-source',
+      version: '1',
+      privacyClass: 'internal',
+      captureMode: 'snapshot'
+    } as Record<string, unknown>;
+    Object.defineProperty(sourceWithAccessorOptionalFields, 'description', {
+      enumerable: true,
+      get: () => '/Users/person/.hermes/state.db'
+    });
+    Object.defineProperty(sourceWithAccessorOptionalFields, 'metadataSchema', {
+      enumerable: true,
+      get: () => 'token=fixture'
+    });
+    expect(() => defineSourceSchema(sourceWithAccessorOptionalFields as never)).toThrow(/source\.accessor_field/);
+
+    function descriptorSwappingProxy<T extends object>(
+      safeRecord: T,
+      unsafeRecord: T,
+      safeDescriptorReads: number
+    ): T {
+      let descriptorReads = 0;
+      return new Proxy(safeRecord, {
+        ownKeys: () => Reflect.ownKeys(safeRecord),
+        getOwnPropertyDescriptor: (_target, key) => {
+          descriptorReads += 1;
+          const record = descriptorReads <= safeDescriptorReads ? safeRecord : unsafeRecord;
+          const descriptor = Object.getOwnPropertyDescriptor(record, key);
+          return descriptor ? { ...descriptor, configurable: true } : undefined;
+        }
+      });
+    }
+
+    function captureThrown(fn: () => void): string {
+      try {
+        fn();
+        return 'no-error';
+      } catch (error) {
+        const typed = error as Error & { violations?: unknown };
+        return `${typed.name}:${typed.message}:${JSON.stringify(typed.violations ?? null)}`;
+      }
+    }
+
+    const rawTrapMessage = '/Users/person/.hermes/state.db';
+    const throwingOwnKeys = <T extends Record<string, unknown>>(record: T): T => new Proxy(record, {
+      ownKeys: () => {
+        throw new Error(rawTrapMessage);
+      }
+    });
+    const throwingLengthArray = (): unknown[] => new Proxy([], {
+      getOwnPropertyDescriptor: (target, key) => {
+        if (key === 'length') throw new Error(rawTrapMessage);
+        return Reflect.getOwnPropertyDescriptor(target, key);
+      }
+    });
+    const divergentGetProxy = <T extends object>(
+      descriptorRecord: T,
+      getRecord: T
+    ): T => new Proxy(descriptorRecord, {
+      ownKeys: () => Reflect.ownKeys(descriptorRecord),
+      getOwnPropertyDescriptor: (_target, key) => {
+        const descriptor = Object.getOwnPropertyDescriptor(descriptorRecord, key);
+        return descriptor ? { ...descriptor, configurable: true } : undefined;
+      },
+      get: (_target, key, receiver) => Reflect.get(getRecord, key, receiver)
+    });
+    const divergentGetArray = (descriptorItems: unknown[], getItems: unknown[]): unknown[] => new Proxy(descriptorItems, {
+      getOwnPropertyDescriptor: (target, key) => Reflect.getOwnPropertyDescriptor(target, key),
+      get: (_target, key, receiver) => Reflect.get(getItems, key, receiver)
+    });
+    const revokedObjectProxy = (): object => {
+      const { proxy, revoke } = Proxy.revocable({}, {});
+      revoke();
+      return proxy;
+    };
+    const revokedArrayProxy = (): unknown[] => {
+      const { proxy, revoke } = Proxy.revocable([], {});
+      revoke();
+      return proxy;
+    };
+
+    expect(() => validateSourceSchema(revokedObjectProxy() as never)).not.toThrow();
+    expect(JSON.stringify(validateSourceSchema(revokedObjectProxy() as never))).not.toContain('revoked');
+    expect(captureThrown(() => defineSourceSchema(revokedObjectProxy() as never))).not.toContain('revoked');
+    expect(() => validateSourceRef(revokedObjectProxy() as never)).not.toThrow();
+    expect(JSON.stringify(validateSourceRef(revokedObjectProxy() as never))).not.toContain('revoked');
+    expect(captureThrown(() => createSourceRef(revokedObjectProxy() as never))).not.toContain('revoked');
+    expect(() => validateSourceAdapterContract(revokedObjectProxy() as never)).not.toThrow();
+    expect(JSON.stringify(validateSourceAdapterContract(revokedObjectProxy() as never))).not.toContain('revoked');
+    expect(captureThrown(() => defineSourceAdapter(revokedObjectProxy() as never))).not.toContain('revoked');
+    expect(() => validateSourceTransformationDeclarations(revokedArrayProxy() as never)).not.toThrow();
+    expect(JSON.stringify(validateSourceTransformationDeclarations(revokedArrayProxy() as never))).not.toContain('revoked');
+    expect(captureThrown(() => defineSourceTransformations(revokedArrayProxy() as never))).not.toContain('revoked');
+    const revokedSampleRefsViolations = validateSourceAdapterContract(validAdapter({ sampleSourceRefs: revokedArrayProxy() as never }));
+    expect(JSON.stringify(revokedSampleRefsViolations)).not.toContain('revoked');
+
+    const sourceWithThrowingOwnKeys = throwingOwnKeys({
+      id: 'safe-source',
+      version: '1',
+      privacyClass: 'internal',
+      captureMode: 'snapshot'
+    });
+    expect(() => validateSourceSchema(sourceWithThrowingOwnKeys as never)).not.toThrow();
+    expect(validateSourceSchema(sourceWithThrowingOwnKeys as never).map((v) => v.code)).toContain('source.accessor_field');
+    const sourceTrapError = captureThrown(() => defineSourceSchema(sourceWithThrowingOwnKeys as never));
+    expect(sourceTrapError).toContain('source.accessor_field');
+    expect(sourceTrapError).not.toContain(rawTrapMessage);
+
+    const baseRefForTrap = {
+      kind: 'session',
+      stableId: 'session:hash',
+      publicHandle: 'session:hash',
+      privacyClass: 'internal',
+      captureMode: 'snapshot'
+    } as const;
+    expect(() => validateSourceRef(throwingOwnKeys(baseRefForTrap) as never)).not.toThrow();
+    expect(validateSourceRef(throwingOwnKeys(baseRefForTrap) as never).map((v) => v.code)).toContain('sourceRef.accessor_field');
+    const metadataTrapViolations = validateSourceRef({
+      ...baseRefForTrap,
+      metadata: throwingOwnKeys({ safe: true })
+    } as never);
+    expect(metadataTrapViolations.map((v) => v.code)).toContain('sourceRef.metadata.accessor_field');
+    expect(JSON.stringify(metadataTrapViolations)).not.toContain(rawTrapMessage);
+
+    const capabilitiesTrapViolations = validateSourceAdapterContract(validAdapter({
+      capabilities: throwingOwnKeys({ currentnessStrategy: 'session-id-and-message-cursor' }) as never
+    }));
+    expect(capabilitiesTrapViolations.map((v) => v.code)).toContain('capabilities.accessor_field');
+    expect(JSON.stringify(capabilitiesTrapViolations)).not.toContain(rawTrapMessage);
+
+    const adapterTrapViolations = validateSourceAdapterContract(throwingOwnKeys(validAdapter() as unknown as Record<string, unknown>) as never);
+    expect(adapterTrapViolations.map((v) => v.code)).toContain('adapter.accessor_field');
+    expect(JSON.stringify(adapterTrapViolations)).not.toContain(rawTrapMessage);
+
+    expect(() => validateSourceTransformationDeclarations(throwingLengthArray() as never)).not.toThrow();
+    expect(validateSourceTransformationDeclarations(throwingLengthArray() as never).map((v) => v.code)).toContain('transformations.length.invalid');
+    const transformationArrayTrapError = captureThrown(() => defineSourceTransformations(throwingLengthArray() as never));
+    expect(transformationArrayTrapError).toContain('transformations.length.invalid');
+    expect(transformationArrayTrapError).not.toContain(rawTrapMessage);
+
+    const sampleLengthTrapViolations = validateSourceAdapterContract(validAdapter({
+      sampleSourceRefs: throwingLengthArray() as never
+    }));
+    expect(sampleLengthTrapViolations.map((v) => v.code)).toContain('sampleSourceRefs.length.invalid');
+    expect(JSON.stringify(sampleLengthTrapViolations)).not.toContain(rawTrapMessage);
+
+    const sourceProxy = descriptorSwappingProxy(
+      {
+        id: 'safe-source',
+        version: '1',
+        privacyClass: 'internal',
+        captureMode: 'snapshot'
+      },
+      {
+        id: '/Users/person/.hermes/state.db',
+        version: '1',
+        privacyClass: 'internal',
+        captureMode: 'snapshot'
+      },
+      10
+    );
+    const definedSourceFromProxy = defineSourceSchema(sourceProxy as never);
+    expect(definedSourceFromProxy.id).toBe('safe-source');
+    expect(JSON.stringify(definedSourceFromProxy)).not.toContain('/Users/person');
+
+    const divergentSourceProxy = divergentGetProxy(
+      {
+        id: 'safe-source',
+        version: '1',
+        privacyClass: 'internal',
+        captureMode: 'snapshot'
+      },
+      {
+        id: '/Users/person/.hermes/state.db',
+        version: '1',
+        privacyClass: 'internal',
+        captureMode: 'snapshot'
+      }
+    );
+    expect(validateSourceSchema(divergentSourceProxy as never).map((v) => v.code)).toContain('source.accessor_field');
+
+    const refWithSwappingPublicHandle = {
+      kind: 'session',
+      stableId: 'session:hash',
+      privacyClass: 'internal',
+      captureMode: 'snapshot'
+    } as Record<string, unknown>;
+    let publicHandleReads = 0;
+    Object.defineProperty(refWithSwappingPublicHandle, 'publicHandle', {
+      enumerable: true,
+      get: () => {
+        publicHandleReads += 1;
+        return publicHandleReads === 1 ? 'session:hash' : '/Users/person/.hermes/state.db';
+      }
+    });
+    expect(() => createSourceRef(refWithSwappingPublicHandle as never)).toThrow(/sourceRef\.publicHandle\.required/);
+
+    const refWithAccessorOptionalEvidence = {
+      kind: 'session',
+      stableId: 'session:hash',
+      publicHandle: 'session:hash',
+      privacyClass: 'internal',
+      captureMode: 'snapshot'
+    } as Record<string, unknown>;
+    Object.defineProperty(refWithAccessorOptionalEvidence, 'evidenceHandle', {
+      enumerable: true,
+      get: () => '/Users/person/.hermes/state.db'
+    });
+    expect(() => createSourceRef(refWithAccessorOptionalEvidence as never)).toThrow(/sourceRef\.accessor_field/);
+
+    const sourceRefProxy = descriptorSwappingProxy(
+      {
+        kind: 'session',
+        stableId: 'session:hash',
+        publicHandle: 'session:hash',
+        privacyClass: 'internal',
+        captureMode: 'snapshot'
+      },
+      {
+        kind: 'session',
+        stableId: 'session:hash',
+        publicHandle: '/Users/person/.hermes/state.db',
+        privacyClass: 'internal',
+        captureMode: 'snapshot'
+      },
+      13
+    );
+    const definedRefFromProxy = createSourceRef(sourceRefProxy as never);
+    expect(definedRefFromProxy.publicHandle).toBe('session:hash');
+    expect(JSON.stringify(definedRefFromProxy)).not.toContain('/Users/person');
+
+    const divergentSourceRefProxy = divergentGetProxy(
+      {
+        kind: 'session',
+        stableId: 'session:hash',
+        publicHandle: 'session:hash',
+        privacyClass: 'internal',
+        captureMode: 'snapshot'
+      },
+      {
+        kind: 'session',
+        stableId: 'session:hash',
+        publicHandle: '/Users/person/.hermes/state.db',
+        privacyClass: 'internal',
+        captureMode: 'snapshot'
+      }
+    );
+    expect(validateSourceRef(divergentSourceRefProxy as never).map((v) => v.code)).toContain('sourceRef.accessor_field');
+
+    const divergentMetadataViolations = validateSourceRef({
+      ...baseRefForTrap,
+      metadata: divergentGetProxy({ safe: 'ok' }, { safe: '/Users/person/.hermes/state.db' })
+    } as never);
+    expect(divergentMetadataViolations.map((v) => v.code)).toContain('sourceRef.metadata.accessor_field');
+    expect(JSON.stringify(divergentMetadataViolations)).not.toContain('/Users/person');
+
+    const transformationWithSwappingId = {
+      version: '1',
+      kind: 'normalize',
+      inputSchema: 'source@1',
+      outputSchema: 'event@1'
+    } as Record<string, unknown>;
+    let transformationIdReads = 0;
+    Object.defineProperty(transformationWithSwappingId, 'id', {
+      enumerable: true,
+      get: () => {
+        transformationIdReads += 1;
+        return transformationIdReads === 1 ? 'normalize' : '/Users/person/.hermes/state.db';
+      }
+    });
+    expect(() => defineSourceTransformations([transformationWithSwappingId as never])).toThrow(/transformation\.id\.required/);
+
+    const transformationWithAccessorOptionalFields = {
+      id: 'normalize',
+      version: '1',
+      kind: 'normalize',
+      inputSchema: 'source@1',
+      outputSchema: 'event@1'
+    } as Record<string, unknown>;
+    Object.defineProperty(transformationWithAccessorOptionalFields, 'description', {
+      enumerable: true,
+      get: () => '/Users/person/.hermes/state.db'
+    });
+    Object.defineProperty(transformationWithAccessorOptionalFields, 'deterministic', {
+      enumerable: true,
+      get: () => true
+    });
+    expect(() => defineSourceTransformations([transformationWithAccessorOptionalFields as never])).toThrow(/transformation\.accessor_field/);
+
+    const accessorBackedTransformations = [] as unknown[];
+    let transformationIndexReads = 0;
+    Object.defineProperty(accessorBackedTransformations, '0', {
+      enumerable: true,
+      configurable: true,
+      get: () => {
+        transformationIndexReads += 1;
+        return transformationIndexReads <= 2
+          ? {
+              id: 'normalize',
+              version: '1',
+              kind: 'normalize',
+              inputSchema: 'source@1',
+              outputSchema: 'event@1'
+            }
+          : {
+              id: '/Users/person/.hermes/state.db',
+              version: '1',
+              kind: 'normalize',
+              inputSchema: 'source@1',
+              outputSchema: 'event@1'
+            };
+      }
+    });
+    expect(() => defineSourceTransformations(accessorBackedTransformations as never)).toThrow(/transformations\.accessor_field/);
+
+    const sparseTransformations = new Array(1);
+    expect(() => defineSourceTransformations(sparseTransformations as never)).toThrow(/transformations\.missing_index/);
+
+    const unsafeLengthTransformations = new Proxy([], {
+      getOwnPropertyDescriptor: (target, key) => {
+        if (key === 'length') {
+          return { value: 2 ** 32, writable: true, enumerable: false, configurable: false };
+        }
+        return Reflect.getOwnPropertyDescriptor(target, key);
+      }
+    });
+    expect(() => validateSourceTransformationDeclarations(unsafeLengthTransformations as never)).not.toThrow();
+    expect(validateSourceTransformationDeclarations(unsafeLengthTransformations as never).map((v) => v.code)).toContain('transformations.length.invalid');
+    expect(() => defineSourceTransformations(unsafeLengthTransformations as never)).toThrow(/transformations\.length\.invalid/);
+
+    const transformationProxy = descriptorSwappingProxy(
+      {
+        id: 'normalize',
+        version: '1',
+        kind: 'normalize',
+        inputSchema: 'source@1',
+        outputSchema: 'event@1'
+      },
+      {
+        id: '/Users/person/.hermes/state.db',
+        version: '1',
+        kind: 'normalize',
+        inputSchema: 'source@1',
+        outputSchema: 'event@1'
+      },
+      13
+    );
+    const definedTransformationFromProxy = defineSourceTransformations([transformationProxy as never]);
+    expect(definedTransformationFromProxy[0].id).toBe('normalize');
+    expect(JSON.stringify(definedTransformationFromProxy)).not.toContain('/Users/person');
+
+    const divergentTransformationProxy = divergentGetProxy(
+      {
+        id: 'normalize',
+        version: '1',
+        kind: 'normalize',
+        inputSchema: 'source@1',
+        outputSchema: 'event@1'
+      },
+      {
+        id: '/Users/person/.hermes/state.db',
+        version: '1',
+        kind: 'normalize',
+        inputSchema: 'source@1',
+        outputSchema: 'event@1'
+      }
+    );
+    expect(validateSourceTransformationDeclarations([divergentTransformationProxy as never]).map((v) => v.code)).toContain('transformation.accessor_field');
+
+    const divergentTransformationArray = divergentGetArray([
+      {
+        id: 'normalize',
+        version: '1',
+        kind: 'normalize',
+        inputSchema: 'source@1',
+        outputSchema: 'event@1'
+      }
+    ], [
+      {
+        id: '/Users/person/.hermes/state.db',
+        version: '1',
+        kind: 'normalize',
+        inputSchema: 'source@1',
+        outputSchema: 'event@1'
+      }
+    ]);
+    expect(validateSourceTransformationDeclarations(divergentTransformationArray as never).map((v) => v.code)).toContain('transformations.accessor_field');
+
+    const capabilitiesWithSwappingCurrentness = { supportsIncrementalImport: true } as Record<string, unknown>;
+    let currentnessReads = 0;
+    Object.defineProperty(capabilitiesWithSwappingCurrentness, 'currentnessStrategy', {
+      enumerable: true,
+      get: () => {
+        currentnessReads += 1;
+        return currentnessReads === 1 ? 'session-id-and-message-cursor' : '/Users/person/.hermes/state.db';
+      }
+    });
+    expect(validateSourceAdapterContract(validAdapter({
+      capabilities: capabilitiesWithSwappingCurrentness as never
+    })).map((v) => v.code)).toContain('capabilities.currentnessStrategy.required');
+
+    const divergentCapabilitiesViolations = validateSourceAdapterContract(validAdapter({
+      capabilities: divergentGetProxy(
+        { currentnessStrategy: 'session-id-and-message-cursor', supportsIncrementalImport: true },
+        { currentnessStrategy: '/Users/person/.hermes/state.db', supportsIncrementalImport: true }
+      ) as never
+    }));
+    expect(divergentCapabilitiesViolations.map((v) => v.code)).toContain('capabilities.accessor_field');
+    expect(JSON.stringify(divergentCapabilitiesViolations)).not.toContain('/Users/person');
+
+    const identityWithAccessorDisplayName = {
+      id: 'safe-adapter',
+      version: '1'
+    } as Record<string, unknown>;
+    Object.defineProperty(identityWithAccessorDisplayName, 'displayName', {
+      enumerable: true,
+      get: () => '/Users/person/.hermes/state.db'
+    });
+    expect(validateSourceAdapterContract(validAdapter({
+      identity: identityWithAccessorDisplayName as never
+    })).map((v) => v.code)).toContain('identity.accessor_field');
+
+    const adapterWithAccessorSampleRefs = validAdapter() as unknown as Record<string, unknown>;
+    Object.defineProperty(adapterWithAccessorSampleRefs, 'sampleSourceRefs', {
+      enumerable: true,
+      configurable: true,
+      get: () => [{
+        kind: 'session',
+        stableId: 'session:hash',
+        publicHandle: 'session:hash',
+        evidenceHandle: '/Users/person/.hermes/state.db',
+        privacyClass: 'internal',
+        captureMode: 'snapshot'
+      }]
+    });
+    expect(validateSourceAdapterContract(adapterWithAccessorSampleRefs as never).map((v) => v.code)).toContain('adapter.accessor_field');
+
+    const sampleSourceRefsWithAccessorIndex = [] as unknown[];
+    Object.defineProperty(sampleSourceRefsWithAccessorIndex, '0', {
+      enumerable: true,
+      configurable: true,
+      get: () => ({
+        kind: 'session',
+        stableId: 'session:hash',
+        publicHandle: 'session:hash',
+        evidenceHandle: 'event:session:hash',
+        privacyClass: 'internal',
+        captureMode: 'snapshot'
+      })
+    });
+    expect(validateSourceAdapterContract(validAdapter({
+      sampleSourceRefs: sampleSourceRefsWithAccessorIndex as never
+    })).map((v) => v.code)).toContain('sampleSourceRefs.accessor_field');
+
+    const adapterWithSparseSampleRefs = validAdapter({ sampleSourceRefs: new Array(1) as never });
+    expect(validateSourceAdapterContract(adapterWithSparseSampleRefs).map((v) => v.code)).toContain('sampleSourceRefs.missing_index');
+
+    const unsafeLengthSampleSourceRefs = new Proxy([], {
+      getOwnPropertyDescriptor: (target, key) => {
+        if (key === 'length') {
+          return { value: 2 ** 32, writable: true, enumerable: false, configurable: false };
+        }
+        return Reflect.getOwnPropertyDescriptor(target, key);
+      }
+    });
+    expect(() => validateSourceAdapterContract(validAdapter({
+      sampleSourceRefs: unsafeLengthSampleSourceRefs as never
+    }))).not.toThrow();
+    expect(validateSourceAdapterContract(validAdapter({
+      sampleSourceRefs: unsafeLengthSampleSourceRefs as never
+    })).map((v) => v.code)).toContain('sampleSourceRefs.length.invalid');
+    expect(() => defineSourceAdapter(validAdapter({
+      sampleSourceRefs: unsafeLengthSampleSourceRefs as never
+    }))).toThrow(/sampleSourceRefs\.length\.invalid/);
+
+    const sampleSourceRefsWithMapOverride = [
+      {
+        kind: 'session',
+        stableId: 'session:hash',
+        publicHandle: 'session:hash',
+        evidenceHandle: 'event:session:hash',
+        privacyClass: 'internal',
+        captureMode: 'snapshot'
+      }
+    ] as unknown[] & { map: unknown };
+    let sampleMapCalled = false;
+    Object.defineProperty(sampleSourceRefsWithMapOverride, 'map', {
+      configurable: true,
+      value: () => {
+        sampleMapCalled = true;
+        return [{
+          kind: 'session',
+          stableId: 'session:hash',
+          publicHandle: '/Users/person/.hermes/state.db',
+          privacyClass: 'internal',
+          captureMode: 'snapshot'
+        }];
+      }
+    });
+    const adapterFromMapOverride = defineSourceAdapter(validAdapter({
+      sampleSourceRefs: sampleSourceRefsWithMapOverride as never
+    }));
+    expect(sampleMapCalled).toBe(false);
+    expect(adapterFromMapOverride.sampleSourceRefs?.[0]?.publicHandle).toBe('session:hash');
+    expect(JSON.stringify(adapterFromMapOverride)).not.toContain('/Users/person');
+
+    const divergentSampleSourceRefs = divergentGetArray([
+      {
+        kind: 'session',
+        stableId: 'session:hash',
+        publicHandle: 'session:hash',
+        evidenceHandle: 'event:session:hash',
+        privacyClass: 'internal',
+        captureMode: 'snapshot'
+      }
+    ], [
+      {
+        kind: 'session',
+        stableId: 'session:hash',
+        publicHandle: '/Users/person/.hermes/state.db',
+        evidenceHandle: 'event:session:hash',
+        privacyClass: 'internal',
+        captureMode: 'snapshot'
+      }
+    ]);
+    const divergentSampleViolations = validateSourceAdapterContract(validAdapter({
+      sampleSourceRefs: divergentSampleSourceRefs as never
+    }));
+    expect(divergentSampleViolations.map((v) => v.code)).toContain('sampleSourceRefs.accessor_field');
+    expect(JSON.stringify(divergentSampleViolations)).not.toContain('/Users/person');
+
+    const adapterProxy = descriptorSwappingProxy(
+      validAdapter(),
+      validAdapter({
+        identity: { id: '/Users/person/.hermes/state.db', version: '1' }
+      }),
+      10
+    );
+    const definedAdapterFromProxy = defineSourceAdapter(adapterProxy as never);
+    expect(definedAdapterFromProxy.identity.id).toBe('codex-session-importer');
+    expect(JSON.stringify(definedAdapterFromProxy)).not.toContain('/Users/person');
+
+    const divergentAdapterProxy = divergentGetProxy(
+      validAdapter(),
+      validAdapter({ identity: { id: '/Users/person/.hermes/state.db', version: '1' } })
+    );
+    const divergentAdapterViolations = validateSourceAdapterContract(divergentAdapterProxy as never);
+    expect(divergentAdapterViolations.map((v) => v.code)).toContain('adapter.accessor_field');
+    expect(JSON.stringify(divergentAdapterViolations)).not.toContain('/Users/person');
+    expect(() => defineSourceAdapter(divergentAdapterProxy as never)).toThrow(/adapter\.accessor_field/);
+
+    const adapterWithSwappingIdentity = validAdapter() as unknown as Record<string, unknown>;
+    let identityReads = 0;
+    Object.defineProperty(adapterWithSwappingIdentity, 'identity', {
+      enumerable: true,
+      get: () => {
+        identityReads += 1;
+        return identityReads === 1
+          ? { id: 'safe-adapter', version: '1' }
+          : { id: '/Users/person/.hermes/state.db', version: '1' };
+      }
+    });
+    expect(() => defineSourceAdapter(adapterWithSwappingIdentity as never)).toThrow(/identity\.required/);
   });
 
   it('rejects malformed optional public declaration text fields before freezing', () => {

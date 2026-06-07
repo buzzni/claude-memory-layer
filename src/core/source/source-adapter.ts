@@ -6,6 +6,10 @@ import {
   isRecord,
   isStableContractIdentifier,
   looksLikePrivacySensitiveSourceValue,
+  safeGetOwnPropertyDescriptorForSourceSnapshot,
+  safeOwnKeysForSourceSnapshot,
+  safeReadOwnDataPropertyForSourceSnapshot,
+  snapshotAllowedRecordFields,
   violation
 } from './source-schema.js';
 import type { SourceRef } from './source-ref.js';
@@ -30,20 +34,42 @@ export interface SourceAdapterContract {
   capabilities: SourceAdapterCapabilities;
 }
 
+export interface PreparedSourceAdapterIdentity {
+  readonly record?: Record<string, unknown>;
+  readonly violations: SourceContractViolation[];
+}
+
+export interface PreparedSourceAdapterCapabilities {
+  readonly record?: Record<string, unknown>;
+  readonly violations: SourceContractViolation[];
+}
+
 export function validateSourceAdapterIdentity(
   identity: Partial<SourceAdapterIdentity> | undefined,
   path = 'identity'
 ): SourceContractViolation[] {
-  const violations: SourceContractViolation[] = [];
-  if (!isRecord(identity)) {
-    return [violation('identity.required', path, 'Source adapter identity is required.')];
-  }
+  return prepareSourceAdapterIdentity(identity, path).violations;
+}
 
-  pushUnknownFieldViolation(identity, ['id', 'version', 'displayName'], 'identity.unknown_field', path, violations);
+export function prepareSourceAdapterIdentity(
+  identity: Partial<SourceAdapterIdentity> | undefined,
+  path = 'identity'
+): PreparedSourceAdapterIdentity {
+  const snapshot = snapshotAllowedRecordFields(identity, ['id', 'version', 'displayName'], {
+    path,
+    requiredCode: 'identity.required',
+    requiredMessage: 'Source adapter identity is required.',
+    unknownCode: 'identity.unknown_field',
+    unknownMessage: 'Source adapter contract object contains unsupported fields.',
+    accessorCode: 'identity.accessor_field',
+    accessorMessage: 'Source adapter identity fields must be data properties.'
+  });
+  if (!snapshot.record) return { violations: snapshot.violations };
 
-  const id = getOwnField(identity, 'id');
-  const version = getOwnField(identity, 'version');
-  const displayName = getOwnField(identity, 'displayName');
+  const violations: SourceContractViolation[] = [...snapshot.violations];
+  const id = getOwnField(snapshot.record, 'id');
+  const version = getOwnField(snapshot.record, 'version');
+  const displayName = getOwnField(snapshot.record, 'displayName');
 
   if (!hasText(id)) {
     violations.push(violation('identity.id.required', `${path}.id`, 'Source adapter identity id must be non-empty.'));
@@ -68,38 +94,107 @@ export function validateSourceAdapterIdentity(
     violations.push(violation('identity.displayName.privacy_sensitive', `${path}.displayName`, 'Source adapter displayName must not leak local state handles or credential-shaped values.'));
   }
 
-  return violations;
+  return { record: snapshot.record, violations };
+}
+
+export function freezeSourceAdapterIdentity(identity: Record<string, unknown>): Readonly<SourceAdapterIdentity> {
+  const id = getOwnField<string>(identity, 'id');
+  const version = getOwnField<string>(identity, 'version');
+  const displayName = getOwnField<string>(identity, 'displayName');
+  const defined: SourceAdapterIdentity = {
+    id: id!,
+    version: version!
+  };
+  if (displayName !== undefined) defined.displayName = displayName;
+  return Object.freeze(defined);
 }
 
 export function validateSourceAdapterCapabilities(
   capabilities: Partial<SourceAdapterCapabilities> | undefined,
   path = 'capabilities'
 ): SourceContractViolation[] {
-  const violations: SourceContractViolation[] = [];
+  return prepareSourceAdapterCapabilities(capabilities, path).violations;
+}
+
+export function prepareSourceAdapterCapabilities(
+  capabilities: Partial<SourceAdapterCapabilities> | undefined,
+  path = 'capabilities'
+): PreparedSourceAdapterCapabilities {
   if (!isRecord(capabilities)) {
-    return [violation('capabilities.required', path, 'Source adapter capabilities with currentnessStrategy are required.')];
+    return {
+      violations: [violation('capabilities.required', path, 'Source adapter capabilities with currentnessStrategy are required.')]
+    };
   }
 
-  Object.getOwnPropertySymbols(capabilities).forEach((key, index) => {
-    const value = (capabilities as Record<symbol, unknown>)[key];
-    const valuePath = `${path}.[symbol-${index}]`;
-    violations.push(violation('capabilities.invalid_key', valuePath, 'Source adapter capability keys must be strings.'));
-    validateCapabilityValue(String(key.description ?? ''), value, valuePath, violations);
+  const record: Record<string, unknown> = Object.create(null);
+  const keySnapshot = safeOwnKeysForSourceSnapshot(capabilities, path, 'capabilities.accessor_field', 'Source adapter capability fields must be data properties.');
+  const violations: SourceContractViolation[] = [...keySnapshot.violations];
+
+  keySnapshot.keys.forEach((key, index) => {
+    if (typeof key !== 'string') {
+      const valuePath = `${path}.[symbol-${index}]`;
+      violations.push(violation('capabilities.invalid_key', valuePath, 'Source adapter capability keys must be strings.'));
+      const descriptorSnapshot = safeGetOwnPropertyDescriptorForSourceSnapshot(capabilities, key, valuePath, 'capabilities.accessor_field', 'Source adapter capability fields must be data properties.');
+      violations.push(...descriptorSnapshot.violations);
+      const descriptor = descriptorSnapshot.descriptor;
+      if (!descriptor || !('value' in descriptor)) {
+        violations.push(violation('capabilities.accessor_field', valuePath, 'Source adapter capability fields must be data properties.'));
+        return;
+      }
+      const readSnapshot = safeReadOwnDataPropertyForSourceSnapshot(capabilities, key, descriptor, valuePath, 'capabilities.accessor_field', 'Source adapter capability fields must be data properties.');
+      violations.push(...readSnapshot.violations);
+      if (readSnapshot.violations.length > 0) return;
+      validateCapabilityValue(propertyKeyDescription(key), readSnapshot.value, valuePath, violations);
+      return;
+    }
+
+    const valuePath = capabilityEntryPath(path, key, index);
+    const descriptorSnapshot = safeGetOwnPropertyDescriptorForSourceSnapshot(capabilities, key, valuePath, 'capabilities.accessor_field', 'Source adapter capability fields must be data properties.');
+    violations.push(...descriptorSnapshot.violations);
+    const descriptor = descriptorSnapshot.descriptor;
+    if (!descriptor || !('value' in descriptor)) {
+      violations.push(violation('capabilities.accessor_field', valuePath, 'Source adapter capability fields must be data properties.'));
+      return;
+    }
+    const readSnapshot = safeReadOwnDataPropertyForSourceSnapshot(capabilities, key, descriptor, valuePath, 'capabilities.accessor_field', 'Source adapter capability fields must be data properties.');
+    violations.push(...readSnapshot.violations);
+    if (readSnapshot.violations.length > 0) return;
+    record[key] = readSnapshot.value;
+    validateCapabilityValue(key, readSnapshot.value, valuePath, violations);
   });
 
-  Object.getOwnPropertyNames(capabilities).forEach((key) => {
-    const value = (capabilities as Record<string, unknown>)[key];
-    validateCapabilityValue(key, value, path, violations);
-  });
-
-  const currentnessStrategy = getOwnField(capabilities, 'currentnessStrategy');
-  if (!hasOwnField(capabilities, 'currentnessStrategy') || !hasText(currentnessStrategy)) {
+  const currentnessStrategy = getOwnField(record, 'currentnessStrategy');
+  if (!hasOwnField(record, 'currentnessStrategy') || !hasText(currentnessStrategy)) {
     violations.push(violation('capabilities.currentnessStrategy.required', `${path}.currentnessStrategy`, 'Source adapter capabilities must declare a deterministic currentnessStrategy.'));
   } else if (!isStableContractIdentifier(currentnessStrategy)) {
     violations.push(violation('capabilities.currentnessStrategy.unstable', `${path}.currentnessStrategy`, 'Source adapter currentnessStrategy must be stable and must not include a local absolute path.'));
   }
 
-  return violations;
+  return { record, violations };
+}
+
+export function freezeSourceAdapterCapabilities(capabilities: Record<string, unknown>): SourceAdapterCapabilities {
+  const keySnapshot = safeOwnKeysForSourceSnapshot(capabilities, 'capabilities', 'capabilities.accessor_field', 'Source adapter capability fields must be data properties.');
+  const safeEntries: Array<[string, unknown]> = [];
+  keySnapshot.keys.forEach((key) => {
+    if (typeof key !== 'string') return;
+    const descriptorSnapshot = safeGetOwnPropertyDescriptorForSourceSnapshot(capabilities, key, `capabilities.${key}`, 'capabilities.accessor_field', 'Source adapter capability fields must be data properties.');
+    const descriptor = descriptorSnapshot.descriptor;
+    if (descriptor && 'value' in descriptor) safeEntries.push([key, descriptor.value]);
+  });
+  return Object.freeze(Object.fromEntries(safeEntries)) as SourceAdapterCapabilities;
+}
+
+function propertyKeyDescription(key: PropertyKey): string {
+  return typeof key === 'symbol' ? String(key.description ?? '') : '';
+}
+
+function capabilityEntryPath(path: string, key: string, index: number): string {
+  if (looksLikePrivacySensitiveSourceValue(key)) {
+    return `${path}.[redacted-key-${index}]`;
+  }
+  const sanitizedKey = key.replace(/[^A-Za-z0-9._:-]+/g, '_').slice(0, 64);
+  return sanitizedKey ? `${path}.${sanitizedKey}` : `${path}.${index}`;
 }
 
 function validateCapabilityValue(
@@ -128,17 +223,4 @@ function validateCapabilityValue(
     return;
   }
   violations.push(violation('capabilities.invalid_value', path, 'Source adapter capability values must be scalar strings, finite numbers, or booleans.'));
-}
-
-function pushUnknownFieldViolation(
-  record: Record<string, unknown>,
-  allowedFields: readonly string[],
-  code: string,
-  path: string,
-  violations: SourceContractViolation[]
-): void {
-  const allowed = new Set(allowedFields);
-  if (Reflect.ownKeys(record).some((key) => typeof key !== 'string' || !allowed.has(key))) {
-    violations.push(violation(code, path, 'Source adapter contract object contains unsupported fields.'));
-  }
 }
