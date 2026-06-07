@@ -161,6 +161,16 @@ describe('MCP project context tools', () => {
     expect(maxTokensDescription).toContain('selected compression mode');
     expect(maxTokensDescription).toContain('final assembly');
     expect(maxTokensDescription).not.toContain('after safe compression');
+    const sourceRefProperties = byName.get('mem-source-ref')?.inputSchema.properties as Record<string, unknown>;
+    expect(sourceRefProperties.includeNeighbors).toMatchObject({
+      type: 'boolean',
+      description: expect.stringContaining('neighbor')
+    });
+    expect(sourceRefProperties.neighborWindow).toMatchObject({
+      type: 'number',
+      minimum: 0,
+      maximum: 5
+    });
     const marketContextProperties = byName.get('external-market-context')?.inputSchema.properties as Record<string, unknown>;
     expect(marketContextProperties.projectPath).toMatchObject({ type: 'string' });
     expect(marketContextProperties.includeSnapshot).toMatchObject({ type: 'boolean' });
@@ -1684,5 +1694,197 @@ describe('MCP project context tools', () => {
 
     expect(result.isError).not.toBe(true);
     expect(textOf(result)).toContain('Citation lookup target');
+  });
+
+  it('does not expand source reference neighbors unless explicitly enabled', async () => {
+    const target = event({
+      id: '66666666-6666-4666-8666-666666666660',
+      sessionId: 'session-neighbor-disabled',
+      eventType: 'agent_response',
+      timestamp: new Date('2026-05-05T02:01:00.000Z'),
+      content: 'Target source reference content.'
+    });
+    mocks.projectService.getRecentEvents.mockResolvedValue([target]);
+    mocks.projectService.getSessionHistory.mockResolvedValue([
+      target,
+      event({
+        id: '66666666-6666-4666-8666-66666666665f',
+        sessionId: 'session-neighbor-disabled',
+        eventType: 'user_prompt',
+        timestamp: new Date('2026-05-05T02:00:00.000Z'),
+        content: 'This neighboring turn should not be expanded.'
+      })
+    ]);
+
+    const result = await handleToolCall('mem-source-ref', {
+      projectPath: '/repo/app',
+      ids: [target.id],
+      neighborWindow: 1,
+      maxContentChars: 240
+    });
+
+    const text = textOf(result);
+    expect(result.isError).not.toBe(true);
+    expect(mocks.projectService.getSessionHistory).not.toHaveBeenCalled();
+    expect(text).not.toContain('- Neighbor Context:');
+    expect(text).not.toContain('This neighboring turn should not be expanded');
+  });
+
+  it('defaults, disables, and clamps source reference neighbor windows', async () => {
+    const sessionEvents = Array.from({ length: 13 }, (_, index) => {
+      const offset = index - 6;
+      return event({
+        id: `77777777-7777-4777-8777-7777777777${String(index).padStart(2, '0')}`,
+        sessionId: 'session-neighbor-bounds',
+        eventType: offset === 0 ? 'agent_response' : 'user_prompt',
+        timestamp: new Date(Date.UTC(2026, 4, 5, 4, index, 0, 0)),
+        content: `Neighbor offset ${offset}`
+      });
+    });
+    const target = sessionEvents[6];
+    mocks.projectService.getRecentEvents.mockResolvedValue([target]);
+    mocks.projectService.getSessionHistory.mockResolvedValue(sessionEvents);
+
+    const defaultResult = await handleToolCall('mem-source-ref', {
+      projectPath: '/repo/app',
+      ids: [target.id],
+      includeNeighbors: true,
+      maxContentChars: 240
+    });
+    const defaultText = textOf(defaultResult);
+    expect(defaultResult.isError).not.toBe(true);
+    expect(defaultText).toContain('Neighbor offset -1');
+    expect(defaultText).toContain('Neighbor offset 1');
+    expect(defaultText).not.toContain('Neighbor offset -2');
+    expect(defaultText).not.toContain('Neighbor offset 2');
+
+    mocks.projectService.getSessionHistory.mockClear();
+    const disabledResult = await handleToolCall('mem-source-ref', {
+      projectPath: '/repo/app',
+      ids: [target.id],
+      includeNeighbors: true,
+      neighborWindow: 0,
+      maxContentChars: 240
+    });
+    const disabledText = textOf(disabledResult);
+    expect(disabledResult.isError).not.toBe(true);
+    expect(mocks.projectService.getSessionHistory).not.toHaveBeenCalled();
+    expect(disabledText).not.toContain('- Neighbor Context:');
+
+    const clampedResult = await handleToolCall('mem-source-ref', {
+      projectPath: '/repo/app',
+      ids: [target.id],
+      includeNeighbors: true,
+      neighborWindow: 99,
+      maxContentChars: 240
+    });
+    const clampedText = textOf(clampedResult);
+    expect(clampedResult.isError).not.toBe(true);
+    expect(clampedText).toContain('Neighbor offset -5');
+    expect(clampedText).toContain('Neighbor offset 5');
+    expect(clampedText).not.toContain('Neighbor offset -6');
+    expect(clampedText).not.toContain('Neighbor offset 6');
+  });
+
+  it('caches same-session neighbor history and labels same-timestamp neighbors by sorted position', async () => {
+    const timestamp = new Date('2026-05-05T04:00:00.000Z');
+    const previous = event({
+      id: '88888888-8888-4888-8888-888888888881',
+      sessionId: 'session-neighbor-cache',
+      eventType: 'user_prompt',
+      timestamp,
+      content: 'Same timestamp previous event.'
+    });
+    const firstTarget = event({
+      id: '88888888-8888-4888-8888-888888888882',
+      sessionId: 'session-neighbor-cache',
+      eventType: 'agent_response',
+      timestamp,
+      content: 'First target source reference content.'
+    });
+    const secondTarget = event({
+      id: '88888888-8888-4888-8888-888888888883',
+      sessionId: 'session-neighbor-cache',
+      eventType: 'agent_response',
+      timestamp,
+      content: 'Second target source reference content.'
+    });
+    const next = event({
+      id: '88888888-8888-4888-8888-888888888884',
+      sessionId: 'session-neighbor-cache',
+      eventType: 'tool_observation',
+      timestamp,
+      content: 'Same timestamp next event.'
+    });
+    mocks.projectService.getRecentEvents.mockResolvedValue([firstTarget, secondTarget]);
+    mocks.projectService.getSessionHistory.mockResolvedValue([previous, firstTarget, secondTarget, next]);
+
+    const result = await handleToolCall('mem-source-ref', {
+      projectPath: '/repo/app',
+      ids: [firstTarget.id, secondTarget.id],
+      includeNeighbors: true,
+      neighborWindow: 1,
+      maxContentChars: 240
+    });
+
+    const text = textOf(result);
+    expect(result.isError).not.toBe(true);
+    expect(mocks.projectService.getSessionHistory).toHaveBeenCalledTimes(1);
+    expect(text).toContain(`before [mem:${generateCitationId(previous.id)}]`);
+    expect(text).toContain(`after [mem:${generateCitationId(secondTarget.id)}]`);
+    expect(text).toContain(`after [mem:${generateCitationId(next.id)}]`);
+  });
+
+  it('optionally expands source references with privacy-safe neighboring session events', async () => {
+    const previous = event({
+      id: '66666666-6666-4666-8666-666666666661',
+      sessionId: 'session-neighbor',
+      eventType: 'user_prompt',
+      timestamp: new Date('2026-05-05T03:00:00.000Z'),
+      content: 'Previous turn explains why retrieval source context matters.'
+    });
+    const target = event({
+      id: '66666666-6666-4666-8666-666666666662',
+      sessionId: 'session-neighbor',
+      eventType: 'agent_response',
+      timestamp: new Date('2026-05-05T03:01:00.000Z'),
+      content: 'Target source reference content.'
+    });
+    const next = event({
+      id: '66666666-6666-4666-8666-666666666663',
+      sessionId: 'session-neighbor',
+      eventType: 'tool_observation',
+      timestamp: new Date('2026-05-05T03:02:00.000Z'),
+      content: `Next turn contains ${'api' + '_key'}=neighbor-secret but also a useful smoke-test result.`
+    });
+    const far = event({
+      id: '66666666-6666-4666-8666-666666666664',
+      sessionId: 'session-neighbor',
+      eventType: 'agent_response',
+      timestamp: new Date('2026-05-05T03:03:00.000Z'),
+      content: 'Far turn outside the requested neighbor window.'
+    });
+    mocks.projectService.getRecentEvents.mockResolvedValue([target]);
+    mocks.projectService.getSessionHistory.mockResolvedValue([previous, target, next, far]);
+
+    const result = await handleToolCall('mem-source-ref', {
+      projectPath: '/repo/app',
+      ids: [target.id],
+      includeNeighbors: true,
+      neighborWindow: 1,
+      maxContentChars: 240
+    });
+
+    const text = textOf(result);
+    expect(result.isError).not.toBe(true);
+    expect(mocks.projectService.getSessionHistory).toHaveBeenCalledWith('session-neighbor');
+    expect(text).toContain('- Neighbor Context:');
+    expect(text).toContain(`[mem:${generateCitationId(previous.id)}]`);
+    expect(text).toContain('Previous turn explains why retrieval source context matters');
+    expect(text).toContain(`[mem:${generateCitationId(next.id)}]`);
+    expect(text).toContain('useful smoke-test result');
+    expect(text).not.toContain('neighbor-secret');
+    expect(text).not.toContain('api_key=');
+    expect(text).not.toContain('Far turn outside the requested neighbor window');
   });
 });

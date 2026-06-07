@@ -1571,7 +1571,10 @@ async function handleMemSourceRef(memoryService: MemoryService, args: Record<str
     : [];
   const maxContentChars = numberArg(args.maxContentChars, 500, 80, 2000);
   const lookupLimit = numberArg(args.lookupLimit, 10000, 1, 50000);
+  const includeNeighbors = args.includeNeighbors === true;
+  const neighborWindow = includeNeighbors ? numberArg(args.neighborWindow, 1, 0, 5) : 0;
   const recentEvents = await memoryService.getRecentEvents(lookupLimit);
+  const sessionEventCache = new Map<string, Promise<MemoryEvent[]>>();
 
   const lines: string[] = ['## Source References', ''];
 
@@ -1605,6 +1608,19 @@ async function handleMemSourceRef(memoryService: MemoryService, args: Record<str
 
     lines.push('- Redacted Preview:');
     lines.push(`  > ${safeInline(event.content, maxContentChars)}`);
+    if (neighborWindow > 0) {
+      try {
+        let sessionEventsPromise = sessionEventCache.get(event.sessionId);
+        if (!sessionEventsPromise) {
+          sessionEventsPromise = memoryService.getSessionHistory(event.sessionId);
+          sessionEventCache.set(event.sessionId, sessionEventsPromise);
+        }
+        const sessionEvents = await sessionEventsPromise;
+        appendSourceRefNeighborContext(lines, event, sessionEvents, neighborWindow, maxContentChars);
+      } catch {
+        lines.push('- Neighbor Context: unavailable (details suppressed)');
+      }
+    }
     lines.push('');
   }
 
@@ -1956,6 +1972,46 @@ function sourceTypeForEvent(event: MemoryEvent): string {
   if (typeof event.metadata?.importedFrom === 'string') return 'imported_history';
   if (typeof event.metadata?.transcriptPath === 'string') return 'transcript';
   return 'raw_event';
+}
+
+function appendSourceRefNeighborContext(
+  lines: string[],
+  event: MemoryEvent,
+  sessionEvents: MemoryEvent[],
+  neighborWindow: number,
+  maxContentChars: number
+): void {
+  const sorted = sessionEvents
+    .slice()
+    .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime() || a.id.localeCompare(b.id));
+  const targetIndex = sorted.findIndex((candidate) => candidate.id === event.id);
+
+  lines.push('- Neighbor Context:');
+  if (targetIndex < 0) {
+    lines.push('  - unavailable (source event not found in session history)');
+    return;
+  }
+
+  const start = Math.max(0, targetIndex - neighborWindow);
+  const end = Math.min(sorted.length, targetIndex + neighborWindow + 1);
+  const neighbors = sorted
+    .map((candidate, index) => ({ event: candidate, index }))
+    .slice(start, end)
+    .filter((candidate) => candidate.event.id !== event.id);
+  if (neighbors.length === 0) {
+    lines.push('  - none within requested window');
+    return;
+  }
+
+  const previewChars = Math.max(80, Math.min(maxContentChars, 300));
+  for (const neighbor of neighbors) {
+    const direction = neighbor.index < targetIndex ? 'before' : 'after';
+    const citationId = generateCitationId(neighbor.event.id);
+    lines.push(
+      `  - ${direction} [mem:${citationId}] sourceRef=event:${neighbor.event.id} type=${neighbor.event.eventType} timestamp=${neighbor.event.timestamp.toISOString()}`
+    );
+    lines.push(`    > ${safeInline(neighbor.event.content, previewChars)}`);
+  }
 }
 
 function formatRelevantMemoryLine(
