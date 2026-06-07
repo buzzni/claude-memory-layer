@@ -25,6 +25,10 @@
 
 ## 2. 목표 구조 개요
 
+메모리 계층과 source-of-truth 계약은 별도 manifest에서 관리한다:
+[`docs/architecture/memory-layer-manifest.md`](architecture/memory-layer-manifest.md).
+이 문서의 폴더 구조 제안은 그 계약을 따른다. 특히 SQLite event store가 raw events와 governance records의 authoritative store이고, markdown/vector/shared/endless/Mongo-style layer는 projection, acceleration, extension, replication 역할이다.
+
 ```text
 src/
   core/

@@ -203,6 +203,9 @@ session/project continuity는 중요하지만 raw event와 같은 층에 두면 
 - **LanceDB** = disposable acceleration layer
 - **shared/Mongo** = replication/extension
 
+이 source-of-truth 계약과 현재 노출된 memory family 목록은
+[`docs/architecture/memory-layer-manifest.md`](../../docs/architecture/memory-layer-manifest.md)에 정리한다. Thin-core 작업은 이 manifest를 기준으로 MCP tool이 어떤 layer를 query/mutate하는지 드러내야 한다.
+
 이 정리가 있으면:
 - 운영 판단이 쉬워지고
 - 장애 복구가 쉬워지고
