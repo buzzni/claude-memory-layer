@@ -120,6 +120,7 @@ export interface ReplayEvaluationSummary extends ReplayMetricsSummary {
 }
 
 export interface ReplayEvaluationQueryMetrics extends ReplayQueryMetrics {
+  expectedIds: string[];
   retrievedIds: string[];
   candidateIds: string[];
   confidence: MatchConfidence;
@@ -193,6 +194,7 @@ export async function evaluateReplayFixture(
     const expectation = getReplayExpectation(run.query);
     const base: ReplayEvaluationQueryMetrics = {
       ...metric,
+      expectedIds: [...run.query.expectedIds],
       retrievedIds: run.retrievedIds,
       candidateIds: run.candidateIds,
       confidence: run.confidence,
