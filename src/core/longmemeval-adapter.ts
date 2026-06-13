@@ -37,6 +37,7 @@ export interface LongMemEvalAdapterOptions {
   generatedAt?: string;
   expandUserFacts?: boolean;
   expandPreferenceQueries?: boolean;
+  expandTemporalQueries?: boolean;
 }
 
 interface BuiltEntry {
@@ -63,6 +64,7 @@ export function longMemEvalEntriesToReplayFixture(
       sourceFileCount: options.sourceFileCount ?? 1,
       rawContentIncluded: true,
       ...(options.expandPreferenceQueries === true ? { preferenceQueryExpansion: true } : {}),
+      ...(options.expandTemporalQueries === true ? { temporalQueryExpansion: true } : {}),
       ...(options.generatedAt ? { generatedAt: options.generatedAt } : {})
     }
   };
@@ -127,7 +129,7 @@ function buildEntry(
 
   const query: ReplayEvaluationQuery = {
     queryId: questionId,
-    query: expandLongMemEvalQuery(question, questionType, isAbstention, options),
+    query: expandLongMemEvalQuery(question, questionType, optionalString(entry.question_date), isAbstention, options),
     expectedIds,
     expectedRelevance,
     expectation: isAbstention ? 'no_match' : 'match',
@@ -147,14 +149,32 @@ function buildEntry(
 function expandLongMemEvalQuery(
   question: string,
   questionType: string,
+  questionDate: string | undefined,
   isAbstention: boolean,
   options: LongMemEvalAdapterOptions
 ): string {
-  if (options.expandPreferenceQueries !== true || isAbstention || questionType !== 'single-session-preference') {
-    return question;
+  let expanded = question;
+
+  if (options.expandPreferenceQueries === true && !isAbstention && questionType === 'single-session-preference') {
+    const hint = 'user preference personal context interests goals prior details';
+    expanded = expanded.toLowerCase().includes(hint) ? expanded : `${expanded} ${hint}`;
   }
-  const hint = 'user preference personal context interests goals prior details';
-  return question.toLowerCase().includes(hint) ? question : `${question} ${hint}`;
+
+  if (options.expandTemporalQueries === true && !isAbstention && questionType === 'temporal-reasoning') {
+    const normalizedDate = normalizeLongMemEvalQuestionDate(questionDate);
+    const hint = `${normalizedDate ? `question date ${normalizedDate} ` : ''}temporal order before after earlier later elapsed days weeks months ago latest earliest timeline`;
+    expanded = expanded.toLowerCase().includes(hint.toLowerCase()) ? expanded : `${expanded} ${hint}`;
+  }
+
+  return expanded;
+}
+
+function normalizeLongMemEvalQuestionDate(questionDate: string | undefined): string | undefined {
+  if (questionDate === undefined) return undefined;
+  const match = /\b(\d{4})[/-](\d{1,2})[/-](\d{1,2})\b/.exec(questionDate);
+  if (!match) return undefined;
+  const [, year, month, day] = match;
+  return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
 }
 
 function buildSessionMemories(

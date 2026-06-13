@@ -58,6 +58,25 @@ function writeLongMemEvalPreferenceFixture(): string {
   return fixturePath;
 }
 
+function writeLongMemEvalTemporalFixture(): string {
+  const dir = mkdtempSync(path.join(tmpdir(), 'cml-longmemeval-cli-temporal-'));
+  const fixturePath = path.join(dir, 'longmemeval-temporal-mini.json');
+  writeFileSync(fixturePath, `${JSON.stringify([
+    {
+      question_id: 'q_cli_temporal',
+      question_type: 'temporal-reasoning',
+      question: 'How many days ago did I attend the museum exhibit?',
+      answer: '12 days',
+      question_date: '2023/02/01 (Wed) 10:20',
+      haystack_session_ids: ['s_answer'],
+      haystack_dates: ['2023/01/20 (Fri) 09:00'],
+      haystack_sessions: [[{ role: 'user', content: 'I attended the museum exhibit.', has_answer: true }]],
+      answer_session_ids: ['s_answer']
+    }
+  ], null, 2)}\n`, 'utf8');
+  return fixturePath;
+}
+
 function writeReaderCommand(): string {
   const dir = mkdtempSync(path.join(tmpdir(), 'cml-longmemeval-reader-'));
   const readerPath = path.join(dir, 'reader.mjs');
@@ -144,6 +163,7 @@ describe('LongMemEval retrieval smoke CLI', () => {
     expect(result.stdout).toContain('--hybrid-turn-weight RATE');
     expect(result.stdout).toContain('--expand-user-facts');
     expect(result.stdout).toContain('--expand-preference-queries');
+    expect(result.stdout).toContain('--expand-temporal-queries');
     expect(result.stdout).toContain('--answers-out PATH');
     expect(result.stdout).toContain('--reader-command PATH');
     expect(result.stdout).toContain('LongMemEval-compatible JSONL');
@@ -229,6 +249,29 @@ describe('LongMemEval retrieval smoke CLI', () => {
     expect(fixture.metadata.preferenceQueryExpansion).toBe(true);
     expect(fixture.queries[0].query).toContain('user preference personal context interests goals prior details');
     expect(fixture.queries[0].query).not.toContain('Sony-compatible photography accessories');
+  });
+
+  it('passes temporal query expansion into converted fixtures', () => {
+    const fixturePath = writeLongMemEvalTemporalFixture();
+    const dir = mkdtempSync(path.join(tmpdir(), 'cml-longmemeval-cli-temporal-out-'));
+    const fixtureOut = path.join(dir, 'fixture.json');
+    const result = runLongMemEvalSmokeCli([
+      '--input', fixturePath,
+      '--expand-temporal-queries',
+      '--fixture-out', fixtureOut,
+      '--format', 'json',
+      '--top-k', '2'
+    ]);
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe('');
+    const fixture = JSON.parse(readFileSync(fixtureOut, 'utf8')) as {
+      metadata: Record<string, unknown>;
+      queries: Array<{ query: string; knownAnswer?: string }>;
+    };
+    expect(fixture.metadata.temporalQueryExpansion).toBe(true);
+    expect(fixture.queries[0].query).toContain('question date 2023-02-01 temporal order');
+    expect(fixture.queries[0].query).not.toContain('12 days');
   });
 
   it('runs hybrid retrieval and emits official-style analysis in JSON', () => {

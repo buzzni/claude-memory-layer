@@ -194,6 +194,40 @@ describe('LongMemEval replay adapter', () => {
     expect(fixture.metadata).toMatchObject({ preferenceQueryExpansion: true });
   });
 
+  it('expands temporal benchmark queries with question date and relation hints without leaking answers', () => {
+    const fixture = longMemEvalEntriesToReplayFixture([
+      {
+        question_id: 'q_temporal',
+        question_type: 'temporal-reasoning',
+        question: 'How many days passed between my visit to the museum and the exhibit at the Met?',
+        answer: '12 days',
+        question_date: '2023/02/01 (Wed) 10:20',
+        haystack_session_ids: ['s1'],
+        haystack_dates: ['2023/01/20 (Fri) 09:00'],
+        haystack_sessions: [[{ role: 'user', content: 'I visited the museum.' }]],
+        answer_session_ids: ['s1']
+      },
+      {
+        question_id: 'q_user',
+        question_type: 'single-session-user',
+        question: 'Which beverage does the user prefer?',
+        answer: 'jasmine tea',
+        question_date: '2023/02/01 (Wed) 10:20',
+        haystack_session_ids: ['s2'],
+        haystack_dates: ['2023/01/22 (Sun) 12:00'],
+        haystack_sessions: [[{ role: 'user', content: 'I prefer jasmine tea.' }]],
+        answer_session_ids: ['s2']
+      }
+    ], { expandTemporalQueries: true });
+
+    expect(fixture.queries[0].query).toBe(
+      'How many days passed between my visit to the museum and the exhibit at the Met? question date 2023-02-01 temporal order before after earlier later elapsed days weeks months ago latest earliest timeline'
+    );
+    expect(fixture.queries[0].query).not.toContain('12 days');
+    expect(fixture.queries[1].query).toBe('Which beverage does the user prefer?');
+    expect(fixture.metadata).toMatchObject({ temporalQueryExpansion: true });
+  });
+
   it('extracts preference-category user goals and personal context beyond direct like/prefer phrasing', () => {
     const fixture = longMemEvalEntriesToReplayFixture([
       {
