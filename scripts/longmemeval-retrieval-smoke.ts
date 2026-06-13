@@ -37,6 +37,8 @@ interface ParsedArgs {
   isolatePerQuestion: boolean;
   includePerQuery: boolean;
   retrievalMode: 'single' | 'hybrid';
+  hybridSessionWeight: number;
+  hybridTurnWeight: number;
   expandUserFacts: boolean;
   expandPreferenceQueries: boolean;
   readerCommand: string;
@@ -169,7 +171,9 @@ function createLongMemEvalRetrievalRunner(
       sessionFixture: fixture,
       turnFixture: hybridTurnFixture,
       sessionRunner: options.isolatePerQuestion ? createPerQuestionRetrievalRunner(fixture) : undefined,
-      turnRunner: options.isolatePerQuestion ? createPerQuestionRetrievalRunner(hybridTurnFixture) : undefined
+      turnRunner: options.isolatePerQuestion ? createPerQuestionRetrievalRunner(hybridTurnFixture) : undefined,
+      sessionWeight: options.hybridSessionWeight,
+      turnWeight: options.hybridTurnWeight
     });
   }
   return options.isolatePerQuestion ? createPerQuestionRetrievalRunner(fixture) : undefined;
@@ -342,6 +346,8 @@ function parseArgs(argv: string[]): ParsedArgs {
     isolatePerQuestion: true,
     includePerQuery: true,
     retrievalMode: 'hybrid',
+    hybridSessionWeight: 1,
+    hybridTurnWeight: 1.5,
     expandUserFacts: false,
     expandPreferenceQueries: false,
     readerCommand: '',
@@ -394,6 +400,10 @@ function parseArgs(argv: string[]): ParsedArgs {
       parsed.retrievalMode = value;
     } else if (arg === '--hybrid-retrieval') {
       parsed.retrievalMode = 'hybrid';
+    } else if (arg === '--hybrid-session-weight') {
+      parsed.hybridSessionWeight = parsePositiveNumber(readOptionValue(argv, ++i, arg), arg);
+    } else if (arg === '--hybrid-turn-weight') {
+      parsed.hybridTurnWeight = parsePositiveNumber(readOptionValue(argv, ++i, arg), arg);
     } else if (arg === '--min-score') {
       parsed.minScore = parseRate(readOptionValue(argv, ++i, arg), arg);
     } else if (arg === '--expand-user-facts') {
@@ -490,6 +500,17 @@ function parseRate(value: string, optionName: string): number {
   return parsed;
 }
 
+function parsePositiveNumber(value: string, optionName: string): number {
+  if (!/^(?:0?\.\d+|[1-9]\d*(?:\.\d+)?)$/.test(value)) {
+    throw new CliError(`Invalid ${optionName}: expected a positive number, got ${value}`);
+  }
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new CliError(`Invalid ${optionName}: expected a positive number, got ${value}`);
+  }
+  return parsed;
+}
+
 function parseNonNegativeInteger(value: string, optionName: string, bounds: { min?: number } = {}): number {
   if (!/^(?:0|[1-9]\d*)$/.test(value)) {
     throw new CliError(`Invalid ${optionName}: expected a non-negative integer, got ${value}`);
@@ -514,6 +535,9 @@ Options:
                             Benchmark fixture mode. hybrid evaluates session qrels with session+turn replay retrieval. Default: hybrid.
                             This is distinct from production MCP retrievalMode=session-event-hybrid.
   --hybrid-retrieval        Shortcut for --retrieval-mode hybrid.
+  --hybrid-session-weight RATE
+                            Session-level rank-fusion weight for hybrid mode. Default: 1.
+  --hybrid-turn-weight RATE Turn-level rank-fusion weight for hybrid mode. Default: 1.5.
   --expand-user-facts       Append answer-independent user preference/fact summaries extracted from haystack text.
   --no-expand-user-facts    Disable user-fact expansion. Default.
   --expand-preference-queries

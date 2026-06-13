@@ -140,6 +140,8 @@ describe('LongMemEval retrieval smoke CLI', () => {
     expect(result.stdout).toContain('Default: hybrid.');
     expect(result.stdout).toContain('distinct from production MCP retrievalMode=session-event-hybrid');
     expect(result.stdout).toContain('--hybrid-retrieval');
+    expect(result.stdout).toContain('--hybrid-session-weight RATE');
+    expect(result.stdout).toContain('--hybrid-turn-weight RATE');
     expect(result.stdout).toContain('--expand-user-facts');
     expect(result.stdout).toContain('--expand-preference-queries');
     expect(result.stdout).toContain('--answers-out PATH');
@@ -248,6 +250,26 @@ describe('LongMemEval retrieval smoke CLI', () => {
     expect(report.evaluator).toBe('cml-retriever-longmemeval-hybrid-isolated-v1');
     expect(report.longMemEvalAnalysis.recallAnyAtK).toBeGreaterThan(0);
     expect(report.longMemEvalAnalysis.failureBreakdown.hit).toBeGreaterThan(0);
+  });
+
+  it('accepts custom hybrid fusion weights and records them in fallback trace', () => {
+    const fixturePath = writeLongMemEvalFixture();
+    const result = runLongMemEvalSmokeCli([
+      '--input', fixturePath,
+      '--retrieval-mode', 'hybrid',
+      '--granularity', 'session',
+      '--format', 'json',
+      '--top-k', '2',
+      '--hybrid-session-weight', '1.25',
+      '--hybrid-turn-weight', '1'
+    ]);
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe('');
+    const report = JSON.parse(result.stdout) as {
+      perQuery: Array<{ fallbackTrace: string[] }>;
+    };
+    expect(report.perQuery[0]?.fallbackTrace).toContain('hybrid:weights:session=1.25,turn=1');
   });
 
   it('fails closed when answer JSONL output is requested without a reader command', () => {

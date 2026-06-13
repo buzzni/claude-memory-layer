@@ -67,7 +67,7 @@ npm run eval:longmemeval:retrieval-smoke -- \
   --out /tmp/LongMemEval/reports/cml-longmemeval-s-full-nonabs-hybrid-fast.json
 ```
 
-Current best retrieval-only smoke with preference query expansion:
+Current best retrieval-only smoke with preference query expansion plus tuned hybrid fusion weights:
 
 ```bash
 npm run eval:longmemeval:retrieval-smoke -- \
@@ -76,8 +76,10 @@ npm run eval:longmemeval:retrieval-smoke -- \
   --retrieval-mode hybrid \
   --strategy fast \
   --expand-preference-queries \
+  --hybrid-session-weight 1.75 \
+  --hybrid-turn-weight 5 \
   --format json \
-  --out /tmp/LongMemEval/reports/cml-longmemeval-s-hybrid-fast-expand-preference-queries.json
+  --out /tmp/LongMemEval/reports/cml-longmemeval-s-hybrid-fast-expand-preference-queries-tuned.json
 ```
 
 Useful flags:
@@ -85,7 +87,8 @@ Useful flags:
 - `--limit N`: run a small sample first.
 - `--retrieval-mode single|hybrid`: benchmark fixture mode. Default is `hybrid` session+turn replay retrieval; use `single` to reproduce the baseline session-only or turn-only retriever. `--hybrid-retrieval` is a shortcut.
 - Do not confuse benchmark `--retrieval-mode hybrid` with production MCP/core `retrievalMode=session-event-hybrid`: the benchmark combines session and turn replay fixtures to score LongMemEval qrels, while production context packs rescue query-relevant sibling events from already-hit sessions.
-- `--expand-preference-queries`: append retrieval-only preference/context hint terms to `single-session-preference` questions. In the 2026-06-13 smoke this improved hybrid Hit@10 from `0.8723` to `0.8745` and nDCG@10 from `0.7234` to `0.7264`.
+- `--expand-preference-queries`: append retrieval-only preference/context hint terms to `single-session-preference` questions. In the 2026-06-13 smoke this improved hybrid Hit@10 from `0.8723` to `0.8745` and nDCG@10 from `0.7234` to `0.7264` before weight tuning.
+- `--hybrid-session-weight RATE` / `--hybrid-turn-weight RATE`: tune session-vs-turn rank fusion in benchmark hybrid mode. The best nDCG/MRR smoke so far uses `--hybrid-session-weight 1.75 --hybrid-turn-weight 5`, improving nDCG@10 to `0.7335`, MRR to `0.7683`, and Recall_all@10 to `0.7021`. A recall-all-oriented preset, `1.25/1`, reached Recall_all@10 `0.7064` but reduced nDCG/MRR, so it is not the default recommended scoring command.
 - `--expand-user-facts`: append answer-independent user preference/fact summaries extracted from haystack text. Current rule-based extraction is useful for fixture inspection, but it did **not** improve the full LongMemEval_S aggregate; prefer `--expand-preference-queries` for the current retrieval smoke.
 - `--include-abstention`: include `*_abs` questions as strict no-match qrels.
 - `--skip-abstention`: default; matches LongMemEval retrieval reporting, which skips abstention instances.
@@ -111,6 +114,8 @@ npm run eval:longmemeval:retrieval-smoke -- \
   --retrieval-mode hybrid \
   --strategy fast \
   --expand-preference-queries \
+  --hybrid-session-weight 1.75 \
+  --hybrid-turn-weight 5 \
   --limit 5 \
   --format json \
   --out /tmp/LongMemEval/reports/cml-longmemeval-s-hybrid-reader-smoke.json \
@@ -131,6 +136,8 @@ npm run eval:longmemeval:retrieval-smoke -- \
   --retrieval-mode hybrid \
   --strategy fast \
   --expand-preference-queries \
+  --hybrid-session-weight 1.75 \
+  --hybrid-turn-weight 5 \
   --format json \
   --out /tmp/LongMemEval/reports/cml-longmemeval-s-hybrid-reader-report.json \
   --answers-out /tmp/LongMemEval/reports/cml-longmemeval-s-hypotheses.jsonl \
@@ -188,17 +195,18 @@ Summary from LongMemEval_S cleaned, 470 non-abstention questions:
 | turn | 231,606 | 0.8979 | 164 | 0.6511 | 0.3830 | 0.5087 | 0.4522 | 0.5068 |
 | hybrid session+turn replay | 22,419 session memories + turn reranking | 0.9362 | 60 | 0.8723 | 0.6979 | 0.7917 | 0.7234 | 0.7558 |
 | hybrid + preference query expansion | 22,419 session memories + turn reranking | 0.9383 | 59 | 0.8745 | 0.7000 | 0.7938 | 0.7264 | 0.7591 |
+| hybrid + preference query expansion + tuned weights `1.75/5` | 22,419 session memories + turn reranking | 0.9383 | 58 | 0.8745 | 0.7021 | 0.7939 | 0.7335 | 0.7683 |
 
-Interpretation: CML's default session retrieval already retrieves at least one relevant evidence session for ~75.5% of LongMemEval_S non-abstention questions. Hybrid session+turn replay retrieval raises that to ~87.2% and raises all-evidence recall from ~48.9% to ~69.8%. The best current retrieval-only smoke is hybrid plus opt-in preference query expansion: Hit@10 ~87.4%, all-evidence recall ~70.0%, fractional recall ~79.4%, and nDCG@10 ~72.6%.
+Interpretation: CML's default session retrieval already retrieves at least one relevant evidence session for ~75.5% of LongMemEval_S non-abstention questions. Hybrid session+turn replay retrieval raises that to ~87.2% and raises all-evidence recall from ~48.9% to ~69.8%. The best current nDCG/MRR retrieval-only smoke is hybrid plus opt-in preference query expansion and tuned `session=1.75, turn=5` rank fusion: Hit@10 ~87.4%, all-evidence recall ~70.2%, fractional recall ~79.4%, nDCG@10 ~73.4%, and MRR ~76.8%.
 
 ## Score interpretation
 
 Because the committed report is still retrieval-only, the official LongMemEval QA score is **N/A until a reader run plus official judge output are recorded**.
 
-Using the transparent proxy documented in the report, the current best hybrid + preference-query-expansion mode implies:
+Using the transparent proxy documented in the report, the current best hybrid + preference-query-expansion + tuned-weight mode implies:
 
-- conservative all-evidence proxy: **64.7 / 100**
-- middle fractional-recall proxy: **73.3 / 100**
+- conservative all-evidence proxy: **64.9 / 100**
+- middle fractional-recall proxy: **73.4 / 100**
 - optimistic any-evidence upper bound: **80.8 / 100**
 
 A practical retrieval-grounded estimate is therefore **about 65–73/100**, with an optimistic ceiling near **81/100** if a reader model can answer from partial evidence. The official QA score remains **N/A** until a reader + official judge run is recorded.

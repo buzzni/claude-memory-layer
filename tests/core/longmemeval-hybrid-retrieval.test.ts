@@ -99,4 +99,53 @@ describe('LongMemEval hybrid retrieval', () => {
       'q_2::session::s_noise'
     ]);
   });
+
+  it('applies custom session and turn fusion weights in runner results', async () => {
+    const entries = [{
+      question_id: 'q_weight',
+      question_type: 'single-session-user',
+      question: 'Which session should win after custom weighting?',
+      answer: 'session answer',
+      haystack_session_ids: ['s_session', 's_turn'],
+      haystack_dates: ['2026-01-01', '2026-01-02'],
+      haystack_sessions: [
+        [{ role: 'user', content: 'session lane evidence', has_answer: true }],
+        [{ role: 'user', content: 'turn lane distractor' }]
+      ],
+      answer_session_ids: ['s_session']
+    }];
+    const sessionFixture = longMemEvalEntriesToReplayFixture(entries, { granularity: 'session' });
+    const turnFixture = longMemEvalEntriesToReplayFixture(entries, { granularity: 'turn' });
+    const sessionRunner: ReplayRetrievalRunner = async () => ({
+      retrievedIds: ['q_weight::session::s_session'],
+      candidateIds: ['q_weight::session::s_session'],
+      confidence: 'suggested'
+    });
+    const turnRunner: ReplayRetrievalRunner = async () => ({
+      retrievedIds: ['q_weight::session::s_turn::turn::0'],
+      candidateIds: ['q_weight::session::s_turn::turn::0'],
+      confidence: 'high'
+    });
+
+    const runner = createLongMemEvalHybridRetrievalRunner({
+      sessionFixture,
+      turnFixture,
+      sessionRunner,
+      turnRunner,
+      sessionWeight: 2,
+      turnWeight: 0.25
+    });
+    const result = await runner('Which session should win after custom weighting?', {
+      fixture: sessionFixture,
+      query: sessionFixture.queries[0],
+      topK: 2,
+      retrievalOptions: {}
+    });
+
+    expect(result.retrievedIds).toEqual([
+      'q_weight::session::s_session',
+      'q_weight::session::s_turn'
+    ]);
+    expect(result.fallbackTrace).toContain('hybrid:weights:session=2,turn=0.25');
+  });
 });

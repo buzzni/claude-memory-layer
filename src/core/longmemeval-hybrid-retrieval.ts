@@ -20,6 +20,8 @@ export interface LongMemEvalHybridRunnerOptions {
   turnFixture: ReplayEvaluationFixture;
   sessionRunner?: ReplayRetrievalRunner;
   turnRunner?: ReplayRetrievalRunner;
+  sessionWeight?: number;
+  turnWeight?: number;
 }
 
 const DEFAULT_SESSION_WEIGHT = 1;
@@ -49,7 +51,9 @@ export function createLongMemEvalHybridRetrievalRunner(
     return combineLongMemEvalHybridSessionResults({
       topK: input.topK,
       sessionResult,
-      turnResult
+      turnResult,
+      sessionWeight: options.sessionWeight,
+      turnWeight: options.turnWeight
     });
   };
 }
@@ -58,12 +62,14 @@ export function combineLongMemEvalHybridSessionResults(
   input: LongMemEvalHybridCombineInput
 ): ReplayRetrievalRunResult {
   const topK = Math.max(1, Math.floor(input.topK));
+  const sessionWeight = input.sessionWeight ?? DEFAULT_SESSION_WEIGHT;
+  const turnWeight = input.turnWeight ?? DEFAULT_TURN_WEIGHT;
   const scores = new Map<string, { score: number; firstRank: number; source: 'session' | 'turn' | 'both' }>();
-  addRankedIds(scores, input.sessionResult.retrievedIds, input.sessionWeight ?? DEFAULT_SESSION_WEIGHT, 'session');
+  addRankedIds(scores, input.sessionResult.retrievedIds, sessionWeight, 'session');
   addRankedIds(
     scores,
     input.turnResult.retrievedIds.map(turnIdToSessionId),
-    input.turnWeight ?? DEFAULT_TURN_WEIGHT,
+    turnWeight,
     'turn'
   );
 
@@ -87,11 +93,16 @@ export function combineLongMemEvalHybridSessionResults(
     confidence: mergeConfidence(input.sessionResult.confidence, input.turnResult.confidence),
     fallbackTrace: unique([
       'hybrid:session-turn',
+      `hybrid:weights:session=${formatWeight(sessionWeight)},turn=${formatWeight(turnWeight)}`,
       `hybrid:turn-promoted:${promotedTurnSessions}`,
       ...prefixTrace('session', input.sessionResult.fallbackTrace),
       ...prefixTrace('turn', input.turnResult.fallbackTrace)
     ])
   };
+}
+
+function formatWeight(value: number): string {
+  return Number.isInteger(value) ? String(value) : String(value);
 }
 
 function addRankedIds(
