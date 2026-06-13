@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 
@@ -36,6 +36,24 @@ function writeLongMemEvalFixture(): string {
   return fixturePath;
 }
 
+function writeReaderCommand(): string {
+  const dir = mkdtempSync(path.join(tmpdir(), 'cml-longmemeval-reader-'));
+  const readerPath = path.join(dir, 'reader.mjs');
+  writeFileSync(readerPath, `#!/usr/bin/env node
+let raw = '';
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', chunk => { raw += chunk; });
+process.stdin.on('end', () => {
+  const payload = JSON.parse(raw);
+  const context = payload.contexts.map(item => item.content).join('\\n');
+  const match = context.match(/prefer ([^.]+)\\./i);
+  process.stdout.write(match ? match[1].trim() : 'I do not know');
+});
+`, 'utf8');
+  chmodSync(readerPath, 0o755);
+  return readerPath;
+}
+
 describe('LongMemEval retrieval smoke CLI', () => {
   it('documents the hybrid session+turn retrieval options in help output', () => {
     const result = runLongMemEvalSmokeCli(['--help']);
@@ -47,6 +65,9 @@ describe('LongMemEval retrieval smoke CLI', () => {
     expect(result.stdout).toContain('distinct from production MCP retrievalMode=session-event-hybrid');
     expect(result.stdout).toContain('--hybrid-retrieval');
     expect(result.stdout).toContain('--expand-user-facts');
+    expect(result.stdout).toContain('--answers-out PATH');
+    expect(result.stdout).toContain('--reader-command PATH');
+    expect(result.stdout).toContain('LongMemEval-compatible JSONL');
   });
 
   it('defaults to hybrid retrieval when retrieval mode is omitted', () => {
@@ -127,5 +148,49 @@ describe('LongMemEval retrieval smoke CLI', () => {
     expect(report.evaluator).toBe('cml-retriever-longmemeval-hybrid-isolated-v1');
     expect(report.longMemEvalAnalysis.recallAnyAtK).toBeGreaterThan(0);
     expect(report.longMemEvalAnalysis.failureBreakdown.hit).toBeGreaterThan(0);
+  });
+
+  it('fails closed when answer JSONL output is requested without a reader command', () => {
+    const fixturePath = writeLongMemEvalFixture();
+    const dir = mkdtempSync(path.join(tmpdir(), 'cml-longmemeval-answers-'));
+    const answersOut = path.join(dir, 'hypotheses.jsonl');
+    const result = runLongMemEvalSmokeCli([
+      '--input', fixturePath,
+      '--format', 'json',
+      '--answers-out', answersOut,
+      '--top-k', '2'
+    ]);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('--reader-command is required when --answers-out is set');
+  });
+
+  it('writes official LongMemEval hypothesis JSONL from retrieved context via reader command', () => {
+    const fixturePath = writeLongMemEvalFixture();
+    const readerCommand = writeReaderCommand();
+    const dir = mkdtempSync(path.join(tmpdir(), 'cml-longmemeval-answers-'));
+    const answersOut = path.join(dir, 'hypotheses.jsonl');
+    const result = runLongMemEvalSmokeCli([
+      '--input', fixturePath,
+      '--retrieval-mode', 'hybrid',
+      '--granularity', 'session',
+      '--format', 'json',
+      '--top-k', '2',
+      '--answers-out', answersOut,
+      '--reader-command', readerCommand
+    ]);
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe('');
+    const rows = readFileSync(answersOut, 'utf8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(rows).toEqual([
+      {
+        question_id: 'q_cli_1',
+        hypothesis: 'jasmine tea in the afternoon'
+      }
+    ]);
   });
 });

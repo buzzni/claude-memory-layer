@@ -4,15 +4,16 @@ This benchmark adapter evaluates CML retrieval against the official LongMemEval 
 
 ## What this measures
 
-Current support is **retrieval-only**:
+Current support has two layers:
 
 1. Read LongMemEval JSON examples.
 2. Convert each example's haystack into a CML replay fixture.
 3. Isolate retrieval per question, matching LongMemEval's per-question haystack setup.
 4. Run the CML replay retriever.
 5. Report Precision@k, fractional Recall@k, Hit@k / `recall_any`, `recall_all`, nDCG@k, MRR, and failure classes.
+6. Optionally feed the retrieved CML context into an external reader/model wrapper and emit LongMemEval-compatible hypothesis JSONL.
 
-It is **not yet** an official LongMemEval QA score because it does not generate answers and does not run `src/evaluation/evaluate_qa.py` with an LLM judge.
+The retrieval report is **not by itself** an official LongMemEval QA score. To get the official QA score, generate hypotheses with `--answers-out` and run LongMemEval's `src/evaluation/evaluate_qa.py` with an LLM judge.
 
 ## Dataset setup
 
@@ -75,8 +76,45 @@ Useful flags:
 - `--include-abstention`: include `*_abs` questions as strict no-match qrels.
 - `--skip-abstention`: default; matches LongMemEval retrieval reporting, which skips abstention instances.
 - `--global-corpus`: search all converted examples together. Default is isolated per question, which better matches LongMemEval.
+- `--answers-out PATH`: write official evaluator hypothesis JSONL with one object per line: `{ "question_id": "...", "hypothesis": "..." }`.
+- `--reader-command PATH`: required with `--answers-out`; executable wrapper for your reader model. CML sends JSON on stdin with `question_id`, `question`, optional `category`, and retrieved `contexts: [{ id, rank, content }]`. The wrapper must write the answer text to stdout.
+- `--reader-arg VALUE`: repeatable extra argument passed to the reader command.
 - `--fixture-out PATH`: inspect the converted replay fixture.
 - `--no-per-query`: omit per-query rows for smaller output.
+
+## Generate QA hypotheses for the official judge
+
+The benchmark script can now produce the LongMemEval hypothesis file consumed by `evaluate_qa.py`. Provide a reader wrapper that calls your model of choice and prints only the final answer.
+
+```bash
+npm run eval:longmemeval:retrieval-smoke -- \
+  --input /tmp/LongMemEval/data/longmemeval_s_cleaned.json \
+  --granularity session \
+  --retrieval-mode hybrid \
+  --strategy fast \
+  --format json \
+  --out /tmp/LongMemEval/reports/cml-longmemeval-s-hybrid-reader-report.json \
+  --answers-out /tmp/LongMemEval/reports/cml-longmemeval-s-hypotheses.jsonl \
+  --reader-command /path/to/your-reader-wrapper
+```
+
+The generated JSONL rows are intentionally minimal and official-compatible:
+
+```jsonl
+{"question_id":"...","hypothesis":"..."}
+```
+
+Then run the upstream evaluator from the cloned LongMemEval repo:
+
+```bash
+cd /tmp/LongMemEval
+python src/evaluation/evaluate_qa.py \
+  gpt-4o-mini \
+  /tmp/LongMemEval/reports/cml-longmemeval-s-hypotheses.jsonl \
+  /tmp/LongMemEval/data/longmemeval_s_cleaned.json
+```
+
+`evaluate_qa.py` requires the judge model credentials expected by LongMemEval (for example `OPENAI_API_KEY` for OpenAI-backed metric models).
 
 ## Metric mapping
 
@@ -105,7 +143,7 @@ Interpretation: CML's default session retrieval already retrieves at least one r
 
 ## Score interpretation
 
-Because this is retrieval-only, the official LongMemEval QA score is **N/A** until an answer-generation path and official judge run are added.
+Because the committed report is still retrieval-only, the official LongMemEval QA score is **N/A until a reader run plus official judge output are recorded**.
 
 Using the transparent proxy documented in the report, the current default hybrid mode implies:
 
@@ -117,8 +155,7 @@ A practical retrieval-grounded estimate is therefore **about 65–73/100**, with
 
 ## Next implementation steps
 
-1. Add an answer-generation path that feeds retrieved CML context into a reader model.
-2. Emit LongMemEval-compatible JSONL: `{ "question_id": "...", "hypothesis": "..." }`.
-3. Run official `src/evaluation/evaluate_qa.py` from the cloned LongMemEval repo.
-4. Compare QA against retrieval diagnostics to separate retriever misses from reader/reasoning misses.
-5. Improve preference/user-fact retrieval beyond the initial lightweight rule-based extraction, which did not move aggregate metrics in this smoke.
+1. Add a concrete reader wrapper for the model/provider to be used in official scoring.
+2. Run `--answers-out` on LongMemEval_S and evaluate with upstream `src/evaluation/evaluate_qa.py`.
+3. Compare QA against retrieval diagnostics to separate retriever misses from reader/reasoning misses.
+4. Improve preference/user-fact retrieval beyond the initial lightweight rule-based extraction, which did not move aggregate metrics in this smoke.

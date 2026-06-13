@@ -1,4 +1,5 @@
 #!/usr/bin/env tsx
+import { spawn } from 'node:child_process';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 
@@ -28,6 +29,7 @@ import type { RetrievalStrategy } from '../src/core/retriever.js';
 interface ParsedArgs {
   inputPath: string;
   outPath: string;
+  answersOutPath: string;
   fixtureOutPath: string;
   format: 'json' | 'markdown';
   granularity: LongMemEvalGranularity;
@@ -36,10 +38,30 @@ interface ParsedArgs {
   includePerQuery: boolean;
   retrievalMode: 'single' | 'hybrid';
   expandUserFacts: boolean;
+  readerCommand: string;
+  readerArgs: string[];
   limit?: number;
   topK?: number;
   strategy?: RetrievalStrategy;
   minScore?: number;
+}
+
+interface LongMemEvalHypothesis {
+  question_id: string;
+  hypothesis: string;
+}
+
+interface LongMemEvalReaderContext {
+  id: string;
+  rank: number;
+  content: string;
+}
+
+interface LongMemEvalReaderPayload {
+  question_id: string;
+  question: string;
+  category?: string;
+  contexts: LongMemEvalReaderContext[];
 }
 
 class CliError extends Error {
@@ -115,6 +137,10 @@ async function main(argv: string[]): Promise<void> {
   });
 
   const analysis = analyzeLongMemEvalRetrievalReport(report, { k: options.topK ?? Math.max(...fixture.ks) });
+  if (options.answersOutPath) {
+    const hypotheses = await generateLongMemEvalHypotheses(fixture, report, options);
+    await writeTextFile(options.answersOutPath, formatLongMemEvalHypothesesJsonl(hypotheses));
+  }
   const outputReport = options.includePerQuery ? report : { ...report, perQuery: [] };
   const output = formatReport(outputReport, options.format, options.inputPath, analysis);
   if (options.outPath) {
@@ -181,10 +207,106 @@ function createPerQuestionRetrievalRunner(fixture: ReplayEvaluationFixture): Rep
   };
 }
 
+async function generateLongMemEvalHypotheses(
+  fixture: ReplayEvaluationFixture,
+  report: ReplayEvaluationReport,
+  options: ParsedArgs
+): Promise<LongMemEvalHypothesis[]> {
+  const memoryById = new Map(fixture.memories.map((memory) => [memory.id, memory]));
+  const metricByQueryId = new Map(report.perQuery.map((metric) => [metric.queryId, metric]));
+
+  const hypotheses: LongMemEvalHypothesis[] = [];
+  for (const query of fixture.queries) {
+    const metric = metricByQueryId.get(query.queryId);
+    const contexts = (metric?.retrievedIds ?? [])
+      .map((id, index): LongMemEvalReaderContext | undefined => {
+        const memory = memoryById.get(id);
+        if (!memory) return undefined;
+        return {
+          id,
+          rank: index + 1,
+          content: memory.content
+        };
+      })
+      .filter((context): context is LongMemEvalReaderContext => context !== undefined);
+
+    const payload: LongMemEvalReaderPayload = {
+      question_id: query.queryId,
+      question: query.query,
+      contexts
+    };
+    if (query.category !== undefined) {
+      payload.category = query.category;
+    }
+
+    const hypothesis = await runReaderCommand(options.readerCommand, options.readerArgs, payload);
+    hypotheses.push({
+      question_id: query.queryId,
+      hypothesis: hypothesis.trim() || 'I do not know'
+    });
+  }
+
+  return hypotheses;
+}
+
+function formatLongMemEvalHypothesesJsonl(hypotheses: LongMemEvalHypothesis[]): string {
+  return `${hypotheses.map((hypothesis) => JSON.stringify(hypothesis)).join('\n')}\n`;
+}
+
+function runReaderCommand(command: string, args: string[], payload: LongMemEvalReaderPayload): Promise<string> {
+  const timeoutMs = 60_000;
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { stdio: ['pipe', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    let timedOut = false;
+    let settled = false;
+
+    const finish = (error: Error | null, value?: string) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (error) {
+        reject(error);
+      } else {
+        resolve(value ?? '');
+      }
+    };
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill('SIGKILL');
+    }, timeoutMs);
+
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => { stdout += chunk; });
+    child.stderr.on('data', (chunk: string) => { stderr += chunk; });
+    child.on('error', (error) => {
+      finish(new CliError(`Reader command failed for ${payload.question_id}: ${error.message}`));
+    });
+    child.on('close', (code, signal) => {
+      if (timedOut) {
+        finish(new CliError(`Reader command timed out for ${payload.question_id} after ${timeoutMs}ms`));
+        return;
+      }
+      if (code !== 0) {
+        const detail = stderr.trim().slice(0, 2_000);
+        finish(new CliError(`Reader command failed for ${payload.question_id} with exit code ${code ?? `signal ${signal ?? 'unknown'}`}${detail ? `: ${detail}` : ''}`));
+        return;
+      }
+      finish(null, stdout.trim());
+    });
+
+    child.stdin.end(`${JSON.stringify(payload)}\n`, 'utf8');
+  });
+}
+
 function parseArgs(argv: string[]): ParsedArgs {
   const parsed: ParsedArgs = {
     inputPath: '',
     outPath: '',
+    answersOutPath: '',
     fixtureOutPath: '',
     format: 'markdown',
     granularity: 'session',
@@ -193,6 +315,8 @@ function parseArgs(argv: string[]): ParsedArgs {
     includePerQuery: true,
     retrievalMode: 'hybrid',
     expandUserFacts: false,
+    readerCommand: '',
+    readerArgs: [],
     strategy: 'fast',
     topK: 10
   };
@@ -203,6 +327,12 @@ function parseArgs(argv: string[]): ParsedArgs {
       parsed.inputPath = readOptionValue(argv, ++i, arg);
     } else if (arg === '--out' || arg === '--report-out') {
       parsed.outPath = readOptionValue(argv, ++i, arg);
+    } else if (arg === '--answers-out') {
+      parsed.answersOutPath = readOptionValue(argv, ++i, arg);
+    } else if (arg === '--reader-command') {
+      parsed.readerCommand = readOptionValue(argv, ++i, arg);
+    } else if (arg === '--reader-arg') {
+      parsed.readerArgs.push(readOptionValue(argv, ++i, arg));
     } else if (arg === '--fixture-out') {
       parsed.fixtureOutPath = readOptionValue(argv, ++i, arg);
     } else if (arg === '--format') {
@@ -264,6 +394,9 @@ function parseArgs(argv: string[]): ParsedArgs {
 
   if (!parsed.inputPath) {
     throw new CliError(`Missing required --input path.\n\n${usage()}`);
+  }
+  if (parsed.answersOutPath && !parsed.readerCommand) {
+    throw new CliError('--reader-command is required when --answers-out is set');
   }
 
   return parsed;
@@ -354,6 +487,9 @@ Options:
   --include-abstention      Include *_abs questions as no-match qrels.
   --skip-abstention         Skip *_abs questions, matching LongMemEval retrieval reporting. Default.
   --global-corpus           Search all converted memories together. Default isolates each question's haystack.
+  --answers-out PATH        Write LongMemEval-compatible JSONL hypotheses: {"question_id","hypothesis"}.
+  --reader-command PATH     Executable reader/model wrapper. Receives JSON on stdin with question and retrieved contexts; writes hypothesis text to stdout.
+  --reader-arg VALUE        Extra argument for --reader-command. Repeat for multiple args.
   --fixture-out PATH        Write the converted replay fixture JSON.
   --out PATH                Write the report instead of stdout.
   --format json|markdown    Report format. Default: markdown.
