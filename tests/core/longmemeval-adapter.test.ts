@@ -162,6 +162,35 @@ describe('LongMemEval replay adapter', () => {
     expect(fixture.memories[0].content).not.toContain('Which beverage does the user prefer?');
   });
 
+  it('can add user-fact expansion only to private searchContent while preserving reader content', () => {
+    const fixture = longMemEvalEntriesToReplayFixture([
+      {
+        question_id: 'q_004_key',
+        question_type: 'single-session-user',
+        question: 'Which beverage does the user prefer?',
+        answer: 'jasmine tea',
+        haystack_session_ids: ['s1'],
+        haystack_dates: ['2026-01-01'],
+        haystack_sessions: [
+          [
+            { role: 'assistant', content: 'What should I keep in mind for afternoons?' },
+            { role: 'user', content: 'For my afternoon routine, my go-to drink is jasmine tea.' }
+          ]
+        ],
+        answer_session_ids: ['s1']
+      }
+    ], { expandUserFactsToSearchContent: true });
+
+    expect(fixture.memories[0].content).toBe(
+      '[2026-01-01] session s1\nassistant: What should I keep in mind for afternoons?\nuser: For my afternoon routine, my go-to drink is jasmine tea.'
+    );
+    expect(fixture.memories[0].content).not.toContain('Extracted user facts:');
+    expect(fixture.memories[0].searchContent).toContain('Extracted user facts:');
+    expect(fixture.memories[0].searchContent).toContain('user preference: go-to drink is jasmine tea');
+    expect(fixture.memories[0].metadata).toMatchObject({ userFactSearchExpansion: true });
+    expect(fixture.metadata).toMatchObject({ userFactSearchExpansion: true });
+  });
+
   it('expands only preference-category benchmark queries without leaking known answers', () => {
     const fixture = longMemEvalEntriesToReplayFixture([
       {

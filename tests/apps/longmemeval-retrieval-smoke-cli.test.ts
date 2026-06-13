@@ -162,6 +162,7 @@ describe('LongMemEval retrieval smoke CLI', () => {
     expect(result.stdout).toContain('--hybrid-session-weight RATE');
     expect(result.stdout).toContain('--hybrid-turn-weight RATE');
     expect(result.stdout).toContain('--expand-user-facts');
+    expect(result.stdout).toContain('--expand-user-facts-to-search-content');
     expect(result.stdout).toContain('--expand-preference-queries');
     expect(result.stdout).toContain('--expand-temporal-queries');
     expect(result.stdout).toContain('--answers-out PATH');
@@ -226,6 +227,30 @@ describe('LongMemEval retrieval smoke CLI', () => {
     const fixture = JSON.parse(readFileSync(fixtureOut, 'utf8')) as { memories: Array<{ content: string; metadata: Record<string, unknown> }> };
     expect(fixture.memories[1].content).toContain('Extracted user facts:');
     expect(fixture.memories[1].metadata.userFactExpansion).toBe(true);
+  });
+
+  it('passes key-only user-fact expansion into private searchContent', () => {
+    const fixturePath = writeLongMemEvalFixture();
+    const dir = mkdtempSync(path.join(tmpdir(), 'cml-longmemeval-cli-search-content-out-'));
+    const fixtureOut = path.join(dir, 'fixture.json');
+    const result = runLongMemEvalSmokeCli([
+      '--input', fixturePath,
+      '--expand-user-facts-to-search-content',
+      '--fixture-out', fixtureOut,
+      '--format', 'json',
+      '--top-k', '2'
+    ]);
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe('');
+    const fixture = JSON.parse(readFileSync(fixtureOut, 'utf8')) as {
+      metadata: Record<string, unknown>;
+      memories: Array<{ content: string; searchContent?: string; metadata: Record<string, unknown> }>;
+    };
+    expect(fixture.metadata.userFactSearchExpansion).toBe(true);
+    expect(fixture.memories[1].content).not.toContain('Extracted user facts:');
+    expect(fixture.memories[1].searchContent).toContain('Extracted user facts:');
+    expect(fixture.memories[1].metadata.userFactSearchExpansion).toBe(true);
   });
 
   it('passes preference query expansion into converted fixtures', () => {

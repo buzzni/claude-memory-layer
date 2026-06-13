@@ -26,6 +26,12 @@ export interface ReplayEvaluationQuery {
 export interface ReplayEvaluationMemory {
   id: string;
   content: string;
+  /**
+   * Optional private indexing text used by replay retrievers only.
+   * Reports and reader contexts continue to use `content` so benchmark output
+   * does not expose expanded search keys.
+   */
+  searchContent?: string;
   sourceSessionId?: string;
   sourceTurnIndex?: number;
   timestamp?: string;
@@ -247,7 +253,10 @@ export function createReplayRetrievalRunner(
   fixture: ReplayEvaluationFixture
 ): ReplayRetrievalRunner {
   const eventStore = new ReplayEventStore(fixture.memories);
-  const vectorStore = new ReplayVectorStore(eventStore.events);
+  const vectorStore = new ReplayVectorStore(
+    eventStore.events,
+    (event) => eventStore.getSearchContent(event.id)
+  );
   const embedder = new ReplayEmbedder();
   const services = createRetrievalServices({
     initialize: async () => undefined,
@@ -561,6 +570,11 @@ function keywordScore(queryTokens: string[], content: string): number {
   return hits / queryTokens.length;
 }
 
+function normalizeSearchContent(memory: ReplayEvaluationMemory): string {
+  const searchContent = memory.searchContent?.trim();
+  return searchContent && searchContent.length > 0 ? searchContent : memory.content;
+}
+
 function vectorize(text: string, dimensions = 64): number[] {
   const vector = new Array<number>(dimensions).fill(0);
   for (const token of tokenize(text)) {
@@ -598,20 +612,35 @@ function average(values: number[]): number {
 class ReplayEventStore {
   readonly events: MemoryEvent[];
   private readonly byId: Map<string, MemoryEvent>;
+  private readonly searchContentById: Map<string, string>;
 
   constructor(memories: ReplayEvaluationMemory[]) {
     this.events = memories.map((memory, index) => replayMemoryToEvent(memory, index));
     this.byId = new Map(this.events.map((event) => [event.id, event]));
+    this.searchContentById = new Map(memories.map((memory) => [
+      memory.id,
+      normalizeSearchContent(memory)
+    ]));
+  }
+
+  getSearchContent(eventId: string): string {
+    return this.searchContentById.get(eventId) ?? this.byId.get(eventId)?.content ?? '';
   }
 
   async keywordSearch(query: string, limit = 10): Promise<Array<{ event: MemoryEvent; rank: number }>> {
     const queryTokens = tokenize(query);
     return this.events
-      .map((event) => ({ event, score: keywordScore(queryTokens, event.content) }))
+      .map((event) => ({ event, score: keywordScore(queryTokens, this.getSearchContent(event.id)) }))
       .filter((row) => row.score > 0)
       .sort((a, b) => b.score - a.score || a.event.id.localeCompare(b.event.id))
       .slice(0, limit)
-      .map((row, index) => ({ event: row.event, rank: -row.score - index / 1000 }));
+      .map((row, index) => ({
+        event: {
+          ...row.event,
+          content: this.getSearchContent(row.event.id)
+        },
+        rank: -row.score - index / 1000
+      }));
   }
 
   async getRecentEvents(limit = 100): Promise<MemoryEvent[]> {
@@ -650,16 +679,16 @@ class ReplayEventStore {
 class ReplayVectorStore {
   private readonly rows: Array<SearchResult & { vector: number[] }>;
 
-  constructor(events: MemoryEvent[]) {
+  constructor(events: MemoryEvent[], getSearchContent: (event: MemoryEvent) => string = (event) => event.content) {
     this.rows = events.map((event) => ({
       id: `replay-vector-${event.id}`,
       eventId: event.id,
-      content: event.content,
+      content: getSearchContent(event),
       score: 0,
       sessionId: event.sessionId,
       eventType: event.eventType,
       timestamp: event.timestamp.toISOString(),
-      vector: vectorize(event.content)
+      vector: vectorize(getSearchContent(event))
     }));
   }
 

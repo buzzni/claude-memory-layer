@@ -36,6 +36,7 @@ export interface LongMemEvalAdapterOptions {
   sourceFileCount?: number;
   generatedAt?: string;
   expandUserFacts?: boolean;
+  expandUserFactsToSearchContent?: boolean;
   expandPreferenceQueries?: boolean;
   expandTemporalQueries?: boolean;
 }
@@ -63,6 +64,7 @@ export function longMemEvalEntriesToReplayFixture(
     metadata: {
       sourceFileCount: options.sourceFileCount ?? 1,
       rawContentIncluded: true,
+      ...(options.expandUserFactsToSearchContent === true ? { userFactSearchExpansion: true } : {}),
       ...(options.expandPreferenceQueries === true ? { preferenceQueryExpansion: true } : {}),
       ...(options.expandTemporalQueries === true ? { temporalQueryExpansion: true } : {}),
       ...(options.generatedAt ? { generatedAt: options.generatedAt } : {})
@@ -118,8 +120,14 @@ function buildEntry(
   }
 
   const memories = granularity === 'session'
-    ? buildSessionMemories(questionId, questionType, sessionIds, dates, sessions, options.expandUserFacts === true)
-    : buildTurnMemories(questionId, questionType, sessionIds, dates, sessions, options.expandUserFacts === true);
+    ? buildSessionMemories(questionId, questionType, sessionIds, dates, sessions, {
+        expandUserFacts: options.expandUserFacts === true,
+        expandUserFactsToSearchContent: options.expandUserFactsToSearchContent === true
+      })
+    : buildTurnMemories(questionId, questionType, sessionIds, dates, sessions, {
+        expandUserFacts: options.expandUserFacts === true,
+        expandUserFactsToSearchContent: options.expandUserFactsToSearchContent === true
+      });
 
   const expectedIds = isAbstention
     ? []
@@ -183,22 +191,28 @@ function buildSessionMemories(
   sessionIds: string[],
   dates: string[],
   sessions: LongMemEvalTurn[][],
-  expandUserFacts: boolean
+  expansionOptions: { expandUserFacts: boolean; expandUserFactsToSearchContent: boolean }
 ): ReplayEvaluationMemory[] {
   return sessions.map((session, index) => {
     const sessionId = sessionIds[index] ?? `session_${index}`;
     const date = dates[index];
-    const userFactLines = expandUserFacts ? extractUserFactLines(session) : [];
+    const shouldExtractUserFacts = expansionOptions.expandUserFacts || expansionOptions.expandUserFactsToSearchContent;
+    const userFactLines = shouldExtractUserFacts ? extractUserFactLines(session) : [];
+    const baseContent = formatSessionContent(date, sessionId, session);
     const memory: ReplayEvaluationMemory = {
       id: makeSessionMemoryId(questionId, sessionId),
-      content: appendUserFactExpansion(formatSessionContent(date, sessionId, session), userFactLines),
+      content: expansionOptions.expandUserFacts ? appendUserFactExpansion(baseContent, userFactLines) : baseContent,
       sourceSessionId: sessionId,
       metadata: {
         questionId,
         questionType,
-        ...(userFactLines.length > 0 ? { userFactExpansion: true } : {})
+        ...(expansionOptions.expandUserFacts && userFactLines.length > 0 ? { userFactExpansion: true } : {}),
+        ...(expansionOptions.expandUserFactsToSearchContent && userFactLines.length > 0 ? { userFactSearchExpansion: true } : {})
       }
     };
+    if (expansionOptions.expandUserFactsToSearchContent && userFactLines.length > 0) {
+      memory.searchContent = appendUserFactExpansion(baseContent, userFactLines);
+    }
     if (date !== undefined) {
       memory.timestamp = date;
     }
@@ -212,26 +226,32 @@ function buildTurnMemories(
   sessionIds: string[],
   dates: string[],
   sessions: LongMemEvalTurn[][],
-  expandUserFacts: boolean
+  expansionOptions: { expandUserFacts: boolean; expandUserFactsToSearchContent: boolean }
 ): ReplayEvaluationMemory[] {
   const memories: ReplayEvaluationMemory[] = [];
   sessions.forEach((session, sessionIndex) => {
     const sessionId = sessionIds[sessionIndex] ?? `session_${sessionIndex}`;
     const date = dates[sessionIndex];
     session.forEach((turn, turnIndex) => {
-      const userFactLines = expandUserFacts ? extractUserFactLines([turn]) : [];
+      const shouldExtractUserFacts = expansionOptions.expandUserFacts || expansionOptions.expandUserFactsToSearchContent;
+      const userFactLines = shouldExtractUserFacts ? extractUserFactLines([turn]) : [];
+      const baseContent = formatTurnContent(date, sessionId, turnIndex, turn);
       const memory: ReplayEvaluationMemory = {
         id: makeTurnMemoryId(questionId, sessionId, turnIndex),
-        content: appendUserFactExpansion(formatTurnContent(date, sessionId, turnIndex, turn), userFactLines),
+        content: expansionOptions.expandUserFacts ? appendUserFactExpansion(baseContent, userFactLines) : baseContent,
         sourceSessionId: sessionId,
         sourceTurnIndex: turnIndex,
         metadata: {
           questionId,
           questionType,
           ...(turn.has_answer === true ? { hasAnswer: true } : {}),
-          ...(userFactLines.length > 0 ? { userFactExpansion: true } : {})
+          ...(expansionOptions.expandUserFacts && userFactLines.length > 0 ? { userFactExpansion: true } : {}),
+          ...(expansionOptions.expandUserFactsToSearchContent && userFactLines.length > 0 ? { userFactSearchExpansion: true } : {})
         }
       };
+      if (expansionOptions.expandUserFactsToSearchContent && userFactLines.length > 0) {
+        memory.searchContent = appendUserFactExpansion(baseContent, userFactLines);
+      }
       if (date !== undefined) {
         memory.timestamp = date;
       }

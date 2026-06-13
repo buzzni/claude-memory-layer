@@ -40,6 +40,7 @@ interface ParsedArgs {
   hybridSessionWeight: number;
   hybridTurnWeight: number;
   expandUserFacts: boolean;
+  expandUserFactsToSearchContent: boolean;
   expandPreferenceQueries: boolean;
   expandTemporalQueries: boolean;
   readerCommand: string;
@@ -108,6 +109,7 @@ async function main(argv: string[]): Promise<void> {
     maxEntries: options.limit,
     includeAbstention: options.includeAbstention,
     expandUserFacts: options.expandUserFacts,
+    expandUserFactsToSearchContent: options.expandUserFactsToSearchContent,
     expandPreferenceQueries: options.expandPreferenceQueries,
     expandTemporalQueries: options.expandTemporalQueries,
     ks: buildEvaluationKs(options.topK),
@@ -121,6 +123,7 @@ async function main(argv: string[]): Promise<void> {
       maxEntries: options.limit,
       includeAbstention: options.includeAbstention,
       expandUserFacts: options.expandUserFacts,
+      expandUserFactsToSearchContent: options.expandUserFactsToSearchContent,
       expandPreferenceQueries: options.expandPreferenceQueries,
       expandTemporalQueries: options.expandTemporalQueries,
       ks: buildEvaluationKs(options.topK),
@@ -352,6 +355,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     hybridSessionWeight: 1,
     hybridTurnWeight: 1.5,
     expandUserFacts: false,
+    expandUserFactsToSearchContent: false,
     expandPreferenceQueries: false,
     expandTemporalQueries: false,
     readerCommand: '',
@@ -414,6 +418,10 @@ function parseArgs(argv: string[]): ParsedArgs {
       parsed.expandUserFacts = true;
     } else if (arg === '--no-expand-user-facts') {
       parsed.expandUserFacts = false;
+    } else if (arg === '--expand-user-facts-to-search-content') {
+      parsed.expandUserFactsToSearchContent = true;
+    } else if (arg === '--no-expand-user-facts-to-search-content') {
+      parsed.expandUserFactsToSearchContent = false;
     } else if (arg === '--expand-preference-queries') {
       parsed.expandPreferenceQueries = true;
     } else if (arg === '--no-expand-preference-queries') {
@@ -548,6 +556,10 @@ Options:
   --hybrid-turn-weight RATE Turn-level rank-fusion weight for hybrid mode. Default: 1.5.
   --expand-user-facts       Append answer-independent user preference/fact summaries extracted from haystack text.
   --no-expand-user-facts    Disable user-fact expansion. Default.
+  --expand-user-facts-to-search-content
+                            Append user preference/fact summaries to private replay searchContent only; reader context remains raw.
+  --no-expand-user-facts-to-search-content
+                            Disable private searchContent user-fact expansion. Default.
   --expand-preference-queries
                             Append retrieval-only preference/context hint terms to single-session-preference questions.
   --no-expand-preference-queries

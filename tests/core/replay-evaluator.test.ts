@@ -109,6 +109,44 @@ describe('replay fixture evaluator', () => {
     expect(report.summary.hitAtK[1]).toBe(1);
   });
 
+  it('uses optional searchContent as a private retrieval-only key without exposing it in reports', async () => {
+    const report = await evaluateReplayFixture({
+      name: 'search-content-key-fixture',
+      ks: [1],
+      queries: [
+        {
+          queryId: 'q-search-key',
+          query: 'atlas zephyr codename',
+          expectedIds: ['m-search-key']
+        }
+      ],
+      memories: [
+        {
+          id: 'm-search-key',
+          content: 'VISIBLE_ORIGINAL_READER_TEXT should remain the answer context only.',
+          searchContent: 'atlas zephyr codename'
+        },
+        {
+          id: 'm-noise',
+          content: 'unrelated dashboard layout memory'
+        }
+      ]
+    }, {
+      generatedAt: '2026-05-05T00:00:00.000Z',
+      retrievalOptions: { strategy: 'fast' }
+    });
+
+    expect(report.perQuery[0]).toMatchObject({
+      queryId: 'q-search-key',
+      retrievedIds: ['m-search-key'],
+      candidateIds: ['m-search-key'],
+      fallbackTrace: expect.arrayContaining(['stage:primary:fast'])
+    });
+    expect(report.summary.hitAtK[1]).toBe(1);
+    expect(JSON.stringify(report)).not.toContain('atlas zephyr codename');
+    expect(JSON.stringify(report)).not.toContain('VISIBLE_ORIGINAL_READER_TEXT');
+  });
+
   it('counts no-match qrels separately from positive retrieval misses', async () => {
     const report = await evaluateReplayFixture({
       name: 'negative-qrels-fixture',

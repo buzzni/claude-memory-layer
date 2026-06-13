@@ -18,10 +18,11 @@
 | hybrid session+turn | 22,419 session memories + turn reranking | 0.9362 | 0.7558 | 60 | 0.6915 | 0.8468 | 0.8723 | 0.6979 | 0.7917 | 0.7234 |
 | hybrid + preference query expansion | 22,419 session memories + turn reranking | 0.9383 | 0.7591 | 59 | 0.6957 | 0.8468 | 0.8745 | 0.7000 | 0.7938 | 0.7264 |
 | hybrid + preference query expansion + tuned weights `1.75/5` | 22,419 session memories + turn reranking | 0.9383 | 0.7683 | 58 | 0.7128 | 0.8489 | 0.8745 | 0.7021 | 0.7939 | 0.7335 |
+| hybrid + preference query expansion + key-only user-fact `searchContent` + tuned weights `1.75/5` | 22,419 session memories + turn reranking | 0.9404 | 0.7676 | 60 | 0.7149 | 0.8511 | 0.8723 | 0.7000 | 0.7918 | 0.7326 |
 | hybrid + preference query expansion + temporal query expansion + tuned weights `1.75/5` | 22,419 session memories + turn reranking | 0.9383 | 0.7336 | 64 | 0.6617 | 0.8383 | 0.8638 | 0.7000 | 0.7855 | 0.7066 |
 | hybrid + preference query expansion + recall-all weights `1.25/1` | 22,419 session memories + turn reranking | 0.9383 | 0.7396 | 56 | 0.6596 | 0.8426 | 0.8745 | 0.7064 | 0.7956 | 0.7136 |
 
-`--expand-user-facts` was also tested for hybrid mode after adding broader preference/context extraction. It did not improve full-dataset aggregate metrics and reduced preference-category recall when combined with query expansion, so the best current nDCG/MRR smoke uses `--expand-preference-queries --hybrid-session-weight 1.75 --hybrid-turn-weight 5` without `--expand-user-facts`. `--expand-temporal-queries` was added as an opt-in diagnostic, but the generic query-term version is also a no-go for scoring: it reduced overall nDCG@10 from `0.7335` to `0.7066` and temporal nDCG@10 from `0.7405` to `0.6408`.
+`--expand-user-facts` was also tested for hybrid mode after adding broader preference/context extraction. It did not improve full-dataset aggregate metrics and reduced preference-category recall when combined with query expansion, so the best current nDCG/MRR smoke uses `--expand-preference-queries --hybrid-session-weight 1.75 --hybrid-turn-weight 5` without `--expand-user-facts`. A safer indexing-stage variant, `--expand-user-facts-to-search-content`, keeps raw reader/report content unchanged and writes extracted fact keys only to private replay `searchContent`; it validates the plumbing but is also a scoring no-go in this smoke, reducing Hit@10 from `0.8745` to `0.8723` and nDCG@10 from `0.7335` to `0.7326`. `--expand-temporal-queries` was added as an opt-in diagnostic, but the generic query-term version is also a no-go for scoring: it reduced overall nDCG@10 from `0.7335` to `0.7066` and temporal nDCG@10 from `0.7405` to `0.6408`.
 
 ## Baseline session failure breakdown
 
@@ -65,6 +66,17 @@
 | no_candidate | 24 |
 | lexical_mismatch | 20 |
 | answer_below_k | 8 |
+| candidate_but_filtered | 7 |
+
+## Hybrid + preference query expansion + key-only user-fact `searchContent` + tuned weights `1.75/5` failure breakdown
+
+| failure_type | count |
+|---|---:|
+| hit | 329 |
+| multi_evidence_partial | 81 |
+| no_candidate | 24 |
+| lexical_mismatch | 20 |
+| answer_below_k | 9 |
 | candidate_but_filtered | 7 |
 
 ## Hybrid + preference query expansion + temporal query expansion + tuned weights `1.75/5` failure breakdown
@@ -125,6 +137,14 @@ Hybrid retrieval reduced failed queries from 115 to 60 and converted many `multi
 | single-session-user | 64 | 0.9062 | 0.9062 | 0.8645 | 0.8512 | nDCG/MRR improved |
 | temporal-reasoning | 127 | 0.9291 | 0.7992 | 0.7405 | 0.8026 | nDCG/MRR improved |
 
+## Hybrid + preference query expansion + key-only user-fact `searchContent` + tuned weights `1.75/5` category deltas
+
+| category | queries | Recall_any@10 | Fractional Recall@10 | nDCG@10 | MRR | notes |
+|---|---:|---:|---:|---:|---:|---|
+| single-session-preference | 30 | 0.3333 | 0.3333 | 0.2484 | 0.2214 | drops vs tuned best 0.3667 / 0.3667 / 0.2633 / 0.2326; no-go for scoring |
+| temporal-reasoning | 127 | unchanged | unchanged | unchanged | unchanged | query yield rose by one item, but no hit/ranking gain |
+| other categories | 313 | unchanged | unchanged | unchanged | unchanged | private searchContent expansion affected only extracted-fact-bearing memories |
+
 ## Hybrid + preference query expansion + temporal query expansion + tuned weights `1.75/5` category deltas
 
 | category | queries | Recall_any@10 | Fractional Recall@10 | nDCG@10 | MRR | notes |
@@ -139,6 +159,7 @@ Hybrid retrieval reduced failed queries from 115 to 60 and converted many `multi
 - Opt-in `--expand-preference-queries` plus tuned hybrid fusion weights `--hybrid-session-weight 1.75 --hybrid-turn-weight 5` is the best current nDCG/MRR retrieval-only configuration for CML on LongMemEval_S. Compared with untuned hybrid + preference expansion, it keeps `Recall_any@10` at 0.8745, raises `Recall_all@10` from 0.7000 to 0.7021, nDCG@10 from 0.7264 to 0.7335, MRR from 0.7591 to 0.7683, and reduces failed queries from 59 to 58.
 - A recall-all-oriented fusion preset `--hybrid-session-weight 1.25 --hybrid-turn-weight 1` reaches `Recall_all@10` 0.7064 and fractional recall 0.7956, but drops nDCG@10 to 0.7136 and MRR to 0.7396, so it is documented as a diagnostic preset rather than the recommended scoring command.
 - Opt-in `--expand-temporal-queries` is a measured no-go in its current generic query-term form: it reduces overall nDCG@10 to 0.7066 and temporal nDCG@10 to 0.6408. The next temporal attempt should use real date-aware filtering/boosting against memory timestamps instead of appending generic relation terms.
+- Key-only user-fact `searchContent` expansion is implemented and keeps raw reader/report content unchanged, but it is also a measured no-go for scoring in this smoke: Hit@10 drops from 0.8745 to 0.8723, nDCG@10 from 0.7335 to 0.7326, and `single-session-preference` loses the query-expansion gain.
 - `single-session-preference` remains the weakest category, but preference query expansion improves it from Hit@10 0.3333 to 0.3667 and nDCG@10 0.2161 to 0.2626.
 - `--expand-user-facts` is not currently recommended for scoring: broader extracted facts added distractor noise and did not improve full LongMemEval_S aggregate metrics.
 
