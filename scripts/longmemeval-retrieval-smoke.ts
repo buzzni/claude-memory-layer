@@ -345,7 +345,8 @@ Options:
   --top-k N                 Retrieval cutoff passed to the CML replay evaluator. Default: 10.
   --strategy auto|fast|deep CML retrieval strategy. Default: fast.
   --retrieval-mode single|hybrid
-                            Retrieval mode. hybrid evaluates session qrels with session+turn retrieval. Default: hybrid.
+                            Benchmark fixture mode. hybrid evaluates session qrels with session+turn replay retrieval. Default: hybrid.
+                            This is distinct from production MCP retrievalMode=session-event-hybrid.
   --hybrid-retrieval        Shortcut for --retrieval-mode hybrid.
   --expand-user-facts       Append answer-independent user preference/fact summaries extracted from haystack text.
   --no-expand-user-facts    Disable user-fact expansion. Default.

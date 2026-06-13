@@ -712,6 +712,79 @@ describe('Retriever strategy/scope', () => {
     expect(koreanLayoutOut.memories.map((memory) => memory.event.id)).toEqual(['e-dashboard-layout-ko']);
   });
 
+  it('uses session-event hybrid retrieval by default for auto strategy and can opt out to event-only', async () => {
+    const sessionSeed = ev(
+      'e-launch-seed',
+      'agent:main:launch',
+      'agent_response',
+      'Launch plan kickoff recorded the fulfillment workstream and rollout scope.',
+      'launch/seed'
+    );
+    const siblingFact = ev(
+      'e-launch-carrier',
+      'agent:main:launch',
+      'agent_response',
+      'Launch plan shipping carrier decision: use CJ Logistics for the first rollout.',
+      'launch/carrier'
+    );
+    const siblingNoise = ev(
+      'e-launch-noise',
+      'agent:main:launch',
+      'agent_response',
+      'Unrelated coffee order note from the same session.',
+      'launch/noise'
+    );
+    const otherSession = ev(
+      'e-other-carrier',
+      'agent:main:other',
+      'agent_response',
+      'Shipping carrier note from a different session should not be rescued by this hit.',
+      'other/carrier'
+    );
+    const events = [sessionSeed, siblingFact, siblingNoise, otherSession];
+    const eventStore = {
+      async keywordSearch() {
+        return [{ event: sessionSeed, rank: -0.1 }];
+      },
+      async getRecentEvents() {
+        return events;
+      },
+      async getEvent(id: string) {
+        return events.find((event) => event.id === id) ?? null;
+      },
+      async getSessionEvents(sessionId: string) {
+        return events.filter((event) => event.sessionId === sessionId);
+      }
+    };
+    const vectorStore = { async search() { return []; } };
+    const retriever = new Retriever(eventStore as any, vectorStore as any, fakeEmbedder as any, new Matcher());
+
+    const hybridOut = await retriever.retrieve('which shipping carrier did the launch plan choose', {
+      strategy: 'auto',
+      topK: 3,
+      minScore: 0.1,
+      includeSessionContext: false
+    });
+
+    expect(hybridOut.memories.map((memory) => memory.event.id)).toContain('e-launch-seed');
+    expect(hybridOut.memories.map((memory) => memory.event.id)).toContain('e-launch-carrier');
+    expect(hybridOut.memories.map((memory) => memory.event.id)).not.toContain('e-launch-noise');
+    expect(hybridOut.memories.map((memory) => memory.event.id)).not.toContain('e-other-carrier');
+    expect(hybridOut.candidateDebug?.find((detail) => detail.eventId === 'e-launch-carrier')?.lanes).toContainEqual(
+      expect.objectContaining({ lane: 'session_event', reason: expect.stringContaining('same_session') })
+    );
+
+    const eventOnlyOut = await retriever.retrieve('which shipping carrier did the launch plan choose', {
+      strategy: 'auto',
+      retrievalMode: 'event',
+      topK: 3,
+      minScore: 0.1,
+      includeSessionContext: false
+    });
+
+    expect(eventOnlyOut.memories.map((memory) => memory.event.id)).toEqual(['e-launch-seed']);
+  });
+
   it('keeps summary fallback within strict project scope for generic continuation', async () => {
     const foreign = {
       ...ev(

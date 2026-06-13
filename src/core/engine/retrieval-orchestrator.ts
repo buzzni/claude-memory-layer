@@ -10,6 +10,7 @@ import {
   Retriever,
   type ProjectScopeMode,
   type RetrievalFacetFilter,
+  type RetrievalMode,
   type RetrievalResult,
   type RetrievalStrategy,
   type UnifiedRetrievalResult
@@ -28,6 +29,7 @@ export interface RetrieveMemoriesOptions {
   allowedProjectHashes?: string[];
   facets?: RetrievalFacetFilter[];
   strategy?: RetrievalStrategy;
+  retrievalMode?: RetrievalMode;
   graphHop?: {
     enabled?: boolean;
     maxHops?: number;

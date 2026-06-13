@@ -44,6 +44,7 @@ describe('LongMemEval retrieval smoke CLI', () => {
     expect(result.stderr).toBe('');
     expect(result.stdout).toContain('--retrieval-mode single|hybrid');
     expect(result.stdout).toContain('Default: hybrid.');
+    expect(result.stdout).toContain('distinct from production MCP retrievalMode=session-event-hybrid');
     expect(result.stdout).toContain('--hybrid-retrieval');
     expect(result.stdout).toContain('--expand-user-facts');
   });

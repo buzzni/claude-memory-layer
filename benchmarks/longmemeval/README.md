@@ -55,7 +55,7 @@ npm run eval:longmemeval:retrieval-smoke -- \
   --out /tmp/LongMemEval/reports/cml-longmemeval-s-full-nonabs-turn-fast.json
 ```
 
-Hybrid session+turn retrieval, currently the default and best retrieval-only mode:
+Hybrid session+turn replay retrieval, currently the default and best retrieval-only benchmark mode:
 
 ```bash
 npm run eval:longmemeval:retrieval-smoke -- \
@@ -69,7 +69,8 @@ npm run eval:longmemeval:retrieval-smoke -- \
 Useful flags:
 
 - `--limit N`: run a small sample first.
-- `--retrieval-mode single|hybrid`: default is `hybrid` session+turn retrieval; use `single` to reproduce the baseline session-only or turn-only retriever. `--hybrid-retrieval` is a shortcut.
+- `--retrieval-mode single|hybrid`: benchmark fixture mode. Default is `hybrid` session+turn replay retrieval; use `single` to reproduce the baseline session-only or turn-only retriever. `--hybrid-retrieval` is a shortcut.
+- Do not confuse benchmark `--retrieval-mode hybrid` with production MCP/core `retrievalMode=session-event-hybrid`: the benchmark combines session and turn replay fixtures to score LongMemEval qrels, while production context packs rescue query-relevant sibling events from already-hit sessions.
 - `--expand-user-facts`: append answer-independent user preference/fact summaries extracted from haystack text. The first rule-based version did not change full LongMemEval_S aggregate metrics.
 - `--include-abstention`: include `*_abs` questions as strict no-match qrels.
 - `--skip-abstention`: default; matches LongMemEval retrieval reporting, which skips abstention instances.
@@ -98,9 +99,9 @@ Summary from LongMemEval_S cleaned, 470 non-abstention questions:
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
 | session | 22,419 | 0.9191 | 115 | 0.7553 | 0.4894 | 0.6250 | 0.5560 | 0.6094 |
 | turn | 231,606 | 0.8979 | 164 | 0.6511 | 0.3830 | 0.5087 | 0.4522 | 0.5068 |
-| hybrid session+turn | 22,419 session memories + turn reranking | 0.9362 | 60 | 0.8723 | 0.6979 | 0.7917 | 0.7234 | 0.7558 |
+| hybrid session+turn replay | 22,419 session memories + turn reranking | 0.9362 | 60 | 0.8723 | 0.6979 | 0.7917 | 0.7234 | 0.7558 |
 
-Interpretation: CML's default session retrieval already retrieves at least one relevant evidence session for ~75.5% of LongMemEval_S non-abstention questions. Hybrid session+turn retrieval raises that to ~87.2% and raises all-evidence recall from ~48.9% to ~69.8%.
+Interpretation: CML's default session retrieval already retrieves at least one relevant evidence session for ~75.5% of LongMemEval_S non-abstention questions. Hybrid session+turn replay retrieval raises that to ~87.2% and raises all-evidence recall from ~48.9% to ~69.8%.
 
 ## Score interpretation
 

@@ -47,6 +47,7 @@ export interface RetrievalScope {
 }
 
 export type RetrievalStrategy = 'auto' | 'fast' | 'deep';
+export type RetrievalMode = 'event' | 'session-event-hybrid';
 export type ProjectScopeMode = 'strict' | 'prefer' | 'global';
 type DecayPolicy = NonNullable<RetrievalOptions['decayPolicy']>;
 type GraphHopOptions = NonNullable<RetrievalOptions['graphHop']>;
@@ -110,6 +111,13 @@ export interface RetrievalOptions {
     maxHops?: number;
     hopPenalty?: number;
   };
+  /**
+   * event: return only directly retrieved events.
+   * session-event-hybrid: also rescue query-relevant sibling events from sessions
+   * that direct retrieval already hit. This is the production form of the
+   * LongMemEval-inspired session+turn hybrid retrieval pattern.
+   */
+  retrievalMode?: RetrievalMode;
   projectScopeMode?: ProjectScopeMode;
   projectHash?: string;
   allowedProjectHashes?: string[];
@@ -220,6 +228,8 @@ export class Retriever {
     options: Partial<RetrievalOptions> = {}
   ): Promise<RetrievalResult> {
     const opts = { ...DEFAULT_OPTIONS, ...options };
+    const retrievalMode: RetrievalMode = options.retrievalMode
+      ?? ((options.strategy ?? DEFAULT_OPTIONS.strategy) === 'auto' ? 'session-event-hybrid' : 'event');
     const sessionFilter = opts.scope?.sessionId ?? opts.sessionId;
     const fallbackTrace: string[] = [];
     const qualityQuery = buildRetrievalQualityQuery(query);
@@ -254,6 +264,7 @@ export class Retriever {
       decayPolicy: opts.decayPolicy,
       intentRewrite: opts.intentRewrite === true,
       graphHop: opts.graphHop,
+      retrievalMode,
       projectScopeMode: opts.projectScopeMode,
       projectHash: opts.projectHash,
       allowedProjectHashes: opts.allowedProjectHashes,
@@ -274,6 +285,7 @@ export class Retriever {
         rerankWeights: opts.rerankWeights,
         decayPolicy: opts.decayPolicy,
         graphHop: opts.graphHop,
+        retrievalMode,
         projectScopeMode: opts.projectScopeMode,
         projectHash: opts.projectHash,
         allowedProjectHashes: opts.allowedProjectHashes,
@@ -295,6 +307,7 @@ export class Retriever {
         rerankWeights: opts.rerankWeights,
         decayPolicy: opts.decayPolicy,
         graphHop: opts.graphHop,
+        retrievalMode,
         projectScopeMode: opts.projectScopeMode,
         projectHash: opts.projectHash,
         allowedProjectHashes: opts.allowedProjectHashes,
@@ -317,10 +330,32 @@ export class Retriever {
         query,
         minScore: opts.minScore
       });
+      const expandedSummary = retrievalMode === 'session-event-hybrid'
+        ? await this.expandSessionEventHybrid(filteredSummary, {
+            query: qualityQuery,
+            currentStateQuery: query,
+            limit: opts.topK * 4
+          })
+        : filteredSummary;
+      const scopedExpandedSummary = retrievalMode === 'session-event-hybrid'
+        ? await this.applyScopeFilters(expandedSummary, {
+            scope: opts.scope,
+            projectScopeMode: opts.projectScopeMode,
+            projectHash: opts.projectHash,
+            allowedProjectHashes: opts.allowedProjectHashes,
+            facets: opts.facets
+          })
+        : expandedSummary;
+      const finalSummary = retrievalMode === 'session-event-hybrid'
+        ? this.applyQualityFilters(scopedExpandedSummary, {
+            query,
+            minScore: opts.minScore
+          })
+        : scopedExpandedSummary;
       current = {
-        results: filteredSummary,
-        candidateResults: filteredSummary,
-        matchResult: this.matcher.matchSearchResults(filteredSummary, () => 0)
+        results: finalSummary,
+        candidateResults: finalSummary,
+        matchResult: this.matcher.matchSearchResults(finalSummary, () => 0)
       };
       fallbackTrace.push('fallback:summary');
     }
@@ -408,6 +443,7 @@ export class Retriever {
       decayPolicy?: DecayPolicy;
       intentRewrite?: boolean;
       graphHop?: GraphHopOptions;
+      retrievalMode: RetrievalMode;
       projectScopeMode?: ProjectScopeMode;
       projectHash?: string;
       allowedProjectHashes?: string[];
@@ -448,7 +484,7 @@ export class Retriever {
       }
     }
 
-    const expandedResults = input.graphHop?.enabled === false
+    const graphExpandedResults = input.graphHop?.enabled === false
       ? initialResults
       : await this.expandGraphHops(initialResults, {
           query,
@@ -457,6 +493,14 @@ export class Retriever {
           hopPenalty: Math.max(0, input.graphHop?.hopPenalty ?? 0.08),
           limit: input.topK * 4,
         });
+
+    const expandedResults = input.retrievalMode === 'session-event-hybrid'
+      ? await this.expandSessionEventHybrid(graphExpandedResults, {
+          query: rerankQuery,
+          currentStateQuery: query,
+          limit: input.topK * 4
+        })
+      : graphExpandedResults;
 
     const rerankedResults = input.rerankWithKeyword
       ? this.rerankByKeywordOverlap(expandedResults, rerankQuery, input.rerankWeights, input.decayPolicy)
@@ -520,6 +564,62 @@ export class Retriever {
       }
     }
     return [...byId.values()].sort((a, b) => b.score - a.score).slice(0, limit);
+  }
+
+  private async expandSessionEventHybrid(
+    seeds: DebuggableSearchResult[],
+    opts: { query: string; currentStateQuery: string; limit: number }
+  ): Promise<DebuggableSearchResult[]> {
+    if (seeds.length === 0 || opts.limit <= seeds.length) return seeds;
+
+    const queryTokens = this.tokenize(opts.query);
+    if (queryTokens.length === 0) return seeds;
+
+    const byId = new Map<string, DebuggableSearchResult>();
+    for (const seed of seeds) byId.set(seed.eventId, seed);
+
+    const bestSeedBySession = new Map<string, DebuggableSearchResult>();
+    for (const seed of [...seeds].sort((a, b) => b.score - a.score || compareStable(a.eventId, b.eventId))) {
+      if (!seed.sessionId || bestSeedBySession.has(seed.sessionId)) continue;
+      bestSeedBySession.set(seed.sessionId, seed);
+    }
+
+    const suppressStaleState = isCurrentStateQuery(opts.currentStateQuery);
+
+    for (const [sessionId, seed] of bestSeedBySession) {
+      const sessionEvents = await this.eventStore.getSessionEvents(sessionId);
+      for (const event of [...sessionEvents].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime())) {
+        if (byId.has(event.id)) continue;
+        if (isLowSignalContextContent(event.content)) continue;
+        if (suppressStaleState && isStaleOrSupersededContent(event.content)) continue;
+
+        const lexicalScore = this.keywordOverlap(queryTokens, this.tokenize(event.content));
+        if (lexicalScore <= 0) continue;
+        if (shouldApplyTechnicalGuard(opts.query) && !hasTechnicalTermOverlap(opts.query, event.content)) continue;
+
+        const score = Math.min(0.95, Math.max(0.35, seed.score * 0.72 + lexicalScore * 0.28));
+        const row: DebuggableSearchResult = withRetrievalLane({
+          id: `session-event-${seed.eventId}-${event.id}`,
+          eventId: event.id,
+          content: event.content,
+          score,
+          sessionId: event.sessionId,
+          eventType: event.eventType,
+          timestamp: event.timestamp.toISOString(),
+          semanticScore: seed.semanticScore ?? seed.score,
+          lexicalScore,
+          recencyScore: seed.recencyScore
+        }, { lane: 'session_event', reason: `same_session:${seed.eventId}`, score });
+
+        byId.set(row.eventId, row);
+        if (byId.size >= opts.limit) break;
+      }
+      if (byId.size >= opts.limit) break;
+    }
+
+    return [...byId.values()]
+      .sort((a, b) => b.score - a.score || compareStable(a.eventId, b.eventId))
+      .slice(0, opts.limit);
   }
 
   private async expandGraphHops(
@@ -1084,7 +1184,7 @@ export class Retriever {
   }
 }
 
-function withRetrievalLane(result: SearchResult, lane: RetrievalDebugLane): DebuggableSearchResult {
+function withRetrievalLane(result: DebuggableSearchResult, lane: RetrievalDebugLane): DebuggableSearchResult {
   const existing = (result as DebuggableSearchResult).lanes ?? [];
   return {
     ...result,

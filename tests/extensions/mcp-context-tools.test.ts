@@ -141,6 +141,11 @@ describe('MCP project context tools', () => {
       type: 'string',
       enum: ['off', 'safe', 'aggressive']
     });
+    expect(contextPackProperties.retrievalMode).toMatchObject({
+      type: 'string',
+      enum: ['session-event-hybrid', 'event'],
+      description: expect.stringContaining('session-event hybrid')
+    });
     expect(contextPackProperties.maxChars).toMatchObject({
       type: 'number',
       minimum: 1000,
@@ -546,12 +551,14 @@ describe('MCP project context tools', () => {
     expect(mocks.projectService.retrieveMemories).not.toHaveBeenCalled();
   });
 
-  it('builds a compact project context pack from relevant search results and recent timeline', async () => {
+  it('builds a privacy-safe project context pack for Codex/Hermes/Claude project work', async () => {
     const relevant = event({
       id: '11111111-1111-4111-8111-111111111111',
       sessionId: 'session-codex',
+      eventType: 'agent_response',
       timestamp: new Date('2026-05-05T01:00:00.000Z'),
-      content: 'Codex import CLI and project-aware MCP integration were implemented.'
+      content: 'Codex import CLI now respects projectPath and preserves source references.',
+      metadata: { importedFrom: 'codex', projectPath: '/repo/app' }
     });
     const recent = [
       event({
@@ -599,6 +606,25 @@ describe('MCP project context tools', () => {
     expect(text).toContain('Hermes adapter verification');
     expect(text).toContain(`[mem:${generateCitationId(relevant.id)}]`);
     expect(text.length).toBeLessThan(5000);
+  });
+
+  it('lets mem-context-pack callers opt out of session-event hybrid retrieval for event-only debugging', async () => {
+    mocks.projectService.getRecentEvents.mockResolvedValue([]);
+
+    const result = await handleToolCall('mem-context-pack', {
+      projectPath: '/repo/app',
+      query: 'debug exact event ranking',
+      topK: 2,
+      retrievalMode: 'event'
+    });
+
+    expect(result.isError).not.toBe(true);
+    expect(mocks.projectService.retrieveMemories).toHaveBeenCalledWith('debug exact event ranking', {
+      topK: 6,
+      sessionId: undefined,
+      recordTrace: false,
+      retrievalMode: 'event'
+    });
   });
 
   it('suppresses compaction handoff artifacts from context-pack memories and timeline while preserving implementation discussions', async () => {

@@ -166,6 +166,11 @@ export const tools: Tool[] = [
           enum: ['off', 'safe', 'aggressive'],
           description: 'Optional context-pack compression mode. safe preserves source refs and high-signal errors/log lines; aggressive is more compact.'
         },
+        retrievalMode: {
+          type: 'string',
+          enum: ['session-event-hybrid', 'event'],
+          description: 'Optional production context-pack retrieval mode. Defaults to session-event-hybrid (session-event hybrid), which rescues query-relevant sibling events from sessions already hit by direct retrieval. Use event for exact event-only debugging.'
+        },
         maxChars: {
           type: 'number',
           minimum: 1000,
