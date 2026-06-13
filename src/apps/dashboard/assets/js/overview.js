@@ -319,7 +319,7 @@ function updateEventsListUI() {
 
     const time = new Date(event.timestamp).toLocaleString();
     const eventType = event.eventType || event.type || 'unknown';
-    const typeClass = `type-${eventType.toLowerCase().replace('_', '-')}`;
+    const typeClass = eventTypeBadgeClass(eventType);
     const preview = event.preview || event.content || '';
     const accessBadge = event.accessCount > 0
       ? `<span class="access-badge"><i class="ri-eye-line"></i> ${event.accessCount}</span>`
@@ -332,7 +332,7 @@ function updateEventsListUI() {
     el.innerHTML = `
       <div class="event-header">
         <div style="display:flex; gap:8px; align-items:center;">
-          <span class="event-type-badge ${typeClass}">${eventType}</span>
+          <span class="event-type-badge ${typeClass}">${escapeHtml(eventType)}</span>
           ${adherenceBadge}
         </div>
         <div style="display:flex; gap:8px; align-items:center;">
@@ -367,11 +367,12 @@ function updateTopAccessedEventsUI() {
     const preview = (m.summary || m.preview || m.content || '').replace(/<[^>]*>/g, '').slice(0, 80);
     const lastAccessed = m.lastAccessedAt ? new Date(m.lastAccessedAt).toLocaleDateString() : (m.lastAccessed ? new Date(m.lastAccessed).toLocaleDateString() : '-');
     const id = m.id || m.memoryId || '';
+    const typeClass = eventTypeBadgeClass(type);
     return `
-      <div class="shared-item" style="cursor:pointer;" ${id ? `onclick="openDetailModal('${id}')"` : ''}>
+      <div class="shared-item" style="cursor:pointer;" ${id ? `onclick="openDetailModal(${jsAttrArg(id)})"` : ''}>
         <div class="shared-info" style="flex-direction:column; align-items:flex-start; gap:2px;">
           <div style="display:flex; gap:6px; align-items:center;">
-            <span class="event-type-badge type-${type.replace('_','-')}">${type}</span>
+            <span class="event-type-badge ${typeClass}">${escapeHtml(type)}</span>
             <span style="font-size:10px; color:var(--text-muted);">last: ${lastAccessed}</span>
           </div>
           <span style="font-size:12px; color:var(--text-secondary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:200px;" title="${escapeHtml(preview)}">${escapeHtml(preview) || '(no preview)'}</span>
@@ -1233,9 +1234,9 @@ function updateRetrievalTraceUI() {
     const selectedIdsHtml = selectedDetails.length > 0
       ? selectedDetails.map((d) => {
           const breakdown = `score=${Number(d.score || 0).toFixed(3)} · s=${Number(d.semanticScore || 0).toFixed(3)} · l=${Number(d.lexicalScore || 0).toFixed(3)} · r=${Number(d.recencyScore || 0).toFixed(3)}`;
-          return `<span class="event-type-badge" style="cursor:pointer;" onclick="openDetailModal('${d.eventId}')" title="${escapeHtml(breakdown)}">${escapeHtml((d.eventId || '').slice(0, 8))}...</span>`;
+          return `<span class="event-type-badge" style="cursor:pointer;" onclick="openDetailModal(${jsAttrArg(d.eventId || '')})" title="${escapeHtml(breakdown)}">${escapeHtml((d.eventId || '').slice(0, 8))}...</span>`;
         }).join(' ')
-      : ((t.selectedEventIds || []).slice(0, 2).map((id) => `<span class="event-type-badge" style="cursor:pointer;" onclick="openDetailModal('${id}')">${escapeHtml((id || '').slice(0, 8))}...</span>`).join(' ') || '-');
+      : ((t.selectedEventIds || []).slice(0, 2).map((id) => `<span class="event-type-badge" style="cursor:pointer;" onclick="openDetailModal(${jsAttrArg(id || '')})">${escapeHtml((id || '').slice(0, 8))}...</span>`).join(' ') || '-');
 
     const scoreBreakdownHtml = selectedDetails.length > 0
       ? selectedDetails.map((d) => `<div style="font-size:10px; color:var(--text-muted);">${escapeHtml((d.eventId || '').slice(0, 8))}... → score ${Number(d.score || 0).toFixed(3)} (s ${Number(d.semanticScore || 0).toFixed(3)}, l ${Number(d.lexicalScore || 0).toFixed(3)}, r ${Number(d.recencyScore || 0).toFixed(3)})</div>`).join('')
@@ -1247,7 +1248,7 @@ function updateRetrievalTraceUI() {
           <span style="font-size:12px; color:var(--text-secondary);"><strong>Trace:</strong> ${escapeHtml((t.traceId || '').slice(0, 12)) || '-'}</span>
           <span style="font-size:11px; color:var(--text-muted);">${ts} · strategy=${escapeHtml(t.strategy || 'auto')} · conf=${escapeHtml(confidence)} ${rewriteBadge}</span>
           <span style="font-size:11px; color:var(--text-muted);">selected IDs: ${selectedIdsHtml}</span>
-          <span style="font-size:11px; color:var(--text-muted);">candidates: ${candidateDetails.map((d) => `<span class=\"event-type-badge\" style=\"cursor:pointer;\" onclick=\"openDetailModal('${d.eventId}')\">${escapeHtml((d.eventId || '').slice(0, 8))}...</span>`).join(' ') || '-'}</span>
+          <span style="font-size:11px; color:var(--text-muted);">candidates: ${candidateDetails.map((d) => `<span class=\"event-type-badge\" style=\"cursor:pointer;\" onclick=\"openDetailModal(${jsAttrArg(d.eventId || '')})\">${escapeHtml((d.eventId || '').slice(0, 8))}...</span>`).join(' ') || '-'}</span>
           ${scoreBreakdownHtml}
         </div>
         <div style="display:flex; flex-direction:column; align-items:flex-end; gap:2px; min-width:68px;">

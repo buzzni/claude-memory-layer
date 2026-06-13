@@ -33,6 +33,8 @@ const state = {
   selectedSessionTurns: [],
   selectedSessionEvents: [],
   sessionSnapshotTab: 'overview',
+  sessionJumpEventId: null,
+  pendingSessionJump: null,
   sessionInspectorRequestId: 0,
   sessionDetailRequestId: 0,
   isSessionInspectorLoading: false,
@@ -65,6 +67,15 @@ const state = {
 
 // Utils
 const formatNumber = (num) => new Intl.NumberFormat().format(num || 0);
+
+function eventTypeBadgeClass(type) {
+  const token = String(type || 'unknown')
+    .toLowerCase()
+    .replace(/_/g, '-')
+    .replace(/[^a-z0-9-]+/g, '-')
+    .replace(/^-+|-+$/g, '') || 'unknown';
+  return `type-${token}`;
+}
 
 // Colors for Chart
 const CHART_COLORS = {

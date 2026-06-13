@@ -36,7 +36,7 @@ async function openDetailModal(eventId) {
     const ctx = data.context || [];
 
     const eventType = evt.eventType || 'unknown';
-    const typeClass = `type-${eventType.toLowerCase().replace('_', '-')}`;
+    const typeClass = eventTypeBadgeClass(eventType);
     const time = new Date(evt.timestamp).toLocaleString();
     const adherenceBadge = renderAdherenceBadge(evt);
 
@@ -46,8 +46,8 @@ async function openDetailModal(eventId) {
         <div class="modal-section-title">Context (Surrounding Events)</div>
         <div class="modal-context-list">
           ${ctx.map(c => `
-            <div class="modal-context-item" onclick="openDetailModal('${c.id}')">
-              <span class="event-type-badge ${`type-${(c.eventType || '').toLowerCase().replace('_', '-')}`}" style="flex-shrink:0;">${c.eventType}</span>
+            <div class="modal-context-item" ${c.id ? `onclick="openDetailModal(${jsAttrArg(c.id)})"` : ''}>
+              <span class="event-type-badge ${eventTypeBadgeClass(c.eventType)}" style="flex-shrink:0;">${escapeHtml(c.eventType || 'event')}</span>
               <div style="flex:1; min-width:0;">
                 <div style="font-size:12px; color:var(--text-muted); margin-bottom:4px;">${new Date(c.timestamp).toLocaleString()}</div>
                 <div style="font-size:13px; color:var(--text-secondary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(c.preview || '')}</div>
@@ -62,7 +62,7 @@ async function openDetailModal(eventId) {
       <div class="modal-meta">
         <div class="modal-meta-item">
           <i class="ri-price-tag-3-line"></i>
-          <span class="event-type-badge ${typeClass}">${eventType}</span>
+          <span class="event-type-badge ${typeClass}">${escapeHtml(eventType)}</span>
         </div>
         ${adherenceBadge ? `<div class="modal-meta-item">${adherenceBadge}</div>` : ''}
         <div class="modal-meta-item">
@@ -71,8 +71,13 @@ async function openDetailModal(eventId) {
         </div>
         <div class="modal-meta-item">
           <i class="ri-chat-1-line"></i>
-          Session: ${evt.sessionId ? evt.sessionId.slice(0, 12) + '...' : 'N/A'}
+          Session: ${evt.sessionId ? escapeHtml(evt.sessionId.slice(0, 12)) + '...' : 'N/A'}
         </div>
+        ${evt.sessionId ? `
+          <button type="button" class="inline-action-btn" onclick="jumpToSession(${jsAttrArg(evt.sessionId)}, ${jsAttrArg(evt.id || eventId)})">
+            <i class="ri-corner-right-up-line"></i> Open in Sessions
+          </button>
+        ` : ''}
       </div>
       <div class="modal-section-title">Content</div>
       <div class="modal-content-block">${escapeHtml(evt.content || '(empty)')}</div>
@@ -111,19 +116,28 @@ async function showEventsListModal() {
     }
 
     body.innerHTML = events.map(e => {
-      const typeClass = `type-${(e.eventType || '').toLowerCase().replace('_', '-')}`;
+      const typeClass = eventTypeBadgeClass(e.eventType);
       const adherenceBadge = renderAdherenceBadge(e);
+      const eventArg = jsAttrArg(e.id || '');
+      const sessionArg = jsAttrArg(e.sessionId || '');
       return `
-        <div class="modal-list-item" onclick="openDetailModal('${e.id}')">
+        <div class="modal-list-item" ${e.id ? `onclick="openDetailModal(${eventArg})"` : ''}>
           <div class="modal-list-info">
             <div class="title">
-              <span class="event-type-badge ${typeClass}" style="margin-right:8px;">${e.eventType}</span>
+              <span class="event-type-badge ${typeClass}" style="margin-right:8px;">${escapeHtml(e.eventType || 'event')}</span>
               ${adherenceBadge}
               ${escapeHtml((e.preview || '').slice(0, 80))}
             </div>
-            <div class="subtitle">${new Date(e.timestamp).toLocaleString()} | Session: ${(e.sessionId || '').slice(0, 12)}...</div>
+            <div class="subtitle">${new Date(e.timestamp).toLocaleString()} | Session: ${escapeHtml((e.sessionId || '').slice(0, 12))}...</div>
+            ${e.sessionId ? `
+              <div class="event-actions">
+                <button type="button" class="inline-action-btn" onclick="event.stopPropagation(); jumpToSession(${sessionArg}, ${eventArg})">
+                  <i class="ri-corner-right-up-line"></i> Open in Sessions
+                </button>
+              </div>
+            ` : ''}
           </div>
-          ${e.accessCount > 0 ? `<div class="modal-list-badge"><i class="ri-eye-line"></i> ${e.accessCount}</div>` : ''}
+          ${e.accessCount > 0 ? `<div class="modal-list-badge"><i class="ri-eye-line"></i> ${formatNumber(e.accessCount)}</div>` : ''}
         </div>
       `;
     }).join('');
@@ -152,12 +166,12 @@ async function showSessionsModal() {
       const started = new Date(s.startedAt).toLocaleString();
       const lastEvent = new Date(s.lastEventAt).toLocaleString();
       return `
-        <div class="modal-list-item" onclick="showSessionDetailInModal('${s.id}')">
+        <div class="modal-list-item" onclick="showSessionDetailInModal(${jsAttrArg(s.id)})">
           <div class="modal-list-info">
-            <div class="title"><i class="ri-chat-1-line" style="color:var(--accent-primary); margin-right:6px;"></i>${s.id.slice(0, 20)}...</div>
+            <div class="title"><i class="ri-chat-1-line" style="color:var(--accent-primary); margin-right:6px;"></i>${escapeHtml(s.id.slice(0, 20))}...</div>
             <div class="subtitle">Started: ${started} | Last: ${lastEvent}</div>
           </div>
-          <div class="modal-list-badge">${s.eventCount} events</div>
+          <div class="modal-list-badge">${formatNumber(s.eventCount)} events</div>
         </div>
       `;
     }).join('');
@@ -172,7 +186,7 @@ async function showSessionDetailInModal(sessionId) {
   body.innerHTML = '<div style="text-align:center; padding:40px; color:var(--text-muted);">Loading session...</div>';
 
   try {
-    const res = await fetch(apiUrl(`${API_BASE}/sessions/${sessionId}`));
+    const res = await fetch(apiUrl(`${API_BASE}/sessions/${encodeURIComponent(sessionId)}`));
     const data = await res.json();
     const session = data.session;
     const events = data.events || [];
@@ -180,7 +194,7 @@ async function showSessionDetailInModal(sessionId) {
 
     body.innerHTML = `
       <div class="modal-meta">
-        <div class="modal-meta-item"><i class="ri-fingerprint-line"></i>${sessionId.slice(0, 20)}...</div>
+        <div class="modal-meta-item"><i class="ri-fingerprint-line"></i>${escapeHtml(sessionId.slice(0, 20))}...</div>
         <div class="modal-meta-item"><i class="ri-time-line"></i>${new Date(session.startedAt).toLocaleString()}</div>
         <div class="modal-meta-item"><i class="ri-file-list-3-line"></i>${session.eventCount} events</div>
       </div>
@@ -197,17 +211,24 @@ async function showSessionDetailInModal(sessionId) {
       </div>
       <div class="modal-section-title">Events</div>
       ${events.map(e => {
-        const typeClass = `type-${(e.eventType || '').toLowerCase().replace('_', '-')}`;
+        const typeClass = eventTypeBadgeClass(e.eventType);
         const adherenceBadge = renderAdherenceBadge(e);
+        const eventArg = jsAttrArg(e.id || '');
+        const sessionArg = jsAttrArg(e.sessionId || sessionId);
         return `
-          <div class="modal-list-item" onclick="closeAllModals(); openDetailModal('${e.id}')">
+          <div class="modal-list-item" ${e.id ? `onclick="closeAllModals(); openDetailModal(${eventArg})"` : ''}>
             <div class="modal-list-info">
               <div class="title">
-                <span class="event-type-badge ${typeClass}" style="margin-right:8px;">${e.eventType}</span>
+                <span class="event-type-badge ${typeClass}" style="margin-right:8px;">${escapeHtml(e.eventType || 'event')}</span>
                 ${adherenceBadge}
                 ${escapeHtml((e.preview || '').slice(0, 80))}
               </div>
               <div class="subtitle">${new Date(e.timestamp).toLocaleString()}</div>
+              <div class="event-actions">
+                <button type="button" class="inline-action-btn" onclick="event.stopPropagation(); jumpToSession(${sessionArg}, ${eventArg})">
+                  <i class="ri-corner-right-up-line"></i> Open in Sessions
+                </button>
+              </div>
             </div>
           </div>
         `;

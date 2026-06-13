@@ -1079,6 +1079,42 @@ body {
   background: rgba(255,255,255,0.025);
 }
 
+.session-message.session-message-jump {
+  border-color: rgba(0, 240, 255, 0.65);
+  box-shadow: 0 0 0 1px rgba(0, 240, 255, 0.18), 0 12px 28px rgba(0, 240, 255, 0.08);
+  background: rgba(0, 240, 255, 0.06);
+}
+
+.event-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+
+.inline-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid rgba(0, 240, 255, 0.25);
+  border-radius: 999px;
+  background: rgba(0, 240, 255, 0.08);
+  color: var(--accent-secondary);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  padding: 6px 10px;
+  transition: all 0.2s ease;
+}
+
+.inline-action-btn:hover {
+  border-color: rgba(0, 240, 255, 0.55);
+  background: rgba(0, 240, 255, 0.14);
+  color: var(--text-primary);
+}
+
 .session-message.type-user-prompt {
   border-left: 3px solid var(--accent-primary);
 }
@@ -1112,6 +1148,13 @@ body {
   color: var(--accent-secondary);
   font-size: 12px;
   border: 1px solid rgba(0, 240, 255, 0.16);
+}
+
+.session-tool-summary.session-message-jump {
+  cursor: pointer;
+  border-color: rgba(0, 240, 255, 0.65);
+  box-shadow: 0 0 0 1px rgba(0, 240, 255, 0.18), 0 12px 28px rgba(0, 240, 255, 0.08);
+  background: rgba(0, 240, 255, 0.13);
 }
 
 .session-snapshot-tabs {

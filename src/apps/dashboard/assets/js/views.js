@@ -235,13 +235,14 @@ async function loadMemoryBankLevel(level) {
     container.innerHTML = `
       <div class="mb-event-list">
         ${events.map(e => {
-          const typeClass = `type-${(e.eventType || '').toLowerCase().replace('_', '-')}`;
+          const typeClass = eventTypeBadgeClass(e.eventType);
+          const eventArg = jsAttrArg(e.id || '');
           return `
-            <div class="mb-event-card" onclick="openDetailModal('${e.id}')">
+            <div class="mb-event-card" ${e.id ? `onclick="openDetailModal(${eventArg})"` : ''}>
               <div class="mb-event-header">
-                <span class="event-type-badge ${typeClass}">${e.eventType}</span>
+                <span class="event-type-badge ${typeClass}">${escapeHtml(e.eventType || 'event')}</span>
                 <div style="display:flex; gap:8px; align-items:center;">
-                  ${e.accessCount > 0 ? `<span class="access-badge"><i class="ri-eye-line"></i> ${e.accessCount}</span>` : ''}
+                  ${e.accessCount > 0 ? `<span class="access-badge"><i class="ri-eye-line"></i> ${formatNumber(e.accessCount)}</span>` : ''}
                   <span class="event-time">${new Date(e.timestamp).toLocaleString()}</span>
                 </div>
               </div>
@@ -271,7 +272,7 @@ function sessionShortId(id) {
 }
 
 function sessionEventTypeClass(type) {
-  return `type-${String(type || 'unknown').toLowerCase().replace(/_/g, '-')}`;
+  return eventTypeBadgeClass(type);
 }
 
 function getSessionEventLevel(event) {
@@ -291,6 +292,15 @@ function sessionEvidencePreviewText(event, max = 120) {
   return sessionPreviewText(event, max);
 }
 
+async function jumpToSession(sessionId, eventId) {
+  if (!sessionId) return;
+  state.pendingSessionJump = { sessionId, eventId: eventId || null, project: state.currentProject || '' };
+  state.sessionJumpEventId = eventId || null;
+  state.sessionDetailRequestId = (state.sessionDetailRequestId || 0) + 1;
+  if (typeof closeAllModals === 'function') closeAllModals();
+  await switchView('sessions', { forceReload: true });
+}
+
 async function loadSessionInspectorView() {
   const listEl = document.getElementById('session-list');
   if (!listEl) return;
@@ -298,6 +308,7 @@ async function loadSessionInspectorView() {
   const requestId = (state.sessionInspectorRequestId || 0) + 1;
   state.sessionInspectorRequestId = requestId;
   const projectAtStart = state.currentProject;
+  const jumpAtStart = state.pendingSessionJump;
   state.isSessionInspectorLoading = true;
   renderSessionList();
 
@@ -307,15 +318,33 @@ async function loadSessionInspectorView() {
       pageSize: state.sessionInspectorPageSize
     }));
     const data = res.ok ? await res.json() : { sessions: [] };
-    if (requestId !== state.sessionInspectorRequestId || projectAtStart !== state.currentProject) return;
-    state.sessionInspectorSessions = data.sessions || [];
+    if (requestId !== state.sessionInspectorRequestId || projectAtStart !== state.currentProject) {
+      if (projectAtStart !== state.currentProject && jumpAtStart && state.pendingSessionJump === jumpAtStart) {
+        state.pendingSessionJump = null;
+        state.sessionJumpEventId = null;
+      }
+      return;
+    }
+    const pendingJump = state.pendingSessionJump;
+    const jump = pendingJump?.project === projectAtStart ? pendingJump : null;
+    if (pendingJump && !jump) {
+      state.pendingSessionJump = null;
+      state.sessionJumpEventId = null;
+    }
+    let sessions = data.sessions || [];
+    if (jump?.sessionId && !sessions.some(s => s.id === jump.sessionId)) {
+      sessions = [{ id: jump.sessionId, eventCount: 0 }, ...sessions];
+    }
+    state.sessionInspectorSessions = sessions;
     state.isSessionInspectorLoading = false;
     renderSessionList();
 
     const selectedStillExists = state.selectedSession && state.sessionInspectorSessions.some(s => s.id === state.selectedSession.id);
-    const nextSessionId = selectedStillExists ? state.selectedSession.id : state.sessionInspectorSessions[0]?.id;
+    const nextSessionId = jump?.sessionId || (selectedStillExists ? state.selectedSession.id : state.sessionInspectorSessions[0]?.id);
     if (nextSessionId) {
       await selectSession(nextSessionId);
+      if (requestId !== state.sessionInspectorRequestId || projectAtStart !== state.currentProject) return;
+      if (jump && state.pendingSessionJump === jump && jump.sessionId === nextSessionId) state.pendingSessionJump = null;
     } else {
       state.selectedSession = null;
       state.selectedSessionTurns = [];
@@ -324,7 +353,17 @@ async function loadSessionInspectorView() {
       renderSessionSnapshot();
     }
   } catch (error) {
-    if (requestId !== state.sessionInspectorRequestId || projectAtStart !== state.currentProject) return;
+    if (requestId !== state.sessionInspectorRequestId || projectAtStart !== state.currentProject) {
+      if (projectAtStart !== state.currentProject && jumpAtStart && state.pendingSessionJump === jumpAtStart) {
+        state.pendingSessionJump = null;
+        state.sessionJumpEventId = null;
+      }
+      return;
+    }
+    if (jumpAtStart && state.pendingSessionJump === jumpAtStart) {
+      state.pendingSessionJump = null;
+      state.sessionJumpEventId = null;
+    }
     state.isSessionInspectorLoading = false;
     listEl.innerHTML = `<div class="session-empty" style="color:var(--error);">Failed to load sessions: ${escapeHtml(error.message)}</div>`;
   }
@@ -372,6 +411,10 @@ async function selectSession(sessionId) {
 
   const detailRequestId = (state.sessionDetailRequestId || 0) + 1;
   state.sessionDetailRequestId = detailRequestId;
+  const activeJump = state.pendingSessionJump;
+  if (!activeJump || activeJump.sessionId !== sessionId || activeJump.project !== (state.currentProject || '')) {
+    state.sessionJumpEventId = null;
+  }
   const projectAtStart = state.currentProject;
   const sessions = state.sessionInspectorSessions || [];
   state.selectedSession = sessions.find(s => s.id === sessionId) || { id: sessionId, eventCount: 0 };
@@ -453,13 +496,17 @@ function renderSessionConversation() {
     const agentEvents = events.filter(e => e.eventType === 'agent_response');
     const toolEvents = events.filter(e => e.eventType === 'tool_observation');
     const otherEvents = events.filter(e => !['user_prompt', 'agent_response', 'tool_observation'].includes(e.eventType));
-    const renderMessage = (event, roleLabel, icon) => `
-      <div class="session-message ${sessionEventTypeClass(event.eventType)}" ${event.id ? `onclick="openDetailModal(${jsAttrArg(event.id)})"` : ''}>
+    const jumpedToolEvent = toolEvents.find(e => e.id && state.sessionJumpEventId === e.id);
+    const renderMessage = (event, roleLabel, icon) => {
+      const jumpClass = event.id && state.sessionJumpEventId === event.id ? 'session-message-jump' : '';
+      return `
+      <div class="session-message ${sessionEventTypeClass(event.eventType)} ${jumpClass}" ${event.id ? `onclick="openDetailModal(${jsAttrArg(event.id)})"` : ''}>
         <div class="session-message-role">${icon} ${roleLabel}</div>
         <div class="session-message-preview">${sessionPreviewText(event)}</div>
         <div class="session-message-meta">${escapeHtml(event.eventType || 'event')} · ${formatSessionTime(event.timestamp)} · ${escapeHtml(event.id || '')}</div>
       </div>
     `;
+    };
 
     return `
       <article class="session-turn">
@@ -469,9 +516,9 @@ function renderSessionConversation() {
         </div>
         ${userEvents.map(e => renderMessage(e, 'User', '👤')).join('')}
         ${toolEvents.length > 0 ? `
-          <div class="session-tool-summary">
+          <div class="session-tool-summary ${jumpedToolEvent ? 'session-message-jump' : ''}" ${jumpedToolEvent?.id ? `onclick="openDetailModal(${jsAttrArg(jumpedToolEvent.id)})"` : ''}>
             <i class="ri-tools-line"></i>
-            ${formatNumber(toolEvents.length)} tool observations captured · raw tool output hidden in timeline
+            <span>${formatNumber(toolEvents.length)} tool observations captured · raw tool output hidden in timeline${jumpedToolEvent ? ' · target tool highlighted' : ''}</span>
           </div>
         ` : ''}
         ${agentEvents.map(e => renderMessage(e, 'Assistant', '🤖')).join('')}
@@ -641,15 +688,26 @@ async function renderUserPromptList() {
       </div>
     `;
 
-    const cards = sessionItems.map((e) => `
-      <div class="event-item" style="cursor:pointer;" onclick="openDetailModal('${e.id}')">
+    const cards = sessionItems.map((e) => {
+      const eventArg = jsAttrArg(e.id || '');
+      const sessionArg = jsAttrArg(e.sessionId || '');
+      return `
+      <div class="event-item" style="cursor:pointer;" ${e.id ? `onclick="openDetailModal(${eventArg})"` : ''}>
         <div class="event-header">
           <span class="event-type-badge type-user-prompt">user_prompt</span>
           <span class="event-time">${new Date(e.timestamp).toLocaleString()}</span>
         </div>
         <div class="event-content" style="-webkit-line-clamp:4;">${escapeHtml(e.preview || '')}</div>
+        ${e.sessionId ? `
+          <div class="event-actions">
+            <button type="button" class="inline-action-btn" onclick="event.stopPropagation(); jumpToSession(${sessionArg}, ${eventArg})">
+              <i class="ri-corner-right-up-line"></i> Open in Sessions
+            </button>
+          </div>
+        ` : ''}
       </div>
-    `).join('');
+    `;
+    }).join('');
 
     return heading + cards;
   }).join('');
