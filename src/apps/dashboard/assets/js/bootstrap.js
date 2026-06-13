@@ -108,6 +108,19 @@ function setupEventListeners() {
       await loadUserPromptsView();
     });
   }
+
+  const sessionRefresh = document.getElementById('session-refresh');
+  if (sessionRefresh) {
+    sessionRefresh.addEventListener('click', async () => {
+      await loadSessionInspectorView();
+    });
+  }
+  document.querySelectorAll('#session-snapshot-tabs .sort-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      setSessionSnapshotTab(btn.dataset.sessionSnapshotTab || 'overview');
+    });
+  });
+
   const userPromptPrev = document.getElementById('user-prompt-prev');
   if (userPromptPrev) {
     userPromptPrev.addEventListener('click', async () => {
@@ -143,7 +156,7 @@ function setupEventListeners() {
       await initActivityChart();
       // Reload current view if not overview
       if (state.currentView !== 'overview') {
-        switchView(state.currentView);
+        await switchView(state.currentView, { forceReload: true });
       }
       updateChatProjectScope();
     });

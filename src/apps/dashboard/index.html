@@ -51,6 +51,10 @@
             <i class="ri-brain-line"></i>
             <span>Memory Banks</span>
           </li>
+          <li class="nav-item" data-nav="sessions">
+            <i class="ri-chat-history-line"></i>
+            <span>Sessions</span>
+          </li>
           <li class="nav-item" data-nav="user-prompts">
             <i class="ri-message-2-line"></i>
             <span>User Prompts</span>
@@ -557,6 +561,60 @@
         </header>
         <div id="mb-content">
           <div style="text-align:center; padding:60px; color:var(--text-muted);">Loading...</div>
+        </div>
+      </div>
+
+      <!-- ========== VIEW: Sessions ========== -->
+      <div id="view-sessions" class="page-view">
+        <header class="top-header">
+          <div class="page-title">
+            <h1>Session Inspector</h1>
+            <p>Browse conversations, turns, and memory evidence captured for each session</p>
+          </div>
+          <div class="header-actions">
+            <button id="session-refresh" class="btn btn-secondary">
+              <i class="ri-refresh-line"></i>
+              <span>Refresh Sessions</span>
+            </button>
+          </div>
+        </header>
+
+        <div class="session-inspector-grid">
+          <section class="card session-list-card">
+            <div class="card-header" style="align-items:flex-end;">
+              <div>
+                <div class="card-title"><i class="ri-history-line"></i><span>Recent Sessions</span></div>
+                <div id="session-inspector-meta" class="session-muted">Select a session to inspect turns and evidence.</div>
+              </div>
+            </div>
+            <div id="session-list" class="session-list">
+              <div class="session-empty">Loading sessions...</div>
+            </div>
+          </section>
+
+          <section class="card session-conversation-card">
+            <div class="card-header">
+              <div class="card-title"><i class="ri-discuss-line"></i><span>Conversation Turns</span></div>
+              <div class="session-muted" id="session-conversation-meta">No session selected</div>
+            </div>
+            <div id="session-conversation" class="session-conversation">
+              <div class="session-empty">Choose a session on the left to see user → tools → assistant flow.</div>
+            </div>
+          </section>
+
+          <aside id="session-snapshot-panel" class="card session-snapshot-panel">
+            <div class="card-header">
+              <div class="card-title"><i class="ri-brain-line"></i><span>Memory Snapshot</span></div>
+            </div>
+            <div id="session-snapshot-tabs" class="session-snapshot-tabs">
+              <button class="sort-btn active" data-session-snapshot-tab="overview">Overview</button>
+              <button class="sort-btn" data-session-snapshot-tab="evidence">Evidence</button>
+              <button class="sort-btn" data-session-snapshot-tab="quality">Quality</button>
+            </div>
+            <div id="session-snapshot-content" class="session-snapshot-content">
+              <div class="session-empty">Select a session to see memory levels, evidence links, and quality signals.</div>
+            </div>
+          </aside>
         </div>
       </div>
 

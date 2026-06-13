@@ -7,7 +7,7 @@
  */
 
 import { Hono } from 'hono';
-import { getServiceFromQuery } from './utils.js';
+import { getLightweightServiceFromQuery, getServiceFromQuery } from './utils.js';
 
 export const turnsRouter = new Hono();
 
@@ -21,7 +21,7 @@ turnsRouter.get('/', async (c) => {
     return c.json({ error: 'sessionId is required' }, 400);
   }
 
-  const memoryService = getServiceFromQuery(c);
+  const memoryService = getLightweightServiceFromQuery(c);
 
   try {
     await memoryService.initialize();
@@ -60,7 +60,7 @@ turnsRouter.get('/', async (c) => {
 // GET /api/turns/:turnId - Get full turn details
 turnsRouter.get('/:turnId', async (c) => {
   const { turnId } = c.req.param();
-  const memoryService = getServiceFromQuery(c);
+  const memoryService = getLightweightServiceFromQuery(c);
 
   try {
     await memoryService.initialize();

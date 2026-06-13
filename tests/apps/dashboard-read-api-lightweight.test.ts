@@ -7,6 +7,9 @@ const mocks = vi.hoisted(() => {
     shutdown: vi.fn(),
     getRecentEvents: vi.fn(),
     getSessionHistory: vi.fn(),
+    getSessionTurns: vi.fn(),
+    countSessionTurns: vi.fn(),
+    getEventsByTurn: vi.fn(),
   };
 
   return {
@@ -25,11 +28,13 @@ vi.mock('../../src/apps/server/api/utils.js', () => ({
 
 const { eventsRouter } = await import('../../src/server/api/events.js');
 const { sessionsRouter } = await import('../../src/server/api/sessions.js');
+const { turnsRouter } = await import('../../src/server/api/turns.js');
 
 function createApp() {
   const app = new Hono();
   app.route('/api/events', eventsRouter);
   app.route('/api/sessions', sessionsRouter);
+  app.route('/api/turns', turnsRouter);
   return app;
 }
 
@@ -58,6 +63,19 @@ describe('dashboard read APIs use lightweight services', () => {
     mocks.service.shutdown.mockReset().mockResolvedValue(undefined);
     mocks.service.getRecentEvents.mockReset().mockResolvedValue(fixtureEvents);
     mocks.service.getSessionHistory.mockReset().mockResolvedValue(fixtureEvents);
+    mocks.service.getSessionTurns.mockReset().mockResolvedValue([
+      {
+        turnId: 'turn-1',
+        startedAt: new Date('2026-05-01T00:00:00.000Z'),
+        promptPreview: 'legacy dashboard prompt about query rewrite stats',
+        eventCount: 2,
+        toolCount: 0,
+        hasResponse: true,
+        events: fixtureEvents,
+      },
+    ]);
+    mocks.service.countSessionTurns.mockReset().mockResolvedValue(1);
+    mocks.service.getEventsByTurn.mockReset().mockResolvedValue(fixtureEvents);
     mocks.getServiceFromQuery.mockClear();
     mocks.getLightweightServiceFromQuery.mockClear();
   });
@@ -98,6 +116,33 @@ describe('dashboard read APIs use lightweight services', () => {
     expect(mocks.getLightweightServiceFromQuery).toHaveBeenCalledTimes(1);
     expect(mocks.getServiceFromQuery).not.toHaveBeenCalled();
     expect(mocks.service.getSessionHistory).toHaveBeenCalledWith('s1');
+    expect(mocks.service.shutdown).toHaveBeenCalledTimes(1);
+  });
+
+  it('GET /api/turns uses lightweight read service for session turns', async () => {
+    const res = await createApp().request('/api/turns?project=abc12345&sessionId=s1&limit=5');
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.total).toBe(1);
+    expect(body.turns[0]).toMatchObject({ turnId: 'turn-1', eventCount: 2 });
+    expect(mocks.getLightweightServiceFromQuery).toHaveBeenCalledTimes(1);
+    expect(mocks.getServiceFromQuery).not.toHaveBeenCalled();
+    expect(mocks.service.getSessionTurns).toHaveBeenCalledWith('s1', { limit: 5, offset: 0 });
+    expect(mocks.service.countSessionTurns).toHaveBeenCalledWith('s1');
+    expect(mocks.service.shutdown).toHaveBeenCalledTimes(1);
+  });
+
+  it('GET /api/turns/:turnId uses lightweight read service for turn details', async () => {
+    const res = await createApp().request('/api/turns/turn-1?project=abc12345');
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.turnId).toBe('turn-1');
+    expect(body.totalEvents).toBe(2);
+    expect(mocks.getLightweightServiceFromQuery).toHaveBeenCalledTimes(1);
+    expect(mocks.getServiceFromQuery).not.toHaveBeenCalled();
+    expect(mocks.service.getEventsByTurn).toHaveBeenCalledWith('turn-1');
     expect(mocks.service.shutdown).toHaveBeenCalledTimes(1);
   });
 });

@@ -1,5 +1,6 @@
-function switchView(viewName) {
-  if (state.currentView === viewName) return;
+function switchView(viewName, options = {}) {
+  const forceReload = Boolean(options.forceReload);
+  if (state.currentView === viewName && !forceReload) return Promise.resolve();
   state.currentView = viewName;
 
   // Update nav active state
@@ -18,10 +19,12 @@ function switchView(viewName) {
 
   // Load view content
   switch (viewName) {
-    case 'knowledge-graph': loadKnowledgeGraphView(); break;
-    case 'memory-banks': loadMemoryBanksView(); break;
-    case 'user-prompts': loadUserPromptsView(); break;
-    case 'configuration': loadConfigurationView(); break;
+    case 'knowledge-graph': return loadKnowledgeGraphView();
+    case 'memory-banks': return loadMemoryBanksView();
+    case 'sessions': return loadSessionInspectorView();
+    case 'user-prompts': return loadUserPromptsView();
+    case 'configuration': return loadConfigurationView();
+    default: return Promise.resolve();
   }
 }
 
@@ -254,6 +257,342 @@ async function loadMemoryBankLevel(level) {
   }
 }
 
+// --- Session Inspector View ---
+
+function formatSessionTime(value) {
+  if (!value) return '-';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? '-' : date.toLocaleString();
+}
+
+function sessionShortId(id) {
+  const text = String(id || 'unknown');
+  return text.length > 18 ? `${text.slice(0, 18)}...` : text;
+}
+
+function sessionEventTypeClass(type) {
+  return `type-${String(type || 'unknown').toLowerCase().replace(/_/g, '-')}`;
+}
+
+function getSessionEventLevel(event) {
+  const metadata = event?.metadata || event?.meta || {};
+  return metadata.level || metadata.memoryLevel || metadata.stage || 'L0';
+}
+
+function sessionPreviewText(event, max = 280) {
+  const preview = event?.preview || '';
+  return escapeHtml(String(preview).slice(0, max));
+}
+
+function sessionEvidencePreviewText(event, max = 120) {
+  if (event?.eventType === 'tool_observation') {
+    return '<em>Tool observation preview hidden</em>';
+  }
+  return sessionPreviewText(event, max);
+}
+
+async function loadSessionInspectorView() {
+  const listEl = document.getElementById('session-list');
+  if (!listEl) return;
+
+  const requestId = (state.sessionInspectorRequestId || 0) + 1;
+  state.sessionInspectorRequestId = requestId;
+  const projectAtStart = state.currentProject;
+  state.isSessionInspectorLoading = true;
+  renderSessionList();
+
+  try {
+    const res = await fetch(apiUrl(`${API_BASE}/sessions`, {
+      page: state.sessionInspectorPage,
+      pageSize: state.sessionInspectorPageSize
+    }));
+    const data = res.ok ? await res.json() : { sessions: [] };
+    if (requestId !== state.sessionInspectorRequestId || projectAtStart !== state.currentProject) return;
+    state.sessionInspectorSessions = data.sessions || [];
+    state.isSessionInspectorLoading = false;
+    renderSessionList();
+
+    const selectedStillExists = state.selectedSession && state.sessionInspectorSessions.some(s => s.id === state.selectedSession.id);
+    const nextSessionId = selectedStillExists ? state.selectedSession.id : state.sessionInspectorSessions[0]?.id;
+    if (nextSessionId) {
+      await selectSession(nextSessionId);
+    } else {
+      state.selectedSession = null;
+      state.selectedSessionTurns = [];
+      state.selectedSessionEvents = [];
+      renderSessionConversation();
+      renderSessionSnapshot();
+    }
+  } catch (error) {
+    if (requestId !== state.sessionInspectorRequestId || projectAtStart !== state.currentProject) return;
+    state.isSessionInspectorLoading = false;
+    listEl.innerHTML = `<div class="session-empty" style="color:var(--error);">Failed to load sessions: ${escapeHtml(error.message)}</div>`;
+  }
+}
+
+function renderSessionList() {
+  const listEl = document.getElementById('session-list');
+  const metaEl = document.getElementById('session-inspector-meta');
+  if (!listEl) return;
+
+  if (state.isSessionInspectorLoading) {
+    listEl.innerHTML = '<div class="session-empty">Loading sessions...</div>';
+    if (metaEl) metaEl.textContent = 'Loading recent sessions...';
+    return;
+  }
+
+  const sessions = state.sessionInspectorSessions || [];
+  if (metaEl) {
+    metaEl.textContent = `${sessions.length} sessions · page ${state.sessionInspectorPage}`;
+  }
+
+  if (sessions.length === 0) {
+    listEl.innerHTML = '<div class="session-empty">No sessions found for the selected project.</div>';
+    return;
+  }
+
+  listEl.innerHTML = sessions.map((session) => {
+    const selected = state.selectedSession?.id === session.id;
+    const durationMs = session.startedAt && session.lastEventAt
+      ? Math.max(0, new Date(session.lastEventAt).getTime() - new Date(session.startedAt).getTime())
+      : 0;
+    const durationMin = durationMs > 0 ? `${Math.max(1, Math.round(durationMs / 60000))}m` : '-';
+    return `
+      <button class="session-list-item ${selected ? 'active' : ''}" onclick="selectSession(${jsAttrArg(session.id)})">
+        <span class="session-list-id">${escapeHtml(sessionShortId(session.id))}</span>
+        <span class="session-list-meta">${formatNumber(session.eventCount || 0)} events · ${durationMin}</span>
+        <span class="session-list-time">${formatSessionTime(session.lastEventAt || session.endedAt || session.startedAt)}</span>
+      </button>
+    `;
+  }).join('');
+}
+
+async function selectSession(sessionId) {
+  if (!sessionId) return;
+
+  const detailRequestId = (state.sessionDetailRequestId || 0) + 1;
+  state.sessionDetailRequestId = detailRequestId;
+  const projectAtStart = state.currentProject;
+  const sessions = state.sessionInspectorSessions || [];
+  state.selectedSession = sessions.find(s => s.id === sessionId) || { id: sessionId, eventCount: 0 };
+  state.selectedSessionTurns = [];
+  state.selectedSessionEvents = [];
+  state.isSessionDetailLoading = true;
+  renderSessionList();
+  renderSessionConversation();
+  renderSessionSnapshot();
+
+  try {
+    const [turnsRes, eventsRes] = await Promise.all([
+      fetch(apiUrl(`${API_BASE}/turns`, { sessionId, limit: 50, offset: 0 })),
+      fetch(apiUrl(`${API_BASE}/events`, { sessionId, limit: 300, sort: 'oldest' }))
+    ]);
+    const turnsData = turnsRes.ok ? await turnsRes.json() : { turns: [] };
+    const eventsData = eventsRes.ok ? await eventsRes.json() : { events: [] };
+
+    if (
+      detailRequestId !== state.sessionDetailRequestId ||
+      projectAtStart !== state.currentProject ||
+      state.selectedSession?.id !== sessionId
+    ) {
+      return;
+    }
+
+    state.selectedSessionTurns = turnsData.turns || [];
+    state.selectedSessionEvents = eventsData.events || [];
+    state.isSessionDetailLoading = false;
+    renderSessionConversation();
+    renderSessionSnapshot();
+  } catch (error) {
+    if (
+      detailRequestId !== state.sessionDetailRequestId ||
+      projectAtStart !== state.currentProject ||
+      state.selectedSession?.id !== sessionId
+    ) {
+      return;
+    }
+    state.isSessionDetailLoading = false;
+    const conversationEl = document.getElementById('session-conversation');
+    if (conversationEl) {
+      conversationEl.innerHTML = `<div class="session-empty" style="color:var(--error);">Failed to load session detail: ${escapeHtml(error.message)}</div>`;
+    }
+    renderSessionSnapshot();
+  }
+}
+
+function renderSessionConversation() {
+  const container = document.getElementById('session-conversation');
+  const metaEl = document.getElementById('session-conversation-meta');
+  if (!container) return;
+
+  if (state.isSessionDetailLoading) {
+    container.innerHTML = '<div class="session-empty">Loading conversation turns...</div>';
+    if (metaEl) metaEl.textContent = 'Loading...';
+    return;
+  }
+
+  if (!state.selectedSession) {
+    container.innerHTML = '<div class="session-empty">Choose a session on the left to see user → tools → assistant flow.</div>';
+    if (metaEl) metaEl.textContent = 'No session selected';
+    return;
+  }
+
+  const turns = state.selectedSessionTurns || [];
+  if (metaEl) {
+    metaEl.textContent = `${sessionShortId(state.selectedSession.id)} · ${turns.length} turns`;
+  }
+
+  if (turns.length === 0) {
+    container.innerHTML = '<div class="session-empty">No turn grouping found. Try running turn backfill if this is legacy data.</div>';
+    return;
+  }
+
+  container.innerHTML = turns.map((turn, index) => {
+    const events = turn.events || [];
+    const userEvents = events.filter(e => e.eventType === 'user_prompt');
+    const agentEvents = events.filter(e => e.eventType === 'agent_response');
+    const toolEvents = events.filter(e => e.eventType === 'tool_observation');
+    const otherEvents = events.filter(e => !['user_prompt', 'agent_response', 'tool_observation'].includes(e.eventType));
+    const renderMessage = (event, roleLabel, icon) => `
+      <div class="session-message ${sessionEventTypeClass(event.eventType)}" ${event.id ? `onclick="openDetailModal(${jsAttrArg(event.id)})"` : ''}>
+        <div class="session-message-role">${icon} ${roleLabel}</div>
+        <div class="session-message-preview">${sessionPreviewText(event)}</div>
+        <div class="session-message-meta">${escapeHtml(event.eventType || 'event')} · ${formatSessionTime(event.timestamp)} · ${escapeHtml(event.id || '')}</div>
+      </div>
+    `;
+
+    return `
+      <article class="session-turn">
+        <div class="session-turn-header">
+          <span>Turn ${index + 1}</span>
+          <span>${formatNumber(turn.eventCount || events.length || 0)} events · ${formatNumber(turn.toolCount ?? toolEvents.length)} tools · ${turn.hasResponse ? 'answered' : 'open'}</span>
+        </div>
+        ${userEvents.map(e => renderMessage(e, 'User', '👤')).join('')}
+        ${toolEvents.length > 0 ? `
+          <div class="session-tool-summary">
+            <i class="ri-tools-line"></i>
+            ${formatNumber(toolEvents.length)} tool observations captured · raw tool output hidden in timeline
+          </div>
+        ` : ''}
+        ${agentEvents.map(e => renderMessage(e, 'Assistant', '🤖')).join('')}
+        ${otherEvents.map(e => renderMessage(e, 'Event', '•')).join('')}
+      </article>
+    `;
+  }).join('');
+}
+
+function setSessionSnapshotTab(tab) {
+  const allowed = ['overview', 'evidence', 'quality'];
+  state.sessionSnapshotTab = allowed.includes(tab) ? tab : 'overview';
+  document.querySelectorAll('#session-snapshot-tabs .sort-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.sessionSnapshotTab === state.sessionSnapshotTab);
+  });
+  renderSessionSnapshot();
+}
+
+function renderSessionSnapshot() {
+  const container = document.getElementById('session-snapshot-content');
+  if (!container) return;
+
+  if (state.isSessionDetailLoading) {
+    container.innerHTML = '<div class="session-empty">Loading memory snapshot...</div>';
+    return;
+  }
+
+  if (!state.selectedSession) {
+    container.innerHTML = '<div class="session-empty">Select a session to see memory levels, evidence links, and quality signals.</div>';
+    return;
+  }
+
+  const tab = state.sessionSnapshotTab || 'overview';
+  if (tab === 'evidence') {
+    renderSessionEvidenceSnapshot(container);
+  } else if (tab === 'quality') {
+    renderSessionQualitySnapshot(container);
+  } else {
+    renderSessionOverviewSnapshot(container);
+  }
+}
+
+function renderSessionOverviewSnapshot(container) {
+  const session = state.selectedSession || {};
+  const turns = state.selectedSessionTurns || [];
+  const events = state.selectedSessionEvents || [];
+  const eventCount = session.eventCount || events.length || 0;
+  const levelCounts = {};
+  const typeCounts = {};
+  for (const event of events) {
+    const level = getSessionEventLevel(event);
+    levelCounts[level] = (levelCounts[level] || 0) + 1;
+    const type = event.eventType || 'unknown';
+    typeCounts[type] = (typeCounts[type] || 0) + 1;
+  }
+
+  container.innerHTML = `
+    <div class="snapshot-kpi-grid">
+      <div class="snapshot-kpi"><strong>${formatNumber(eventCount)} events</strong><span>captured</span></div>
+      <div class="snapshot-kpi"><strong>${formatNumber(turns.length)} turns</strong><span>conversation groups</span></div>
+      <div class="snapshot-kpi"><strong>${formatNumber(events.filter(e => (e.accessCount || 0) > 0).length)} used</strong><span>retrieved later</span></div>
+    </div>
+    <div class="snapshot-section-title">Memory Levels</div>
+    <div class="snapshot-chip-list">
+      ${Object.entries(levelCounts).length > 0
+        ? Object.entries(levelCounts).map(([level, count]) => `<span class="snapshot-chip">${escapeHtml(level)} · ${formatNumber(count)}</span>`).join('')
+        : '<span class="snapshot-chip muted">No level metadata</span>'}
+    </div>
+    <div class="snapshot-section-title">Event Mix</div>
+    <div class="snapshot-chip-list">
+      ${Object.entries(typeCounts).map(([type, count]) => `<span class="snapshot-chip">${escapeHtml(type)} · ${formatNumber(count)}</span>`).join('') || '<span class="snapshot-chip muted">No events loaded</span>'}
+    </div>
+    <div class="snapshot-note">Raw metadata is intentionally hidden here; use Event Detail for explicit drill-down.</div>
+  `;
+}
+
+function renderSessionEvidenceSnapshot(container) {
+  const events = state.selectedSessionEvents || [];
+  const visible = events.slice(0, 30);
+  container.innerHTML = `
+    <div class="snapshot-section-title">Evidence Coverage</div>
+    <div class="snapshot-note">Showing sanitized event IDs, types, levels, and short previews. Raw metadata and tool output are not rendered in this panel.</div>
+    ${visible.length === 0 ? '<div class="session-empty">No evidence events loaded.</div>' : ''}
+    <div class="snapshot-evidence-list">
+      ${visible.map(event => `
+        <button class="snapshot-evidence-item" ${event.id ? `onclick="openDetailModal(${jsAttrArg(event.id)})"` : ''}>
+          <span class="event-type-badge ${sessionEventTypeClass(event.eventType)}">${escapeHtml(event.eventType || 'event')}</span>
+          <span class="snapshot-evidence-id">${escapeHtml(event.id || '')}</span>
+          <span class="snapshot-evidence-meta">${escapeHtml(getSessionEventLevel(event))} · ${formatSessionTime(event.timestamp)} · ${formatNumber(event.accessCount || 0)} hits</span>
+          <span class="snapshot-evidence-preview">${sessionEvidencePreviewText(event, 120)}</span>
+        </button>
+      `).join('')}
+    </div>
+  `;
+}
+
+function renderSessionQualitySnapshot(container) {
+  const turns = state.selectedSessionTurns || [];
+  const events = state.selectedSessionEvents || [];
+  const answeredTurns = turns.filter(t => t.hasResponse).length;
+  const toolCount = turns.reduce((sum, turn) => sum + Number(turn.toolCount || 0), 0);
+  const userPromptCount = events.filter(e => e.eventType === 'user_prompt').length;
+  const responseCount = events.filter(e => e.eventType === 'agent_response').length;
+  const responseCoverage = turns.length > 0 ? Math.round((answeredTurns / turns.length) * 100) : 0;
+
+  container.innerHTML = `
+    <div class="snapshot-kpi-grid">
+      <div class="snapshot-kpi"><strong>${responseCoverage}%</strong><span>response coverage</span></div>
+      <div class="snapshot-kpi"><strong>${formatNumber(toolCount)}</strong><span>tool observations</span></div>
+      <div class="snapshot-kpi"><strong>${formatNumber(userPromptCount)}:${formatNumber(responseCount)}</strong><span>prompt/response</span></div>
+    </div>
+    <div class="snapshot-section-title">Turn Quality Signals</div>
+    <div class="snapshot-chip-list">
+      <span class="snapshot-chip">${formatNumber(answeredTurns)} answered turns</span>
+      <span class="snapshot-chip">${formatNumber(Math.max(0, turns.length - answeredTurns))} open turns</span>
+      <span class="snapshot-chip">${formatNumber(events.filter(e => (e.accessCount || 0) > 0).length)} reused memories</span>
+    </div>
+    <div class="snapshot-note">This is a lightweight dashboard heuristic, not a model judgment. It helps spot sessions with missing responses, heavy tool usage, or later memory reuse.</div>
+  `;
+}
+
 // --- User Prompts View ---
 
 async function renderUserPromptList() {
@@ -460,6 +799,10 @@ function escapeHtml(unsafe) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#039;");
+}
+
+function jsAttrArg(value) {
+  return escapeHtml(JSON.stringify(String(value ?? '')));
 }
 
 // --- Chat Panel ---
