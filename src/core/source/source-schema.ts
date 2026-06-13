@@ -306,7 +306,7 @@ export function looksLikePrivacySensitiveSourceValue(value: unknown, fieldName =
       || looksLikeCredentialAssignment(candidate)
       || looksLikeBareCredentialToken(candidate)
       || looksLikeCredentialFieldValue(fieldName, candidate)
-      || /\bBearer\s+(?!\[?redacted\]?\b)[A-Za-z0-9._~+/=-]{3,}/i.test(candidate)
+      || /\bBearer\s+(?!\[?redacted\]?(?:$|[\s&;,|()[\]{}<>"'`]))[A-Za-z0-9._~+/=-]{3,}/i.test(candidate)
       || /(?:^|[\s:=,;|()[\]{}<>"'`])[a-z][a-z0-9+.-]*:\/\/[^\s/@:]+:[^\s/@]+@/i.test(candidate)
       || /(?:^|[\s:=,;|()[\]{}<>"'`])[a-z][a-z0-9+.-]*:\/\/:[^\s/@]+@/i.test(candidate);
   });
@@ -317,7 +317,7 @@ export function violation(code: string, path: string, message: string): SourceCo
 }
 
 function looksLikeCredentialAssignment(value: string): boolean {
-  return /(?:^|[^A-Za-z0-9_-])(?:api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|secret|password|passwd|authorization|token)\s*[:=]\s*(?!\[?redacted\]?\b)(?:Bearer\s+)?[^\s&;,|]{3,}/i.test(value);
+  return /(?:^|[^A-Za-z0-9_-])(?:api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|secret|password|passwd|authorization|token)\s*[:=]\s*(?!(?:Bearer\s+)?\[?redacted\]?(?:$|[\s&;,|()[\]{}<>"'`]))(?:Bearer\s+)?[^\s&;,|]{3,}/i.test(value);
 }
 
 function looksLikeBareCredentialToken(value: string): boolean {

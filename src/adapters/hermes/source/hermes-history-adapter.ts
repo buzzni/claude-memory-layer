@@ -127,11 +127,13 @@ function normalizeHermesSource(value: string | undefined): string | undefined {
 
 function normalizeMessageId(value: string | number | undefined): string | undefined {
   if (value === undefined) return undefined;
-  const raw = String(value).trim();
-  if (!raw) return undefined;
-  if (shouldRedactLocalSourceValue(raw)) return `hash-${stableHash(raw)}`;
-  const safe = raw.replace(/[^A-Za-z0-9._:@-]+/g, '-').replace(/^-+|-+$/g, '');
-  return safe || stableHash(raw);
+  const raw = String(value);
+  const trimmed = raw.trim();
+  if (!trimmed) return undefined;
+  if (shouldRedactLocalSourceValue(trimmed)) return `hash-${stableHash(raw)}`;
+  const safe = trimmed.replace(/[^A-Za-z0-9._:@-]+/g, '-').replace(/^-+|-+$/g, '');
+  if (!safe) return `hash-${stableHash(raw)}`;
+  return safe === raw ? `raw:${safe}` : `normalized:${safe}:${stableHash(raw)}`;
 }
 
 function shouldRedactLocalSourceValue(value: string): boolean {

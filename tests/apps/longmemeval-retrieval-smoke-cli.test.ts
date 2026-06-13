@@ -5,9 +5,10 @@ import * as path from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-function runLongMemEvalSmokeCli(args: string[]) {
+function runLongMemEvalSmokeCli(args: string[], env: Record<string, string> = {}) {
   return spawnSync('npx', ['tsx', 'scripts/longmemeval-retrieval-smoke.ts', ...args], {
     cwd: process.cwd(),
+    env: { ...process.env, ...env },
     encoding: 'utf8'
   });
 }
@@ -60,6 +61,28 @@ function writeEarlyExitReaderCommand(): string {
   writeFileSync(readerPath, `#!/usr/bin/env node
 process.stderr.write('reader failed before stdin\\n');
 process.exit(7);
+`, 'utf8');
+  chmodSync(readerPath, 0o755);
+  return readerPath;
+}
+
+function writeSecretLeakingReaderCommand(): string {
+  const dir = mkdtempSync(path.join(tmpdir(), 'cml-longmemeval-reader-secret-leak-'));
+  const readerPath = path.join(dir, 'reader.mjs');
+  writeFileSync(readerPath, `#!/usr/bin/env node
+process.stderr.write('reader leaked ' + process.env.LONGMEMEVAL_READER_API_KEY + '\\n');
+process.exit(9);
+`, 'utf8');
+  chmodSync(readerPath, 0o755);
+  return readerPath;
+}
+
+function writeBoundarySecretLeakingReaderCommand(): string {
+  const dir = mkdtempSync(path.join(tmpdir(), 'cml-longmemeval-reader-boundary-secret-leak-'));
+  const readerPath = path.join(dir, 'reader.mjs');
+  writeFileSync(readerPath, `#!/usr/bin/env node
+process.stderr.write('x'.repeat(1996) + process.env.LONGMEMEVAL_READER_API_KEY + '\\n');
+process.exit(9);
 `, 'utf8');
   chmodSync(readerPath, 0o755);
   return readerPath;
@@ -217,6 +240,50 @@ describe('LongMemEval retrieval smoke CLI', () => {
     expect(result.stderr).toContain('reader failed before stdin');
     expect(result.stderr).not.toContain('Unhandled');
     expect(result.stderr).not.toContain('write EPIPE');
+  });
+
+  it('redacts inherited reader credentials from failing reader stderr', () => {
+    const fixturePath = writeLongMemEvalFixture();
+    const readerCommand = writeSecretLeakingReaderCommand();
+    const dir = mkdtempSync(path.join(tmpdir(), 'cml-longmemeval-answers-'));
+    const answersOut = path.join(dir, 'hypotheses.jsonl');
+    const secretValue = ['reader', 'secret', 'fixture', '12345'].join('-');
+    const result = runLongMemEvalSmokeCli([
+      '--input', fixturePath,
+      '--retrieval-mode', 'hybrid',
+      '--granularity', 'session',
+      '--format', 'json',
+      '--top-k', '2',
+      '--answers-out', answersOut,
+      '--reader-command', readerCommand
+    ], Object.fromEntries([['LONGMEMEVAL_READER_API_KEY', secretValue]]));
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('Reader command failed for q_cli_1 with exit code 9');
+    expect(result.stderr).toContain('[REDACTED]');
+    expect(result.stderr).not.toContain(secretValue);
+  });
+
+  it('redacts reader credentials before truncating failing reader stderr', () => {
+    const fixturePath = writeLongMemEvalFixture();
+    const readerCommand = writeBoundarySecretLeakingReaderCommand();
+    const dir = mkdtempSync(path.join(tmpdir(), 'cml-longmemeval-answers-'));
+    const answersOut = path.join(dir, 'hypotheses.jsonl');
+    const secretValue = ['zzzz', 'boundary', 'fixture', '12345'].join('-');
+    const result = runLongMemEvalSmokeCli([
+      '--input', fixturePath,
+      '--retrieval-mode', 'hybrid',
+      '--granularity', 'session',
+      '--format', 'json',
+      '--top-k', '2',
+      '--answers-out', answersOut,
+      '--reader-command', readerCommand
+    ], Object.fromEntries([['LONGMEMEVAL_READER_API_KEY', secretValue]]));
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('Reader command failed for q_cli_1 with exit code 9');
+    expect(result.stderr).not.toContain(secretValue);
+    expect(result.stderr).not.toContain(secretValue.slice(0, 4));
   });
 
   it('writes official LongMemEval hypothesis JSONL from retrieved context via reader command', () => {

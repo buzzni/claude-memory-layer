@@ -58,9 +58,9 @@ describe('Hermes history source adapter', () => {
 
     expect(messageRef).toMatchObject({
       kind: 'message',
-      stableId: expect.stringMatching(/^hermes-history:session:[a-f0-9]{12}:message:42$/),
-      publicHandle: expect.stringMatching(/^hermes-history:session:[a-f0-9]{12}:message:42$/),
-      evidenceHandle: expect.stringMatching(/^hermes-history:evidence:[a-f0-9]{12}:message:42$/),
+      stableId: expect.stringMatching(/^hermes-history:session:[a-f0-9]{12}:message:raw:42$/),
+      publicHandle: expect.stringMatching(/^hermes-history:session:[a-f0-9]{12}:message:raw:42$/),
+      evidenceHandle: expect.stringMatching(/^hermes-history:evidence:[a-f0-9]{12}:message:raw:42$/),
       privacyClass: 'confidential',
       captureMode: 'history_import',
       metadata: {
@@ -179,5 +179,40 @@ describe('Hermes history source adapter', () => {
     expect(serializedRefs).not.toContain('AIza');
     expect(serializedRefs).not.toContain('sk_live');
     expect(serializedRefs).not.toContain('eyJ');
+  });
+
+  it('keeps normalized message source refs collision-resistant when punctuation is stripped', () => {
+    const refs = [
+      'a b',
+      'a-b',
+      'normalized:a-b:c8687a08aa5d',
+      '-1',
+      '1',
+      'normalized:1:1bad6b8cf971',
+      'abc!',
+      ' abc',
+      'abc ',
+      '\tabc',
+      'abc',
+      'normalized:abc:53e0eff32046'
+    ].map((messageId) => createHermesHistorySourceRef({
+      sessionId: 'session-a',
+      messageId,
+      hermesSource: 'cli'
+    }));
+    const publicHandles = refs.map((ref) => ref.publicHandle);
+
+    expect(new Set(publicHandles).size).toBe(publicHandles.length);
+    expect(publicHandles).toEqual(expect.arrayContaining([
+      expect.stringMatching(/^hermes-history:session:[a-f0-9]{12}:message:normalized:a-b:[a-f0-9]{12}$/),
+      expect.stringMatching(/^hermes-history:session:[a-f0-9]{12}:message:raw:a-b$/),
+      expect.stringMatching(/^hermes-history:session:[a-f0-9]{12}:message:raw:normalized:a-b:c8687a08aa5d$/),
+      expect.stringMatching(/^hermes-history:session:[a-f0-9]{12}:message:normalized:1:[a-f0-9]{12}$/),
+      expect.stringMatching(/^hermes-history:session:[a-f0-9]{12}:message:raw:1$/),
+      expect.stringMatching(/^hermes-history:session:[a-f0-9]{12}:message:raw:normalized:1:1bad6b8cf971$/),
+      expect.stringMatching(/^hermes-history:session:[a-f0-9]{12}:message:normalized:abc:[a-f0-9]{12}$/),
+      expect.stringMatching(/^hermes-history:session:[a-f0-9]{12}:message:raw:abc$/),
+      expect.stringMatching(/^hermes-history:session:[a-f0-9]{12}:message:raw:normalized:abc:53e0eff32046$/)
+    ]));
   });
 });

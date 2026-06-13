@@ -298,7 +298,7 @@ function runReaderCommand(command: string, args: string[], payload: LongMemEvalR
         return;
       }
       if (code !== 0) {
-        const detail = stderr.trim().slice(0, 2_000);
+        const detail = redactKnownSecrets(stderr.trim(), readerSecretValues(process.env)).slice(0, 2_000);
         finish(new CliError(`Reader command failed for ${payload.question_id} with exit code ${code ?? `signal ${signal ?? 'unknown'}`}${detail ? `: ${detail}` : ''}`));
         return;
       }
@@ -311,6 +311,20 @@ function runReaderCommand(command: string, args: string[], payload: LongMemEvalR
 
     child.stdin.end(`${JSON.stringify(payload)}\n`, 'utf8');
   });
+}
+
+function readerSecretValues(env: Record<string, string | undefined>): string[] {
+  return [env.LONGMEMEVAL_READER_API_KEY, env.OPENAI_API_KEY]
+    .filter((value): value is string => typeof value === 'string' && value.length > 0);
+}
+
+function redactKnownSecrets(value: string, secrets: string[]): string {
+  let redacted = value;
+  for (const secret of secrets) {
+    if (secret.length < 2) continue;
+    redacted = redacted.split(secret).join('[REDACTED]');
+  }
+  return redacted;
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
