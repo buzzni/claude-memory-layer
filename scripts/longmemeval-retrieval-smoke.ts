@@ -38,6 +38,7 @@ interface ParsedArgs {
   includePerQuery: boolean;
   retrievalMode: 'single' | 'hybrid';
   expandUserFacts: boolean;
+  expandPreferenceQueries: boolean;
   readerCommand: string;
   readerArgs: string[];
   limit?: number;
@@ -104,6 +105,7 @@ async function main(argv: string[]): Promise<void> {
     maxEntries: options.limit,
     includeAbstention: options.includeAbstention,
     expandUserFacts: options.expandUserFacts,
+    expandPreferenceQueries: options.expandPreferenceQueries,
     ks: buildEvaluationKs(options.topK),
     sourceFileCount: 1
   });
@@ -115,6 +117,7 @@ async function main(argv: string[]): Promise<void> {
       maxEntries: options.limit,
       includeAbstention: options.includeAbstention,
       expandUserFacts: options.expandUserFacts,
+      expandPreferenceQueries: options.expandPreferenceQueries,
       ks: buildEvaluationKs(options.topK),
       sourceFileCount: 1
     })
@@ -340,6 +343,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     includePerQuery: true,
     retrievalMode: 'hybrid',
     expandUserFacts: false,
+    expandPreferenceQueries: false,
     readerCommand: '',
     readerArgs: [],
     strategy: 'fast',
@@ -396,6 +400,10 @@ function parseArgs(argv: string[]): ParsedArgs {
       parsed.expandUserFacts = true;
     } else if (arg === '--no-expand-user-facts') {
       parsed.expandUserFacts = false;
+    } else if (arg === '--expand-preference-queries') {
+      parsed.expandPreferenceQueries = true;
+    } else if (arg === '--no-expand-preference-queries') {
+      parsed.expandPreferenceQueries = false;
     } else if (arg === '--include-abstention') {
       parsed.includeAbstention = true;
     } else if (arg === '--skip-abstention') {
@@ -508,6 +516,10 @@ Options:
   --hybrid-retrieval        Shortcut for --retrieval-mode hybrid.
   --expand-user-facts       Append answer-independent user preference/fact summaries extracted from haystack text.
   --no-expand-user-facts    Disable user-fact expansion. Default.
+  --expand-preference-queries
+                            Append retrieval-only preference/context hint terms to single-session-preference questions.
+  --no-expand-preference-queries
+                            Disable preference query expansion. Default.
   --min-score RATE          Override retriever minScore.
   --include-abstention      Include *_abs questions as no-match qrels.
   --skip-abstention         Skip *_abs questions, matching LongMemEval retrieval reporting. Default.

@@ -36,6 +36,7 @@ export interface LongMemEvalAdapterOptions {
   sourceFileCount?: number;
   generatedAt?: string;
   expandUserFacts?: boolean;
+  expandPreferenceQueries?: boolean;
 }
 
 interface BuiltEntry {
@@ -61,6 +62,7 @@ export function longMemEvalEntriesToReplayFixture(
     metadata: {
       sourceFileCount: options.sourceFileCount ?? 1,
       rawContentIncluded: true,
+      ...(options.expandPreferenceQueries === true ? { preferenceQueryExpansion: true } : {}),
       ...(options.generatedAt ? { generatedAt: options.generatedAt } : {})
     }
   };
@@ -125,7 +127,7 @@ function buildEntry(
 
   const query: ReplayEvaluationQuery = {
     queryId: questionId,
-    query: question,
+    query: expandLongMemEvalQuery(question, questionType, isAbstention, options),
     expectedIds,
     expectedRelevance,
     expectation: isAbstention ? 'no_match' : 'match',
@@ -140,6 +142,19 @@ function buildEntry(
   }
 
   return { memories, query };
+}
+
+function expandLongMemEvalQuery(
+  question: string,
+  questionType: string,
+  isAbstention: boolean,
+  options: LongMemEvalAdapterOptions
+): string {
+  if (options.expandPreferenceQueries !== true || isAbstention || questionType !== 'single-session-preference') {
+    return question;
+  }
+  const hint = 'user preference personal context interests goals prior details';
+  return question.toLowerCase().includes(hint) ? question : `${question} ${hint}`;
 }
 
 function buildSessionMemories(
@@ -259,10 +274,24 @@ function extractPreferenceFactsFromText(content: string): string[] {
   const patterns: Array<(text: string) => string | undefined> = [
     (text) => firstCapture(text, /\bmy\s+((?:favorite|favourite|go-to|default)\s+[^.?!,;]{1,50}?)\s+(?:is|are)\s+([^.?!;]{1,100})/i,
       ([subject, value]) => `user preference: ${subject.trim()} is ${stripTrailing(value)}.`),
-    (text) => firstCapture(text, /\bi\s+(?:really\s+)?(?:prefer|like|love|enjoy)\s+([^.?!;]{1,100})/i,
-      ([value]) => `user preference: prefers ${stripTrailing(value)}.`),
+    (text) => firstCapture(text, /\bi(?:\s+am|'m)\s+trying\s+to\s+learn\s+([^.?!,;]{3,140}),\s+which\s+i\s+(?:enjoy|like|love|prefer)\s+to\s+use\b/i,
+      ([value]) => `user preference: enjoys using ${stripTrailing(value)}.`),
+    (text) => firstCapture(text, /\bi(?:\s+am|'m)\s+looking\s+to\s+([^.?!;]{1,120})/i,
+      ([value]) => `user goal: looking to ${stripTrailing(value)}.`),
+    (text) => firstCapture(text, /\bi\s+(?:want|would\s+like)\s+to\s+((?:know|learn|try|find|improve|use|make|get)\s+[^.?!;]{1,120})/i,
+      ([value]) => renderUserGoalFact('wants to', value)),
+    (text) => firstCapture(text, /\bi(?:\s+am|'m)\s+trying\s+to\s+((?:learn|find|get|improve|use|make)\s+[^.?!;]{1,120})/i,
+      ([value]) => renderUserGoalFact('trying to', value)),
+    (text) => firstCapture(text, /\bi(?:'d|\s+would)\s+love\s+to\s+([^.?!;]{1,120})/i,
+      ([value]) => `user preference: would love to ${stripTrailing(value)}.`),
+    (text) => firstCapture(text, /\bi\s+(?:also\s+|really\s+)?(?:prefer|like|love|enjoy)\s+([^.?!;]{1,120})/i,
+      ([value]) => renderPreferenceVerbFact(value)),
     (text) => firstCapture(text, /\bi\s+(?:usually|always|often)\s+(?:choose|pick|order|drink|eat|use|wear)\s+([^.?!;]{1,100})/i,
-      ([value]) => `user habit: usually chooses ${stripTrailing(value)}.`)
+      ([value]) => `user habit: usually chooses ${stripTrailing(value)}.`),
+    (text) => firstCapture(text, /\bi(?:\s+have|'ve)\s+been\s+([^.?!;]{1,160})/i,
+      ([value]) => `user context: has been ${stripTrailing(value)}.`),
+    (text) => firstCapture(text, /\b(?:i\s+recently|recently\s+i)\s+([^.?!;]{1,140})/i,
+      ([value]) => `user context: recently ${stripTrailing(value)}.`)
   ];
 
   for (const pattern of patterns) {
@@ -275,11 +304,24 @@ function extractPreferenceFactsFromText(content: string): string[] {
 function firstCapture(
   text: string,
   pattern: RegExp,
-  render: (captures: string[]) => string
+  render: (captures: string[]) => string | undefined
 ): string | undefined {
   const match = pattern.exec(text);
   if (!match) return undefined;
   return render(match.slice(1).filter((value): value is string => typeof value === 'string'));
+}
+
+function renderPreferenceVerbFact(value: string): string | undefined {
+  const normalized = stripTrailing(value);
+  if (!normalized || /^to\s+\w+$/i.test(normalized)) return undefined;
+  return `user preference: prefers ${normalized}.`;
+}
+
+function renderUserGoalFact(prefix: 'wants to' | 'trying to', value: string): string | undefined {
+  const normalized = stripTrailing(value);
+  if (!normalized || /\bwhich\s+i\s+(?:enjoy|like|love|prefer)\s+to\s+use\b/i.test(normalized)) return undefined;
+  if (/^(?:make\s+sure|ensure)\b/i.test(normalized)) return undefined;
+  return `user goal: ${prefix} ${normalized}.`;
 }
 
 function normalizeFactText(value: unknown): string {

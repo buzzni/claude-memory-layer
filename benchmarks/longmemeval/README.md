@@ -56,7 +56,7 @@ npm run eval:longmemeval:retrieval-smoke -- \
   --out /tmp/LongMemEval/reports/cml-longmemeval-s-full-nonabs-turn-fast.json
 ```
 
-Hybrid session+turn replay retrieval, currently the default and best retrieval-only benchmark mode:
+Hybrid session+turn replay retrieval, currently the default retrieval-only benchmark mode:
 
 ```bash
 npm run eval:longmemeval:retrieval-smoke -- \
@@ -67,12 +67,26 @@ npm run eval:longmemeval:retrieval-smoke -- \
   --out /tmp/LongMemEval/reports/cml-longmemeval-s-full-nonabs-hybrid-fast.json
 ```
 
+Current best retrieval-only smoke with preference query expansion:
+
+```bash
+npm run eval:longmemeval:retrieval-smoke -- \
+  --input /tmp/LongMemEval/data/longmemeval_s_cleaned.json \
+  --granularity session \
+  --retrieval-mode hybrid \
+  --strategy fast \
+  --expand-preference-queries \
+  --format json \
+  --out /tmp/LongMemEval/reports/cml-longmemeval-s-hybrid-fast-expand-preference-queries.json
+```
+
 Useful flags:
 
 - `--limit N`: run a small sample first.
 - `--retrieval-mode single|hybrid`: benchmark fixture mode. Default is `hybrid` session+turn replay retrieval; use `single` to reproduce the baseline session-only or turn-only retriever. `--hybrid-retrieval` is a shortcut.
 - Do not confuse benchmark `--retrieval-mode hybrid` with production MCP/core `retrievalMode=session-event-hybrid`: the benchmark combines session and turn replay fixtures to score LongMemEval qrels, while production context packs rescue query-relevant sibling events from already-hit sessions.
-- `--expand-user-facts`: append answer-independent user preference/fact summaries extracted from haystack text. The first rule-based version did not change full LongMemEval_S aggregate metrics.
+- `--expand-preference-queries`: append retrieval-only preference/context hint terms to `single-session-preference` questions. In the 2026-06-13 smoke this improved hybrid Hit@10 from `0.8723` to `0.8745` and nDCG@10 from `0.7234` to `0.7264`.
+- `--expand-user-facts`: append answer-independent user preference/fact summaries extracted from haystack text. Current rule-based extraction is useful for fixture inspection, but it did **not** improve the full LongMemEval_S aggregate; prefer `--expand-preference-queries` for the current retrieval smoke.
 - `--include-abstention`: include `*_abs` questions as strict no-match qrels.
 - `--skip-abstention`: default; matches LongMemEval retrieval reporting, which skips abstention instances.
 - `--global-corpus`: search all converted examples together. Default is isolated per question, which better matches LongMemEval.
@@ -96,6 +110,7 @@ npm run eval:longmemeval:retrieval-smoke -- \
   --granularity session \
   --retrieval-mode hybrid \
   --strategy fast \
+  --expand-preference-queries \
   --limit 5 \
   --format json \
   --out /tmp/LongMemEval/reports/cml-longmemeval-s-hybrid-reader-smoke.json \
@@ -115,6 +130,7 @@ npm run eval:longmemeval:retrieval-smoke -- \
   --granularity session \
   --retrieval-mode hybrid \
   --strategy fast \
+  --expand-preference-queries \
   --format json \
   --out /tmp/LongMemEval/reports/cml-longmemeval-s-hybrid-reader-report.json \
   --answers-out /tmp/LongMemEval/reports/cml-longmemeval-s-hypotheses.jsonl \
@@ -162,7 +178,7 @@ CML replay report fields map as follows:
 
 ## Current smoke result
 
-See `benchmarks/longmemeval/reports/2026-06-12-cml-longmemeval-s-retrieval-smoke.md`.
+See `benchmarks/longmemeval/reports/2026-06-13-cml-longmemeval-s-retrieval-smoke.md`.
 
 Summary from LongMemEval_S cleaned, 470 non-abstention questions:
 
@@ -171,24 +187,25 @@ Summary from LongMemEval_S cleaned, 470 non-abstention questions:
 | session | 22,419 | 0.9191 | 115 | 0.7553 | 0.4894 | 0.6250 | 0.5560 | 0.6094 |
 | turn | 231,606 | 0.8979 | 164 | 0.6511 | 0.3830 | 0.5087 | 0.4522 | 0.5068 |
 | hybrid session+turn replay | 22,419 session memories + turn reranking | 0.9362 | 60 | 0.8723 | 0.6979 | 0.7917 | 0.7234 | 0.7558 |
+| hybrid + preference query expansion | 22,419 session memories + turn reranking | 0.9383 | 59 | 0.8745 | 0.7000 | 0.7938 | 0.7264 | 0.7591 |
 
-Interpretation: CML's default session retrieval already retrieves at least one relevant evidence session for ~75.5% of LongMemEval_S non-abstention questions. Hybrid session+turn replay retrieval raises that to ~87.2% and raises all-evidence recall from ~48.9% to ~69.8%.
+Interpretation: CML's default session retrieval already retrieves at least one relevant evidence session for ~75.5% of LongMemEval_S non-abstention questions. Hybrid session+turn replay retrieval raises that to ~87.2% and raises all-evidence recall from ~48.9% to ~69.8%. The best current retrieval-only smoke is hybrid plus opt-in preference query expansion: Hit@10 ~87.4%, all-evidence recall ~70.0%, fractional recall ~79.4%, and nDCG@10 ~72.6%.
 
 ## Score interpretation
 
 Because the committed report is still retrieval-only, the official LongMemEval QA score is **N/A until a reader run plus official judge output are recorded**.
 
-Using the transparent proxy documented in the report, the current default hybrid mode implies:
+Using the transparent proxy documented in the report, the current best hybrid + preference-query-expansion mode implies:
 
-- conservative all-evidence proxy: **64.5 / 100**
-- middle fractional-recall proxy: **73.2 / 100**
-- optimistic any-evidence upper bound: **80.6 / 100**
+- conservative all-evidence proxy: **64.7 / 100**
+- middle fractional-recall proxy: **73.3 / 100**
+- optimistic any-evidence upper bound: **80.8 / 100**
 
-A practical retrieval-grounded estimate is therefore **about 65–73/100**, with an optimistic ceiling near **81/100** if a reader model can answer from partial evidence.
+A practical retrieval-grounded estimate is therefore **about 65–73/100**, with an optimistic ceiling near **81/100** if a reader model can answer from partial evidence. The official QA score remains **N/A** until a reader + official judge run is recorded.
 
 ## Next implementation steps
 
 1. Run a small `--limit` hypothesis smoke with real reader credentials.
 2. Run full `--answers-out` on LongMemEval_S and evaluate with upstream `src/evaluation/evaluate_qa.py` when ready to spend reader + judge model tokens.
 3. Compare QA against retrieval diagnostics to separate retriever misses from reader/reasoning misses.
-4. Improve preference/user-fact retrieval beyond the initial lightweight rule-based extraction, which did not move aggregate metrics in this smoke.
+4. Continue preference-category work beyond query expansion; current `--expand-user-facts` is a no-go for default scoring because it adds distractor noise and does not improve full LongMemEval_S aggregate metrics.

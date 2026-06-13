@@ -161,4 +161,71 @@ describe('LongMemEval replay adapter', () => {
     expect(fixture.memories[0].metadata).toMatchObject({ userFactExpansion: true });
     expect(fixture.memories[0].content).not.toContain('Which beverage does the user prefer?');
   });
+
+  it('expands only preference-category benchmark queries without leaking known answers', () => {
+    const fixture = longMemEvalEntriesToReplayFixture([
+      {
+        question_id: 'q_pref',
+        question_type: 'single-session-preference',
+        question: 'Can you suggest accessories that complement my current photography setup?',
+        answer: 'Sony-compatible photography accessories',
+        haystack_session_ids: ['s1'],
+        haystack_dates: ['2026-01-02'],
+        haystack_sessions: [[{ role: 'user', content: "I'm looking to upgrade my camera flash." }]],
+        answer_session_ids: ['s1']
+      },
+      {
+        question_id: 'q_user',
+        question_type: 'single-session-user',
+        question: 'Which beverage does the user prefer?',
+        answer: 'jasmine tea',
+        haystack_session_ids: ['s2'],
+        haystack_dates: ['2026-01-03'],
+        haystack_sessions: [[{ role: 'user', content: 'I prefer jasmine tea.' }]],
+        answer_session_ids: ['s2']
+      }
+    ], { expandPreferenceQueries: true });
+
+    expect(fixture.queries[0].query).toBe(
+      'Can you suggest accessories that complement my current photography setup? user preference personal context interests goals prior details'
+    );
+    expect(fixture.queries[0].query).not.toContain('Sony-compatible photography accessories');
+    expect(fixture.queries[1].query).toBe('Which beverage does the user prefer?');
+    expect(fixture.metadata).toMatchObject({ preferenceQueryExpansion: true });
+  });
+
+  it('extracts preference-category user goals and personal context beyond direct like/prefer phrasing', () => {
+    const fixture = longMemEvalEntriesToReplayFixture([
+      {
+        question_id: 'q_005',
+        question_type: 'single-session-preference',
+        question: 'Can you suggest accessories that complement my current photography setup?',
+        answer: 'Sony-compatible photography accessories',
+        haystack_session_ids: ['s1'],
+        haystack_dates: ['2026-01-02'],
+        haystack_sessions: [
+          [
+            { role: 'user', content: "I'm looking to upgrade my camera flash. Can you recommend good options that are compatible with my Sony A7R IV?" },
+            { role: 'user', content: "I'm looking for some help with finding a good resort in Hawaii for a family vacation." },
+            { role: 'user', content: 'Besides great views, I also like hotels with unique features, such as a rooftop pool.' },
+            { role: 'user', content: "I'm trying to learn advanced settings for video editing with Adobe Premiere Pro, which I enjoy to use." },
+            { role: 'user', content: "I've been using basil and mint in my cooking lately and harvested cherry tomatoes from my garden." }
+          ]
+        ],
+        answer_session_ids: ['s1']
+      }
+    ], { expandUserFacts: true });
+
+    const content = fixture.memories[0].content;
+    expect(content).toContain('Extracted user facts:');
+    expect(content).toContain('user goal: looking to upgrade my camera flash');
+    expect(content).not.toContain('user goal: looking for some help with finding a good resort in Hawaii for a family vacation');
+    expect(content).not.toContain('user goal: interested in good options that are compatible with my Sony A7R IV');
+    expect(content).toContain('user preference: prefers hotels with unique features, such as a rooftop pool');
+    expect(content).toContain('user preference: enjoys using advanced settings for video editing with Adobe Premiere Pro');
+    expect(content).not.toContain('user goal: trying to learn advanced settings for video editing with Adobe Premiere Pro, which I enjoy to use');
+    expect(content).toContain('user context: has been using basil and mint in my cooking lately and harvested cherry tomatoes from my garden');
+    expect(fixture.memories[0].metadata).toMatchObject({ userFactExpansion: true });
+    expect(content).not.toContain('Can you suggest accessories that complement my current photography setup?');
+  });
 });

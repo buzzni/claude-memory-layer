@@ -37,6 +37,27 @@ function writeLongMemEvalFixture(): string {
   return fixturePath;
 }
 
+function writeLongMemEvalPreferenceFixture(): string {
+  const dir = mkdtempSync(path.join(tmpdir(), 'cml-longmemeval-cli-pref-'));
+  const fixturePath = path.join(dir, 'longmemeval-preference-mini.json');
+  writeFileSync(fixturePath, `${JSON.stringify([
+    {
+      question_id: 'q_cli_pref',
+      question_type: 'single-session-preference',
+      question: 'Can you suggest accessories that complement my current photography setup?',
+      answer: 'Sony-compatible photography accessories',
+      haystack_session_ids: ['s_noise', 's_answer'],
+      haystack_dates: ['2026-01-01', '2026-01-02'],
+      haystack_sessions: [
+        [{ role: 'user', content: 'I talked about a calendar.' }],
+        [{ role: 'user', content: "I'm looking to upgrade my camera flash.", has_answer: true }]
+      ],
+      answer_session_ids: ['s_answer']
+    }
+  ], null, 2)}\n`, 'utf8');
+  return fixturePath;
+}
+
 function writeReaderCommand(): string {
   const dir = mkdtempSync(path.join(tmpdir(), 'cml-longmemeval-reader-'));
   const readerPath = path.join(dir, 'reader.mjs');
@@ -120,6 +141,7 @@ describe('LongMemEval retrieval smoke CLI', () => {
     expect(result.stdout).toContain('distinct from production MCP retrievalMode=session-event-hybrid');
     expect(result.stdout).toContain('--hybrid-retrieval');
     expect(result.stdout).toContain('--expand-user-facts');
+    expect(result.stdout).toContain('--expand-preference-queries');
     expect(result.stdout).toContain('--answers-out PATH');
     expect(result.stdout).toContain('--reader-command PATH');
     expect(result.stdout).toContain('LongMemEval-compatible JSONL');
@@ -182,6 +204,29 @@ describe('LongMemEval retrieval smoke CLI', () => {
     const fixture = JSON.parse(readFileSync(fixtureOut, 'utf8')) as { memories: Array<{ content: string; metadata: Record<string, unknown> }> };
     expect(fixture.memories[1].content).toContain('Extracted user facts:');
     expect(fixture.memories[1].metadata.userFactExpansion).toBe(true);
+  });
+
+  it('passes preference query expansion into converted fixtures', () => {
+    const fixturePath = writeLongMemEvalPreferenceFixture();
+    const dir = mkdtempSync(path.join(tmpdir(), 'cml-longmemeval-cli-pref-out-'));
+    const fixtureOut = path.join(dir, 'fixture.json');
+    const result = runLongMemEvalSmokeCli([
+      '--input', fixturePath,
+      '--expand-preference-queries',
+      '--fixture-out', fixtureOut,
+      '--format', 'json',
+      '--top-k', '2'
+    ]);
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe('');
+    const fixture = JSON.parse(readFileSync(fixtureOut, 'utf8')) as {
+      metadata: Record<string, unknown>;
+      queries: Array<{ query: string; knownAnswer?: string }>;
+    };
+    expect(fixture.metadata.preferenceQueryExpansion).toBe(true);
+    expect(fixture.queries[0].query).toContain('user preference personal context interests goals prior details');
+    expect(fixture.queries[0].query).not.toContain('Sony-compatible photography accessories');
   });
 
   it('runs hybrid retrieval and emits official-style analysis in JSON', () => {
