@@ -46,6 +46,7 @@ interface ParsedArgs {
   temporalDateBoost: boolean;
   readerCommand: string;
   readerArgs: string[];
+  readerTimeoutMs: number;
   limit?: number;
   topK?: number;
   strategy?: RetrievalStrategy;
@@ -83,6 +84,8 @@ class CliHelp extends Error {
     this.name = 'CliHelp';
   }
 }
+
+const DEFAULT_READER_TIMEOUT_MS = 60_000;
 
 void main(process.argv.slice(2)).catch((error) => {
   if (error instanceof CliHelp) {
@@ -255,7 +258,7 @@ async function generateLongMemEvalHypotheses(
       payload.category = query.category;
     }
 
-    const hypothesis = await runReaderCommand(options.readerCommand, options.readerArgs, payload);
+    const hypothesis = await runReaderCommand(options.readerCommand, options.readerArgs, payload, options.readerTimeoutMs);
     hypotheses.push({
       question_id: query.queryId,
       hypothesis: hypothesis.trim() || 'I do not know'
@@ -269,10 +272,12 @@ function formatLongMemEvalHypothesesJsonl(hypotheses: LongMemEvalHypothesis[]): 
   return `${hypotheses.map((hypothesis) => JSON.stringify(hypothesis)).join('\n')}\n`;
 }
 
-function runReaderCommand(command: string, args: string[], payload: LongMemEvalReaderPayload): Promise<string> {
-  const timeoutMs = 60_000;
+function runReaderCommand(command: string, args: string[], payload: LongMemEvalReaderPayload, timeoutMs: number): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(command, args, {
+      detached: process.platform !== 'win32',
+      stdio: ['pipe', 'pipe', 'pipe']
+    });
     let stdout = '';
     let stderr = '';
     let timedOut = false;
@@ -292,7 +297,7 @@ function runReaderCommand(command: string, args: string[], payload: LongMemEvalR
 
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill('SIGKILL');
+      killReaderProcessTree(child);
     }, timeoutMs);
 
     child.stdout.setEncoding('utf8');
@@ -327,6 +332,19 @@ function runReaderCommand(command: string, args: string[], payload: LongMemEvalR
 
     child.stdin.end(`${JSON.stringify(payload)}\n`, 'utf8');
   });
+}
+
+function killReaderProcessTree(child: ReturnType<typeof spawn>): void {
+  if (child.pid === undefined) return;
+  try {
+    if (process.platform !== 'win32') {
+      process.kill(-child.pid, 'SIGKILL');
+      return;
+    }
+  } catch {
+    // Fall back to killing the direct child below.
+  }
+  child.kill('SIGKILL');
 }
 
 function readerSecretValues(env: Record<string, string | undefined>): string[] {
@@ -364,6 +382,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     temporalDateBoost: false,
     readerCommand: '',
     readerArgs: [],
+    readerTimeoutMs: parseReaderTimeoutMs(process.env.LONGMEMEVAL_READER_TIMEOUT_MS),
     strategy: 'fast',
     topK: 10
   };
@@ -380,6 +399,8 @@ function parseArgs(argv: string[]): ParsedArgs {
       parsed.readerCommand = readOptionValue(argv, ++i, arg);
     } else if (arg === '--reader-arg') {
       parsed.readerArgs.push(readOptionValue(argv, ++i, arg));
+    } else if (arg === '--reader-timeout-ms') {
+      parsed.readerTimeoutMs = parseNonNegativeInteger(readOptionValue(argv, ++i, arg), arg, { min: 1 });
     } else if (arg === '--fixture-out') {
       parsed.fixtureOutPath = readOptionValue(argv, ++i, arg);
     } else if (arg === '--format') {
@@ -547,6 +568,13 @@ function parseNonNegativeInteger(value: string, optionName: string, bounds: { mi
   return parsed;
 }
 
+function parseReaderTimeoutMs(value: string | undefined): number {
+  if (value === undefined || value.trim() === '') {
+    return DEFAULT_READER_TIMEOUT_MS;
+  }
+  return parseNonNegativeInteger(value.trim(), 'LONGMEMEVAL_READER_TIMEOUT_MS', { min: 1 });
+}
+
 function usage(): string {
   return `Usage: tsx scripts/longmemeval-retrieval-smoke.ts --input /path/to/longmemeval_s_cleaned.json [options]
 
@@ -585,6 +613,7 @@ Options:
   --answers-out PATH        Write LongMemEval-compatible JSONL hypotheses: {"question_id","hypothesis"}.
   --reader-command PATH     Executable reader/model wrapper. Receives JSON on stdin with question and retrieved contexts; writes hypothesis text to stdout.
   --reader-arg VALUE        Extra argument for --reader-command. Repeat for multiple args.
+  --reader-timeout-ms N     Per-question reader timeout in milliseconds. Default: ${DEFAULT_READER_TIMEOUT_MS}; env: LONGMEMEVAL_READER_TIMEOUT_MS.
   --fixture-out PATH        Write the converted replay fixture JSON.
   --out PATH                Write the report instead of stdout.
   --format json|markdown    Report format. Default: markdown.

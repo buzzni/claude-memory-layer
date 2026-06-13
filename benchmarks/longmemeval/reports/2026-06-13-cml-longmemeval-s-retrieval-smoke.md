@@ -207,6 +207,21 @@ This is not an official QA score. Official LongMemEval QA requires answer genera
 
 Practical estimate for current CML on LongMemEval_S before answer generation: **roughly 65–73/100** in the current best hybrid + preference-query-expansion + temporal-date-boost + tuned-weight retrieval mode, with an optimistic upper bound near **81/100** if the reader can answer from partial evidence. The official QA score remains **N/A** until a reader + official judge run is added.
 
+## Codex-compatible QA smoke
+
+After local Codex CLI re-authentication, the repo can now generate answer hypotheses through `scripts/longmemeval-codex-reader.ts` and score them through `scripts/longmemeval-codex-judge.ts`. The judge wrapper mirrors LongMemEval's answer-check prompt but calls `codex exec`, so this is **Codex-compatible QA smoke**, not the unmodified upstream official evaluator.
+
+Smoke run details:
+
+- Dataset: LongMemEval_S cleaned, first 5 non-abstention examples via `--limit 5`.
+- Retrieval mode: current best `hybrid + --expand-preference-queries + --temporal-date-boost + weights 1.75/5`.
+- Reader: `scripts/longmemeval-codex-reader.ts` with local Codex subscription auth.
+- Judge: `scripts/longmemeval-codex-judge.ts` with upstream answer-check prompt and local Codex subscription auth.
+- Result: **Accuracy 0.6000 (3/5)**, category `single-session-user: 0.6000 (5)`.
+- Example smoke hypotheses: `I do not know`, `I do not know`, `Target`, `The Glass Menagerie`, `Summer Vibes`.
+
+The upstream official LongMemEval QA score remains **N/A** because `/tmp/LongMemEval/src/evaluation/evaluate_qa.py` requires API-compatible judge credentials such as `OPENAI_API_KEY`; Codex subscription OAuth is not a drop-in replacement for that script. A full Codex CLI fallback would require roughly **470 reader calls + 470 judge calls** for the non-abstention LongMemEval_S set, so it should be run deliberately as a long/costly job or replaced with an API-compatible official judge run.
+
 ## Reproduction commands
 
 ```bash
@@ -276,4 +291,33 @@ npm run eval:longmemeval:retrieval-smoke -- \
   --format markdown \
   --no-per-query \
   --out /tmp/LongMemEval/reports/cml-longmemeval-s-hybrid-expand-fast.md
+```
+
+### Codex-compatible smoke commands
+
+```bash
+LONGMEMEVAL_CODEX_TIMEOUT_MS=120000 \
+LONGMEMEVAL_READER_TIMEOUT_MS=180000 \
+npm run eval:longmemeval:retrieval-smoke -- \
+  --input /tmp/LongMemEval/data/longmemeval_s_cleaned.json \
+  --granularity session \
+  --retrieval-mode hybrid \
+  --expand-preference-queries \
+  --temporal-date-boost \
+  --hybrid-session-weight 1.75 \
+  --hybrid-turn-weight 5 \
+  --top-k 10 \
+  --limit 5 \
+  --format json \
+  --out /tmp/LongMemEval/reports/cml-longmemeval-s-codex-reader-smoke-report.json \
+  --answers-out /tmp/LongMemEval/reports/cml-longmemeval-s-codex-hypotheses-smoke.jsonl \
+  --reader-command npx \
+  --reader-arg tsx \
+  --reader-arg scripts/longmemeval-codex-reader.ts
+
+LONGMEMEVAL_CODEX_TIMEOUT_MS=120000 \
+npm run eval:longmemeval:codex-judge -- \
+  --hyp /tmp/LongMemEval/reports/cml-longmemeval-s-codex-hypotheses-smoke.jsonl \
+  --ref /tmp/LongMemEval/data/longmemeval_s_cleaned.json \
+  --out /tmp/LongMemEval/reports/cml-longmemeval-s-codex-hypotheses-smoke.jsonl.eval-results-codex
 ```

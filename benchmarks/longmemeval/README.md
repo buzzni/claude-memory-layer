@@ -100,12 +100,16 @@ Useful flags:
 - `--answers-out PATH`: write official evaluator hypothesis JSONL with one object per line: `{ "question_id": "...", "hypothesis": "..." }`.
 - `--reader-command PATH`: required with `--answers-out`; executable wrapper for your reader model. CML sends JSON on stdin with `question_id`, `question`, optional `category`, and retrieved `contexts: [{ id, rank, content }]`. The wrapper must write the answer text to stdout.
 - `--reader-arg VALUE`: repeatable extra argument passed to the reader command.
+- `--reader-timeout-ms N` or `LONGMEMEVAL_READER_TIMEOUT_MS`: per-question outer timeout for the reader command; defaults to `60000` ms. For slow wrappers such as Codex, set this higher than the wrapper's own model timeout.
 - `--fixture-out PATH`: inspect the converted replay fixture.
 - `--no-per-query`: omit per-query rows for smaller output.
 
 ## Generate QA hypotheses for the official judge
 
-The benchmark script can produce the LongMemEval hypothesis file consumed by `evaluate_qa.py`. The repo includes a reusable OpenAI-compatible reader wrapper at `scripts/longmemeval-openai-reader.ts`; it reads the retrieved-context JSON payload on stdin and writes only the final hypothesis text to stdout.
+The benchmark script can produce the LongMemEval hypothesis file consumed by `evaluate_qa.py`. The repo includes two reusable reader wrappers:
+
+- `scripts/longmemeval-openai-reader.ts`: OpenAI-compatible `/chat/completions` reader. Use this for the cleanest path to upstream official QA.
+- `scripts/longmemeval-codex-reader.ts`: local `codex exec` reader for environments with Codex subscription auth but no `OPENAI_API_KEY` in the shell. This generates hypotheses, but it is not itself the unmodified upstream official evaluator.
 
 Use a small `--limit` first to verify credentials, cost, and provider behavior:
 
@@ -152,13 +156,45 @@ npm run eval:longmemeval:retrieval-smoke -- \
   --reader-arg scripts/longmemeval-openai-reader.ts
 ```
 
-Reader wrapper environment:
+OpenAI-compatible reader wrapper environment:
 
 - `LONGMEMEVAL_READER_API_KEY` or `OPENAI_API_KEY`: required. `LONGMEMEVAL_READER_API_KEY` is preferred so the reader key can be separated from the official judge key.
 - `LONGMEMEVAL_READER_BASE_URL`: optional OpenAI-compatible base URL; defaults to `https://api.openai.com/v1`.
 - `LONGMEMEVAL_READER_MODEL`: optional reader model; defaults to `gpt-4o-mini`.
 - `LONGMEMEVAL_READER_MAX_TOKENS`: optional positive integer; defaults to `256`.
 - `LONGMEMEVAL_READER_CONTEXT_CHAR_LIMIT`: optional positive integer; defaults to `24000`.
+
+Codex subscription reader fallback:
+
+```bash
+LONGMEMEVAL_CODEX_TIMEOUT_MS=120000 \
+LONGMEMEVAL_READER_TIMEOUT_MS=180000 \
+npm run eval:longmemeval:retrieval-smoke -- \
+  --input /tmp/LongMemEval/data/longmemeval_s_cleaned.json \
+  --granularity session \
+  --retrieval-mode hybrid \
+  --strategy fast \
+  --expand-preference-queries \
+  --temporal-date-boost \
+  --hybrid-session-weight 1.75 \
+  --hybrid-turn-weight 5 \
+  --limit 5 \
+  --format json \
+  --out /tmp/LongMemEval/reports/cml-longmemeval-s-codex-reader-smoke-report.json \
+  --answers-out /tmp/LongMemEval/reports/cml-longmemeval-s-codex-hypotheses-smoke.jsonl \
+  --reader-command npx \
+  --reader-arg tsx \
+  --reader-arg scripts/longmemeval-codex-reader.ts
+```
+
+Codex reader environment:
+
+- `LONGMEMEVAL_CODEX_BIN`: optional Codex executable path; defaults to `codex`.
+- `LONGMEMEVAL_CODEX_MODEL`: optional Codex model override passed as `--model`.
+- `LONGMEMEVAL_CODEX_SANDBOX`: optional Codex sandbox mode; defaults to `read-only`.
+- `LONGMEMEVAL_CODEX_TIMEOUT_MS`: optional per-question timeout; defaults to `120000`.
+- `LONGMEMEVAL_CODEX_CONTEXT_CHAR_LIMIT`: optional retrieved-context prompt budget; defaults to `24000`.
+- When this wrapper is invoked through `eval:longmemeval:retrieval-smoke`, also set `LONGMEMEVAL_READER_TIMEOUT_MS` or `--reader-timeout-ms` to a value greater than `LONGMEMEVAL_CODEX_TIMEOUT_MS` so the outer benchmark process does not kill the wrapper first.
 
 The generated JSONL rows are intentionally minimal and official-compatible:
 
@@ -177,6 +213,18 @@ python src/evaluation/evaluate_qa.py \
 ```
 
 `evaluate_qa.py` requires the judge model credentials expected by LongMemEval (for example `OPENAI_API_KEY` for OpenAI-backed metric models). Treat this as a separate, cost-incurring official judge step: the reader wrapper only creates hypotheses; it does not grade them or produce an official LongMemEval QA score.
+
+If only Codex subscription auth is available, you can run a Codex-compatible judge wrapper that reuses the upstream answer-check prompt through `codex exec`:
+
+```bash
+LONGMEMEVAL_CODEX_TIMEOUT_MS=120000 \
+npm run eval:longmemeval:codex-judge -- \
+  --hyp /tmp/LongMemEval/reports/cml-longmemeval-s-codex-hypotheses-smoke.jsonl \
+  --ref /tmp/LongMemEval/data/longmemeval_s_cleaned.json \
+  --out /tmp/LongMemEval/reports/cml-longmemeval-s-codex-hypotheses-smoke.jsonl.eval-results-codex
+```
+
+Label this result precisely as `Codex-compatible judge score`, not `official upstream LongMemEval QA`, because the unmodified upstream evaluator did not run.
 
 ## Metric mapping
 
@@ -221,8 +269,8 @@ A practical retrieval-grounded estimate is therefore **about 65–73/100**, with
 
 ## Next implementation steps
 
-1. Run a small `--limit` hypothesis smoke with real reader credentials.
-2. Run full `--answers-out` on LongMemEval_S and evaluate with upstream `src/evaluation/evaluate_qa.py` when ready to spend reader + judge model tokens.
+1. For upstream official QA, provide API-compatible judge credentials and run full `--answers-out` on LongMemEval_S followed by `src/evaluation/evaluate_qa.py`.
+2. For Codex-subscription-only environments, expand the current `--limit 5` Codex reader + Codex-compatible judge smoke to a deliberate larger sample before attempting the full 470-question run. A full Codex CLI path requires roughly 470 reader calls plus 470 judge calls.
 3. Compare QA against retrieval diagnostics to separate retriever misses from reader/reasoning misses.
 4. Continue preference-category work beyond query expansion; current `--expand-user-facts` and key-only `--expand-user-facts-to-search-content` are no-gos for default scoring because they add/rank distractor noise and do not improve full LongMemEval_S aggregate metrics.
 5. Continue temporal work beyond the safe `--temporal-date-boost` baseline: it improves rank metrics only for explicit relative-date questions, while broader ordering/multi-evidence temporal questions still require reasoning-aware retrieval or reader-side support.

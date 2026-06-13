@@ -129,6 +129,17 @@ process.exit(7);
   return readerPath;
 }
 
+function writeHangingReaderCommand(): string {
+  const dir = mkdtempSync(path.join(tmpdir(), 'cml-longmemeval-reader-hang-'));
+  const readerPath = path.join(dir, 'reader.mjs');
+  writeFileSync(readerPath, `#!/usr/bin/env node
+process.stdin.resume();
+setInterval(() => undefined, 1000);
+`, 'utf8');
+  chmodSync(readerPath, 0o755);
+  return readerPath;
+}
+
 function writeSecretLeakingReaderCommand(): string {
   const dir = mkdtempSync(path.join(tmpdir(), 'cml-longmemeval-reader-secret-leak-'));
   const readerPath = path.join(dir, 'reader.mjs');
@@ -191,6 +202,8 @@ describe('LongMemEval retrieval smoke CLI', () => {
     expect(result.stdout).toContain('--temporal-date-boost');
     expect(result.stdout).toContain('--answers-out PATH');
     expect(result.stdout).toContain('--reader-command PATH');
+    expect(result.stdout).toContain('--reader-timeout-ms N');
+    expect(result.stdout).toContain('LONGMEMEVAL_READER_TIMEOUT_MS');
     expect(result.stdout).toContain('LongMemEval-compatible JSONL');
   });
 
@@ -427,6 +440,27 @@ describe('LongMemEval retrieval smoke CLI', () => {
     expect(result.stderr).toContain('reader failed before stdin');
     expect(result.stderr).not.toContain('Unhandled');
     expect(result.stderr).not.toContain('write EPIPE');
+  });
+
+  it('honors explicit reader timeout instead of hardcoding the outer reader limit', () => {
+    const fixturePath = writeLongMemEvalFixture();
+    const readerCommand = writeHangingReaderCommand();
+    const dir = mkdtempSync(path.join(tmpdir(), 'cml-longmemeval-answers-timeout-'));
+    const answersOut = path.join(dir, 'hypotheses.jsonl');
+    const result = runLongMemEvalSmokeCli([
+      '--input', fixturePath,
+      '--retrieval-mode', 'hybrid',
+      '--granularity', 'session',
+      '--format', 'json',
+      '--top-k', '2',
+      '--answers-out', answersOut,
+      '--reader-command', readerCommand,
+      '--reader-timeout-ms', '50'
+    ]);
+
+    expect(result.status).toBe(1);
+    expect(result.signal).toBeNull();
+    expect(result.stderr).toContain('Reader command timed out for q_cli_1 after 50ms');
   });
 
   it('redacts inherited reader credentials from failing reader stderr', () => {

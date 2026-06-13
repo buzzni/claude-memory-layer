@@ -34,6 +34,7 @@
     "eval:retrieval-replay": "tsx scripts/replay-retrieval-benchmark.ts --fixture benchmarks/replay/golden-memory-usefulness-v1.json --format markdown --no-per-query --min-query-yield 1 --min-no-match-accuracy 1 --max-forbidden-hits 0 --max-failed-queries 0",
     "eval:retrieval-replay:report": "tsx scripts/replay-retrieval-benchmark.ts --fixture benchmarks/replay/golden-memory-usefulness-v1.json --format markdown --no-per-query",
     "eval:longmemeval:retrieval-smoke": "tsx scripts/longmemeval-retrieval-smoke.ts",
+    "eval:longmemeval:codex-judge": "tsx scripts/longmemeval-codex-judge.ts",
     "benchmark:replay:promote-review": "tsx scripts/promote-retrieval-review-queue.ts",
     "benchmark:replay:validate-promotion": "tsx scripts/validate-replay-promotion-candidates.ts",
     "benchmark:qrels": "tsx scripts/generate-session-qrels.ts",
