@@ -67,7 +67,7 @@ npm run eval:longmemeval:retrieval-smoke -- \
   --out /tmp/LongMemEval/reports/cml-longmemeval-s-full-nonabs-hybrid-fast.json
 ```
 
-Current best retrieval-only smoke with preference query expansion plus tuned hybrid fusion weights:
+Current best retrieval-only smoke with preference query expansion, safe temporal date boost, and tuned hybrid fusion weights:
 
 ```bash
 npm run eval:longmemeval:retrieval-smoke -- \
@@ -76,10 +76,11 @@ npm run eval:longmemeval:retrieval-smoke -- \
   --retrieval-mode hybrid \
   --strategy fast \
   --expand-preference-queries \
+  --temporal-date-boost \
   --hybrid-session-weight 1.75 \
   --hybrid-turn-weight 5 \
   --format json \
-  --out /tmp/LongMemEval/reports/cml-longmemeval-s-hybrid-fast-expand-preference-queries-tuned.json
+  --out /tmp/LongMemEval/reports/cml-longmemeval-s-hybrid-fast-expand-preference-temporal-date-boost-tuned.json
 ```
 
 Useful flags:
@@ -88,8 +89,9 @@ Useful flags:
 - `--retrieval-mode single|hybrid`: benchmark fixture mode. Default is `hybrid` session+turn replay retrieval; use `single` to reproduce the baseline session-only or turn-only retriever. `--hybrid-retrieval` is a shortcut.
 - Do not confuse benchmark `--retrieval-mode hybrid` with production MCP/core `retrievalMode=session-event-hybrid`: the benchmark combines session and turn replay fixtures to score LongMemEval qrels, while production context packs rescue query-relevant sibling events from already-hit sessions.
 - `--expand-preference-queries`: append retrieval-only preference/context hint terms to `single-session-preference` questions. In the 2026-06-13 smoke this improved hybrid Hit@10 from `0.8723` to `0.8745` and nDCG@10 from `0.7234` to `0.7264` before weight tuning.
-- `--expand-temporal-queries`: append question-date and generic temporal relation hint terms to `temporal-reasoning` questions. This is intentionally opt-in and **not recommended for scoring** after the 2026-06-13 full smoke: combined with the current best weights it reduced overall nDCG@10 from `0.7335` to `0.7066` and temporal nDCG@10 from `0.7405` to `0.6408`. The next temporal improvement should be date-aware filter/boosting, not generic query-term appends.
-- `--hybrid-session-weight RATE` / `--hybrid-turn-weight RATE`: tune session-vs-turn rank fusion in benchmark hybrid mode. The best nDCG/MRR smoke so far uses `--hybrid-session-weight 1.75 --hybrid-turn-weight 5`, improving nDCG@10 to `0.7335`, MRR to `0.7683`, and Recall_all@10 to `0.7021`. A recall-all-oriented preset, `1.25/1`, reached Recall_all@10 `0.7064` but reduced nDCG/MRR, so it is not the default recommended scoring command.
+- `--expand-temporal-queries`: append question-date and generic temporal relation hint terms to `temporal-reasoning` questions. This is intentionally opt-in and **not recommended for scoring** after the 2026-06-13 full smoke: combined with the current best weights it reduced overall nDCG@10 from `0.7335` to `0.7066` and temporal nDCG@10 from `0.7405` to `0.6408`. Prefer `--temporal-date-boost` for temporal experiments.
+- `--temporal-date-boost`: attach structured question-date metadata and rerank explicit relative-date temporal candidates by timestamp proximity only when candidate content overlaps extracted entity terms. It does **not** append date tokens to query text. On LongMemEval_S it was narrow but safe: 9/127 temporal questions were eligible, 2 reranked, Recall@10 stayed unchanged, and nDCG@10/MRR improved from `0.7335`/`0.7683` to `0.7340`/`0.7694`.
+- `--hybrid-session-weight RATE` / `--hybrid-turn-weight RATE`: tune session-vs-turn rank fusion in benchmark hybrid mode. The best nDCG/MRR smoke so far uses `--hybrid-session-weight 1.75 --hybrid-turn-weight 5` plus `--temporal-date-boost`, improving nDCG@10 to `0.7340`, MRR to `0.7694`, and Recall_all@10 to `0.7021`. A recall-all-oriented preset, `1.25/1`, reached Recall_all@10 `0.7064` but reduced nDCG/MRR, so it is not the default recommended scoring command.
 - `--expand-user-facts`: append answer-independent user preference/fact summaries extracted from haystack text directly into replay memory content. Current rule-based extraction is useful for fixture inspection, but it did **not** improve the full LongMemEval_S aggregate; prefer `--expand-preference-queries` for the current retrieval smoke.
 - `--expand-user-facts-to-search-content`: append the same extracted summaries to private replay `searchContent` only, preserving raw reader context/report content. This validates indexing-stage key expansion plumbing, but the 2026-06-13 full smoke was also a scoring no-go: best tuned mode fell from Hit@10 `0.8745` / nDCG@10 `0.7335` to Hit@10 `0.8723` / nDCG@10 `0.7326`.
 - `--include-abstention`: include `*_abs` questions as strict no-match qrels.
@@ -116,6 +118,7 @@ npm run eval:longmemeval:retrieval-smoke -- \
   --retrieval-mode hybrid \
   --strategy fast \
   --expand-preference-queries \
+  --temporal-date-boost \
   --hybrid-session-weight 1.75 \
   --hybrid-turn-weight 5 \
   --limit 5 \
@@ -138,6 +141,7 @@ npm run eval:longmemeval:retrieval-smoke -- \
   --retrieval-mode hybrid \
   --strategy fast \
   --expand-preference-queries \
+  --temporal-date-boost \
   --hybrid-session-weight 1.75 \
   --hybrid-turn-weight 5 \
   --format json \
@@ -197,16 +201,17 @@ Summary from LongMemEval_S cleaned, 470 non-abstention questions:
 | turn | 231,606 | 0.8979 | 164 | 0.6511 | 0.3830 | 0.5087 | 0.4522 | 0.5068 |
 | hybrid session+turn replay | 22,419 session memories + turn reranking | 0.9362 | 60 | 0.8723 | 0.6979 | 0.7917 | 0.7234 | 0.7558 |
 | hybrid + preference query expansion | 22,419 session memories + turn reranking | 0.9383 | 59 | 0.8745 | 0.7000 | 0.7938 | 0.7264 | 0.7591 |
-| hybrid + preference query expansion + tuned weights `1.75/5` | 22,419 session memories + turn reranking | 0.9383 | 58 | 0.8745 | 0.7021 | 0.7939 | 0.7335 | 0.7683 |
+| hybrid + preference query expansion + tuned weights `1.75/5` | 22,419 session memories + turn reranking | 0.9383 | 59 | 0.8745 | 0.7021 | 0.7939 | 0.7335 | 0.7683 |
+| hybrid + preference query expansion + temporal date boost + tuned weights `1.75/5` | 22,419 session memories + turn reranking | 0.9383 | 59 | 0.8745 | 0.7021 | 0.7939 | 0.7340 | 0.7694 |
 | hybrid + preference query expansion + key-only user-fact `searchContent` + tuned weights `1.75/5` | 22,419 session memories + turn reranking | 0.9404 | 60 | 0.8723 | 0.7000 | 0.7918 | 0.7326 | 0.7676 |
 
-Interpretation: CML's default session retrieval already retrieves at least one relevant evidence session for ~75.5% of LongMemEval_S non-abstention questions. Hybrid session+turn replay retrieval raises that to ~87.2% and raises all-evidence recall from ~48.9% to ~69.8%. The best current nDCG/MRR retrieval-only smoke is hybrid plus opt-in preference query expansion and tuned `session=1.75, turn=5` rank fusion: Hit@10 ~87.4%, all-evidence recall ~70.2%, fractional recall ~79.4%, nDCG@10 ~73.4%, and MRR ~76.8%. Key-only user-fact `searchContent` expansion is implemented for isolated replay/indexing experiments, but it is not part of the current best scoring command because it slightly reduced full-smoke metrics.
+Interpretation: CML's default session retrieval already retrieves at least one relevant evidence session for ~75.5% of LongMemEval_S non-abstention questions. Hybrid session+turn replay retrieval raises that to ~87.2% and raises all-evidence recall from ~48.9% to ~69.8%. The best current nDCG/MRR retrieval-only smoke is hybrid plus opt-in preference query expansion, temporal date boost, and tuned `session=1.75, turn=5` rank fusion: Hit@10 ~87.4%, all-evidence recall ~70.2%, fractional recall ~79.4%, nDCG@10 ~73.4%, and MRR ~76.9%. The temporal date boost is rank-only and narrow, so the retrieval-grounded score proxy is unchanged. Key-only user-fact `searchContent` expansion is implemented for isolated replay/indexing experiments, but it is not part of the current best scoring command because it slightly reduced full-smoke metrics.
 
 ## Score interpretation
 
 Because the committed report is still retrieval-only, the official LongMemEval QA score is **N/A until a reader run plus official judge output are recorded**.
 
-Using the transparent proxy documented in the report, the current best hybrid + preference-query-expansion + tuned-weight mode implies:
+Using the transparent proxy documented in the report, the current best hybrid + preference-query-expansion + temporal-date-boost + tuned-weight mode implies:
 
 - conservative all-evidence proxy: **64.9 / 100**
 - middle fractional-recall proxy: **73.4 / 100**
@@ -220,4 +225,4 @@ A practical retrieval-grounded estimate is therefore **about 65–73/100**, with
 2. Run full `--answers-out` on LongMemEval_S and evaluate with upstream `src/evaluation/evaluate_qa.py` when ready to spend reader + judge model tokens.
 3. Compare QA against retrieval diagnostics to separate retriever misses from reader/reasoning misses.
 4. Continue preference-category work beyond query expansion; current `--expand-user-facts` and key-only `--expand-user-facts-to-search-content` are no-gos for default scoring because they add/rank distractor noise and do not improve full LongMemEval_S aggregate metrics.
-5. Replace the diagnostic `--expand-temporal-queries` approach with real date-aware filtering/boosting; generic temporal query terms harmed the full LongMemEval_S smoke.
+5. Continue temporal work beyond the safe `--temporal-date-boost` baseline: it improves rank metrics only for explicit relative-date questions, while broader ordering/multi-evidence temporal questions still require reasoning-aware retrieval or reader-side support.

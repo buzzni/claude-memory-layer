@@ -12,6 +12,13 @@ import type { SearchResult, VectorStore } from './vector-store.js';
 
 export type ReplayExpectation = 'match' | 'no_match';
 
+export interface ReplayTemporalDateBoost {
+  referenceDate: string;
+  targetDate?: string;
+  toleranceDays?: number;
+  entityTerms?: string[];
+}
+
 export interface ReplayEvaluationQuery {
   queryId: string;
   query: string;
@@ -21,6 +28,7 @@ export interface ReplayEvaluationQuery {
   category?: string;
   forbiddenIds?: string[];
   knownAnswer?: string;
+  temporalDateBoost?: ReplayTemporalDateBoost;
 }
 
 export interface ReplayEvaluationMemory {
@@ -44,6 +52,10 @@ export interface ReplayEvaluationFixtureMetadata {
   sourceFileCount?: number;
   rawContentIncluded?: boolean;
   generatedAt?: string;
+  userFactSearchExpansion?: boolean;
+  preferenceQueryExpansion?: boolean;
+  temporalQueryExpansion?: boolean;
+  temporalDateBoost?: boolean;
 }
 
 export interface ReplayEvaluationFixture {
@@ -166,6 +178,7 @@ export async function evaluateReplayFixture(
     topK
   };
   const runner = options.retrievalRunner ?? createReplayRetrievalRunner(fixture);
+  const memoryById = new Map(fixture.memories.map((memory) => [memory.id, memory]));
 
   const runs = await Promise.all(
     fixture.queries.map(async (query) => {
@@ -175,12 +188,13 @@ export async function evaluateReplayFixture(
         topK,
         retrievalOptions
       });
+      const boostedRun = applyTemporalDateBoost(run, query, memoryById, topK);
       return {
         query,
-        retrievedIds: uniqueIds(run.retrievedIds).slice(0, topK),
-        candidateIds: uniqueIds(run.candidateIds ?? run.retrievedIds),
-        confidence: run.confidence ?? 'none',
-        fallbackTrace: run.fallbackTrace ?? []
+        retrievedIds: uniqueIds(boostedRun.retrievedIds).slice(0, topK),
+        candidateIds: uniqueIds(boostedRun.candidateIds ?? boostedRun.retrievedIds),
+        confidence: boostedRun.confidence ?? 'none',
+        fallbackTrace: boostedRun.fallbackTrace ?? []
       };
     })
   );
@@ -550,6 +564,83 @@ function findForbiddenHitIds(retrievedIds: string[], forbiddenIds: string[]): st
   if (forbiddenIds.length === 0) return [];
   const forbidden = new Set(forbiddenIds);
   return uniqueIds(retrievedIds.filter((id) => forbidden.has(id)));
+}
+
+function applyTemporalDateBoost(
+  run: ReplayRetrievalRunResult,
+  query: ReplayEvaluationQuery,
+  memoryById: Map<string, ReplayEvaluationMemory>,
+  topK: number
+): ReplayRetrievalRunResult {
+  const boost = query.temporalDateBoost;
+  if (!boost?.targetDate) return run;
+
+  const entityTerms = uniqueIds((boost.entityTerms ?? [])
+    .map((term) => term.toLowerCase().trim())
+    .filter((term) => term.length >= 3));
+  if (entityTerms.length === 0) return run;
+
+  const targetTime = parseDateOnlyUtc(boost.targetDate);
+  if (targetTime === undefined) return run;
+
+  const pool = uniqueIds([...(run.retrievedIds ?? []), ...(run.candidateIds ?? [])]);
+  if (pool.length === 0) return run;
+
+  const toleranceDays = Math.max(0, Math.floor(boost.toleranceDays ?? 1));
+  const scored = pool.map((id, index) => {
+    const memory = memoryById.get(id);
+    const temporalScore = memory
+      ? temporalDateCandidateScore(memory, entityTerms, targetTime, toleranceDays)
+      : 0;
+    const baseScore = 1 / (index + 1);
+    return { id, score: baseScore + temporalScore, temporalScore, index };
+  });
+
+  const boostedCount = scored.filter((row) => row.temporalScore > 0).length;
+  if (boostedCount === 0) return run;
+
+  const rerankedIds = scored
+    .sort((a, b) => b.score - a.score || a.index - b.index || a.id.localeCompare(b.id))
+    .map((row) => row.id);
+  const retrievedIds = rerankedIds.slice(0, topK);
+  const originalRetrieved = uniqueIds(run.retrievedIds ?? []).slice(0, topK);
+  const changed = retrievedIds.join(' ') !== originalRetrieved.join(' ');
+  if (!changed) return run;
+
+  return {
+    ...run,
+    retrievedIds,
+    candidateIds: uniqueIds([...(run.candidateIds ?? []), ...retrievedIds]),
+    fallbackTrace: uniqueIds([...(run.fallbackTrace ?? []), 'temporal-date-boost:applied'])
+  };
+}
+
+function temporalDateCandidateScore(
+  memory: ReplayEvaluationMemory,
+  entityTerms: string[],
+  targetTime: number,
+  toleranceDays: number
+): number {
+  const memoryTime = parseDateOnlyUtc(memory.timestamp);
+  if (memoryTime === undefined) return 0;
+  const dayDiff = Math.abs(memoryTime - targetTime) / 86_400_000;
+  if (dayDiff > toleranceDays) return 0;
+
+  const contentTokens = new Set(tokenize(memory.content));
+  const entityHits = entityTerms.filter((term) => contentTokens.has(term)).length;
+  if (entityHits === 0) return 0;
+
+  const entityCoverage = entityHits / entityTerms.length;
+  const proximity = toleranceDays === 0 ? 1 : 1 - (dayDiff / (toleranceDays + 1));
+  return 2 + entityCoverage + proximity;
+}
+
+function parseDateOnlyUtc(value: string | undefined): number | undefined {
+  if (!value) return undefined;
+  const match = /\b(\d{4})[/-](\d{1,2})[/-](\d{1,2})\b/.exec(value);
+  if (!match) return undefined;
+  const [, year, month, day] = match;
+  return Date.UTC(Number(year), Number(month) - 1, Number(day));
 }
 
 function tokenize(text: string): string[] {

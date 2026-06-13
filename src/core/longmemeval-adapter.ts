@@ -1,7 +1,8 @@
 import type {
   ReplayEvaluationFixture,
   ReplayEvaluationMemory,
-  ReplayEvaluationQuery
+  ReplayEvaluationQuery,
+  ReplayTemporalDateBoost
 } from './replay-evaluator.js';
 
 export type LongMemEvalGranularity = 'session' | 'turn';
@@ -39,6 +40,7 @@ export interface LongMemEvalAdapterOptions {
   expandUserFactsToSearchContent?: boolean;
   expandPreferenceQueries?: boolean;
   expandTemporalQueries?: boolean;
+  temporalDateBoost?: boolean;
 }
 
 interface BuiltEntry {
@@ -67,6 +69,7 @@ export function longMemEvalEntriesToReplayFixture(
       ...(options.expandUserFactsToSearchContent === true ? { userFactSearchExpansion: true } : {}),
       ...(options.expandPreferenceQueries === true ? { preferenceQueryExpansion: true } : {}),
       ...(options.expandTemporalQueries === true ? { temporalQueryExpansion: true } : {}),
+      ...(options.temporalDateBoost === true ? { temporalDateBoost: true } : {}),
       ...(options.generatedAt ? { generatedAt: options.generatedAt } : {})
     }
   };
@@ -150,6 +153,12 @@ function buildEntry(
   if (answer !== undefined) {
     query.knownAnswer = answer;
   }
+  if (options.temporalDateBoost === true && !isAbstention && questionType === 'temporal-reasoning') {
+    const temporalDateBoost = buildTemporalDateBoost(question, optionalString(entry.question_date));
+    if (temporalDateBoost !== undefined) {
+      query.temporalDateBoost = temporalDateBoost;
+    }
+  }
 
   return { memories, query };
 }
@@ -183,6 +192,111 @@ function normalizeLongMemEvalQuestionDate(questionDate: string | undefined): str
   if (!match) return undefined;
   const [, year, month, day] = match;
   return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
+}
+
+
+function buildTemporalDateBoost(
+  question: string,
+  questionDate: string | undefined
+): ReplayTemporalDateBoost | undefined {
+  const referenceDate = normalizeLongMemEvalQuestionDate(questionDate);
+  if (referenceDate === undefined) return undefined;
+
+  const relative = parseExplicitRelativeDate(question, referenceDate);
+  const boost: ReplayTemporalDateBoost = {
+    referenceDate,
+    entityTerms: extractTemporalEntityTerms(question)
+  };
+  if (relative !== undefined) {
+    boost.targetDate = relative.targetDate;
+    boost.toleranceDays = relative.toleranceDays;
+  }
+  return boost;
+}
+
+function parseExplicitRelativeDate(
+  question: string,
+  referenceDate: string
+): { targetDate: string; toleranceDays: number } | undefined {
+  const match = /\b(\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+(day|days|week|weeks|month|months|year|years)\s+ago\b/i.exec(question);
+  if (!match) return undefined;
+  const amount = parseTemporalAmount(match[1]);
+  if (amount === undefined) return undefined;
+  const unit = match[2].toLowerCase();
+  const reference = parseDateOnlyUtc(referenceDate);
+  if (reference === undefined) return undefined;
+  const target = new Date(reference);
+  let toleranceDays = 1;
+  if (unit.startsWith('day')) {
+    target.setUTCDate(target.getUTCDate() - amount);
+    toleranceDays = 1;
+  } else if (unit.startsWith('week')) {
+    target.setUTCDate(target.getUTCDate() - amount * 7);
+    toleranceDays = 3;
+  } else if (unit.startsWith('month')) {
+    target.setUTCMonth(target.getUTCMonth() - amount);
+    toleranceDays = 7;
+  } else if (unit.startsWith('year')) {
+    target.setUTCFullYear(target.getUTCFullYear() - amount);
+    toleranceDays = 14;
+  }
+  return { targetDate: formatDateOnly(target), toleranceDays };
+}
+
+function parseTemporalAmount(value: string | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  if (/^\d+$/.test(value)) return Number(value);
+  const words: Record<string, number> = {
+    one: 1,
+    two: 2,
+    three: 3,
+    four: 4,
+    five: 5,
+    six: 6,
+    seven: 7,
+    eight: 8,
+    nine: 9,
+    ten: 10,
+    eleven: 11,
+    twelve: 12
+  };
+  return words[value.toLowerCase()];
+}
+
+function extractTemporalEntityTerms(question: string): string[] {
+  const stopwords = new Set([
+    'what', 'which', 'when', 'where', 'who', 'whom', 'whose', 'how', 'many', 'much',
+    'did', 'was', 'were', 'am', 'is', 'are', 'do', 'does', 'have', 'has', 'had',
+    'the', 'a', 'an', 'and', 'or', 'to', 'of', 'for', 'with', 'from', 'between',
+    'at', 'on', 'in', 'by', 'ago', 'day', 'days', 'week', 'weeks', 'month', 'months',
+    'year', 'years', 'passed', 'pass', 'elapsed', 'happened', 'happen', 'first',
+    'last', 'earlier', 'later', 'before', 'after', 'order', 'latest', 'earliest',
+    'past', 'recent', 'recently', 'i', 'my', 'me'
+  ]);
+  const seen = new Set<string>();
+  const terms: string[] = [];
+  for (const raw of question.toLowerCase().replace(/[^\p{L}\p{N}\s'-]/gu, ' ').split(/\s+/)) {
+    const token = raw.replace(/^[-']+|[-']+$/g, '');
+    if (token.length < 3 || /^\d+$/.test(token) || stopwords.has(token)) continue;
+    if (seen.has(token)) continue;
+    seen.add(token);
+    terms.push(token);
+  }
+  return terms.slice(0, 12);
+}
+
+function parseDateOnlyUtc(value: string): Date | undefined {
+  const match = /\b(\d{4})-(\d{2})-(\d{2})\b/.exec(value);
+  if (!match) return undefined;
+  const [, year, month, day] = match;
+  return new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
+}
+
+function formatDateOnly(date: Date): string {
+  const year = date.getUTCFullYear();
+  const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(date.getUTCDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 }
 
 function buildSessionMemories(

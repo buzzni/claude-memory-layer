@@ -257,6 +257,36 @@ describe('LongMemEval replay adapter', () => {
     expect(fixture.metadata).toMatchObject({ temporalQueryExpansion: true });
   });
 
+  it('adds temporal date-boost metadata without appending lexical date tokens to the query', () => {
+    const fixture = longMemEvalEntriesToReplayFixture([
+      {
+        question_id: 'q_temporal_boost',
+        question_type: 'temporal-reasoning',
+        question: 'What did I do 12 days ago at the museum exhibit?',
+        answer: 'attended the museum exhibit',
+        question_date: '2023/02/01 (Wed) 10:20',
+        haystack_session_ids: ['s_noise', 's_answer'],
+        haystack_dates: ['2023/01/20 (Fri) 09:00', '2023/01/20 (Fri) 13:00'],
+        haystack_sessions: [
+          [{ role: 'user', content: 'I renewed my passport and checked my calendar.' }],
+          [{ role: 'user', content: 'I attended the museum exhibit with Maya.' }]
+        ],
+        answer_session_ids: ['s_answer']
+      }
+    ], { temporalDateBoost: true });
+
+    expect(fixture.queries[0].query).toBe('What did I do 12 days ago at the museum exhibit?');
+    expect(fixture.queries[0].query).not.toContain('question date');
+    expect(fixture.queries[0].query).not.toContain('2023-02-01');
+    expect(fixture.queries[0].temporalDateBoost).toMatchObject({
+      referenceDate: '2023-02-01',
+      targetDate: '2023-01-20',
+      toleranceDays: 1,
+      entityTerms: expect.arrayContaining(['museum', 'exhibit'])
+    });
+    expect(fixture.metadata).toMatchObject({ temporalDateBoost: true });
+  });
+
   it('extracts preference-category user goals and personal context beyond direct like/prefer phrasing', () => {
     const fixture = longMemEvalEntriesToReplayFixture([
       {

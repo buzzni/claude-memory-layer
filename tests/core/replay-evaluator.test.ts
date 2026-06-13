@@ -261,6 +261,63 @@ describe('replay fixture evaluator', () => {
     ]);
   });
 
+  it('applies temporal date boost only to entity-overlapping candidates', async () => {
+    const retrievalRunner: ReplayRetrievalRunner = async () => ({
+      retrievedIds: ['m-same-date-no-entity', 'm-answer', 'm-far-entity'],
+      candidateIds: ['m-same-date-no-entity', 'm-answer', 'm-far-entity'],
+      confidence: 'high',
+      fallbackTrace: ['stage:primary:fast']
+    });
+
+    const report = await evaluateReplayFixture({
+      name: 'temporal-date-boost-fixture',
+      ks: [1, 3],
+      queries: [
+        {
+          queryId: 'q-temporal-boost',
+          category: 'temporal-reasoning',
+          query: 'What did I do 12 days ago at the museum exhibit?',
+          expectedIds: ['m-answer'],
+          expectedRelevance: { 'm-answer': 3 },
+          temporalDateBoost: {
+            referenceDate: '2023-02-01',
+            targetDate: '2023-01-20',
+            toleranceDays: 1,
+            entityTerms: ['museum', 'exhibit']
+          }
+        }
+      ],
+      memories: [
+        {
+          id: 'm-same-date-no-entity',
+          timestamp: '2023-01-20',
+          content: 'I renewed my passport and reviewed the calendar.'
+        },
+        {
+          id: 'm-answer',
+          timestamp: '2023-01-21',
+          content: 'I attended the museum exhibit with Maya.'
+        },
+        {
+          id: 'm-far-entity',
+          timestamp: '2022-12-01',
+          content: 'I read about a museum exhibit online.'
+        }
+      ]
+    }, {
+      generatedAt: '2026-05-05T00:00:00.000Z',
+      retrievalRunner
+    });
+
+    expect(report.perQuery[0].retrievedIds).toEqual([
+      'm-answer',
+      'm-same-date-no-entity',
+      'm-far-entity'
+    ]);
+    expect(report.perQuery[0].fallbackTrace).toContain('temporal-date-boost:applied');
+    expect(report.summary.hitAtK[1]).toBe(1);
+  });
+
   it('formats markdown reports without raw query or memory content', async () => {
     const report = await evaluateReplayFixture(fixture, {
       generatedAt: '2026-05-05T00:00:00.000Z',

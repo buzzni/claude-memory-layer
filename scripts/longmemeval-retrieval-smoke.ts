@@ -43,6 +43,7 @@ interface ParsedArgs {
   expandUserFactsToSearchContent: boolean;
   expandPreferenceQueries: boolean;
   expandTemporalQueries: boolean;
+  temporalDateBoost: boolean;
   readerCommand: string;
   readerArgs: string[];
   limit?: number;
@@ -112,6 +113,7 @@ async function main(argv: string[]): Promise<void> {
     expandUserFactsToSearchContent: options.expandUserFactsToSearchContent,
     expandPreferenceQueries: options.expandPreferenceQueries,
     expandTemporalQueries: options.expandTemporalQueries,
+    temporalDateBoost: options.temporalDateBoost,
     ks: buildEvaluationKs(options.topK),
     sourceFileCount: 1
   });
@@ -126,6 +128,7 @@ async function main(argv: string[]): Promise<void> {
       expandUserFactsToSearchContent: options.expandUserFactsToSearchContent,
       expandPreferenceQueries: options.expandPreferenceQueries,
       expandTemporalQueries: options.expandTemporalQueries,
+      temporalDateBoost: options.temporalDateBoost,
       ks: buildEvaluationKs(options.topK),
       sourceFileCount: 1
     })
@@ -358,6 +361,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     expandUserFactsToSearchContent: false,
     expandPreferenceQueries: false,
     expandTemporalQueries: false,
+    temporalDateBoost: false,
     readerCommand: '',
     readerArgs: [],
     strategy: 'fast',
@@ -430,6 +434,10 @@ function parseArgs(argv: string[]): ParsedArgs {
       parsed.expandTemporalQueries = true;
     } else if (arg === '--no-expand-temporal-queries') {
       parsed.expandTemporalQueries = false;
+    } else if (arg === '--temporal-date-boost') {
+      parsed.temporalDateBoost = true;
+    } else if (arg === '--no-temporal-date-boost') {
+      parsed.temporalDateBoost = false;
     } else if (arg === '--include-abstention') {
       parsed.includeAbstention = true;
     } else if (arg === '--skip-abstention') {
@@ -568,6 +576,8 @@ Options:
                             Append question-date and temporal relation hint terms to temporal-reasoning questions.
   --no-expand-temporal-queries
                             Disable temporal query expansion. Default.
+  --temporal-date-boost    Attach structured question-date metadata and rerank explicit relative-date temporal hits without appending date tokens.
+  --no-temporal-date-boost Disable temporal date boost. Default.
   --min-score RATE          Override retriever minScore.
   --include-abstention      Include *_abs questions as no-match qrels.
   --skip-abstention         Skip *_abs questions, matching LongMemEval retrieval reporting. Default.

@@ -77,6 +77,29 @@ function writeLongMemEvalTemporalFixture(): string {
   return fixturePath;
 }
 
+function writeLongMemEvalExplicitTemporalFixture(): string {
+  const dir = mkdtempSync(path.join(tmpdir(), 'cml-longmemeval-cli-explicit-temporal-'));
+  const fixturePath = path.join(dir, 'longmemeval-explicit-temporal-mini.json');
+  writeFileSync(fixturePath, `${JSON.stringify([
+    {
+      question_id: 'q_cli_temporal_boost',
+      question_type: 'temporal-reasoning',
+      question: 'What did I do 12 days ago at the museum exhibit?',
+      answer: 'attended the museum exhibit',
+      question_date: '2023/02/01 (Wed) 10:20',
+      haystack_session_ids: ['s_noise', 's_answer'],
+      haystack_dates: ['2023/01/20 (Fri) 09:00', '2023/01/21 (Sat) 09:00'],
+      haystack_sessions: [
+        [{ role: 'user', content: 'I renewed my passport and checked my calendar.' }],
+        [{ role: 'user', content: 'I attended the museum exhibit.', has_answer: true }]
+      ],
+      answer_session_ids: ['s_answer']
+    }
+  ], null, 2)}
+`, 'utf8');
+  return fixturePath;
+}
+
 function writeReaderCommand(): string {
   const dir = mkdtempSync(path.join(tmpdir(), 'cml-longmemeval-reader-'));
   const readerPath = path.join(dir, 'reader.mjs');
@@ -165,6 +188,7 @@ describe('LongMemEval retrieval smoke CLI', () => {
     expect(result.stdout).toContain('--expand-user-facts-to-search-content');
     expect(result.stdout).toContain('--expand-preference-queries');
     expect(result.stdout).toContain('--expand-temporal-queries');
+    expect(result.stdout).toContain('--temporal-date-boost');
     expect(result.stdout).toContain('--answers-out PATH');
     expect(result.stdout).toContain('--reader-command PATH');
     expect(result.stdout).toContain('LongMemEval-compatible JSONL');
@@ -297,6 +321,34 @@ describe('LongMemEval retrieval smoke CLI', () => {
     expect(fixture.metadata.temporalQueryExpansion).toBe(true);
     expect(fixture.queries[0].query).toContain('question date 2023-02-01 temporal order');
     expect(fixture.queries[0].query).not.toContain('12 days');
+  });
+
+  it('passes temporal date boost metadata without mutating benchmark query text', () => {
+    const fixturePath = writeLongMemEvalExplicitTemporalFixture();
+    const dir = mkdtempSync(path.join(tmpdir(), 'cml-longmemeval-cli-temporal-boost-out-'));
+    const fixtureOut = path.join(dir, 'fixture.json');
+    const result = runLongMemEvalSmokeCli([
+      '--input', fixturePath,
+      '--temporal-date-boost',
+      '--fixture-out', fixtureOut,
+      '--format', 'json',
+      '--top-k', '2'
+    ]);
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe('');
+    const fixture = JSON.parse(readFileSync(fixtureOut, 'utf8')) as {
+      metadata: Record<string, unknown>;
+      queries: Array<{ query: string; temporalDateBoost?: Record<string, unknown> }>;
+    };
+    expect(fixture.metadata.temporalDateBoost).toBe(true);
+    expect(fixture.queries[0].query).toBe('What did I do 12 days ago at the museum exhibit?');
+    expect(fixture.queries[0].query).not.toContain('question date');
+    expect(fixture.queries[0].temporalDateBoost).toMatchObject({
+      referenceDate: '2023-02-01',
+      targetDate: '2023-01-20',
+      toleranceDays: 1
+    });
   });
 
   it('runs hybrid retrieval and emits official-style analysis in JSON', () => {
