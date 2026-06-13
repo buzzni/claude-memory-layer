@@ -261,6 +261,7 @@ function runReaderCommand(command: string, args: string[], payload: LongMemEvalR
     let stderr = '';
     let timedOut = false;
     let settled = false;
+    let stdinError: Error | undefined;
 
     const finish = (error: Error | null, value?: string) => {
       if (settled) return;
@@ -282,6 +283,12 @@ function runReaderCommand(command: string, args: string[], payload: LongMemEvalR
     child.stderr.setEncoding('utf8');
     child.stdout.on('data', (chunk: string) => { stdout += chunk; });
     child.stderr.on('data', (chunk: string) => { stderr += chunk; });
+    child.stdin.on('error', (error: Error & { code?: string }) => {
+      stdinError = error;
+      if (error.code !== 'EPIPE') {
+        finish(new CliError(`Reader command stdin write failed for ${payload.question_id}: ${error.message}`));
+      }
+    });
     child.on('error', (error) => {
       finish(new CliError(`Reader command failed for ${payload.question_id}: ${error.message}`));
     });
@@ -293,6 +300,10 @@ function runReaderCommand(command: string, args: string[], payload: LongMemEvalR
       if (code !== 0) {
         const detail = stderr.trim().slice(0, 2_000);
         finish(new CliError(`Reader command failed for ${payload.question_id} with exit code ${code ?? `signal ${signal ?? 'unknown'}`}${detail ? `: ${detail}` : ''}`));
+        return;
+      }
+      if (stdinError) {
+        finish(new CliError(`Reader command stdin write failed for ${payload.question_id}: ${stdinError.message}`));
         return;
       }
       finish(null, stdout.trim());

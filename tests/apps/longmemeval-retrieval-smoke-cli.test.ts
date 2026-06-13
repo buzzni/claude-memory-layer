@@ -54,6 +54,38 @@ process.stdin.on('end', () => {
   return readerPath;
 }
 
+function writeEarlyExitReaderCommand(): string {
+  const dir = mkdtempSync(path.join(tmpdir(), 'cml-longmemeval-reader-early-exit-'));
+  const readerPath = path.join(dir, 'reader.mjs');
+  writeFileSync(readerPath, `#!/usr/bin/env node
+process.stderr.write('reader failed before stdin\\n');
+process.exit(7);
+`, 'utf8');
+  chmodSync(readerPath, 0o755);
+  return readerPath;
+}
+
+function writeLargeLongMemEvalFixture(): string {
+  const dir = mkdtempSync(path.join(tmpdir(), 'cml-longmemeval-cli-large-'));
+  const fixturePath = path.join(dir, 'longmemeval-large.json');
+  const largeContext = `${'irrelevant context. '.repeat(150_000)} User said: I prefer jasmine tea.`;
+  writeFileSync(fixturePath, `${JSON.stringify([
+    {
+      question_id: 'q_cli_large',
+      question_type: 'single-session-user',
+      question: 'Which tea did the user prefer?',
+      answer: 'jasmine tea',
+      haystack_session_ids: ['s_answer'],
+      haystack_dates: ['2026-01-02'],
+      haystack_sessions: [
+        [{ role: 'user', content: largeContext, has_answer: true }]
+      ],
+      answer_session_ids: ['s_answer']
+    }
+  ], null, 2)}\n`, 'utf8');
+  return fixturePath;
+}
+
 describe('LongMemEval retrieval smoke CLI', () => {
   it('documents the hybrid session+turn retrieval options in help output', () => {
     const result = runLongMemEvalSmokeCli(['--help']);
@@ -163,6 +195,28 @@ describe('LongMemEval retrieval smoke CLI', () => {
 
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('--reader-command is required when --answers-out is set');
+  });
+
+  it('reports early reader failure without crashing on stdin EPIPE', () => {
+    const fixturePath = writeLargeLongMemEvalFixture();
+    const readerCommand = writeEarlyExitReaderCommand();
+    const dir = mkdtempSync(path.join(tmpdir(), 'cml-longmemeval-answers-'));
+    const answersOut = path.join(dir, 'hypotheses.jsonl');
+    const result = runLongMemEvalSmokeCli([
+      '--input', fixturePath,
+      '--retrieval-mode', 'hybrid',
+      '--granularity', 'session',
+      '--format', 'json',
+      '--top-k', '2',
+      '--answers-out', answersOut,
+      '--reader-command', readerCommand
+    ]);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('Reader command failed for q_cli_large with exit code 7');
+    expect(result.stderr).toContain('reader failed before stdin');
+    expect(result.stderr).not.toContain('Unhandled');
+    expect(result.stderr).not.toContain('write EPIPE');
   });
 
   it('writes official LongMemEval hypothesis JSONL from retrieved context via reader command', () => {
