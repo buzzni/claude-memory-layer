@@ -84,9 +84,32 @@ Useful flags:
 
 ## Generate QA hypotheses for the official judge
 
-The benchmark script can now produce the LongMemEval hypothesis file consumed by `evaluate_qa.py`. Provide a reader wrapper that calls your model of choice and prints only the final answer.
+The benchmark script can produce the LongMemEval hypothesis file consumed by `evaluate_qa.py`. The repo includes a reusable OpenAI-compatible reader wrapper at `scripts/longmemeval-openai-reader.ts`; it reads the retrieved-context JSON payload on stdin and writes only the final hypothesis text to stdout.
+
+Use a small `--limit` first to verify credentials, cost, and provider behavior:
 
 ```bash
+LONGMEMEVAL_READER_API_KEY="$OPENAI_API_KEY" \
+LONGMEMEVAL_READER_MODEL=gpt-4o-mini \
+npm run eval:longmemeval:retrieval-smoke -- \
+  --input /tmp/LongMemEval/data/longmemeval_s_cleaned.json \
+  --granularity session \
+  --retrieval-mode hybrid \
+  --strategy fast \
+  --limit 5 \
+  --format json \
+  --out /tmp/LongMemEval/reports/cml-longmemeval-s-hybrid-reader-smoke.json \
+  --answers-out /tmp/LongMemEval/reports/cml-longmemeval-s-hypotheses-smoke.jsonl \
+  --reader-command npx \
+  --reader-arg tsx \
+  --reader-arg scripts/longmemeval-openai-reader.ts
+```
+
+Then run the full hypothesis generation when ready to spend the reader-model tokens:
+
+```bash
+LONGMEMEVAL_READER_API_KEY="$OPENAI_API_KEY" \
+LONGMEMEVAL_READER_MODEL=gpt-4o-mini \
 npm run eval:longmemeval:retrieval-smoke -- \
   --input /tmp/LongMemEval/data/longmemeval_s_cleaned.json \
   --granularity session \
@@ -95,8 +118,18 @@ npm run eval:longmemeval:retrieval-smoke -- \
   --format json \
   --out /tmp/LongMemEval/reports/cml-longmemeval-s-hybrid-reader-report.json \
   --answers-out /tmp/LongMemEval/reports/cml-longmemeval-s-hypotheses.jsonl \
-  --reader-command /path/to/your-reader-wrapper
+  --reader-command npx \
+  --reader-arg tsx \
+  --reader-arg scripts/longmemeval-openai-reader.ts
 ```
+
+Reader wrapper environment:
+
+- `LONGMEMEVAL_READER_API_KEY` or `OPENAI_API_KEY`: required. `LONGMEMEVAL_READER_API_KEY` is preferred so the reader key can be separated from the official judge key.
+- `LONGMEMEVAL_READER_BASE_URL`: optional OpenAI-compatible base URL; defaults to `https://api.openai.com/v1`.
+- `LONGMEMEVAL_READER_MODEL`: optional reader model; defaults to `gpt-4o-mini`.
+- `LONGMEMEVAL_READER_MAX_TOKENS`: optional positive integer; defaults to `256`.
+- `LONGMEMEVAL_READER_CONTEXT_CHAR_LIMIT`: optional positive integer; defaults to `24000`.
 
 The generated JSONL rows are intentionally minimal and official-compatible:
 
@@ -114,7 +147,7 @@ python src/evaluation/evaluate_qa.py \
   /tmp/LongMemEval/data/longmemeval_s_cleaned.json
 ```
 
-`evaluate_qa.py` requires the judge model credentials expected by LongMemEval (for example `OPENAI_API_KEY` for OpenAI-backed metric models).
+`evaluate_qa.py` requires the judge model credentials expected by LongMemEval (for example `OPENAI_API_KEY` for OpenAI-backed metric models). Treat this as a separate, cost-incurring official judge step: the reader wrapper only creates hypotheses; it does not grade them or produce an official LongMemEval QA score.
 
 ## Metric mapping
 
@@ -155,7 +188,7 @@ A practical retrieval-grounded estimate is therefore **about 65–73/100**, with
 
 ## Next implementation steps
 
-1. Add a concrete reader wrapper for the model/provider to be used in official scoring.
-2. Run `--answers-out` on LongMemEval_S and evaluate with upstream `src/evaluation/evaluate_qa.py`.
+1. Run a small `--limit` hypothesis smoke with real reader credentials.
+2. Run full `--answers-out` on LongMemEval_S and evaluate with upstream `src/evaluation/evaluate_qa.py` when ready to spend reader + judge model tokens.
 3. Compare QA against retrieval diagnostics to separate retriever misses from reader/reasoning misses.
 4. Improve preference/user-fact retrieval beyond the initial lightweight rule-based extraction, which did not move aggregate metrics in this smoke.
