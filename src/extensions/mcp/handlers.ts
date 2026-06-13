@@ -48,6 +48,7 @@ import {
   isGenericContinuationQuery,
   isLowSignalContextContent
 } from '../../core/retrieval-quality.js';
+import type { RetrievalMode } from '../../core/retriever.js';
 import {
   ContextCompressor,
   summarizeCompressionTelemetry,
@@ -1042,6 +1043,7 @@ interface McpMemoryRetrievalOptions {
   fetchTopK?: number;
   sessionId?: string;
   eventType?: EventType;
+  retrievalMode?: RetrievalMode;
 }
 
 interface McpMemoryRetrievalResult {
@@ -1059,11 +1061,13 @@ async function retrieveMcpMemories(
 ): Promise<McpMemoryRetrievalResult> {
   const fetchTopK = Math.max(options.topK, options.fetchTopK ?? options.topK);
   try {
-    const result = await memoryService.retrieveMemories(query, {
+    const retrieveOptions = {
       topK: fetchTopK,
       sessionId: options.sessionId,
-      recordTrace: false
-    });
+      recordTrace: false,
+      ...(options.retrievalMode ? { retrievalMode: options.retrievalMode } : {})
+    };
+    const result = await memoryService.retrieveMemories(query, retrieveOptions);
     return { memories: selectMcpMemoryResults(result.memories, options.topK, options.eventType) };
   } catch (error) {
     if (!isVectorSchemaMismatchError(error)) {
@@ -1254,6 +1258,7 @@ async function handleMemContextPack(memoryService: MemoryService, args: Record<s
   const projectPath = optionalString(args.projectPath);
   const maxContextChars = contextPackMaxCharsArg(args);
   const compression = contextCompressionModeArg(args.compression, maxContextChars !== undefined);
+  const retrievalMode = contextPackRetrievalModeArg(args.retrievalMode);
   const compressionTelemetry: ContextCompressionMetadata[] = [];
   const formatOptions: ContextPackFormatOptions = {
     compression,
@@ -1282,7 +1287,7 @@ async function handleMemContextPack(memoryService: MemoryService, args: Record<s
     })
     : undefined;
 
-  const search = await retrieveMcpMemories(memoryService, query, { topK: retrievalTopK, sessionId });
+  const search = await retrieveMcpMemories(memoryService, query, { topK: retrievalTopK, sessionId, retrievalMode });
   const recentEvents = await memoryService.getRecentEvents(recentLimit);
 
   const timelineEvents = selectContextPackTimelineEvents(
@@ -2166,9 +2171,18 @@ function contextCompressionModeArg(value: unknown, hasBudget: boolean): ContextC
   throw new Error('Invalid compression: expected off, safe, or aggressive');
 }
 
+function contextPackRetrievalModeArg(value: unknown): RetrievalMode | undefined {
+  if (value === undefined || value === null || value === '') return undefined;
+  const normalized = String(value).trim().toLowerCase();
+  if (normalized === 'session-event-hybrid') return 'session-event-hybrid';
+  if (normalized === 'event') return 'event';
+  throw new Error('Invalid retrievalMode: expected session-event-hybrid or event');
+}
+
 function validateMemContextPackBudgetArgs(args: Record<string, unknown>): void {
   const maxContextChars = contextPackMaxCharsArg(args);
   contextCompressionModeArg(args.compression, maxContextChars !== undefined);
+  contextPackRetrievalModeArg(args.retrievalMode);
 }
 
 function contextPackMaxCharsArg(args: Record<string, unknown>): number | undefined {

@@ -7,6 +7,7 @@
 
 export const RETRIEVAL_DEBUG_LANE_NAMES = [
   'raw_event',
+  'session_event',
   'session_summary',
   'graph_path',
   'facet_match'

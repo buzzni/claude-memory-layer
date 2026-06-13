@@ -43,6 +43,9 @@ export * from './vector-outbox.js';
 // Product validation
 export * from './product-validation-matrix.js';
 
+// Source adapter contracts
+export * from './source/index.js';
+
 // Matching & Alignment
 export * from './matcher.js';
 export * from './evidence-aligner.js';

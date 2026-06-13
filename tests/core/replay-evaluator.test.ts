@@ -77,6 +77,7 @@ describe('replay fixture evaluator', () => {
     expect(report.perQuery).toEqual([
       {
         queryId: 'q-secret-1',
+        expectedIds: ['m-secret-1'],
         retrievedIds: ['m-secret-1', 'm-noise'],
         candidateIds: ['m-secret-1', 'm-noise'],
         confidence: 'high',
