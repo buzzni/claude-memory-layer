@@ -266,6 +266,20 @@ function formatSessionTime(value) {
   return Number.isNaN(date.getTime()) ? '-' : date.toLocaleString();
 }
 
+function formatSessionDateGroup(value) {
+  if (!value) return 'Undated sessions';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'Undated sessions';
+  const today = new Date();
+  const startOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
+  const startOfDate = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+  const deltaDays = Math.round((startOfToday - startOfDate) / 86400000);
+  if (deltaDays === 0) return 'Today';
+  if (deltaDays === 1) return 'Yesterday';
+  if (deltaDays > 1 && deltaDays < 7) return `${deltaDays} days ago`;
+  return date.toLocaleDateString();
+}
+
 function sessionShortId(id) {
   const text = String(id || 'unknown');
   return text.length > 18 ? `${text.slice(0, 18)}...` : text;
@@ -390,17 +404,29 @@ function renderSessionList() {
     return;
   }
 
+  let previousGroup = '';
   listEl.innerHTML = sessions.map((session) => {
     const selected = state.selectedSession?.id === session.id;
     const durationMs = session.startedAt && session.lastEventAt
       ? Math.max(0, new Date(session.lastEventAt).getTime() - new Date(session.startedAt).getTime())
       : 0;
     const durationMin = durationMs > 0 ? `${Math.max(1, Math.round(durationMs / 60000))}m` : '-';
+    const timeValue = session.lastEventAt || session.endedAt || session.startedAt || session.firstUserPromptAt;
+    const group = formatSessionDateGroup(timeValue);
+    const promptPreview = session.promptPreview || 'No user prompt preview yet';
+    const source = session.source || 'unknown';
+    const toolCount = Number(session.toolCount || session.eventTypeCounts?.tool_observation || 0);
+    const responseCount = Number(session.responseCount || session.eventTypeCounts?.agent_response || 0);
+    const groupHtml = group !== previousGroup ? `<div class="session-date-group">${escapeHtml(group)}</div>` : '';
+    previousGroup = group;
     return `
+      ${groupHtml}
       <button class="session-list-item ${selected ? 'active' : ''}" onclick="selectSession(${jsAttrArg(session.id)})">
+        <span class="session-list-title">${escapeHtml(promptPreview)}</span>
         <span class="session-list-id">${escapeHtml(sessionShortId(session.id))}</span>
-        <span class="session-list-meta">${formatNumber(session.eventCount || 0)} events · ${durationMin}</span>
-        <span class="session-list-time">${formatSessionTime(session.lastEventAt || session.endedAt || session.startedAt)}</span>
+        <span class="session-list-meta">${formatNumber(session.eventCount || 0)} events · ${durationMin} · ${formatNumber(toolCount)} tools · ${formatNumber(responseCount)} responses</span>
+        <span class="session-list-time">${formatSessionTime(timeValue)}</span>
+        <span class="session-list-source">source: ${escapeHtml(source)}</span>
       </button>
     `;
   }).join('');
@@ -490,7 +516,14 @@ function renderSessionConversation() {
     return;
   }
 
-  container.innerHTML = turns.map((turn, index) => {
+  const jumpNotice = state.sessionJumpEventId ? `
+    <div class="session-jump-notice">
+      <i class="ri-corner-down-right-line"></i>
+      <span>Opened from User Prompts · Jump target is highlighted below.</span>
+    </div>
+  ` : '';
+
+  container.innerHTML = jumpNotice + turns.map((turn, index) => {
     const events = turn.events || [];
     const userEvents = events.filter(e => e.eventType === 'user_prompt');
     const agentEvents = events.filter(e => e.eventType === 'agent_response');
@@ -501,7 +534,7 @@ function renderSessionConversation() {
       const jumpClass = event.id && state.sessionJumpEventId === event.id ? 'session-message-jump' : '';
       return `
       <div class="session-message ${sessionEventTypeClass(event.eventType)} ${jumpClass}" ${event.id ? `onclick="openDetailModal(${jsAttrArg(event.id)})"` : ''}>
-        <div class="session-message-role">${icon} ${roleLabel}</div>
+        <div class="session-message-role">${icon} ${roleLabel}${jumpClass ? ' · <span class="session-jump-badge">Jump target</span>' : ''}</div>
         <div class="session-message-preview">${sessionPreviewText(event)}</div>
         <div class="session-message-meta">${escapeHtml(event.eventType || 'event')} · ${formatSessionTime(event.timestamp)} · ${escapeHtml(event.id || '')}</div>
       </div>

@@ -37,6 +37,11 @@
         </select>
       </div>
 
+      <div id="scope-context-bar" class="scope-context-bar">
+        <div id="scope-context-label" class="scope-context-label">Scope: All projects</div>
+        <div id="scope-context-detail" class="scope-context-detail">Select a project to inspect project-local memory.</div>
+      </div>
+
       <nav>
         <ul class="nav-menu">
           <li class="nav-item active" data-nav="overview">
@@ -99,6 +104,14 @@
             </button>
           </div>
         </header>
+
+        <div id="global-empty-state" class="global-empty-state" hidden>
+          <i class="ri-folder-search-line"></i>
+          <div>
+            <strong>No aggregate data is visible in Global scope yet.</strong>
+            <span>Select a project from the sidebar to inspect live project-local memory, sessions, and retrieval evidence.</span>
+          </div>
+        </div>
 
         <!-- Stats Grid -->
         <div class="stats-grid">
@@ -238,6 +251,7 @@
                   <i class="ri-search-eye-line"></i>
                   <span>Progressive Retrieval Disclosure</span>
                 </div>
+                <div id="disclosure-scope-badge" class="scope-mini-badge">Search → Expand → Source · Project scope follows sidebar</div>
                 <div class="disclosure-controls">
                   <label class="disclosure-toggle"><input type="checkbox" id="disclosure-include-shared"> Shared</label>
                   <select id="disclosure-strategy" class="project-dropdown compact">

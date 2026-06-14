@@ -106,6 +106,55 @@ describe('dashboard read APIs use lightweight services', () => {
     expect(mocks.service.shutdown).toHaveBeenCalledTimes(1);
   });
 
+  it('GET /api/sessions returns human-readable previews and aggregate counts for the session inspector', async () => {
+    mocks.service.getRecentEvents.mockResolvedValueOnce([
+      {
+        id: 'tool-private',
+        eventType: 'tool_observation',
+        sessionId: 's-ux',
+        timestamp: new Date('2026-05-01T00:02:00.000Z'),
+        content: 'PRIVATE_TOOL_OUTPUT_SHOULD_NOT_BECOME_TITLE',
+        metadata: { level: 'L0' },
+      },
+      {
+        id: 'prompt-1',
+        eventType: 'user_prompt',
+        sessionId: 's-ux',
+        timestamp: new Date('2026-05-01T00:00:00.000Z'),
+        content: 'Improve the memory dashboard project scope and session inspector UX',
+        metadata: { source: 'hermes', level: 'L1' },
+      },
+      {
+        id: 'agent-1',
+        eventType: 'agent_response',
+        sessionId: 's-ux',
+        timestamp: new Date('2026-05-01T00:03:00.000Z'),
+        content: 'Implemented the requested dashboard changes.',
+        metadata: { level: 'L2' },
+      },
+    ]);
+
+    const res = await createApp().request('/api/sessions?project=abc12345&pageSize=5');
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.sessions[0]).toMatchObject({
+      id: 's-ux',
+      eventCount: 3,
+      promptPreview: 'Improve the memory dashboard project scope and session inspector UX',
+      firstUserPromptAt: '2026-05-01T00:00:00.000Z',
+      toolCount: 1,
+      responseCount: 1,
+      source: 'hermes',
+    });
+    expect(body.sessions[0].eventTypeCounts).toMatchObject({
+      user_prompt: 1,
+      tool_observation: 1,
+      agent_response: 1,
+    });
+    expect(JSON.stringify(body.sessions[0])).not.toContain('PRIVATE_TOOL_OUTPUT_SHOULD_NOT_BECOME_TITLE');
+  });
+
   it('GET /api/sessions/:id uses lightweight read service for session details', async () => {
     const res = await createApp().request('/api/sessions/s1?project=abc12345');
 

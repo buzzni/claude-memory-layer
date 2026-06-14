@@ -26,6 +26,12 @@ sessionsRouter.get('/', async (c) => {
       startedAt: Date;
       eventCount: number;
       lastEventAt: Date;
+      promptPreview: string;
+      firstUserPromptAt: Date | null;
+      toolCount: number;
+      responseCount: number;
+      eventTypeCounts: Record<string, number>;
+      source: string | null;
     }>();
 
     for (const event of recentEvents) {
@@ -35,10 +41,25 @@ sessionsRouter.get('/', async (c) => {
           id: event.sessionId,
           startedAt: event.timestamp,
           eventCount: 1,
-          lastEventAt: event.timestamp
+          lastEventAt: event.timestamp,
+          promptPreview: event.eventType === 'user_prompt' ? event.content.slice(0, 160) : '',
+          firstUserPromptAt: event.eventType === 'user_prompt' ? event.timestamp : null,
+          toolCount: event.eventType === 'tool_observation' ? 1 : 0,
+          responseCount: event.eventType === 'agent_response' ? 1 : 0,
+          eventTypeCounts: { [event.eventType || 'unknown']: 1 },
+          source: typeof event.metadata?.source === 'string' ? event.metadata.source : null
         });
       } else {
         existing.eventCount++;
+        const eventType = event.eventType || 'unknown';
+        existing.eventTypeCounts[eventType] = (existing.eventTypeCounts[eventType] || 0) + 1;
+        if (event.eventType === 'tool_observation') existing.toolCount++;
+        if (event.eventType === 'agent_response') existing.responseCount++;
+        if (event.eventType === 'user_prompt' && (!existing.firstUserPromptAt || event.timestamp < existing.firstUserPromptAt)) {
+          existing.firstUserPromptAt = event.timestamp;
+          existing.promptPreview = event.content.slice(0, 160);
+        }
+        if (!existing.source && typeof event.metadata?.source === 'string') existing.source = event.metadata.source;
         if (event.timestamp < existing.startedAt) {
           existing.startedAt = event.timestamp;
         }

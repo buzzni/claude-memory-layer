@@ -120,6 +120,7 @@ async function loadLevelEvents(level, sort) {
 
 function updateStatsUI() {
   if (!state.stats) return;
+  if (typeof updateProjectScopeUI === 'function') updateProjectScopeUI();
 
   const eventCount = state.stats.storage?.eventCount || 0;
   const sessionCount = state.stats.sessions?.total || 0;

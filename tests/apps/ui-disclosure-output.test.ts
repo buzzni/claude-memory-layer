@@ -137,6 +137,10 @@ describe('dashboard retrieval disclosure provenance output', () => {
     expect(elements['disclosure-results'].innerHTML).toContain('class="disclosure-result"');
     expect(elements['disclosure-results'].innerHTML).toContain('User prompt');
     expect(elements['disclosure-results'].innerHTML).toContain('https://memoryhub.ai/ko/');
+    expect(elements['disclosure-results'].innerHTML).toContain('Inspect evidence');
+    expect(elements['disclosure-results'].innerHTML).toContain('Why this ranked');
+    expect(elements['disclosure-results'].innerHTML).toContain('<mark>memoryhub</mark>');
+    expect(elements['disclosure-results'].innerHTML).toContain('Project-local');
     expect(requestedBodies[0]).toMatchObject({
       query: 'memoryhub',
       options: { strategy: 'fast', topK: 5, includeShared: false }
@@ -186,6 +190,9 @@ describe('dashboard retrieval disclosure provenance output', () => {
     hooks.renderDisclosureDrilldown();
 
     const html = elements['disclosure-drilldown'].innerHTML;
+    expect(html).toContain('Search result');
+    expect(html).toContain('Expanded context');
+    expect(html).toContain('Source evidence');
     expect(html).toContain('shared_troubleshooting');
     expect(html).toContain('Shared source provenance');
     expect(html).toContain('sourceProjectHash');
@@ -195,5 +202,53 @@ describe('dashboard retrieval disclosure provenance output', () => {
     expect(html).toContain('solution');
     expect(html).toContain('clear cache and retry');
     expect(html).toContain('No local raw events for this shared source.');
+  });
+
+  it('renders local source evidence with safe collapsed raw transcript previews', () => {
+    const elements = { 'disclosure-drilldown': new TestElement() };
+    const hooks = loadDashboardWithElements(elements);
+
+    hooks.state.disclosureSelectedId = 'event:e1';
+    hooks.state.disclosureExpansion = {
+      target: {
+        id: 'event:e1',
+        resultType: 'source',
+        title: 'User asked about MemoryHub',
+        snippet: 'https://memoryhub.ai/ko/ benchmark dashboard ideas',
+        score: 0.91,
+        reasons: ['keyword_match', 'recent_relevance'],
+        sourceRef: 'event:e1',
+        metadata: { sourceProjectHash: 'b7f03a73', eventType: 'user_prompt' }
+      },
+      relatedSources: [],
+      expandedContext: 'The user asked about MemoryHub dashboard ideas and benchmarking.\n[CONTEXT COMPACTION — REFERENCE ONLY] private handoff summary\nDo not show stale hidden transcript details.'
+    };
+    hooks.state.disclosureSource = {
+      sourceRef: 'event:e1',
+      sourceType: 'local_event',
+      eventIds: ['e1'],
+      rawEvents: [{
+        id: 'e1',
+        eventType: 'user_prompt',
+        timestamp: '2026-06-14T00:00:00.000Z',
+        content: '[CONTEXT COMPACTION — REFERENCE ONLY] giant raw transcript metadata\nhttps://memoryhub.ai/ko/ benchmark dashboard ideas',
+        metadata: { rawPath: '/Users/alice/private-project', secretLike: 'PRIVATE_META_SENTINEL' }
+      }],
+      metadata: { sourceProjectHash: 'b7f03a73' }
+    };
+
+    hooks.renderDisclosureDrilldown();
+
+    const html = elements['disclosure-drilldown'].innerHTML;
+    expect(html).toContain('Source evidence');
+    expect(html).toContain('Safe preview');
+    expect(html).toContain('Show raw/meta text');
+    expect(html).toContain('Context compaction boilerplate hidden');
+    expect(html).toContain('https://memoryhub.ai/ko/');
+    expect(html).not.toContain('[CONTEXT COMPACTION');
+    expect(html).not.toContain('private handoff summary');
+    expect(html).not.toContain('stale hidden transcript details');
+    expect(html).not.toContain('/Users/alice/private-project');
+    expect(html).not.toContain('PRIVATE_META_SENTINEL');
   });
 });

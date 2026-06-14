@@ -30,9 +30,41 @@ async function loadProjects() {
       option.textContent = `${p.projectName} (${p.dbSizeHuman})`;
       select.appendChild(option);
     });
+
+    const savedProject = window.localStorage?.getItem('cml.dashboard.project') || '';
+    if (!state.currentProject && savedProject && state.projects.some(p => p.hash === savedProject)) {
+      state.currentProject = savedProject;
+      select.value = savedProject;
+    }
+    updateProjectScopeUI();
   } catch (error) {
     console.error('Failed to load projects:', error);
+    updateProjectScopeUI();
   }
+}
+
+function updateProjectScopeUI() {
+  const label = document.getElementById('scope-context-label');
+  const detail = document.getElementById('scope-context-detail');
+  const disclosureBadge = document.getElementById('disclosure-scope-badge');
+  const empty = document.getElementById('global-empty-state');
+  const project = state.currentProject ? state.projects.find(p => p.hash === state.currentProject) : null;
+  const eventCount = state.stats?.storage?.eventCount || 0;
+  const sessionCount = state.stats?.sessions?.total || 0;
+  const vectorCount = state.stats?.storage?.vectorCount || 0;
+
+  if (project) {
+    if (label) label.textContent = `Scope: ${project.projectName}`;
+    if (detail) detail.textContent = `Project-local memory · ${project.dbSizeHuman || project.hash}`;
+    if (disclosureBadge) disclosureBadge.textContent = `Search → Expand → Source · Project-local: ${project.projectName}`;
+    if (empty) empty.hidden = true;
+    return;
+  }
+
+  if (label) label.textContent = 'Scope: All projects';
+  if (detail) detail.textContent = 'Global aggregate view. Select a project for live project-local sessions and retrieval evidence.';
+  if (disclosureBadge) disclosureBadge.textContent = 'Search → Expand → Source · Global scope unless a project is selected';
+  if (empty) empty.hidden = !(eventCount === 0 && sessionCount === 0 && vectorCount === 0);
 }
 
 function setupEventListeners() {
@@ -144,6 +176,8 @@ function setupEventListeners() {
   if (projectSelect) {
     projectSelect.addEventListener('change', async (e) => {
       state.currentProject = e.target.value;
+      if (window.localStorage) window.localStorage.setItem('cml.dashboard.project', state.currentProject || '');
+      updateProjectScopeUI();
       await refreshData();
       if (state.chartInstance) {
         state.chartInstance.destroy();
@@ -159,6 +193,7 @@ function setupEventListeners() {
         await switchView(state.currentView, { forceReload: true });
       }
       updateChatProjectScope();
+      updateProjectScopeUI();
     });
   }
 

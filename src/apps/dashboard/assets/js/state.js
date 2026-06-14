@@ -59,6 +59,7 @@ const state = {
   chatCurrentTab: 'chat',
   disclosureResults: [],
   disclosureMeta: null,
+  disclosureQuery: '',
   disclosureSelectedId: null,
   disclosureExpansion: null,
   disclosureSource: null,

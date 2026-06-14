@@ -22,6 +22,7 @@
     "test:coverage": "vitest --coverage",
     "lint": "eslint src/**/*.ts",
     "typecheck": "tsc --noEmit",
+    "smoke:dashboard": "tsx scripts/dashboard-smoke.ts",
     "check:architecture": "node scripts/check-import-boundaries.mjs",
     "ops:sync-gap:report": "node scripts/report-sync-gap.js",
     "ops:sync-gap:fix": "node scripts/fix-sync-gap.js",

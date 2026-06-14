@@ -80,6 +80,12 @@ const sessionPayload = {
       startedAt: '2026-06-13T09:00:00.000Z',
       lastEventAt: '2026-06-13T09:05:00.000Z',
       eventCount: 4,
+      promptPreview: 'How should we inspect user memories?',
+      firstUserPromptAt: '2026-06-13T09:00:00.000Z',
+      toolCount: 1,
+      responseCount: 1,
+      source: 'hermes',
+      eventTypeCounts: { user_prompt: 1, tool_observation: 1, agent_response: 1 },
     },
   ],
   total: 1,
@@ -164,6 +170,11 @@ describe('dashboard session inspector', () => {
     expect(elements['session-list'].innerHTML).toContain('session&#039;alpha');
     expect(elements['session-list'].innerHTML).toContain('selectSession(&quot;session&#039;alpha&quot;)');
     expect(elements['session-list'].innerHTML).not.toContain("selectSession('session&#039;alpha')");
+    expect(elements['session-list'].innerHTML).toContain('How should we inspect user memories?');
+    expect(elements['session-list'].innerHTML).toContain('session-date-group');
+    expect(elements['session-list'].innerHTML).toContain('1 tools');
+    expect(elements['session-list'].innerHTML).toContain('1 responses');
+    expect(elements['session-list'].innerHTML).toContain('source: hermes');
     expect(elements['session-conversation'].innerHTML).toContain('How should we inspect user memories?');
     expect(elements['session-conversation'].innerHTML).toContain('Use a session inspector with evidence links.');
     expect(elements['session-snapshot-content'].innerHTML).toContain('4 events');
@@ -352,6 +363,8 @@ describe('dashboard session inspector', () => {
     expect(new URL(requestedUrls[1]).searchParams.get('sessionId')).toBe('session-target');
     expect(elements['session-conversation'].innerHTML).toContain('TARGET_PROMPT_MARKER');
     expect(elements['session-conversation'].innerHTML).toContain('session-message-jump');
+    expect(elements['session-conversation'].innerHTML).toContain('Opened from User Prompts');
+    expect(elements['session-conversation'].innerHTML).toContain('Jump target');
   });
 
   it('clears stale pending session jumps when the project changes before sessions load', async () => {
