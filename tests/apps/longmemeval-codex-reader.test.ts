@@ -138,6 +138,56 @@ describe('LongMemEval Codex CLI reader wrapper', () => {
     expect(prompt).toContain('Return only the final concise answer text');
   });
 
+  it('adds category-specific synthesis instructions for multi-session questions', async () => {
+    const mock = writeMockCodex();
+    const result = await runReader({
+      question_id: 'q_reader_multi',
+      question: 'Which two cities did the user compare across trips?',
+      category: 'multi-session',
+      contexts: [
+        { id: 'mem_trip_1', rank: 1, content: '[2024-01-01] session a\nuser: I visited Seoul for work.' },
+        { id: 'mem_trip_2', rank: 2, content: '[2024-02-01] session b\nuser: I compared it with Tokyo later.' }
+      ]
+    }, {
+      LONGMEMEVAL_CODEX_BIN: mock.bin
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe('');
+    const prompt = readFileSync(mock.promptPath, 'utf8');
+    expect(prompt).toContain('For multi-session questions, inspect all retrieved contexts and synthesize every required evidence item before answering.');
+    expect(prompt).toContain('Do not answer from only the top-ranked context when the question asks for comparisons, changes, counts, or multiple facts.');
+  });
+
+  it('passes temporal target-date hints into the reader prompt without exposing answers', async () => {
+    const mock = writeMockCodex();
+    const result = await runReader({
+      question_id: 'q_reader_temporal',
+      question: 'What did I do 12 days ago at the museum exhibit?',
+      category: 'temporal-reasoning',
+      temporalDateBoost: {
+        referenceDate: '2023-02-01',
+        targetDate: '2023-01-20',
+        toleranceDays: 1,
+        entityTerms: ['museum', 'exhibit']
+      },
+      contexts: [
+        { id: 'mem_same_date_noise', rank: 1, content: '[2023-01-20] session noise\nuser: I bought groceries.' },
+        { id: 'mem_answer', rank: 2, content: '[2023-01-20] session answer\nuser: I attended the museum exhibit.' }
+      ]
+    }, {
+      LONGMEMEVAL_CODEX_BIN: mock.bin
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe('');
+    const prompt = readFileSync(mock.promptPath, 'utf8');
+    expect(prompt).toContain('For temporal-reasoning questions, use the dates in context headers and prefer evidence matching the temporal target.');
+    expect(prompt).toContain('Temporal target date: 2023-01-20; reference date: 2023-02-01; tolerance: ±1 day.');
+    expect(prompt).toContain('Temporal entity terms: museum, exhibit.');
+    expect(prompt).not.toContain('attended the museum exhibit is the answer');
+  });
+
   it('fails closed with a bounded redacted diagnostic when codex exits non-zero', async () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'cml-longmemeval-codex-reader-fail-'));
     const bin = path.join(dir, 'codex-fail.mjs');

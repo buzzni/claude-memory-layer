@@ -1,5 +1,5 @@
 #!/usr/bin/env tsx
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
@@ -10,11 +10,24 @@ interface LongMemEvalReaderContext {
   content: string;
 }
 
+interface LongMemEvalTemporalDateBoost {
+  referenceDate: string;
+  targetDate?: string;
+  toleranceDays?: number;
+  entityTerms?: string[];
+}
+
 interface LongMemEvalReaderPayload {
   question_id: string;
   question: string;
   category?: string;
+  temporalDateBoost?: LongMemEvalTemporalDateBoost;
   contexts: LongMemEvalReaderContext[];
+}
+
+interface ProcessTreeChild {
+  pid?: number;
+  kill(signal?: NodeJS.Signals | number): boolean;
 }
 
 class ReaderError extends Error {
@@ -97,8 +110,39 @@ function parsePayload(raw: string): LongMemEvalReaderPayload {
     question_id: questionId,
     question,
     ...(typeof parsed.category === 'string' ? { category: parsed.category } : {}),
+    ...(parsed.temporalDateBoost !== undefined ? { temporalDateBoost: parseTemporalDateBoost(parsed.temporalDateBoost) } : {}),
     contexts: contexts.map((context, index) => parseContext(context, index))
   };
+}
+
+function parseTemporalDateBoost(value: unknown): LongMemEvalTemporalDateBoost {
+  if (!isRecord(value)) {
+    throw new ReaderError('Reader payload temporalDateBoost must be an object');
+  }
+  const referenceDate = value.referenceDate;
+  if (typeof referenceDate !== 'string' || referenceDate.trim() === '') {
+    throw new ReaderError('Reader payload temporalDateBoost requires non-empty string referenceDate');
+  }
+  const boost: LongMemEvalTemporalDateBoost = { referenceDate };
+  if (value.targetDate !== undefined) {
+    if (typeof value.targetDate !== 'string' || value.targetDate.trim() === '') {
+      throw new ReaderError('Reader payload temporalDateBoost targetDate must be a non-empty string');
+    }
+    boost.targetDate = value.targetDate;
+  }
+  if (value.toleranceDays !== undefined) {
+    if (typeof value.toleranceDays !== 'number' || !Number.isFinite(value.toleranceDays) || value.toleranceDays < 0) {
+      throw new ReaderError('Reader payload temporalDateBoost toleranceDays must be a non-negative number');
+    }
+    boost.toleranceDays = value.toleranceDays;
+  }
+  if (value.entityTerms !== undefined) {
+    if (!Array.isArray(value.entityTerms) || !value.entityTerms.every((term) => typeof term === 'string')) {
+      throw new ReaderError('Reader payload temporalDateBoost entityTerms must be a string array');
+    }
+    boost.entityTerms = value.entityTerms.filter((term) => term.trim() !== '');
+  }
+  return boost;
 }
 
 function parseContext(context: unknown, index: number): LongMemEvalReaderContext {
@@ -126,6 +170,7 @@ function buildPrompt(payload: LongMemEvalReaderPayload, contextCharLimit: number
     'Answer only from the retrieved context below.',
     'If the retrieved context is insufficient, answer exactly: I do not know.',
     'Return only the final concise answer text. Do not include citations, markdown, reasoning, or explanation.',
+    ...buildReaderGuidanceLines(payload),
     '',
     `Question ID: ${payload.question_id}`,
     ...(payload.category ? [`Category: ${payload.category}`] : []),
@@ -150,6 +195,32 @@ function buildPrompt(payload: LongMemEvalReaderPayload, contextCharLimit: number
     lines.push('[no retrieved contexts]');
   }
   return lines.join('\n');
+}
+
+function buildReaderGuidanceLines(payload: LongMemEvalReaderPayload): string[] {
+  const lines: string[] = [];
+  const category = payload.category?.toLowerCase() ?? '';
+  if (category.includes('multi')) {
+    lines.push('For multi-session questions, inspect all retrieved contexts and synthesize every required evidence item before answering.');
+    lines.push('Do not answer from only the top-ranked context when the question asks for comparisons, changes, counts, or multiple facts.');
+  }
+  if (category.includes('temporal')) {
+    lines.push('For temporal-reasoning questions, use the dates in context headers and prefer evidence matching the temporal target.');
+  }
+  if (payload.temporalDateBoost !== undefined) {
+    lines.push(formatTemporalDateBoostLine(payload.temporalDateBoost));
+    const entityTerms = payload.temporalDateBoost.entityTerms ?? [];
+    if (entityTerms.length > 0) {
+      lines.push(`Temporal entity terms: ${entityTerms.join(', ')}.`);
+    }
+  }
+  return lines;
+}
+
+function formatTemporalDateBoostLine(boost: LongMemEvalTemporalDateBoost): string {
+  const target = boost.targetDate ? `Temporal target date: ${boost.targetDate}; ` : '';
+  const tolerance = boost.toleranceDays !== undefined ? `; tolerance: ±${boost.toleranceDays} day${boost.toleranceDays === 1 ? '' : 's'}` : '';
+  return `${target}reference date: ${boost.referenceDate}${tolerance}.`;
 }
 
 async function runCodexReader(prompt: string, timeoutMs: number): Promise<string> {
@@ -272,7 +343,7 @@ function buildCodexEnv(): NodeJS.ProcessEnv {
   return env;
 }
 
-function killProcessTree(child: ChildProcess): void {
+function killProcessTree(child: ProcessTreeChild): void {
   if (child.pid === undefined) return;
   try {
     process.kill(-child.pid, 'SIGKILL');

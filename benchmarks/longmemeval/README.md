@@ -196,6 +196,48 @@ Codex reader environment:
 - `LONGMEMEVAL_CODEX_CONTEXT_CHAR_LIMIT`: optional retrieved-context prompt budget; defaults to `24000`.
 - When this wrapper is invoked through `eval:longmemeval:retrieval-smoke`, also set `LONGMEMEVAL_READER_TIMEOUT_MS` or `--reader-timeout-ms` to a value greater than `LONGMEMEVAL_CODEX_TIMEOUT_MS` so the outer benchmark process does not kill the wrapper first.
 
+For Codex-subscription-only full runs, prefer the resumable batch runner instead of manually chaining `retrieval-smoke`, reader, and judge commands. It writes every completed hypothesis/judge row immediately and stores `checkpoint.json`, so interrupted 470-question LongMemEval_S runs can continue with `--resume` without duplicating completed `question_id`s:
+
+```bash
+LONGMEMEVAL_CODEX_TIMEOUT_MS=120000 \
+LONGMEMEVAL_BATCH_READER_TIMEOUT_MS=180000 \
+LONGMEMEVAL_BATCH_JUDGE_TIMEOUT_MS=180000 \
+npm run eval:longmemeval:codex-batch -- \
+  --input /tmp/LongMemEval/data/longmemeval_s_cleaned.json \
+  --out-dir /tmp/LongMemEval/reports/cml-longmemeval-s-codex-full-batch \
+  --granularity session \
+  --retrieval-mode hybrid \
+  --strategy fast \
+  --expand-preference-queries \
+  --temporal-date-boost \
+  --hybrid-session-weight 1.75 \
+  --hybrid-turn-weight 5 \
+  --top-k 10
+```
+
+Resume the same run after a terminal/network/Codex interruption. `--resume` requires the existing `checkpoint.json` and validates its fingerprint, so use the same input path, managed output paths, and retrieval options; use a new `--out-dir` or `--force` to restart with different options. Do not combine `--resume` and `--force`:
+
+```bash
+LONGMEMEVAL_CODEX_TIMEOUT_MS=120000 \
+LONGMEMEVAL_BATCH_READER_TIMEOUT_MS=180000 \
+LONGMEMEVAL_BATCH_JUDGE_TIMEOUT_MS=180000 \
+npm run eval:longmemeval:codex-batch -- \
+  --input /tmp/LongMemEval/data/longmemeval_s_cleaned.json \
+  --out-dir /tmp/LongMemEval/reports/cml-longmemeval-s-codex-full-batch \
+  --resume
+```
+
+Default batch outputs inside `--out-dir`:
+
+- `checkpoint.json`: current phase/status, completed reader/judge counts, managed file paths, and the retrieval-option fingerprint used to validate `--resume`.
+- `retrieval-report.json` and `fixture.json`: reusable retrieval artifacts; `--resume` reuses them if present.
+- `hypotheses.jsonl`: LongMemEval-compatible `{ "question_id", "hypothesis" }` rows.
+- `eval-results-codex.jsonl`: Codex-compatible judge rows with `autoeval_label`.
+
+The runner rejects duplicate/stale `question_id` rows in resumed hypothesis/judge JSONL files and refuses managed output path collisions or attempts to write over the input file.
+
+Use `--skip-judge` when you only want resumable hypothesis generation for the upstream official evaluator. Label `eval-results-codex.jsonl` precisely as a Codex-compatible judge score, not as unmodified upstream LongMemEval QA.
+
 The generated JSONL rows are intentionally minimal and official-compatible:
 
 ```jsonl
@@ -270,7 +312,7 @@ A practical retrieval-grounded estimate is therefore **about 65–73/100**, with
 ## Next implementation steps
 
 1. For upstream official QA, provide API-compatible judge credentials and run full `--answers-out` on LongMemEval_S followed by `src/evaluation/evaluate_qa.py`.
-2. For Codex-subscription-only environments, expand the current `--limit 5` Codex reader + Codex-compatible judge smoke to a deliberate larger sample before attempting the full 470-question run. A full Codex CLI path requires roughly 470 reader calls plus 470 judge calls.
+2. For Codex-subscription-only environments, use `npm run eval:longmemeval:codex-batch -- ...` with `--out-dir` and `--resume` to expand beyond the current `--limit 5` smoke. A full Codex CLI path requires roughly 470 reader calls plus 470 judge calls, so checkpointed resume is recommended.
 3. Compare QA against retrieval diagnostics to separate retriever misses from reader/reasoning misses.
 4. Continue preference-category work beyond query expansion; current `--expand-user-facts` and key-only `--expand-user-facts-to-search-content` are no-gos for default scoring because they add/rank distractor noise and do not improve full LongMemEval_S aggregate metrics.
 5. Continue temporal work beyond the safe `--temporal-date-boost` baseline: it improves rank metrics only for explicit relative-date questions, while broader ordering/multi-evidence temporal questions still require reasoning-aware retrieval or reader-side support.

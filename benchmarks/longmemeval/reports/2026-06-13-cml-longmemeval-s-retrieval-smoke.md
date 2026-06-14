@@ -220,7 +220,7 @@ Smoke run details:
 - Result: **Accuracy 0.6000 (3/5)**, category `single-session-user: 0.6000 (5)`.
 - Example smoke hypotheses: `I do not know`, `I do not know`, `Target`, `The Glass Menagerie`, `Summer Vibes`.
 
-The upstream official LongMemEval QA score remains **N/A** because `/tmp/LongMemEval/src/evaluation/evaluate_qa.py` requires API-compatible judge credentials such as `OPENAI_API_KEY`; Codex subscription OAuth is not a drop-in replacement for that script. A full Codex CLI fallback would require roughly **470 reader calls + 470 judge calls** for the non-abstention LongMemEval_S set, so it should be run deliberately as a long/costly job or replaced with an API-compatible official judge run.
+The upstream official LongMemEval QA score remains **N/A** because `/tmp/LongMemEval/src/evaluation/evaluate_qa.py` requires API-compatible judge credentials such as `OPENAI_API_KEY`; Codex subscription OAuth is not a drop-in replacement for that script. A full Codex CLI fallback requires roughly **470 reader calls + 470 judge calls** for the non-abstention LongMemEval_S set, so it should be run deliberately through the resumable `scripts/longmemeval-codex-batch.ts` checkpoint runner or replaced with an API-compatible official judge run.
 
 ## Reproduction commands
 
@@ -320,4 +320,25 @@ npm run eval:longmemeval:codex-judge -- \
   --hyp /tmp/LongMemEval/reports/cml-longmemeval-s-codex-hypotheses-smoke.jsonl \
   --ref /tmp/LongMemEval/data/longmemeval_s_cleaned.json \
   --out /tmp/LongMemEval/reports/cml-longmemeval-s-codex-hypotheses-smoke.jsonl.eval-results-codex
+
+LONGMEMEVAL_CODEX_TIMEOUT_MS=120000 \
+LONGMEMEVAL_BATCH_READER_TIMEOUT_MS=180000 \
+LONGMEMEVAL_BATCH_JUDGE_TIMEOUT_MS=180000 \
+npm run eval:longmemeval:codex-batch -- \
+  --input /tmp/LongMemEval/data/longmemeval_s_cleaned.json \
+  --out-dir /tmp/LongMemEval/reports/cml-longmemeval-s-codex-full-batch \
+  --granularity session \
+  --retrieval-mode hybrid \
+  --expand-preference-queries \
+  --temporal-date-boost \
+  --hybrid-session-weight 1.75 \
+  --hybrid-turn-weight 5 \
+  --top-k 10
+
+npm run eval:longmemeval:codex-batch -- \
+  --input /tmp/LongMemEval/data/longmemeval_s_cleaned.json \
+  --out-dir /tmp/LongMemEval/reports/cml-longmemeval-s-codex-full-batch \
+  --resume
 ```
+
+`--resume` requires the existing `checkpoint.json` and validates its fingerprint, so reruns must keep the same input path, managed output paths, and retrieval options. Use a fresh `--out-dir` or `--force` to restart with different options; `--resume` and `--force` are intentionally mutually exclusive. The batch runner also rejects duplicate/stale resumed `question_id` rows and managed output paths that collide with each other or with the input file.
