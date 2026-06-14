@@ -23,6 +23,7 @@ function switchView(viewName, options = {}) {
     case 'memory-banks': return loadMemoryBanksView();
     case 'sessions': return loadSessionInspectorView();
     case 'user-prompts': return loadUserPromptsView();
+    case 'playground': return loadPlaygroundView();
     case 'configuration': return loadConfigurationView();
     default: return Promise.resolve();
   }
@@ -772,17 +773,191 @@ async function loadUserPromptsView() {
   }
 }
 
+// --- Playground View ---
+
+async function loadPlaygroundView() {
+  renderPlaygroundDryRun(state.playgroundLastRun);
+  const status = document.getElementById('playground-status');
+  if (status && !state.playgroundLastRun) {
+    status.textContent = state.currentProject
+      ? 'Ready. Dry-run uses the selected project scope.'
+      : 'Ready. Global dry-run; select a project for project-local replay.';
+  }
+}
+
+async function runPlaygroundDryRun() {
+  if (state.isPlaygroundLoading) return;
+  const queryInput = document.getElementById('playground-query');
+  const query = (queryInput?.value || '').trim();
+  const status = document.getElementById('playground-status');
+  const button = document.getElementById('playground-run-btn');
+  if (!query) {
+    if (status) status.textContent = 'Enter a query before running a dry-run replay.';
+    return;
+  }
+
+  const strategy = document.getElementById('playground-strategy')?.value || 'fast';
+  const topK = Math.max(1, Math.min(20, parseInt(document.getElementById('playground-topk')?.value || '5', 10) || 5));
+  const windowSize = Math.max(1, Math.min(10, parseInt(document.getElementById('playground-window')?.value || '3', 10) || 3));
+  const includeShared = Boolean(document.getElementById('playground-include-shared')?.checked);
+
+  state.isPlaygroundLoading = true;
+  if (button) button.disabled = true;
+  if (status) status.textContent = 'Running dry-run replay...';
+  renderPlaygroundDryRun(null, true);
+
+  try {
+    const res = await fetch(apiUrl('/api/playground/dry-run'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        query,
+        options: { strategy, topK, includeShared, windowSize }
+      })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Playground dry-run failed');
+    state.playgroundLastRun = data;
+    if (status) status.textContent = `Dry-run complete · ${data.search?.results?.length || 0} result(s) · ${data.replayTrace?.join(' → ') || 'no trace'}`;
+    renderPlaygroundDryRun(data);
+  } catch (error) {
+    if (status) status.textContent = `Dry-run failed: ${error.message}`;
+    renderPlaygroundDryRun({ error: error.message, replayTrace: [] });
+  } finally {
+    state.isPlaygroundLoading = false;
+    if (button) button.disabled = false;
+  }
+}
+
+function renderPlaygroundDryRun(result, isLoading = false) {
+  const container = document.getElementById('playground-output');
+  if (!container) return;
+  if (isLoading) {
+    container.innerHTML = `
+      <div class="disclosure-results"><div class="disclosure-empty">Searching ranked candidates...</div></div>
+      <div class="disclosure-drilldown"><div class="disclosure-empty">Replay trace will appear after search.</div></div>
+    `;
+    return;
+  }
+  if (!result) {
+    container.innerHTML = `
+      <div class="disclosure-results"><div class="disclosure-empty">Run a query to see ranked results and replay trace.</div></div>
+      <div class="disclosure-drilldown"><div class="disclosure-empty">Expansion/source details will appear here.</div></div>
+    `;
+    return;
+  }
+  if (result.error) {
+    container.innerHTML = `
+      <div class="disclosure-results"><div class="disclosure-empty" style="color:var(--error);">${escapeHtml(result.error)}</div></div>
+      <div class="disclosure-drilldown"><div class="disclosure-empty">No replay output.</div></div>
+    `;
+    return;
+  }
+
+  const results = result.search?.results || [];
+  const resultCards = results.length ? results.map((r, idx) => `
+    <div class="disclosure-result${r.id === result.selectedResultId ? ' active' : ''}">
+      <div class="disclosure-result-head">
+        <span class="event-type-badge">#${idx + 1} ${escapeHtml(r.resultType || 'result')}</span>
+        <span class="disclosure-scope-pill">score ${Number(r.score || 0).toFixed(2)}</span>
+      </div>
+      <div class="disclosure-snippet">${highlightDisclosureText(r.snippet || r.preview || '', result.query || '')}</div>
+      <div class="disclosure-rank-explain"><strong>Why this ranked</strong>${(r.reasons || []).map(reason => `<span class="disclosure-chip">${escapeHtml(reason)}</span>`).join('') || '<span class="disclosure-chip">no_reason</span>'}</div>
+    </div>
+  `).join('') : '<div class="disclosure-empty">No results. Try a broader query or another project scope.</div>';
+
+  const trace = (result.replayTrace || []).map(step => `<span class="disclosure-chip">${escapeHtml(step)}</span>`).join('');
+  const expansionFacts = (result.expansion?.surroundingFacts || []).slice(0, 6).map(f => `
+    <div class="shared-item"><div class="shared-info"><span>${escapeHtml(f.snippet || f.summary || f.id || 'fact')}</span></div></div>
+  `).join('') || '<div class="disclosure-empty">No expansion facts returned.</div>';
+  const rawEvents = (result.source?.rawEvents || []).slice(0, 3).map(e => {
+    const preview = e?.preview || e?.id || e?.eventId || 'source preview unavailable';
+    return `<pre class="disclosure-source-pre">${escapeHtml(buildSafeDisclosurePreview(preview))}</pre>`;
+  }).join('') || '<div class="disclosure-empty">No safe source preview returned.</div>';
+
+  container.innerHTML = `
+    <div class="disclosure-results">
+      <div class="snapshot-note">Dry-run: ${result.mutated === false ? 'no memory writes' : 'mutation state unknown'} · selected ${escapeHtml(result.selectedResultId || 'none')}</div>
+      ${resultCards}
+    </div>
+    <div class="disclosure-drilldown">
+      <div class="disclosure-section-title">Replay Trace</div>
+      <div class="disclosure-rank-explain">${trace || '<span class="disclosure-chip">empty</span>'}</div>
+      <div class="disclosure-section-title" style="margin-top:14px;">Expand layer</div>
+      ${expansionFacts}
+      <div class="disclosure-section-title" style="margin-top:14px;">Source layer</div>
+      ${rawEvents}
+    </div>
+  `;
+}
+
 // --- Configuration View ---
+
+function renderSetupProviderHealthCard(setupHealth) {
+  if (!setupHealth) {
+    return `
+      <div class="card setup-provider-health-card" style="margin-bottom:24px;">
+        <div class="card-header"><div class="card-title"><i class="ri-stethoscope-line"></i><span>Setup & Provider Health</span></div></div>
+        <div class="disclosure-empty">Setup health is unavailable.</div>
+      </div>
+    `;
+  }
+  const setup = setupHealth.setup || {};
+  const storage = setup.storage || {};
+  const outbox = setup.outbox || {};
+  const providers = setupHealth.providers || {};
+  const claude = providers.claudeCli || {};
+  const embeddings = providers.embeddings || {};
+  const recommendations = Array.isArray(setupHealth.recommendations) ? setupHealth.recommendations : [];
+  const status = setupHealth.status || 'unknown';
+  const scope = setup.scope || 'global';
+  const recommendationHtml = recommendations.length
+    ? recommendations.map(item => `<div class="snapshot-note">${escapeHtml(item)}</div>`).join('')
+    : '<div class="snapshot-note">No setup action required.</div>';
+
+  return `
+    <div class="card setup-provider-health-card" style="margin-bottom:24px;">
+      <div class="card-header" style="align-items:flex-start;">
+        <div>
+          <div class="card-title"><i class="ri-stethoscope-line"></i><span>Setup & Provider Health</span></div>
+          <div class="session-muted">Provider readiness, storage visibility, and setup guidance for the current ${escapeHtml(scope)} scope.</div>
+        </div>
+        <span class="disclosure-scope-pill">${escapeHtml(status)}</span>
+      </div>
+      <div class="cfg-grid">
+        <div class="cfg-section">
+          <div class="cfg-section-title"><i class="ri-hard-drive-2-line"></i>Storage Readiness</div>
+          <div class="cfg-row"><span class="cfg-row-label">Status</span><span class="cfg-row-value">${escapeHtml(storage.status || 'unknown')}</span></div>
+          <div class="cfg-row"><span class="cfg-row-label">Events</span><span class="cfg-row-value">${formatNumber(storage.totalEvents || 0)} events</span></div>
+          <div class="cfg-row"><span class="cfg-row-label">Vectors</span><span class="cfg-row-value">${formatNumber(storage.vectorCount || 0)} vectors</span></div>
+          <div class="cfg-row"><span class="cfg-row-label">Outbox</span><span class="cfg-row-value">${formatNumber(outbox.pending || 0)} pending · ${formatNumber(outbox.failed || 0)} failed · ${formatNumber(outbox.stuckProcessing || 0)} stuck</span></div>
+        </div>
+        <div class="cfg-section">
+          <div class="cfg-section-title"><i class="ri-terminal-box-line"></i>Provider Readiness</div>
+          <div class="cfg-row"><span class="cfg-row-label">Claude CLI</span><span class="cfg-row-value">${escapeHtml(claude.status || 'unknown')}</span></div>
+          <div class="cfg-row"><span class="cfg-row-label">Claude Auth Signal</span><span class="cfg-row-value">${escapeHtml(claude.authSignal || 'not-detected')}</span></div>
+          <div class="cfg-row"><span class="cfg-row-label">Embedding Backend</span><span class="cfg-row-value">${escapeHtml(embeddings.status || 'unknown')}</span></div>
+          <div class="cfg-row"><span class="cfg-row-label">Backend</span><span class="cfg-row-value">${escapeHtml(embeddings.backend || '@huggingface/transformers')}</span></div>
+        </div>
+      </div>
+      <div style="margin-top:14px;">
+        <div class="section-label">Setup recommendations</div>
+        ${recommendationHtml}
+      </div>
+    </div>
+  `;
+}
 
 async function loadConfigurationView() {
   const container = document.getElementById('cfg-content');
   container.innerHTML = '<div style="text-align:center; padding:60px; color:var(--text-muted);">Loading configuration...</div>';
 
   try {
-    const [statsRes, graduationRes, endlessRes] = await Promise.all([
+    const [statsRes, graduationRes, endlessRes, setupHealthRes] = await Promise.all([
       fetch(apiUrl(`${API_BASE}/stats`)).then(r => r.json()).catch(() => null),
       fetch(apiUrl(`${API_BASE}/stats/graduation`)).then(r => r.json()).catch(() => null),
-      fetch(apiUrl(`${API_BASE}/stats/endless`)).then(r => r.json()).catch(() => null)
+      fetch(apiUrl(`${API_BASE}/stats/endless`)).then(r => r.json()).catch(() => null),
+      fetch(apiUrl(`${API_BASE}/health/setup`)).then(r => r.json()).catch(() => null)
     ]);
 
     const memory = statsRes?.memory || {};
@@ -790,8 +965,10 @@ async function loadConfigurationView() {
     const criteria = graduationRes?.criteria || {};
     const descriptions = graduationRes?.description || {};
     const endless = endlessRes || {};
+    const setupHealth = setupHealthRes || null;
 
     container.innerHTML = `
+      ${renderSetupProviderHealthCard(setupHealth)}
       <div class="cfg-grid">
         <div class="cfg-section">
           <div class="cfg-section-title"><i class="ri-database-2-line"></i>Storage</div>

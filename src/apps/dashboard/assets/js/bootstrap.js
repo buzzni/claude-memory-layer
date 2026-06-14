@@ -208,6 +208,20 @@ function setupEventListeners() {
     vectorHealthRecoverBtn.addEventListener('click', recoverVectorHealth);
   }
 
+  const playgroundRunBtn = document.getElementById('playground-run-btn');
+  if (playgroundRunBtn) {
+    playgroundRunBtn.addEventListener('click', runPlaygroundDryRun);
+  }
+  const playgroundQuery = document.getElementById('playground-query');
+  if (playgroundQuery) {
+    playgroundQuery.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        runPlaygroundDryRun();
+      }
+    });
+  }
+
   // Stat cards
   document.querySelectorAll('.stat-card[data-stat]').forEach(card => {
     card.addEventListener('click', () => {

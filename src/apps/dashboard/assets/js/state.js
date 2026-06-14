@@ -17,6 +17,8 @@ const state = {
   operationsStats: null,
   perspectiveStats: null,
   vectorHealth: null,
+  projectDetail: null,
+  projectDetailProject: null,
   vectorHealthRecovery: null,
   vectorHealthRecoveryProject: null,
   isVectorRecoveryRunning: false,
@@ -63,7 +65,9 @@ const state = {
   disclosureSelectedId: null,
   disclosureExpansion: null,
   disclosureSource: null,
-  isDisclosureLoading: false
+  isDisclosureLoading: false,
+  playgroundLastRun: null,
+  isPlaygroundLoading: false
 };
 
 // Utils

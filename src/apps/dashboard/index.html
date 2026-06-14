@@ -64,6 +64,10 @@
             <i class="ri-message-2-line"></i>
             <span>User Prompts</span>
           </li>
+          <li class="nav-item" data-nav="playground">
+            <i class="ri-flask-line"></i>
+            <span>Playground</span>
+          </li>
           <li class="nav-item" data-nav="configuration">
             <i class="ri-settings-4-line"></i>
             <span>Configuration</span>
@@ -111,6 +115,16 @@
             <strong>No aggregate data is visible in Global scope yet.</strong>
             <span>Select a project from the sidebar to inspect live project-local memory, sessions, and retrieval evidence.</span>
           </div>
+        </div>
+
+        <div id="project-detail-card" class="card project-detail-card" hidden>
+          <div class="card-header">
+            <div class="card-title">
+              <i class="ri-folder-chart-line"></i>
+              <span>Project Detail</span>
+            </div>
+          </div>
+          <div class="disclosure-empty">Select a project to inspect project-local detail.</div>
         </div>
 
         <!-- Stats Grid -->
@@ -663,6 +677,50 @@
           </div>
           <div id="user-prompt-list" class="event-list">
             <div style="padding:20px; text-align:center; color:var(--text-muted);">Loading...</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ========== VIEW: Playground ========== -->
+      <div id="view-playground" class="page-view">
+        <header class="top-header">
+          <div class="page-title">
+            <h1>Playground</h1>
+            <p>Dry-run Replay for retrieval: Search → Expand → Source without mutating memory</p>
+          </div>
+        </header>
+        <div class="card" style="margin-bottom:16px;">
+          <div class="card-header" style="align-items:flex-end;">
+            <div>
+              <div class="card-title"><i class="ri-flask-line"></i><span>Dry-run Replay</span></div>
+              <div class="session-muted">Use the current project scope and replay the retrieval evidence pipeline safely.</div>
+            </div>
+            <div class="disclosure-controls">
+              <select id="playground-strategy" class="project-dropdown compact">
+                <option value="fast">fast</option>
+                <option value="auto">auto</option>
+                <option value="deep">deep</option>
+              </select>
+              <input id="playground-topk" class="search-input compact" type="number" min="1" max="20" value="5" title="Top K">
+              <input id="playground-window" class="search-input compact" type="number" min="1" max="10" value="3" title="Expand window">
+              <label class="disclosure-toggle"><input type="checkbox" id="playground-include-shared"> Shared</label>
+            </div>
+          </div>
+          <div class="disclosure-search-row">
+            <div class="search-wrapper disclosure-search-wrapper">
+              <i class="ri-search-line"></i>
+              <input type="text" id="playground-query" class="search-input" placeholder="Replay a retrieval query without writing memory...">
+            </div>
+            <button id="playground-run-btn" class="btn btn-secondary"><i class="ri-play-circle-line"></i><span>Run Dry-run</span></button>
+          </div>
+          <div id="playground-status" class="disclosure-status">Ready. Select a project for project-local dry-runs.</div>
+        </div>
+        <div id="playground-output" class="disclosure-layout">
+          <div class="disclosure-results">
+            <div class="disclosure-empty">Run a query to see ranked results and replay trace.</div>
+          </div>
+          <div class="disclosure-drilldown">
+            <div class="disclosure-empty">Expansion/source details will appear here.</div>
           </div>
         </div>
       </div>

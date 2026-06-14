@@ -22,6 +22,65 @@ function renderDisclosureStatus(message, isError = false) {
   status.style.color = isError ? 'var(--error)' : 'var(--text-muted)';
 }
 
+function disclosureString(value) {
+  if (value === undefined || value === null || value === '') return null;
+  return String(value);
+}
+
+function normalizeDisclosureEventId(value) {
+  const raw = disclosureString(value);
+  if (!raw) return null;
+  return raw.startsWith('event:') ? raw.slice('event:'.length) : raw;
+}
+
+function getDisclosureJumpTarget(...candidates) {
+  for (const candidate of candidates) {
+    const target = getDisclosureJumpTargetFromCandidate(candidate);
+    if (target) return target;
+  }
+  return null;
+}
+
+function getDisclosureJumpTargetFromCandidate(candidate) {
+  if (!candidate || typeof candidate !== 'object') return null;
+
+  const nestedCandidates = [];
+  if (candidate.primaryEvent) nestedCandidates.push(candidate.primaryEvent);
+  if (candidate.rawEvent) nestedCandidates.push(candidate.rawEvent);
+  if (candidate.event) nestedCandidates.push(candidate.event);
+  if (Array.isArray(candidate.rawEvents)) nestedCandidates.push(...candidate.rawEvents);
+  for (const nested of nestedCandidates) {
+    const target = getDisclosureJumpTargetFromCandidate(nested);
+    if (target) return target;
+  }
+
+  const metadata = candidate.metadata && typeof candidate.metadata === 'object' ? candidate.metadata : {};
+  const sessionId = disclosureString(candidate.sessionId || metadata.sessionId);
+  if (!sessionId) return null;
+
+  const eventId = normalizeDisclosureEventId(
+    candidate.eventId ||
+    metadata.eventId ||
+    candidate.id ||
+    candidate.sourceRef ||
+    (Array.isArray(candidate.eventIds) ? candidate.eventIds[0] : null)
+  );
+  return { sessionId, eventId };
+}
+
+function disclosureAttrArg(value) {
+  if (typeof jsAttrArg === 'function') return jsAttrArg(value);
+  return escapeHtml(JSON.stringify(String(value ?? '')));
+}
+
+function renderDisclosureJumpButton(target, label = 'Open in Sessions') {
+  if (!target?.sessionId) return '';
+  return `
+    <button type="button" class="inline-action-btn disclosure-session-jump" onclick="event.stopPropagation(); jumpToSession(${disclosureAttrArg(target.sessionId)}, ${disclosureAttrArg(target.eventId || '')})">
+      <i class="ri-corner-right-up-line"></i> ${escapeHtml(label)}
+    </button>`;
+}
+
 async function handleDisclosureSearch() {
   const input = document.getElementById('disclosure-search-input');
   const query = (input?.value || '').trim();
@@ -108,8 +167,10 @@ function renderDisclosureResults() {
     const reasons = (r.reasons || []).map(reason => `<span class="disclosure-chip">${escapeHtml(reason)}</span>`).join('');
     const provenance = renderDisclosureProvenance(r.metadata, ['sourceProjectHash', 'sourceEntryId', 'topics']);
     const scope = getDisclosureScopeLabel(r);
+    const jumpTarget = getDisclosureJumpTarget(r);
+    const jumpButton = renderDisclosureJumpButton(jumpTarget);
     return `
-      <button class="disclosure-result${active}" data-result-id="${escapeHtml(r.id)}">
+      <div class="disclosure-result${active}" data-result-id="${escapeHtml(r.id)}" role="button" tabindex="0">
         <div class="disclosure-result-head">
           <span class="event-type-badge">#${idx + 1} ${escapeHtml(r.resultType || 'result')}</span>
           <span class="disclosure-scope-pill">${escapeHtml(scope)}</span>
@@ -119,13 +180,19 @@ function renderDisclosureResults() {
         <div class="disclosure-snippet" title="${escapeHtml(r.snippet || '(no snippet)')}">${highlightDisclosureText(r.snippet || '(no snippet)', query)}</div>
         ${provenance}
         <div class="disclosure-rank-explain"><strong>Why this ranked</strong>${reasons || '<span class="disclosure-chip">no_reason</span>'}</div>
-        <div class="disclosure-result-cta">Inspect evidence <i class="ri-arrow-right-line"></i></div>
-      </button>`;
+        <div class="disclosure-result-cta"><span>Inspect evidence <i class="ri-arrow-right-line"></i></span>${jumpButton}</div>
+      </div>`;
   }).join('');
 
   container.innerHTML = metaHtml + resultHtml;
   container.querySelectorAll('.disclosure-result').forEach(btn => {
-    btn.addEventListener('click', () => loadDisclosureDrilldown(btn.dataset.resultId));
+    const openResult = () => loadDisclosureDrilldown(btn.dataset.resultId);
+    btn.addEventListener('click', openResult);
+    btn.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      openResult();
+    });
   });
 }
 
@@ -205,6 +272,10 @@ function renderDisclosureDrilldown(isLoading = false, message = null, isError = 
   const sourceProvenanceBlock = sourceProvenance
     ? `<div class="modal-section-title">${isSharedSource ? 'Shared source provenance' : 'Source metadata'}</div>${sourceProvenance}`
     : '';
+  const sourceJumpButton = renderDisclosureJumpButton(
+    getDisclosureJumpTarget(source, rawEvent, expansion.target),
+    'Open in Sessions'
+  );
 
   container.innerHTML = `
     <div class="disclosure-stepper" aria-label="Search → Expand → Source">
@@ -226,6 +297,7 @@ function renderDisclosureDrilldown(isLoading = false, message = null, isError = 
       <div class="modal-section-title">Source evidence</div>
       <div class="disclosure-safe-label">Safe preview</div>
       <div class="modal-content-block">${escapeHtml(sourcePreview)}</div>
+      ${sourceJumpButton}
       ${sourceSafetyNote}
       ${rawEvent ? '<button class="sort-btn" type="button" disabled title="Raw transcript and metadata are intentionally hidden in this dashboard panel.">Show raw/meta text</button>' : ''}
       ${sourceProvenanceBlock}

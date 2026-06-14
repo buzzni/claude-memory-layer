@@ -18,9 +18,11 @@ class TestElement {
   appendChild() {}
 }
 
+type FetchStub = (...args: any[]) => Promise<{ ok: boolean; json: () => Promise<unknown> }>;
+
 function loadDashboardWithElements(
   elements: Record<string, TestElement>,
-  fetchImpl: typeof fetch | (() => Promise<{ ok: boolean; json: () => Promise<unknown> }>) = async () => ({ ok: true, json: async () => ({}) })
+  fetchImpl: FetchStub = async () => ({ ok: true, json: async () => ({}) })
 ) {
   const dashboardDir = join(process.cwd(), 'src/apps/dashboard/assets/js');
   const source = ['state.js', 'views.js', 'disclosure.js']
@@ -43,7 +45,7 @@ function loadDashboardWithElements(
   };
 
   vm.runInNewContext(
-    `${source}\n;globalThis.__dashboardTestHooks = { state, handleDisclosureSearch, renderDisclosureResults, renderDisclosureDrilldown };`,
+    `${source}\n;globalThis.__dashboardTestHooks = { state, handleDisclosureSearch, renderDisclosureResults, renderDisclosureDrilldown, getDisclosureJumpTarget };`,
     context
   );
   return (context as unknown as { __dashboardTestHooks: {
@@ -51,6 +53,7 @@ function loadDashboardWithElements(
     handleDisclosureSearch: () => Promise<void>;
     renderDisclosureResults: () => void;
     renderDisclosureDrilldown: () => void;
+    getDisclosureJumpTarget: (...candidates: any[]) => { sessionId: string; eventId: string | null } | null;
   }}).__dashboardTestHooks;
 }
 
@@ -88,6 +91,35 @@ describe('dashboard retrieval disclosure provenance output', () => {
     expect(html).toContain('project-a');
     expect(html).toContain('topics');
     expect(html).toContain('checkout');
+  });
+
+  it('renders local search results with an Open in Sessions jump target', () => {
+    const elements = { 'disclosure-results': new TestElement() };
+    const hooks = loadDashboardWithElements(elements);
+
+    const result = {
+      id: 'event:e1',
+      resultType: 'source',
+      title: 'User asked about MemoryHub',
+      snippet: 'benchmark dashboard ideas',
+      score: 0.91,
+      reasons: ['keyword_match'],
+      sourceRef: 'event:e1',
+      sessionId: 'session-1',
+      metadata: { sourceProjectHash: 'b7f03a73', eventId: 'e1' }
+    };
+    hooks.state.isDisclosureLoading = false;
+    hooks.state.disclosureMeta = { total: 1, usedVector: false, usedKeyword: true, fallbackApplied: false };
+    hooks.state.disclosureResults = [result];
+
+    hooks.renderDisclosureResults();
+
+    const html = elements['disclosure-results'].innerHTML;
+    expect(hooks.getDisclosureJumpTarget(result)).toEqual({ sessionId: 'session-1', eventId: 'e1' });
+    expect(html).toContain('Open in Sessions');
+    expect(html).toContain('jumpToSession');
+    expect(html).toContain('session-1');
+    expect(html).toContain('e1');
   });
 
   it('renders search results after a successful disclosure search instead of leaving the list loading', async () => {
@@ -229,6 +261,7 @@ describe('dashboard retrieval disclosure provenance output', () => {
       eventIds: ['e1'],
       rawEvents: [{
         id: 'e1',
+        sessionId: 'session-1',
         eventType: 'user_prompt',
         timestamp: '2026-06-14T00:00:00.000Z',
         content: '[CONTEXT COMPACTION — REFERENCE ONLY] giant raw transcript metadata\nhttps://memoryhub.ai/ko/ benchmark dashboard ideas',
@@ -243,6 +276,9 @@ describe('dashboard retrieval disclosure provenance output', () => {
     expect(html).toContain('Source evidence');
     expect(html).toContain('Safe preview');
     expect(html).toContain('Show raw/meta text');
+    expect(html).toContain('Open in Sessions');
+    expect(html).toContain('jumpToSession');
+    expect(html).toContain('session-1');
     expect(html).toContain('Context compaction boilerplate hidden');
     expect(html).toContain('https://memoryhub.ai/ko/');
     expect(html).not.toContain('[CONTEXT COMPACTION');

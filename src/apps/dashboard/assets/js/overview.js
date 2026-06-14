@@ -32,6 +32,88 @@ async function loadVectorHealthData() {
     .catch(() => null);
 }
 
+async function loadProjectDetailData() {
+  if (!state.currentProject) {
+    state.projectDetail = null;
+    state.projectDetailProject = null;
+    return;
+  }
+  const projectHash = state.currentProject;
+  state.projectDetail = await fetch(apiUrl(`${API_BASE}/projects/${encodeURIComponent(projectHash)}/detail`))
+    .then(r => r.ok !== false ? r.json() : null)
+    .catch(() => null);
+  state.projectDetailProject = projectHash;
+}
+
+function topEntries(record, limit = 3) {
+  return Object.entries(record || {})
+    .sort((a, b) => Number(b[1] || 0) - Number(a[1] || 0))
+    .slice(0, limit);
+}
+
+function updateProjectDetailUI() {
+  const el = document.getElementById('project-detail-card');
+  if (!el) return;
+
+  if (!state.currentProject) {
+    el.hidden = true;
+    el.innerHTML = '';
+    return;
+  }
+
+  el.hidden = false;
+  const detail = state.projectDetailProject === state.currentProject ? state.projectDetail : null;
+  if (!detail) {
+    el.innerHTML = `
+      <div class="card-header">
+        <div class="card-title"><i class="ri-folder-chart-line"></i><span>Project Detail</span></div>
+      </div>
+      <div class="disclosure-empty">Project detail is unavailable for the selected scope.</div>
+    `;
+    return;
+  }
+
+  const project = detail.project || {};
+  const storage = detail.storage || {};
+  const sessions = detail.sessions || {};
+  const retrieval = detail.retrieval || {};
+  const outbox = detail.outbox || {};
+  const eventTypeChips = topEntries(detail.eventTypes, 4)
+    .map(([label, count]) => `<span class="event-type-badge ${eventTypeBadgeClass(label)}">${escapeHtml(label)} · ${formatNumber(count)}</span>`)
+    .join('') || '<span class="session-muted">No event types</span>';
+  const sourceChips = topEntries(detail.sources, 3)
+    .map(([label, count]) => `<span class="disclosure-scope-pill">${escapeHtml(label)} · ${formatNumber(count)}</span>`)
+    .join('') || '<span class="session-muted">No source metadata</span>';
+  const selectionRate = `${((retrieval.selectionRate || 0) * 100).toFixed(1)}% selection`;
+
+  el.innerHTML = `
+    <div class="card-header" style="align-items:flex-start;">
+      <div>
+        <div class="card-title"><i class="ri-folder-chart-line"></i><span>Project Detail</span></div>
+        <div class="session-muted">${escapeHtml(project.projectName || state.currentProject)} · ${escapeHtml(project.registered ? 'registered' : 'unregistered')}</div>
+      </div>
+      <span class="disclosure-scope-pill">${escapeHtml(project.hash || state.currentProject)}</span>
+    </div>
+    <div class="stats-grid kpi-grid" style="margin-top:0; margin-bottom:14px;">
+      <div class="stat-card kpi-card"><div class="stat-value">${formatNumber(storage.eventCount || 0)} events</div><div class="stat-label"><i class="ri-file-list-3-line"></i> total</div></div>
+      <div class="stat-card kpi-card"><div class="stat-value">${formatNumber(sessions.total || 0)} sessions</div><div class="stat-label"><i class="ri-discuss-line"></i> active</div></div>
+      <div class="stat-card kpi-card"><div class="stat-value">${formatNumber(storage.vectorCount || 0)} vectors</div><div class="stat-label"><i class="ri-node-tree"></i> indexed</div></div>
+      <div class="stat-card kpi-card"><div class="stat-value">${formatNumber(retrieval.totalQueries || 0)}</div><div class="stat-label"><i class="ri-search-eye-line"></i> ${selectionRate}</div></div>
+    </div>
+    <div class="cfg-grid">
+      <div class="cfg-section">
+        <div class="cfg-section-title"><i class="ri-price-tag-3-line"></i>Event types</div>
+        <div style="display:flex; gap:6px; flex-wrap:wrap;">${eventTypeChips}</div>
+      </div>
+      <div class="cfg-section">
+        <div class="cfg-section-title"><i class="ri-router-line"></i>Sources & outbox</div>
+        <div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:8px;">${sourceChips}</div>
+        <div class="session-muted">${formatNumber(outbox.pending || 0)} pending · ${formatNumber(outbox.processing || 0)} processing · ${formatNumber(outbox.failed || 0)} failed · ${formatNumber(outbox.stuckProcessing || 0)} stuck</div>
+      </div>
+    </div>
+  `;
+}
+
 async function refreshData() {
   const btn = document.getElementById('refresh-btn');
   if(btn) btn.classList.add('loading');
@@ -41,7 +123,7 @@ async function refreshData() {
   const kpiWindowAtStart = state.kpiWindow;
 
   try {
-    const [stats, shared, mostAccessed, helpfulness, memoryUsefulness, retrievalTraces, retrievalReviewQueue, operationsStats, perspectiveStats, adherenceSummary, vectorHealth] = await Promise.all([
+    const [stats, shared, mostAccessed, helpfulness, memoryUsefulness, retrievalTraces, retrievalReviewQueue, operationsStats, perspectiveStats, adherenceSummary, vectorHealth, projectDetail] = await Promise.all([
       fetch(apiUrl(`${API_BASE}/stats`)).then(r => r.json()).catch(() => null),
       fetch(apiUrl(`${API_BASE}/stats/shared`)).then(r => r.json()).catch(() => null),
       fetch(apiUrl(`${API_BASE}/stats/most-accessed`, { limit: 10 })).then(r => r.json()).catch(() => null),
@@ -52,7 +134,10 @@ async function refreshData() {
       fetch(apiUrl(`${API_BASE}/stats/operations`, { windowDays: operationStatsWindowDays() })).then(r => r.ok ? r.json() : null).catch(() => null),
       fetch(apiUrl(`${API_BASE}/stats/perspective`, { windowDays: operationStatsWindowDays() })).then(r => r.ok ? r.json() : null).catch(() => null),
       fetchAdherenceSummary().catch(() => null),
-      fetch(apiUrl(`${API_BASE}/health`)).then(r => r.ok ? r.json() : null).catch(() => null)
+      fetch(apiUrl(`${API_BASE}/health`)).then(r => r.ok ? r.json() : null).catch(() => null),
+      state.currentProject
+        ? fetch(apiUrl(`${API_BASE}/projects/${encodeURIComponent(state.currentProject)}/detail`)).then(r => r.ok ? r.json() : null).catch(() => null)
+        : Promise.resolve(null)
     ]);
 
     if (
@@ -74,11 +159,14 @@ async function refreshData() {
     state.perspectiveStats = perspectiveStats;
     state.adherenceSummary = adherenceSummary;
     state.vectorHealth = vectorHealth;
+    state.projectDetail = projectDetail;
+    state.projectDetailProject = state.currentProject || null;
 
     await loadKpiData();
     if (refreshRequestId !== state.refreshRequestId) return;
 
     updateStatsUI();
+    updateProjectDetailUI();
     updateSharedUI();
     updateMemoryUsageUI();
     updateKpiCardsUI();

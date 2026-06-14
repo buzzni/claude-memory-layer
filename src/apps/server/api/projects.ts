@@ -7,9 +7,89 @@ import { Hono } from 'hono';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { loadSessionRegistry } from '../../../services/memory-service.js';
+import {
+  DISABLED_SHARED_STORE_CONFIG,
+  loadSessionRegistry,
+  MemoryService
+} from '../../../services/memory-service.js';
+import { resolveProjectStoragePath } from '../../../core/registry/project-path.js';
 
 export const projectsRouter = new Hono();
+
+type ProjectDetailEvent = {
+  eventType?: string;
+  sessionId?: string;
+  timestamp?: Date | string;
+  metadata?: Record<string, unknown> | null;
+};
+
+type OutboxKindStats = {
+  pending?: number;
+  processing?: number;
+  failed?: number;
+  stuckProcessing?: number;
+};
+
+type ProjectOutboxStats = {
+  embedding?: OutboxKindStats;
+  vector?: OutboxKindStats;
+};
+
+// GET /api/projects/:hash/detail - Aggregate project details for the dashboard.
+projectsRouter.get('/:hash/detail', async (c) => {
+  const { hash } = c.req.param();
+  const registry = loadSessionRegistry();
+  const projectPath = getRegisteredProjectPath(registry, hash);
+  const storagePath = resolveProjectStoragePath(hash);
+  const memoryService = new MemoryService({
+    storagePath,
+    projectHash: hash,
+    ...(projectPath ? { projectPath } : {}),
+    readOnly: true,
+    lightweightMode: true,
+    analyticsEnabled: false,
+    sharedStoreConfig: DISABLED_SHARED_STORE_CONFIG
+  });
+
+  try {
+    await memoryService.initialize();
+    const [stats, recentEvents, retrieval, outbox] = await Promise.all([
+      memoryService.getStats(),
+      memoryService.getRecentEvents(1000),
+      memoryService.getRetrievalTraceStats(),
+      memoryService.getOutboxStats()
+    ]);
+
+    const eventSummary = summarizeProjectEvents(recentEvents as ProjectDetailEvent[]);
+    return c.json({
+      project: {
+        hash,
+        projectName: projectPath ? path.basename(projectPath) : `unknown (${hash})`,
+        registered: Boolean(projectPath)
+      },
+      storage: {
+        eventCount: stats.totalEvents,
+        vectorCount: stats.vectorCount,
+        levels: stats.levelStats || []
+      },
+      sessions: eventSummary.sessions,
+      eventTypes: eventSummary.eventTypes,
+      sources: eventSummary.sources,
+      activity: eventSummary.activity,
+      retrieval: {
+        totalQueries: retrieval.totalQueries,
+        avgCandidateCount: retrieval.avgCandidateCount,
+        avgSelectedCount: retrieval.avgSelectedCount,
+        selectionRate: retrieval.selectionRate
+      },
+      outbox: summarizeProjectOutbox(outbox as ProjectOutboxStats)
+    });
+  } catch {
+    return c.json({ error: 'Project detail unavailable' }, 500);
+  } finally {
+    await memoryService.shutdown();
+  }
+});
 
 // GET /api/projects - List available projects
 projectsRouter.get('/', async (c) => {
@@ -64,6 +144,64 @@ projectsRouter.get('/', async (c) => {
     return c.json({ projects: [], error: (error as Error).message }, 500);
   }
 });
+
+function getRegisteredProjectPath(registry: ReturnType<typeof loadSessionRegistry>, hash: string): string | undefined {
+  for (const entry of Object.values(registry.sessions)) {
+    if (entry.projectHash === hash) {
+      return entry.projectPath;
+    }
+  }
+  return undefined;
+}
+
+function summarizeProjectEvents(events: ProjectDetailEvent[]) {
+  const sessions = new Set<string>();
+  const eventTypes: Record<string, number> = {};
+  const sources: Record<string, number> = {};
+  let firstEventAt: string | null = null;
+  let lastEventAt: string | null = null;
+
+  for (const event of events) {
+    if (event.sessionId) sessions.add(event.sessionId);
+    incrementBucket(eventTypes, event.eventType || 'unknown');
+    const source = typeof event.metadata?.source === 'string' ? event.metadata.source : 'unknown';
+    incrementBucket(sources, source || 'unknown');
+    const timestamp = normalizeIsoTimestamp(event.timestamp);
+    if (!timestamp) continue;
+    if (!firstEventAt || timestamp < firstEventAt) firstEventAt = timestamp;
+    if (!lastEventAt || timestamp > lastEventAt) lastEventAt = timestamp;
+  }
+
+  return {
+    sessions: { total: sessions.size },
+    eventTypes,
+    sources,
+    activity: { firstEventAt, lastEventAt }
+  };
+}
+
+function summarizeProjectOutbox(outbox: ProjectOutboxStats) {
+  const embedding = outbox.embedding || {};
+  const vector = outbox.vector || {};
+  return {
+    pending: (embedding.pending || 0) + (vector.pending || 0),
+    processing: (embedding.processing || 0) + (vector.processing || 0),
+    failed: (embedding.failed || 0) + (vector.failed || 0),
+    stuckProcessing: (embedding.stuckProcessing || 0) + (vector.stuckProcessing || 0)
+  };
+}
+
+function incrementBucket(bucket: Record<string, number>, rawLabel: string): void {
+  const label = rawLabel.replace(/[^a-zA-Z0-9_.:-]/g, '_').slice(0, 80) || 'unknown';
+  bucket[label] = (bucket[label] || 0) + 1;
+}
+
+function normalizeIsoTimestamp(value: Date | string | undefined): string | null {
+  if (!value) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toISOString();
+}
 
 function formatBytes(bytes: number): string {
   if (bytes === 0) return '0 B';
