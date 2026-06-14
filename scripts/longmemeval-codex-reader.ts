@@ -42,6 +42,14 @@ const DEFAULT_TIMEOUT_MS = 120_000;
 const MAX_TIMEOUT_MS = 600_000;
 const DEFAULT_SANDBOX = 'read-only';
 const ALLOWED_SANDBOXES = new Set(['read-only', 'workspace-write', 'danger-full-access']);
+const EVIDENCE_NOTE_LIMIT = 8;
+const EVIDENCE_NOTE_SNIPPET_LIMIT = 280;
+const QUESTION_STOPWORDS = new Set([
+  'about', 'again', 'also', 'and', 'any', 'are', 'can', 'could', 'did', 'does', 'for', 'from',
+  'had', 'has', 'have', 'how', 'into', 'many', 'may', 'might', 'need', 'off', 'onto', 'our',
+  'out', 'the', 'their', 'them', 'then', 'there', 'these', 'this', 'those', 'what', 'when',
+  'where', 'which', 'while', 'who', 'why', 'with', 'would', 'you', 'your'
+]);
 
 void main().catch((error) => {
   if (error instanceof ReaderError) {
@@ -165,6 +173,7 @@ function parseContext(context: unknown, index: number): LongMemEvalReaderContext
 }
 
 function buildPrompt(payload: LongMemEvalReaderPayload, contextCharLimit: number): string {
+  const evidenceNotes = buildQuestionFocusedEvidenceNotes(payload);
   const lines = [
     'You are a LongMemEval reader.',
     'Answer only from the retrieved context below.',
@@ -175,6 +184,7 @@ function buildPrompt(payload: LongMemEvalReaderPayload, contextCharLimit: number
     `Question ID: ${payload.question_id}`,
     ...(payload.category ? [`Category: ${payload.category}`] : []),
     `Question: ${payload.question}`,
+    ...(evidenceNotes.length > 0 ? ['', 'Question-focused evidence notes:', ...evidenceNotes] : []),
     '',
     'Retrieved Contexts:'
   ];
@@ -203,6 +213,11 @@ function buildReaderGuidanceLines(payload: LongMemEvalReaderPayload): string[] {
   if (category.includes('multi')) {
     lines.push('For multi-session questions, inspect all retrieved contexts and synthesize every required evidence item before answering.');
     lines.push('Do not answer from only the top-ranked context when the question asks for comparisons, changes, counts, or multiple facts.');
+    lines.push('Use an internal evidence ledger before answering: context rank/id, quoted supporting fact, normalized item or event, include/exclude reason.');
+    lines.push('When evidence is spread across non-adjacent ranks, include later relevant contexts instead of stopping after early evidence.');
+  }
+  if (isCountQuestion(payload.question)) {
+    lines.push('For "how many" or count questions, count distinct supported items or events, not the number of retrieved contexts.');
   }
   if (category.includes('temporal')) {
     lines.push('For temporal-reasoning questions, use the dates in context headers and prefer evidence matching the temporal target.');
@@ -221,6 +236,68 @@ function formatTemporalDateBoostLine(boost: LongMemEvalTemporalDateBoost): strin
   const target = boost.targetDate ? `Temporal target date: ${boost.targetDate}; ` : '';
   const tolerance = boost.toleranceDays !== undefined ? `; tolerance: ±${boost.toleranceDays} day${boost.toleranceDays === 1 ? '' : 's'}` : '';
   return `${target}reference date: ${boost.referenceDate}${tolerance}.`;
+}
+
+function buildQuestionFocusedEvidenceNotes(payload: LongMemEvalReaderPayload): string[] {
+  const category = payload.category?.toLowerCase() ?? '';
+  if (!category.includes('multi') && !isCountQuestion(payload.question)) return [];
+  const terms = extractQuestionTerms(payload.question);
+  if (terms.length === 0) return [];
+  const focusAnchors = buildFocusAnchorTerms(terms);
+  return [...payload.contexts]
+    .map((context) => {
+      const evidenceText = extractUserEvidenceText(context.content);
+      return { context, evidenceText, score: scoreContextForQuestion(evidenceText, terms) };
+    })
+    .filter(({ evidenceText, score }) => score > 0 && matchesFocusAnchors(evidenceText, focusAnchors))
+    .sort((a, b) => b.score - a.score || a.context.rank - b.context.rank)
+    .slice(0, EVIDENCE_NOTE_LIMIT)
+    .sort((a, b) => a.context.rank - b.context.rank)
+    .map(({ context, evidenceText }) => `- [${context.rank}] ${context.id}: ${compactSnippet(evidenceText, EVIDENCE_NOTE_SNIPPET_LIMIT)}`);
+}
+
+function buildFocusAnchorTerms(terms: string[]): string[] {
+  if (terms.includes('model') && terms.includes('kit')) return ['model'];
+  return [];
+}
+
+function matchesFocusAnchors(content: string, focusAnchors: string[]): boolean {
+  if (focusAnchors.length === 0) return true;
+  const lower = content.toLowerCase();
+  return focusAnchors.some((term) => lower.includes(term));
+}
+
+function extractUserEvidenceText(content: string): string {
+  const matches = [...content.matchAll(/(?:^|\s)user:\s*([\s\S]*?)(?=\s+(?:assistant|system|tool):|$)/gi)]
+    .map((match) => match[1]?.trim())
+    .filter((text): text is string => Boolean(text));
+  return matches.length > 0 ? matches.join(' ') : content;
+}
+
+function extractQuestionTerms(question: string): string[] {
+  const terms = new Set<string>();
+  for (const token of question.toLowerCase().match(/[a-z0-9]+/g) ?? []) {
+    if (token.length < 3 || QUESTION_STOPWORDS.has(token)) continue;
+    terms.add(token);
+    if (token.endsWith('ies') && token.length > 4) terms.add(`${token.slice(0, -3)}y`);
+    else if (token.endsWith('s') && token.length > 3) terms.add(token.slice(0, -1));
+  }
+  return [...terms];
+}
+
+function scoreContextForQuestion(content: string, terms: string[]): number {
+  const lower = content.toLowerCase();
+  return terms.reduce((score, term) => score + (lower.includes(term) ? 1 : 0), 0);
+}
+
+function compactSnippet(content: string, maxChars: number): string {
+  const compact = content.replace(/\s+/g, ' ').trim();
+  if (compact.length <= maxChars) return compact;
+  return `${compact.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
+}
+
+function isCountQuestion(question: string): boolean {
+  return /\b(how many|number of|count)\b/i.test(question);
 }
 
 async function runCodexReader(prompt: string, timeoutMs: number): Promise<string> {

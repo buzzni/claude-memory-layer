@@ -159,6 +159,58 @@ describe('LongMemEval Codex CLI reader wrapper', () => {
     expect(prompt).toContain('Do not answer from only the top-ranked context when the question asks for comparisons, changes, counts, or multiple facts.');
   });
 
+  it('adds a structured evidence ledger instruction for multi-session count questions', async () => {
+    const mock = writeMockCodex();
+    const result = await runReader({
+      question_id: 'q_reader_multi_count',
+      question: 'How many model kits have I worked on or bought?',
+      category: 'multi-session',
+      contexts: [
+        { id: 'kit_b29', rank: 1, content: '[2023-05-20] user: I bought a 1/72 scale B-29 bomber model kit.' },
+        { id: 'kit_spitfire', rank: 2, content: '[2023-05-30] user: I recently finished a Tamiya 1/48 scale Spitfire Mk.V.' },
+        { id: 'noise', rank: 3, content: '[2023-05-22] user: Please show my Instagram graph.' },
+        { id: 'kit_eagle', rank: 4, content: '[2023-05-27] user: I recently finished a simple Revell F-15 Eagle kit.' }
+      ]
+    }, {
+      LONGMEMEVAL_CODEX_BIN: mock.bin
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe('');
+    const prompt = readFileSync(mock.promptPath, 'utf8');
+    expect(prompt).toContain('Use an internal evidence ledger before answering: context rank/id, quoted supporting fact, normalized item or event, include/exclude reason.');
+    expect(prompt).toContain('For "how many" or count questions, count distinct supported items or events, not the number of retrieved contexts.');
+    expect(prompt).toContain('When evidence is spread across non-adjacent ranks, include later relevant contexts instead of stopping after early evidence.');
+    expect(prompt).not.toContain('B-29 bomber model kit is the answer');
+  });
+
+  it('adds question-focused evidence notes for non-adjacent count evidence', async () => {
+    const mock = writeMockCodex();
+    const result = await runReader({
+      question_id: 'q_reader_count_notes',
+      question: 'How many model kits have I worked on or bought?',
+      category: 'multi-session',
+      contexts: [
+        { id: 'kit_b29', rank: 1, content: '[2023-05-20] user: I bought a 1/72 scale B-29 bomber model kit.' },
+        { id: 'noise_recipe', rank: 2, content: '[2023-05-21] user: I bought chicken for meal prep.' },
+        { id: 'noise_graph', rank: 3, content: '[2023-05-22] user: Please show my Instagram graph.' },
+        { id: 'kit_spitfire', rank: 8, content: '[2023-05-30] user: I recently finished a Tamiya 1/48 scale Spitfire Mk.V model kit.' }
+      ]
+    }, {
+      LONGMEMEVAL_CODEX_BIN: mock.bin
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe('');
+    const prompt = readFileSync(mock.promptPath, 'utf8');
+    expect(prompt).toContain('Question-focused evidence notes:');
+    expect(prompt).toContain('- [1] kit_b29:');
+    expect(prompt).toContain('- [8] kit_spitfire:');
+    expect(prompt).not.toContain('- [2] noise_recipe:');
+    expect(prompt).not.toContain('- [3] noise_graph:');
+    expect(prompt.indexOf('Question-focused evidence notes:')).toBeLessThan(prompt.indexOf('Retrieved Contexts:'));
+  });
+
   it('passes temporal target-date hints into the reader prompt without exposing answers', async () => {
     const mock = writeMockCodex();
     const result = await runReader({
