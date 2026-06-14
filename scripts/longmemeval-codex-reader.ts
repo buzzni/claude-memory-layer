@@ -229,6 +229,9 @@ function buildReaderGuidanceLines(payload: LongMemEvalReaderPayload): string[] {
       lines.push(`Temporal entity terms: ${entityTerms.join(', ')}.`);
     }
   }
+  if (payload.temporalDateBoost !== undefined) {
+    lines.push('Use the question-focused evidence notes as a structured ledger: include rows are candidate support; exclude rows are distractors to avoid.');
+  }
   return lines;
 }
 
@@ -238,22 +241,102 @@ function formatTemporalDateBoostLine(boost: LongMemEvalTemporalDateBoost): strin
   return `${target}reference date: ${boost.referenceDate}${tolerance}.`;
 }
 
-function buildQuestionFocusedEvidenceNotes(payload: LongMemEvalReaderPayload): string[] {
+function shouldBuildQuestionFocusedEvidenceNotes(payload: LongMemEvalReaderPayload): boolean {
   const category = payload.category?.toLowerCase() ?? '';
-  if (!category.includes('multi') && !isCountQuestion(payload.question)) return [];
+  return category.includes('multi') || isCountQuestion(payload.question) || payload.temporalDateBoost !== undefined;
+}
+
+interface EvidenceNoteRow {
+  context: LongMemEvalReaderContext;
+  evidenceText: string;
+  score: number;
+  date: string;
+  temporalStatus: 'not-applicable' | 'target-date' | 'outside-window' | 'unknown-date';
+  entityHits: string[];
+  decision: 'include' | 'exclude(entity-mismatch)' | 'exclude(outside-temporal-window)' | 'exclude(question-mismatch)';
+}
+
+function buildQuestionFocusedEvidenceNotes(payload: LongMemEvalReaderPayload): string[] {
+  if (!shouldBuildQuestionFocusedEvidenceNotes(payload)) return [];
   const terms = extractQuestionTerms(payload.question);
-  if (terms.length === 0) return [];
+  const temporalBoost = payload.temporalDateBoost;
+  if (terms.length === 0 && temporalBoost === undefined) return [];
   const focusAnchors = buildFocusAnchorTerms(terms);
-  return [...payload.contexts]
-    .map((context) => {
-      const evidenceText = extractUserEvidenceText(context.content);
-      return { context, evidenceText, score: scoreContextForQuestion(evidenceText, terms) };
-    })
-    .filter(({ evidenceText, score }) => score > 0 && matchesFocusAnchors(evidenceText, focusAnchors))
-    .sort((a, b) => b.score - a.score || a.context.rank - b.context.rank)
-    .slice(0, EVIDENCE_NOTE_LIMIT)
+  const rows = [...payload.contexts]
+    .map((context) => buildEvidenceNoteRow(context, terms, focusAnchors, temporalBoost))
+    .filter(shouldEmitEvidenceNoteRow);
+
+  const included = rows
+    .filter((row) => row.decision === 'include')
+    .sort(compareEvidenceNoteRows)
+    .slice(0, EVIDENCE_NOTE_LIMIT);
+  const remaining = EVIDENCE_NOTE_LIMIT - included.length;
+  const excluded = remaining > 0
+    ? rows
+      .filter((row) => row.decision !== 'include')
+      .sort(compareEvidenceNoteRows)
+      .slice(0, remaining)
+    : [];
+
+  return [...included, ...excluded]
     .sort((a, b) => a.context.rank - b.context.rank)
-    .map(({ context, evidenceText }) => `- [${context.rank}] ${context.id}: ${compactSnippet(evidenceText, EVIDENCE_NOTE_SNIPPET_LIMIT)}`);
+    .map((row) => formatEvidenceNoteRow(row, temporalBoost !== undefined));
+}
+
+function buildEvidenceNoteRow(
+  context: LongMemEvalReaderContext,
+  terms: string[],
+  focusAnchors: string[],
+  temporalBoost: LongMemEvalTemporalDateBoost | undefined
+): EvidenceNoteRow {
+  const evidenceText = extractUserEvidenceText(context.content);
+  const score = scoreContextForQuestion(evidenceText, terms);
+  const temporal = assessTemporalStatus(context.content, temporalBoost);
+  const entityHits = findEntityHits(evidenceText, temporalBoost?.entityTerms ?? []);
+  const hasEntityRequirement = (temporalBoost?.entityTerms?.length ?? 0) > 0;
+  const passesEntity = !hasEntityRequirement || entityHits.length > 0;
+  const passesTemporal = temporal.status !== 'outside-window';
+  const passesQuestion = score > 0 && matchesFocusAnchors(evidenceText, focusAnchors);
+  let decision: EvidenceNoteRow['decision'] = 'include';
+  if (!passesTemporal) decision = 'exclude(outside-temporal-window)';
+  else if (!passesEntity) decision = 'exclude(entity-mismatch)';
+  else if (!passesQuestion) decision = 'exclude(question-mismatch)';
+
+  return {
+    context,
+    evidenceText,
+    score,
+    date: temporal.date,
+    temporalStatus: temporal.status,
+    entityHits,
+    decision
+  };
+}
+
+function shouldEmitEvidenceNoteRow(row: EvidenceNoteRow): boolean {
+  if (row.decision === 'include') return true;
+  if (row.temporalStatus === 'not-applicable') return false;
+  if (row.temporalStatus === 'target-date') return true;
+  if (row.decision === 'exclude(outside-temporal-window)' && (row.entityHits.length > 0 || row.score > 0)) return true;
+  return row.score > 0;
+}
+
+function compareEvidenceNoteRows(a: EvidenceNoteRow, b: EvidenceNoteRow): number {
+  const temporalA = a.temporalStatus === 'target-date' ? 1 : 0;
+  const temporalB = b.temporalStatus === 'target-date' ? 1 : 0;
+  return temporalB - temporalA
+    || b.score - a.score
+    || b.entityHits.length - a.entityHits.length
+    || a.context.rank - b.context.rank;
+}
+
+function formatEvidenceNoteRow(row: EvidenceNoteRow, includeLedgerFields: boolean): string {
+  const snippet = compactSnippet(row.evidenceText, EVIDENCE_NOTE_SNIPPET_LIMIT);
+  if (!includeLedgerFields) {
+    return `- [${row.context.rank}] ${row.context.id}: ${snippet}`;
+  }
+  const entities = row.entityHits.length > 0 ? row.entityHits.join(', ') : 'none';
+  return `- [${row.context.rank}] ${row.context.id}: date=${row.date} | temporal=${row.temporalStatus} | entities=${entities} | decision=${row.decision} | evidence=${snippet}`;
 }
 
 function buildFocusAnchorTerms(terms: string[]): string[] {
@@ -265,6 +348,63 @@ function matchesFocusAnchors(content: string, focusAnchors: string[]): boolean {
   if (focusAnchors.length === 0) return true;
   const lower = content.toLowerCase();
   return focusAnchors.some((term) => lower.includes(term));
+}
+
+function findEntityHits(content: string, entityTerms: string[]): string[] {
+  const lower = content.toLowerCase();
+  return uniqueStrings(entityTerms
+    .map((term) => term.trim())
+    .filter((term) => term !== '')
+    .filter((term) => lower.includes(term.toLowerCase())));
+}
+
+function assessTemporalStatus(
+  content: string,
+  boost: LongMemEvalTemporalDateBoost | undefined
+): { date: string; status: EvidenceNoteRow['temporalStatus'] } {
+  if (boost === undefined || boost.targetDate === undefined) {
+    return { date: extractFirstIsoDate(content) ?? 'unknown', status: 'not-applicable' };
+  }
+  const date = extractFirstIsoDate(content);
+  if (date === undefined) {
+    return { date: 'unknown', status: 'unknown-date' };
+  }
+  const diff = Math.abs(daysBetweenIsoDates(date, boost.targetDate));
+  const tolerance = boost.toleranceDays ?? 0;
+  return {
+    date,
+    status: diff <= tolerance ? 'target-date' : 'outside-window'
+  };
+}
+
+function extractFirstIsoDate(content: string): string | undefined {
+  const match = content.match(/\b\d{4}-\d{2}-\d{2}\b/);
+  return match?.[0];
+}
+
+function daysBetweenIsoDates(a: string, b: string): number {
+  const aMs = isoDateToUtcMs(a);
+  const bMs = isoDateToUtcMs(b);
+  if (aMs === undefined || bMs === undefined) return Number.POSITIVE_INFINITY;
+  return Math.round((aMs - bMs) / 86_400_000);
+}
+
+function isoDateToUtcMs(value: string): number | undefined {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return undefined;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const ms = Date.UTC(year, month - 1, day);
+  const date = new Date(ms);
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) {
+    return undefined;
+  }
+  return ms;
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values)];
 }
 
 function extractUserEvidenceText(content: string): string {

@@ -240,6 +240,41 @@ describe('LongMemEval Codex CLI reader wrapper', () => {
     expect(prompt).not.toContain('attended the museum exhibit is the answer');
   });
 
+  it('adds structured temporal ledger rows with include and exclude decisions', async () => {
+    const mock = writeMockCodex();
+    const result = await runReader({
+      question_id: 'q_reader_temporal_ledger',
+      question: 'How many museum exhibit activities did I do 12 days ago?',
+      category: 'multi-session temporal-reasoning',
+      temporalDateBoost: {
+        referenceDate: '2023-02-01',
+        targetDate: '2023-01-20',
+        toleranceDays: 1,
+        entityTerms: ['museum', 'exhibit']
+      },
+      contexts: [
+        { id: 'target_tour', rank: 1, content: '[2023-01-20] session a\nuser: I attended the museum exhibit opening tour.' },
+        { id: 'same_date_noise', rank: 2, content: '[2023-01-20] session b\nuser: I bought groceries after work.' },
+        { id: 'off_date_museum', rank: 3, content: '[2023-01-27] session c\nuser: I visited the museum cafe.' },
+        { id: 'target_workshop', rank: 7, content: '[2023-01-21] session d\nuser: I joined a museum exhibit sketching workshop.' }
+      ]
+    }, {
+      LONGMEMEVAL_CODEX_BIN: mock.bin
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe('');
+    const prompt = readFileSync(mock.promptPath, 'utf8');
+    expect(prompt).toContain('Question-focused evidence notes:');
+    expect(prompt).toContain('Use the question-focused evidence notes as a structured ledger: include rows are candidate support; exclude rows are distractors to avoid.');
+    expect(prompt).toContain('- [1] target_tour: date=2023-01-20 | temporal=target-date | entities=museum, exhibit | decision=include');
+    expect(prompt).toContain('- [2] same_date_noise: date=2023-01-20 | temporal=target-date | entities=none | decision=exclude(entity-mismatch)');
+    expect(prompt).toContain('- [3] off_date_museum: date=2023-01-27 | temporal=outside-window | entities=museum | decision=exclude(outside-temporal-window)');
+    expect(prompt).toContain('- [7] target_workshop: date=2023-01-21 | temporal=target-date | entities=museum, exhibit | decision=include');
+    expect(prompt.indexOf('Question-focused evidence notes:')).toBeLessThan(prompt.indexOf('Retrieved Contexts:'));
+    expect(prompt).not.toContain('opening tour is the answer');
+  });
+
   it('fails closed with a bounded redacted diagnostic when codex exits non-zero', async () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'cml-longmemeval-codex-reader-fail-'));
     const bin = path.join(dir, 'codex-fail.mjs');
