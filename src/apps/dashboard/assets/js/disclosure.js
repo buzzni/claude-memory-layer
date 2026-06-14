@@ -61,10 +61,14 @@ async function handleDisclosureSearch() {
 
     state.disclosureResults = data.results || [];
     state.disclosureMeta = data.meta || null;
+    state.isDisclosureLoading = false;
+    if (button) button.disabled = false;
     renderDisclosureStatus(`Search layer returned ${state.disclosureResults.length} result(s). Click a result to expand/source.`);
     renderDisclosureResults();
   } catch (error) {
     state.disclosureResults = [];
+    state.isDisclosureLoading = false;
+    if (button) button.disabled = false;
     renderDisclosureStatus(error.message || 'Disclosure search failed', true);
     renderDisclosureResults();
   } finally {

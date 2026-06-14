@@ -6,6 +6,8 @@ import * as vm from 'node:vm';
 class TestElement {
   innerHTML = '';
   textContent = '';
+  value = '';
+  checked = false;
   style: Record<string, string> = {};
   disabled = false;
   classList = { add() {}, remove() {}, toggle() {} };
@@ -16,7 +18,10 @@ class TestElement {
   appendChild() {}
 }
 
-function loadDashboardWithElements(elements: Record<string, TestElement>) {
+function loadDashboardWithElements(
+  elements: Record<string, TestElement>,
+  fetchImpl: typeof fetch | (() => Promise<{ ok: boolean; json: () => Promise<unknown> }>) = async () => ({ ok: true, json: async () => ({}) })
+) {
   const dashboardDir = join(process.cwd(), 'src/apps/dashboard/assets/js');
   const source = ['state.js', 'views.js', 'disclosure.js']
     .map(file => readFileSync(join(dashboardDir, file), 'utf-8'))
@@ -24,7 +29,7 @@ function loadDashboardWithElements(elements: Record<string, TestElement>) {
   const context = {
     console,
     URL,
-    fetch: async () => ({ ok: true, json: async () => ({}) }),
+    fetch: fetchImpl,
     window: { location: { origin: 'http://localhost:37777' } },
     document: {
       addEventListener() {},
@@ -38,11 +43,12 @@ function loadDashboardWithElements(elements: Record<string, TestElement>) {
   };
 
   vm.runInNewContext(
-    `${source}\n;globalThis.__dashboardTestHooks = { state, renderDisclosureResults, renderDisclosureDrilldown };`,
+    `${source}\n;globalThis.__dashboardTestHooks = { state, handleDisclosureSearch, renderDisclosureResults, renderDisclosureDrilldown };`,
     context
   );
   return (context as unknown as { __dashboardTestHooks: {
     state: Record<string, any>;
+    handleDisclosureSearch: () => Promise<void>;
     renderDisclosureResults: () => void;
     renderDisclosureDrilldown: () => void;
   }}).__dashboardTestHooks;
@@ -82,6 +88,59 @@ describe('dashboard retrieval disclosure provenance output', () => {
     expect(html).toContain('project-a');
     expect(html).toContain('topics');
     expect(html).toContain('checkout');
+  });
+
+  it('renders search results after a successful disclosure search instead of leaving the list loading', async () => {
+    const elements = {
+      'disclosure-search-input': new TestElement(),
+      'disclosure-search-btn': new TestElement(),
+      'disclosure-include-shared': new TestElement(),
+      'disclosure-strategy': new TestElement(),
+      'disclosure-topk': new TestElement(),
+      'disclosure-status': new TestElement(),
+      'disclosure-results': new TestElement(),
+      'disclosure-drilldown': new TestElement(),
+    };
+    elements['disclosure-search-input'].value = 'memoryhub';
+    elements['disclosure-strategy'].value = 'fast';
+    elements['disclosure-topk'].value = '5';
+
+    const requestedBodies: unknown[] = [];
+    const hooks = loadDashboardWithElements(elements, async (_url, init) => {
+      requestedBodies.push(JSON.parse(String(init?.body || '{}')));
+      return {
+        ok: true,
+        json: async () => ({
+          results: [
+            {
+              id: 'event:e1',
+              resultType: 'source',
+              title: 'User prompt',
+              snippet: 'https://memoryhub.ai/ko/',
+              score: 0.97,
+              reasons: ['keyword_match'],
+              sourceRef: 'event:e1',
+              metadata: { sourceProjectHash: 'b7f03a73' }
+            }
+          ],
+          meta: { total: 1, usedVector: false, usedKeyword: true, fallbackApplied: false }
+        })
+      };
+    });
+
+    await hooks.handleDisclosureSearch();
+
+    expect(hooks.state.isDisclosureLoading).toBe(false);
+    expect(elements['disclosure-search-btn'].disabled).toBe(false);
+    expect(elements['disclosure-status'].textContent).toContain('Search layer returned 1 result');
+    expect(elements['disclosure-results'].innerHTML).not.toContain('Searching...');
+    expect(elements['disclosure-results'].innerHTML).toContain('class="disclosure-result"');
+    expect(elements['disclosure-results'].innerHTML).toContain('User prompt');
+    expect(elements['disclosure-results'].innerHTML).toContain('https://memoryhub.ai/ko/');
+    expect(requestedBodies[0]).toMatchObject({
+      query: 'memoryhub',
+      options: { strategy: 'fast', topK: 5, includeShared: false }
+    });
   });
 
   it('renders shared drilldown with explicit source metadata and no fake raw event', () => {
