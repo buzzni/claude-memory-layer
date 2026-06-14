@@ -163,11 +163,16 @@ writeFileSync(args[outIndex + 1], JSON.stringify({ ...row, autoeval_label: { mod
 }
 
 function writeJudgeCommand(): { bin: string; callsPath: string } {
+  return writeJudgeCommandWithLabels({});
+}
+
+function writeJudgeCommandWithLabels(labelsByQuestionId: Record<string, boolean>): { bin: string; callsPath: string } {
   const dir = mkdtempSync(path.join(tmpdir(), 'cml-longmemeval-codex-batch-judge-'));
   const bin = path.join(dir, 'judge.mjs');
   const callsPath = path.join(dir, 'codex-calls.txt');
   writeFileSync(bin, `#!/usr/bin/env node
 import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
+const labelsByQuestionId = ${JSON.stringify(labelsByQuestionId)};
 const args = process.argv.slice(2);
 const hypIndex = args.indexOf('--hyp');
 const outIndex = args.indexOf('--out');
@@ -181,7 +186,8 @@ if (process.env.FAIL_JUDGE_ON === row.question_id) {
   console.error('judge failed for ' + row.question_id + '; token=ak');
   process.exit(8);
 }
-writeFileSync(args[outIndex + 1], JSON.stringify({ ...row, autoeval_label: { model: 'codex-cli', label: true } }) + '\\n');
+const label = Object.prototype.hasOwnProperty.call(labelsByQuestionId, row.question_id) ? labelsByQuestionId[row.question_id] : true;
+writeFileSync(args[outIndex + 1], JSON.stringify({ ...row, autoeval_label: { model: 'codex-cli', label } }) + '\\n');
 `, 'utf8');
   chmodSync(bin, 0o755);
   return { bin, callsPath };
@@ -430,6 +436,100 @@ describe('LongMemEval Codex full batch runner', () => {
     expect(checkpoint.judge.completed).toBe(2);
   });
 
+  it('writes a compact summary artifact with category and retrieval-vs-QA breakdown after judging', () => {
+    const input = writeTwoQuestionFixture();
+    const reader = writeReaderCommand();
+    const judge = writeJudgeCommandWithLabels({ q_batch_2: false });
+    const outDir = mkdtempSync(path.join(tmpdir(), 'cml-longmemeval-codex-batch-summary-out-'));
+
+    const result = runBatch([
+      '--input', input,
+      '--out-dir', outDir,
+      '--reader-command', reader,
+      '--judge-command', judge.bin,
+      '--limit', '2',
+      '--top-k', '2'
+    ]);
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe('');
+    expect(result.stdout).toContain('Saved summary to');
+    const summary = JSON.parse(readFileSync(path.join(outDir, 'summary.json'), 'utf8')) as Record<string, any>;
+    expect(summary.score).toMatchObject({ total: 2, correct: 1, accuracy: 0.5 });
+    expect(summary.categoryBreakdown['single-session-user']).toMatchObject({ total: 2, correct: 1, accuracy: 0.5 });
+    expect(summary.retrievalVsQa.overall).toMatchObject({
+      hit10Correct: 1,
+      hit10Wrong: 1,
+      miss10Correct: 0,
+      miss10Wrong: 0
+    });
+    expect(JSON.stringify(summary)).not.toContain('jasmine tea');
+    expect(JSON.stringify(summary)).not.toContain('iced coffee');
+  });
+
+  it('counts legacy retrieval-report fallback hits only within top 10 when at metrics are absent', () => {
+    const input = writeTwoQuestionFixture();
+    const reader = writeReaderCommand();
+    const judge = writeJudgeCommandWithLabels({ q_batch_2: false });
+    const outDir = mkdtempSync(path.join(tmpdir(), 'cml-longmemeval-codex-batch-legacy-hit10-out-'));
+
+    const first = runBatch([
+      '--input', input,
+      '--out-dir', outDir,
+      '--reader-command', reader,
+      '--judge-command', judge.bin,
+      '--limit', '2',
+      '--top-k', '2'
+    ]);
+
+    expect(first.status).toBe(0);
+    const reportPath = path.join(outDir, 'retrieval-report.json');
+    const report = JSON.parse(readFileSync(reportPath, 'utf8')) as Record<string, any>;
+    for (const metric of report.perQuery as Array<Record<string, any>>) {
+      delete metric.at;
+      if (metric.queryId === 'q_batch_1') {
+        metric.expectedIds = ['s_answer_1'];
+        metric.retrievedIds = [
+          's_noise_1_rank_1',
+          's_noise_1_rank_2',
+          's_noise_1_rank_3',
+          's_noise_1_rank_4',
+          's_noise_1_rank_5',
+          's_noise_1_rank_6',
+          's_noise_1_rank_7',
+          's_noise_1_rank_8',
+          's_noise_1_rank_9',
+          's_noise_1_rank_10',
+          's_answer_1'
+        ];
+      } else if (metric.queryId === 'q_batch_2') {
+        metric.expectedIds = ['s_answer_2'];
+        metric.retrievedIds = ['s_answer_2'];
+      }
+    }
+    writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
+    unlinkSync(path.join(outDir, 'summary.json'));
+
+    const second = runBatch([
+      '--input', input,
+      '--out-dir', outDir,
+      '--reader-command', reader,
+      '--judge-command', judge.bin,
+      '--resume',
+      '--limit', '2',
+      '--top-k', '2'
+    ]);
+
+    expect(second.status).toBe(0);
+    const summary = JSON.parse(readFileSync(path.join(outDir, 'summary.json'), 'utf8')) as Record<string, any>;
+    expect(summary.retrievalVsQa.overall).toMatchObject({
+      hit10Correct: 0,
+      hit10Wrong: 1,
+      miss10Correct: 1,
+      miss10Wrong: 0
+    });
+  });
+
   it('rejects resume when retrieval options no longer match the checkpoint', () => {
     const input = writeTwoQuestionFixture();
     const reader = writeReaderCommand();
@@ -459,6 +559,76 @@ describe('LongMemEval Codex full batch runner', () => {
     expect(second.status).toBe(1);
     expect(second.stderr).toContain('Resume checkpoint does not match current options');
     expect(second.stderr).toContain('limit');
+  });
+
+  it('rejects resume when the summary output path no longer matches the checkpoint', () => {
+    const input = writeTwoQuestionFixture();
+    const reader = writeReaderCommand();
+    const outDir = mkdtempSync(path.join(tmpdir(), 'cml-longmemeval-codex-batch-summary-mismatch-out-'));
+    const alternateSummaryPath = path.join(outDir, 'alternate-summary.json');
+    writeFileSync(alternateSummaryPath, 'do not overwrite', 'utf8');
+
+    const first = runBatch([
+      '--input', input,
+      '--out-dir', outDir,
+      '--reader-command', reader,
+      '--skip-judge',
+      '--limit', '2',
+      '--top-k', '2'
+    ]);
+
+    expect(first.status).toBe(0);
+
+    const second = runBatch([
+      '--input', input,
+      '--out-dir', outDir,
+      '--reader-command', reader,
+      '--skip-judge',
+      '--resume',
+      '--summary-out', alternateSummaryPath,
+      '--limit', '2',
+      '--top-k', '2'
+    ]);
+
+    expect(second.status).toBe(1);
+    expect(second.stderr).toContain('Resume checkpoint does not match current options');
+    expect(second.stderr).toContain('summary');
+    expect(readFileSync(alternateSummaryPath, 'utf8')).toBe('do not overwrite');
+  });
+
+  it('continues legacy checkpoints that recorded no summary path in the checkpoint fingerprint', () => {
+    const input = writeTwoQuestionFixture();
+    const reader = writeReaderCommand();
+    const outDir = mkdtempSync(path.join(tmpdir(), 'cml-longmemeval-codex-batch-legacy-summary-out-'));
+
+    const first = runBatch([
+      '--input', input,
+      '--out-dir', outDir,
+      '--reader-command', reader,
+      '--skip-judge',
+      '--limit', '2',
+      '--top-k', '2'
+    ]);
+
+    expect(first.status).toBe(0);
+    const checkpointPath = path.join(outDir, 'checkpoint.json');
+    const checkpoint = JSON.parse(readFileSync(checkpointPath, 'utf8')) as Record<string, any>;
+    delete checkpoint.files.summary;
+    delete checkpoint.run_options.files.summary;
+    writeFileSync(checkpointPath, `${JSON.stringify(checkpoint, null, 2)}\n`, 'utf8');
+
+    const second = runBatch([
+      '--input', input,
+      '--out-dir', outDir,
+      '--reader-command', reader,
+      '--skip-judge',
+      '--resume',
+      '--limit', '2',
+      '--top-k', '2'
+    ]);
+
+    expect(second.status).toBe(0);
+    expect(second.stderr).toBe('');
   });
 
   it('rejects stale resumed hypothesis rows outside the current fixture', () => {

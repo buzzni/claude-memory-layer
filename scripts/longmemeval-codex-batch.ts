@@ -12,6 +12,7 @@ interface ParsedArgs {
   fixtureOutPath: string;
   hypothesesOutPath: string;
   judgeOutPath: string;
+  summaryOutPath: string;
   resume: boolean;
   force: boolean;
   skipJudge: boolean;
@@ -63,7 +64,10 @@ interface ReplayReport {
 
 interface ReplayQueryMetric {
   queryId: string;
+  at?: Record<string, { hits?: number; recall?: number }>;
+  expectedIds?: string[];
   retrievedIds: string[];
+  category?: string;
 }
 
 interface ReaderPayload {
@@ -155,7 +159,10 @@ async function main(argv: string[]): Promise<void> {
   const evaluatedRows = await readRowsByQuestionId<EvaluatedRow>(options.judgeOutPath, 'judge result');
   validateRowsBelongToFixture(evaluatedRows, fixtureQuestionIds, 'judge result', options.judgeOutPath);
   await runJudgePhase(options, fixture, hypotheses, evaluatedRows);
-  const score = summarizeEvaluation([...evaluatedRows.values()]);
+  const evaluated = [...evaluatedRows.values()];
+  const score = summarizeEvaluation(evaluated);
+  const summary = buildEvaluationSummary(fixture, report, evaluated);
+  await writeTextFile(options.summaryOutPath, `${JSON.stringify(summary, null, 2)}\n`);
 
   await writeCheckpoint(options, 'completed', {
     readerTotal: fixture.queries.length,
@@ -165,6 +172,7 @@ async function main(argv: string[]): Promise<void> {
   });
   process.stdout.write(`Codex-compatible accuracy: ${round4(score.accuracy)} (${score.correct}/${score.total})\n`);
   process.stdout.write(`Saved judge results to ${options.judgeOutPath}\n`);
+  process.stdout.write(`Saved summary to ${options.summaryOutPath}\n`);
 }
 
 async function prepareOutputFiles(options: ParsedArgs): Promise<void> {
@@ -173,7 +181,8 @@ async function prepareOutputFiles(options: ParsedArgs): Promise<void> {
     options.retrievalReportPath,
     options.fixtureOutPath,
     options.hypothesesOutPath,
-    options.judgeOutPath
+    options.judgeOutPath,
+    options.summaryOutPath
   ];
   if (options.force) {
     await Promise.all(managed.map((filePath) => rm(filePath, { force: true }).catch(() => undefined)));
@@ -206,7 +215,8 @@ async function validateResumeCheckpoint(options: ParsedArgs): Promise<void> {
   }
 
   const expected = buildRunOptionsFingerprint(options);
-  const mismatches = collectObjectMismatches(checkpoint.run_options, expected, 'run_options');
+  const checkpointRunOptions = normalizeCheckpointRunOptions(checkpoint.run_options, checkpoint, options);
+  const mismatches = collectObjectMismatches(checkpointRunOptions, expected, 'run_options');
   if (mismatches.length > 0) {
     throw new CliError(`Resume checkpoint does not match current options: ${mismatches.join(', ')}. Use matching options, a new --out-dir, or --force to restart.`);
   }
@@ -450,6 +460,7 @@ async function writeCheckpoint(
       fixture: options.fixtureOutPath,
       hypotheses: options.hypothesesOutPath,
       judge_results: options.judgeOutPath,
+      summary: options.summaryOutPath,
       checkpoint: options.checkpointPath
     },
     run_options: buildRunOptionsFingerprint(options),
@@ -657,6 +668,70 @@ function summarizeEvaluation(rows: EvaluatedRow[]): { total: number; correct: nu
   return { total, correct, accuracy: total === 0 ? 0 : correct / total };
 }
 
+function buildEvaluationSummary(fixture: ReplayFixture, report: ReplayReport, rows: EvaluatedRow[]): Record<string, unknown> {
+  const queryById = new Map(fixture.queries.map((query) => [query.queryId, query]));
+  const metricByQueryId = new Map(report.perQuery.map((metric) => [metric.queryId, metric]));
+  const categoryBreakdown = new Map<string, { total: number; correct: number }>();
+  const overallRetrievalVsQa = createRetrievalVsQaCounters();
+  const retrievalVsQaByCategory = new Map<string, ReturnType<typeof createRetrievalVsQaCounters>>();
+
+  for (const row of rows) {
+    const metric = metricByQueryId.get(row.question_id);
+    const category = queryById.get(row.question_id)?.category ?? metric?.category ?? 'unknown';
+    const correct = row.autoeval_label?.label === true;
+    const categoryStats = categoryBreakdown.get(category) ?? { total: 0, correct: 0 };
+    categoryStats.total += 1;
+    if (correct) categoryStats.correct += 1;
+    categoryBreakdown.set(category, categoryStats);
+
+    const hit10 = hasRetrievalHitAt10(metric);
+    addRetrievalVsQa(overallRetrievalVsQa, hit10, correct);
+    const categoryRetrievalVsQa = retrievalVsQaByCategory.get(category) ?? createRetrievalVsQaCounters();
+    addRetrievalVsQa(categoryRetrievalVsQa, hit10, correct);
+    retrievalVsQaByCategory.set(category, categoryRetrievalVsQa);
+  }
+
+  return {
+    generatedAt: new Date().toISOString(),
+    score: summarizeEvaluation(rows),
+    categoryBreakdown: Object.fromEntries(
+      [...categoryBreakdown.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([category, stats]) => [category, {
+        ...stats,
+        accuracy: stats.total === 0 ? 0 : stats.correct / stats.total
+      }])
+    ),
+    retrievalVsQa: {
+      overall: overallRetrievalVsQa,
+      byCategory: Object.fromEntries([...retrievalVsQaByCategory.entries()].sort(([a], [b]) => a.localeCompare(b)))
+    }
+  };
+}
+
+function createRetrievalVsQaCounters(): { hit10Correct: number; hit10Wrong: number; miss10Correct: number; miss10Wrong: number } {
+  return { hit10Correct: 0, hit10Wrong: 0, miss10Correct: 0, miss10Wrong: 0 };
+}
+
+function addRetrievalVsQa(
+  counters: ReturnType<typeof createRetrievalVsQaCounters>,
+  hit10: boolean,
+  correct: boolean
+): void {
+  if (hit10 && correct) counters.hit10Correct += 1;
+  else if (hit10) counters.hit10Wrong += 1;
+  else if (correct) counters.miss10Correct += 1;
+  else counters.miss10Wrong += 1;
+}
+
+function hasRetrievalHitAt10(metric: ReplayQueryMetric | undefined): boolean {
+  if (!metric) return false;
+  const at10 = metric.at?.['10'];
+  if ((at10?.hits ?? 0) > 0 || (at10?.recall ?? 0) > 0) return true;
+  const expectedIds = metric.expectedIds ?? [];
+  if (expectedIds.length === 0) return false;
+  const retrievedAt10 = new Set((metric.retrievedIds ?? []).slice(0, 10));
+  return expectedIds.some((id) => retrievedAt10.has(id));
+}
+
 function round4(value: number): number {
   return Math.round(value * 10_000) / 10_000;
 }
@@ -678,6 +753,7 @@ function parseArgs(argv: string[]): ParsedArgs {
   let fixtureOutPath = '';
   let hypothesesOutPath = '';
   let judgeOutPath = '';
+  let summaryOutPath = '';
   let customReaderCommand = false;
   let customJudgeCommand = false;
   const parsed: ParsedArgs = {
@@ -688,6 +764,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     fixtureOutPath,
     hypothesesOutPath,
     judgeOutPath,
+    summaryOutPath,
     resume: false,
     force: false,
     skipJudge: false,
@@ -726,6 +803,8 @@ function parseArgs(argv: string[]): ParsedArgs {
       hypothesesOutPath = readOptionValue(argv, ++i, arg);
     } else if (arg === '--judge-out') {
       judgeOutPath = readOptionValue(argv, ++i, arg);
+    } else if (arg === '--summary-out') {
+      summaryOutPath = readOptionValue(argv, ++i, arg);
     } else if (arg === '--resume') {
       parsed.resume = true;
     } else if (arg === '--force') {
@@ -801,6 +880,7 @@ function parseArgs(argv: string[]): ParsedArgs {
   parsed.fixtureOutPath = fixtureOutPath ? path.resolve(cwd, fixtureOutPath) : path.join(parsed.outDir, 'fixture.json');
   parsed.hypothesesOutPath = hypothesesOutPath ? path.resolve(cwd, hypothesesOutPath) : path.join(parsed.outDir, 'hypotheses.jsonl');
   parsed.judgeOutPath = judgeOutPath ? path.resolve(cwd, judgeOutPath) : path.join(parsed.outDir, 'eval-results-codex.jsonl');
+  parsed.summaryOutPath = summaryOutPath ? path.resolve(cwd, summaryOutPath) : path.join(parsed.outDir, 'summary.json');
   parsed.inputPath = path.resolve(cwd, parsed.inputPath);
   validatePathSafety(parsed);
   return parsed;
@@ -816,7 +896,8 @@ function validatePathSafety(options: ParsedArgs): void {
     retrieval_report: options.retrievalReportPath,
     fixture: options.fixtureOutPath,
     hypotheses: options.hypothesesOutPath,
-    judge_results: options.judgeOutPath
+    judge_results: options.judgeOutPath,
+    summary: options.summaryOutPath
   })) {
     if (path.resolve(filePath) === options.inputPath) {
       throw new CliError(`Refusing to use input file as ${label} output: ${filePath}`);
@@ -837,6 +918,7 @@ function buildRunOptionsFingerprint(options: ParsedArgs): Record<string, unknown
       fixture: options.fixtureOutPath,
       hypotheses: options.hypothesesOutPath,
       judge_results: options.judgeOutPath,
+      summary: options.summaryOutPath,
       checkpoint: options.checkpointPath
     },
     retrieval: {
@@ -852,6 +934,33 @@ function buildRunOptionsFingerprint(options: ParsedArgs): Record<string, unknown
       include_abstention: options.includeAbstention
     }
   };
+}
+
+function normalizeCheckpointRunOptions(
+  runOptions: Record<string, unknown>,
+  checkpoint: Record<string, unknown>,
+  options: ParsedArgs
+): Record<string, unknown> {
+  if (!isRecord(runOptions.files) || runOptions.files.summary !== undefined) {
+    return runOptions;
+  }
+  const summary = isRecord(checkpoint.files) && typeof checkpoint.files.summary === 'string'
+    ? checkpoint.files.summary
+    : defaultSummaryOutPath(options) === options.summaryOutPath
+      ? options.summaryOutPath
+      : undefined;
+  if (summary === undefined) return runOptions;
+  return {
+    ...runOptions,
+    files: {
+      ...runOptions.files,
+      summary
+    }
+  };
+}
+
+function defaultSummaryOutPath(options: ParsedArgs): string {
+  return path.join(options.outDir, 'summary.json');
 }
 
 function collectObjectMismatches(actual: unknown, expected: unknown, pathPrefix: string): string[] {
@@ -952,6 +1061,7 @@ Options:
   --fixture-out PATH           Converted replay fixture path. Default: OUT_DIR/fixture.json.
   --hypotheses-out PATH        Reader hypothesis JSONL path. Default: OUT_DIR/hypotheses.jsonl.
   --judge-out PATH             Codex-compatible judge JSONL path. Default: OUT_DIR/eval-results-codex.jsonl.
+  --summary-out PATH           Compact score/breakdown JSON path. Default: OUT_DIR/summary.json.
   --resume                     Reuse existing retrieval artifacts and skip completed hypothesis/judge rows by question_id.
   --force                      Delete managed output files before starting.
   --skip-judge                 Stop after reader hypotheses; checkpoint status becomes reader_complete.
@@ -982,6 +1092,7 @@ Default output files:
   OUT_DIR/fixture.json
   OUT_DIR/hypotheses.jsonl
   OUT_DIR/eval-results-codex.jsonl
+  OUT_DIR/summary.json
 
 Notes:
   - Reader and judge prompts are piped through stdin by the existing Codex wrappers.
