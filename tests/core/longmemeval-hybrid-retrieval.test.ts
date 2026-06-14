@@ -40,6 +40,88 @@ describe('LongMemEval hybrid retrieval', () => {
     ]));
   });
 
+  it('promotes content-similar candidate siblings for multi-session count completion', () => {
+    const sessionFixture = {
+      name: 'multi-session-sibling-fixture',
+      ks: [1, 5],
+      queries: [],
+      memories: [
+        {
+          id: 'q_clothes::session::alpha',
+          content: 'user: I need organization tips for my closet after buying black jeans from a clothing store.',
+          sourceSessionId: 'alpha'
+        },
+        {
+          id: 'q_clothes::session::bravo',
+          content: 'user: Please help declutter my closet and clothes; I still need to pick up a navy blazer.',
+          sourceSessionId: 'bravo'
+        },
+        {
+          id: 'q_clothes::session::charlie',
+          content: 'user: I need organization tips for my closet because winter clothes are still waiting to be put away.',
+          sourceSessionId: 'charlie'
+        },
+        {
+          id: 'q_clothes::session::noise_sewing',
+          content: 'user: I need organizing tips for my sewing space after receiving DMC floss.',
+          sourceSessionId: 'noise_sewing'
+        },
+        {
+          id: 'q_clothes::session::noise_history',
+          content: 'user: Tell me about Anabaptist communities during the Reformation.',
+          sourceSessionId: 'noise_history'
+        },
+        {
+          id: 'q_clothes::session::noise_guitar',
+          content: 'user: I want to pick up acoustic guitar again and need buying advice.',
+          sourceSessionId: 'noise_guitar'
+        }
+      ]
+    };
+    const combined = combineLongMemEvalHybridSessionResults({
+      topK: 5,
+      query: {
+        queryId: 'q_clothes',
+        query: 'How many items of clothing do I need to pick up or return from a store?',
+        expectedIds: [],
+        category: 'multi-session'
+      },
+      sessionFixture,
+      sessionResult: {
+        retrievedIds: [
+          'q_clothes::session::alpha',
+          'q_clothes::session::bravo',
+          'q_clothes::session::noise_sewing',
+          'q_clothes::session::noise_history',
+          'q_clothes::session::noise_guitar'
+        ],
+        candidateIds: [
+          'q_clothes::session::alpha',
+          'q_clothes::session::bravo',
+          'q_clothes::session::noise_sewing',
+          'q_clothes::session::noise_history',
+          'q_clothes::session::noise_guitar',
+          'q_clothes::session::charlie'
+        ],
+        confidence: 'suggested'
+      },
+      turnResult: {
+        retrievedIds: [],
+        candidateIds: [],
+        confidence: 'none'
+      }
+    });
+
+    expect(combined.retrievedIds).toEqual([
+      'q_clothes::session::alpha',
+      'q_clothes::session::bravo',
+      'q_clothes::session::charlie',
+      'q_clothes::session::noise_sewing',
+      'q_clothes::session::noise_history'
+    ]);
+    expect(combined.fallbackTrace).toContain('hybrid:multi-session-sibling-completion:1');
+  });
+
   it('creates a runner that searches session and turn fixtures then returns session ids', async () => {
     const entries = [{
       question_id: 'q_2',

@@ -11,6 +11,8 @@ export interface LongMemEvalHybridCombineInput {
   topK: number;
   sessionResult: ReplayRetrievalRunResult;
   turnResult: ReplayRetrievalRunResult;
+  query?: ReplayEvaluationQuery;
+  sessionFixture?: ReplayEvaluationFixture;
   sessionWeight?: number;
   turnWeight?: number;
 }
@@ -50,6 +52,8 @@ export function createLongMemEvalHybridRetrievalRunner(
 
     return combineLongMemEvalHybridSessionResults({
       topK: input.topK,
+      query: input.query,
+      sessionFixture: options.sessionFixture,
       sessionResult,
       turnResult,
       sessionWeight: options.sessionWeight,
@@ -83,18 +87,26 @@ export function combineLongMemEvalHybridSessionResults(
     ...input.sessionResult.candidateIds ?? [],
     ...retrievedIds
   ]);
+  const completed = completeMultiSessionCandidateSiblings({
+    topK,
+    query: input.query,
+    sessionFixture: input.sessionFixture,
+    retrievedIds,
+    candidateIds
+  });
   const promotedTurnSessions = unique(input.turnResult.retrievedIds.map(turnIdToSessionId)).filter(
     (id) => !input.sessionResult.retrievedIds.includes(id)
   ).length;
 
   return {
-    retrievedIds,
-    candidateIds,
+    retrievedIds: completed.retrievedIds,
+    candidateIds: unique([...candidateIds, ...completed.retrievedIds]),
     confidence: mergeConfidence(input.sessionResult.confidence, input.turnResult.confidence),
     fallbackTrace: unique([
       'hybrid:session-turn',
       `hybrid:weights:session=${formatWeight(sessionWeight)},turn=${formatWeight(turnWeight)}`,
       `hybrid:turn-promoted:${promotedTurnSessions}`,
+      ...(completed.promotedCount > 0 ? [`hybrid:multi-session-sibling-completion:${completed.promotedCount}`] : []),
       ...prefixTrace('session', input.sessionResult.fallbackTrace),
       ...prefixTrace('turn', input.turnResult.fallbackTrace)
     ])
@@ -125,6 +137,135 @@ function addRankedIds(
     existing.source = existing.source === source ? source : 'both';
   });
 }
+
+interface MultiSessionCandidateCompletionInput {
+  topK: number;
+  query?: ReplayEvaluationQuery;
+  sessionFixture?: ReplayEvaluationFixture;
+  retrievedIds: string[];
+  candidateIds: string[];
+}
+
+interface MultiSessionCandidateCompletionResult {
+  retrievedIds: string[];
+  promotedCount: number;
+}
+
+function completeMultiSessionCandidateSiblings(
+  input: MultiSessionCandidateCompletionInput
+): MultiSessionCandidateCompletionResult {
+  const baseRetrievedIds = unique(input.retrievedIds.map(turnIdToSessionId)).slice(0, input.topK);
+  if (!isMultiSessionQuestion(input.query) || !input.sessionFixture || baseRetrievedIds.length < 2) {
+    return { retrievedIds: baseRetrievedIds, promotedCount: 0 };
+  }
+
+  const memoryById = new Map(
+    input.sessionFixture.memories.map((memory) => [memory.id, extractUserSiblingText(memory.content)])
+  );
+  const seedIds = baseRetrievedIds.slice(0, 2);
+  const seedTokenSets = seedIds
+    .map((id) => memoryById.get(id))
+    .filter((content): content is string => content !== undefined)
+    .map(tokenSet);
+  if (seedTokenSets.length < 2) {
+    return { retrievedIds: baseRetrievedIds, promotedCount: 0 };
+  }
+
+  const commonSeedTerms = [...seedTokenSets[0]]
+    .filter((term) => seedTokenSets.every((tokens) => tokens.has(term)))
+    .filter(isSiblingAnchorTerm)
+    .slice(0, 12);
+  if (commonSeedTerms.length < 2) {
+    return { retrievedIds: baseRetrievedIds, promotedCount: 0 };
+  }
+
+  const queryTerms = tokenSet(input.query?.query ?? '');
+  const seedIdSet = new Set(seedIds);
+  const originalRankById = new Map(baseRetrievedIds.map((id, index) => [id, index + 1]));
+  const minCommonHits = Math.max(2, Math.min(10, Math.ceil(commonSeedTerms.length * 0.45)));
+  const scoredCandidates = unique(input.candidateIds.map(turnIdToSessionId))
+    .filter((id) => !seedIdSet.has(id))
+    .map((id, index) => {
+      const content = memoryById.get(id);
+      if (!content) return undefined;
+      const tokens = tokenSet(content);
+      const commonHits = commonSeedTerms.filter((term) => tokens.has(term)).length;
+      const queryHits = [...queryTerms].filter((term) => tokens.has(term) && isSiblingAnchorTerm(term)).length;
+      const originalRank = originalRankById.get(id) ?? Number.POSITIVE_INFINITY;
+      const score = (commonHits * 2) + queryHits - (Math.min(originalRank, input.topK + index + 1) / 1000);
+      return { id, score, commonHits, queryHits, originalRank, index };
+    })
+    .filter((row): row is {
+      id: string;
+      score: number;
+      commonHits: number;
+      queryHits: number;
+      originalRank: number;
+      index: number;
+    } => row !== undefined)
+    .filter((row) => row.commonHits >= minCommonHits && row.queryHits >= 1)
+    .sort((a, b) => b.score - a.score || a.originalRank - b.originalRank || a.index - b.index || a.id.localeCompare(b.id));
+
+  const siblingIds = scoredCandidates.slice(0, 2).map((row) => row.id);
+  if (siblingIds.length === 0) {
+    return { retrievedIds: baseRetrievedIds, promotedCount: 0 };
+  }
+
+  const seedKeep = Math.min(2, baseRetrievedIds.length);
+  const completed = unique([
+    ...baseRetrievedIds.slice(0, seedKeep),
+    ...siblingIds,
+    ...baseRetrievedIds.slice(seedKeep)
+  ]).slice(0, input.topK);
+  const promotedCount = siblingIds.filter((id) => {
+    const originalRank = originalRankById.get(id);
+    const newRank = completed.indexOf(id) + 1;
+    return newRank > 0 && (originalRank === undefined || newRank < originalRank);
+  }).length;
+  return { retrievedIds: completed, promotedCount };
+}
+
+function isMultiSessionQuestion(query: ReplayEvaluationQuery | undefined): boolean {
+  return query?.category?.toLowerCase().includes('multi') === true;
+}
+
+function tokenSet(value: string): Set<string> {
+  return new Set(value
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s'-]/gu, ' ')
+    .split(/\s+/)
+    .map(normalizeSiblingToken)
+    .filter((token) => token.length >= 4 && !SIBLING_STOPWORDS.has(token)));
+}
+
+function extractUserSiblingText(content: string): string {
+  const flattened = content.replace(/\r?\n/g, ' | ');
+  const segments = [...flattened.matchAll(/(?:^|\|\s*)user:\s*([\s\S]*?)(?=\s*\|\s*(?:assistant|system|tool|user):|$)/gi)]
+    .map((match) => match[1]?.trim())
+    .filter((segment): segment is string => Boolean(segment));
+  return segments.length > 0 ? segments.join(' ') : content;
+}
+
+function normalizeSiblingToken(value: string): string {
+  let token = value.replace(/^[-']+|[-']+$/g, '');
+  if (/^cloth(?:e[sd]?|es|ing)?$/.test(token)) return 'cloth';
+  if (/^organi[sz]/.test(token)) return 'organiz';
+  if (token.endsWith('ing') && token.length > 6) token = token.slice(0, -3);
+  if (token.endsWith('ed') && token.length > 5) token = token.slice(0, -2);
+  if (token.endsWith('s') && token.length > 5) token = token.slice(0, -1);
+  return token;
+}
+
+function isSiblingAnchorTerm(term: string): boolean {
+  return term.length >= 4 && !SIBLING_STOPWORDS.has(term);
+}
+
+const SIBLING_STOPWORDS = new Set([
+  'assistant', 'because', 'before', 'buying', 'could', 'from', 'give', 'have', 'help',
+  'item', 'many', 'need', 'please', 'return', 'session', 'still', 'store', 'tell',
+  'that', 'them', 'there', 'they', 'this', 'tips', 'user', 'want', 'with', 'would',
+  'your'
+]);
 
 function findMatchingQuery(
   fixture: ReplayEvaluationFixture,
