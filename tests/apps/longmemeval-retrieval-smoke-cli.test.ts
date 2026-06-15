@@ -118,6 +118,25 @@ process.stdin.on('end', () => {
   return readerPath;
 }
 
+function writePayloadRecordingReaderCommand(): { readerPath: string; payloadPath: string } {
+  const dir = mkdtempSync(path.join(tmpdir(), 'cml-longmemeval-reader-payload-'));
+  const readerPath = path.join(dir, 'reader.mjs');
+  const payloadPath = path.join(dir, 'payload.json');
+  writeFileSync(readerPath, `#!/usr/bin/env node
+import { writeFileSync } from 'node:fs';
+let raw = '';
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', chunk => { raw += chunk; });
+process.stdin.on('end', () => {
+  const payload = JSON.parse(raw);
+  writeFileSync(${JSON.stringify(payloadPath)}, JSON.stringify(payload, null, 2));
+  process.stdout.write('I do not know');
+});
+`, 'utf8');
+  chmodSync(readerPath, 0o755);
+  return { readerPath, payloadPath };
+}
+
 function writeEarlyExitReaderCommand(): string {
   const dir = mkdtempSync(path.join(tmpdir(), 'cml-longmemeval-reader-early-exit-'));
   const readerPath = path.join(dir, 'reader.mjs');
@@ -534,5 +553,35 @@ describe('LongMemEval retrieval smoke CLI', () => {
         hypothesis: 'jasmine tea in the afternoon'
       }
     ]);
+  });
+
+  it('forwards temporal date boost metadata to answer reader payloads', () => {
+    const fixturePath = writeLongMemEvalExplicitTemporalFixture();
+    const reader = writePayloadRecordingReaderCommand();
+    const dir = mkdtempSync(path.join(tmpdir(), 'cml-longmemeval-answers-temporal-'));
+    const answersOut = path.join(dir, 'hypotheses.jsonl');
+    const result = runLongMemEvalSmokeCli([
+      '--input', fixturePath,
+      '--retrieval-mode', 'hybrid',
+      '--granularity', 'session',
+      '--format', 'json',
+      '--top-k', '2',
+      '--temporal-date-boost',
+      '--answers-out', answersOut,
+      '--reader-command', reader.readerPath
+    ]);
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe('');
+    const payload = JSON.parse(readFileSync(reader.payloadPath, 'utf8')) as Record<string, any>;
+    expect(payload.question_id).toBe('q_cli_temporal_boost');
+    expect(payload.category).toBe('temporal-reasoning');
+    expect(payload.temporalDateBoost).toMatchObject({
+      referenceDate: '2023-02-01',
+      targetDate: '2023-01-20',
+      toleranceDays: 1,
+      entityTerms: ['museum', 'exhibit']
+    });
+    expect(JSON.stringify(payload.temporalDateBoost)).not.toContain('attended the museum exhibit');
   });
 });

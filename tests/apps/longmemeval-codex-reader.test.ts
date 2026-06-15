@@ -211,6 +211,31 @@ describe('LongMemEval Codex CLI reader wrapper', () => {
     expect(prompt.indexOf('Question-focused evidence notes:')).toBeLessThan(prompt.indexOf('Retrieved Contexts:'));
   });
 
+  it('adds question-focused evidence notes for single-session preference context', async () => {
+    const mock = writeMockCodex();
+    const result = await runReader({
+      question_id: 'q_reader_preference_notes',
+      question: 'Can you suggest accessories that complement my current photography setup?',
+      category: 'single-session-preference',
+      contexts: [
+        { id: 'noise_calendar', rank: 1, content: '[2026-01-01] user: I need to update my calendar reminders.' },
+        { id: 'photo_setup', rank: 5, content: '[2026-01-02] user: My current photography setup is a Sony A7C camera with a compact flash.' }
+      ]
+    }, {
+      LONGMEMEVAL_CODEX_BIN: mock.bin
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe('');
+    const prompt = readFileSync(mock.promptPath, 'utf8');
+    expect(prompt).toContain('For preference questions, prefer retrieved first-person preference, setup, interest, or personal-context statements over generic advice.');
+    expect(prompt).toContain('Question-focused evidence notes:');
+    expect(prompt).toContain('- [5] photo_setup:');
+    expect(prompt).not.toContain('- [1] noise_calendar:');
+    expect(prompt.indexOf('Question-focused evidence notes:')).toBeLessThan(prompt.indexOf('Retrieved Contexts:'));
+    expect(prompt).not.toContain('Sony-compatible photography accessories is the answer');
+  });
+
   it('passes temporal target-date hints into the reader prompt without exposing answers', async () => {
     const mock = writeMockCodex();
     const result = await runReader({

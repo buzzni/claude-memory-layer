@@ -9,7 +9,8 @@ import {
   createReplayRetrievalRunner,
   type ReplayEvaluationFixture,
   type ReplayEvaluationReport,
-  type ReplayRetrievalRunner
+  type ReplayRetrievalRunner,
+  type ReplayTemporalDateBoost
 } from '../src/core/replay-evaluator.js';
 import {
   longMemEvalEntriesToReplayFixture,
@@ -68,6 +69,7 @@ interface LongMemEvalReaderPayload {
   question_id: string;
   question: string;
   category?: string;
+  temporalDateBoost?: ReplayTemporalDateBoost;
   contexts: LongMemEvalReaderContext[];
 }
 
@@ -256,6 +258,9 @@ async function generateLongMemEvalHypotheses(
     };
     if (query.category !== undefined) {
       payload.category = query.category;
+    }
+    if (query.temporalDateBoost !== undefined) {
+      payload.temporalDateBoost = query.temporalDateBoost;
     }
 
     const hypothesis = await runReaderCommand(options.readerCommand, options.readerArgs, payload, options.readerTimeoutMs);

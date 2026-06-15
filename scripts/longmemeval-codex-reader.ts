@@ -216,6 +216,9 @@ function buildReaderGuidanceLines(payload: LongMemEvalReaderPayload): string[] {
     lines.push('Use an internal evidence ledger before answering: context rank/id, quoted supporting fact, normalized item or event, include/exclude reason.');
     lines.push('When evidence is spread across non-adjacent ranks, include later relevant contexts instead of stopping after early evidence.');
   }
+  if (category.includes('preference')) {
+    lines.push('For preference questions, prefer retrieved first-person preference, setup, interest, or personal-context statements over generic advice.');
+  }
   if (isCountQuestion(payload.question)) {
     lines.push('For "how many" or count questions, count distinct supported items or events, not the number of retrieved contexts.');
   }
@@ -243,7 +246,7 @@ function formatTemporalDateBoostLine(boost: LongMemEvalTemporalDateBoost): strin
 
 function shouldBuildQuestionFocusedEvidenceNotes(payload: LongMemEvalReaderPayload): boolean {
   const category = payload.category?.toLowerCase() ?? '';
-  return category.includes('multi') || isCountQuestion(payload.question) || payload.temporalDateBoost !== undefined;
+  return category.includes('multi') || category.includes('preference') || isCountQuestion(payload.question) || payload.temporalDateBoost !== undefined;
 }
 
 interface EvidenceNoteRow {
