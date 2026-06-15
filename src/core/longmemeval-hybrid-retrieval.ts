@@ -106,7 +106,7 @@ export function combineLongMemEvalHybridSessionResults(
       'hybrid:session-turn',
       `hybrid:weights:session=${formatWeight(sessionWeight)},turn=${formatWeight(turnWeight)}`,
       `hybrid:turn-promoted:${promotedTurnSessions}`,
-      ...(completed.promotedCount > 0 ? [`hybrid:multi-session-sibling-completion:${completed.promotedCount}`] : []),
+      ...(completed.promotedCount > 0 ? [`hybrid:multi-evidence-sibling-completion:${completed.promotedCount}`] : []),
       ...prefixTrace('session', input.sessionResult.fallbackTrace),
       ...prefixTrace('turn', input.turnResult.fallbackTrace)
     ])
@@ -155,7 +155,7 @@ function completeMultiSessionCandidateSiblings(
   input: MultiSessionCandidateCompletionInput
 ): MultiSessionCandidateCompletionResult {
   const baseRetrievedIds = unique(input.retrievedIds.map(turnIdToSessionId)).slice(0, input.topK);
-  if (!isMultiSessionQuestion(input.query) || !input.sessionFixture || baseRetrievedIds.length < 2) {
+  if (!isMultiEvidenceQuestion(input.query) || !input.sessionFixture || baseRetrievedIds.length < 2) {
     return { retrievedIds: baseRetrievedIds, promotedCount: 0 };
   }
 
@@ -206,12 +206,13 @@ function completeMultiSessionCandidateSiblings(
     .filter((row) => row.commonHits >= minCommonHits && row.queryHits >= 1)
     .sort((a, b) => b.score - a.score || a.originalRank - b.originalRank || a.index - b.index || a.id.localeCompare(b.id));
 
-  const siblingIds = scoredCandidates.slice(0, 2).map((row) => row.id);
+  const seedKeep = Math.min(2, baseRetrievedIds.length);
+  const siblingLimit = Math.min(4, Math.max(2, input.topK - seedKeep - 1));
+  const siblingIds = scoredCandidates.slice(0, siblingLimit).map((row) => row.id);
   if (siblingIds.length === 0) {
     return { retrievedIds: baseRetrievedIds, promotedCount: 0 };
   }
 
-  const seedKeep = Math.min(2, baseRetrievedIds.length);
   const completed = unique([
     ...baseRetrievedIds.slice(0, seedKeep),
     ...siblingIds,
@@ -225,8 +226,11 @@ function completeMultiSessionCandidateSiblings(
   return { retrievedIds: completed, promotedCount };
 }
 
-function isMultiSessionQuestion(query: ReplayEvaluationQuery | undefined): boolean {
-  return query?.category?.toLowerCase().includes('multi') === true;
+function isMultiEvidenceQuestion(query: ReplayEvaluationQuery | undefined): boolean {
+  const category = query?.category?.toLowerCase() ?? '';
+  return category.includes('multi')
+    || category.includes('temporal')
+    || (category.includes('knowledge') && category.includes('update'));
 }
 
 function tokenSet(value: string): Set<string> {
