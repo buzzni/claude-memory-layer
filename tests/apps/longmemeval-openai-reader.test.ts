@@ -156,4 +156,39 @@ describe('LongMemEval OpenAI-compatible reader wrapper', () => {
       await closeServer(server);
     }
   });
+
+  it('passes temporal target and reference-date guidance to OpenAI-compatible readers', async () => {
+    const requests: MockRequest[] = [];
+    const { server, baseUrl } = await startMockOpenAiServer(requests);
+    try {
+      const result = await runReader({
+        question_id: 'q_reader_temporal_openai',
+        question: 'How many weeks ago did I meet up with my aunt and receive the crystal chandelier?',
+        category: 'temporal-reasoning',
+        temporalDateBoost: {
+          referenceDate: '2023-04-01',
+          targetDate: '2023-03-04',
+          toleranceDays: 0,
+          entityTerms: ['aunt', 'crystal chandelier']
+        },
+        contexts: [
+          { id: 'chandelier', rank: 1, content: '[2023-03-04] session answer\nuser: I got a stunning crystal chandelier from my aunt today.' }
+        ]
+      }, {
+        LONGMEMEVAL_READER_API_KEY: 'dk',
+        LONGMEMEVAL_READER_BASE_URL: baseUrl
+      });
+
+      expect(result.status).toBe(0);
+      expect(result.stderr).toBe('');
+      expect(requests).toHaveLength(1);
+      const messages = requests[0].body.messages as Array<{ role: string; content: string }>;
+      expect(messages[1].content).toContain('Temporal target date: 2023-03-04; reference date: 2023-04-01; tolerance: ±0 days.');
+      expect(messages[1].content).toContain('Treat the reference date as the current/today date for relative-time questions; never use the real current system date.');
+      expect(messages[1].content).toContain('Temporal entity terms: aunt, crystal chandelier.');
+      expect(messages[1].content).not.toContain('4 weeks ago is the answer');
+    } finally {
+      await closeServer(server);
+    }
+  });
 });

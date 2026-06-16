@@ -300,6 +300,33 @@ describe('LongMemEval Codex CLI reader wrapper', () => {
     expect(prompt).not.toContain('opening tour is the answer');
   });
 
+  it('tells temporal reader to use the LongMemEval reference date instead of the real current date', async () => {
+    const mock = writeMockCodex();
+    const result = await runReader({
+      question_id: 'q_reader_temporal_reference_date',
+      question: 'How many weeks ago did I meet up with my aunt and receive the crystal chandelier?',
+      category: 'temporal-reasoning',
+      temporalDateBoost: {
+        referenceDate: '2023-04-01',
+        targetDate: '2023-03-04',
+        toleranceDays: 0,
+        entityTerms: ['aunt', 'crystal chandelier']
+      },
+      contexts: [
+        { id: 'chandelier', rank: 1, content: '[2023-03-04] session answer\nuser: I got a stunning crystal chandelier from my aunt today.' }
+      ]
+    }, {
+      LONGMEMEVAL_CODEX_BIN: mock.bin
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe('');
+    const prompt = readFileSync(mock.promptPath, 'utf8');
+    expect(prompt).toContain('Treat the reference date as the current/today date for relative-time questions; never use the real current system date.');
+    expect(prompt).toContain('Temporal target date: 2023-03-04; reference date: 2023-04-01; tolerance: ±0 days.');
+    expect(prompt).not.toContain('4 weeks ago is the answer');
+  });
+
   it('fails closed with a bounded redacted diagnostic when codex exits non-zero', async () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'cml-longmemeval-codex-reader-fail-'));
     const bin = path.join(dir, 'codex-fail.mjs');

@@ -227,6 +227,7 @@ function buildReaderGuidanceLines(payload: LongMemEvalReaderPayload): string[] {
   }
   if (payload.temporalDateBoost !== undefined) {
     lines.push(formatTemporalDateBoostLine(payload.temporalDateBoost));
+    lines.push('Treat the reference date as the current/today date for relative-time questions; never use the real current system date.');
     const entityTerms = payload.temporalDateBoost.entityTerms ?? [];
     if (entityTerms.length > 0) {
       lines.push(`Temporal entity terms: ${entityTerms.join(', ')}.`);

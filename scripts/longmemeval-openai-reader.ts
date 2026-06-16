@@ -6,10 +6,18 @@ interface LongMemEvalReaderContext {
   content: string;
 }
 
+interface LongMemEvalTemporalDateBoost {
+  referenceDate: string;
+  targetDate?: string;
+  toleranceDays?: number;
+  entityTerms?: string[];
+}
+
 interface LongMemEvalReaderPayload {
   question_id: string;
   question: string;
   category?: string;
+  temporalDateBoost?: LongMemEvalTemporalDateBoost;
   contexts: LongMemEvalReaderContext[];
 }
 
@@ -136,8 +144,39 @@ function parsePayload(raw: string): LongMemEvalReaderPayload {
     question_id: questionId,
     question,
     ...(typeof parsed.category === 'string' ? { category: parsed.category } : {}),
+    ...(parsed.temporalDateBoost !== undefined ? { temporalDateBoost: parseTemporalDateBoost(parsed.temporalDateBoost) } : {}),
     contexts: contexts.map((context, index) => parseContext(context, index))
   };
+}
+
+function parseTemporalDateBoost(value: unknown): LongMemEvalTemporalDateBoost {
+  if (!isRecord(value)) {
+    throw new ReaderError('Reader payload temporalDateBoost must be an object');
+  }
+  const referenceDate = value.referenceDate;
+  if (typeof referenceDate !== 'string' || referenceDate.trim() === '') {
+    throw new ReaderError('Reader payload temporalDateBoost requires non-empty string referenceDate');
+  }
+  const boost: LongMemEvalTemporalDateBoost = { referenceDate };
+  if (value.targetDate !== undefined) {
+    if (typeof value.targetDate !== 'string' || value.targetDate.trim() === '') {
+      throw new ReaderError('Reader payload temporalDateBoost targetDate must be a non-empty string');
+    }
+    boost.targetDate = value.targetDate;
+  }
+  if (value.toleranceDays !== undefined) {
+    if (typeof value.toleranceDays !== 'number' || !Number.isFinite(value.toleranceDays) || value.toleranceDays < 0) {
+      throw new ReaderError('Reader payload temporalDateBoost toleranceDays must be a non-negative number');
+    }
+    boost.toleranceDays = value.toleranceDays;
+  }
+  if (value.entityTerms !== undefined) {
+    if (!Array.isArray(value.entityTerms) || !value.entityTerms.every((term) => typeof term === 'string')) {
+      throw new ReaderError('Reader payload temporalDateBoost entityTerms must be a string array');
+    }
+    boost.entityTerms = value.entityTerms.filter((term) => term.trim() !== '');
+  }
+  return boost;
 }
 
 function parseContext(context: unknown, index: number): LongMemEvalReaderContext {
@@ -181,6 +220,7 @@ function buildUserPrompt(payload: LongMemEvalReaderPayload, contextCharLimit: nu
     `Question ID: ${payload.question_id}`,
     ...(payload.category ? [`Category: ${payload.category}`] : []),
     `Question: ${payload.question}`,
+    ...(payload.temporalDateBoost !== undefined ? buildTemporalGuidanceLines(payload.temporalDateBoost) : []),
     '',
     'Retrieved Contexts:'
   ];
@@ -200,6 +240,24 @@ function buildUserPrompt(payload: LongMemEvalReaderPayload, contextCharLimit: nu
     lines.push('[no retrieved contexts]');
   }
   return lines.join('\n');
+}
+
+function buildTemporalGuidanceLines(boost: LongMemEvalTemporalDateBoost): string[] {
+  const lines = [
+    formatTemporalDateBoostLine(boost),
+    'Treat the reference date as the current/today date for relative-time questions; never use the real current system date.'
+  ];
+  const entityTerms = boost.entityTerms ?? [];
+  if (entityTerms.length > 0) {
+    lines.push(`Temporal entity terms: ${entityTerms.join(', ')}.`);
+  }
+  return lines;
+}
+
+function formatTemporalDateBoostLine(boost: LongMemEvalTemporalDateBoost): string {
+  const target = boost.targetDate !== undefined ? `target date: ${boost.targetDate}; ` : '';
+  const tolerance = boost.toleranceDays !== undefined ? `; tolerance: ±${boost.toleranceDays} days` : '';
+  return `Temporal ${target}reference date: ${boost.referenceDate}${tolerance}.`;
 }
 
 function parsePositiveInteger(value: string | undefined, fallback: number, name: string): number {
