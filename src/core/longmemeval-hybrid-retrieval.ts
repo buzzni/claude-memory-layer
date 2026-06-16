@@ -94,19 +94,27 @@ export function combineLongMemEvalHybridSessionResults(
     retrievedIds,
     candidateIds
   });
+  const preferenceBackfilled = backfillPreferenceCandidates({
+    topK,
+    query: input.query,
+    sessionFixture: input.sessionFixture,
+    retrievedIds: completed.retrievedIds,
+    candidateIds
+  });
   const promotedTurnSessions = unique(input.turnResult.retrievedIds.map(turnIdToSessionId)).filter(
     (id) => !input.sessionResult.retrievedIds.includes(id)
   ).length;
 
   return {
-    retrievedIds: completed.retrievedIds,
-    candidateIds: unique([...candidateIds, ...completed.retrievedIds]),
+    retrievedIds: preferenceBackfilled.retrievedIds,
+    candidateIds: unique([...candidateIds, ...completed.retrievedIds, ...preferenceBackfilled.retrievedIds]),
     confidence: mergeConfidence(input.sessionResult.confidence, input.turnResult.confidence),
     fallbackTrace: unique([
       'hybrid:session-turn',
       `hybrid:weights:session=${formatWeight(sessionWeight)},turn=${formatWeight(turnWeight)}`,
       `hybrid:turn-promoted:${promotedTurnSessions}`,
       ...(completed.promotedCount > 0 ? [`hybrid:multi-evidence-sibling-completion:${completed.promotedCount}`] : []),
+      ...(preferenceBackfilled.promotedCount > 0 ? [`hybrid:preference-candidate-backfill:${preferenceBackfilled.promotedCount}`] : []),
       ...prefixTrace('session', input.sessionResult.fallbackTrace),
       ...prefixTrace('turn', input.turnResult.fallbackTrace)
     ])
@@ -232,6 +240,120 @@ function isMultiEvidenceQuestion(query: ReplayEvaluationQuery | undefined): bool
     || category.includes('temporal')
     || (category.includes('knowledge') && category.includes('update'));
 }
+
+interface PreferenceCandidateBackfillInput {
+  topK: number;
+  query?: ReplayEvaluationQuery;
+  sessionFixture?: ReplayEvaluationFixture;
+  retrievedIds: string[];
+  candidateIds: string[];
+}
+
+interface PreferenceCandidateBackfillResult {
+  retrievedIds: string[];
+  promotedCount: number;
+}
+
+function backfillPreferenceCandidates(
+  input: PreferenceCandidateBackfillInput
+): PreferenceCandidateBackfillResult {
+  const baseRetrievedIds = unique(input.retrievedIds.map(turnIdToSessionId)).slice(0, input.topK);
+  if (!isSingleSessionPreferenceQuestion(input.query) || !input.sessionFixture || baseRetrievedIds.length === 0) {
+    return { retrievedIds: baseRetrievedIds, promotedCount: 0 };
+  }
+
+  const memoryById = new Map(input.sessionFixture.memories.map((memory) => [memory.id, memory.content]));
+  const selected = [...baseRetrievedIds];
+  const selectedSet = new Set(selected);
+  const queryTerms = preferenceTokenSet(input.query?.query ?? '');
+  if (queryTerms.size === 0) return { retrievedIds: baseRetrievedIds, promotedCount: 0 };
+
+  const scoredCandidates = unique(input.candidateIds.map(turnIdToSessionId))
+    .filter((id) => !selectedSet.has(id))
+    .map((id, index) => {
+      const content = memoryById.get(id);
+      if (!content) return undefined;
+      const score = scorePreferenceCandidate(input.query?.query ?? '', content);
+      return { id, index, ...score };
+    })
+    .filter((row): row is PreferenceCandidateScore & { id: string; index: number } => row !== undefined)
+    .filter((row) => row.score >= 6 && row.queryHits.length >= 1 && row.personalSignalCount > 0)
+    .sort((a, b) => b.score - a.score || a.index - b.index || a.id.localeCompare(b.id));
+
+  let promotedCount = 0;
+  const maxPromotions = 1;
+
+  for (const candidate of scoredCandidates) {
+    if (promotedCount >= maxPromotions) break;
+    if (selectedSet.has(candidate.id)) continue;
+
+    if (selected.length >= input.topK) break;
+
+    selected.push(candidate.id);
+    selectedSet.add(candidate.id);
+    promotedCount += 1;
+  }
+
+  return { retrievedIds: selected.slice(0, input.topK), promotedCount };
+}
+
+interface PreferenceCandidateScore {
+  score: number;
+  queryHits: string[];
+  personalSignalCount: number;
+}
+
+function isSingleSessionPreferenceQuestion(query: ReplayEvaluationQuery | undefined): boolean {
+  const category = query?.category?.toLowerCase() ?? '';
+  return category.includes('single') && category.includes('preference');
+}
+
+function scorePreferenceCandidate(query: string, content: string): PreferenceCandidateScore {
+  const userText = extractUserOnlyText(content);
+  if (!userText) return { score: 0, queryHits: [], personalSignalCount: 0 };
+
+  const queryTerms = preferenceTokenSet(query);
+  const contentTerms = preferenceTokenSet(userText);
+  const queryHits = [...queryTerms].filter((term) => contentTerms.has(term));
+  const personalSignalCount = PREFERENCE_PERSONAL_CONTEXT_PATTERNS
+    .filter((pattern) => pattern.test(userText))
+    .length;
+  return {
+    score: (queryHits.length * 2) + Math.min(personalSignalCount, 4),
+    queryHits,
+    personalSignalCount
+  };
+}
+
+function extractUserOnlyText(content: string): string | undefined {
+  const flattened = content.replace(/\r?\n/g, ' | ');
+  const segments = [...flattened.matchAll(/(?:^|\|\s*)user:\s*([\s\S]*?)(?=\s*\|\s*(?:assistant|system|tool|user):|$)/gi)]
+    .map((match) => match[1]?.trim())
+    .filter((segment): segment is string => Boolean(segment));
+  return segments.length > 0 ? segments.join(' ') : undefined;
+}
+
+function preferenceTokenSet(value: string): Set<string> {
+  return new Set(value
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s'-]/gu, ' ')
+    .split(/\s+/)
+    .map(normalizeSiblingToken)
+    .filter((token) => token.length >= 4 && !PREFERENCE_STOPWORDS.has(token)));
+}
+
+const PREFERENCE_PERSONAL_CONTEXT_PATTERNS = [
+  /\bi(?:'m| am| was|'ve| have| recently| usually| always| often| like| love| prefer| enjoy| want| need| started| found| considering| planning| looking| trying| thinking)\b/i,
+  /\bmy\b/i
+];
+
+const PREFERENCE_STOPWORDS = new Set([
+  'about', 'advice', 'again', 'after', 'before', 'could', 'detail', 'does', 'from',
+  'goal', 'have', 'help', 'idea', 'interest', 'many', 'need', 'personal', 'prior',
+  'recommend', 'recommendation', 'should', 'suggest', 'suggestion', 'there', 'this',
+  'tips', 'upcoming', 'user', 'what', 'when', 'where', 'which', 'with', 'would',
+  'your'
+]);
 
 function tokenSet(value: string): Set<string> {
   return new Set(value

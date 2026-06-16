@@ -162,6 +162,218 @@ describe('LongMemEval hybrid retrieval', () => {
     expect(combined.fallbackTrace).toContain('hybrid:multi-evidence-sibling-completion:3');
   });
 
+  it('backfills strong personal-context candidates for single-session preference questions', () => {
+    const combined = combineLongMemEvalHybridSessionResults({
+      topK: 6,
+      query: {
+        queryId: 'q_pref_trip',
+        query: 'Can you suggest a hotel for my upcoming trip?',
+        expectedIds: [],
+        category: 'single-session-preference'
+      },
+      sessionFixture: {
+        name: 'preference-backfill-fixture',
+        ks: [1, 5, 6],
+        queries: [],
+        memories: [
+          {
+            id: 'q_pref_trip::session::top_city',
+            content: 'user: I need advice about city transit passes for a museum day.',
+            sourceSessionId: 'top_city'
+          },
+          {
+            id: 'q_pref_trip::session::top_calendar',
+            content: 'user: Please help organize my calendar before next week.',
+            sourceSessionId: 'top_calendar'
+          },
+          {
+            id: 'q_pref_trip::session::top_recipe',
+            content: 'user: I want tips for a pasta sauce with basil.',
+            sourceSessionId: 'top_recipe'
+          },
+          {
+            id: 'q_pref_trip::session::tail_noise_one',
+            content: 'assistant: Generic hotel descriptions without any prior user context.',
+            sourceSessionId: 'tail_noise_one'
+          },
+          {
+            id: 'q_pref_trip::session::tail_noise_two',
+            content: 'user: Tell me about medieval trade routes.',
+            sourceSessionId: 'tail_noise_two'
+          },
+          {
+            id: 'q_pref_trip::session::answer_hotel_view',
+            content: 'user: I am planning my Seattle trip and need hotel recommendations with a great city view.',
+            sourceSessionId: 'answer_hotel_view'
+          }
+        ]
+      },
+      sessionResult: {
+        retrievedIds: [
+          'q_pref_trip::session::top_city',
+          'q_pref_trip::session::top_calendar',
+          'q_pref_trip::session::top_recipe',
+          'q_pref_trip::session::tail_noise_one',
+          'q_pref_trip::session::tail_noise_two'
+        ],
+        candidateIds: [
+          'q_pref_trip::session::top_city',
+          'q_pref_trip::session::top_calendar',
+          'q_pref_trip::session::top_recipe',
+          'q_pref_trip::session::tail_noise_one',
+          'q_pref_trip::session::tail_noise_two',
+          'q_pref_trip::session::answer_hotel_view'
+        ],
+        confidence: 'suggested'
+      },
+      turnResult: {
+        retrievedIds: [],
+        candidateIds: [],
+        confidence: 'none'
+      }
+    });
+
+    expect(combined.retrievedIds).toEqual([
+      'q_pref_trip::session::top_city',
+      'q_pref_trip::session::top_calendar',
+      'q_pref_trip::session::top_recipe',
+      'q_pref_trip::session::tail_noise_one',
+      'q_pref_trip::session::tail_noise_two',
+      'q_pref_trip::session::answer_hotel_view'
+    ]);
+    expect(combined.fallbackTrace).toContain('hybrid:preference-candidate-backfill:1');
+  });
+
+  it('does not preference-backfill generic non-user recommendation candidates', () => {
+    const combined = combineLongMemEvalHybridSessionResults({
+      topK: 3,
+      query: {
+        queryId: 'q_pref_generic',
+        query: 'Can you suggest a hotel for my upcoming trip?',
+        expectedIds: [],
+        category: 'single-session-preference'
+      },
+      sessionFixture: {
+        name: 'preference-generic-guard-fixture',
+        ks: [1, 3],
+        queries: [],
+        memories: [
+          {
+            id: 'q_pref_generic::session::top_one',
+            content: 'user: I need advice about city transit passes.',
+            sourceSessionId: 'top_one'
+          },
+          {
+            id: 'q_pref_generic::session::top_two',
+            content: 'user: Please help organize my calendar.',
+            sourceSessionId: 'top_two'
+          },
+          {
+            id: 'q_pref_generic::session::top_three',
+            content: 'user: Tell me about medieval trade routes.',
+            sourceSessionId: 'top_three'
+          },
+          {
+            id: 'q_pref_generic::session::generic_hotel',
+            content: 'assistant: Hotel recommendations for trips include downtown business hotels and airport hotels.',
+            sourceSessionId: 'generic_hotel'
+          }
+        ]
+      },
+      sessionResult: {
+        retrievedIds: [
+          'q_pref_generic::session::top_one',
+          'q_pref_generic::session::top_two',
+          'q_pref_generic::session::top_three'
+        ],
+        candidateIds: [
+          'q_pref_generic::session::top_one',
+          'q_pref_generic::session::top_two',
+          'q_pref_generic::session::top_three',
+          'q_pref_generic::session::generic_hotel'
+        ],
+        confidence: 'suggested'
+      },
+      turnResult: {
+        retrievedIds: [],
+        candidateIds: [],
+        confidence: 'none'
+      }
+    });
+
+    expect(combined.retrievedIds).toEqual([
+      'q_pref_generic::session::top_one',
+      'q_pref_generic::session::top_two',
+      'q_pref_generic::session::top_three'
+    ]);
+    expect(combined.fallbackTrace).not.toContain('hybrid:preference-candidate-backfill:1');
+  });
+
+  it('does not replace full topK preference results with backfill candidates', () => {
+    const combined = combineLongMemEvalHybridSessionResults({
+      topK: 3,
+      query: {
+        queryId: 'q_pref_full',
+        query: 'Can you suggest a hotel for my upcoming trip?',
+        expectedIds: [],
+        category: 'single-session-preference'
+      },
+      sessionFixture: {
+        name: 'preference-full-topk-guard-fixture',
+        ks: [1, 3],
+        queries: [],
+        memories: [
+          {
+            id: 'q_pref_full::session::top_one',
+            content: 'user: I need advice about city transit passes.',
+            sourceSessionId: 'top_one'
+          },
+          {
+            id: 'q_pref_full::session::top_two',
+            content: 'user: Please help organize my calendar.',
+            sourceSessionId: 'top_two'
+          },
+          {
+            id: 'q_pref_full::session::top_three',
+            content: 'user: Tell me about medieval trade routes.',
+            sourceSessionId: 'top_three'
+          },
+          {
+            id: 'q_pref_full::session::answer_hotel_view',
+            content: 'user: I am planning my Seattle trip and need hotel recommendations with a great city view.',
+            sourceSessionId: 'answer_hotel_view'
+          }
+        ]
+      },
+      sessionResult: {
+        retrievedIds: [
+          'q_pref_full::session::top_one',
+          'q_pref_full::session::top_two',
+          'q_pref_full::session::top_three'
+        ],
+        candidateIds: [
+          'q_pref_full::session::top_one',
+          'q_pref_full::session::top_two',
+          'q_pref_full::session::top_three',
+          'q_pref_full::session::answer_hotel_view'
+        ],
+        confidence: 'suggested'
+      },
+      turnResult: {
+        retrievedIds: [],
+        candidateIds: [],
+        confidence: 'none'
+      }
+    });
+
+    expect(combined.retrievedIds).toEqual([
+      'q_pref_full::session::top_one',
+      'q_pref_full::session::top_two',
+      'q_pref_full::session::top_three'
+    ]);
+    expect(combined.fallbackTrace).not.toContain('hybrid:preference-candidate-backfill:1');
+  });
+
   it('creates a runner that searches session and turn fixtures then returns session ids', async () => {
     const entries = [{
       question_id: 'q_2',
