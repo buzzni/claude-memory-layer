@@ -236,6 +236,35 @@ describe('LongMemEval Codex CLI reader wrapper', () => {
     expect(prompt).not.toContain('Sony-compatible photography accessories is the answer');
   });
 
+  it('adds dated evidence ledger notes for knowledge-update questions', async () => {
+    const mock = writeMockCodex();
+    const result = await runReader({
+      question_id: 'q_reader_knowledge_update_notes',
+      question: 'What is my current highest score in Ticket to Ride?',
+      category: 'knowledge-update',
+      contexts: [
+        { id: 'older_score', rank: 1, content: '[2023-05-23] user: My highest score in Ticket to Ride is currently 124 points.' },
+        { id: 'newer_score', rank: 2, content: '[2023-05-25] user: I improved my Ticket to Ride score; my current highest score is 132 points.' },
+        { id: 'noise', rank: 3, content: '[2023-05-24] user: I need dinner ideas for game night.' }
+      ]
+    }, {
+      LONGMEMEVAL_CODEX_BIN: mock.bin
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe('');
+    const prompt = readFileSync(mock.promptPath, 'utf8');
+    expect(prompt).toContain('For knowledge-update questions, compare dated evidence for the same fact and avoid answering from stale evidence.');
+    expect(prompt).toContain('If the question asks for current, now, latest, most recent, or updated information, prefer the newest dated relevant evidence.');
+    expect(prompt).toContain('Question-focused evidence notes:');
+    expect(prompt).toContain('- [1] older_score: date=2023-05-23 | decision=include | evidence=');
+    expect(prompt).toContain('- [2] newer_score: date=2023-05-25 | decision=include | evidence=');
+    expect(prompt.indexOf('- [2] newer_score:')).toBeLessThan(prompt.indexOf('- [1] older_score:'));
+    expect(prompt).not.toContain('- [3] noise:');
+    expect(prompt.indexOf('Question-focused evidence notes:')).toBeLessThan(prompt.indexOf('Retrieved Contexts:'));
+    expect(prompt).not.toContain('132 points is the answer');
+  });
+
   it('passes temporal target-date hints into the reader prompt without exposing answers', async () => {
     const mock = writeMockCodex();
     const result = await runReader({

@@ -219,6 +219,11 @@ function buildReaderGuidanceLines(payload: LongMemEvalReaderPayload): string[] {
   if (category.includes('preference')) {
     lines.push('For preference questions, prefer retrieved first-person preference, setup, interest, or personal-context statements over generic advice.');
   }
+  if (category.includes('knowledge-update')) {
+    lines.push('For knowledge-update questions, compare dated evidence for the same fact and avoid answering from stale evidence.');
+    lines.push('If the question asks for current, now, latest, most recent, or updated information, prefer the newest dated relevant evidence.');
+    lines.push('If dated evidence conflicts, answer from the ledger row matching the question time cue rather than the earliest retrieved rank.');
+  }
   if (isCountQuestion(payload.question)) {
     lines.push('For "how many" or count questions, count distinct supported items or events, not the number of retrieved contexts.');
   }
@@ -247,7 +252,7 @@ function formatTemporalDateBoostLine(boost: LongMemEvalTemporalDateBoost): strin
 
 function shouldBuildQuestionFocusedEvidenceNotes(payload: LongMemEvalReaderPayload): boolean {
   const category = payload.category?.toLowerCase() ?? '';
-  return category.includes('multi') || category.includes('preference') || isCountQuestion(payload.question) || payload.temporalDateBoost !== undefined;
+  return category.includes('multi') || category.includes('preference') || category.includes('knowledge-update') || isCountQuestion(payload.question) || payload.temporalDateBoost !== undefined;
 }
 
 interface EvidenceNoteRow {
@@ -262,6 +267,7 @@ interface EvidenceNoteRow {
 
 function buildQuestionFocusedEvidenceNotes(payload: LongMemEvalReaderPayload): string[] {
   if (!shouldBuildQuestionFocusedEvidenceNotes(payload)) return [];
+  const category = payload.category?.toLowerCase() ?? '';
   const terms = extractQuestionTerms(payload.question);
   const temporalBoost = payload.temporalDateBoost;
   if (terms.length === 0 && temporalBoost === undefined) return [];
@@ -282,9 +288,43 @@ function buildQuestionFocusedEvidenceNotes(payload: LongMemEvalReaderPayload): s
       .slice(0, remaining)
     : [];
 
+  const format = evidenceNoteFormat(category, temporalBoost);
+  const datePreference = format === 'dated' ? knowledgeUpdateDatePreference(payload.question) : 'rank';
   return [...included, ...excluded]
-    .sort((a, b) => a.context.rank - b.context.rank)
-    .map((row) => formatEvidenceNoteRow(row, temporalBoost !== undefined));
+    .sort((a, b) => compareEvidenceNoteOutputRows(a, b, datePreference))
+    .map((row) => formatEvidenceNoteRow(row, format));
+}
+
+function compareEvidenceNoteOutputRows(
+  a: EvidenceNoteRow,
+  b: EvidenceNoteRow,
+  datePreference: 'newest' | 'oldest' | 'rank'
+): number {
+  if (datePreference !== 'rank') {
+    const aDate = isoDateToUtcMs(a.date);
+    const bDate = isoDateToUtcMs(b.date);
+    if (aDate !== undefined && bDate !== undefined && aDate !== bDate) {
+      return datePreference === 'newest' ? bDate - aDate : aDate - bDate;
+    }
+    if (aDate !== undefined && bDate === undefined) return -1;
+    if (aDate === undefined && bDate !== undefined) return 1;
+  }
+  return a.context.rank - b.context.rank;
+}
+
+function knowledgeUpdateDatePreference(question: string): 'newest' | 'oldest' | 'rank' {
+  if (/\b(initially|initial|first|originally|previous|before|prior)\b/i.test(question)) return 'oldest';
+  if (/\b(current|currently|now|latest|most recent|newest|updated)\b/i.test(question)) return 'newest';
+  return 'rank';
+}
+
+function evidenceNoteFormat(
+  category: string,
+  temporalBoost: LongMemEvalTemporalDateBoost | undefined
+): 'plain' | 'dated' | 'temporal' {
+  if (temporalBoost !== undefined) return 'temporal';
+  if (category.includes('knowledge-update')) return 'dated';
+  return 'plain';
 }
 
 function buildEvidenceNoteRow(
@@ -334,10 +374,13 @@ function compareEvidenceNoteRows(a: EvidenceNoteRow, b: EvidenceNoteRow): number
     || a.context.rank - b.context.rank;
 }
 
-function formatEvidenceNoteRow(row: EvidenceNoteRow, includeLedgerFields: boolean): string {
+function formatEvidenceNoteRow(row: EvidenceNoteRow, format: 'plain' | 'dated' | 'temporal'): string {
   const snippet = compactSnippet(row.evidenceText, EVIDENCE_NOTE_SNIPPET_LIMIT);
-  if (!includeLedgerFields) {
+  if (format === 'plain') {
     return `- [${row.context.rank}] ${row.context.id}: ${snippet}`;
+  }
+  if (format === 'dated') {
+    return `- [${row.context.rank}] ${row.context.id}: date=${row.date} | decision=${row.decision} | evidence=${snippet}`;
   }
   const entities = row.entityHits.length > 0 ? row.entityHits.join(', ') : 'none';
   return `- [${row.context.rank}] ${row.context.id}: date=${row.date} | temporal=${row.temporalStatus} | entities=${entities} | decision=${row.decision} | evidence=${snippet}`;
