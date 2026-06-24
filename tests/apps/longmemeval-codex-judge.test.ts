@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 
@@ -34,7 +34,7 @@ function runJudge(args: string[], env: Record<string, string> = {}): Promise<Cli
   });
 }
 
-function writeMockCodex(mode: 'normal' | 'ambiguous' | 'fail' = 'normal'): { bin: string; promptPath: string; argsPath: string; envPath: string } {
+function writeMockCodex(mode: 'normal' | 'ambiguous' | 'fail' = 'normal', failPromptIncludes = ''): { bin: string; promptPath: string; argsPath: string; envPath: string } {
   const dir = mkdtempSync(path.join(tmpdir(), 'cml-longmemeval-codex-judge-'));
   const bin = path.join(dir, 'codex-mock.mjs');
   const promptPath = path.join(dir, 'prompts.txt');
@@ -47,6 +47,11 @@ process.stdin.setEncoding('utf8');
 process.stdin.on('data', chunk => { prompt += chunk; });
 process.stdin.on('end', () => {
   appendFileSync(${JSON.stringify(promptPath)}, prompt + '\\n---PROMPT---\\n');
+  const failPromptIncludes = ${JSON.stringify(failPromptIncludes)};
+  if (failPromptIncludes && prompt.includes(failPromptIncludes)) {
+    console.error('judge failed for selected prompt: token=ak');
+    process.exit(7);
+  }
   const answer = ${JSON.stringify(mode)} === 'ambiguous'
     ? 'no, not yes'
     : (prompt.includes('Model Response: jasmine tea') ? 'yes' : 'no');
@@ -105,6 +110,8 @@ describe('LongMemEval Codex-compatible judge wrapper', () => {
     expect(result.stdout).toContain('LongMemEval Codex-compatible judge');
     expect(result.stdout).toContain('not the unmodified upstream official evaluator');
     expect(result.stdout).toContain('LONGMEMEVAL_CODEX_BIN');
+    expect(result.stdout).toContain('--checkpoint PATH');
+    expect(result.stdout).toContain('--resume');
   });
 
   it('judges hypotheses with the upstream answer-check prompt via stdin and writes JSONL results', async () => {
@@ -151,6 +158,134 @@ describe('LongMemEval Codex-compatible judge wrapper', () => {
     expect(result.stdout).toContain('Accuracy: 0');
     const [row] = readFileSync(files.out, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
     expect(row.autoeval_label).toEqual({ model: 'codex-cli', label: false });
+  });
+
+  it('streams evaluated rows to JSONL checkpoints and resumes without re-scoring completed hypotheses', async () => {
+    const mock = writeMockCodex('normal', 'Model Response: black coffee');
+    const files = writeFixtureFiles();
+    const checkpoint = path.join(path.dirname(files.out), 'judge-checkpoint.json');
+
+    const first = await runJudge(['--hyp', files.hyp, '--ref', files.ref, '--out', files.out, '--checkpoint', checkpoint], {
+      LONGMEMEVAL_CODEX_BIN: mock.bin
+    });
+
+    expect(first.status).toBe(1);
+    expect(first.stderr).toContain('Codex judge failed for q2');
+    const partialRows = readFileSync(files.out, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    expect(partialRows.map((row) => row.question_id)).toEqual(['q1']);
+    expect(partialRows[0].autoeval_label).toEqual({ model: 'codex-cli', label: true });
+    let checkpointData = JSON.parse(readFileSync(checkpoint, 'utf8')) as Record<string, any>;
+    expect(checkpointData.status).toBe('judge_failed');
+    expect(checkpointData.judge).toMatchObject({ total: 2, completed: 1 });
+
+    const secondMock = writeMockCodex();
+    const second = await runJudge(['--hyp', files.hyp, '--ref', files.ref, '--out', files.out, '--checkpoint', checkpoint, '--resume'], {
+      LONGMEMEVAL_CODEX_BIN: secondMock.bin
+    });
+
+    expect(second.status).toBe(0);
+    expect(second.stderr).toBe('');
+    expect(second.stdout).toContain('Accuracy: 0.5');
+    const finalRows = readFileSync(files.out, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    expect(finalRows.map((row) => row.question_id)).toEqual(['q1', 'q2']);
+    expect(finalRows.map((row) => row.autoeval_label.label)).toEqual([true, false]);
+    const firstPromptLog = readFileSync(mock.promptPath, 'utf8');
+    const secondPromptLog = readFileSync(secondMock.promptPath, 'utf8');
+    expect((firstPromptLog.match(/Model Response: jasmine tea/g) ?? [])).toHaveLength(1);
+    expect((firstPromptLog.match(/Model Response: black coffee/g) ?? [])).toHaveLength(1);
+    expect((secondPromptLog.match(/Model Response: jasmine tea/g) ?? [])).toHaveLength(0);
+    expect((secondPromptLog.match(/Model Response: black coffee/g) ?? [])).toHaveLength(1);
+    checkpointData = JSON.parse(readFileSync(checkpoint, 'utf8')) as Record<string, any>;
+    expect(checkpointData.status).toBe('completed');
+    expect(checkpointData.judge).toMatchObject({ total: 2, completed: 2 });
+  });
+
+  it('refuses to overwrite managed outputs without --resume or --force and allows explicit --force restart', async () => {
+    const mock = writeMockCodex();
+    const files = writeFixtureFiles();
+    const checkpoint = path.join(path.dirname(files.out), 'judge-checkpoint.json');
+    writeFileSync(files.out, 'stale result must survive', 'utf8');
+    chmodSync(files.out, 0o200);
+
+    const blocked = await runJudge(['--hyp', files.hyp, '--ref', files.ref, '--out', files.out, '--checkpoint', checkpoint], {
+      LONGMEMEVAL_CODEX_BIN: mock.bin
+    });
+    chmodSync(files.out, 0o600);
+
+    expect(blocked.status).toBe(1);
+    expect(blocked.stderr).toContain('Refusing to overwrite existing judge output');
+    expect(readFileSync(files.out, 'utf8')).toBe('stale result must survive');
+    expect(existsSync(checkpoint)).toBe(false);
+
+    const forced = await runJudge(['--hyp', files.hyp, '--ref', files.ref, '--out', files.out, '--checkpoint', checkpoint, '--force'], {
+      LONGMEMEVAL_CODEX_BIN: mock.bin
+    });
+
+    expect(forced.status).toBe(0);
+    const rows = readFileSync(files.out, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    expect(rows.map((row) => row.question_id)).toEqual(['q1', 'q2']);
+    const checkpointData = JSON.parse(readFileSync(checkpoint, 'utf8')) as Record<string, any>;
+    expect(checkpointData.status).toBe('completed');
+  });
+
+  it('rejects resume when input content changed or checkpoint progress no longer matches output rows', async () => {
+    const failingMock = writeMockCodex('normal', 'Model Response: black coffee');
+    const files = writeFixtureFiles();
+    const checkpoint = path.join(path.dirname(files.out), 'judge-checkpoint.json');
+    const first = await runJudge(['--hyp', files.hyp, '--ref', files.ref, '--out', files.out, '--checkpoint', checkpoint], {
+      LONGMEMEVAL_CODEX_BIN: failingMock.bin
+    });
+    expect(first.status).toBe(1);
+
+    writeFileSync(files.hyp, [
+      JSON.stringify({ question_id: 'q1', hypothesis: 'changed jasmine tea' }),
+      JSON.stringify({ question_id: 'q2', hypothesis: 'black coffee' })
+    ].join('\n') + '\n', 'utf8');
+    const changedInput = await runJudge(['--hyp', files.hyp, '--ref', files.ref, '--out', files.out, '--checkpoint', checkpoint, '--resume'], {
+      LONGMEMEVAL_CODEX_BIN: writeMockCodex().bin
+    });
+
+    expect(changedInput.status).toBe(1);
+    expect(changedInput.stderr).toContain('Resume checkpoint does not match current options');
+    expect(changedInput.stderr).toContain('run_options.hyp_sha256');
+    expect(changedInput.stderr).not.toContain(files.hyp);
+
+    writeFileSync(files.hyp, [
+      JSON.stringify({ question_id: 'q1', hypothesis: 'jasmine tea' }),
+      JSON.stringify({ question_id: 'q2', hypothesis: 'black coffee' })
+    ].join('\n') + '\n', 'utf8');
+    unlinkSync(files.out);
+    const missingOutput = await runJudge(['--hyp', files.hyp, '--ref', files.ref, '--out', files.out, '--checkpoint', checkpoint, '--resume'], {
+      LONGMEMEVAL_CODEX_BIN: writeMockCodex().bin
+    });
+
+    expect(missingOutput.status).toBe(1);
+    expect(missingOutput.stderr).toContain('Resume output is missing evaluated rows recorded by the checkpoint');
+  });
+
+  it('recovers when streamed output is ahead of checkpoint progress after a crash window', async () => {
+    const failingMock = writeMockCodex('normal', 'Model Response: black coffee');
+    const files = writeFixtureFiles();
+    const checkpoint = path.join(path.dirname(files.out), 'judge-checkpoint.json');
+    const first = await runJudge(['--hyp', files.hyp, '--ref', files.ref, '--out', files.out, '--checkpoint', checkpoint], {
+      LONGMEMEVAL_CODEX_BIN: failingMock.bin
+    });
+    expect(first.status).toBe(1);
+
+    const simulatedCrashedRow = {
+      question_id: 'q2',
+      hypothesis: 'black coffee',
+      autoeval_label: { model: 'codex-cli', label: false }
+    };
+    writeFileSync(files.out, `${readFileSync(files.out, 'utf8')}${JSON.stringify(simulatedCrashedRow)}\n`, 'utf8');
+
+    const resumed = await runJudge(['--hyp', files.hyp, '--ref', files.ref, '--out', files.out, '--checkpoint', checkpoint, '--resume']);
+
+    expect(resumed.status).toBe(0);
+    expect(resumed.stdout).toContain('Accuracy: 0.5');
+    const checkpointData = JSON.parse(readFileSync(checkpoint, 'utf8')) as Record<string, any>;
+    expect(checkpointData.status).toBe('completed');
+    expect(checkpointData.judge).toMatchObject({ total: 2, completed: 2 });
   });
 
   it('fails closed on hypothesis ids missing from references', async () => {
