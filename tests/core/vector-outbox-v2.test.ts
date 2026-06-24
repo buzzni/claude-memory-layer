@@ -452,6 +452,22 @@ describe('VectorOutbox V2', () => {
     expect(db.prepare('SELECT COUNT(*) AS count FROM vector_outbox').get()).toEqual({ count: 2 });
   });
 
+  it('keeps Lance commit conflicts retryable without consuming retry budget', async () => {
+    const db = createDb();
+    const outbox = new VectorOutbox(db, { embeddingVersion: 'test-v1', maxRetries: 1 });
+    const jobId = await outbox.enqueue('event', 'event-transient-conflict');
+
+    const claimed = await outbox.claimJobs(1);
+    expect(claimed).toHaveLength(1);
+    await outbox.markFailed(jobId, 'Lance commit conflict: concurrent writer committed first; please retry');
+
+    expect(db.prepare('SELECT status, retry_count, error FROM vector_outbox WHERE job_id = ?').get(jobId)).toEqual({
+      status: 'pending',
+      retry_count: 0,
+      error: 'Lance commit conflict: concurrent writer committed first; please retry'
+    });
+  });
+
   it('reports accurate reconcile and cleanup counts', async () => {
     const db = createDb();
     const outbox = new VectorOutbox(db, {

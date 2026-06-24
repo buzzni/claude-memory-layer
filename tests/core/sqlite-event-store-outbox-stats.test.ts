@@ -63,6 +63,12 @@ describe('SQLiteEventStore outbox health stats', () => {
       db,
       `INSERT INTO embedding_outbox (id, event_id, content, status, retry_count, created_at, processed_at, error_message)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      ['emb-retryable-failed', 'event-private-retryable', 'PRIVATE_CONTENT_SENTINEL', 'failed', 1, '2026-05-25T00:56:30.000Z', null, 'PRIVATE_RETRYABLE_ERROR_SENTINEL']
+    );
+    sqliteRun(
+      db,
+      `INSERT INTO embedding_outbox (id, event_id, content, status, retry_count, created_at, processed_at, error_message)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       ['emb-done', 'event-private-5', 'PRIVATE_CONTENT_SENTINEL', 'done', 0, '2026-05-25T00:40:00.000Z', '2026-05-25T00:41:00.000Z', null]
     );
 
@@ -94,6 +100,12 @@ describe('SQLiteEventStore outbox health stats', () => {
       db,
       `INSERT INTO vector_outbox (job_id, item_kind, item_id, embedding_version, status, retry_count, error, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ['vec-retryable-failed', 'task_title', 'task-private-retryable', 'v1', 'failed', 1, 'PRIVATE_VECTOR_RETRYABLE_ERROR_SENTINEL', '2026-05-25T00:56:30.000Z', '2026-05-25T00:56:30.000Z']
+    );
+    sqliteRun(
+      db,
+      `INSERT INTO vector_outbox (job_id, item_kind, item_id, embedding_version, status, retry_count, error, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ['vec-done', 'entry', 'entry-private-2', 'v1', 'done', 0, null, '2026-05-25T00:55:00.000Z', '2026-05-25T00:55:00.000Z']
     );
 
@@ -102,16 +114,20 @@ describe('SQLiteEventStore outbox health stats', () => {
     expect(stats.embedding).toEqual({
       pending: 1,
       processing: 2,
-      failed: 1,
-      total: 5,
+      failed: 2,
+      retryableFailed: 1,
+      quarantinedFailed: 1,
+      total: 6,
       stuckProcessing: 1,
       oldestProcessingAgeMs: 10 * 60 * 1000
     });
     expect(stats.vector).toEqual({
       pending: 1,
       processing: 2,
-      failed: 1,
-      total: 5,
+      failed: 2,
+      retryableFailed: 1,
+      quarantinedFailed: 1,
+      total: 6,
       stuckProcessing: 1,
       oldestProcessingAgeMs: 20 * 60 * 1000
     });

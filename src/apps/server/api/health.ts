@@ -52,8 +52,10 @@ function aggregateOutbox(outbox: Awaited<ReturnType<Awaited<ReturnType<typeof ge
   const pending = (outbox.embedding?.pending || 0) + (outbox.vector?.pending || 0);
   const processing = (outbox.embedding?.processing || 0) + (outbox.vector?.processing || 0);
   const failed = (outbox.embedding?.failed || 0) + (outbox.vector?.failed || 0);
+  const retryableFailed = (outbox.embedding?.retryableFailed || 0) + (outbox.vector?.retryableFailed || 0);
+  const quarantinedFailed = (outbox.embedding?.quarantinedFailed || 0) + (outbox.vector?.quarantinedFailed || 0);
   const stuckProcessing = (outbox.embedding?.stuckProcessing || 0) + (outbox.vector?.stuckProcessing || 0);
-  return { pending, processing, failed, stuckProcessing };
+  return { pending, processing, failed, retryableFailed, quarantinedFailed, stuckProcessing };
 }
 
 // GET /api/health/setup
@@ -133,6 +135,8 @@ healthRouter.get('/', async (c) => {
     const outboxPending = outbox.embedding.pending + outbox.vector.pending;
     const outboxProcessing = outbox.embedding.processing + outbox.vector.processing;
     const outboxFailed = outbox.embedding.failed + outbox.vector.failed;
+    const outboxRetryableFailed = (outbox.embedding.retryableFailed ?? 0) + (outbox.vector.retryableFailed ?? 0);
+    const outboxQuarantinedFailed = (outbox.embedding.quarantinedFailed ?? 0) + (outbox.vector.quarantinedFailed ?? 0);
     const outboxStuckProcessing = outbox.embedding.stuckProcessing + outbox.vector.stuckProcessing;
     const oldestProcessingAgeMs = Math.max(
       outbox.embedding.oldestProcessingAgeMs ?? 0,
@@ -155,6 +159,8 @@ healthRouter.get('/', async (c) => {
           pending: outboxPending,
           processing: outboxProcessing,
           failed: outboxFailed,
+          retryableFailed: outboxRetryableFailed,
+          quarantinedFailed: outboxQuarantinedFailed,
           stuckProcessing: outboxStuckProcessing,
           oldestProcessingAgeMs
         }

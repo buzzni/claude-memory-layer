@@ -108,7 +108,7 @@ function updateProjectDetailUI() {
       <div class="cfg-section">
         <div class="cfg-section-title"><i class="ri-router-line"></i>Sources & outbox</div>
         <div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:8px;">${sourceChips}</div>
-        <div class="session-muted">${formatNumber(outbox.pending || 0)} pending · ${formatNumber(outbox.processing || 0)} processing · ${formatNumber(outbox.failed || 0)} failed · ${formatNumber(outbox.stuckProcessing || 0)} stuck</div>
+        <div class="session-muted">${formatNumber(outbox.pending || 0)} pending · ${formatNumber(outbox.processing || 0)} processing · ${formatNumber(outbox.failed || 0)} failed · ${formatNumber(outbox.retryableFailed || 0)} retryable · ${formatNumber(outbox.quarantinedFailed || 0)} quarantined · ${formatNumber(outbox.stuckProcessing || 0)} stuck</div>
       </div>
     </div>
   `;
@@ -505,6 +505,8 @@ function vectorOutboxTotals(outbox) {
     pending: vectorHealthCount(providedTotals?.pending ?? (vectorHealthCount(embedding.pending) + vectorHealthCount(vector.pending))),
     processing: vectorHealthCount(providedTotals?.processing ?? (vectorHealthCount(embedding.processing) + vectorHealthCount(vector.processing))),
     failed: vectorHealthCount(providedTotals?.failed ?? (vectorHealthCount(embedding.failed) + vectorHealthCount(vector.failed))),
+    retryableFailed: vectorHealthCount(providedTotals?.retryableFailed ?? (vectorHealthCount(embedding.retryableFailed) + vectorHealthCount(vector.retryableFailed))),
+    quarantinedFailed: vectorHealthCount(providedTotals?.quarantinedFailed ?? (vectorHealthCount(embedding.quarantinedFailed) + vectorHealthCount(vector.quarantinedFailed))),
     stuckProcessing: vectorHealthCount(providedTotals?.stuckProcessing ?? (vectorHealthCount(embedding.stuckProcessing) + vectorHealthCount(vector.stuckProcessing))),
     oldestProcessingAgeMs: providedTotals?.oldestProcessingAgeMs ?? maxNullableHealthAge(embedding.oldestProcessingAgeMs, vector.oldestProcessingAgeMs)
   };
@@ -533,15 +535,17 @@ function vectorOutboxQueueRow(label, stats) {
   const pending = vectorHealthCount(stats?.pending);
   const processing = vectorHealthCount(stats?.processing);
   const failed = vectorHealthCount(stats?.failed);
+  const retryable = vectorHealthCount(stats?.retryableFailed);
+  const quarantined = vectorHealthCount(stats?.quarantinedFailed);
   const stuck = vectorHealthCount(stats?.stuckProcessing);
   const total = vectorHealthCount(stats?.total);
   const age = formatVectorHealthAge(stats?.oldestProcessingAgeMs);
-  const statusColor = failed > 0 || stuck > 0 ? 'var(--warning)' : 'var(--success)';
+  const statusColor = quarantined > 0 || stuck > 0 || failed > 0 ? 'var(--warning)' : 'var(--success)';
   return `
     <div class="shared-item">
       <div class="shared-info" style="flex-direction:column; align-items:flex-start; gap:2px; min-width:0;">
         <span style="font-size:12px; color:var(--text-secondary);">${escapeHtml(label)}</span>
-        <span style="font-size:10px; color:var(--text-muted);">pending ${formatNumber(pending)} · processing ${formatNumber(processing)} · failed ${formatNumber(failed)} · stuck ${formatNumber(stuck)} · oldest ${age}</span>
+        <span style="font-size:10px; color:var(--text-muted);">pending ${formatNumber(pending)} · processing ${formatNumber(processing)} · failed ${formatNumber(failed)} · retryable ${formatNumber(retryable)} · quarantined ${formatNumber(quarantined)} · stuck ${formatNumber(stuck)} · oldest ${age}</span>
       </div>
       <div style="display:flex; flex-direction:column; align-items:flex-end; gap:2px; min-width:48px;">
         <span style="font-size:15px; font-weight:700; color:${statusColor};">${formatNumber(total)}</span>
@@ -612,6 +616,8 @@ function updateVectorHealthUI() {
         <span><strong>${formatNumber(totals.pending)} pending</strong></span>
         <span><strong>${formatNumber(totals.processing)} processing</strong></span>
         <span><strong>${formatNumber(totals.failed)} failed</strong></span>
+        <span><strong>${formatNumber(totals.retryableFailed)} retryable</strong></span>
+        <span><strong>${formatNumber(totals.quarantinedFailed)} quarantined</strong></span>
         <span><strong>${formatNumber(totals.stuckProcessing)} stuck</strong></span>
         <span><strong>${formatVectorHealthAge(totals.oldestProcessingAgeMs)} oldest processing</strong></span>
       </div>

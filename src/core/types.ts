@@ -723,6 +723,8 @@ export interface OutboxItem {
 export interface OutboxStatsOptions {
   /** Processing rows older than this threshold are considered abandoned/stuck. */
   stuckThresholdMs?: number;
+  /** Failed rows below this retry budget are counted as retryable; rows at/above it are counted as quarantined. */
+  maxRetries?: number;
   /** Test hook for deterministic age calculations. */
   now?: Date;
 }
@@ -731,6 +733,10 @@ export interface OutboxQueueStats {
   pending: number;
   processing: number;
   failed: number;
+  /** Failed rows that recovery can safely move back to pending without exposing payloads. */
+  retryableFailed?: number;
+  /** Failed rows at/above retry budget that need operator attention/quarantine handling. */
+  quarantinedFailed?: number;
   total: number;
   stuckProcessing: number;
   /** Age in milliseconds for the oldest processing row, or null when none are processing. */

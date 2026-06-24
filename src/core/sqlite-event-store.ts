@@ -1763,6 +1763,9 @@ export class SQLiteEventStore {
     const thresholdMs = Number.isFinite(options.stuckThresholdMs) && (options.stuckThresholdMs ?? 0) >= 0
       ? options.stuckThresholdMs!
       : DEFAULT_OUTBOX_STUCK_THRESHOLD_MS;
+    const maxRetries = Number.isFinite(options.maxRetries) && (options.maxRetries ?? 0) > 0
+      ? options.maxRetries!
+      : DEFAULT_OUTBOX_MAX_RETRIES;
     const now = options.now ?? new Date();
     const threshold = new Date(now.getTime() - thresholdMs).toISOString();
 
@@ -1786,9 +1789,11 @@ export class SQLiteEventStore {
     const fromRows = (
       rows: Array<{ status: string; count: number }>,
       stuckProcessing: number,
-      oldestProcessingAgeMs: number | null
+      oldestProcessingAgeMs: number | null,
+      retryableFailed: number,
+      quarantinedFailed: number
     ) => {
-      const out = { pending: 0, processing: 0, failed: 0, total: 0, stuckProcessing, oldestProcessingAgeMs };
+      const out = { pending: 0, processing: 0, failed: 0, retryableFailed, quarantinedFailed, total: 0, stuckProcessing, oldestProcessingAgeMs };
       for (const row of rows) {
         const key = row.status as 'pending' | 'processing' | 'failed' | 'done';
         if (key === 'pending' || key === 'processing' || key === 'failed') {
@@ -1813,6 +1818,22 @@ export class SQLiteEventStore {
        FROM embedding_outbox
        WHERE status = 'processing'`
     );
+    const embeddingRetryableFailed = sqliteGet<{ count: number }>(
+      this.db,
+      `SELECT COUNT(*) as count
+       FROM embedding_outbox
+       WHERE status = 'failed'
+         AND retry_count < ?`,
+      [maxRetries]
+    );
+    const embeddingQuarantinedFailed = sqliteGet<{ count: number }>(
+      this.db,
+      `SELECT COUNT(*) as count
+       FROM embedding_outbox
+       WHERE status = 'failed'
+         AND retry_count >= ?`,
+      [maxRetries]
+    );
 
     const vectorStuck = sqliteGet<{ count: number }>(
       this.db,
@@ -1828,17 +1849,37 @@ export class SQLiteEventStore {
        FROM vector_outbox
        WHERE status = 'processing'`
     );
+    const vectorRetryableFailed = sqliteGet<{ count: number }>(
+      this.db,
+      `SELECT COUNT(*) as count
+       FROM vector_outbox
+       WHERE status = 'failed'
+         AND retry_count < ?`,
+      [maxRetries]
+    );
+    const vectorQuarantinedFailed = sqliteGet<{ count: number }>(
+      this.db,
+      `SELECT COUNT(*) as count
+       FROM vector_outbox
+       WHERE status = 'failed'
+         AND retry_count >= ?`,
+      [maxRetries]
+    );
 
     return {
       embedding: fromRows(
         embeddingRows,
         Number(embeddingStuck?.count ?? 0),
-        processingAgeMs(embeddingOldest?.oldest)
+        processingAgeMs(embeddingOldest?.oldest),
+        Number(embeddingRetryableFailed?.count ?? 0),
+        Number(embeddingQuarantinedFailed?.count ?? 0)
       ),
       vector: fromRows(
         vectorRows,
         Number(vectorStuck?.count ?? 0),
-        processingAgeMs(vectorOldest?.oldest)
+        processingAgeMs(vectorOldest?.oldest),
+        Number(vectorRetryableFailed?.count ?? 0),
+        Number(vectorQuarantinedFailed?.count ?? 0)
       )
     };
   }

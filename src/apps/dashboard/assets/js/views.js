@@ -930,7 +930,7 @@ function renderSetupProviderHealthCard(setupHealth) {
           <div class="cfg-row"><span class="cfg-row-label">Status</span><span class="cfg-row-value">${escapeHtml(storage.status || 'unknown')}</span></div>
           <div class="cfg-row"><span class="cfg-row-label">Events</span><span class="cfg-row-value">${formatNumber(storage.totalEvents || 0)} events</span></div>
           <div class="cfg-row"><span class="cfg-row-label">Vectors</span><span class="cfg-row-value">${formatNumber(storage.vectorCount || 0)} vectors</span></div>
-          <div class="cfg-row"><span class="cfg-row-label">Outbox</span><span class="cfg-row-value">${formatNumber(outbox.pending || 0)} pending · ${formatNumber(outbox.failed || 0)} failed · ${formatNumber(outbox.stuckProcessing || 0)} stuck</span></div>
+          <div class="cfg-row"><span class="cfg-row-label">Outbox</span><span class="cfg-row-value">${formatNumber(outbox.pending || 0)} pending · ${formatNumber(outbox.failed || 0)} failed · ${formatNumber(outbox.retryableFailed || 0)} retryable · ${formatNumber(outbox.quarantinedFailed || 0)} quarantined · ${formatNumber(outbox.stuckProcessing || 0)} stuck</span></div>
         </div>
         <div class="cfg-section">
           <div class="cfg-section-title"><i class="ri-terminal-box-line"></i>Provider Readiness</div>

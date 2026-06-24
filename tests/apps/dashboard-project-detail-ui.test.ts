@@ -65,7 +65,7 @@ describe('dashboard project detail card', () => {
         eventTypes: { user_prompt: 5, agent_response: 4 },
         sources: { hermes: 6, codex: 3 },
         retrieval: { totalQueries: 9, selectionRate: 0.37, rawQuery: 'PRIVATE_QUERY_SHOULD_NOT_LEAK' },
-        outbox: { pending: 3, processing: 1, failed: 0, stuckProcessing: 0, rawIds: ['PRIVATE_OUTBOX_ID_SHOULD_NOT_LEAK'] },
+        outbox: { pending: 3, processing: 1, failed: 3, retryableFailed: 2, quarantinedFailed: 1, stuckProcessing: 0, rawIds: ['PRIVATE_OUTBOX_ID_SHOULD_NOT_LEAK'] },
       }) };
     });
     hooks.state.currentProject = 'project-safe-hash';
@@ -84,6 +84,8 @@ describe('dashboard project detail card', () => {
     expect(card.innerHTML).toContain('31 vectors');
     expect(card.innerHTML).toContain('37.0% selection');
     expect(card.innerHTML).toContain('3 pending');
+    expect(card.innerHTML).toContain('2 retryable');
+    expect(card.innerHTML).toContain('1 quarantined');
     expect(card.innerHTML).toContain('user_prompt');
     expect(card.innerHTML).toContain('hermes');
 

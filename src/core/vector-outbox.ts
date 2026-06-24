@@ -33,6 +33,13 @@ export interface OutboxMetrics {
   oldestPendingAge: number | null;
 }
 
+function isRetryableLanceCommitConflict(error: string): boolean {
+  const normalized = error.toLowerCase();
+  return normalized.includes('lance')
+    && normalized.includes('commit')
+    && normalized.includes('conflict');
+}
+
 export interface OutboxEnqueueInput {
   itemKind: OutboxItemKind;
   itemId: string;
@@ -177,6 +184,18 @@ export class VectorOutbox {
     if (rows.length === 0) return;
 
     const retryCount = rows[0].retry_count;
+
+    if (isRetryableLanceCommitConflict(error)) {
+      await dbRun(
+        this.db,
+        `UPDATE vector_outbox
+         SET status = 'pending', error = ?, updated_at = ?
+         WHERE job_id = ?`,
+        [error, now, jobId]
+      );
+      return;
+    }
+
     const newStatus: OutboxStatus = retryCount >= this.config.maxRetries - 1
       ? 'failed'
       : 'pending';  // Will retry

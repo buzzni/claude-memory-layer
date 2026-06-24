@@ -42,8 +42,8 @@ describe('health API outbox recovery', () => {
       levelStats: []
     });
     mocks.service.getOutboxStats.mockReset().mockResolvedValue({
-      embedding: { pending: 1, processing: 0, failed: 0, total: 1, stuckProcessing: 0, oldestProcessingAgeMs: null },
-      vector: { pending: 0, processing: 0, failed: 0, total: 0, stuckProcessing: 0, oldestProcessingAgeMs: null }
+      embedding: { pending: 1, processing: 0, failed: 0, retryableFailed: 0, quarantinedFailed: 0, total: 1, stuckProcessing: 0, oldestProcessingAgeMs: null },
+      vector: { pending: 0, processing: 0, failed: 0, retryableFailed: 0, quarantinedFailed: 0, total: 0, stuckProcessing: 0, oldestProcessingAgeMs: null }
     });
     mocks.service.recoverStuckOutboxItems.mockReset().mockResolvedValue({
       embedding: { recoveredProcessing: 34, retriedFailed: 0 },
@@ -63,7 +63,7 @@ describe('health API outbox recovery', () => {
     const json = await res.json();
     expect(json.status).toBe('ok');
     expect(json.storage).toEqual({ totalEvents: 51, vectorCount: 0 });
-    expect(json.outbox.totals).toEqual({ pending: 1, processing: 0, failed: 0, stuckProcessing: 0, oldestProcessingAgeMs: null });
+    expect(json.outbox.totals).toEqual({ pending: 1, processing: 0, failed: 0, retryableFailed: 0, quarantinedFailed: 0, stuckProcessing: 0, oldestProcessingAgeMs: null });
     expect(mocks.getLightweightServiceFromQuery).toHaveBeenCalledTimes(1);
     expect(mocks.getServiceFromQuery).not.toHaveBeenCalled();
     expect(mocks.getWritableServiceFromQuery).not.toHaveBeenCalled();
@@ -87,6 +87,8 @@ describe('health API outbox recovery', () => {
       pending: 3,
       processing: 5,
       failed: 0,
+      retryableFailed: 0,
+      quarantinedFailed: 0,
       stuckProcessing: 3,
       oldestProcessingAgeMs: 1200000
     });

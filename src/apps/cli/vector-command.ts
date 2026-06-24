@@ -35,12 +35,12 @@ export function formatVectorStatusReport(input: VectorStatusReportInput): string
     `Vector count: ${input.stats.vectorCount}`,
     `Total events: ${input.stats.totalEvents}`,
     '',
-    'Queue      pending  processing  failed  stuck  total  oldest',
+    'Queue      pending  processing  failed  retryable  quarantined  stuck  total  oldest',
     formatQueueRow('Embedding', embedding),
     formatQueueRow('Vector', vector),
     formatQueueRow('Total', totals),
     '',
-    `Totals: pending=${totals.pending}, processing=${totals.processing}, failed=${totals.failed}, stuck=${totals.stuckProcessing}, total=${totals.total}`,
+    `Totals: pending=${totals.pending}, processing=${totals.processing}, failed=${totals.failed}, retryableFailed=${totals.retryableFailed ?? 0}, quarantinedFailed=${totals.quarantinedFailed ?? 0}, stuck=${totals.stuckProcessing}, total=${totals.total}`,
     `Oldest processing age: ${formatDuration(oldestProcessingAge)}`,
     `Status: ${status}`
   ];
@@ -57,6 +57,8 @@ function normalizeQueue(queue: OutboxQueueStats): OutboxQueueStats {
     pending: numberOrZero(queue.pending),
     processing: numberOrZero(queue.processing),
     failed: numberOrZero(queue.failed),
+    retryableFailed: numberOrZero(queue.retryableFailed),
+    quarantinedFailed: numberOrZero(queue.quarantinedFailed),
     total: numberOrZero(queue.total),
     stuckProcessing: numberOrZero(queue.stuckProcessing),
     oldestProcessingAgeMs: Number.isFinite(queue.oldestProcessingAgeMs ?? Number.NaN)
@@ -70,6 +72,8 @@ function sumQueues(a: OutboxQueueStats, b: OutboxQueueStats): OutboxQueueStats {
     pending: a.pending + b.pending,
     processing: a.processing + b.processing,
     failed: a.failed + b.failed,
+    retryableFailed: (a.retryableFailed ?? 0) + (b.retryableFailed ?? 0),
+    quarantinedFailed: (a.quarantinedFailed ?? 0) + (b.quarantinedFailed ?? 0),
     stuckProcessing: a.stuckProcessing + b.stuckProcessing,
     total: a.total + b.total,
     oldestProcessingAgeMs: maxNullable(a.oldestProcessingAgeMs, b.oldestProcessingAgeMs)
@@ -82,6 +86,8 @@ function formatQueueRow(label: string, queue: OutboxQueueStats): string {
     String(queue.pending).padStart(7),
     String(queue.processing).padStart(11),
     String(queue.failed).padStart(7),
+    String(queue.retryableFailed ?? 0).padStart(9),
+    String(queue.quarantinedFailed ?? 0).padStart(11),
     String(queue.stuckProcessing).padStart(6),
     String(queue.total).padStart(6),
     formatDuration(queue.oldestProcessingAgeMs).padStart(7)
@@ -94,8 +100,9 @@ function maxNullable(a: number | null, b: number | null): number | null {
   return Math.max(a, b);
 }
 
-function numberOrZero(value: number): number {
-  return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
+function numberOrZero(value: number | null | undefined): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return 0;
+  return Math.floor(value);
 }
 
 function formatDuration(ms: number | null): string {

@@ -28,6 +28,8 @@ describe('vector-status CLI helpers', () => {
           pending: 1,
           processing: 2,
           failed: 3,
+          retryableFailed: 1,
+          quarantinedFailed: 2,
           stuckProcessing: 1,
           oldestProcessingAgeMs: 120_000,
           total: 6,
@@ -38,6 +40,8 @@ describe('vector-status CLI helpers', () => {
           pending: 4,
           processing: 5,
           failed: 0,
+          retryableFailed: 0,
+          quarantinedFailed: 0,
           stuckProcessing: 2,
           oldestProcessingAgeMs: 245_000,
           total: 11,
@@ -56,6 +60,8 @@ describe('vector-status CLI helpers', () => {
     expect(output).toContain('pending=5');
     expect(output).toContain('processing=7');
     expect(output).toContain('failed=3');
+    expect(output).toContain('retryableFailed=1');
+    expect(output).toContain('quarantinedFailed=2');
     expect(output).toContain('stuck=3');
     expect(output).toContain('Oldest processing age: 4m');
     expect(output).toContain('Status: needs-attention');
