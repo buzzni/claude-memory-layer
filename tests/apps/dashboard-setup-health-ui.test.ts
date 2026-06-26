@@ -57,7 +57,7 @@ describe('dashboard setup/provider health UI', () => {
           setup: {
             scope: 'project',
             storage: { status: 'ok', totalEvents: 12, vectorCount: 8, rawPath: 'PRIVATE_STORAGE_PATH_SHOULD_NOT_LEAK' },
-            outbox: { pending: 1, processing: 0, failed: 0, stuckProcessing: 0, rawIds: ['PRIVATE_OUTBOX_ID_SHOULD_NOT_LEAK'] },
+            outbox: { pending: 1, processing: 0, failed: 3, retryableFailed: 2, quarantinedFailed: 1, stuckProcessing: 0, rawIds: ['PRIVATE_OUTBOX_ID_SHOULD_NOT_LEAK'] },
           },
           providers: {
             claudeCli: { status: 'missing', command: 'claude', authSignal: 'not-detected', rawError: 'PRIVATE_CLAUDE_ERROR_SHOULD_NOT_LEAK' },
@@ -90,6 +90,8 @@ describe('dashboard setup/provider health UI', () => {
     expect(cfg.innerHTML).toContain('@huggingface/transformers');
     expect(cfg.innerHTML).toContain('12 events');
     expect(cfg.innerHTML).toContain('1 pending');
+    expect(cfg.innerHTML).toContain('2 retryable');
+    expect(cfg.innerHTML).toContain('1 quarantined');
     expect(cfg.innerHTML).toContain('Install or authenticate Claude CLI');
 
     for (const privateSentinel of [

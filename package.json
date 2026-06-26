@@ -93,8 +93,10 @@
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^20.11.0",
     "esbuild": "^0.28.0",
+    "eslint": "^9.39.4",
     "tsx": "^4.7.0",
     "typescript": "^5.4.0",
+    "typescript-eslint": "^8.62.0",
     "vitest": "^4.1.8"
   }
 }

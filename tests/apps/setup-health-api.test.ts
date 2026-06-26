@@ -43,8 +43,8 @@ function statsPayload() {
 
 function outboxPayload() {
   return {
-    embedding: { pending: 1, processing: 0, failed: 0, stuckProcessing: 0, oldestProcessingAgeMs: null, total: 4, rawError: 'PRIVATE_EMBED_ERROR_SHOULD_NOT_LEAK' },
-    vector: { pending: 0, processing: 0, failed: 0, stuckProcessing: 0, oldestProcessingAgeMs: null, total: 4, itemIds: ['PRIVATE_VECTOR_ITEM_SHOULD_NOT_LEAK'] },
+    embedding: { pending: 1, processing: 0, failed: 0, retryableFailed: 0, quarantinedFailed: 0, stuckProcessing: 0, oldestProcessingAgeMs: null, total: 4, rawError: 'PRIVATE_EMBED_ERROR_SHOULD_NOT_LEAK' },
+    vector: { pending: 0, processing: 0, failed: 0, retryableFailed: 0, quarantinedFailed: 0, stuckProcessing: 0, oldestProcessingAgeMs: null, total: 4, itemIds: ['PRIVATE_VECTOR_ITEM_SHOULD_NOT_LEAK'] },
   };
 }
 
@@ -87,7 +87,7 @@ describe('setup/provider health API', () => {
       setup: {
         scope: 'project',
         storage: { status: 'ok', totalEvents: 12, vectorCount: 8 },
-        outbox: { pending: 1, failed: 0, stuckProcessing: 0 },
+        outbox: { pending: 1, failed: 0, retryableFailed: 0, quarantinedFailed: 0, stuckProcessing: 0 },
       },
       providers: {
         claudeCli: { status: 'available', command: 'claude', authSignal: 'env-present' },

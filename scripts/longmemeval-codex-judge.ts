@@ -1,6 +1,7 @@
 #!/usr/bin/env tsx
 import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { appendFile, mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 
@@ -8,6 +9,9 @@ interface ParsedArgs {
   hypPath: string;
   refPath: string;
   outPath: string;
+  checkpointPath: string;
+  resume: boolean;
+  force: boolean;
 }
 
 interface HypothesisRow {
@@ -49,6 +53,7 @@ const DEFAULT_TIMEOUT_MS = 120_000;
 const MAX_TIMEOUT_MS = 600_000;
 const DEFAULT_SANDBOX = 'read-only';
 const ALLOWED_SANDBOXES = new Set(['read-only', 'workspace-write', 'danger-full-access']);
+const CHECKPOINT_VERSION = 1;
 
 void main(process.argv.slice(2)).catch((error) => {
   if (error instanceof CliHelp) {
@@ -69,50 +74,70 @@ void main(process.argv.slice(2)).catch((error) => {
 async function main(argv: string[]): Promise<void> {
   const options = parseArgs(argv);
   const timeoutMs = parsePositiveInteger(readEnv('LONGMEMEVAL_CODEX_TIMEOUT_MS'), DEFAULT_TIMEOUT_MS, 'LONGMEMEVAL_CODEX_TIMEOUT_MS', MAX_TIMEOUT_MS);
-  const hypotheses = parseHypotheses(await readFile(options.hypPath, 'utf8'), options.hypPath);
-  const references = parseReferences(await readFile(options.refPath, 'utf8'), options.refPath);
+  const hypRaw = await readFile(options.hypPath, 'utf8');
+  const refRaw = await readFile(options.refPath, 'utf8');
+  const runFingerprint = buildRunOptionsFingerprint(options, hypRaw, refRaw);
+  const hypotheses = parseHypotheses(hypRaw, options.hypPath);
+  const references = parseReferences(refRaw, options.refPath);
   assertUniqueIds(hypotheses, 'hypothesis');
   assertUniqueIds(references, 'reference');
   if (hypotheses.length === 0) {
     throw new CliError('Hypothesis file contains no rows to evaluate');
   }
   const qidToReference = new Map(references.map((reference) => [reference.question_id, reference]));
-  const categoryScores = new Map<string, number[]>();
-  for (const reference of references) {
-    categoryScores.set(reference.question_type, []);
+  for (const hypothesis of hypotheses) {
+    if (!qidToReference.has(hypothesis.question_id)) {
+      throw new CliError(`${hypothesis.question_id} is not in reference data`);
+    }
   }
 
-  const evaluated: EvaluatedRow[] = [];
+  const resumeCheckpoint = await prepareCheckpointedRun(options, hypotheses.length, runFingerprint);
+  const evaluatedById = options.resume
+    ? await readEvaluatedRowsByQuestionId(options.outPath, hypotheses)
+    : new Map<string, EvaluatedRow>();
+  if (options.resume && resumeCheckpoint) {
+    validateResumeOutputConsistency(resumeCheckpoint, hypotheses.length, evaluatedById.size);
+  }
+  await writeCheckpoint(options, 'judge_running', hypotheses.length, evaluatedById.size, runFingerprint);
+
   for (const hypothesis of hypotheses) {
+    if (evaluatedById.has(hypothesis.question_id)) continue;
     const reference = qidToReference.get(hypothesis.question_id);
     if (!reference) {
       throw new CliError(`${hypothesis.question_id} is not in reference data`);
     }
-    const prompt = getAnscheckPrompt(
-      reference.question_type,
-      reference.question,
-      reference.answer,
-      hypothesis.hypothesis,
-      hypothesis.question_id.includes('_abs')
-    );
-    const evalResponse = await runCodexPrompt(prompt, timeoutMs);
-    const label = parseJudgeLabel(evalResponse);
-    evaluated.push({
-      ...hypothesis,
-      autoeval_label: {
-        model: 'codex-cli',
-        label
-      }
-    });
-    const scores = categoryScores.get(reference.question_type) ?? [];
-    scores.push(label ? 1 : 0);
-    categoryScores.set(reference.question_type, scores);
+    try {
+      const prompt = getAnscheckPrompt(
+        reference.question_type,
+        reference.question,
+        reference.answer,
+        hypothesis.hypothesis,
+        hypothesis.question_id.includes('_abs')
+      );
+      const evalResponse = await runCodexPrompt(prompt, timeoutMs);
+      const label = parseJudgeLabel(evalResponse);
+      const evaluated: EvaluatedRow = {
+        ...hypothesis,
+        autoeval_label: {
+          model: 'codex-cli',
+          label
+        }
+      };
+      await appendJsonlRow(options.outPath, evaluated);
+      evaluatedById.set(hypothesis.question_id, evaluated);
+      await writeCheckpoint(options, 'judge_running', hypotheses.length, evaluatedById.size, runFingerprint);
+    } catch (error) {
+      await writeCheckpoint(options, 'judge_failed', hypotheses.length, evaluatedById.size, runFingerprint).catch(() => undefined);
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new CliError(`Codex judge failed for ${hypothesis.question_id}: ${detail}`);
+    }
   }
 
-  await writeTextFile(options.outPath, `${evaluated.map((entry) => JSON.stringify(entry)).join('\n')}\n`);
+  const evaluated = hypotheses.map((hypothesis) => evaluatedById.get(hypothesis.question_id)).filter((row): row is EvaluatedRow => row !== undefined);
   const allScores = evaluated.map((entry) => entry.autoeval_label.label ? 1 : 0);
+  await writeCheckpoint(options, 'completed', hypotheses.length, evaluated.length, runFingerprint);
   process.stdout.write(`Accuracy: ${round4(mean(allScores))}\n`);
-  for (const [category, scores] of [...categoryScores.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+  for (const [category, scores] of buildCategoryScores(references, evaluated).entries()) {
     if (scores.length === 0) continue;
     process.stdout.write(`\t${category}: ${round4(mean(scores))} (${scores.length})\n`);
   }
@@ -120,7 +145,7 @@ async function main(argv: string[]): Promise<void> {
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
-  const parsed: ParsedArgs = { hypPath: '', refPath: '', outPath: '' };
+  const parsed: ParsedArgs = { hypPath: '', refPath: '', outPath: '', checkpointPath: '', resume: false, force: false };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--hyp' || arg === '--hyp-file') {
@@ -129,6 +154,12 @@ function parseArgs(argv: string[]): ParsedArgs {
       parsed.refPath = readOptionValue(argv, ++i, arg);
     } else if (arg === '--out') {
       parsed.outPath = readOptionValue(argv, ++i, arg);
+    } else if (arg === '--checkpoint') {
+      parsed.checkpointPath = readOptionValue(argv, ++i, arg);
+    } else if (arg === '--resume') {
+      parsed.resume = true;
+    } else if (arg === '--force') {
+      parsed.force = true;
     } else if (arg === '--help' || arg === '-h') {
       throw new CliHelp(usage());
     } else if (arg.startsWith('--')) {
@@ -147,7 +178,243 @@ function parseArgs(argv: string[]): ParsedArgs {
   if (!parsed.outPath) {
     parsed.outPath = `${parsed.hypPath}.eval-results-codex`;
   }
+  if (!parsed.checkpointPath) {
+    parsed.checkpointPath = `${parsed.outPath}.checkpoint.json`;
+  }
+  if (parsed.resume && parsed.force) {
+    throw new CliError('Cannot combine --resume and --force');
+  }
   return parsed;
+}
+
+type JudgeCheckpointStatus = 'judge_running' | 'judge_failed' | 'completed';
+
+interface JudgeCheckpoint {
+  version: number;
+  status?: unknown;
+  run_options?: unknown;
+  judge?: unknown;
+}
+
+async function prepareCheckpointedRun(options: ParsedArgs, total: number, runFingerprint: Record<string, unknown>): Promise<JudgeCheckpoint | undefined> {
+  assertSafeOutputPaths(options);
+  if (options.resume) {
+    return validateResumeCheckpoint(options, runFingerprint);
+  }
+  if (!options.force) {
+    if (await fileExists(options.outPath)) {
+      throw new CliError('Refusing to overwrite existing judge output; use --resume to continue or --force to restart.');
+    }
+    if (await fileExists(options.checkpointPath)) {
+      throw new CliError('Refusing to overwrite existing judge checkpoint; use --resume to continue or --force to restart.');
+    }
+  }
+  if (options.force) {
+    await Promise.all([
+      rm(options.outPath, { force: true }).catch(() => undefined),
+      rm(options.checkpointPath, { force: true }).catch(() => undefined)
+    ]);
+  }
+  await createEmptyOutputFile(options.outPath);
+  await writeCheckpoint(options, 'judge_running', total, 0, runFingerprint);
+  return undefined;
+}
+
+function assertSafeOutputPaths(options: ParsedArgs): void {
+  const inputPaths = new Set([path.resolve(options.hypPath), path.resolve(options.refPath)]);
+  const outPath = path.resolve(options.outPath);
+  const checkpointPath = path.resolve(options.checkpointPath);
+  if (inputPaths.has(outPath)) {
+    throw new CliError('Refusing to use input file as judge output');
+  }
+  if (inputPaths.has(checkpointPath)) {
+    throw new CliError('Refusing to use input file as checkpoint output');
+  }
+  if (outPath === checkpointPath) {
+    throw new CliError('Managed output path collision: --out and --checkpoint must be different');
+  }
+}
+
+async function validateResumeCheckpoint(options: ParsedArgs, runFingerprint: Record<string, unknown>): Promise<JudgeCheckpoint> {
+  if (!await fileExists(options.checkpointPath)) {
+    throw new CliError('Resume checkpoint is required; use --force to restart or choose a new --out path.');
+  }
+  const checkpoint = await readJsonFile<JudgeCheckpoint>(options.checkpointPath, 'checkpoint');
+  if (!isRecord(checkpoint)) {
+    throw new CliError('Resume checkpoint must be a JSON object');
+  }
+  if (checkpoint.version !== CHECKPOINT_VERSION) {
+    throw new CliError(`Unsupported resume checkpoint version: ${String(checkpoint.version)}`);
+  }
+  if (!isRecord(checkpoint.run_options)) {
+    throw new CliError('Resume checkpoint is missing run_options; use --force to restart');
+  }
+  const mismatches = collectObjectMismatches(checkpoint.run_options, runFingerprint, 'run_options');
+  if (mismatches.length > 0) {
+    throw new CliError(`Resume checkpoint does not match current options: ${mismatches.join(', ')}. Use matching options, a new --out path, or --force to restart.`);
+  }
+  return checkpoint;
+}
+
+function buildRunOptionsFingerprint(options: ParsedArgs, hypRaw: string, refRaw: string): Record<string, unknown> {
+  return {
+    hyp_path_hash: sha256(path.resolve(options.hypPath)),
+    ref_path_hash: sha256(path.resolve(options.refPath)),
+    out_path_hash: sha256(path.resolve(options.outPath)),
+    hyp_sha256: sha256(hypRaw),
+    ref_sha256: sha256(refRaw),
+    codex_model: readEnv('LONGMEMEVAL_CODEX_MODEL') ?? null,
+    codex_sandbox: readEnv('LONGMEMEVAL_CODEX_SANDBOX') ?? DEFAULT_SANDBOX
+  };
+}
+
+function sha256(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+function collectObjectMismatches(actual: Record<string, unknown>, expected: Record<string, unknown>, prefix: string): string[] {
+  const mismatches: string[] = [];
+  for (const key of Object.keys(expected).sort()) {
+    const left = actual[key];
+    const right = expected[key];
+    if (JSON.stringify(left) !== JSON.stringify(right)) {
+      mismatches.push(`${prefix}.${key}`);
+    }
+  }
+  return mismatches;
+}
+
+async function readEvaluatedRowsByQuestionId(filePath: string, expectedHypotheses: HypothesisRow[]): Promise<Map<string, EvaluatedRow>> {
+  const rowsById = new Map<string, EvaluatedRow>();
+  if (!await fileExists(filePath)) return rowsById;
+  const raw = await readFile(filePath, 'utf8');
+  if (!raw.trim()) return rowsById;
+  const parsed = parseJsonOrJsonl(raw, 'resume output');
+  for (const [index, entry] of parsed.entries()) {
+    if (!isRecord(entry)) {
+      throw new CliError(`Evaluated row ${index + 1} in resume output must be an object`);
+    }
+    const questionId = entry.question_id;
+    const hypothesis = entry.hypothesis;
+    const autoevalLabel = entry.autoeval_label;
+    if (typeof questionId !== 'string' || questionId.trim() === '') {
+      throw new CliError(`Evaluated row ${index + 1} requires non-empty string question_id`);
+    }
+    const expectedHypothesis = expectedHypotheses[index];
+    if (!expectedHypothesis) {
+      throw new CliError(`Unexpected extra evaluated row ${index + 1} in resumed output`);
+    }
+    if (questionId !== expectedHypothesis.question_id) {
+      throw new CliError(`Resume output row ${index + 1} does not match current hypothesis order`);
+    }
+    if (hypothesis !== expectedHypothesis.hypothesis) {
+      throw new CliError(`Resume output row ${index + 1} hypothesis does not match current hypotheses`);
+    }
+    if (rowsById.has(questionId)) {
+      throw new CliError(`Duplicate evaluated question_id in resumed output: ${questionId}`);
+    }
+    if (typeof hypothesis !== 'string') {
+      throw new CliError(`Evaluated row ${index + 1} requires string hypothesis`);
+    }
+    if (!isRecord(autoevalLabel) || typeof autoevalLabel.label !== 'boolean') {
+      throw new CliError(`Evaluated row ${index + 1} requires boolean autoeval_label.label`);
+    }
+    rowsById.set(questionId, { ...entry, question_id: questionId, hypothesis } as EvaluatedRow);
+  }
+  return rowsById;
+}
+
+function validateResumeOutputConsistency(checkpoint: JudgeCheckpoint, total: number, rowCount: number): void {
+  if (!isRecord(checkpoint.judge)) {
+    throw new CliError('Resume checkpoint is missing judge progress; use --force to restart');
+  }
+  const rawTotal = checkpoint.judge.total;
+  const rawCompleted = checkpoint.judge.completed;
+  if (!Number.isInteger(rawTotal) || !Number.isInteger(rawCompleted)) {
+    throw new CliError('Resume checkpoint has invalid judge progress; use --force to restart');
+  }
+  const checkpointTotal = rawTotal as number;
+  const checkpointCompleted = rawCompleted as number;
+  if (checkpointTotal !== total) {
+    throw new CliError('Resume checkpoint total does not match current hypothesis rows; use --force to restart');
+  }
+  if (checkpointCompleted > 0 && rowCount === 0) {
+    throw new CliError('Resume output is missing evaluated rows recorded by the checkpoint; use --force to restart');
+  }
+  if (rowCount < checkpointCompleted) {
+    throw new CliError('Resume output row count is behind checkpoint progress; use --force to restart');
+  }
+}
+
+async function createEmptyOutputFile(filePath: string): Promise<void> {
+  await mkdir(path.dirname(filePath), { recursive: true });
+  try {
+    await writeFile(filePath, '', { encoding: 'utf8', flag: 'wx' });
+  } catch (error) {
+    if (hasErrorCode(error, 'EEXIST')) {
+      throw new CliError('Refusing to overwrite existing judge output; use --resume to continue or --force to restart.');
+    }
+    throw error;
+  }
+}
+
+async function appendJsonlRow(filePath: string, row: EvaluatedRow): Promise<void> {
+  await mkdir(path.dirname(filePath), { recursive: true });
+  await appendFile(filePath, `${JSON.stringify(row)}\n`, 'utf8');
+}
+
+async function writeCheckpoint(options: ParsedArgs, status: JudgeCheckpointStatus, total: number, completed: number, runFingerprint: Record<string, unknown>): Promise<void> {
+  const checkpoint = {
+    version: CHECKPOINT_VERSION,
+    status,
+    updated_at: new Date().toISOString(),
+    run_options: runFingerprint,
+    files: {
+      hyp_path_hash: runFingerprint.hyp_path_hash,
+      ref_path_hash: runFingerprint.ref_path_hash,
+      out_path_hash: runFingerprint.out_path_hash
+    },
+    judge: {
+      total,
+      completed
+    }
+  };
+  await writeTextFileAtomic(options.checkpointPath, `${JSON.stringify(checkpoint, null, 2)}\n`);
+}
+
+async function readJsonFile<T>(filePath: string, label: string): Promise<T> {
+  try {
+    return JSON.parse(await readFile(filePath, 'utf8')) as T;
+  } catch (error) {
+    const detail = error instanceof SyntaxError ? `: ${error.message}` : '';
+    throw new CliError(`Failed to read ${label}${detail}`);
+  }
+}
+
+async function fileExists(filePath: string): Promise<boolean> {
+  try {
+    await stat(filePath);
+    return true;
+  } catch (error) {
+    if (hasErrorCode(error, 'ENOENT')) return false;
+    throw error;
+  }
+}
+
+function buildCategoryScores(references: ReferenceRow[], evaluated: EvaluatedRow[]): Map<string, number[]> {
+  const qidToReference = new Map(references.map((reference) => [reference.question_id, reference]));
+  const scores = new Map<string, number[]>();
+  for (const category of [...new Set(references.map((reference) => reference.question_type))].sort((a, b) => a.localeCompare(b))) {
+    scores.set(category, []);
+  }
+  for (const row of evaluated) {
+    const reference = qidToReference.get(row.question_id);
+    if (!reference) continue;
+    const categoryScores = scores.get(reference.question_type) ?? [];
+    categoryScores.push(row.autoeval_label.label ? 1 : 0);
+    scores.set(reference.question_type, categoryScores);
+  }
+  return scores;
 }
 
 function parseHypotheses(raw: string, filePath: string): HypothesisRow[] {
@@ -382,6 +649,19 @@ async function writeTextFile(filePath: string, content: string): Promise<void> {
   await writeFile(filePath, content, 'utf8');
 }
 
+async function writeTextFileAtomic(filePath: string, content: string): Promise<void> {
+  const dir = path.dirname(filePath);
+  await mkdir(dir, { recursive: true });
+  const tmpPath = path.join(dir, `.${path.basename(filePath)}.${process.pid}.${Date.now()}.tmp`);
+  try {
+    await writeFile(tmpPath, content, { encoding: 'utf8', flag: 'wx' });
+    await rename(tmpPath, filePath);
+  } catch (error) {
+    await rm(tmpPath, { force: true }).catch(() => undefined);
+    throw error;
+  }
+}
+
 function readOptionValue(argv: string[], index: number, option: string): string {
   const value = argv[index];
   if (value === undefined || value.startsWith('--')) {
@@ -447,6 +727,10 @@ function collectSecretEnvValues(): string[] {
   return [...values].sort((a, b) => b.length - a.length);
 }
 
+function hasErrorCode(error: unknown, code: string): boolean {
+  return isRecord(error) && error.code === code;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
@@ -455,7 +739,12 @@ function usage(): string {
   return `LongMemEval Codex-compatible judge
 
 Usage:
-  npx tsx scripts/longmemeval-codex-judge.ts --hyp hypotheses.jsonl --ref longmemeval_s_cleaned.json [--out results.jsonl]
+  npx tsx scripts/longmemeval-codex-judge.ts --hyp hypotheses.jsonl --ref longmemeval_s_cleaned.json [--out results.jsonl] [--checkpoint PATH] [--resume|--force]
+
+Options:
+  --checkpoint PATH  Checkpoint file for resumable judging. Default: <out>.checkpoint.json
+  --resume           Continue from an existing checkpoint and append only missing question_id rows.
+  --force            Remove existing output/checkpoint and restart from scratch. Cannot be combined with --resume.
 
 Runs the LongMemEval answer-check prompt through local \`codex exec\` and writes JSONL rows with autoeval_label. This is useful when only Codex subscription auth is available, but it is not the unmodified upstream official evaluator. Upstream official QA still requires running LongMemEval's evaluate_qa.py with API-compatible judge credentials. Prompt content is piped to Codex stdin instead of argv, and Codex runs from an isolated temporary working directory with a pruned environment.
 
