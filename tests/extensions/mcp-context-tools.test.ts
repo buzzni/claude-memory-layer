@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => {
       getRecentEvents: vi.fn(),
       getSessionHistory: vi.fn(),
       getStats: vi.fn(),
+      recordQueryTrace: vi.fn(),
       processPendingEmbeddings: vi.fn()
     };
   }
@@ -70,6 +71,7 @@ function resetService(service: typeof mocks.defaultService) {
   service.getRecentEvents.mockReset().mockResolvedValue([]);
   service.getSessionHistory.mockReset().mockResolvedValue([]);
   service.getStats.mockReset().mockResolvedValue({ totalEvents: 0, vectorCount: 0, levelStats: [] });
+  service.recordQueryTrace.mockReset().mockResolvedValue(undefined);
   service.processPendingEmbeddings.mockReset().mockResolvedValue(0);
 }
 
@@ -599,6 +601,15 @@ describe('MCP project context tools', () => {
       recordTrace: false
     });
     expect(mocks.projectService.getRecentEvents).toHaveBeenCalledWith(3);
+    expect(mocks.projectService.recordQueryTrace).toHaveBeenCalledWith({
+      sessionId: undefined,
+      queryText: 'Codex Hermes MCP integration',
+      queryRewriteKind: 'none',
+      strategy: 'mcp-context-pack',
+      candidateEventIds: [relevant.id],
+      selectedEventIds: [relevant.id],
+      confidence: 'suggested'
+    });
     expect(text).toContain('## Project Context Pack');
     expect(text).toContain('### Relevant Memories');
     expect(text).toContain('Codex import CLI');
@@ -606,6 +617,66 @@ describe('MCP project context tools', () => {
     expect(text).toContain('Hermes adapter verification');
     expect(text).toContain(`[mem:${generateCitationId(relevant.id)}]`);
     expect(text.length).toBeLessThan(5000);
+  });
+
+  it('records context-pack trace queries through the same privacy-safe sanitizer used for MCP output', async () => {
+    const relevant = event({
+      id: '19191919-1919-4919-8919-191919191919',
+      sessionId: 'session-private-query',
+      eventType: 'agent_response',
+      timestamp: new Date('2026-05-05T02:20:00.000Z'),
+      content: 'Private query telemetry should preserve usage counts without raw credentials.',
+      metadata: { projectPath: '/repo/app' }
+    });
+    mocks.projectService.retrieveMemories.mockResolvedValue({ memories: [{ event: relevant, score: 0.81 }] });
+    mocks.projectService.getRecentEvents.mockResolvedValue([relevant]);
+
+    const result = await handleToolCall('mem-context-pack', {
+      projectPath: '/repo/app',
+      query: 'debug postgres://user:super-secret@db.example/app using /repo/app/private/key.json api_key=abc123',
+      topK: 1,
+      recentLimit: 1,
+      sessionLimit: 1
+    });
+
+    expect(result.isError).not.toBe(true);
+    const traceInput = mocks.projectService.recordQueryTrace.mock.calls[0]?.[0];
+    expect(traceInput).toMatchObject({
+      strategy: 'mcp-context-pack',
+      candidateEventIds: [relevant.id],
+      selectedEventIds: [relevant.id]
+    });
+    expect(traceInput.queryText).toContain('[path]');
+    expect(traceInput.queryText).not.toContain('super-secret');
+    expect(traceInput.queryText).not.toContain('/repo/app');
+    expect(traceInput.queryText).not.toContain('abc123');
+  });
+
+  it('does not fail context-pack retrieval when best-effort trace recording fails', async () => {
+    const relevant = event({
+      id: '19191919-1919-4919-8919-191919191920',
+      sessionId: 'session-trace-failure',
+      eventType: 'agent_response',
+      timestamp: new Date('2026-05-05T02:25:00.000Z'),
+      content: 'Context-pack result remains available even when usage telemetry is temporarily unavailable.',
+      metadata: { projectPath: '/repo/app' }
+    });
+    mocks.projectService.retrieveMemories.mockResolvedValue({ memories: [{ event: relevant, score: 0.84 }] });
+    mocks.projectService.getRecentEvents.mockResolvedValue([relevant]);
+    mocks.projectService.recordQueryTrace.mockRejectedValueOnce(new Error('read-only store'));
+
+    const result = await handleToolCall('mem-context-pack', {
+      projectPath: '/repo/app',
+      query: 'trace failure should not break context pack',
+      topK: 1,
+      recentLimit: 1,
+      sessionLimit: 1
+    });
+
+    const text = textOf(result);
+    expect(result.isError).not.toBe(true);
+    expect(mocks.projectService.recordQueryTrace).toHaveBeenCalledTimes(1);
+    expect(text).toContain('Context-pack result remains available');
   });
 
   it('lets mem-context-pack callers opt out of session-event hybrid retrieval for event-only debugging', async () => {

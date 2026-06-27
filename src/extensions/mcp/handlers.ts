@@ -1303,6 +1303,12 @@ async function handleMemContextPack(memoryService: MemoryService, args: Record<s
     recentSessionIds,
     projectPath
   });
+  await recordMcpContextPackTrace(memoryService, {
+    query,
+    sessionId,
+    candidates: search.memories,
+    selected: relevantMemories
+  });
   const hasPerspectiveContext = optionalString(args.observerActorId) !== undefined
     || optionalString(args.targetActorId) !== undefined
     || optionalString(args.observedActorId) !== undefined;
@@ -1404,6 +1410,34 @@ async function handleMemContextPack(memoryService: MemoryService, args: Record<s
   }
 
   return textResult(applyContextPackBudget(lines.join('\n'), maxContextChars));
+}
+
+async function recordMcpContextPackTrace(
+  memoryService: MemoryService,
+  input: {
+    query: string;
+    sessionId?: string;
+    candidates: ContextPackMemory[];
+    selected: ContextPackMemory[];
+  }
+): Promise<void> {
+  try {
+    await memoryService.recordQueryTrace({
+      sessionId: input.sessionId,
+      queryText: sanitizeOperationString(input.query, 1000),
+      queryRewriteKind: 'none',
+      strategy: 'mcp-context-pack',
+      candidateEventIds: uniqueContextPackEventIds(input.candidates),
+      selectedEventIds: uniqueContextPackEventIds(input.selected),
+      confidence: input.selected.length > 0 ? 'suggested' : 'none'
+    });
+  } catch {
+    // Best-effort usage telemetry must not break read-only MCP context retrieval.
+  }
+}
+
+function uniqueContextPackEventIds(memories: ContextPackMemory[]): string[] {
+  return Array.from(new Set(memories.map((memory) => memory.event.id).filter(Boolean)));
 }
 
 type LatestImportSource = 'claude' | 'codex' | 'hermes';

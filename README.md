@@ -679,7 +679,7 @@ node dist/mcp/index.js
 | Search | `mem-search` | 프로젝트/세션 스코프 메모리 검색 |
 | Search | `mem-timeline` / `mem-details` | 검색 결과 주변 타임라인과 상세 내용 조회 |
 | Search | `mem-stats` | aggregate memory/vector/outbox 통계 |
-| Context | `mem-context-pack` | 작업 시작용 relevant memory + recent timeline + follow-up refs |
+| Context | `mem-context-pack` | 작업 시작용 relevant memory + recent timeline + follow-up refs; privacy-safe query trace를 기록해 dashboard/replay usage 분석에 포함 |
 | Context | `mem-import-latest` | 최신 Claude/Codex/Hermes 세션을 bounded import 후 context-pack freshness 확보 |
 | Context | `mem-project-timeline` | 최근 프로젝트 메모리를 session/source/count/safe-preview로 요약 |
 | Context | `mem-source-ref` | `mem:`/`event:` ref를 redacted preview와 safe metadata로 해석; `includeNeighbors` + `neighborWindow`로 같은 세션의 전후 이벤트를 bounded/privacy-safe preview로 확장 |

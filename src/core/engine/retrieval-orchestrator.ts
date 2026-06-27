@@ -43,7 +43,7 @@ export interface RetrieveMemoriesOptions {
 }
 
 export interface RecordQueryTraceInput {
-  sessionId: string;
+  sessionId?: string;
   queryText: string;
   rawQueryText?: string;
   queryRewriteKind?: string;
