@@ -4,7 +4,7 @@
  */
 
 import { Hono } from 'hono';
-import { getLightweightServiceFromQuery } from './utils.js';
+import { getLightweightServiceFromQuery, jsonError } from './utils.js';
 
 export const eventsRouter = new Hono();
 
@@ -82,7 +82,7 @@ eventsRouter.get('/', async (c) => {
       hasMore: offset + limit < total
     });
   } catch (error) {
-    return c.json({ error: (error as Error).message }, 500);
+    return jsonError(c, error);
   } finally {
     await memoryService.shutdown();
   }
@@ -130,7 +130,7 @@ eventsRouter.get('/:id', async (c) => {
       }))
     });
   } catch (error) {
-    return c.json({ error: (error as Error).message }, 500);
+    return jsonError(c, error);
   } finally {
     await memoryService.shutdown();
   }

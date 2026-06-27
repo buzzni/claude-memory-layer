@@ -1237,7 +1237,10 @@ async function handleMemDetails(memoryService: MemoryService, args: Record<strin
     lines.push('');
     lines.push('**Content**:');
     lines.push('```');
-    lines.push(event.content);
+    // Redact secrets/PII before disclosure. mem-details intentionally returns
+    // full (untruncated) content, but every other read tool sanitizes, so this
+    // must not be the one path that leaks raw captured transcript data.
+    lines.push(applyPrivacyFilter(event.content, MCP_PRIVACY_CONFIG).content);
     lines.push('```');
     lines.push('');
     lines.push('---');

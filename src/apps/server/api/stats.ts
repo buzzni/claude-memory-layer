@@ -7,7 +7,7 @@ import { Hono } from 'hono';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { getLightweightServiceFromQuery, getServiceFromQuery } from './utils.js';
+import { getLightweightServiceFromQuery, getServiceFromQuery, jsonError } from './utils.js';
 import { hashProjectPath } from '../../../core/registry/project-path.js';
 import { sanitizeGovernanceAuditValue } from '../../../core/operations/governance-audit.js';
 import {
@@ -1533,7 +1533,7 @@ statsRouter.get('/levels/:level', async (c) => {
       hasMore: events.length === limit
     });
   } catch (error) {
-    return c.json({ error: (error as Error).message }, 500);
+    return jsonError(c, error);
   } finally {
     await memoryService.shutdown();
   }
@@ -1770,7 +1770,7 @@ statsRouter.get('/', async (c) => {
       retrievalTrace
     });
   } catch (error) {
-    return c.json({ error: (error as Error).message }, 500);
+    return jsonError(c, error);
   } finally {
     await memoryService.shutdown();
   }
@@ -1842,7 +1842,7 @@ statsRouter.get('/timeline', async (c) => {
       daily: Object.values(daily).sort((a, b) => a.date.localeCompare(b.date))
     });
   } catch (error) {
-    return c.json({ error: (error as Error).message }, 500);
+    return jsonError(c, error);
   } finally {
     await memoryService.shutdown();
   }
@@ -2147,7 +2147,7 @@ statsRouter.get('/kpi', async (c) => {
       alerts
     });
   } catch (error) {
-    return c.json({ error: (error as Error).message }, 500);
+    return jsonError(c, error);
   } finally {
     await memoryService.shutdown();
   }

@@ -143,4 +143,59 @@ describe('dashboard server bind/auth options', () => {
       password: 'pw'
     });
   });
+
+  it('blocks cross-origin state-changing API requests by default', async () => {
+    const app = serverModule.createDashboardApp();
+
+    const res = await app.request('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: 'https://evil.example' },
+      body: JSON.stringify({})
+    });
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Cross-origin request blocked' });
+  });
+
+  it('allows same-origin and non-browser state-changing API requests', async () => {
+    const app = serverModule.createDashboardApp();
+
+    const sameOrigin = await app.request('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Origin: 'http://localhost' },
+      body: JSON.stringify({})
+    });
+    expect(sameOrigin.status).not.toBe(403);
+
+    const noOrigin = await app.request('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({})
+    });
+    expect(noOrigin.status).not.toBe(403);
+  });
+
+  it('does not emit a wildcard CORS header by default (same-origin lockdown)', async () => {
+    const app = serverModule.createDashboardApp();
+
+    const res = await app.request('/health', {
+      headers: { Origin: 'https://evil.example' }
+    });
+
+    expect(res.headers.get('access-control-allow-origin')).toBeNull();
+  });
+
+  it('emits CORS headers only for an explicitly allowed origin', async () => {
+    const app = serverModule.createDashboardApp({ allowedOrigins: ['https://trusted.example'] });
+
+    const allowed = await app.request('/health', {
+      headers: { Origin: 'https://trusted.example' }
+    });
+    expect(allowed.headers.get('access-control-allow-origin')).toBe('https://trusted.example');
+
+    const disallowed = await app.request('/health', {
+      headers: { Origin: 'https://evil.example' }
+    });
+    expect(disallowed.headers.get('access-control-allow-origin')).not.toBe('https://evil.example');
+  });
 });

@@ -4,7 +4,7 @@
  */
 
 import { Hono } from 'hono';
-import { getLightweightServiceFromQuery, getServiceFromQuery } from './utils.js';
+import { getLightweightServiceFromQuery, getServiceFromQuery, jsonError } from './utils.js';
 
 export const searchRouter = new Hono();
 
@@ -79,7 +79,7 @@ searchRouter.post('/', async (c) => {
       }
     });
   } catch (error) {
-    return c.json({ error: (error as Error).message }, 500);
+    return jsonError(c, error);
   } finally {
     await memoryService.shutdown();
   }
@@ -129,7 +129,7 @@ searchRouter.post('/disclosure', async (c) => {
       throw error;
     }
   } catch (error) {
-    return c.json({ error: (error as Error).message }, 500);
+    return jsonError(c, error);
   } finally {
     await memoryService?.shutdown();
   }
@@ -153,7 +153,7 @@ searchRouter.get('/disclosure/:resultId/expand', async (c) => {
 
     return c.json(result);
   } catch (error) {
-    return c.json({ error: (error as Error).message }, 500);
+    return jsonError(c, error);
   } finally {
     await memoryService.shutdown();
   }
@@ -172,7 +172,7 @@ searchRouter.get('/disclosure/:resultId/source', async (c) => {
 
     return c.json(result);
   } catch (error) {
-    return c.json({ error: (error as Error).message }, 500);
+    return jsonError(c, error);
   } finally {
     await memoryService.shutdown();
   }
@@ -208,7 +208,7 @@ searchRouter.get('/', async (c) => {
       }
     });
   } catch (error) {
-    return c.json({ error: (error as Error).message }, 500);
+    return jsonError(c, error);
   } finally {
     await memoryService.shutdown();
   }

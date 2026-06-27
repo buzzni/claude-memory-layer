@@ -4,7 +4,7 @@
  */
 
 import { Hono } from 'hono';
-import { getServiceFromQuery } from './utils.js';
+import { getServiceFromQuery, jsonError } from './utils.js';
 import { generateCitationId, parseCitationId } from '../../../core/citation-generator.js';
 
 export const citationsRouter = new Hono();
@@ -47,7 +47,7 @@ citationsRouter.get('/:id', async (c) => {
       }
     });
   } catch (error) {
-    return c.json({ error: (error as Error).message }, 500);
+    return jsonError(c, error);
   } finally {
     await memoryService.shutdown();
   }
@@ -98,7 +98,7 @@ citationsRouter.get('/:id/related', async (c) => {
       } : null
     });
   } catch (error) {
-    return c.json({ error: (error as Error).message }, 500);
+    return jsonError(c, error);
   } finally {
     await memoryService.shutdown();
   }
