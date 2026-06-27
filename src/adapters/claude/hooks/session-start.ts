@@ -6,12 +6,18 @@
 import { getLightweightMemoryService } from '../../../services/memory-service.js';
 import { registerSession } from '../../../core/registry/session-registry.js';
 import { ensureDaemonRunning } from './semantic-daemon-client.js';
+import { readStdin } from './hook-runtime.js';
 import type { SessionStartInput, SessionStartOutput } from '../../../core/types.js';
 
-export async function main(): Promise<void> {
-  // Read input from stdin
-  const inputData = await readStdin();
-  const input: SessionStartInput = JSON.parse(inputData);
+export async function main(): Promise<string> {
+  // Read input from stdin. Guard the parse so a malformed/empty body still emits
+  // a valid envelope instead of throwing past the hook into an unhandled rejection.
+  let input: SessionStartInput;
+  try {
+    input = JSON.parse(await readStdin());
+  } catch {
+    return JSON.stringify({ context: '' });
+  }
 
   // Register session with project path for other hooks to find
   registerSession(input.session_id, input.cwd);
@@ -46,10 +52,12 @@ export async function main(): Promise<void> {
     }
 
     const output: SessionStartOutput = { context };
-    console.log(JSON.stringify(output));
+    return JSON.stringify(output);
   } catch (error) {
-    console.error('Memory hook error:', error);
-    console.log(JSON.stringify({ context: '' }));
+    if (process.env.CLAUDE_MEMORY_DEBUG) {
+      console.error('Memory hook error:', error);
+    }
+    return JSON.stringify({ context: '' });
   } finally {
     try {
       await memoryService.close();
@@ -57,17 +65,4 @@ export async function main(): Promise<void> {
       // Best-effort cleanup
     }
   }
-}
-
-function readStdin(): Promise<string> {
-  return new Promise((resolve) => {
-    let data = '';
-    process.stdin.setEncoding('utf8');
-    process.stdin.on('data', (chunk) => {
-      data += chunk;
-    });
-    process.stdin.on('end', () => {
-      resolve(data);
-    });
-  });
 }

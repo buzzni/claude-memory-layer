@@ -21,6 +21,7 @@ import * as os from 'os';
 import { getLightweightMemoryService } from '../../../services/memory-service.js';
 import { writeTurnState, readLastAssistantSnippet } from '../../../core/turn-state.js';
 import { retrieveSemanticMemories } from './semantic-daemon-client.js';
+import { readStdin, readNumberEnv } from './hook-runtime.js';
 import {
   filterHookInjectableMemories,
   getHookInjectionPolicy,
@@ -29,15 +30,17 @@ import {
 } from './prompt-injection-policy.js';
 import type { UserPromptSubmitInput, UserPromptSubmitOutput } from '../../../core/types.js';
 
-// Configuration
-const MAX_MEMORIES = parseInt(process.env.CLAUDE_MEMORY_MAX_COUNT || '5');
+// Configuration. All numeric env vars go through readNumberEnv so an invalid
+// value (e.g. a typo) falls back to the default instead of producing NaN, which
+// would silently make every threshold comparison false and return no memories.
+const MAX_MEMORIES = readNumberEnv('CLAUDE_MEMORY_MAX_COUNT', 5, { integer: true, min: 0 });
 // Tuned default for noise/recall balance on shopping_assistant-like corpus
-const BASE_MIN_SCORE = parseFloat(process.env.CLAUDE_MEMORY_MIN_SCORE || '0.4');
-const FALLBACK_MIN_SCORE = parseFloat(process.env.CLAUDE_MEMORY_FALLBACK_MIN_SCORE || '0.3');
+const BASE_MIN_SCORE = readNumberEnv('CLAUDE_MEMORY_MIN_SCORE', 0.4, { min: 0, max: 1 });
+const FALLBACK_MIN_SCORE = readNumberEnv('CLAUDE_MEMORY_FALLBACK_MIN_SCORE', 0.3, { min: 0, max: 1 });
 const ENABLE_SEARCH = process.env.CLAUDE_MEMORY_SEARCH !== 'false';
 const RETRIEVAL_MODE = (process.env.CLAUDE_MEMORY_RETRIEVAL_MODE || 'hybrid') as 'keyword' | 'semantic' | 'hybrid';
-const SEMANTIC_TIMEOUT_MS = parseInt(process.env.CLAUDE_MEMORY_SEMANTIC_TIMEOUT_MS || '2000');
-const ADHERENCE_INTERVAL_TURNS = parseInt(process.env.CLAUDE_MEMORY_ADHERENCE_INTERVAL_TURNS || '3');
+const SEMANTIC_TIMEOUT_MS = readNumberEnv('CLAUDE_MEMORY_SEMANTIC_TIMEOUT_MS', 2000, { integer: true, min: 0 });
+const ADHERENCE_INTERVAL_TURNS = readNumberEnv('CLAUDE_MEMORY_ADHERENCE_INTERVAL_TURNS', 3, { integer: true, min: 1 });
 
 const ADHERENCE_STATE_DIR = path.join(os.homedir(), '.claude-code', 'memory');
 
@@ -256,22 +259,21 @@ export function getRetrievalQueryRewriteKind(prompt: string, retrievalQuery: str
   return retrievalQuery === prompt.trim() ? 'none' : 'follow-up-context';
 }
 
-export async function main(): Promise<void> {
-  // Read input from stdin
-  const inputData = await readStdin();
-  const input: UserPromptSubmitInput = JSON.parse(inputData);
-
-  // Generate a new turn_id for this user prompt
-  // This groups the prompt with subsequent tool calls and the final agent response
-  const turnId = randomUUID();
-
-  // Persist turn state so PostToolUse and Stop hooks can read it
-  writeTurnState(input.session_id, turnId);
-
-  // Use lightweight service (SQLite only, no embedder/vector - FAST!)
-  const memoryService = getLightweightMemoryService(input.session_id);
-
+export async function main(): Promise<string> {
   try {
+    // Read input from stdin (parse inside try so malformed JSON still emits a safe envelope)
+    const input: UserPromptSubmitInput = JSON.parse(await readStdin());
+
+    // Generate a new turn_id for this user prompt
+    // This groups the prompt with subsequent tool calls and the final agent response
+    const turnId = randomUUID();
+
+    // Persist turn state so PostToolUse and Stop hooks can read it
+    writeTurnState(input.session_id, turnId);
+
+    // Use lightweight service (SQLite only, no embedder/vector - FAST!)
+    const memoryService = getLightweightMemoryService(input.session_id);
+
     let context = '';
 
     const adherenceState = readAdherenceState(input.session_id);
@@ -431,24 +433,11 @@ export async function main(): Promise<void> {
     });
 
     const output: UserPromptSubmitOutput = { context };
-    console.log(JSON.stringify(output));
+    return JSON.stringify(output);
   } catch (error) {
     if (process.env.CLAUDE_MEMORY_DEBUG) {
       console.error('Memory hook error:', error);
     }
-    console.log(JSON.stringify({ context: '' }));
+    return JSON.stringify({ context: '' });
   }
-}
-
-function readStdin(): Promise<string> {
-  return new Promise((resolve) => {
-    let data = '';
-    process.stdin.setEncoding('utf8');
-    process.stdin.on('data', (chunk) => {
-      data += chunk;
-    });
-    process.stdin.on('end', () => {
-      resolve(data);
-    });
-  });
 }

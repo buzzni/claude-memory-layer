@@ -17,6 +17,7 @@ import { applyPrivacyFilter } from '../../../core/privacy/index.js';
 import { readTurnState, clearTurnState, writeLastAssistantSnippet } from '../../../core/turn-state.js';
 import type { StopInput, Config } from '../../../core/types.js';
 import { extractAssistantMessages } from '../transcript/turn-reconstructor.js';
+import { readStdin, readNumberEnv } from './hook-runtime.js';
 
 // Default privacy config
 const DEFAULT_PRIVACY_CONFIG: Config['privacy'] = {
@@ -30,24 +31,21 @@ const DEFAULT_PRIVACY_CONFIG: Config['privacy'] = {
   }
 };
 
-export async function main(): Promise<void> {
-  // Read input from stdin
-  const inputData = await readStdin();
-  const input: StopInput = JSON.parse(inputData);
-
-  // Use lightweight service (SQLite only, no embedder/vector - FAST!)
-  const memoryService = getLightweightMemoryService(input.session_id);
-
+export async function main(): Promise<string> {
   try {
+    // Read input from stdin (parse inside try so malformed JSON still emits a safe envelope)
+    const input: StopInput = JSON.parse(await readStdin());
+
+    // Use lightweight service (SQLite only, no embedder/vector - FAST!)
+    const memoryService = getLightweightMemoryService(input.session_id);
+
     // Read current turn_id from state file
     const turnId = readTurnState(input.session_id);
 
     // Read assistant messages from transcript
     const assistantMessages = await extractAssistantMessages(input.transcript_path);
 
-    const MIN_AGENT_RESPONSE_LEN = parseInt(
-      process.env.CLAUDE_MEMORY_AGENT_RESPONSE_MIN_LEN || '150'
-    );
+    const MIN_AGENT_RESPONSE_LEN = readNumberEnv('CLAUDE_MEMORY_AGENT_RESPONSE_MIN_LEN', 150, { integer: true, min: 0 });
     const lastIdx = assistantMessages.length - 1;
 
     // Store each assistant response
@@ -105,24 +103,11 @@ export async function main(): Promise<void> {
     await memoryService.processPendingEmbeddings();
 
     // Output empty (stop hook doesn't return context)
-    console.log(JSON.stringify({}));
+    return JSON.stringify({});
   } catch (error) {
     if (process.env.CLAUDE_MEMORY_DEBUG) {
       console.error('Stop hook error:', error);
     }
-    console.log(JSON.stringify({}));
+    return JSON.stringify({});
   }
-}
-
-function readStdin(): Promise<string> {
-  return new Promise((resolve) => {
-    let data = '';
-    process.stdin.setEncoding('utf8');
-    process.stdin.on('data', (chunk) => {
-      data += chunk;
-    });
-    process.stdin.on('end', () => {
-      resolve(data);
-    });
-  });
 }

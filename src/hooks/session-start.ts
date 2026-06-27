@@ -5,5 +5,6 @@
  * Implementation lives in the Claude adapter layer so core stays platform-agnostic.
  */
 import { main } from '../adapters/claude/hooks/session-start.js';
+import { runHook } from '../adapters/claude/hooks/hook-runtime.js';
 
-main().catch(console.error);
+void runHook({ name: 'session-start', fallbackOutput: '{"context":""}' }, main);
