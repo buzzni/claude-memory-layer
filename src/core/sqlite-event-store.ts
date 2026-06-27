@@ -1121,6 +1121,58 @@ export class SQLiteEventStore {
   }
 
   /**
+   * Aggregate event counts by type via SQL GROUP BY, instead of loading rows
+   * into memory and counting in JS. Counts all events (the old recent-window
+   * scan also under-counted stores larger than its cap).
+   */
+  async getEventTypeCounts(options?: QuarantineReadOptions): Promise<Array<{ eventType: string; count: number }>> {
+    await this.initialize();
+    const rows = sqliteAll<{ event_type: string; count: number }>(
+      this.db,
+      `SELECT event_type, COUNT(*) as count FROM events WHERE ${maybeQuarantinePredicate(options)} GROUP BY event_type`,
+      []
+    );
+    return rows.map((row) => ({ eventType: row.event_type, count: row.count }));
+  }
+
+  /** Count distinct sessions via SQL instead of materializing a Set in JS. */
+  async getDistinctSessionCount(options?: QuarantineReadOptions): Promise<number> {
+    await this.initialize();
+    const row = sqliteGet<{ count: number }>(
+      this.db,
+      `SELECT COUNT(DISTINCT session_id) as count FROM events WHERE ${maybeQuarantinePredicate(options)}`,
+      []
+    );
+    return row?.count ?? 0;
+  }
+
+  /**
+   * Per-day event counts (with type breakdown) since an ISO timestamp, computed
+   * by SQL GROUP BY on the date prefix. Timestamps are stored as ISO-8601
+   * strings, so substr(...,1,10) is the UTC day and `timestamp >= ?` compares
+   * lexicographically.
+   */
+  async getDailyEventCounts(
+    sinceIso: string,
+    options?: QuarantineReadOptions
+  ): Promise<Array<{ day: string; total: number; prompts: number; responses: number; tools: number }>> {
+    await this.initialize();
+    return sqliteAll<{ day: string; total: number; prompts: number; responses: number; tools: number }>(
+      this.db,
+      `SELECT substr(timestamp, 1, 10) as day,
+              COUNT(*) as total,
+              SUM(CASE WHEN event_type = 'user_prompt' THEN 1 ELSE 0 END) as prompts,
+              SUM(CASE WHEN event_type = 'agent_response' THEN 1 ELSE 0 END) as responses,
+              SUM(CASE WHEN event_type = 'tool_observation' THEN 1 ELSE 0 END) as tools
+       FROM events
+       WHERE timestamp >= ? AND ${maybeQuarantinePredicate(options)}
+       GROUP BY day
+       ORDER BY day ASC`,
+      [sinceIso]
+    );
+  }
+
+  /**
    * Get event by ID
    */
   async getEvent(id: string, options?: QuarantineReadOptions): Promise<MemoryEvent | null> {

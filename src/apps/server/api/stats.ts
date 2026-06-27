@@ -1722,32 +1722,21 @@ statsRouter.get('/', async (c) => {
   const memoryService = getLightweightServiceFromQuery(c);
   try {
     await memoryService.initialize();
-    const stats = await memoryService.getStats();
-    const recentEvents = await memoryService.getRecentEvents(10000);
 
-    // Calculate event types
-    const eventsByType = recentEvents.reduce((acc, e) => {
-      acc[e.eventType] = (acc[e.eventType] || 0) + 1;
-      return acc;
-    }, {} as Record<string, number>);
+    // Aggregate in SQL rather than loading the 10k most-recent events and
+    // counting in JS (which also under-counted stores larger than that window).
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+    const [stats, typeCounts, sessionTotal, dailyCounts, rawTrace] = await Promise.all([
+      memoryService.getStats(),
+      memoryService.getEventTypeCounts(),
+      memoryService.getDistinctSessionCount(),
+      memoryService.getDailyEventCounts(sevenDaysAgo),
+      memoryService.getRetrievalTraceStats()
+    ]);
 
-    // Calculate unique sessions
-    const uniqueSessions = new Set(recentEvents.map(e => e.sessionId));
-
-    // Calculate events by day (last 7 days)
-    const now = new Date();
-    const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-    const eventsByDay = recentEvents
-      .filter(e => e.timestamp >= sevenDaysAgo)
-      .reduce((acc, e) => {
-        const day = e.timestamp.toISOString().split('T')[0];
-        acc[day] = (acc[day] || 0) + 1;
-        return acc;
-      }, {} as Record<string, number>);
-
-    const retrievalTrace = sanitizeRetrievalTraceStats(
-      await memoryService.getRetrievalTraceStats()
-    );
+    const eventsByType = Object.fromEntries(typeCounts.map((t) => [t.eventType, t.count]));
+    const eventsByDay = Object.fromEntries(dailyCounts.map((d) => [d.day, d.total]));
+    const retrievalTrace = sanitizeRetrievalTraceStats(rawTrace);
 
     return c.json({
       storage: {
@@ -1755,12 +1744,12 @@ statsRouter.get('/', async (c) => {
         vectorCount: stats.vectorCount
       },
       sessions: {
-        total: uniqueSessions.size
+        total: sessionTotal
       },
       eventsByType,
       activity: {
         daily: eventsByDay,
-        total7Days: recentEvents.filter(e => e.timestamp >= sevenDaysAgo).length
+        total7Days: dailyCounts.reduce((sum, d) => sum + d.total, 0)
       },
       memory: {
         heapUsed: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
@@ -1814,33 +1803,24 @@ statsRouter.get('/most-accessed', async (c) => {
 
 // GET /api/stats/timeline - Get activity timeline
 statsRouter.get('/timeline', async (c) => {
-  const days = parseInt(c.req.query('days') || '7', 10);
+  const parsedDays = parseInt(c.req.query('days') || '7', 10);
+  const days = Number.isFinite(parsedDays) && parsedDays > 0 ? parsedDays : 7;
   const memoryService = getLightweightServiceFromQuery(c);
 
   try {
     await memoryService.initialize();
-    const recentEvents = await memoryService.getRecentEvents(10000);
 
-    const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
-    const filteredEvents = recentEvents.filter(e => e.timestamp >= cutoff);
+    // Group by day in SQL instead of scanning the 10k most-recent events.
+    const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+    const daily = (await memoryService.getDailyEventCounts(cutoff)).map((d) => ({
+      date: d.day,
+      total: d.total,
+      prompts: d.prompts,
+      responses: d.responses,
+      tools: d.tools
+    }));
 
-    // Group by day
-    const daily = filteredEvents.reduce((acc, e) => {
-      const day = e.timestamp.toISOString().split('T')[0];
-      if (!acc[day]) {
-        acc[day] = { date: day, total: 0, prompts: 0, responses: 0, tools: 0 };
-      }
-      acc[day].total++;
-      if (e.eventType === 'user_prompt') acc[day].prompts++;
-      if (e.eventType === 'agent_response') acc[day].responses++;
-      if (e.eventType === 'tool_observation') acc[day].tools++;
-      return acc;
-    }, {} as Record<string, { date: string; total: number; prompts: number; responses: number; tools: number }>);
-
-    return c.json({
-      days,
-      daily: Object.values(daily).sort((a, b) => a.date.localeCompare(b.date))
-    });
+    return c.json({ days, daily });
   } catch (error) {
     return jsonError(c, error);
   } finally {

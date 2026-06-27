@@ -304,6 +304,23 @@ export class MemoryService {
     return this.queryService.getEventByCitationId(citationId);
   }
 
+  /** Aggregate event counts by type (SQL GROUP BY). */
+  async getEventTypeCounts(): Promise<Array<{ eventType: string; count: number }>> {
+    return this.queryService.getEventTypeCounts();
+  }
+
+  /** Count distinct sessions (SQL). */
+  async getDistinctSessionCount(): Promise<number> {
+    return this.queryService.getDistinctSessionCount();
+  }
+
+  /** Per-day event counts with type breakdown since an ISO timestamp (SQL). */
+  async getDailyEventCounts(
+    sinceIso: string
+  ): Promise<Array<{ day: string; total: number; prompts: number; responses: number; tools: number }>> {
+    return this.queryService.getDailyEventCounts(sinceIso);
+  }
+
   /**
    * Get session history
    */
