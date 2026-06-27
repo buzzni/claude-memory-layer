@@ -13,6 +13,7 @@ import * as readline from 'readline';
 import { randomUUID } from 'crypto';
 import { MemoryService } from './memory-service.js';
 import { registerSession } from '../core/registry/session-registry.js';
+import { mergeAgentResponseBlocks, truncateAgentResponse } from './turn-buffering.js';
 
 export type ProgressEvent =
   | { phase: 'scan'; message: string }
@@ -324,20 +325,9 @@ export class SessionHistoryImporter {
     const flushTextBuffer = async () => {
       if (textBuffer.length === 0 || !currentTurnId) return;
 
-      // Filter: keep substantive text (>= 100 chars), discard short transitional phrases
-      const substantive = textBuffer.filter(t => t.length >= 100);
-
-      // If all filtered out, keep the longest block (there's always something meaningful)
-      const merged = substantive.length > 0
-        ? substantive.join('\n\n')
-        : textBuffer.reduce((a, b) => a.length >= b.length ? a : b, '');
-
+      const merged = mergeAgentResponseBlocks(textBuffer);
       if (!merged) { textBuffer = []; return; }
-
-      // Truncate if very long
-      const truncated = merged.length > 10000
-        ? merged.slice(0, 10000) + '...[truncated]'
-        : merged;
+      const truncated = truncateAgentResponse(merged);
 
       const appendResult = await this.memoryService.storeAgentResponse(
         sessionId,

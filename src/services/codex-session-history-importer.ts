@@ -14,6 +14,7 @@ import { createHash, randomUUID } from 'crypto';
 import { MemoryService } from './memory-service.js';
 import { registerSession } from '../core/registry/session-registry.js';
 import type { ImportOptions, ImportResult } from './session-history-importer.js';
+import { mergeAgentResponseBlocks, truncateAgentResponse } from './turn-buffering.js';
 
 type CodexLogLine = {
   timestamp?: string;
@@ -552,33 +553,6 @@ export class CodexSessionHistoryImporter {
     return this.sessionsRoot;
   }
 
-  private listSessionFilesRecursive(rootDir: string): string[] {
-    if (!fs.existsSync(rootDir)) return [];
-    const out: string[] = [];
-    const stack: string[] = [rootDir];
-
-    while (stack.length > 0) {
-      const dir = stack.pop()!;
-      let entries: fs.Dirent[];
-      try {
-        entries = fs.readdirSync(dir, { withFileTypes: true });
-      } catch {
-        continue;
-      }
-
-      for (const ent of entries) {
-        const fullPath = path.join(dir, ent.name);
-        if (ent.isDirectory()) {
-          stack.push(fullPath);
-        } else if (ent.isFile() && ent.name.endsWith('.jsonl')) {
-          out.push(fullPath);
-        }
-      }
-    }
-
-    return out;
-  }
-
   private async readSessionMeta(filePath: string): Promise<{ sessionId: string | null; cwd: string | null }> {
     const fileStream = fs.createReadStream(filePath, { encoding: 'utf-8' });
     const rl = readline.createInterface({ input: fileStream, crlfDelay: Infinity });
@@ -639,7 +613,7 @@ export class CodexSessionHistoryImporter {
     const normalizedTarget = normalizeMaybeRealpath(projectPath);
     onProgress?.({ phase: 'scan', message: 'Scanning Codex session files...' });
 
-    const sessionFiles = this.listSessionFilesRecursive(sessionsRoot);
+    const sessionFiles = listCodexSessionFilesRecursive(sessionsRoot);
     const matchingFiles: string[] = [];
 
     // Filter by original CWD stored in session_meta.payload.cwd
@@ -716,7 +690,7 @@ export class CodexSessionHistoryImporter {
     }
 
     onProgress?.({ phase: 'scan', message: 'Scanning all Codex sessions...' });
-    const sessionFiles = this.listSessionFilesRecursive(sessionsRoot);
+    const sessionFiles = listCodexSessionFilesRecursive(sessionsRoot);
     const selectedFiles = selectRecentCodexSessionFiles(sessionFiles, options.sessionLimit);
     onProgress?.({ phase: 'scan', message: `Found ${sessionFiles.length} Codex session file(s)` });
 
@@ -809,16 +783,9 @@ export class CodexSessionHistoryImporter {
       if (storedCount >= limit) { textBuffer = []; return; }
       if (textBuffer.length === 0 || !currentTurnId) return;
 
-      const substantive = textBuffer.filter(t => t.length >= 100);
-      const merged = substantive.length > 0
-        ? substantive.join('\n\n')
-        : textBuffer.reduce((a, b) => a.length >= b.length ? a : b, '');
-
+      const merged = mergeAgentResponseBlocks(textBuffer);
       if (!merged) { textBuffer = []; return; }
-
-      const truncated = merged.length > 10000
-        ? merged.slice(0, 10000) + '...[truncated]'
-        : merged;
+      const truncated = truncateAgentResponse(merged);
 
       const appendResult = await this.memoryService.storeAgentResponse(
         sessionId,
@@ -925,7 +892,7 @@ export class CodexSessionHistoryImporter {
     const sessionsRoot = this.getSessionsRoot();
     if (!fs.existsSync(sessionsRoot)) return [];
 
-    const files = this.listSessionFilesRecursive(sessionsRoot);
+    const files = listCodexSessionFilesRecursive(sessionsRoot);
     const sessions: Array<{ sessionId: string; filePath: string; size: number; modifiedAt: Date }> = [];
 
     const normalizedTarget = projectPath ? normalizeMaybeRealpath(projectPath) : null;
