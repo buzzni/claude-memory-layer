@@ -8,6 +8,18 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { getLightweightServiceFromQuery, getServiceFromQuery, jsonError } from './utils.js';
+import {
+  loadKpiThresholds,
+  windowToMs,
+  inWindow,
+  isEditToolName,
+  parseToolPayload,
+  isTestLikeCommand,
+  safeRatio,
+  round,
+  computeSessionTurnCount,
+  type KpiWindow
+} from './stats-metrics.js';
 import { hashProjectPath } from '../../../core/registry/project-path.js';
 import { sanitizeGovernanceAuditValue } from '../../../core/operations/governance-audit.js';
 import {
@@ -641,100 +653,6 @@ function buildLessonConfidenceBuckets(db: SQLiteDatabase, projectHash: string | 
       return confidence >= bucket.min && confidence < bucket.max;
     }).length
   }));
-}
-
-type KpiWindow = '24h' | '7d' | '30d';
-
-type KpiThresholds = {
-  usefulRecallRateMin: number;
-  reworkRateMax: number;
-  postChangeFailureRateMax: number;
-  avgCompletionTurnsMax: number;
-  memoryHitRateMin: number;
-};
-
-const DEFAULT_KPI_THRESHOLDS: KpiThresholds = {
-  usefulRecallRateMin: 0.45,
-  reworkRateMax: 0.25,
-  postChangeFailureRateMax: 0.2,
-  avgCompletionTurnsMax: 12,
-  memoryHitRateMin: 0.35
-};
-
-function loadKpiThresholds(): KpiThresholds {
-  try {
-    const filePath = path.resolve(process.cwd(), 'config', 'kpi-thresholds.json');
-    if (!fs.existsSync(filePath)) return DEFAULT_KPI_THRESHOLDS;
-    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as Partial<KpiThresholds>;
-    return {
-      usefulRecallRateMin: Number(parsed.usefulRecallRateMin ?? DEFAULT_KPI_THRESHOLDS.usefulRecallRateMin),
-      reworkRateMax: Number(parsed.reworkRateMax ?? DEFAULT_KPI_THRESHOLDS.reworkRateMax),
-      postChangeFailureRateMax: Number(parsed.postChangeFailureRateMax ?? DEFAULT_KPI_THRESHOLDS.postChangeFailureRateMax),
-      avgCompletionTurnsMax: Number(parsed.avgCompletionTurnsMax ?? DEFAULT_KPI_THRESHOLDS.avgCompletionTurnsMax),
-      memoryHitRateMin: Number(parsed.memoryHitRateMin ?? DEFAULT_KPI_THRESHOLDS.memoryHitRateMin)
-    };
-  } catch {
-    return DEFAULT_KPI_THRESHOLDS;
-  }
-}
-
-function windowToMs(window: KpiWindow): number {
-  if (window === '24h') return 24 * 60 * 60 * 1000;
-  if (window === '7d') return 7 * 24 * 60 * 60 * 1000;
-  return 30 * 24 * 60 * 60 * 1000;
-}
-
-function inWindow(e: MemoryEvent, now: number, window: KpiWindow): boolean {
-  return now - e.timestamp.getTime() <= windowToMs(window);
-}
-
-function isEditToolName(name: string): boolean {
-  return ['Write', 'Edit', 'MultiEdit', 'NotebookEdit'].includes(name);
-}
-
-function parseToolPayload(e: MemoryEvent): { toolName?: string; success?: boolean; filePath?: string; command?: string } | null {
-  if (e.eventType !== 'tool_observation') return null;
-  try {
-    const payload = JSON.parse(e.content) as any;
-    return {
-      toolName: payload?.toolName,
-      success: payload?.success,
-      filePath: payload?.metadata?.filePath,
-      command: payload?.metadata?.command
-    };
-  } catch {
-    return {
-      toolName: (e.metadata as any)?.toolName,
-      success: (e.metadata as any)?.success,
-      filePath: (e.metadata as any)?.filePath,
-      command: (e.metadata as any)?.command
-    };
-  }
-}
-
-function isTestLikeCommand(command?: string): boolean {
-  if (!command) return false;
-  return /(test|jest|vitest|pytest|go test|cargo test|lint|eslint|build|tsc)/i.test(command);
-}
-
-function safeRatio(num: number, den: number): number {
-  if (!Number.isFinite(num) || !Number.isFinite(den) || den <= 0) return 0;
-  return num / den;
-}
-
-function round(value: number, digits = 4): number {
-  const factor = 10 ** digits;
-  return Math.round(value * factor) / factor;
-}
-
-function computeSessionTurnCount(sessionEvents: MemoryEvent[]): number {
-  const turnIds = new Set<string>();
-  for (const e of sessionEvents) {
-    const turnId = (e.metadata as any)?.turnId;
-    if (typeof turnId === 'string' && turnId.length > 0) turnIds.add(turnId);
-  }
-  if (turnIds.size > 0) return turnIds.size;
-  return sessionEvents.filter((e) => e.eventType === 'user_prompt').length;
 }
 
 type KpiMetrics = {
