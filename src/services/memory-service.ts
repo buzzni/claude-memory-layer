@@ -291,6 +291,13 @@ export class MemoryService {
   }
 
   /**
+   * Get a single event by id (indexed lookup).
+   */
+  async getEvent(id: string): Promise<MemoryEvent | null> {
+    return this.queryService.getEvent(id);
+  }
+
+  /**
    * Get session history
    */
   async getSessionHistory(sessionId: string): Promise<MemoryEvent[]> {

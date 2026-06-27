@@ -33,6 +33,7 @@ export interface MemoryStats {
 
 interface QueryStore {
   keywordSearch(query: string, topK: number): Promise<RankedKeywordResult[]>;
+  getEvent(id: string): Promise<MemoryEvent | null>;
   getSessionEvents(sessionId: string): Promise<MemoryEvent[]>;
   getRecentEvents(limit: number): Promise<MemoryEvent[]>;
 }
@@ -88,6 +89,11 @@ export class MemoryQueryService {
         score: 1 - (r.rank - minRank) / rankRange
       }))
       .filter((r) => !options?.minScore || r.score >= options.minScore);
+  }
+
+  async getEvent(id: string): Promise<MemoryEvent | null> {
+    await this.initialize();
+    return this.queryStore.getEvent(id);
   }
 
   async getSessionHistory(sessionId: string): Promise<MemoryEvent[]> {

@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => {
   const service = {
     initialize: vi.fn(),
     shutdown: vi.fn(),
+    getEvent: vi.fn(),
     getRecentEvents: vi.fn(),
     getSessionHistory: vi.fn(),
     getSessionTurns: vi.fn(),
@@ -61,6 +62,7 @@ describe('dashboard read APIs use lightweight services', () => {
   beforeEach(() => {
     mocks.service.initialize.mockReset().mockResolvedValue(undefined);
     mocks.service.shutdown.mockReset().mockResolvedValue(undefined);
+    mocks.service.getEvent.mockReset().mockImplementation(async (id: string) => fixtureEvents.find((e) => e.id === id) ?? null);
     mocks.service.getRecentEvents.mockReset().mockResolvedValue(fixtureEvents);
     mocks.service.getSessionHistory.mockReset().mockResolvedValue(fixtureEvents);
     mocks.service.getSessionTurns.mockReset().mockResolvedValue([
@@ -91,6 +93,27 @@ describe('dashboard read APIs use lightweight services', () => {
     expect(mocks.getServiceFromQuery).not.toHaveBeenCalled();
     expect(mocks.service.initialize).toHaveBeenCalledTimes(1);
     expect(mocks.service.shutdown).toHaveBeenCalledTimes(1);
+  });
+
+  it('GET /api/events/:id resolves the event by indexed id lookup, not a full scan', async () => {
+    const res = await createApp().request('/api/events/e1?project=abc12345');
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.event).toMatchObject({ id: 'e1', sessionId: 's1' });
+    // Surrounding context comes from the same session and excludes the target.
+    expect(body.context.map((e: { id: string }) => e.id)).toEqual(['e2']);
+    // Indexed lookup + session-scoped context — never the 10k getRecentEvents scan.
+    expect(mocks.service.getEvent).toHaveBeenCalledWith('e1');
+    expect(mocks.service.getSessionHistory).toHaveBeenCalledWith('s1');
+    expect(mocks.service.getRecentEvents).not.toHaveBeenCalled();
+  });
+
+  it('GET /api/events/:id returns 404 for an unknown id without scanning', async () => {
+    const res = await createApp().request('/api/events/missing?project=abc12345');
+
+    expect(res.status).toBe(404);
+    expect(mocks.service.getRecentEvents).not.toHaveBeenCalled();
   });
 
   it('GET /api/sessions uses lightweight read service instead of full vector/embedder service', async () => {

@@ -96,16 +96,17 @@ eventsRouter.get('/:id', async (c) => {
   try {
     await memoryService.initialize();
 
-    const recentEvents = await memoryService.getRecentEvents(10000);
-    const event = recentEvents.find(e => e.id === id);
+    // Indexed single-event lookup instead of scanning the 10k most-recent events
+    // (which also silently 404'd any event older than that window).
+    const event = await memoryService.getEvent(id);
 
     if (!event) {
       return c.json({ error: 'Event not found' }, 404);
     }
 
-    // Get surrounding events for context
-    const sessionEvents = recentEvents
-      .filter(e => e.sessionId === event.sessionId)
+    // Get surrounding events for context, scoped to this event's session rather
+    // than a global scan.
+    const sessionEvents = (await memoryService.getSessionHistory(event.sessionId))
       .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
 
     const eventIndex = sessionEvents.findIndex(e => e.id === id);
