@@ -20,13 +20,9 @@ citationsRouter.get('/:id', async (c) => {
   try {
     await memoryService.initialize();
 
-    // Search through recent events to find the one matching this citation ID
-    const recentEvents = await memoryService.getRecentEvents(10000);
-
-    const event = recentEvents.find(e => {
-      const eventCitationId = generateCitationId(e.id);
-      return eventCitationId === citationId;
-    });
+    // Indexed reverse lookup instead of scanning the 10k most-recent events and
+    // hashing each id (which also missed citations older than that window).
+    const event = await memoryService.getEventByCitationId(citationId);
 
     if (!event) {
       return c.json({ error: 'Citation not found' }, 404);
@@ -62,21 +58,15 @@ citationsRouter.get('/:id/related', async (c) => {
   try {
     await memoryService.initialize();
 
-    const recentEvents = await memoryService.getRecentEvents(10000);
-
-    // Find the main event
-    const event = recentEvents.find(e => {
-      const eventCitationId = generateCitationId(e.id);
-      return eventCitationId === citationId;
-    });
+    // Indexed reverse lookup for the main event, then session-scoped neighbours.
+    const event = await memoryService.getEventByCitationId(citationId);
 
     if (!event) {
       return c.json({ error: 'Citation not found' }, 404);
     }
 
     // Get surrounding events from same session
-    const sessionEvents = recentEvents
-      .filter(e => e.sessionId === event.sessionId)
+    const sessionEvents = (await memoryService.getSessionHistory(event.sessionId))
       .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
 
     const eventIndex = sessionEvents.findIndex(e => e.id === event.id);

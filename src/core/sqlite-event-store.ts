@@ -19,6 +19,7 @@ import {
   ProjectScopeRepairSample
 } from './types.js';
 import { makeCanonicalKey, makeDedupeKey } from './canonical-key.js';
+import { generateCitationId } from './citation-generator.js';
 import * as nodePath from 'path';
 import { hashProjectPath } from './registry/project-path.js';
 import {
@@ -846,6 +847,15 @@ export class SQLiteEventStore {
         DELETE FROM events_fts WHERE rowid = OLD.rowid;
         INSERT INTO events_fts(rowid, content, event_id) VALUES (NEW.rowid, NEW.content, NEW.id);
       END;
+
+      -- Reverse index for citation ids (a non-reversible hash of event id), so
+      -- citation lookups are O(1) instead of scanning recent events and hashing
+      -- each one. Populated lazily/self-healing by getEventByCitationId.
+      CREATE TABLE IF NOT EXISTS event_citations (
+        event_id TEXT PRIMARY KEY,
+        citation_id TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_event_citations_citation ON event_citations(citation_id);
     `);
 
 
@@ -1143,6 +1153,62 @@ export class SQLiteEventStore {
     );
 
     return rows.map((row) => this.rowToEvent(row));
+  }
+
+  /**
+   * Resolve an event from its citation id via the reverse index, instead of
+   * scanning recent events and hashing each one. The index is self-healing: a
+   * miss triggers a one-time backfill of any events not yet indexed (covering
+   * freshly appended events) before retrying.
+   */
+  async getEventByCitationId(citationId: string, options?: QuarantineReadOptions): Promise<MemoryEvent | null> {
+    await this.initialize();
+    if (!citationId) return null;
+
+    let row = sqliteGet<{ event_id: string }>(
+      this.db,
+      `SELECT event_id FROM event_citations WHERE citation_id = ? LIMIT 1`,
+      [citationId]
+    );
+
+    if (!row) {
+      this.indexMissingCitations();
+      row = sqliteGet<{ event_id: string }>(
+        this.db,
+        `SELECT event_id FROM event_citations WHERE citation_id = ? LIMIT 1`,
+        [citationId]
+      );
+    }
+
+    if (!row) return null;
+    return this.getEvent(row.event_id, options);
+  }
+
+  /**
+   * Backfill citation ids for any events not yet present in event_citations.
+   * Gated on a cheap count comparison so the common (fully-indexed) path does no
+   * work, and the scan only runs when there are genuinely new events to index.
+   */
+  private indexMissingCitations(): void {
+    const eventCount = sqliteGet<{ c: number }>(this.db, `SELECT COUNT(*) as c FROM events`, [])?.c ?? 0;
+    const indexedCount = sqliteGet<{ c: number }>(this.db, `SELECT COUNT(*) as c FROM event_citations`, [])?.c ?? 0;
+    if (indexedCount >= eventCount) return;
+
+    const unindexed = sqliteAll<{ id: string }>(
+      this.db,
+      `SELECT e.id FROM events e
+       LEFT JOIN event_citations ec ON ec.event_id = e.id
+       WHERE ec.event_id IS NULL`,
+      []
+    );
+    if (unindexed.length === 0) return;
+
+    const insert = this.db.prepare(`INSERT OR IGNORE INTO event_citations (event_id, citation_id) VALUES (?, ?)`);
+    this.db.transaction(() => {
+      for (const { id } of unindexed) {
+        insert.run(id, generateCitationId(id));
+      }
+    })();
   }
 
   /**
@@ -2873,7 +2939,7 @@ export class SQLiteEventStore {
     // Only the tables that both exist and key cascades on event_id. (vector_outbox
     // keys on item_id, not event_id; the previous code swallowed the resulting
     // error, so it was never cleaned here either — behavior preserved.)
-    const relatedTables = ['event_dedup', 'memory_levels', 'embedding_queue', 'embedding_outbox', 'vector_outbox']
+    const relatedTables = ['event_dedup', 'memory_levels', 'embedding_queue', 'embedding_outbox', 'vector_outbox', 'event_citations']
       .filter((table) => this.hasTable(table) && this.hasTableColumn(table, 'event_id'));
 
     const runDelete = this.db.transaction((): number => {

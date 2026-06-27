@@ -298,6 +298,13 @@ export class MemoryService {
   }
 
   /**
+   * Resolve an event from its citation id via the reverse index.
+   */
+  async getEventByCitationId(citationId: string): Promise<MemoryEvent | null> {
+    return this.queryService.getEventByCitationId(citationId);
+  }
+
+  /**
    * Get session history
    */
   async getSessionHistory(sessionId: string): Promise<MemoryEvent[]> {
