@@ -43,7 +43,12 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      # The test toolchain (vitest 4 / rolldown) imports `styleText` from
+      # node:util, which only exists on Node >= 20.12, so tests run on the
+      # dev-supported runtimes (devEngines.runtime >= 20.19). Node 18 still
+      # verifies the published engines floor via typecheck/lint/build.
       - name: Test
+        if: matrix.node-version != '18'
         run: npm run test:run
 
       - name: Build
