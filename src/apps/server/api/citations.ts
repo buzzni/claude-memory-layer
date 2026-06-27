@@ -4,7 +4,7 @@
  */
 
 import { Hono } from 'hono';
-import { getServiceFromQuery } from './utils.js';
+import { getServiceFromQuery, jsonError } from './utils.js';
 import { generateCitationId, parseCitationId } from '../../../core/citation-generator.js';
 
 export const citationsRouter = new Hono();
@@ -20,13 +20,9 @@ citationsRouter.get('/:id', async (c) => {
   try {
     await memoryService.initialize();
 
-    // Search through recent events to find the one matching this citation ID
-    const recentEvents = await memoryService.getRecentEvents(10000);
-
-    const event = recentEvents.find(e => {
-      const eventCitationId = generateCitationId(e.id);
-      return eventCitationId === citationId;
-    });
+    // Indexed reverse lookup instead of scanning the 10k most-recent events and
+    // hashing each id (which also missed citations older than that window).
+    const event = await memoryService.getEventByCitationId(citationId);
 
     if (!event) {
       return c.json({ error: 'Citation not found' }, 404);
@@ -47,7 +43,7 @@ citationsRouter.get('/:id', async (c) => {
       }
     });
   } catch (error) {
-    return c.json({ error: (error as Error).message }, 500);
+    return jsonError(c, error);
   } finally {
     await memoryService.shutdown();
   }
@@ -62,21 +58,15 @@ citationsRouter.get('/:id/related', async (c) => {
   try {
     await memoryService.initialize();
 
-    const recentEvents = await memoryService.getRecentEvents(10000);
-
-    // Find the main event
-    const event = recentEvents.find(e => {
-      const eventCitationId = generateCitationId(e.id);
-      return eventCitationId === citationId;
-    });
+    // Indexed reverse lookup for the main event, then session-scoped neighbours.
+    const event = await memoryService.getEventByCitationId(citationId);
 
     if (!event) {
       return c.json({ error: 'Citation not found' }, 404);
     }
 
     // Get surrounding events from same session
-    const sessionEvents = recentEvents
-      .filter(e => e.sessionId === event.sessionId)
+    const sessionEvents = (await memoryService.getSessionHistory(event.sessionId))
       .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
 
     const eventIndex = sessionEvents.findIndex(e => e.id === event.id);
@@ -98,7 +88,7 @@ citationsRouter.get('/:id/related', async (c) => {
       } : null
     });
   } catch (error) {
-    return c.json({ error: (error as Error).message }, 500);
+    return jsonError(c, error);
   } finally {
     await memoryService.shutdown();
   }

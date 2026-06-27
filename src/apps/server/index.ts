@@ -23,6 +23,12 @@ export interface DashboardAppOptions {
   password?: string;
   cookieMaxAgeSeconds?: number;
   now?: () => number;
+  /**
+   * Cross-origin allow-list for the dashboard API. Empty (the default) means
+   * same-origin only — no CORS headers are emitted, so browsers block any
+   * cross-origin reads of the API. Falls back to DASHBOARD_ALLOWED_ORIGINS.
+   */
+  allowedOrigins?: string[];
 }
 
 export interface DashboardServerOptions extends DashboardAppOptions {
@@ -225,8 +231,43 @@ function createAuthOptions(options: DashboardAppOptions): Required<DashboardAppO
   return {
     password: options.password ?? '',
     cookieMaxAgeSeconds: options.cookieMaxAgeSeconds ?? DEFAULT_SESSION_MAX_AGE_SECONDS,
-    now: options.now ?? Date.now
+    now: options.now ?? Date.now,
+    allowedOrigins: options.allowedOrigins ?? []
   };
+}
+
+/**
+ * Resolve the cross-origin allow-list, preferring an explicit option and
+ * falling back to the comma-separated DASHBOARD_ALLOWED_ORIGINS env var. An
+ * empty result means same-origin only (no CORS headers emitted).
+ */
+function resolveAllowedOrigins(explicit?: string[]): string[] {
+  if (explicit && explicit.length > 0) return explicit;
+  const raw = process.env.DASHBOARD_ALLOWED_ORIGINS;
+  if (!raw) return [];
+  return raw.split(',').map((value) => value.trim()).filter(Boolean);
+}
+
+/**
+ * The server's own origin(s): the request URL origin and, when present, the
+ * scheme+Host-header origin (covers reverse-proxy setups). Either may match a
+ * legitimate same-origin request.
+ */
+function selfOrigins(c: Context): string[] {
+  const origins: string[] = [];
+  try {
+    origins.push(new URL(c.req.url).origin);
+  } catch {
+    // Non-absolute URL; fall through to the host header.
+  }
+  const host = c.req.header('host');
+  if (host) origins.push(`${isSecureRequest(c) ? 'https' : 'http'}://${host}`);
+  return origins;
+}
+
+/** True when a mutating request's Origin is same-origin or explicitly allowed. */
+function isAllowedMutationOrigin(c: Context, origin: string, allowedOrigins: string[]): boolean {
+  return allowedOrigins.includes(origin) || selfOrigins(c).includes(origin);
 }
 
 export function createDashboardApp(options: DashboardAppOptions = {}): Hono {
@@ -234,8 +275,39 @@ export function createDashboardApp(options: DashboardAppOptions = {}): Hono {
   const authOptions = createAuthOptions(options);
 
   // Middleware
-  app.use('*', cors());
+  //
+  // The dashboard UI is served from the same origin as the API, so cross-origin
+  // CORS access is never needed for normal use. A permissive `cors()` (which
+  // emits `Access-Control-Allow-Origin: *`) would let any website the user
+  // visits read the unauthenticated localhost API and exfiltrate their memory
+  // data. So we lock down to same-origin by default and only enable CORS for an
+  // explicit, operator-provided allow-list (DASHBOARD_ALLOWED_ORIGINS).
+  const allowedOrigins = resolveAllowedOrigins(options.allowedOrigins);
+  if (allowedOrigins.length > 0) {
+    app.use('*', cors({
+      origin: (origin) => (allowedOrigins.includes(origin) ? origin : null),
+      credentials: true
+    }));
+  }
   app.use('*', logger());
+
+  // CSRF / cross-origin guard for state-changing API requests. Because the API
+  // is unauthenticated by default, a malicious page could otherwise drive-by
+  // POST to mutating endpoints (recover/backfill/graduation-run/chat). Browsers
+  // always attach an Origin header to such cross-origin requests; if present it
+  // must match the server's own origin or an explicit allow-list entry.
+  // Non-browser callers (CLI, curl) omit Origin and remain allowed for local use.
+  app.use('/api/*', async (c, next) => {
+    const method = c.req.method;
+    if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') {
+      return next();
+    }
+    const origin = c.req.header('origin');
+    if (origin && !isAllowedMutationOrigin(c, origin, allowedOrigins)) {
+      return c.json({ error: 'Cross-origin request blocked' }, 403);
+    }
+    return next();
+  });
 
   // Health check stays unauthenticated for local readiness checks.
   app.get('/health', (c) => c.json({ status: 'ok', timestamp: new Date().toISOString() }));

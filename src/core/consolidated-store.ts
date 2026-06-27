@@ -26,20 +26,32 @@ export class ConsolidatedStore {
    */
   async create(input: ConsolidatedMemoryInput): Promise<string> {
     const memoryId = randomUUID();
+    const sourceEvents = Array.isArray(input.sourceEvents) ? input.sourceEvents : [];
 
-    await dbRun(
-      this.db,
+    // Insert the memory and its event junction rows atomically so the index can
+    // never drift from source_events.
+    const insertMemory = this.db.prepare(
       `INSERT INTO consolidated_memories
         (memory_id, summary, topics, source_events, confidence, created_at)
-       VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
-      [
+       VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`
+    );
+    const insertEvent = this.db.prepare(
+      `INSERT OR IGNORE INTO consolidated_memory_events (memory_id, event_id) VALUES (?, ?)`
+    );
+    this.db.transaction(() => {
+      insertMemory.run(
         memoryId,
         input.summary,
         JSON.stringify(input.topics),
-        JSON.stringify(input.sourceEvents),
+        JSON.stringify(sourceEvents),
         input.confidence
-      ]
-    );
+      );
+      for (const eventId of sourceEvents) {
+        if (typeof eventId === 'string' && eventId.length > 0) {
+          insertEvent.run(memoryId, eventId);
+        }
+      }
+    })();
 
     return memoryId;
   }
@@ -165,11 +177,14 @@ export class ConsolidatedStore {
    * Delete a consolidated memory
    */
   async delete(memoryId: string): Promise<void> {
-    await dbRun(
-      this.db,
-      `DELETE FROM consolidated_memories WHERE memory_id = ?`,
-      [memoryId]
-    );
+    // Remove the memory and its junction rows together so the event index does
+    // not retain stale entries (which would cause false "already consolidated").
+    const deleteEvents = this.db.prepare(`DELETE FROM consolidated_memory_events WHERE memory_id = ?`);
+    const deleteMemory = this.db.prepare(`DELETE FROM consolidated_memories WHERE memory_id = ?`);
+    this.db.transaction(() => {
+      deleteEvents.run(memoryId);
+      deleteMemory.run(memoryId);
+    })();
   }
 
   /**
@@ -304,16 +319,20 @@ export class ConsolidatedStore {
    * Check if source events are already consolidated
    */
   async isAlreadyConsolidated(eventIds: string[]): Promise<boolean> {
-    for (const eventId of eventIds) {
-      const result = await dbAll<{ count: number }>(
-        this.db,
-        `SELECT COUNT(*) as count FROM consolidated_memories
-         WHERE source_events LIKE ?`,
-        [`%"${eventId}"%`]
-      );
-      if ((result[0]?.count || 0) > 0) return true;
-    }
-    return false;
+    if (eventIds.length === 0) return false;
+
+    // Single indexed lookup against the junction table, replacing one
+    // full-table `source_events LIKE` scan per event id. Also avoids the
+    // substring false positive where `evt_1` matched `evt_12`.
+    const placeholders = eventIds.map(() => '?').join(',');
+    const rows = await dbAll<{ memory_id: string }>(
+      this.db,
+      `SELECT memory_id FROM consolidated_memory_events
+       WHERE event_id IN (${placeholders})
+       LIMIT 1`,
+      eventIds
+    );
+    return rows.length > 0;
   }
 
   /**

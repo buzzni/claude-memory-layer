@@ -11,6 +11,24 @@ import {
 } from '../../../services/memory-service.js';
 import { resolveProjectStoragePath } from '../../../core/registry/project-path.js';
 
+type ApiErrorStatus = 400 | 401 | 403 | 404 | 409 | 422 | 500;
+
+/**
+ * Return a generic JSON error to the client while logging the real error
+ * server-side. Raw exception messages can leak internal details (filesystem
+ * paths, SQLite/driver errors, embedding-backend context), so handlers should
+ * never reflect `(error as Error).message` straight back to the caller.
+ */
+export function jsonError(
+  c: Context,
+  error: unknown,
+  options: { status?: ApiErrorStatus; message?: string } = {}
+) {
+  const status: ApiErrorStatus = options.status ?? 500;
+  console.error(`[api] ${c.req.method} ${c.req.path} failed:`, error);
+  return c.json({ error: options.message ?? 'Internal server error' }, status);
+}
+
 /**
  * Get the appropriate MemoryService based on the ?project= query parameter.
  * - If ?project=<hash> is set (8 hex chars), resolves directly to project storage

@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as net from 'net';
 import * as os from 'os';
 import * as path from 'path';
+import { readNumberEnv } from './hook-runtime.js';
 
 interface SemanticRequest {
   sessionId: string;
@@ -40,7 +41,7 @@ const DEFAULT_SOCKET_PATH = path.join(
 );
 
 const DAEMON_SOCKET_PATH = process.env.CLAUDE_MEMORY_SEMANTIC_SOCKET || DEFAULT_SOCKET_PATH;
-const DAEMON_START_TIMEOUT_MS = parseInt(process.env.CLAUDE_MEMORY_SEMANTIC_DAEMON_START_MS || '1500');
+const DAEMON_START_TIMEOUT_MS = readNumberEnv('CLAUDE_MEMORY_SEMANTIC_DAEMON_START_MS', 1500, { integer: true, min: 0 });
 
 let daemonStartPromise: Promise<void> | null = null;
 

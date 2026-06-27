@@ -905,12 +905,17 @@ export class Retriever {
     const normalizedIncludes = (scope?.contentIncludes || []).map((s) => s.toLowerCase());
     const filtered: Array<{ result: DebuggableSearchResult; projectHash?: string }> = [];
 
+    // Batch-load candidate events once instead of one getEvent round-trip per
+    // result (this loop ran N sequential queries, then enrichResults re-fetched
+    // the survivors one-by-one again).
+    const eventMap = await this.fetchEventsByIds(results.map((r) => r.eventId));
+
     for (const result of results) {
       if (scope?.sessionId && result.sessionId !== scope.sessionId) continue;
       if (scope?.sessionIdPrefix && !result.sessionId.startsWith(scope.sessionIdPrefix)) continue;
       if (scope?.eventTypes && scope.eventTypes.length > 0 && !scope.eventTypes.includes(result.eventType as MemoryEvent['eventType'])) continue;
 
-      const event = await this.eventStore.getEvent(result.eventId);
+      const event = eventMap.get(result.eventId);
       if (!event) continue;
 
       if (scope?.canonicalKeyPrefix && !event.canonicalKey.startsWith(scope.canonicalKeyPrefix)) continue;
@@ -1042,11 +1047,36 @@ export class Retriever {
     return this.eventStore.getRecentEvents(limit);
   }
 
+  /**
+   * Batch-load events by id into a Map in a single query, de-duplicating ids.
+   * Replaces per-result getEvent round-trips in the scope/enrich hot paths.
+   */
+  private async fetchEventsByIds(ids: string[]): Promise<Map<string, MemoryEvent>> {
+    const map = new Map<string, MemoryEvent>();
+    if (ids.length === 0) return map;
+    const unique = [...new Set(ids)];
+
+    // Prefer the batch query; fall back to concurrent single fetches for stores
+    // (or test doubles) that don't implement getEvents.
+    if (typeof this.eventStore.getEvents === 'function') {
+      const events = await this.eventStore.getEvents(unique);
+      for (const event of events) map.set(event.id, event);
+    } else {
+      const events = await Promise.all(unique.map((id) => this.eventStore.getEvent(id)));
+      for (const event of events) {
+        if (event) map.set(event.id, event);
+      }
+    }
+    return map;
+  }
+
   private async enrichResults(results: SearchResult[], options: RetrievalOptions, query: string): Promise<MemoryWithContext[]> {
     const memories: MemoryWithContext[] = [];
 
+    const eventMap = await this.fetchEventsByIds(results.map((r) => r.eventId));
+
     for (const result of results) {
-      const event = await this.eventStore.getEvent(result.eventId);
+      const event = eventMap.get(result.eventId);
       if (!event) continue;
 
       if (this.graduation) {

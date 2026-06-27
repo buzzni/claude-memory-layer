@@ -7,6 +7,10 @@ const mocks = vi.hoisted(() => {
     shutdown: vi.fn(),
     getStats: vi.fn(),
     getRecentEvents: vi.fn(),
+    getEventsAfter: vi.fn(),
+    getEventTypeCounts: vi.fn(),
+    getDistinctSessionCount: vi.fn(),
+    getDailyEventCounts: vi.fn(),
     getRetrievalTraceStats: vi.fn(),
     getSharedStoreStats: vi.fn(),
     getEventsByLevel: vi.fn(),
@@ -53,6 +57,18 @@ describe('stats API lightweight read paths', () => {
     mocks.service.getRecentEvents.mockReset().mockResolvedValue([
       { id: 'e1', eventType: 'user_prompt', sessionId: 's1', timestamp: new Date('2026-05-01T00:00:00.000Z'), content: 'prompt', metadata: {} },
       { id: 'e2', eventType: 'agent_response', sessionId: 's1', timestamp: new Date('2026-05-01T00:01:00.000Z'), content: 'response', metadata: {} }
+    ]);
+    mocks.service.getEventsAfter.mockReset().mockResolvedValue([
+      { id: 'e1', eventType: 'user_prompt', sessionId: 's1', timestamp: new Date('2026-05-01T00:00:00.000Z'), content: 'prompt', metadata: {} },
+      { id: 'e2', eventType: 'agent_response', sessionId: 's1', timestamp: new Date('2026-05-01T00:01:00.000Z'), content: 'response', metadata: {} }
+    ]);
+    mocks.service.getEventTypeCounts.mockReset().mockResolvedValue([
+      { eventType: 'user_prompt', count: 1 },
+      { eventType: 'agent_response', count: 1 }
+    ]);
+    mocks.service.getDistinctSessionCount.mockReset().mockResolvedValue(1);
+    mocks.service.getDailyEventCounts.mockReset().mockResolvedValue([
+      { day: '2026-05-01', total: 2, prompts: 1, responses: 1, tools: 0 }
     ]);
     mocks.service.getRetrievalTraceStats.mockReset().mockResolvedValue({ totalQueries: 0, avgCandidateCount: 0, avgSelectedCount: 0, selectionRate: 0 });
     mocks.service.getSharedStoreStats.mockReset().mockResolvedValue({ total: 0, totalUsageCount: 0 });
@@ -162,5 +178,17 @@ describe('stats API lightweight read paths', () => {
     }
     expect(mocks.getServiceFromQuery).not.toHaveBeenCalled();
     expect(mocks.getLightweightServiceFromQuery).toHaveBeenCalledTimes(paths.length);
+  });
+
+  it('GET /api/stats/kpi window-scopes its event fetch instead of a 20k scan', async () => {
+    const res = await createApp().request('/api/stats/kpi?project=abc12345&window=7d');
+
+    expect(res.status).toBe(200);
+    expect(mocks.service.getEventsAfter).toHaveBeenCalledTimes(1);
+    expect(mocks.service.getRecentEvents).not.toHaveBeenCalled();
+    // The lookback cutoff is a past ISO timestamp (>= 30d for a 7d window).
+    const cutoff = mocks.service.getEventsAfter.mock.calls[0][0];
+    expect(typeof cutoff).toBe('string');
+    expect(new Date(cutoff).getTime()).toBeLessThan(Date.now());
   });
 });

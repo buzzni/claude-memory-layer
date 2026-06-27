@@ -75,4 +75,45 @@ describe('session history importer prompt filtering', () => {
     expect(importer.importSessionFile).toHaveBeenCalledTimes(1);
     expect(importer.importSessionFile).toHaveBeenCalledWith(newest, expect.objectContaining({ sessionLimit: 1 }));
   });
+
+  it('does not delete existing events on force reimport when the source file is unparseable', async () => {
+    const dir = tempDir();
+    const file = join(dir, 'corrupt-session.jsonl');
+    writeFileSync(file, 'not json at all\n{still not<json\n', 'utf8');
+
+    const deleteSessionEvents = vi.fn(async () => 5);
+    const startSession = vi.fn(async () => {});
+    const importer = new SessionHistoryImporter({ deleteSessionEvents, startSession } as never);
+
+    const result = await importer.importSessionFile(file, { force: true });
+
+    expect(deleteSessionEvents).not.toHaveBeenCalled();
+    expect(startSession).not.toHaveBeenCalled();
+    expect(result.errors.some((e) => e.includes('Skipped force reimport'))).toBe(true);
+  });
+
+  it('deletes before re-importing when a force reimport source file is parseable', async () => {
+    const dir = tempDir();
+    const file = join(dir, 'valid-session.jsonl');
+    writeFileSync(
+      file,
+      '{"type":"user","timestamp":"2026-05-01T00:00:00Z","message":{"role":"user","content":"hello"}}\n',
+      'utf8'
+    );
+
+    const calls: string[] = [];
+    const importer = new SessionHistoryImporter({
+      deleteSessionEvents: vi.fn(async () => { calls.push('delete'); return 2; }),
+      startSession: vi.fn(async () => { calls.push('start'); }),
+      storeUserPrompt: vi.fn(async () => ({ success: true, isDuplicate: false, eventId: 'e1' })),
+      storeAgentResponse: vi.fn(async () => ({ success: true, isDuplicate: false, eventId: 'e2' })),
+      endSession: vi.fn(async () => {})
+    } as never);
+
+    await importer.importSessionFile(file, { force: true });
+
+    // The destructive delete must run, and only after the file passed pre-flight.
+    expect(calls[0]).toBe('delete');
+    expect(calls).toContain('start');
+  });
 });

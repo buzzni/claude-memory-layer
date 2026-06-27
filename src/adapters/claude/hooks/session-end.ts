@@ -6,16 +6,16 @@
 import { getLightweightMemoryService } from '../../../services/memory-service.js';
 import type { SessionEndInput } from '../../../core/types.js';
 import { generateSessionSummary } from '../transcript/turn-reconstructor.js';
+import { readStdin } from './hook-runtime.js';
 
-export async function main(): Promise<void> {
-  // Read input from stdin
-  const inputData = await readStdin();
-  const input: SessionEndInput = JSON.parse(inputData);
-
-  // Use lightweight service (SQLite only, no embedder/vector - FAST!)
-  const memoryService = getLightweightMemoryService(input.session_id);
-
+export async function main(): Promise<string> {
   try {
+    // Read input from stdin (parse inside try so malformed JSON still emits a safe envelope)
+    const input: SessionEndInput = JSON.parse(await readStdin());
+
+    // Use lightweight service (SQLite only, no embedder/vector - FAST!)
+    const memoryService = getLightweightMemoryService(input.session_id);
+
     // Get session history
     const sessionEvents = await memoryService.getSessionHistory(input.session_id);
 
@@ -38,22 +38,11 @@ export async function main(): Promise<void> {
       await memoryService.processPendingEmbeddings();
     }
 
-    console.log(JSON.stringify({}));
+    return JSON.stringify({});
   } catch (error) {
-    console.error('Memory hook error:', error);
-    console.log(JSON.stringify({}));
+    if (process.env.CLAUDE_MEMORY_DEBUG) {
+      console.error('Memory hook error:', error);
+    }
+    return JSON.stringify({});
   }
-}
-
-function readStdin(): Promise<string> {
-  return new Promise((resolve) => {
-    let data = '';
-    process.stdin.setEncoding('utf8');
-    process.stdin.on('data', (chunk) => {
-      data += chunk;
-    });
-    process.stdin.on('end', () => {
-      resolve(data);
-    });
-  });
 }

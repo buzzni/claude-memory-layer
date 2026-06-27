@@ -7,7 +7,19 @@ import { Hono } from 'hono';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { getLightweightServiceFromQuery, getServiceFromQuery } from './utils.js';
+import { getLightweightServiceFromQuery, getServiceFromQuery, jsonError } from './utils.js';
+import {
+  loadKpiThresholds,
+  windowToMs,
+  inWindow,
+  isEditToolName,
+  parseToolPayload,
+  isTestLikeCommand,
+  safeRatio,
+  round,
+  computeSessionTurnCount,
+  type KpiWindow
+} from './stats-metrics.js';
 import { hashProjectPath } from '../../../core/registry/project-path.js';
 import { sanitizeGovernanceAuditValue } from '../../../core/operations/governance-audit.js';
 import {
@@ -641,100 +653,6 @@ function buildLessonConfidenceBuckets(db: SQLiteDatabase, projectHash: string | 
       return confidence >= bucket.min && confidence < bucket.max;
     }).length
   }));
-}
-
-type KpiWindow = '24h' | '7d' | '30d';
-
-type KpiThresholds = {
-  usefulRecallRateMin: number;
-  reworkRateMax: number;
-  postChangeFailureRateMax: number;
-  avgCompletionTurnsMax: number;
-  memoryHitRateMin: number;
-};
-
-const DEFAULT_KPI_THRESHOLDS: KpiThresholds = {
-  usefulRecallRateMin: 0.45,
-  reworkRateMax: 0.25,
-  postChangeFailureRateMax: 0.2,
-  avgCompletionTurnsMax: 12,
-  memoryHitRateMin: 0.35
-};
-
-function loadKpiThresholds(): KpiThresholds {
-  try {
-    const filePath = path.resolve(process.cwd(), 'config', 'kpi-thresholds.json');
-    if (!fs.existsSync(filePath)) return DEFAULT_KPI_THRESHOLDS;
-    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as Partial<KpiThresholds>;
-    return {
-      usefulRecallRateMin: Number(parsed.usefulRecallRateMin ?? DEFAULT_KPI_THRESHOLDS.usefulRecallRateMin),
-      reworkRateMax: Number(parsed.reworkRateMax ?? DEFAULT_KPI_THRESHOLDS.reworkRateMax),
-      postChangeFailureRateMax: Number(parsed.postChangeFailureRateMax ?? DEFAULT_KPI_THRESHOLDS.postChangeFailureRateMax),
-      avgCompletionTurnsMax: Number(parsed.avgCompletionTurnsMax ?? DEFAULT_KPI_THRESHOLDS.avgCompletionTurnsMax),
-      memoryHitRateMin: Number(parsed.memoryHitRateMin ?? DEFAULT_KPI_THRESHOLDS.memoryHitRateMin)
-    };
-  } catch {
-    return DEFAULT_KPI_THRESHOLDS;
-  }
-}
-
-function windowToMs(window: KpiWindow): number {
-  if (window === '24h') return 24 * 60 * 60 * 1000;
-  if (window === '7d') return 7 * 24 * 60 * 60 * 1000;
-  return 30 * 24 * 60 * 60 * 1000;
-}
-
-function inWindow(e: MemoryEvent, now: number, window: KpiWindow): boolean {
-  return now - e.timestamp.getTime() <= windowToMs(window);
-}
-
-function isEditToolName(name: string): boolean {
-  return ['Write', 'Edit', 'MultiEdit', 'NotebookEdit'].includes(name);
-}
-
-function parseToolPayload(e: MemoryEvent): { toolName?: string; success?: boolean; filePath?: string; command?: string } | null {
-  if (e.eventType !== 'tool_observation') return null;
-  try {
-    const payload = JSON.parse(e.content) as any;
-    return {
-      toolName: payload?.toolName,
-      success: payload?.success,
-      filePath: payload?.metadata?.filePath,
-      command: payload?.metadata?.command
-    };
-  } catch {
-    return {
-      toolName: (e.metadata as any)?.toolName,
-      success: (e.metadata as any)?.success,
-      filePath: (e.metadata as any)?.filePath,
-      command: (e.metadata as any)?.command
-    };
-  }
-}
-
-function isTestLikeCommand(command?: string): boolean {
-  if (!command) return false;
-  return /(test|jest|vitest|pytest|go test|cargo test|lint|eslint|build|tsc)/i.test(command);
-}
-
-function safeRatio(num: number, den: number): number {
-  if (!Number.isFinite(num) || !Number.isFinite(den) || den <= 0) return 0;
-  return num / den;
-}
-
-function round(value: number, digits = 4): number {
-  const factor = 10 ** digits;
-  return Math.round(value * factor) / factor;
-}
-
-function computeSessionTurnCount(sessionEvents: MemoryEvent[]): number {
-  const turnIds = new Set<string>();
-  for (const e of sessionEvents) {
-    const turnId = (e.metadata as any)?.turnId;
-    if (typeof turnId === 'string' && turnId.length > 0) turnIds.add(turnId);
-  }
-  if (turnIds.size > 0) return turnIds.size;
-  return sessionEvents.filter((e) => e.eventType === 'user_prompt').length;
 }
 
 type KpiMetrics = {
@@ -1533,7 +1451,7 @@ statsRouter.get('/levels/:level', async (c) => {
       hasMore: events.length === limit
     });
   } catch (error) {
-    return c.json({ error: (error as Error).message }, 500);
+    return jsonError(c, error);
   } finally {
     await memoryService.shutdown();
   }
@@ -1722,32 +1640,21 @@ statsRouter.get('/', async (c) => {
   const memoryService = getLightweightServiceFromQuery(c);
   try {
     await memoryService.initialize();
-    const stats = await memoryService.getStats();
-    const recentEvents = await memoryService.getRecentEvents(10000);
 
-    // Calculate event types
-    const eventsByType = recentEvents.reduce((acc, e) => {
-      acc[e.eventType] = (acc[e.eventType] || 0) + 1;
-      return acc;
-    }, {} as Record<string, number>);
+    // Aggregate in SQL rather than loading the 10k most-recent events and
+    // counting in JS (which also under-counted stores larger than that window).
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+    const [stats, typeCounts, sessionTotal, dailyCounts, rawTrace] = await Promise.all([
+      memoryService.getStats(),
+      memoryService.getEventTypeCounts(),
+      memoryService.getDistinctSessionCount(),
+      memoryService.getDailyEventCounts(sevenDaysAgo),
+      memoryService.getRetrievalTraceStats()
+    ]);
 
-    // Calculate unique sessions
-    const uniqueSessions = new Set(recentEvents.map(e => e.sessionId));
-
-    // Calculate events by day (last 7 days)
-    const now = new Date();
-    const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-    const eventsByDay = recentEvents
-      .filter(e => e.timestamp >= sevenDaysAgo)
-      .reduce((acc, e) => {
-        const day = e.timestamp.toISOString().split('T')[0];
-        acc[day] = (acc[day] || 0) + 1;
-        return acc;
-      }, {} as Record<string, number>);
-
-    const retrievalTrace = sanitizeRetrievalTraceStats(
-      await memoryService.getRetrievalTraceStats()
-    );
+    const eventsByType = Object.fromEntries(typeCounts.map((t) => [t.eventType, t.count]));
+    const eventsByDay = Object.fromEntries(dailyCounts.map((d) => [d.day, d.total]));
+    const retrievalTrace = sanitizeRetrievalTraceStats(rawTrace);
 
     return c.json({
       storage: {
@@ -1755,12 +1662,12 @@ statsRouter.get('/', async (c) => {
         vectorCount: stats.vectorCount
       },
       sessions: {
-        total: uniqueSessions.size
+        total: sessionTotal
       },
       eventsByType,
       activity: {
         daily: eventsByDay,
-        total7Days: recentEvents.filter(e => e.timestamp >= sevenDaysAgo).length
+        total7Days: dailyCounts.reduce((sum, d) => sum + d.total, 0)
       },
       memory: {
         heapUsed: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
@@ -1770,7 +1677,7 @@ statsRouter.get('/', async (c) => {
       retrievalTrace
     });
   } catch (error) {
-    return c.json({ error: (error as Error).message }, 500);
+    return jsonError(c, error);
   } finally {
     await memoryService.shutdown();
   }
@@ -1814,35 +1721,26 @@ statsRouter.get('/most-accessed', async (c) => {
 
 // GET /api/stats/timeline - Get activity timeline
 statsRouter.get('/timeline', async (c) => {
-  const days = parseInt(c.req.query('days') || '7', 10);
+  const parsedDays = parseInt(c.req.query('days') || '7', 10);
+  const days = Number.isFinite(parsedDays) && parsedDays > 0 ? parsedDays : 7;
   const memoryService = getLightweightServiceFromQuery(c);
 
   try {
     await memoryService.initialize();
-    const recentEvents = await memoryService.getRecentEvents(10000);
 
-    const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
-    const filteredEvents = recentEvents.filter(e => e.timestamp >= cutoff);
+    // Group by day in SQL instead of scanning the 10k most-recent events.
+    const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+    const daily = (await memoryService.getDailyEventCounts(cutoff)).map((d) => ({
+      date: d.day,
+      total: d.total,
+      prompts: d.prompts,
+      responses: d.responses,
+      tools: d.tools
+    }));
 
-    // Group by day
-    const daily = filteredEvents.reduce((acc, e) => {
-      const day = e.timestamp.toISOString().split('T')[0];
-      if (!acc[day]) {
-        acc[day] = { date: day, total: 0, prompts: 0, responses: 0, tools: 0 };
-      }
-      acc[day].total++;
-      if (e.eventType === 'user_prompt') acc[day].prompts++;
-      if (e.eventType === 'agent_response') acc[day].responses++;
-      if (e.eventType === 'tool_observation') acc[day].tools++;
-      return acc;
-    }, {} as Record<string, { date: string; total: number; prompts: number; responses: number; tools: number }>);
-
-    return c.json({
-      days,
-      daily: Object.values(daily).sort((a, b) => a.date.localeCompare(b.date))
-    });
+    return c.json({ days, daily });
   } catch (error) {
-    return c.json({ error: (error as Error).message }, 500);
+    return jsonError(c, error);
   } finally {
     await memoryService.shutdown();
   }
@@ -1891,17 +1789,17 @@ statsRouter.get('/usefulness', async (c) => {
   try {
     await memoryService.initialize();
     const now = Date.now();
-    const eventLimit = 20000;
     const traceLimit = 5000;
     const windowStart = new Date(now - windowToMs(window));
+    // Fetch exactly the window's events (uncapped) rather than a 20k slice, so
+    // the result can't be silently truncated for an active window.
     const [events, helpfulness, traces] = await Promise.all([
-      memoryService.getRecentEvents(eventLimit),
+      memoryService.getEventsAfter(windowStart.toISOString()),
       memoryService.getHelpfulnessStats(windowStart),
       memoryService.getRecentRetrievalTraces(traceLimit)
     ]);
 
     return c.json(computeMemoryUsefulnessSummary(events, helpfulness, traces, now, window, {
-      eventsLimit: eventLimit,
       tracesLimit: traceLimit
     }));
   } catch (error) {
@@ -2019,7 +1917,10 @@ statsRouter.get('/kpi', async (c) => {
     await memoryService.initialize();
     const now = Date.now();
     const thresholds = loadKpiThresholds();
-    const allEvents = await memoryService.getRecentEvents(20000);
+    // Fetch only what the window, the previous-window deltas (up to 2x window),
+    // and the 30-day trend actually need — not an arbitrary 20k-recent slice.
+    const lookbackMs = Math.max(2 * windowToMs(window), 30 * 24 * 60 * 60 * 1000);
+    const allEvents = await memoryService.getEventsAfter(new Date(now - lookbackMs).toISOString());
     const events = allEvents.filter((e) => inWindow(e, now, window));
 
     const helpfulness = await memoryService.getHelpfulnessStats();
@@ -2147,7 +2048,7 @@ statsRouter.get('/kpi', async (c) => {
       alerts
     });
   } catch (error) {
-    return c.json({ error: (error as Error).message }, 500);
+    return jsonError(c, error);
   } finally {
     await memoryService.shutdown();
   }

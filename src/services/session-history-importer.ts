@@ -13,6 +13,7 @@ import * as readline from 'readline';
 import { randomUUID } from 'crypto';
 import { MemoryService } from './memory-service.js';
 import { registerSession } from '../core/registry/session-registry.js';
+import { mergeAgentResponseBlocks, truncateAgentResponse } from './turn-buffering.js';
 
 export type ProgressEvent =
   | { phase: 'scan'; message: string }
@@ -233,6 +234,36 @@ export class SessionHistoryImporter {
   /**
    * Import a specific session file
    */
+  /**
+   * Pre-flight check used before a destructive force-reimport: returns true only
+   * if the file can be opened and contains at least one line that parses as JSON.
+   * Streams the file and short-circuits on the first valid record.
+   */
+  private async hasParseableContent(filePath: string): Promise<boolean> {
+    let stream: fs.ReadStream | undefined;
+    let rl: readline.Interface | undefined;
+    try {
+      stream = fs.createReadStream(filePath);
+      rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+      for await (const line of rl) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        try {
+          JSON.parse(trimmed);
+          return true;
+        } catch {
+          // Keep scanning; a later line may be valid.
+        }
+      }
+      return false;
+    } catch {
+      return false;
+    } finally {
+      rl?.close();
+      stream?.close();
+    }
+  }
+
   async importSessionFile(filePath: string, options: ImportOptions = {}): Promise<ImportResult> {
     const result: ImportResult = {
       totalSessions: 1,
@@ -251,8 +282,15 @@ export class SessionHistoryImporter {
     // Extract session ID from filename
     const sessionId = path.basename(filePath, '.jsonl');
 
-    // Force reimport: delete existing events for this session
+    // Force reimport: delete existing events for this session. Validate that the
+    // source file is readable and has at least one parseable record BEFORE the
+    // destructive delete, so a corrupt/empty/unreadable file can never wipe the
+    // existing session with nothing to re-import in its place.
     if (options.force) {
+      if (!(await this.hasParseableContent(filePath))) {
+        result.errors.push(`Skipped force reimport (no parseable records): ${filePath}`);
+        return result;
+      }
       const deleted = await this.memoryService.deleteSessionEvents(sessionId);
       if (options.verbose && deleted > 0) {
         console.log(`  Deleted ${deleted} existing events for session ${sessionId}`);
@@ -287,20 +325,9 @@ export class SessionHistoryImporter {
     const flushTextBuffer = async () => {
       if (textBuffer.length === 0 || !currentTurnId) return;
 
-      // Filter: keep substantive text (>= 100 chars), discard short transitional phrases
-      const substantive = textBuffer.filter(t => t.length >= 100);
-
-      // If all filtered out, keep the longest block (there's always something meaningful)
-      const merged = substantive.length > 0
-        ? substantive.join('\n\n')
-        : textBuffer.reduce((a, b) => a.length >= b.length ? a : b, '');
-
+      const merged = mergeAgentResponseBlocks(textBuffer);
       if (!merged) { textBuffer = []; return; }
-
-      // Truncate if very long
-      const truncated = merged.length > 10000
-        ? merged.slice(0, 10000) + '...[truncated]'
-        : merged;
+      const truncated = truncateAgentResponse(merged);
 
       const appendResult = await this.memoryService.storeAgentResponse(
         sessionId,
@@ -317,6 +344,7 @@ export class SessionHistoryImporter {
       textBuffer = [];
     };
 
+    try {
     for await (const line of rl) {
       if (lineCount >= limit) break;
 
@@ -384,6 +412,11 @@ export class SessionHistoryImporter {
 
     // Flush any remaining buffered text from the last turn
     await flushTextBuffer();
+    } finally {
+      // Always release the file descriptor, even if storing a record threw.
+      rl.close();
+      fileStream.close();
+    }
 
     // End session
     await this.memoryService.endSession(sessionId);

@@ -56,7 +56,7 @@ export interface RetrievalDisclosureSource extends RetrievalDisclosureSourceRefe
   primaryEvent?: MemoryEvent;
 }
 
-export interface RetrievalDisclosureSearchOptions extends RetrieveMemoriesOptions {}
+export type RetrievalDisclosureSearchOptions = RetrieveMemoriesOptions;
 
 export interface RetrievalDisclosureExpandOptions {
   windowSize?: number;

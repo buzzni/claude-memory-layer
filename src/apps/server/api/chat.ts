@@ -7,7 +7,7 @@ import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import { spawn } from 'child_process';
 import type { ChildProcess } from 'child_process';
-import { getLightweightServiceFromQuery, getServiceFromQuery } from './utils.js';
+import { getLightweightServiceFromQuery, getServiceFromQuery, jsonError } from './utils.js';
 
 export const chatRouter = new Hono();
 
@@ -93,7 +93,7 @@ chatRouter.post('/', async (c) => {
       }
     });
   } catch (error) {
-    return c.json({ error: (error as Error).message }, 500);
+    return jsonError(c, error);
   } finally {
     await memoryService.shutdown();
   }

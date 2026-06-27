@@ -5,6 +5,7 @@ import * as path from 'path';
 import { DISABLED_SHARED_STORE_CONFIG, MemoryService } from '../../../services/memory-service.js';
 import { getProjectStoragePath } from '../../../core/registry/project-path.js';
 import { getSessionProject } from '../../../core/registry/session-registry.js';
+import { readNumberEnv } from './hook-runtime.js';
 
 export interface SemanticDaemonRequest {
   type?: 'retrieve';
@@ -34,7 +35,7 @@ const SOCKET_PATH = process.env.CLAUDE_MEMORY_SEMANTIC_SOCKET || path.join(
   'semantic-daemon.sock'
 );
 
-const IDLE_TIMEOUT_MS = parseInt(process.env.CLAUDE_MEMORY_SEMANTIC_DAEMON_IDLE_MS || '600000');
+const IDLE_TIMEOUT_MS = readNumberEnv('CLAUDE_MEMORY_SEMANTIC_DAEMON_IDLE_MS', 600000, { integer: true, min: 1000 });
 const serviceCache = new Map<string, MemoryService>();
 
 let server: net.Server | null = null;

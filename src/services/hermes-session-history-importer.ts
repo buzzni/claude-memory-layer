@@ -16,6 +16,7 @@ import { registerSession } from '../core/registry/session-registry.js';
 import type { Config } from '../core/types.js';
 import { MemoryService } from './memory-service.js';
 import { isWorthStoringPrompt, type ImportOptions, type ImportResult } from './session-history-importer.js';
+import { mergeAgentResponseBlocks } from './turn-buffering.js';
 
 export const HERMES_VALIDATION_DEFAULT_MAX_CONTENT_CHARS = 10_000;
 const HERMES_MEMORY_SESSION_PREFIX = 'hermes:';
@@ -621,11 +622,7 @@ export class HermesSessionHistoryImporter {
       }
       if (textBuffer.length === 0 || !currentTurnId) return;
 
-      const contentBlocks = textBuffer.map((item) => item.content);
-      const substantive = contentBlocks.filter((content) => content.length >= 100);
-      const merged = substantive.length > 0
-        ? substantive.join('\n\n')
-        : contentBlocks.reduce((a, b) => a.length >= b.length ? a : b, '');
+      const merged = mergeAgentResponseBlocks(textBuffer.map((item) => item.content));
       if (!merged) {
         textBuffer = [];
         return;

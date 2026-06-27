@@ -33,6 +33,7 @@ export interface MemoryStats {
 
 interface QueryStore {
   keywordSearch(query: string, topK: number): Promise<RankedKeywordResult[]>;
+  getEvent(id: string): Promise<MemoryEvent | null>;
   getSessionEvents(sessionId: string): Promise<MemoryEvent[]>;
   getRecentEvents(limit: number): Promise<MemoryEvent[]>;
 }
@@ -46,6 +47,11 @@ interface QueryMaintenanceStore extends QueryStore {
   getEventLevel(eventId: string): Promise<string | null>;
   getSessionTurns(sessionId: string, options?: { limit?: number; offset?: number }): Promise<MemorySessionTurn[]>;
   getEventsByTurn(turnId: string): Promise<MemoryEvent[]>;
+  getEventByCitationId(citationId: string): Promise<MemoryEvent | null>;
+  getEventsAfter(sinceIso: string): Promise<MemoryEvent[]>;
+  getEventTypeCounts(): Promise<Array<{ eventType: string; count: number }>>;
+  getDistinctSessionCount(): Promise<number>;
+  getDailyEventCounts(sinceIso: string): Promise<Array<{ day: string; total: number; prompts: number; responses: number; tools: number }>>;
   countSessionTurns(sessionId: string): Promise<number>;
   backfillTurnIds(): Promise<number>;
   deleteSessionEvents(sessionId: string): Promise<number>;
@@ -88,6 +94,38 @@ export class MemoryQueryService {
         score: 1 - (r.rank - minRank) / rankRange
       }))
       .filter((r) => !options?.minScore || r.score >= options.minScore);
+  }
+
+  async getEvent(id: string): Promise<MemoryEvent | null> {
+    await this.initialize();
+    return this.queryStore.getEvent(id);
+  }
+
+  async getEventByCitationId(citationId: string): Promise<MemoryEvent | null> {
+    await this.initialize();
+    return this.getMaintenanceStore('getEventByCitationId').getEventByCitationId(citationId);
+  }
+
+  async getEventsAfter(sinceIso: string): Promise<MemoryEvent[]> {
+    await this.initialize();
+    return this.getMaintenanceStore('getEventsAfter').getEventsAfter(sinceIso);
+  }
+
+  async getEventTypeCounts(): Promise<Array<{ eventType: string; count: number }>> {
+    await this.initialize();
+    return this.getMaintenanceStore('getEventTypeCounts').getEventTypeCounts();
+  }
+
+  async getDistinctSessionCount(): Promise<number> {
+    await this.initialize();
+    return this.getMaintenanceStore('getDistinctSessionCount').getDistinctSessionCount();
+  }
+
+  async getDailyEventCounts(
+    sinceIso: string
+  ): Promise<Array<{ day: string; total: number; prompts: number; responses: number; tools: number }>> {
+    await this.initialize();
+    return this.getMaintenanceStore('getDailyEventCounts').getDailyEventCounts(sinceIso);
   }
 
   async getSessionHistory(sessionId: string): Promise<MemoryEvent[]> {

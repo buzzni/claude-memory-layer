@@ -291,6 +291,42 @@ export class MemoryService {
   }
 
   /**
+   * Get a single event by id (indexed lookup).
+   */
+  async getEvent(id: string): Promise<MemoryEvent | null> {
+    return this.queryService.getEvent(id);
+  }
+
+  /**
+   * Resolve an event from its citation id via the reverse index.
+   */
+  async getEventByCitationId(citationId: string): Promise<MemoryEvent | null> {
+    return this.queryService.getEventByCitationId(citationId);
+  }
+
+  /** All events at/after an ISO timestamp (ascending, uncapped). */
+  async getEventsAfter(sinceIso: string): Promise<MemoryEvent[]> {
+    return this.queryService.getEventsAfter(sinceIso);
+  }
+
+  /** Aggregate event counts by type (SQL GROUP BY). */
+  async getEventTypeCounts(): Promise<Array<{ eventType: string; count: number }>> {
+    return this.queryService.getEventTypeCounts();
+  }
+
+  /** Count distinct sessions (SQL). */
+  async getDistinctSessionCount(): Promise<number> {
+    return this.queryService.getDistinctSessionCount();
+  }
+
+  /** Per-day event counts with type breakdown since an ISO timestamp (SQL). */
+  async getDailyEventCounts(
+    sinceIso: string
+  ): Promise<Array<{ day: string; total: number; prompts: number; responses: number; tools: number }>> {
+    return this.queryService.getDailyEventCounts(sinceIso);
+  }
+
+  /**
    * Get session history
    */
   async getSessionHistory(sessionId: string): Promise<MemoryEvent[]> {

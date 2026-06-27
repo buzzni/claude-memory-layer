@@ -38,6 +38,27 @@ export function createSQLiteDatabase(path: string, options?: SQLiteOptions): SQL
   return db;
 }
 
+// Per-connection prepared-statement cache. Re-running db.prepare() for every
+// call recompiles the SQL each time, which dominates the per-call cost on hot
+// paths (getEvent, keywordSearch, access tracking). Statements are scoped to
+// their database via a WeakMap so they are finalized/GC'd with the connection,
+// and SQLite transparently re-prepares them across schema changes.
+const statementCache = new WeakMap<SQLiteDatabase, Map<string, Database.Statement>>();
+
+function prepareCached(db: SQLiteDatabase, sql: string): Database.Statement {
+  let cache = statementCache.get(db);
+  if (!cache) {
+    cache = new Map();
+    statementCache.set(db, cache);
+  }
+  let stmt = cache.get(sql);
+  if (!stmt) {
+    stmt = db.prepare(sql);
+    cache.set(sql, stmt);
+  }
+  return stmt;
+}
+
 /**
  * Execute a statement that doesn't return rows (INSERT, UPDATE, DELETE)
  */
@@ -46,8 +67,7 @@ export function sqliteRun(
   sql: string,
   params: unknown[] = []
 ): Database.RunResult {
-  const stmt = db.prepare(sql);
-  return stmt.run(...params);
+  return prepareCached(db, sql).run(...params);
 }
 
 /**
@@ -58,8 +78,7 @@ export function sqliteAll<T = Record<string, unknown>>(
   sql: string,
   params: unknown[] = []
 ): T[] {
-  const stmt = db.prepare(sql);
-  return stmt.all(...params) as T[];
+  return prepareCached(db, sql).all(...params) as T[];
 }
 
 /**
@@ -70,8 +89,7 @@ export function sqliteGet<T = Record<string, unknown>>(
   sql: string,
   params: unknown[] = []
 ): T | undefined {
-  const stmt = db.prepare(sql);
-  return stmt.get(...params) as T | undefined;
+  return prepareCached(db, sql).get(...params) as T | undefined;
 }
 
 /**

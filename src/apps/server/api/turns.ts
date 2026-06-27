@@ -7,7 +7,7 @@
  */
 
 import { Hono } from 'hono';
-import { getLightweightServiceFromQuery, getServiceFromQuery } from './utils.js';
+import { getLightweightServiceFromQuery, getServiceFromQuery, jsonError } from './utils.js';
 
 export const turnsRouter = new Hono();
 
@@ -51,7 +51,7 @@ turnsRouter.get('/', async (c) => {
       hasMore: offset + limit < totalTurns
     });
   } catch (error) {
-    return c.json({ error: (error as Error).message }, 500);
+    return jsonError(c, error);
   } finally {
     await memoryService.shutdown();
   }
@@ -113,7 +113,7 @@ turnsRouter.get('/:turnId', async (c) => {
       totalEvents: events.length
     });
   } catch (error) {
-    return c.json({ error: (error as Error).message }, 500);
+    return jsonError(c, error);
   } finally {
     await memoryService.shutdown();
   }

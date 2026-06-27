@@ -14,9 +14,7 @@ import {
 import { makeCanonicalKey, makeDedupeKey } from './canonical-key.js';
 import { createDatabase, dbRun, dbAll, dbClose, toDate, type Database, type DatabaseOptions } from './db-wrapper.js';
 
-export interface EventStoreOptions extends DatabaseOptions {
-  // Additional options can be added here
-}
+export type EventStoreOptions = DatabaseOptions;
 
 export class EventStore {
   private db: Database;
@@ -268,6 +266,30 @@ export class EventStore {
       )
     `);
 
+    // Junction table mapping consolidated memories to their source event ids.
+    // Replaces per-event `source_events LIKE '%"id"%'` full scans (O(groups x
+    // events) per consolidation run, plus substring false positives) with a
+    // single indexed lookup.
+    await dbRun(this.db, `
+      CREATE TABLE IF NOT EXISTS consolidated_memory_events (
+        memory_id VARCHAR NOT NULL,
+        event_id VARCHAR NOT NULL,
+        PRIMARY KEY (memory_id, event_id)
+      )
+    `);
+    await dbRun(this.db, `CREATE INDEX IF NOT EXISTS idx_cme_event ON consolidated_memory_events(event_id)`);
+    // One-time backfill from existing source_events JSON (idempotent; skipped
+    // once the junction holds any rows, since new writes self-index).
+    const cmeCount = await dbAll<{ c: number }>(this.db, `SELECT COUNT(*) as c FROM consolidated_memory_events`);
+    if ((cmeCount[0]?.c ?? 0) === 0) {
+      await dbRun(this.db, `
+        INSERT OR IGNORE INTO consolidated_memory_events (memory_id, event_id)
+        SELECT cm.memory_id, je.value
+        FROM consolidated_memories cm, json_each(cm.source_events) je
+        WHERE json_valid(cm.source_events)
+      `);
+    }
+
     // Continuity Log table (tracks context transitions)
     await dbRun(this.db, `
       CREATE TABLE IF NOT EXISTS continuity_log (
@@ -447,6 +469,21 @@ export class EventStore {
     return this.rowToEvent(rows[0]);
   }
 
+  /** Batch-fetch events by id in a single query (missing ids are omitted). */
+  async getEvents(ids: string[]): Promise<MemoryEvent[]> {
+    await this.initialize();
+    if (ids.length === 0) return [];
+
+    const placeholders = ids.map(() => '?').join(',');
+    const rows = await dbAll<Record<string, unknown>>(
+      this.db,
+      `SELECT * FROM events WHERE id IN (${placeholders})`,
+      ids
+    );
+
+    return rows.map((row) => this.rowToEvent(row));
+  }
+
   /**
    * Create or update session
    */
@@ -547,28 +584,28 @@ export class EventStore {
   async getPendingOutboxItems(limit: number = 32): Promise<OutboxItem[]> {
     await this.initialize();
 
-    // First, get pending items
-    const pending = await dbAll<Record<string, unknown>>(
+    // Claim pending items atomically (single UPDATE ... RETURNING) so two
+    // concurrent workers can't select the same rows before either marks them
+    // 'processing' and double-process them.
+    const claimed = await dbAll<Record<string, unknown>>(
       this.db,
-      `SELECT * FROM embedding_outbox
-       WHERE status = 'pending'
-       ORDER BY created_at
-       LIMIT ?`,
+      `UPDATE embedding_outbox
+       SET status = 'processing'
+       WHERE id IN (
+         SELECT id FROM embedding_outbox
+         WHERE status = 'pending'
+         ORDER BY created_at
+         LIMIT ?
+       )
+       RETURNING *`,
       [limit]
     );
 
-    if (pending.length === 0) return [];
+    if (claimed.length === 0) return [];
 
-    // Update status to processing
-    const ids = pending.map(r => r.id as string);
-    const placeholders = ids.map(() => '?').join(',');
-    await dbRun(
-      this.db,
-      `UPDATE embedding_outbox SET status = 'processing' WHERE id IN (${placeholders})`,
-      ids
-    );
+    claimed.sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
 
-    return pending.map(row => ({
+    return claimed.map(row => ({
       id: row.id as string,
       eventId: row.event_id as string,
       content: row.content as string,
