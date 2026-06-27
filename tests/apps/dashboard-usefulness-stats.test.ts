@@ -284,7 +284,7 @@ describe('dashboard memory usefulness stats', () => {
         rawQueryText: 'PRIVATE_RAW_PROMPT_SHOULD_NOT_LEAK',
         queryText: 'PRIVATE_EFFECTIVE_QUERY_SHOULD_NOT_LEAK',
         queryRewriteKind: ' surprise-kind ',
-        strategy: 'hybrid',
+        strategy: 'PRIVATE_TRACE_STRATEGY_LABEL_SHOULD_NOT_LEAK',
         candidateCount: 1,
         selectedCount: 0,
         candidateEventIds: ['candidate-1'],
@@ -319,6 +319,7 @@ describe('dashboard memory usefulness stats', () => {
       traceId: 'trace-private',
       queryRewriteKind: 'none',
       rewritten: false,
+      strategy: 'unknown',
     });
     expect(body.traces[1]).toMatchObject({
       traceId: 'trace-rewritten',
@@ -333,6 +334,102 @@ describe('dashboard memory usefulness stats', () => {
     expect(JSON.stringify(body)).not.toContain('PRIVATE_EFFECTIVE_QUERY_SHOULD_NOT_LEAK');
     expect(JSON.stringify(body)).not.toContain('PRIVATE_REWRITE_RAW_SHOULD_NOT_LEAK');
     expect(JSON.stringify(body)).not.toContain('PRIVATE_REWRITE_EFFECTIVE_QUERY_SHOULD_NOT_LEAK');
+  });
+
+
+  it('returns aggregate retrieval strategy breakdown without raw query text', async () => {
+    mocks.service.getRetrievalTraceStats.mockReset().mockResolvedValue({
+      totalQueries: 3,
+      avgCandidateCount: 2,
+      avgSelectedCount: 0.67,
+      selectionRate: 0.3333,
+      rewrittenQueries: 2,
+      rewriteRate: 0.6667,
+      rewrittenQueriesWithSelection: 2,
+      rawQueriesWithSelection: 0,
+      rewrittenSelectionRate: 1,
+      rawSelectionRate: 0,
+      avgSelectedCountForRewrittenQueries: 1,
+      avgSelectedCountForRawQueries: 0,
+      strategyBreakdown: [
+        {
+          strategy: 'mcp-context-pack',
+          totalQueries: 2,
+          queriesWithSelection: 1,
+          rewrittenQueries: 1,
+          rewriteRate: 0.5,
+          totalCandidateCount: 5,
+          totalSelectedCount: 1,
+          avgCandidateCount: 2.5,
+          avgSelectedCount: 0.5,
+          selectionRate: 0.2,
+          queryYieldRate: 0.5,
+          rawQueryText: 'PRIVATE_STRATEGY_QUERY_SHOULD_NOT_LEAK'
+        },
+        {
+          strategy: 'session-start-hook',
+          totalQueries: 1,
+          queriesWithSelection: 1,
+          rewrittenQueries: 1,
+          rewriteRate: 1,
+          totalCandidateCount: 1,
+          totalSelectedCount: 1,
+          avgCandidateCount: 1,
+          avgSelectedCount: 1,
+          selectionRate: 1,
+          queryYieldRate: 1,
+          queryText: 'PRIVATE_STRATEGY_EFFECTIVE_QUERY_SHOULD_NOT_LEAK'
+        },
+        {
+          strategy: 'PRIVATE_STRATEGY_LABEL_SHOULD_NOT_LEAK',
+          totalQueries: 1,
+          queriesWithSelection: 1,
+          rewrittenQueries: 0,
+          rewriteRate: 0,
+          totalCandidateCount: 2,
+          totalSelectedCount: 1,
+          avgCandidateCount: 2,
+          avgSelectedCount: 1,
+          selectionRate: 0.5,
+          queryYieldRate: 1
+        },
+        {
+          strategy: 'PRIVATE_SECOND_STRATEGY_LABEL_SHOULD_NOT_LEAK',
+          totalQueries: 2,
+          queriesWithSelection: 1,
+          rewrittenQueries: 1,
+          rewriteRate: 0.5,
+          totalCandidateCount: 3,
+          totalSelectedCount: 1,
+          avgCandidateCount: 1.5,
+          avgSelectedCount: 0.5,
+          selectionRate: 0.3333,
+          queryYieldRate: 0.5
+        }
+      ]
+    });
+
+    const res = await createApp().request('/api/stats/retrieval-traces?limit=10');
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.stats.strategyBreakdown).toEqual([
+      expect.objectContaining({ strategy: 'mcp-context-pack', totalQueries: 2, totalCandidateCount: 5, totalSelectedCount: 1, queryYieldRate: 0.5 }),
+      expect.objectContaining({ strategy: 'session-start-hook', totalQueries: 1, totalCandidateCount: 1, totalSelectedCount: 1, queryYieldRate: 1 }),
+      expect.objectContaining({ strategy: 'unknown', totalQueries: 3, queriesWithSelection: 2, rewrittenQueries: 1, totalCandidateCount: 5, totalSelectedCount: 2 })
+    ]);
+    const unknownStrategy = body.stats.strategyBreakdown.find((row: any) => row.strategy === 'unknown');
+    expect(unknownStrategy.avgCandidateCount).toBeCloseTo(5 / 3, 4);
+    expect(unknownStrategy.avgSelectedCount).toBeCloseTo(2 / 3, 4);
+    expect(unknownStrategy.rewriteRate).toBeCloseTo(1 / 3, 4);
+    expect(unknownStrategy.selectionRate).toBeCloseTo(2 / 5, 4);
+    expect(unknownStrategy.queryYieldRate).toBeCloseTo(2 / 3, 4);
+    expect(body.stats.strategyBreakdown[0]).not.toHaveProperty('rawQueryText');
+    expect(body.stats.strategyBreakdown[1]).not.toHaveProperty('queryText');
+    expect(JSON.stringify(body)).not.toContain('PRIVATE_STRATEGY_QUERY_SHOULD_NOT_LEAK');
+    expect(JSON.stringify(body)).not.toContain('PRIVATE_STRATEGY_EFFECTIVE_QUERY_SHOULD_NOT_LEAK');
+    expect(JSON.stringify(body)).not.toContain('PRIVATE_STRATEGY_LABEL_SHOULD_NOT_LEAK');
+    expect(JSON.stringify(body)).not.toContain('PRIVATE_SECOND_STRATEGY_LABEL_SHOULD_NOT_LEAK');
   });
 
   it('returns a privacy-safe bad retrieval review queue with prioritized failure reasons', async () => {
@@ -481,7 +578,7 @@ describe('dashboard memory usefulness stats', () => {
           queryRewriteKind: 'follow-up-context',
           candidateCount: 4,
           selectedCount: 0,
-          strategy: 'hybrid',
+          strategy: 'PRIVATE_UI_REVIEW_STRATEGY_LABEL_SHOULD_NOT_LEAK',
           createdAt: '2026-05-08T10:30:00.000Z',
           rawQueryText: 'PRIVATE_UI_RAW_SHOULD_NOT_LEAK',
           queryText: 'PRIVATE_UI_EFFECTIVE_QUERY_SHOULD_NOT_LEAK',
@@ -496,8 +593,68 @@ describe('dashboard memory usefulness stats', () => {
     expect(elements['retrieval-review-list'].innerHTML).toContain('trace-rewrite');
     expect(elements['retrieval-review-list'].innerHTML).toContain('Rewritten query selected no memories');
     expect(elements['retrieval-review-list'].innerHTML).toContain('Review rerank thresholds');
+    expect(elements['retrieval-review-list'].innerHTML).toContain('strategy=unknown');
+    expect(elements['retrieval-review-list'].innerHTML).not.toContain('PRIVATE_UI_REVIEW_STRATEGY_LABEL_SHOULD_NOT_LEAK');
     expect(elements['retrieval-review-list'].innerHTML).not.toContain('PRIVATE_UI_RAW_SHOULD_NOT_LEAK');
     expect(elements['retrieval-review-list'].innerHTML).not.toContain('PRIVATE_UI_EFFECTIVE_QUERY_SHOULD_NOT_LEAK');
+  });
+
+
+  it('renders retrieval strategy breakdown including context-pack usage in the overview dashboard', () => {
+    const elements = {
+      'retrieval-trace-summary': new TestElement(),
+      'retrieval-trace-list': new TestElement(),
+      'retrieval-review-summary': new TestElement(),
+      'retrieval-review-list': new TestElement(),
+    };
+    const hooks = loadOverviewWithElements(elements);
+    hooks.state.retrievalTraces = {
+      stats: {
+        totalQueries: 3,
+        avgCandidateCount: 2,
+        avgSelectedCount: 0.67,
+        selectionRate: 0.3333,
+        rewriteRate: 0.6667,
+        strategyBreakdown: [
+          { strategy: 'mcp-context-pack', totalQueries: 2, queriesWithSelection: 1, totalCandidateCount: 5, totalSelectedCount: 1, queryYieldRate: 0.5, selectionRate: 0.2 },
+          { strategy: 'session-start-hook', totalQueries: 1, queriesWithSelection: 1, totalCandidateCount: 1, totalSelectedCount: 1, queryYieldRate: 1, selectionRate: 1 },
+          { strategy: 'PRIVATE_STRATEGY_LABEL_SHOULD_NOT_LEAK', totalQueries: 1, queriesWithSelection: 1, totalCandidateCount: 2, totalSelectedCount: 1, queryYieldRate: 1, selectionRate: 0.5 }
+        ]
+      },
+      traces: [
+        {
+          traceId: 'trace-ui-private-strategy',
+          strategy: 'PRIVATE_UI_TRACE_STRATEGY_LABEL_SHOULD_NOT_LEAK',
+          confidence: 'high',
+          candidateCount: 2,
+          selectedCount: 1,
+          queryRewriteKind: 'none',
+          selectedEventIds: ['selected-ui-event'],
+          candidateEventIds: ['candidate-ui-event'],
+          rawQueryText: 'PRIVATE_UI_TRACE_RAW_SHOULD_NOT_LEAK',
+          queryText: 'PRIVATE_UI_TRACE_EFFECTIVE_SHOULD_NOT_LEAK',
+          createdAt: '2026-05-08T10:31:00.000Z',
+        }
+      ],
+    };
+    hooks.state.retrievalReviewQueue = {
+      summary: { reviewItems: 0, rewrittenNoSelection: 0, candidateNoSelection: 0, emptyCandidateSet: 0 },
+      items: [],
+    };
+
+    hooks.updateRetrievalTraceUI();
+
+    expect(elements['retrieval-trace-summary'].innerHTML).toContain('mcp-context-pack');
+    expect(elements['retrieval-trace-summary'].innerHTML).toContain('2 queries');
+    expect(elements['retrieval-trace-summary'].innerHTML).toContain('50.0% yield');
+    expect(elements['retrieval-trace-summary'].innerHTML).toContain('session-start-hook');
+    expect(elements['retrieval-trace-summary'].innerHTML).toContain('100.0% yield');
+    expect(elements['retrieval-trace-summary'].innerHTML).toContain('unknown');
+    expect(elements['retrieval-trace-summary'].innerHTML).not.toContain('PRIVATE_STRATEGY_LABEL_SHOULD_NOT_LEAK');
+    expect(elements['retrieval-trace-list'].innerHTML).toContain('strategy=unknown');
+    expect(elements['retrieval-trace-list'].innerHTML).not.toContain('PRIVATE_UI_TRACE_STRATEGY_LABEL_SHOULD_NOT_LEAK');
+    expect(elements['retrieval-trace-list'].innerHTML).not.toContain('PRIVATE_UI_TRACE_RAW_SHOULD_NOT_LEAK');
+    expect(elements['retrieval-trace-list'].innerHTML).not.toContain('PRIVATE_UI_TRACE_EFFECTIVE_SHOULD_NOT_LEAK');
   });
 
   it('renders a generic retrieval review queue error state without leaking error text', () => {

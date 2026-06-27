@@ -301,6 +301,66 @@ describe('SQLiteEventStore replication helpers', () => {
     });
   });
 
+
+  it('aggregates retrieval trace stats by strategy including context-pack usage', async () => {
+    await storeA.recordRetrievalTrace({
+      sessionId: 'strategy-session',
+      rawQueryText: '계속',
+      queryText: 'Previous user: improve memory usage\nCurrent user: 계속',
+      queryRewriteKind: 'follow-up-context',
+      strategy: 'mcp-context-pack',
+      candidateEventIds: ['candidate-1', 'candidate-2', 'candidate-3'],
+      selectedEventIds: ['candidate-1']
+    });
+    await storeA.recordRetrievalTrace({
+      sessionId: 'strategy-session',
+      queryText: 'self contained search',
+      queryRewriteKind: 'none',
+      strategy: 'mcp-context-pack',
+      candidateEventIds: ['candidate-4', 'candidate-5'],
+      selectedEventIds: []
+    });
+    await storeA.recordRetrievalTrace({
+      sessionId: 'strategy-session',
+      queryText: 'session start project context',
+      queryRewriteKind: 'intent-rewrite',
+      strategy: 'session-start-hook',
+      candidateEventIds: ['candidate-6'],
+      selectedEventIds: ['candidate-6']
+    });
+
+    const stats = await storeA.getRetrievalTraceStats();
+
+    expect(stats.strategyBreakdown).toEqual([
+      {
+        strategy: 'mcp-context-pack',
+        totalQueries: 2,
+        queriesWithSelection: 1,
+        rewrittenQueries: 1,
+        rewriteRate: 0.5,
+        totalCandidateCount: 5,
+        totalSelectedCount: 1,
+        avgCandidateCount: 2.5,
+        avgSelectedCount: 0.5,
+        selectionRate: 0.2,
+        queryYieldRate: 0.5
+      },
+      {
+        strategy: 'session-start-hook',
+        totalQueries: 1,
+        queriesWithSelection: 1,
+        rewrittenQueries: 1,
+        rewriteRate: 1,
+        totalCandidateCount: 1,
+        totalSelectedCount: 1,
+        avgCandidateCount: 1,
+        avgSelectedCount: 1,
+        selectionRate: 1,
+        queryYieldRate: 1
+      }
+    ]);
+  });
+
   it('filters helpfulness statistics by the requested time window', async () => {
     await storeA.recordRetrieval('old-event', 'old-session', 0.2, 'old retrieval query');
     await storeA.recordRetrieval('new-event', 'new-session', 0.8, 'new retrieval query');
@@ -337,4 +397,3 @@ describe('SQLiteEventStore replication helpers', () => {
     });
   });
 });
-

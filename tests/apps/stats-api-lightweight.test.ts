@@ -81,6 +81,66 @@ describe('stats API lightweight read paths', () => {
     expect(mocks.service.shutdown).toHaveBeenCalledTimes(1);
   });
 
+  it('GET /api/stats returns sanitized aggregate retrieval trace stats', async () => {
+    mocks.service.getRetrievalTraceStats.mockResolvedValue({
+      totalQueries: 1,
+      avgCandidateCount: 2,
+      avgSelectedCount: 1,
+      selectionRate: 0.5,
+      rewrittenQueries: 0,
+      rewriteRate: 0,
+      rewrittenQueriesWithSelection: 0,
+      rawQueriesWithSelection: 1,
+      rewrittenSelectionRate: 0,
+      rawSelectionRate: 1,
+      avgSelectedCountForRewrittenQueries: 0,
+      avgSelectedCountForRawQueries: 1,
+      rawQueryText: 'PRIVATE_ROOT_RAW_QUERY_SHOULD_NOT_LEAK',
+      queryText: 'PRIVATE_ROOT_EFFECTIVE_QUERY_SHOULD_NOT_LEAK',
+      strategyBreakdown: [
+        {
+          strategy: 'PRIVATE_ROOT_STRATEGY_LABEL_SHOULD_NOT_LEAK',
+          totalQueries: 1,
+          queriesWithSelection: 1,
+          rewrittenQueries: 0,
+          rewriteRate: 0,
+          totalCandidateCount: 2,
+          totalSelectedCount: 1,
+          avgCandidateCount: 2,
+          avgSelectedCount: 1,
+          selectionRate: 0.5,
+          queryYieldRate: 1,
+          rawQueryText: 'PRIVATE_ROOT_STRATEGY_QUERY_SHOULD_NOT_LEAK',
+          queryText: 'PRIVATE_ROOT_STRATEGY_EFFECTIVE_QUERY_SHOULD_NOT_LEAK'
+        }
+      ]
+    });
+
+    const res = await createApp().request('/api/stats?project=abc12345');
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.retrievalTrace.strategyBreakdown).toEqual([
+      expect.objectContaining({
+        strategy: 'unknown',
+        totalQueries: 1,
+        totalCandidateCount: 2,
+        totalSelectedCount: 1,
+        selectionRate: 0.5,
+        queryYieldRate: 1
+      })
+    ]);
+    expect(body.retrievalTrace).not.toHaveProperty('rawQueryText');
+    expect(body.retrievalTrace).not.toHaveProperty('queryText');
+    expect(body.retrievalTrace.strategyBreakdown[0]).not.toHaveProperty('rawQueryText');
+    expect(body.retrievalTrace.strategyBreakdown[0]).not.toHaveProperty('queryText');
+    expect(JSON.stringify(body)).not.toContain('PRIVATE_ROOT_RAW_QUERY_SHOULD_NOT_LEAK');
+    expect(JSON.stringify(body)).not.toContain('PRIVATE_ROOT_EFFECTIVE_QUERY_SHOULD_NOT_LEAK');
+    expect(JSON.stringify(body)).not.toContain('PRIVATE_ROOT_STRATEGY_LABEL_SHOULD_NOT_LEAK');
+    expect(JSON.stringify(body)).not.toContain('PRIVATE_ROOT_STRATEGY_QUERY_SHOULD_NOT_LEAK');
+    expect(JSON.stringify(body)).not.toContain('PRIVATE_ROOT_STRATEGY_EFFECTIVE_QUERY_SHOULD_NOT_LEAK');
+  });
+
   it('dashboard-read stats subroutes avoid full embedder-backed service initialization', async () => {
     const app = createApp();
     const paths = [

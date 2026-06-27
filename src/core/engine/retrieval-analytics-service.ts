@@ -8,6 +8,20 @@
 import type { RetrievalDebugLane } from '../retrieval-debug-lanes.js';
 import type { MemoryEvent } from '../types.js';
 
+export interface RetrievalTraceStrategyStats {
+  strategy: string;
+  totalQueries: number;
+  queriesWithSelection: number;
+  rewrittenQueries: number;
+  rewriteRate: number;
+  totalCandidateCount: number;
+  totalSelectedCount: number;
+  avgCandidateCount: number;
+  avgSelectedCount: number;
+  selectionRate: number;
+  queryYieldRate: number;
+}
+
 export interface RetrievalTraceStats {
   totalQueries: number;
   avgCandidateCount: number;
@@ -21,6 +35,7 @@ export interface RetrievalTraceStats {
   rawSelectionRate?: number;
   avgSelectedCountForRewrittenQueries?: number;
   avgSelectedCountForRawQueries?: number;
+  strategyBreakdown?: RetrievalTraceStrategyStats[];
 }
 
 export interface HelpfulnessStats {

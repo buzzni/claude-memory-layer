@@ -2542,6 +2542,19 @@ export class SQLiteEventStore {
     rawSelectionRate: number;
     avgSelectedCountForRewrittenQueries: number;
     avgSelectedCountForRawQueries: number;
+    strategyBreakdown: Array<{
+      strategy: string;
+      totalQueries: number;
+      queriesWithSelection: number;
+      rewrittenQueries: number;
+      rewriteRate: number;
+      totalCandidateCount: number;
+      totalSelectedCount: number;
+      avgCandidateCount: number;
+      avgSelectedCount: number;
+      selectionRate: number;
+      queryYieldRate: number;
+    }>;
   }> {
     await this.initialize();
 
@@ -2568,6 +2581,49 @@ export class SQLiteEventStore {
         []
       );
 
+      const strategyColumnSql = this.hasTableColumn('retrieval_traces', 'strategy')
+        ? "COALESCE(NULLIF(TRIM(strategy), ''), 'unknown')"
+        : "'unknown'";
+      const strategyRows = sqliteAll<Record<string, unknown>>(
+        this.db,
+        `SELECT
+          ${strategyColumnSql} as strategy,
+          COUNT(*) as total_queries,
+          SUM(CASE WHEN selected_count > 0 THEN 1 ELSE 0 END) as queries_with_selection,
+          SUM(CASE WHEN ${rewrittenQueryRewriteKindSql} THEN 1 ELSE 0 END) as rewritten_queries,
+          SUM(candidate_count) as total_candidate_count,
+          SUM(selected_count) as total_selected_count,
+          AVG(candidate_count) as avg_candidate_count,
+          AVG(selected_count) as avg_selected_count,
+          CASE
+            WHEN SUM(candidate_count) > 0 THEN (SUM(selected_count) * 1.0 / SUM(candidate_count))
+            ELSE 0
+          END as selection_rate
+         FROM retrieval_traces
+         GROUP BY ${strategyColumnSql}
+         ORDER BY total_queries DESC, strategy ASC`,
+        []
+      );
+
+      const strategyBreakdown = strategyRows.map((strategyRow) => {
+        const strategyTotalQueries = Number(strategyRow.total_queries || 0);
+        const strategyQueriesWithSelection = Number(strategyRow.queries_with_selection || 0);
+        const strategyRewrittenQueries = Number(strategyRow.rewritten_queries || 0);
+        return {
+          strategy: String(strategyRow.strategy || 'unknown'),
+          totalQueries: strategyTotalQueries,
+          queriesWithSelection: strategyQueriesWithSelection,
+          rewrittenQueries: strategyRewrittenQueries,
+          rewriteRate: strategyTotalQueries > 0 ? strategyRewrittenQueries / strategyTotalQueries : 0,
+          totalCandidateCount: Number(strategyRow.total_candidate_count || 0),
+          totalSelectedCount: Number(strategyRow.total_selected_count || 0),
+          avgCandidateCount: Number(strategyRow.avg_candidate_count || 0),
+          avgSelectedCount: Number(strategyRow.avg_selected_count || 0),
+          selectionRate: Number(strategyRow.selection_rate || 0),
+          queryYieldRate: strategyTotalQueries > 0 ? strategyQueriesWithSelection / strategyTotalQueries : 0,
+        };
+      });
+
       const totalQueries = Number(row?.total_queries || 0);
       const rewrittenQueries = Number(row?.rewritten_queries || 0);
       const rawQueries = Math.max(0, totalQueries - rewrittenQueries);
@@ -2587,6 +2643,7 @@ export class SQLiteEventStore {
         rawSelectionRate: rawQueries > 0 ? rawQueriesWithSelection / rawQueries : 0,
         avgSelectedCountForRewrittenQueries: Number(row?.avg_selected_count_for_rewritten_queries || 0),
         avgSelectedCountForRawQueries: Number(row?.avg_selected_count_for_raw_queries || 0),
+        strategyBreakdown,
       };
     } catch (err: any) {
       if (err?.message?.includes('no such table')) {
@@ -2603,6 +2660,7 @@ export class SQLiteEventStore {
           rawSelectionRate: 0,
           avgSelectedCountForRewrittenQueries: 0,
           avgSelectedCountForRawQueries: 0,
+          strategyBreakdown: [],
         };
       }
       throw err;

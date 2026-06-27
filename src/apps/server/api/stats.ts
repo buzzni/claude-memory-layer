@@ -183,6 +183,25 @@ function sanitizeAggregateLabel(value: unknown): string {
   return trimmed.length > 0 ? trimmed.slice(0, 96) : 'unknown';
 }
 
+const SAFE_RETRIEVAL_TRACE_STRATEGIES = new Set([
+  'auto',
+  'deep',
+  'fast',
+  'hybrid',
+  'keyword',
+  'semantic',
+  'mcp-context-pack',
+  'session-start-hook',
+  'unknown'
+]);
+
+function normalizeRetrievalTraceStrategy(value: unknown): string {
+  const label = sanitizeAggregateLabel(value);
+  if (label === '[REDACTED]') return 'unknown';
+  const normalized = label.trim().toLowerCase();
+  return SAFE_RETRIEVAL_TRACE_STRATEGIES.has(normalized) ? normalized : 'unknown';
+}
+
 function emptyOperationsStatsPayload(context: OperationsStatsContext, databaseExists: boolean, missingTables: readonly string[], windowDays: number) {
   return {
     generatedAt: new Date().toISOString(),
@@ -827,6 +846,94 @@ function getTraceCandidateCount(trace: RetrievalTraceLike): number {
   return Number(trace.candidateCount ?? trace.candidateEventIds?.length ?? trace.candidateDetails?.length ?? 0);
 }
 
+
+type RetrievalTraceStrategyStatsLike = {
+  strategy?: unknown;
+  totalQueries?: unknown;
+  queriesWithSelection?: unknown;
+  rewrittenQueries?: unknown;
+  rewriteRate?: unknown;
+  totalCandidateCount?: unknown;
+  totalSelectedCount?: unknown;
+  avgCandidateCount?: unknown;
+  avgSelectedCount?: unknown;
+  selectionRate?: unknown;
+  queryYieldRate?: unknown;
+};
+
+type RetrievalTraceStrategyStatsBucket = {
+  strategy: string;
+  totalQueries: number;
+  queriesWithSelection: number;
+  rewrittenQueries: number;
+  totalCandidateCount: number;
+  totalSelectedCount: number;
+};
+
+function normalizeStatsNumber(value: unknown): number {
+  const numberValue = Number(value || 0);
+  return Number.isFinite(numberValue) ? Math.max(0, numberValue) : 0;
+}
+
+function sanitizeRetrievalTraceStrategyBreakdown(value: unknown): RetrievalTraceStrategyStatsLike[] {
+  if (!Array.isArray(value)) return [];
+
+  const byStrategy = new Map<string, RetrievalTraceStrategyStatsBucket>();
+
+  for (const item of value) {
+    const row = item && typeof item === 'object' ? item as RetrievalTraceStrategyStatsLike : {};
+    const strategy = normalizeRetrievalTraceStrategy(row.strategy ?? 'unknown');
+    const bucket = byStrategy.get(strategy) ?? {
+      strategy,
+      totalQueries: 0,
+      queriesWithSelection: 0,
+      rewrittenQueries: 0,
+      totalCandidateCount: 0,
+      totalSelectedCount: 0,
+    };
+
+    bucket.totalQueries += normalizeStatsNumber(row.totalQueries);
+    bucket.queriesWithSelection += normalizeStatsNumber(row.queriesWithSelection);
+    bucket.rewrittenQueries += normalizeStatsNumber(row.rewrittenQueries);
+    bucket.totalCandidateCount += normalizeStatsNumber(row.totalCandidateCount);
+    bucket.totalSelectedCount += normalizeStatsNumber(row.totalSelectedCount);
+    byStrategy.set(strategy, bucket);
+  }
+
+  return Array.from(byStrategy.values()).map((row) => ({
+    strategy: row.strategy,
+    totalQueries: row.totalQueries,
+    queriesWithSelection: row.queriesWithSelection,
+    rewrittenQueries: row.rewrittenQueries,
+    rewriteRate: normalizeMetric(safeRatio(row.rewrittenQueries, row.totalQueries)),
+    totalCandidateCount: row.totalCandidateCount,
+    totalSelectedCount: row.totalSelectedCount,
+    avgCandidateCount: safeRatio(row.totalCandidateCount, row.totalQueries),
+    avgSelectedCount: safeRatio(row.totalSelectedCount, row.totalQueries),
+    selectionRate: normalizeMetric(safeRatio(row.totalSelectedCount, row.totalCandidateCount)),
+    queryYieldRate: normalizeMetric(safeRatio(row.queriesWithSelection, row.totalQueries)),
+  }));
+}
+
+function sanitizeRetrievalTraceStats(stats: unknown) {
+  const s = stats && typeof stats === 'object' ? stats as Record<string, unknown> : {};
+  return {
+    totalQueries: Number(s.totalQueries || 0),
+    avgCandidateCount: Number(s.avgCandidateCount || 0),
+    avgSelectedCount: Number(s.avgSelectedCount || 0),
+    selectionRate: normalizeMetric(s.selectionRate),
+    rewrittenQueries: Number(s.rewrittenQueries || 0),
+    rewriteRate: normalizeMetric(s.rewriteRate),
+    rewrittenQueriesWithSelection: Number(s.rewrittenQueriesWithSelection || 0),
+    rawQueriesWithSelection: Number(s.rawQueriesWithSelection || 0),
+    rewrittenSelectionRate: normalizeMetric(s.rewrittenSelectionRate),
+    rawSelectionRate: normalizeMetric(s.rawSelectionRate),
+    avgSelectedCountForRewrittenQueries: Number(s.avgSelectedCountForRewrittenQueries || 0),
+    avgSelectedCountForRawQueries: Number(s.avgSelectedCountForRawQueries || 0),
+    strategyBreakdown: sanitizeRetrievalTraceStrategyBreakdown(s.strategyBreakdown),
+  };
+}
+
 type RetrievalReviewReason =
   | 'rewritten-query-no-selection'
   | 'candidate-no-selection'
@@ -910,7 +1017,7 @@ function makeRetrievalReviewItem(trace: RetrievalTraceLike): RetrievalReviewItem
     action,
     queryRewriteKind,
     rewritten,
-    strategy: trace.strategy || null,
+    strategy: normalizeRetrievalTraceStrategy(trace.strategy ?? 'unknown'),
     candidateCount,
     selectedCount,
     candidateEventIds: (trace.candidateEventIds || []).slice(0, 5),
@@ -1638,7 +1745,9 @@ statsRouter.get('/', async (c) => {
         return acc;
       }, {} as Record<string, number>);
 
-    const retrievalTrace = await memoryService.getRetrievalTraceStats();
+    const retrievalTrace = sanitizeRetrievalTraceStats(
+      await memoryService.getRetrievalTraceStats()
+    );
 
     return c.json({
       storage: {
@@ -1816,7 +1925,7 @@ statsRouter.get('/retrieval-traces', async (c) => {
     const traceStats = await memoryService.getRetrievalTraceStats();
 
     return c.json({
-      stats: traceStats,
+      stats: sanitizeRetrievalTraceStats(traceStats as unknown as Record<string, unknown>),
       traces: traces.map((t) => {
         const queryRewriteKind = normalizeQueryRewriteKind(t.queryRewriteKind);
         return {
@@ -1825,7 +1934,7 @@ statsRouter.get('/retrieval-traces', async (c) => {
           projectHash: t.projectHash || null,
           queryRewriteKind,
           rewritten: queryRewriteKind !== 'none',
-          strategy: t.strategy || null,
+          strategy: normalizeRetrievalTraceStrategy(t.strategy ?? 'unknown'),
           candidateEventIds: t.candidateEventIds,
           selectedEventIds: t.selectedEventIds,
           candidateDetails: t.candidateDetails || [],
@@ -1853,6 +1962,7 @@ statsRouter.get('/retrieval-traces', async (c) => {
         rawSelectionRate: 0,
         avgSelectedCountForRewrittenQueries: 0,
         avgSelectedCountForRawQueries: 0,
+        strategyBreakdown: [],
       },
       traces: [],
       error: (error as Error).message

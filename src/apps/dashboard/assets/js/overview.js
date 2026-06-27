@@ -1269,11 +1269,12 @@ function updateRetrievalReviewQueueUI() {
     const selectedIds = (item.selectedEventIds || []).slice(0, 3)
       .map((id) => `<span class="event-type-badge">${escapeHtml((id || '').slice(0, 8))}...</span>`)
       .join(' ');
+    const strategy = normalizeRetrievalTraceStrategyLabel(item.strategy);
     return `
       <div class="shared-item" style="align-items:flex-start; border-left:2px solid ${severityColor};">
         <div class="shared-info" style="align-items:flex-start; flex-direction:column; gap:4px;">
           <span style="font-size:12px; color:var(--text-secondary);"><strong>${escapeHtml(item.title || 'Retrieval trace needs review')}</strong></span>
-          <span style="font-size:11px; color:var(--text-muted);">Trace ${escapeHtml((item.traceId || '').slice(0, 18))} · ${ts} · reason=${escapeHtml(item.reason || 'unknown')} · strategy=${escapeHtml(item.strategy || 'auto')} ${rewriteBadge}</span>
+          <span style="font-size:11px; color:var(--text-muted);">Trace ${escapeHtml((item.traceId || '').slice(0, 18))} · ${ts} · reason=${escapeHtml(item.reason || 'unknown')} · strategy=${escapeHtml(strategy)} ${rewriteBadge}</span>
           <span style="font-size:11px; color:var(--text-muted);">${escapeHtml(item.detail || '')}</span>
           <span style="font-size:11px; color:var(--text-secondary);"><strong>Action:</strong> ${escapeHtml(item.action || '')}</span>
           <span style="font-size:11px; color:var(--text-muted);">candidates: ${candidateIds || '-'} · selected: ${selectedIds || '-'}</span>
@@ -1285,6 +1286,23 @@ function updateRetrievalReviewQueueUI() {
       </div>
     `;
   }).join('');
+}
+
+const SAFE_RETRIEVAL_TRACE_STRATEGIES = new Set([
+  'auto',
+  'deep',
+  'fast',
+  'hybrid',
+  'keyword',
+  'semantic',
+  'mcp-context-pack',
+  'session-start-hook',
+  'unknown'
+]);
+
+function normalizeRetrievalTraceStrategyLabel(value) {
+  const normalized = String(value || 'unknown').trim().toLowerCase();
+  return SAFE_RETRIEVAL_TRACE_STRATEGIES.has(normalized) ? normalized : 'unknown';
 }
 
 function updateRetrievalTraceUI() {
@@ -1305,6 +1323,18 @@ function updateRetrievalTraceUI() {
 
   const selectionRate = ((stats.selectionRate || 0) * 100).toFixed(1);
   const rewriteRate = ((stats.rewriteRate || 0) * 100).toFixed(1);
+  const strategyBreakdown = Array.isArray(stats.strategyBreakdown) ? stats.strategyBreakdown.slice(0, 4) : [];
+  const strategyBreakdownHtml = strategyBreakdown.length > 0
+    ? `<div style="display:flex; gap:8px; flex-wrap:wrap; font-size:11px; margin-top:8px; color:var(--text-muted);">
+        ${strategyBreakdown.map((row) => {
+          const strategy = normalizeRetrievalTraceStrategyLabel(row.strategy);
+          const queries = Number(row.totalQueries || 0);
+          const yieldRate = (Number(row.queryYieldRate || 0) * 100).toFixed(1);
+          const selRate = (Number(row.selectionRate || 0) * 100).toFixed(1);
+          return `<span class="event-type-badge" title="${escapeHtml(selRate)}% selected memories/candidates">${escapeHtml(strategy)} · ${formatNumber(queries)} queries · ${escapeHtml(yieldRate)}% yield</span>`;
+        }).join('')}
+      </div>`
+    : '';
   summaryEl.innerHTML = `
     <div style="display:flex; gap:14px; flex-wrap:wrap; font-size:12px;">
       <span><strong>${formatNumber(stats.totalQueries)}</strong> queries</span>
@@ -1313,11 +1343,13 @@ function updateRetrievalTraceUI() {
       <span><strong>${selectionRate}%</strong> selection rate</span>
       <span title="Share of retrieval queries enriched with previous prompt/assistant context"><strong>${rewriteRate}%</strong> rewrite rate</span>
     </div>
+    ${strategyBreakdownHtml}
   `;
 
   listEl.innerHTML = traces.slice(0, 8).map((t) => {
     const ts = t.createdAt ? new Date(t.createdAt).toLocaleString() : '-';
     const confidence = t.confidence || 'n/a';
+    const strategy = normalizeRetrievalTraceStrategyLabel(t.strategy);
     const selected = Number(t.selectedCount || 0);
     const candidates = Number(t.candidateCount || 0);
     const rewriteKind = t.queryRewriteKind || (t.rewritten ? 'rewritten' : 'none');
@@ -1341,7 +1373,7 @@ function updateRetrievalTraceUI() {
       <div class="shared-item" style="align-items:flex-start;">
         <div class="shared-info" style="align-items:flex-start; flex-direction:column; gap:4px;">
           <span style="font-size:12px; color:var(--text-secondary);"><strong>Trace:</strong> ${escapeHtml((t.traceId || '').slice(0, 12)) || '-'}</span>
-          <span style="font-size:11px; color:var(--text-muted);">${ts} · strategy=${escapeHtml(t.strategy || 'auto')} · conf=${escapeHtml(confidence)} ${rewriteBadge}</span>
+          <span style="font-size:11px; color:var(--text-muted);">${ts} · strategy=${escapeHtml(strategy)} · conf=${escapeHtml(confidence)} ${rewriteBadge}</span>
           <span style="font-size:11px; color:var(--text-muted);">selected IDs: ${selectedIdsHtml}</span>
           <span style="font-size:11px; color:var(--text-muted);">candidates: ${candidateDetails.map((d) => `<span class=\"event-type-badge\" style=\"cursor:pointer;\" onclick=\"openDetailModal(${jsAttrArg(d.eventId || '')})\">${escapeHtml((d.eventId || '').slice(0, 8))}...</span>`).join(' ') || '-'}</span>
           ${scoreBreakdownHtml}
