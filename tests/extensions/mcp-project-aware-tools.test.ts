@@ -439,8 +439,8 @@ describe('MCP project-aware memory tools', () => {
       }
     ]);
     mocks.projectService.getOutboxStats.mockResolvedValue({
-      embedding: { pending: 2, processing: 1, failed: 0, total: 5, stuckProcessing: 1, oldestProcessingAgeMs: 600000 },
-      vector: { pending: 1, processing: 2, failed: 1, total: 4, stuckProcessing: 2, oldestProcessingAgeMs: 1200000 }
+      embedding: { pending: 2, processing: 1, failed: 2, retryableFailed: 1, quarantinedFailed: 1, total: 5, stuckProcessing: 1, oldestProcessingAgeMs: 600000 },
+      vector: { pending: 1, processing: 2, failed: 3, retryableFailed: 0, quarantinedFailed: 3, total: 4, stuckProcessing: 2, oldestProcessingAgeMs: 1200000 }
     });
 
     const result = await handleToolCall('mem-stats', { projectPath: '/repo/app' });
@@ -454,9 +454,9 @@ describe('MCP project-aware memory tools', () => {
     expect(text).toContain('Embedder Model: Xenova/multilingual-e5-small');
     expect(text).toContain('Vector Table Dimension: unknown');
     expect(text).toContain('Pending Embeddings: 2');
-    expect(text).toContain('Embedding Outbox: pending=2, processing=1, failed=0, stuck=1, oldestProcessingAge=10m, total=5');
+    expect(text).toContain('Embedding Outbox: pending=2, processing=1, failed=2, retryableFailed=1, quarantinedFailed=1, stuck=1, oldestProcessingAge=10m, total=5');
     expect(text).toContain('Vector Outbox Pending: 1');
-    expect(text).toContain('Vector Outbox: pending=1, processing=2, failed=1, stuck=2, oldestProcessingAge=20m, total=4');
+    expect(text).toContain('Vector Outbox: pending=1, processing=2, failed=3, retryableFailed=0, quarantinedFailed=3, stuck=2, oldestProcessingAge=20m, total=4');
     expect(text).toContain('MCP/CLI parity');
     expect(text).toContain('restart');
     expect(text).not.toContain('/repo/app');

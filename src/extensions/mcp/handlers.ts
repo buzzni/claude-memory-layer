@@ -2346,7 +2346,7 @@ function formatMcpProcessingAge(ageMs: number | null): string {
 }
 
 function formatMcpOutboxQueueStats(stats: McpOutboxStats['embedding']): string {
-  return `pending=${stats.pending}, processing=${stats.processing}, failed=${stats.failed}, stuck=${stats.stuckProcessing}, oldestProcessingAge=${formatMcpProcessingAge(stats.oldestProcessingAgeMs)}, total=${stats.total}`;
+  return `pending=${stats.pending}, processing=${stats.processing}, failed=${stats.failed}, retryableFailed=${stats.retryableFailed ?? 0}, quarantinedFailed=${stats.quarantinedFailed ?? 0}, stuck=${stats.stuckProcessing}, oldestProcessingAge=${formatMcpProcessingAge(stats.oldestProcessingAgeMs)}, total=${stats.total}`;
 }
 
 async function handleMemStats(memoryService: MemoryService, args: Record<string, unknown>): Promise<ToolResult> {
@@ -2400,8 +2400,8 @@ async function readMcpOutboxStats(memoryService: MemoryService): Promise<McpOutb
     return await memoryService.getOutboxStats();
   } catch {
     return {
-      embedding: { pending: 0, processing: 0, failed: 0, total: 0, stuckProcessing: 0, oldestProcessingAgeMs: null },
-      vector: { pending: 0, processing: 0, failed: 0, total: 0, stuckProcessing: 0, oldestProcessingAgeMs: null }
+      embedding: { pending: 0, processing: 0, failed: 0, retryableFailed: 0, quarantinedFailed: 0, total: 0, stuckProcessing: 0, oldestProcessingAgeMs: null },
+      vector: { pending: 0, processing: 0, failed: 0, retryableFailed: 0, quarantinedFailed: 0, total: 0, stuckProcessing: 0, oldestProcessingAgeMs: null }
     };
   }
 }

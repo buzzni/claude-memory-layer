@@ -104,6 +104,7 @@ import {
   resolveProcessCommandOptions
 } from './process-command.js';
 import {
+  formatVectorStatusJsonReport,
   formatVectorStatusReport,
   resolveVectorStatusCommandOptions
 } from './vector-command.js';
@@ -947,6 +948,7 @@ program
   .command('vector-status')
   .description('Show aggregate vector outbox status')
   .option('-p, --project <path>', 'Project path (defaults to cwd)')
+  .option('--json', 'Print aggregate vector outbox status as JSON for automation')
   .action(async (options) => {
     let service: ReturnType<typeof getLightweightMemoryServiceForProject> | undefined;
 
@@ -957,7 +959,10 @@ program
         service.getStats(),
         service.getOutboxStats()
       ]);
-      console.log(formatVectorStatusReport({ stats, outbox }));
+      const rendered = vectorOptions.json
+        ? formatVectorStatusJsonReport({ stats, outbox })
+        : formatVectorStatusReport({ stats, outbox });
+      console.log(rendered);
     } catch (error) {
       const message = error instanceof Error && error.message.startsWith('--')
         ? error.message

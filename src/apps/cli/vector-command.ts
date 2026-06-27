@@ -3,15 +3,35 @@ import type { MemoryStats } from '../../core/engine/memory-query-service.js';
 
 export interface RawVectorStatusCommandOptions {
   project?: string;
+  json?: boolean;
 }
 
 export interface VectorStatusCommandOptions {
   projectPath: string;
+  json: boolean;
 }
 
 export interface VectorStatusReportInput {
   stats: Pick<MemoryStats, 'totalEvents' | 'vectorCount' | 'levelStats'>;
   outbox: OutboxStats;
+}
+
+type VectorStatus = 'ok' | 'needs-attention';
+type VectorStatusRecommendedAction = 'none' | 'run-recovery' | 'inspect-quarantined';
+
+interface NormalizedVectorStatusReport {
+  storage: {
+    totalEvents: number;
+    vectorCount: number;
+  };
+  outbox: {
+    embedding: OutboxQueueStats;
+    vector: OutboxQueueStats;
+    totals: OutboxQueueStats;
+  };
+  status: VectorStatus;
+  recommendedAction: VectorStatusRecommendedAction;
+  oldestProcessingAgeMs: number | null;
 }
 
 export function resolveVectorStatusCommandOptions(
@@ -21,15 +41,13 @@ export function resolveVectorStatusCommandOptions(
   if (options.project !== undefined && options.project.trim().length === 0) {
     throw new Error('--project must not be empty');
   }
-  return { projectPath: options.project ?? cwd };
+  return { projectPath: options.project ?? cwd, json: options.json === true };
 }
 
 export function formatVectorStatusReport(input: VectorStatusReportInput): string {
-  const embedding = normalizeQueue(input.outbox.embedding);
-  const vector = normalizeQueue(input.outbox.vector);
-  const totals = sumQueues(embedding, vector);
-  const status = totals.failed > 0 || totals.stuckProcessing > 0 ? 'needs-attention' : 'ok';
-  const oldestProcessingAge = maxNullable(embedding.oldestProcessingAgeMs, vector.oldestProcessingAgeMs);
+  const report = buildVectorStatusReport(input);
+  const { embedding, vector, totals } = report.outbox;
+  const oldestProcessingAge = report.oldestProcessingAgeMs;
   const lines = [
     'Vector Outbox Status',
     `Vector count: ${input.stats.vectorCount}`,
@@ -42,14 +60,44 @@ export function formatVectorStatusReport(input: VectorStatusReportInput): string
     '',
     `Totals: pending=${totals.pending}, processing=${totals.processing}, failed=${totals.failed}, retryableFailed=${totals.retryableFailed ?? 0}, quarantinedFailed=${totals.quarantinedFailed ?? 0}, stuck=${totals.stuckProcessing}, total=${totals.total}`,
     `Oldest processing age: ${formatDuration(oldestProcessingAge)}`,
-    `Status: ${status}`
+    `Status: ${report.status}`
   ];
 
-  if (status === 'needs-attention') {
+  if (report.recommendedAction === 'run-recovery') {
     lines.push('', 'Next step: claude-memory-layer process --dry-run-recovery');
+  } else if (report.recommendedAction === 'inspect-quarantined') {
+    lines.push('', 'Next step: inspect quarantined outbox failures; recovery has no retryable failed rows.');
   }
 
   return lines.join('\n');
+}
+
+export function formatVectorStatusJsonReport(input: VectorStatusReportInput): string {
+  return JSON.stringify(buildVectorStatusReport(input), null, 2);
+}
+
+function buildVectorStatusReport(input: VectorStatusReportInput): NormalizedVectorStatusReport {
+  const embedding = normalizeQueue(input.outbox.embedding);
+  const vector = normalizeQueue(input.outbox.vector);
+  const totals = sumQueues(embedding, vector);
+  const status: VectorStatus = totals.failed > 0 || totals.stuckProcessing > 0 ? 'needs-attention' : 'ok';
+  const oldestProcessingAgeMs = maxNullable(embedding.oldestProcessingAgeMs, vector.oldestProcessingAgeMs);
+  return {
+    storage: {
+      totalEvents: numberOrZero(input.stats.totalEvents),
+      vectorCount: numberOrZero(input.stats.vectorCount)
+    },
+    outbox: { embedding, vector, totals },
+    status,
+    recommendedAction: selectRecommendedAction(totals),
+    oldestProcessingAgeMs
+  };
+}
+
+function selectRecommendedAction(totals: OutboxQueueStats): VectorStatusRecommendedAction {
+  if ((totals.retryableFailed ?? 0) > 0 || totals.stuckProcessing > 0) return 'run-recovery';
+  if ((totals.quarantinedFailed ?? 0) > 0) return 'inspect-quarantined';
+  return 'none';
 }
 
 function normalizeQueue(queue: OutboxQueueStats): OutboxQueueStats {

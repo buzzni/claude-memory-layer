@@ -56,9 +56,9 @@ function healthPayload() {
       rawPath: 'PRIVATE_STORAGE_PATH_SENTINEL'
     },
     outbox: {
-      embedding: { pending: 1, processing: 2, failed: 3, stuckProcessing: 1, oldestProcessingAgeMs: 120_000, total: 12, rawError: 'PRIVATE_EMBED_ERROR_SENTINEL' },
-      vector: { pending: 4, processing: 5, failed: 6, stuckProcessing: 2, oldestProcessingAgeMs: 245_000, total: 34, rowId: 'PRIVATE_VECTOR_ROW_ID_SENTINEL', itemId: 'PRIVATE_ITEM_ID_SENTINEL', sourceContent: 'PRIVATE_SOURCE_CONTENT_SENTINEL' },
-      totals: { pending: 5, processing: 7, failed: 9, stuckProcessing: 3, oldestProcessingAgeMs: 245_000, rawIds: ['PRIVATE_TOTAL_ROW_ID_SENTINEL'] }
+      embedding: { pending: 1, processing: 2, failed: 3, retryableFailed: 1, quarantinedFailed: 2, stuckProcessing: 1, oldestProcessingAgeMs: 120_000, total: 12, rawError: 'PRIVATE_EMBED_ERROR_SENTINEL' },
+      vector: { pending: 4, processing: 5, failed: 6, retryableFailed: 4, quarantinedFailed: 2, stuckProcessing: 2, oldestProcessingAgeMs: 245_000, total: 34, rowId: 'PRIVATE_VECTOR_ROW_ID_SENTINEL', itemId: 'PRIVATE_ITEM_ID_SENTINEL', sourceContent: 'PRIVATE_SOURCE_CONTENT_SENTINEL' },
+      totals: { pending: 5, processing: 7, failed: 9, retryableFailed: 5, quarantinedFailed: 4, stuckProcessing: 3, oldestProcessingAgeMs: 245_000, rawIds: ['PRIVATE_TOTAL_ROW_ID_SENTINEL'] }
     },
     levelStats: []
   };
@@ -109,11 +109,15 @@ describe('dashboard vector health panel', () => {
     expect(elements['vector-health-summary'].innerHTML).toContain('456 vectors');
     expect(elements['vector-health-summary'].innerHTML).toContain('5 pending');
     expect(elements['vector-health-summary'].innerHTML).toContain('9 failed');
+    expect(elements['vector-health-summary'].innerHTML).toContain('5 retryable');
+    expect(elements['vector-health-summary'].innerHTML).toContain('4 quarantined');
     expect(elements['vector-health-summary'].innerHTML).toContain('3 stuck');
     expect(elements['vector-health-queue-list'].innerHTML).toContain('Embedding Outbox');
     expect(elements['vector-health-queue-list'].innerHTML).toContain('Vector Outbox');
     expect(elements['vector-health-queue-list'].innerHTML).toContain('pending 4');
     expect(elements['vector-health-queue-list'].innerHTML).toContain('failed 6');
+    expect(elements['vector-health-queue-list'].innerHTML).toContain('retryable 4');
+    expect(elements['vector-health-queue-list'].innerHTML).toContain('quarantined 2');
     expect(elements['vector-health-recovery-result'].innerHTML).toContain('Last recovery');
     expect(elements['vector-health-recovery-result'].innerHTML).toContain('embedding=3');
     expect(elements['vector-health-recovery-result'].innerHTML).toContain('vector=7');

@@ -73,8 +73,8 @@ describe('project detail dashboard API', () => {
       rawQueryText: 'PRIVATE_QUERY_SHOULD_NOT_LEAK',
     });
     mocks.service.getOutboxStats.mockReset().mockResolvedValue({
-      embedding: { pending: 1, processing: 0, failed: 0, stuckProcessing: 0, total: 3, rawError: 'PRIVATE_EMBED_ERROR_SHOULD_NOT_LEAK' },
-      vector: { pending: 2, processing: 1, failed: 0, stuckProcessing: 0, total: 4, itemIds: ['PRIVATE_VECTOR_ID_SHOULD_NOT_LEAK'] },
+      embedding: { pending: 1, processing: 0, failed: 2, retryableFailed: 1, quarantinedFailed: 1, stuckProcessing: 0, total: 3, rawError: 'PRIVATE_EMBED_ERROR_SHOULD_NOT_LEAK' },
+      vector: { pending: 2, processing: 1, failed: 3, retryableFailed: 0, quarantinedFailed: 3, stuckProcessing: 0, total: 4, itemIds: ['PRIVATE_VECTOR_ID_SHOULD_NOT_LEAK'] },
     });
     mocks.MemoryService.mockClear();
     mocks.resolveProjectStoragePath.mockClear();
@@ -93,7 +93,7 @@ describe('project detail dashboard API', () => {
       eventTypes: { user_prompt: 2, agent_response: 1, tool_observation: 1 },
       sources: { hermes: 2, codex: 2 },
       retrieval: { totalQueries: 7, selectionRate: 0.36 },
-      outbox: { pending: 3, processing: 1, failed: 0, stuckProcessing: 0 },
+      outbox: { pending: 3, processing: 1, failed: 5, retryableFailed: 1, quarantinedFailed: 4, stuckProcessing: 0 },
     });
     expect(body.project).not.toHaveProperty('projectPath');
     expect(mocks.resolveProjectStoragePath).toHaveBeenCalledWith('abc12345');

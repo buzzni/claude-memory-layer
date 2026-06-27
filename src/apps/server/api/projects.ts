@@ -27,6 +27,8 @@ type OutboxKindStats = {
   pending?: number;
   processing?: number;
   failed?: number;
+  retryableFailed?: number;
+  quarantinedFailed?: number;
   stuckProcessing?: number;
 };
 
@@ -187,6 +189,8 @@ function summarizeProjectOutbox(outbox: ProjectOutboxStats) {
     pending: (embedding.pending || 0) + (vector.pending || 0),
     processing: (embedding.processing || 0) + (vector.processing || 0),
     failed: (embedding.failed || 0) + (vector.failed || 0),
+    retryableFailed: (embedding.retryableFailed || 0) + (vector.retryableFailed || 0),
+    quarantinedFailed: (embedding.quarantinedFailed || 0) + (vector.quarantinedFailed || 0),
     stuckProcessing: (embedding.stuckProcessing || 0) + (vector.stuckProcessing || 0)
   };
 }
