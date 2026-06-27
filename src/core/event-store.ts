@@ -14,9 +14,7 @@ import {
 import { makeCanonicalKey, makeDedupeKey } from './canonical-key.js';
 import { createDatabase, dbRun, dbAll, dbClose, toDate, type Database, type DatabaseOptions } from './db-wrapper.js';
 
-export interface EventStoreOptions extends DatabaseOptions {
-  // Additional options can be added here
-}
+export type EventStoreOptions = DatabaseOptions;
 
 export class EventStore {
   private db: Database;

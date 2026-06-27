@@ -2129,7 +2129,7 @@ export class SQLiteEventStore {
 
     // Count successful vs failed tools
     let toolSuccessCount = 0;
-    let toolTotalCount = toolEvents.length;
+    const toolTotalCount = toolEvents.length;
     for (const t of toolEvents) {
       try {
         const content = JSON.parse(t.content as string);
