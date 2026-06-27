@@ -83,6 +83,9 @@ function normalizeQueryRewriteKind(value?: string | null): QueryRewriteKind {
 const REWRITTEN_QUERY_REWRITE_KIND_SQL = `LOWER(TRIM(COALESCE(query_rewrite_kind, 'none'))) IN ('follow-up-context', 'intent-rewrite')`;
 const DEFAULT_OUTBOX_STUCK_THRESHOLD_MS = 5 * 60 * 1000;
 const DEFAULT_OUTBOX_MAX_RETRIES = 3;
+// Bump when introducing an ordered migration that must run exactly once; gate
+// such migrations on the persisted PRAGMA user_version.
+const SQLITE_SCHEMA_VERSION = 1;
 
 function emptyOutboxRecoveryResult(): OutboxRecoveryResult {
   return {
@@ -838,11 +841,7 @@ export class SQLiteEventStore {
 
 
     // Best-effort forward migration for action edge source ownership
-    try {
-      sqliteExec(this.db, `ALTER TABLE memory_action_edges ADD COLUMN source TEXT NOT NULL DEFAULT 'manual';`);
-    } catch {
-      // column may already exist
-    }
+    this.addColumnIfMissing('memory_action_edges', 'source', `TEXT NOT NULL DEFAULT 'manual'`);
     try {
       const edgeIndexes = sqliteAll<{ name: string; unique: number }>(this.db, `PRAGMA index_list(memory_action_edges)`, []);
       const hasSourceAwareUnique = edgeIndexes.some((index) => {
@@ -887,68 +886,23 @@ export class SQLiteEventStore {
       // action edge table may not exist in partial migrations
     }
 
-    // Best-effort forward migration for retrieval trace detail column
-    try {
-      sqliteExec(this.db, `ALTER TABLE retrieval_traces ADD COLUMN selected_details_json TEXT;`);
-    } catch {
-      // column may already exist
-    }
-    try {
-      sqliteExec(this.db, `ALTER TABLE retrieval_traces ADD COLUMN candidate_details_json TEXT;`);
-    } catch {
-      // column may already exist
-    }
-    try {
-      sqliteExec(this.db, `ALTER TABLE retrieval_traces ADD COLUMN raw_query_text TEXT;`);
-    } catch {
-      // column may already exist
-    }
-    try {
-      sqliteExec(this.db, `ALTER TABLE retrieval_traces ADD COLUMN query_rewrite_kind TEXT;`);
-    } catch {
-      // column may already exist
-    }
+    // Best-effort forward migration for retrieval trace detail columns
+    this.addColumnIfMissing('retrieval_traces', 'selected_details_json', 'TEXT');
+    this.addColumnIfMissing('retrieval_traces', 'candidate_details_json', 'TEXT');
+    this.addColumnIfMissing('retrieval_traces', 'raw_query_text', 'TEXT');
+    this.addColumnIfMissing('retrieval_traces', 'query_rewrite_kind', 'TEXT');
     try {
       sqliteExec(this.db, `CREATE INDEX IF NOT EXISTS idx_retrieval_traces_query_rewrite_kind ON retrieval_traces(query_rewrite_kind);`);
     } catch {
       // index/table may not exist in partial migrations
     }
 
-    // Migrate existing events table to add new columns if they don't exist
-    // Check if columns exist before trying to add them
-    const tableInfo = sqliteAll(this.db, "PRAGMA table_info(events)", []);
-    const columnNames = tableInfo.map((col: any) => col.name);
-
-    if (!columnNames.includes('access_count')) {
-      try {
-        sqliteExec(this.db, `
-          ALTER TABLE events ADD COLUMN access_count INTEGER DEFAULT 0;
-        `);
-      } catch (err: any) {
-        console.error('Error adding access_count column:', err);
-      }
-    }
-
-    if (!columnNames.includes('last_accessed_at')) {
-      try {
-        sqliteExec(this.db, `
-          ALTER TABLE events ADD COLUMN last_accessed_at TEXT;
-        `);
-      } catch (err: any) {
-        console.error('Error adding last_accessed_at column:', err);
-      }
-    }
-
-    // Add turn_id column for grouping events within a conversation turn
-    if (!columnNames.includes('turn_id')) {
-      try {
-        sqliteExec(this.db, `
-          ALTER TABLE events ADD COLUMN turn_id TEXT;
-        `);
-      } catch (err: any) {
-        console.error('Error adding turn_id column:', err);
-      }
-    }
+    // Forward-migrate the events table columns added over time. turn_id groups
+    // events within a conversation turn; access_count/last_accessed_at back
+    // access analytics.
+    this.addColumnIfMissing('events', 'access_count', 'INTEGER DEFAULT 0');
+    this.addColumnIfMissing('events', 'last_accessed_at', 'TEXT');
+    this.addColumnIfMissing('events', 'turn_id', 'TEXT');
 
     // Create indexes for new columns if they don't exist
     try {
@@ -971,9 +925,14 @@ export class SQLiteEventStore {
       sqliteExec(this.db, `
         CREATE INDEX IF NOT EXISTS idx_events_turn_id ON events(turn_id);
       `);
-    } catch (err: any) {
+    } catch {
       // Index may already exist, ignore
     }
+
+    // Stamp the schema version so future ordered migrations have an anchor to
+    // gate on (PRAGMA user_version persists in the DB file). The migrations
+    // above remain idempotent, so this is forward-looking rather than required.
+    sqliteExec(this.db, `PRAGMA user_version = ${SQLITE_SCHEMA_VERSION}`);
 
     this.initialized = true;
   }
@@ -2343,16 +2302,14 @@ export class SQLiteEventStore {
    * Rebuild FTS index from existing events
    * Call this once after upgrading to FTS5
    */
-  async rebuildFtsIndex(): Promise<number> {
-    await this.initialize();
-
-    // Get count of events to index
-    const countRow = sqliteGet<{count: number}>(this.db, 'SELECT COUNT(*) as count FROM events', []);
-    const totalEvents = countRow?.count ?? 0;
-
-    // Clear and rebuild FTS index. Recreate the virtual table instead of
-    // issuing DELETE against it: older migrated FTS5 tables/triggers can fail
-    // with `no such column: T.event_id` when processing synthetic deletes.
+  /**
+   * Drop and recreate the events_fts virtual table + sync triggers, repopulating
+   * from the current events table. Recreating the table (instead of issuing
+   * DELETEs against it) sidesteps a quirk where older migrated FTS5 tables fail
+   * with `no such column: T.event_id` on synthetic deletes. Safe to call inside
+   * a transaction (pure DDL + INSERT...SELECT, no transaction control).
+   */
+  private recreateEventsFtsTable(): void {
     sqliteExec(this.db, `
       DROP TRIGGER IF EXISTS events_fts_insert;
       DROP TRIGGER IF EXISTS events_fts_delete;
@@ -2381,6 +2338,16 @@ export class SQLiteEventStore {
         INSERT INTO events_fts(rowid, content, event_id) VALUES (NEW.rowid, NEW.content, NEW.id);
       END;
     `);
+  }
+
+  async rebuildFtsIndex(): Promise<number> {
+    await this.initialize();
+
+    // Get count of events to index
+    const countRow = sqliteGet<{count: number}>(this.db, 'SELECT COUNT(*) as count FROM events', []);
+    const totalEvents = countRow?.count ?? 0;
+
+    this.recreateEventsFtsTable();
 
     return totalEvents;
   }
@@ -2400,6 +2367,37 @@ export class SQLiteEventStore {
     } catch {
       return false;
     }
+  }
+
+  private hasTable(tableName: string): boolean {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(tableName)) return false;
+    try {
+      const rows = sqliteAll<{ name: string }>(
+        this.db,
+        `SELECT name FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1`,
+        [tableName]
+      );
+      return rows.length > 0;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Add a column only when its table exists and the column is missing.
+   *
+   * Unlike a blind `try { ALTER } catch {}`, this distinguishes "already
+   * migrated" / "table not present yet" (both safely skipped) from a genuine
+   * failure (disk full, corruption), which is allowed to surface instead of
+   * being silently swallowed as if the migration had succeeded.
+   */
+  private addColumnIfMissing(table: string, column: string, definition: string): void {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(table) || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(column)) {
+      throw new Error(`Invalid identifier in migration: ${table}.${column}`);
+    }
+    if (!this.hasTable(table)) return;
+    if (this.hasTableColumn(table, column)) return;
+    sqliteExec(this.db, `ALTER TABLE ${table} ADD COLUMN ${column} ${definition};`);
   }
 
 
@@ -2823,52 +2821,44 @@ export class SQLiteEventStore {
     const eventIds = events.map(e => e.id);
     const placeholders = eventIds.map(() => '?').join(',');
 
-    // Drop FTS triggers to prevent SQLITE_CORRUPT_VTAB during bulk delete
-    const ftsTriggersDropped: string[] = [];
-    for (const triggerName of ['events_fts_delete', 'events_fts_update', 'events_fts_insert']) {
-      try {
+    // Run the trigger-drop -> delete -> FTS-rebuild -> trigger-recreate sequence
+    // atomically. Outside a transaction, a crash or error after the triggers are
+    // dropped would permanently desync the FTS index, so keyword search would
+    // silently return stale results forever. Inside a transaction any failure
+    // rolls back and the triggers/index stay consistent. We pre-check optional
+    // table existence (instead of swallowing per-statement errors) so a genuine
+    // failure is never mistaken for a benign "table does not exist".
+    // Only the tables that both exist and key cascades on event_id. (vector_outbox
+    // keys on item_id, not event_id; the previous code swallowed the resulting
+    // error, so it was never cleaned here either — behavior preserved.)
+    const relatedTables = ['event_dedup', 'memory_levels', 'embedding_queue', 'embedding_outbox', 'vector_outbox']
+      .filter((table) => this.hasTable(table) && this.hasTableColumn(table, 'event_id'));
+
+    const runDelete = this.db.transaction((): number => {
+      // Drop FTS sync triggers before the bulk delete so the synthetic FTS
+      // delete (which can fail with `no such column: T.event_id` on older
+      // migrated tables, and risks SQLITE_CORRUPT_VTAB) never fires mid-delete.
+      for (const triggerName of ['events_fts_delete', 'events_fts_update', 'events_fts_insert']) {
         sqliteRun(this.db, `DROP TRIGGER IF EXISTS ${triggerName}`);
-        ftsTriggersDropped.push(triggerName);
-      } catch {
-        // Trigger may not exist
       }
-    }
 
-    // Delete from related tables first (some may not exist depending on DB version)
-    for (const table of ['event_dedup', 'memory_levels', 'embedding_queue', 'embedding_outbox', 'vector_outbox']) {
-      try {
+      // Delete from related tables first.
+      for (const table of relatedTables) {
         sqliteRun(this.db, `DELETE FROM ${table} WHERE event_id IN (${placeholders})`, eventIds);
-      } catch {
-        // Table may not exist
       }
-    }
 
-    // Delete events
-    const result = sqliteRun(this.db, `DELETE FROM events WHERE session_id = ?`, [sessionId]);
+      // Delete events.
+      const result = sqliteRun(this.db, `DELETE FROM events WHERE session_id = ?`, [sessionId]);
 
-    // Rebuild FTS index if we dropped triggers
-    if (ftsTriggersDropped.length > 0) {
-      try {
-        // Rebuild FTS from remaining events
-        sqliteRun(this.db, `INSERT INTO events_fts(events_fts) VALUES('rebuild')`);
+      // Recreate the FTS table + triggers from the remaining events. A failure
+      // here aborts the whole transaction rather than leaving the index desynced
+      // with its triggers permanently dropped.
+      this.recreateEventsFtsTable();
 
-        // Recreate triggers
-        sqliteRun(this.db, `CREATE TRIGGER IF NOT EXISTS events_fts_insert AFTER INSERT ON events BEGIN
-          INSERT INTO events_fts(rowid, content, event_id) VALUES (NEW.rowid, NEW.content, NEW.id);
-        END`);
-        sqliteRun(this.db, `CREATE TRIGGER IF NOT EXISTS events_fts_delete AFTER DELETE ON events BEGIN
-          DELETE FROM events_fts WHERE rowid = OLD.rowid;
-        END`);
-        sqliteRun(this.db, `CREATE TRIGGER IF NOT EXISTS events_fts_update AFTER UPDATE ON events BEGIN
-          DELETE FROM events_fts WHERE rowid = OLD.rowid;
-          INSERT INTO events_fts(rowid, content, event_id) VALUES (NEW.rowid, NEW.content, NEW.id);
-        END`);
-      } catch {
-        // FTS rebuild failed - non-critical, will be rebuilt on next initialize
-      }
-    }
+      return result.changes || 0;
+    });
 
-    return result.changes || 0;
+    return runDelete();
   }
 
   /**
