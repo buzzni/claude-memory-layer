@@ -304,6 +304,11 @@ export class MemoryService {
     return this.queryService.getEventByCitationId(citationId);
   }
 
+  /** All events at/after an ISO timestamp (ascending, uncapped). */
+  async getEventsAfter(sinceIso: string): Promise<MemoryEvent[]> {
+    return this.queryService.getEventsAfter(sinceIso);
+  }
+
   /** Aggregate event counts by type (SQL GROUP BY). */
   async getEventTypeCounts(): Promise<Array<{ eventType: string; count: number }>> {
     return this.queryService.getEventTypeCounts();

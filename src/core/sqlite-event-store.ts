@@ -1135,6 +1135,22 @@ export class SQLiteEventStore {
     return rows.map((row) => ({ eventType: row.event_type, count: row.count }));
   }
 
+  /**
+   * Fetch every event at/after an ISO timestamp (ascending), with no row cap.
+   * For window-scoped analytics (KPI/usefulness) this fetches exactly the events
+   * the window needs instead of an arbitrary "most recent N" slice that both
+   * over-fetches sparse windows and truncates very active ones.
+   */
+  async getEventsAfter(sinceIso: string, options?: QuarantineReadOptions): Promise<MemoryEvent[]> {
+    await this.initialize();
+    const rows = sqliteAll<Record<string, unknown>>(
+      this.db,
+      `SELECT * FROM events WHERE timestamp >= ? AND ${maybeQuarantinePredicate(options)} ORDER BY timestamp ASC`,
+      [sinceIso]
+    );
+    return rows.map((row) => this.rowToEvent(row));
+  }
+
   /** Count distinct sessions via SQL instead of materializing a Set in JS. */
   async getDistinctSessionCount(options?: QuarantineReadOptions): Promise<number> {
     await this.initialize();

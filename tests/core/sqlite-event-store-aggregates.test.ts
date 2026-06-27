@@ -50,6 +50,25 @@ describe('SQLiteEventStore SQL aggregates', () => {
     await store.close();
   });
 
+  it('fetches events at/after a cutoff in ascending order, uncapped', async () => {
+    const store = new SQLiteEventStore(tempDbPath());
+    await store.initialize();
+    await seed(store);
+
+    // seed() spans 2026-06-01 (2 events) and 2026-06-02 (2 events).
+    const all = await store.getEventsAfter('2026-06-01T00:00:00.000Z');
+    expect(all).toHaveLength(4);
+    // Ascending by timestamp.
+    expect(all[0].timestamp.getTime()).toBeLessThanOrEqual(all[3].timestamp.getTime());
+
+    // A later cutoff excludes the earlier day's events.
+    const fromDay2 = await store.getEventsAfter('2026-06-02T00:00:00.000Z');
+    expect(fromDay2).toHaveLength(2);
+    expect(fromDay2.every((e) => e.timestamp.toISOString() >= '2026-06-02')).toBe(true);
+
+    await store.close();
+  });
+
   it('groups daily counts with a type breakdown and honours the cutoff', async () => {
     const store = new SQLiteEventStore(tempDbPath());
     await store.initialize();

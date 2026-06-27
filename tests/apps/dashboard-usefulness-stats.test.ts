@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => {
     initialize: vi.fn(),
     shutdown: vi.fn(),
     getRecentEvents: vi.fn(),
+    getEventsAfter: vi.fn(),
     getHelpfulnessStats: vi.fn(),
     getRecentRetrievalTraces: vi.fn(),
     getRetrievalTraceStats: vi.fn(),
@@ -97,11 +98,13 @@ describe('dashboard memory usefulness stats', () => {
     vi.setSystemTime(new Date('2026-05-08T12:00:00.000Z'));
     mocks.service.initialize.mockReset().mockResolvedValue(undefined);
     mocks.service.shutdown.mockReset().mockResolvedValue(undefined);
-    mocks.service.getRecentEvents.mockReset().mockResolvedValue([
+    // /usefulness now fetches only the window via getEventsAfter, so the store
+    // (here mocked) already excludes out-of-window events like the old prompt.
+    mocks.service.getRecentEvents.mockReset().mockResolvedValue([]);
+    mocks.service.getEventsAfter.mockReset().mockResolvedValue([
       event('p1', 'user_prompt', '2026-05-08T10:00:00.000Z', { adherence: { checked: true, reason: 'memory_context' } }),
       event('p2', 'user_prompt', '2026-05-08T11:00:00.000Z', { adherence: { checked: false, reason: 'simple_task' } }),
       event('p3', 'user_prompt', '2026-05-07T11:00:00.000Z'),
-      event('old', 'user_prompt', '2026-04-01T00:00:00.000Z', { adherence: { checked: true } }),
     ]);
     mocks.service.getHelpfulnessStats.mockReset().mockResolvedValue({
       avgScore: 0.8,
@@ -225,7 +228,7 @@ describe('dashboard memory usefulness stats', () => {
     expect(body.diagnostics[0].detail).toContain('1 of 3 prompts');
     expect(body.diagnostics[0].action).toContain('adherence triggers');
     expect(body.limits).toEqual({
-      eventsLimit: 20000,
+      eventsLimit: 3,
       tracesLimit: 5000,
       eventWindowTruncated: false,
       traceWindowTruncated: false,
@@ -250,13 +253,13 @@ describe('dashboard memory usefulness stats', () => {
       unhelpful: 0,
     });
 
-    mocks.service.getRecentEvents.mockResolvedValue([event('p-zero', 'user_prompt', '2026-05-08T10:00:00.000Z')]);
+    mocks.service.getEventsAfter.mockResolvedValue([event('p-zero', 'user_prompt', '2026-05-08T10:00:00.000Z')]);
     mocks.service.getRecentRetrievalTraces.mockResolvedValue([]);
     const zeroRes = await createApp().request('/api/stats/usefulness?window=24h');
     const zeroBody = await zeroRes.json();
     expect(zeroBody.score).toEqual({ value: 0, label: 'low', confidence: 0.35 });
 
-    mocks.service.getRecentEvents.mockResolvedValue([]);
+    mocks.service.getEventsAfter.mockResolvedValue([]);
     mocks.service.getRecentRetrievalTraces.mockResolvedValue([]);
     const emptyRes = await createApp().request('/api/stats/usefulness?window=24h');
     const emptyBody = await emptyRes.json();
@@ -265,7 +268,7 @@ describe('dashboard memory usefulness stats', () => {
 
   it('returns a generic error when usefulness calculation fails', async () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-    mocks.service.getRecentEvents.mockRejectedValue(new Error('/Users/example/private-store failed'));
+    mocks.service.getEventsAfter.mockRejectedValue(new Error('/Users/example/private-store failed'));
 
     const res = await createApp().request('/api/stats/usefulness?window=7d');
     const body = await res.json();

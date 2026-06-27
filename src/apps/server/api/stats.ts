@@ -1871,17 +1871,17 @@ statsRouter.get('/usefulness', async (c) => {
   try {
     await memoryService.initialize();
     const now = Date.now();
-    const eventLimit = 20000;
     const traceLimit = 5000;
     const windowStart = new Date(now - windowToMs(window));
+    // Fetch exactly the window's events (uncapped) rather than a 20k slice, so
+    // the result can't be silently truncated for an active window.
     const [events, helpfulness, traces] = await Promise.all([
-      memoryService.getRecentEvents(eventLimit),
+      memoryService.getEventsAfter(windowStart.toISOString()),
       memoryService.getHelpfulnessStats(windowStart),
       memoryService.getRecentRetrievalTraces(traceLimit)
     ]);
 
     return c.json(computeMemoryUsefulnessSummary(events, helpfulness, traces, now, window, {
-      eventsLimit: eventLimit,
       tracesLimit: traceLimit
     }));
   } catch (error) {
@@ -1999,7 +1999,10 @@ statsRouter.get('/kpi', async (c) => {
     await memoryService.initialize();
     const now = Date.now();
     const thresholds = loadKpiThresholds();
-    const allEvents = await memoryService.getRecentEvents(20000);
+    // Fetch only what the window, the previous-window deltas (up to 2x window),
+    // and the 30-day trend actually need — not an arbitrary 20k-recent slice.
+    const lookbackMs = Math.max(2 * windowToMs(window), 30 * 24 * 60 * 60 * 1000);
+    const allEvents = await memoryService.getEventsAfter(new Date(now - lookbackMs).toISOString());
     const events = allEvents.filter((e) => inWindow(e, now, window));
 
     const helpfulness = await memoryService.getHelpfulnessStats();
