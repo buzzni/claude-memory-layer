@@ -478,6 +478,15 @@ export class SQLiteEventStore {
         access_count INTEGER DEFAULT 0
       );
 
+      -- Junction: consolidated memory -> source event id (indexed lookup that
+      -- replaces per-event source_events LIKE scans during consolidation).
+      CREATE TABLE IF NOT EXISTS consolidated_memory_events (
+        memory_id TEXT NOT NULL,
+        event_id TEXT NOT NULL,
+        PRIMARY KEY (memory_id, event_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_cme_event ON consolidated_memory_events(event_id);
+
       -- Continuity Log table (tracks context transitions)
       CREATE TABLE IF NOT EXISTS continuity_log (
         log_id TEXT PRIMARY KEY,
@@ -927,6 +936,18 @@ export class SQLiteEventStore {
       `);
     } catch {
       // Index may already exist, ignore
+    }
+
+    // One-time backfill of the consolidated_memory_events junction from existing
+    // source_events JSON (idempotent; skipped once the junction has any rows).
+    const cmeCount = sqliteGet<{ c: number }>(this.db, `SELECT COUNT(*) as c FROM consolidated_memory_events`, []);
+    if ((cmeCount?.c ?? 0) === 0) {
+      sqliteExec(this.db, `
+        INSERT OR IGNORE INTO consolidated_memory_events (memory_id, event_id)
+        SELECT cm.memory_id, je.value
+        FROM consolidated_memories cm, json_each(cm.source_events) je
+        WHERE json_valid(cm.source_events);
+      `);
     }
 
     // Stamp the schema version so future ordered migrations have an anchor to

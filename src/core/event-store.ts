@@ -266,6 +266,30 @@ export class EventStore {
       )
     `);
 
+    // Junction table mapping consolidated memories to their source event ids.
+    // Replaces per-event `source_events LIKE '%"id"%'` full scans (O(groups x
+    // events) per consolidation run, plus substring false positives) with a
+    // single indexed lookup.
+    await dbRun(this.db, `
+      CREATE TABLE IF NOT EXISTS consolidated_memory_events (
+        memory_id VARCHAR NOT NULL,
+        event_id VARCHAR NOT NULL,
+        PRIMARY KEY (memory_id, event_id)
+      )
+    `);
+    await dbRun(this.db, `CREATE INDEX IF NOT EXISTS idx_cme_event ON consolidated_memory_events(event_id)`);
+    // One-time backfill from existing source_events JSON (idempotent; skipped
+    // once the junction holds any rows, since new writes self-index).
+    const cmeCount = await dbAll<{ c: number }>(this.db, `SELECT COUNT(*) as c FROM consolidated_memory_events`);
+    if ((cmeCount[0]?.c ?? 0) === 0) {
+      await dbRun(this.db, `
+        INSERT OR IGNORE INTO consolidated_memory_events (memory_id, event_id)
+        SELECT cm.memory_id, je.value
+        FROM consolidated_memories cm, json_each(cm.source_events) je
+        WHERE json_valid(cm.source_events)
+      `);
+    }
+
     // Continuity Log table (tracks context transitions)
     await dbRun(this.db, `
       CREATE TABLE IF NOT EXISTS continuity_log (
