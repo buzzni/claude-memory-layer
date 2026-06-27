@@ -1127,6 +1127,25 @@ export class SQLiteEventStore {
   }
 
   /**
+   * Batch-fetch events by id in a single query, applying the same quarantine
+   * predicate as getEvent. Lets hot paths replace N sequential round-trips with
+   * one. Missing ids are simply absent from the result (order not guaranteed).
+   */
+  async getEvents(ids: string[], options?: QuarantineReadOptions): Promise<MemoryEvent[]> {
+    await this.initialize();
+    if (ids.length === 0) return [];
+
+    const placeholders = ids.map(() => '?').join(',');
+    const rows = sqliteAll<Record<string, unknown>>(
+      this.db,
+      `SELECT * FROM events WHERE id IN (${placeholders}) AND ${maybeQuarantinePredicate(options)}`,
+      ids
+    );
+
+    return rows.map((row) => this.rowToEvent(row));
+  }
+
+  /**
    * Get events since a timestamp (for sync)
    */
   async getEventsSince(timestamp: string, limit: number = 1000, options?: QuarantineReadOptions): Promise<MemoryEvent[]> {

@@ -469,6 +469,21 @@ export class EventStore {
     return this.rowToEvent(rows[0]);
   }
 
+  /** Batch-fetch events by id in a single query (missing ids are omitted). */
+  async getEvents(ids: string[]): Promise<MemoryEvent[]> {
+    await this.initialize();
+    if (ids.length === 0) return [];
+
+    const placeholders = ids.map(() => '?').join(',');
+    const rows = await dbAll<Record<string, unknown>>(
+      this.db,
+      `SELECT * FROM events WHERE id IN (${placeholders})`,
+      ids
+    );
+
+    return rows.map((row) => this.rowToEvent(row));
+  }
+
   /**
    * Create or update session
    */
