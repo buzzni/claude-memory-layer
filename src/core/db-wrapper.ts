@@ -22,10 +22,21 @@ export interface DatabaseOptions {
 }
 
 /**
- * Creates a new SQLite database connection
+ * Creates a new SQLite database connection.
+ *
+ * Applies the same connection pragmas as the primary sqlite-wrapper so handles
+ * opened here don't fall back to rollback-journal mode with a 0ms busy timeout —
+ * which would throw SQLITE_BUSY the instant another process (vector worker,
+ * mongo sync, or a second handle to the same file) holds a write lock.
  */
 export function createDatabase(dbPath: string, options?: DatabaseOptions): Database {
-  return new BetterSqlite3(dbPath, { readonly: options?.readOnly });
+  const db = new BetterSqlite3(dbPath, { readonly: options?.readOnly });
+  db.pragma('busy_timeout = 5000');
+  if (!options?.readOnly) {
+    db.pragma('journal_mode = WAL');
+    db.pragma('synchronous = NORMAL');
+  }
+  return db;
 }
 
 /**

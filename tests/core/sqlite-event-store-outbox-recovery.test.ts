@@ -73,4 +73,23 @@ describe('SQLiteEventStore outbox recovery', () => {
 
     await store.close();
   });
+
+  it('atomically claims pending items so a second claim does not re-return them', async () => {
+    const store = new SQLiteEventStore(tempDbPath());
+    await store.initialize();
+
+    const id1 = await store.enqueueForEmbedding('event-1', 'first');
+    const id2 = await store.enqueueForEmbedding('event-2', 'second');
+
+    const firstClaim = await store.getPendingOutboxItems(10);
+    expect(firstClaim.map((item) => item.id).sort()).toEqual([id1, id2].sort());
+    expect(firstClaim.every((item) => item.status === 'processing')).toBe(true);
+
+    // The claim flips status to 'processing' in the same statement, so an
+    // immediate second claim (e.g. a concurrent worker) must get nothing back.
+    const secondClaim = await store.getPendingOutboxItems(10);
+    expect(secondClaim).toEqual([]);
+
+    await store.close();
+  });
 });

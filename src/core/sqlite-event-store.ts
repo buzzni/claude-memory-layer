@@ -1350,29 +1350,31 @@ export class SQLiteEventStore {
   async getPendingOutboxItems(limit: number = 32): Promise<OutboxItem[]> {
     await this.initialize();
 
-    const pending = sqliteAll<Record<string, unknown>>(
-      this.db,
-      `SELECT * FROM embedding_outbox
-       WHERE status = 'pending'
-       ORDER BY created_at
-       LIMIT ?`,
-      [limit]
-    );
-
-    if (pending.length === 0) return [];
-
-    // Update status to processing and stamp the claim time so abandoned workers can be recovered safely.
-    const ids = pending.map(r => r.id as string);
-    const placeholders = ids.map(() => '?').join(',');
-    sqliteRun(
+    // Claim pending items atomically in a single UPDATE ... RETURNING. A
+    // SELECT-then-UPDATE leaves a window where two concurrent workers (or a
+    // worker plus processAll) both select the same rows before either marks them
+    // 'processing', producing duplicate embedding work. The single statement
+    // makes the claim race-free, matching VectorOutbox.claimJobs.
+    const claimed = sqliteAll<Record<string, unknown>>(
       this.db,
       `UPDATE embedding_outbox
        SET status = 'processing', processed_at = datetime('now'), error_message = NULL
-       WHERE id IN (${placeholders})`,
-      ids
+       WHERE id IN (
+         SELECT id FROM embedding_outbox
+         WHERE status = 'pending'
+         ORDER BY created_at
+         LIMIT ?
+       )
+       RETURNING *`,
+      [limit]
     );
 
-    return pending.map(row => ({
+    if (claimed.length === 0) return [];
+
+    // RETURNING does not guarantee row order; restore created_at ordering.
+    claimed.sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
+
+    return claimed.map(row => ({
       id: row.id as string,
       eventId: row.event_id as string,
       content: row.content as string,

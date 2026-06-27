@@ -545,28 +545,28 @@ export class EventStore {
   async getPendingOutboxItems(limit: number = 32): Promise<OutboxItem[]> {
     await this.initialize();
 
-    // First, get pending items
-    const pending = await dbAll<Record<string, unknown>>(
+    // Claim pending items atomically (single UPDATE ... RETURNING) so two
+    // concurrent workers can't select the same rows before either marks them
+    // 'processing' and double-process them.
+    const claimed = await dbAll<Record<string, unknown>>(
       this.db,
-      `SELECT * FROM embedding_outbox
-       WHERE status = 'pending'
-       ORDER BY created_at
-       LIMIT ?`,
+      `UPDATE embedding_outbox
+       SET status = 'processing'
+       WHERE id IN (
+         SELECT id FROM embedding_outbox
+         WHERE status = 'pending'
+         ORDER BY created_at
+         LIMIT ?
+       )
+       RETURNING *`,
       [limit]
     );
 
-    if (pending.length === 0) return [];
+    if (claimed.length === 0) return [];
 
-    // Update status to processing
-    const ids = pending.map(r => r.id as string);
-    const placeholders = ids.map(() => '?').join(',');
-    await dbRun(
-      this.db,
-      `UPDATE embedding_outbox SET status = 'processing' WHERE id IN (${placeholders})`,
-      ids
-    );
+    claimed.sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
 
-    return pending.map(row => ({
+    return claimed.map(row => ({
       id: row.id as string,
       eventId: row.event_id as string,
       content: row.content as string,

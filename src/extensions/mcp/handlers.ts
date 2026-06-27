@@ -999,10 +999,10 @@ async function handleExternalMarketContext(args: Record<string, unknown>): Promi
 }
 
 async function handleMemSearch(memoryService: MemoryService, args: Record<string, unknown>): Promise<ToolResult> {
-  const query = args.query as string;
+  const query = requiredOperationString(args.query, 'query');
   const topK = numberArg(args.topK, 5, 1, 20);
   const fetchTopK = Math.min(topK * 3, 20);
-  const sessionId = args.sessionId as string | undefined;
+  const sessionId = optionalString(args.sessionId);
   const eventType = eventTypeArg(args.eventType);
 
   const search = await retrieveMcpMemories(memoryService, query, { topK, fetchTopK, sessionId, eventType });
@@ -1151,8 +1151,8 @@ function scoreKeywordMatch(content: string, queryTokens: string[]): number {
 }
 
 async function handleMemTimeline(memoryService: MemoryService, args: Record<string, unknown>): Promise<ToolResult> {
-  const ids = args.ids as string[];
-  const windowSize = (args.windowSize as number) || 3;
+  const ids = stringArrayOperationArg(args.ids, 100);
+  const windowSize = numberArg(args.windowSize, 3, 0, 50);
 
   const recentEvents = await memoryService.getRecentEvents(10000);
 
@@ -1209,7 +1209,11 @@ async function handleMemTimeline(memoryService: MemoryService, args: Record<stri
 }
 
 async function handleMemDetails(memoryService: MemoryService, args: Record<string, unknown>): Promise<ToolResult> {
-  const ids = args.ids as string[];
+  const ids = stringArrayOperationArg(args.ids, 200);
+
+  if (ids.length === 0) {
+    return { content: [{ type: 'text', text: '## No memory ids provided.' }] };
+  }
 
   const recentEvents = await memoryService.getRecentEvents(10000);
 
