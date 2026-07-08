@@ -10,6 +10,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import {
+  DISABLED_SHARED_STORE_CONFIG,
+  MemoryService,
   getDefaultMemoryService,
   getMemoryServiceForProject,
   getLightweightMemoryServiceForProject
@@ -30,7 +32,8 @@ import { SQLiteEventStore } from '../../core/sqlite-event-store.js';
 import { createSQLiteDatabase, sqliteClose, sqliteGet, type SQLiteDatabase } from '../../core/sqlite-wrapper.js';
 import { MongoSyncWorker, type MongoSyncDirection } from '../../core/mongo-sync-worker.js';
 import { applyPrivacyFilter, maskSensitiveInput } from '../../core/privacy/filter.js';
-import type { Config } from '../../core/types.js';
+import type { Config, OutboxStats, OutboxQueueStats } from '../../core/types.js';
+import type { MemoryStats } from '../../core/engine/memory-query-service.js';
 import {
   ActionRepository,
   CheckpointRepository,
@@ -108,6 +111,13 @@ import {
   formatVectorStatusReport,
   resolveVectorStatusCommandOptions
 } from './vector-command.js';
+import {
+  buildProductivityHealthReport,
+  parseProductivityHealthMode,
+  parseProductivityHealthProfile,
+  type ProductivityHealthMode,
+  type ProductivityHealthProfile
+} from '../../core/productivity-health-report.js';
 import {
   createMongoSyncPostProcessor,
   resolveMongoSyncProcessOptions
@@ -193,6 +203,60 @@ type MarketContextCommandOptions = {
   json?: boolean;
   snapshot?: boolean;
 };
+
+type HealthCommandOptions = {
+  productivity?: boolean;
+  json?: boolean;
+  project?: string;
+  profile?: ProductivityHealthProfile | string;
+  mode?: ProductivityHealthMode | string;
+};
+
+function resolveHealthProjectIdentity(projectPath: string | undefined): { scope: 'project' | 'global'; id: string } {
+  if (!projectPath || projectPath.trim().length === 0) return { scope: 'global', id: 'global' };
+  const normalized = projectPath.trim();
+  return { scope: 'project', id: /^[a-f0-9]{8}$/.test(normalized) ? normalized : hashProjectPath(normalized) };
+}
+
+function resolveHealthStoragePath(projectPathOrHash: string | undefined): string {
+  const normalized = projectPathOrHash?.trim();
+  return normalized && normalized.length > 0 ? resolveProjectStoragePath(normalized) : path.join(os.homedir(), '.claude-code', 'memory');
+}
+
+function createHealthMemoryService(projectPathOrHash: string | undefined): MemoryService {
+  return new MemoryService({
+    storagePath: resolveHealthStoragePath(projectPathOrHash),
+    readOnly: true,
+    lightweightMode: true,
+    analyticsEnabled: false,
+    sharedStoreConfig: DISABLED_SHARED_STORE_CONFIG
+  });
+}
+
+function healthStoreExists(projectPathOrHash: string | undefined): boolean {
+  return fs.existsSync(path.join(resolveHealthStoragePath(projectPathOrHash), 'events.sqlite'));
+}
+
+function emptyHealthStats(): Pick<MemoryStats, 'totalEvents' | 'vectorCount' | 'levelStats'> {
+  return { totalEvents: 0, vectorCount: 0, levelStats: [] };
+}
+
+function emptyHealthQueue(): OutboxQueueStats {
+  return {
+    pending: 0,
+    processing: 0,
+    failed: 0,
+    retryableFailed: 0,
+    quarantinedFailed: 0,
+    total: 0,
+    stuckProcessing: 0,
+    oldestProcessingAgeMs: null
+  };
+}
+
+function emptyHealthOutbox(): OutboxStats {
+  return { embedding: emptyHealthQueue(), vector: emptyHealthQueue() };
+}
 
 function parseCommaList(value: string | undefined): string[] | undefined {
   if (!value) return undefined;
@@ -938,6 +1002,59 @@ program
     } catch (error) {
       console.error('Stats failed:', error);
       process.exit(1);
+    }
+  });
+
+/**
+ * Health command - aggregate-only Project Health Report
+ */
+program
+  .command('health')
+  .description('Show aggregate health reports for agent productivity workflows')
+  .option('--productivity', 'Print Project Health Report for agent productivity workflows')
+  .option('--json', 'Print health report as JSON')
+  .option('-p, --project <path>', 'Project path or 8-character project hash')
+  .option('--profile <profile>', 'Agent profile: coder, reviewer, pm, support, researcher, team', 'coder')
+  .option('--mode <mode>', 'Report mode: observe, preview, enforce', 'preview')
+  .action(async (options: HealthCommandOptions) => {
+    let service: MemoryService | undefined;
+
+    try {
+      if (options.productivity !== true) {
+        throw new Error('Use --productivity to select the Project Health Report');
+      }
+      if (options.json !== true) {
+        throw new Error('Only --json output is currently supported for productivity health');
+      }
+
+      const profile = parseProductivityHealthProfile(options.profile);
+      const mode = parseProductivityHealthMode(options.mode);
+      const projectPath = options.project ?? process.cwd();
+      const project = resolveHealthProjectIdentity(projectPath);
+
+      let stats: Pick<MemoryStats, 'totalEvents' | 'vectorCount' | 'levelStats'>;
+      let outbox: OutboxStats;
+      if (healthStoreExists(projectPath)) {
+        service = createHealthMemoryService(projectPath);
+        [stats, outbox] = await Promise.all([
+          service.getStats(),
+          service.getOutboxStats()
+        ]);
+      } else {
+        stats = emptyHealthStats();
+        outbox = emptyHealthOutbox();
+      }
+      console.log(JSON.stringify(buildProductivityHealthReport({ stats, outbox, project, profile, mode }), null, 2));
+    } catch (error) {
+      const message = error instanceof Error
+        ? error.message
+        : 'Health report failed';
+      console.error(message.startsWith('Invalid --') || message.startsWith('Use --') || message.startsWith('Only --')
+        ? message
+        : 'Health report failed');
+      process.exit(1);
+    } finally {
+      await service?.shutdown().catch(() => undefined);
     }
   });
 

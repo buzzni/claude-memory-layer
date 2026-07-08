@@ -32,6 +32,14 @@ The cleaned LongMemEval_S JSON is roughly 277MB. Do not commit it.
 
 ## Run retrieval-only smoke
 
+Reproducible mini smoke with no external dataset download:
+
+```bash
+npm run eval:longmemeval:retrieval-smoke -- --format json --top-k 2
+```
+
+The npm wrapper defaults to the committed `benchmarks/longmemeval/fixtures/retrieval-smoke-mini.json` fixture for fresh-clone reproducibility. Pass `--input <path>` after `--` to override it with the full external LongMemEval dataset.
+
 Baseline session-level retrieval, official-style non-abstention only:
 
 ```bash

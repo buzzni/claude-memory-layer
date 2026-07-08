@@ -1,0 +1,30 @@
+[
+  {
+    "question_id": "q_smoke_1",
+    "question_type": "single-session-user",
+    "question": "Which tea did the user prefer?",
+    "answer": "jasmine tea",
+    "haystack_session_ids": ["s_noise", "s_answer"],
+    "haystack_dates": ["2026-01-01", "2026-01-02"],
+    "haystack_sessions": [
+      [
+        {
+          "role": "user",
+          "content": "I talked about a calendar."
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "Noise before the preference."
+        },
+        {
+          "role": "user",
+          "content": "I prefer jasmine tea in the afternoon.",
+          "has_answer": true
+        }
+      ]
+    ],
+    "answer_session_ids": ["s_answer"]
+  }
+]

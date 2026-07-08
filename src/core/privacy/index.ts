@@ -18,3 +18,12 @@ export {
   truncateOutput,
   type FilterResult
 } from './filter.js';
+
+export {
+  DEFAULT_PUBLIC_OUTPUT_SCAN_PATHS,
+  formatPublicOutputScanMarkdown,
+  scanPublicOutputFiles,
+  type PublicOutputFinding,
+  type PublicOutputScanOptions,
+  type PublicOutputScanReport
+} from './public-output-scanner.js';
