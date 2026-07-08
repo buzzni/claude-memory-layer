@@ -5,7 +5,18 @@
 
 import { Hono } from 'hono';
 import { spawnSync } from 'child_process';
+import * as fs from 'fs';
+import * as path from 'path';
 import { getLightweightServiceFromQuery, getWritableServiceFromQuery } from './utils.js';
+import { hashProjectPath, resolveProjectStoragePath } from '../../../core/registry/project-path.js';
+import type { MemoryStats } from '../../../core/engine/memory-query-service.js';
+import type { OutboxQueueStats, OutboxStats } from '../../../core/types.js';
+import {
+  buildProductivityHealthReport,
+  parseProductivityHealthMode,
+  parseProductivityHealthProfile,
+  type ProductivityHealthProjectIdentity
+} from '../../../core/productivity-health-report.js';
 
 export const healthRouter = new Hono();
 
@@ -56,6 +67,38 @@ function aggregateOutbox(outbox: Awaited<ReturnType<Awaited<ReturnType<typeof ge
   const quarantinedFailed = (outbox.embedding?.quarantinedFailed || 0) + (outbox.vector?.quarantinedFailed || 0);
   const stuckProcessing = (outbox.embedding?.stuckProcessing || 0) + (outbox.vector?.stuckProcessing || 0);
   return { pending, processing, failed, retryableFailed, quarantinedFailed, stuckProcessing };
+}
+
+function resolveProductivityProjectIdentity(project: string | undefined): ProductivityHealthProjectIdentity {
+  if (!project || project.trim().length === 0) return { scope: 'global', id: 'global' };
+  const normalized = project.trim();
+  return { scope: 'project', id: /^[a-f0-9]{8}$/.test(normalized) ? normalized : hashProjectPath(normalized) };
+}
+
+function explicitProjectStoreExists(project: string | undefined): boolean {
+  if (!project || project.trim().length === 0) return true;
+  return fs.existsSync(path.join(resolveProjectStoragePath(project.trim()), 'events.sqlite'));
+}
+
+function emptyProductivityStats(): Pick<MemoryStats, 'totalEvents' | 'vectorCount' | 'levelStats'> {
+  return { totalEvents: 0, vectorCount: 0, levelStats: [] };
+}
+
+function emptyProductivityQueue(): OutboxQueueStats {
+  return {
+    pending: 0,
+    processing: 0,
+    failed: 0,
+    retryableFailed: 0,
+    quarantinedFailed: 0,
+    total: 0,
+    stuckProcessing: 0,
+    oldestProcessingAgeMs: null
+  };
+}
+
+function emptyProductivityOutbox(): OutboxStats {
+  return { embedding: emptyProductivityQueue(), vector: emptyProductivityQueue() };
 }
 
 // GET /api/health/setup
@@ -118,6 +161,46 @@ healthRouter.get('/setup', async (c) => {
     }, 500);
   } finally {
     await memoryService.shutdown();
+  }
+});
+
+// GET /api/health/productivity
+// Aggregate-only Project Health Report for agent productivity workflows.
+healthRouter.get('/productivity', async (c) => {
+  let memoryService: ReturnType<typeof getLightweightServiceFromQuery> | undefined;
+  try {
+    const profile = parseProductivityHealthProfile(c.req.query('profile'));
+    const mode = parseProductivityHealthMode(c.req.query('mode'));
+    const projectQuery = c.req.query('project') || c.req.query('projectId');
+    const project = resolveProductivityProjectIdentity(projectQuery);
+
+    if (!explicitProjectStoreExists(projectQuery)) {
+      return c.json(buildProductivityHealthReport({
+        stats: emptyProductivityStats(),
+        outbox: emptyProductivityOutbox(),
+        project,
+        profile,
+        mode
+      }));
+    }
+
+    memoryService = getLightweightServiceFromQuery(c);
+    await memoryService.initialize();
+    const [stats, outbox] = await Promise.all([
+      memoryService.getStats(),
+      memoryService.getOutboxStats()
+    ]);
+
+    return c.json(buildProductivityHealthReport({ stats, outbox, project, profile, mode }));
+  } catch (error) {
+    const status = error instanceof Error && error.message.startsWith('Invalid --') ? 400 : 500;
+    return c.json({
+      status: 'error',
+      timestamp: new Date().toISOString(),
+      error: status === 400 ? 'Invalid productivity health option' : 'Productivity health check failed'
+    }, status);
+  } finally {
+    if (memoryService) await memoryService.shutdown();
   }
 });
 

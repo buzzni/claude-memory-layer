@@ -13,6 +13,13 @@ function runLongMemEvalSmokeCli(args: string[], env: Record<string, string> = {}
   });
 }
 
+function runLongMemEvalSmokeNpmScript(args: string[] = []) {
+  return spawnSync('npm', ['run', 'eval:longmemeval:retrieval-smoke', '--', ...args], {
+    cwd: process.cwd(),
+    encoding: 'utf8'
+  });
+}
+
 function writeLongMemEvalFixture(): string {
   const dir = mkdtempSync(path.join(tmpdir(), 'cml-longmemeval-cli-'));
   const fixturePath = path.join(dir, 'longmemeval-mini.json');
@@ -224,6 +231,24 @@ describe('LongMemEval retrieval smoke CLI', () => {
     expect(result.stdout).toContain('--reader-timeout-ms N');
     expect(result.stdout).toContain('LONGMEMEVAL_READER_TIMEOUT_MS');
     expect(result.stdout).toContain('LongMemEval-compatible JSONL');
+  });
+
+  it('ships a reproducible npm smoke that runs against the committed mini fixture without external input', () => {
+    const result = runLongMemEvalSmokeNpmScript(['--format', 'json', '--top-k', '2']);
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe('');
+    const pkg = JSON.parse(readFileSync(path.join(process.cwd(), 'package.json'), 'utf8')) as { scripts?: Record<string, string> };
+    expect(pkg.scripts?.['eval:longmemeval:retrieval-smoke']).toContain('benchmarks/longmemeval/fixtures/retrieval-smoke-mini.json');
+    const report = JSON.parse(result.stdout.slice(result.stdout.indexOf('{'))) as {
+      evaluator: string;
+      fixtureStats: { queryCount: number; ks: number[] };
+      longMemEvalAnalysis: { k: number };
+    };
+    expect(report.evaluator).toBe('cml-retriever-longmemeval-hybrid-isolated-v1');
+    expect(report.fixtureStats.queryCount).toBeGreaterThan(0);
+    expect(report.fixtureStats.ks).toContain(2);
+    expect(report.longMemEvalAnalysis.k).toBe(2);
   });
 
   it('defaults to hybrid retrieval when retrieval mode is omitted', () => {
