@@ -7,4 +7,4 @@
 import { main } from '../adapters/claude/hooks/session-start.js';
 import { runHook } from '../adapters/claude/hooks/hook-runtime.js';
 
-void runHook({ name: 'session-start', fallbackOutput: '{"context":""}' }, main);
+void runHook({ name: 'session-start', fallbackOutput: '{"hookSpecificOutput":{"hookEventName":"SessionStart"}}' }, main);

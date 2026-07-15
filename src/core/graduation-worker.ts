@@ -6,7 +6,7 @@
 
 import type { MemoryLevel } from './types.js';
 import { EventStore } from './event-store.js';
-import { GraduationPipeline } from './graduation.js';
+import { GraduationPipeline, type EventMetrics } from './graduation.js';
 
 export interface GraduationWorkerConfig {
   /** How often to run graduation evaluation (ms) */
@@ -15,6 +15,44 @@ export interface GraduationWorkerConfig {
   batchSize: number;
   /** Minimum time between evaluations of the same event (ms) */
   cooldownMs: number;
+}
+
+export type GraduationRunStatus = 'success' | 'not_eligible' | 'failed';
+
+export interface GraduationRunTelemetryInput {
+  startedAt: Date;
+  finishedAt: Date;
+  status: GraduationRunStatus;
+  evaluated: number;
+  graduated: number;
+}
+
+/**
+ * SQLite stores can persist aggregate liveness data.  Keep this optional so
+ * the worker remains compatible with the legacy EventStore and test doubles.
+ */
+export interface GraduationRunTelemetryStore {
+  recordGraduationRun(input: GraduationRunTelemetryInput): Promise<void>;
+}
+
+export interface GraduationMetricsStore {
+  getGraduationMetrics(eventIds: string[]): Promise<EventMetrics[]>;
+}
+
+export interface GraduationCandidateStore {
+  getGraduationCandidates(level: MemoryLevel, options: { limit: number }): Promise<Awaited<ReturnType<EventStore['getEventsByLevel']>>>;
+}
+
+function hasGraduationRunTelemetry(store: EventStore): store is EventStore & GraduationRunTelemetryStore {
+  return typeof (store as Partial<GraduationRunTelemetryStore>).recordGraduationRun === 'function';
+}
+
+function hasGraduationMetrics(store: EventStore): store is EventStore & GraduationMetricsStore {
+  return typeof (store as Partial<GraduationMetricsStore>).getGraduationMetrics === 'function';
+}
+
+function hasGraduationCandidates(store: EventStore): store is EventStore & GraduationCandidateStore {
+  return typeof (store as Partial<GraduationCandidateStore>).getGraduationCandidates === 'function';
 }
 
 const DEFAULT_CONFIG: GraduationWorkerConfig = {
@@ -65,7 +103,7 @@ export class GraduationWorker {
    * Force a graduation evaluation run
    */
   async forceRun(): Promise<GraduationRunResult> {
-    return await this.runGraduation();
+    return await this.runGraduationWithTelemetry();
   }
 
   /**
@@ -87,7 +125,7 @@ export class GraduationWorker {
     if (!this.running) return;
 
     try {
-      await this.runGraduation();
+      await this.runGraduationWithTelemetry();
     } catch (error) {
       console.error('Graduation error:', error);
     }
@@ -109,9 +147,13 @@ export class GraduationWorker {
     const now = Date.now();
 
     for (const level of levels) {
-      const events = await this.eventStore.getEventsByLevel(level, {
-        limit: this.config.batchSize
-      });
+      const events = hasGraduationCandidates(this.eventStore)
+        ? await this.eventStore.getGraduationCandidates(level, { limit: this.config.batchSize })
+        : await this.eventStore.getEventsByLevel(level, { limit: this.config.batchSize });
+
+      if (hasGraduationMetrics(this.eventStore) && events.length > 0) {
+        this.graduation.hydrateMetrics(await this.eventStore.getGraduationMetrics(events.map((event) => event.id)));
+      }
 
       let levelGraduated = 0;
 
@@ -146,6 +188,42 @@ export class GraduationWorker {
     }
 
     return result;
+  }
+
+  private async runGraduationWithTelemetry(): Promise<GraduationRunResult> {
+    const startedAt = new Date();
+    try {
+      const result = await this.runGraduation();
+      await this.recordTelemetry({
+        startedAt,
+        finishedAt: new Date(),
+        status: result.graduated === 0 ? 'not_eligible' : 'success',
+        evaluated: result.evaluated,
+        graduated: result.graduated
+      });
+      return result;
+    } catch (error) {
+      await this.recordTelemetry({
+        startedAt,
+        finishedAt: new Date(),
+        status: 'failed',
+        evaluated: 0,
+        graduated: 0
+      });
+      throw error;
+    }
+  }
+
+  private async recordTelemetry(input: GraduationRunTelemetryInput): Promise<void> {
+    if (!hasGraduationRunTelemetry(this.eventStore)) return;
+
+    // Telemetry must not make a successful derivation fail.  Errors are kept
+    // out of public output and the next run will attempt to record again.
+    try {
+      await this.eventStore.recordGraduationRun(input);
+    } catch {
+      // best-effort liveness telemetry
+    }
   }
 }
 

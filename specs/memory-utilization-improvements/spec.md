@@ -433,6 +433,93 @@ Week 3 (Feedback Loop):
 | IMP-04 graduation repair로 L0 과잉 승격 | 저 | 중 | dry-run 모드 먼저 실행 |
 | IMP-01 sync 변환으로 hook 응답 지연 | 저 | 저 | trace INSERT는 < 1ms (SQLite sync) |
 
+## IMP-11: Evidence-based answer utilization (2026-07-14)
+
+**문제**: 검색 성공과 답변 기여가 분리되어 있다. Claude adapter가 비표준 `{context}` JSON을 반환해 실제 모델에 전달되지 않았고, 전달 전 후보도 `user_prompt`나 단일 tool observation처럼 관련은 있지만 답을 만들 수 없는 조각이었다. 실데이터 평가 프롬프트가 운영 corpus에 다시 저장되어 다음 평가를 오염시키는 문제도 확인됐다.
+
+**기능 계약**:
+
+1. SessionStart/UserPromptSubmit은 Claude Code의 `hookSpecificOutput.hookEventName + additionalContext` envelope를 사용한다.
+2. `CLAUDE_MEMORY_EVAL_MODE=true`에서는 prompt/access/helpfulness/trace/adherence/session event를 쓰지 않는다. 프로젝트 라우팅 registry만 허용한다.
+3. 주입 후보는 semantic score뿐 아니라 evidence utility를 반영한다: `session_summary > agent_response > tool_observation > user_prompt`.
+4. answer-seeking query에 prompt-only evidence만 있으면 abstain한다. continuation query에서만 prompt-only context를 허용한다.
+5. relevant seed가 user prompt/tool observation이면 같은 session의 인접 episode를 확장해 agent response/session summary를 우선 evidence로 추가한다.
+6. 주입 문맥은 source event ref와 “요청/시도와 확정 결과를 구분하라”는 grounding instruction을 포함한다.
+
+**성공 기준**:
+
+- 공식 envelope contract test 및 실제 `claude -p` memory-on smoke 통과.
+- 테스트 세션을 제외한 `recsys_justin` 실제 corpus에서 answerable evidence precision ≥80%.
+- unrelated/meta no-match injection ≤5%, prompt-only answer injection 0.
+- 소규모 5-case gate 통과 후 20+ case로 확대하며, 확대 평가에서 quality가 악화되면 enforce하지 않는다.
+
+## IMP-12: Hook-only automatic graduation (2026-07-14)
+
+**문제**: Claude hook은 짧게 실행되는 lightweight process이고 semantic daemon은 `embeddingOnly`라서, 검색·접근 증거는 자동으로 쌓여도 L0→L1+ graduation pass는 사용자가 `process`를 실행하지 않으면 시작되지 않는다. 일반 full service의 5분 worker만으로는 hook-only 설치의 pipeline liveness를 보장할 수 없다.
+
+**기능 계약**:
+
+1. semantic daemon은 retrieval response의 critical path 밖에서 project별 bounded graduation pass를 예약한다.
+2. 자동 pass는 기본 활성화하되 project별 cooldown과 in-flight dedupe를 적용한다. `CLAUDE_MEMORY_AUTO_GRADUATION=false`로 비활성화할 수 있다.
+3. `CLAUDE_MEMORY_EVAL_MODE=true` request는 corpus뿐 아니라 graduation level/telemetry도 변경하지 않는다.
+4. embedding-only runtime은 주기 worker/endless/shared service를 켜지 않고 재사용 가능한 one-shot graduation만 수행한다.
+5. candidate batch는 단순 최신순이 아니라 접근된 memory를 우선해 오래된 useful memory의 starvation을 방지한다.
+6. 자동 pass 실패는 retrieval response를 실패시키거나 민감한 오류를 stdout에 노출하지 않으며, 다음 cooldown 이후 재시도한다.
+
+**성공 기준**:
+
+- hook-only daemon request 후 bounded 시간 내 graduation attempt telemetry가 기록된다.
+- eligible fixture는 별도 수동 CLI 없이 L1로 승격되고, evaluation request는 level/telemetry가 불변이다.
+- retrieval latency는 background scheduling 전후 동등하며 자동 pass 동시 실행은 project당 1개 이하이다.
+
+## IMP-13: Graduated evidence utilization (2026-07-14)
+
+**문제**: L0→L1/L2 승격 후에도 retrieval ranking은 `memory_levels`를 읽지 않아 승격이 실제 recall을 바꾸지 않았다. 반대로 단순 level boost를 적용하면 promoted user prompt, task notification, 긴 운영 가이드가 정확한 답변보다 앞서는 noise amplification이 발생했다.
+
+**기능 계약**:
+
+1. Hook retrieval은 기존 semantic/keyword lane과 별도로 L1+ graduated lane을 bounded하게 조회한다.
+2. direct answer 후보는 `agent_response`와 answer-capable `session_summary`로 제한한다. template summary와 tool output은 level이 높아도 direct answer가 아니다.
+3. promoted `user_prompt`는 같은 turn의 response를 찾는 episode seed로만 사용할 수 있고 최종 answer evidence로 주입하지 않는다.
+4. graduated score는 level/access만이 아니라 query term coverage, identifier/entity coverage, entity proximity, FTS rank, diagnostic intent/outcome contract를 결합한다.
+5. 기존 semantic candidate가 L1+ lane에도 존재하면 서로 다른 score scale 중 graduated calibration을 사용한다.
+6. calibrated graduated top result에는 더 엄격한 score-cliff를 적용해 관련 있지만 다른 incident/entity의 답변이 함께 주입되는 것을 막는다.
+7. 주입 citation에 L1/L2 level을 표시하되, level은 근거의 정확성을 보장하지 않는 작은 prior로만 취급한다.
+8. semantic/no-match alignment은 질문 보일러플레이(`어떻게`, `확인해줘` 등)를 topic overlap으로 계산하지 않고, 최소 2개의 meaningful term overlap을 요구한다.
+9. graduated calibration 내부에서 적용한 level/access prior는 최종 ranking에서 다시 더하지 않는다. 넓은 L2가 정확한 L1을 밀어내지 않아야 한다.
+
+**성공 기준**:
+
+- 실제 promoted answer 6개 + prompt-only/no-match 2개 gate에서 정확한 answer 6/6, abstention 2/2.
+- 20+ 확대 field set에서 promoted precision ≥90%, prompt-only/unrelated injection 0.
+- eval mode 전후 events/traces/levels/graduation attempts 불변.
+- 실제 Claude Code hook event에서 relevant promoted evidence가 citation과 함께 전달되고, 관련 없는 질문은 `additionalContext`를 생성하지 않는다.
+
+## IMP-14: Local 100-case field evaluation and reusable Skill (2026-07-14)
+
+**문제**: 소규 hand-labeled canary는 정확한 회귀를 잡지만 실제 메모리 분포의 다양성과 일반화를 보장하지 않는다. raw transcript를 공개 fixture로 커밋하지 않으면서 반복 실행 가능한 대규모 field gate가 필요하다.
+
+**기능 계약**:
+
+1. project-local SQLite를 read-only로 열고 same-turn user prompt/agent response pair에서 deterministic하게 평가 질문을 생성한다.
+2. 기본 200건은 promoted/L0 positive, identifier counterfactual, unrelated no-match를 포함하고 level·intent·session·difficulty·query-style 다양성을 보고한다.
+3. raw query가 든 dataset은 local-only/ignored artifact로 저장하고, 커밋 가능 report는 aggregate·opaque case ID·failure reason만 포함한다.
+4. 평가는 실제 `UserPromptSubmit` hook을 eval mode로 실행해 top-1 hit, positive hit, no-match accuracy, wrong injection, latency p50/p95를 계산한다.
+5. eval mode 전후 events/traces/levels는 불변이어야 하고, hook 라우팅용 transient session mapping은 성공·실패와 무관하게 `finally`에서 제거한다. dataset/report는 secret/local path를 stdout에 노출하지 않는다.
+6. 같은 workflow를 다른 project/dataset에 적용할 수 있는 Codex Skill로 패키징하고 deterministic runner를 재사용한다.
+7. 회귀 기준선은 dataset만 고정하지 않고 해당 dataset을 생성한 `events.sqlite` 스냅샷도 별도 local-only fixture 디렉터리에 함께 동결한다.
+8. fixture 평가는 격리된 `HOME`, project store, session registry를 사용해 이후 live 프로젝트 메모리 추가·승격·semantic daemon 상태의 영향을 받지 않아야 한다.
+9. fixture 생성은 SQLite backup API로 WAL-consistent snapshot을 만들고 dataset/store checksum과 corpus count를 local manifest에 기록한다.
+
+**성공 기준**:
+
+- 100-case field set을 생성·실행하고 positive top-1/hit·no-match·latency를 보고한다.
+- baseline failure를 유형화해 최소 1회 정책을 개선하고 동일 dataset으로 재평가한다.
+- Skill folder가 `quick_validate.py`를 통과하고 실제 runner smoke를 성공한다.
+- live store에 평가와 무관한 메모리를 추가하지 않고도 frozen fixture 재평가 결과가 동일한 품질 gate를 통과한다.
+- positive에는 원문 exact recall뿐 아니라 압축 단서, 비연속 multi-clue, 동의어 치환, 제한적 typo/noise가 포함되어야 하며 난이도별 hit/top-1을 별도로 보고한다.
+- negative에는 명백한 무관 질문뿐 아니라 원문 구조를 유지한 plausible identifier counterfactual을 포함해 strict no-match를 압박한다.
+
 ## 2026-05-10 구현 업데이트 — Ask Memory diagnostics + memory-only
 
 ### 추가된 기능 contract

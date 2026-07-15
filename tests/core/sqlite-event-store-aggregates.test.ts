@@ -85,4 +85,138 @@ describe('SQLiteEventStore SQL aggregates', () => {
 
     await store.close();
   });
+
+  it('returns safe aggregate graduation liveness without retaining raw failure text', async () => {
+    const store = new SQLiteEventStore(tempDbPath());
+    await store.initialize();
+    await store.recordGraduationRun({
+      startedAt: new Date('2026-07-14T00:00:00.000Z'),
+      finishedAt: new Date('2026-07-14T00:00:01.000Z'),
+      status: 'failed',
+      evaluated: 4,
+      graduated: 0
+    });
+
+    expect(await store.getDerivationLiveness()).toEqual({
+      graduation: {
+        attempts: 1,
+        lastAttemptAt: '2026-07-14T00:00:01.000Z',
+        lastSuccessAt: null,
+        lastStatus: 'failed',
+        lastErrorCategory: 'graduation_failed'
+      },
+      sources: { graduatedEvents: 0, curatedLessons: 0 }
+    });
+
+    await store.close();
+  });
+
+  it('excludes quarantined graduated events from Brief source readiness', async () => {
+    const store = new SQLiteEventStore(tempDbPath());
+    await store.initialize();
+    const appended = await store.append({
+      eventType: 'user_prompt',
+      sessionId: 's1',
+      timestamp: new Date(),
+      content: 'quarantined memory',
+      metadata: { quarantine: { status: 'active' } }
+    });
+    await store.updateMemoryLevel(appended.eventId!, 'L1');
+
+    expect((await store.getDerivationLiveness()).sources.graduatedEvents).toBe(0);
+    await store.close();
+  });
+
+  it('limits curated source readiness to the requested project hash', async () => {
+    const store = new SQLiteEventStore(tempDbPath());
+    await store.initialize();
+    const db = store.getDatabase();
+    db.prepare(`INSERT INTO memory_lessons (
+      lesson_id, project_hash, name, trigger, steps_json, confidence,
+      source_session_ids, source_event_ids, failure_modes_json, skill_candidate,
+      source_class, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run('lesson-other-project', 'other-project', 'other', 'other', '[]', 1, '[]', '[]', '[]', 0, 'curated', '2026-01-01', '2026-01-01');
+
+    expect((await store.getDerivationLiveness('current-project')).sources.curatedLessons).toBe(0);
+    expect((await store.getDerivationLiveness('other-project')).sources.curatedLessons).toBe(1);
+    await store.close();
+  });
+
+  it('prioritizes accessed graduation candidates over newer unused events', async () => {
+    const store = new SQLiteEventStore(tempDbPath());
+    await store.initialize();
+    const old = await store.append({
+      eventType: 'agent_response',
+      sessionId: 'old-session',
+      timestamp: new Date('2025-01-01T00:00:00.000Z'),
+      content: 'old but useful answer'
+    });
+    await store.append({
+      eventType: 'agent_response',
+      sessionId: 'new-session',
+      timestamp: new Date('2026-07-14T00:00:00.000Z'),
+      content: 'new but unused answer'
+    });
+    await store.incrementAccessCount([old.eventId!]);
+
+    const candidates = await store.getGraduationCandidates('L0', { limit: 10 });
+    expect(candidates.map((event) => event.id)).toEqual([old.eventId]);
+    await store.close();
+  });
+
+  it('hydrates distinct retrieval sessions as durable cross-session evidence', async () => {
+    const store = new SQLiteEventStore(tempDbPath());
+    await store.initialize();
+    const appended = await store.append({
+      eventType: 'session_summary',
+      sessionId: 'source-session',
+      timestamp: new Date(),
+      content: 'reused deployment rule'
+    });
+    await store.incrementAccessCount([appended.eventId!]);
+    await store.recordRetrieval(appended.eventId!, 'consumer-a', 0.9, 'deployment rule');
+    await store.recordRetrieval(appended.eventId!, 'consumer-b', 0.9, 'deployment rule');
+
+    expect(await store.getGraduationMetrics([appended.eventId!])).toEqual([
+      expect.objectContaining({
+        eventId: appended.eventId,
+        accessCount: 1,
+        crossSessionRefs: 1,
+        confidence: 1
+      })
+    ]);
+    await store.close();
+  });
+
+  it('searches only answer-capable L1+ events in the graduated evidence lane', async () => {
+    const store = new SQLiteEventStore(tempDbPath());
+    await store.initialize();
+    const answer = await store.append({
+      eventType: 'agent_response', sessionId: 'answer-session', timestamp: new Date(),
+      content: 'ssgshop benimaru v1 CrashLoopBackOff timestamp mismatch resolution'
+    });
+    const prompt = await store.append({
+      eventType: 'user_prompt', sessionId: 'prompt-session', timestamp: new Date(),
+      content: 'ssgshop benimaru v1 CrashLoopBackOff 원인을 알려줘'
+    });
+    const tool = await store.append({
+      eventType: 'tool_observation', sessionId: 'tool-session', timestamp: new Date(),
+      content: 'ssgshop benimaru v1 CrashLoopBackOff kubectl output'
+    });
+    await store.updateMemoryLevel(answer.eventId!, 'L2');
+    await store.updateMemoryLevel(prompt.eventId!, 'L2');
+    await store.updateMemoryLevel(tool.eventId!, 'L2');
+    await store.incrementAccessCount([answer.eventId!]);
+
+    const results = await store.searchGraduatedEvidence('ssgshop benimaru v1 CrashLoopBackOff', 10);
+    expect(results).toHaveLength(2);
+    expect(results.find((result) => result.event.id === answer.eventId)).toMatchObject({
+      level: 'L2', accessCount: 1,
+      event: { id: answer.eventId, eventType: 'agent_response' }
+    });
+    expect(results.some((result) => result.event.id === prompt.eventId)).toBe(true);
+    expect(results.some((result) => result.event.id === tool.eventId)).toBe(false);
+    await store.close();
+  });
 });

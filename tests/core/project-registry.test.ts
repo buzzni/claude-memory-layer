@@ -74,5 +74,37 @@ describe('session registry utilities', () => {
     };
 
     expect(saved.sessions['session-123']?.projectPath.endsWith('/workspace/project')).toBe(true);
+
+    registryModule.unregisterSession('session-123');
+    expect(registryModule.getSessionProject('session-123')).toBeNull();
+
+    const afterRemoval = JSON.parse(await fs.readFile(registryPath, 'utf8')) as {
+      sessions: Record<string, { projectPath: string }>;
+    };
+    expect(afterRemoval.sessions['session-123']).toBeUndefined();
+  });
+
+  it('removes a transient mapping when the registered action fails', async () => {
+    const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'cml-home-'));
+    const fixtureHome = path.join(tempHome, 'frozen-fixture-home');
+    const projectDir = path.join(tempHome, 'workspace', 'project');
+    await fs.mkdir(projectDir, { recursive: true });
+
+    vi.doMock('os', async () => {
+      const actual = await vi.importActual<typeof import('os')>('os');
+      return {
+        ...actual,
+        homedir: () => tempHome
+      };
+    });
+
+    const registryModule = await import('../../src/core/registry/session-registry.js');
+    await expect(registryModule.withRegisteredSession('field-eval-failure', projectDir, async () => {
+      expect(registryModule.getSessionProject('field-eval-failure', { homeDir: fixtureHome })).not.toBeNull();
+      throw new Error('forced evaluation failure');
+    }, { homeDir: fixtureHome })).rejects.toThrow('forced evaluation failure');
+
+    expect(registryModule.getSessionProject('field-eval-failure', { homeDir: fixtureHome })).toBeNull();
+    expect(registryModule.getSessionProject('field-eval-failure')).toBeNull();
   });
 });

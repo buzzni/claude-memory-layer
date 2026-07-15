@@ -78,6 +78,7 @@ describe('LessonRepository', () => {
       'source_event_ids',
       'failure_modes_json',
       'skill_candidate',
+      'source_class',
       'created_at',
       'updated_at'
     ]));

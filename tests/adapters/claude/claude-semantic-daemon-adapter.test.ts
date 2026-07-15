@@ -32,6 +32,15 @@ describe('Claude semantic daemon adapter', () => {
       topK: Number.NaN,
       minScore: 0.2
     })).toBe(false);
+
+    expect(isValidSemanticDaemonRequest({
+      type: 'graduate',
+      sessionId: 'session-1'
+    })).toBe(true);
+    expect(isValidSemanticDaemonRequest({
+      type: 'graduate',
+      sessionId: ''
+    })).toBe(false);
   });
 
   it('returns a deterministic invalid request response without initializing retrieval', async () => {

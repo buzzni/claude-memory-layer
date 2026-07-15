@@ -5,6 +5,7 @@ import {
   shouldRunMemorySearch,
   shouldRunAdherenceCheck,
   type AdherenceState,
+  selectEvidencePreview
 } from '../../src/adapters/claude/hooks/user-prompt-submit.js';
 
 function adherenceState(overrides: Partial<AdherenceState> = {}): AdherenceState {
@@ -20,6 +21,14 @@ function adherenceState(overrides: Partial<AdherenceState> = {}): AdherenceState
 }
 
 describe('Claude user prompt adherence trigger heuristics', () => {
+  it('renders a long evidence excerpt around the strongest query identifier', () => {
+    const content = `${'unrelated prelude '.repeat(30)}PR 167 review found a null handling risk and required a regression test.`;
+    const preview = selectEvidencePreview(content, 'PR 167 코드 리뷰 결론', 160);
+    expect(preview).toContain('PR 167');
+    expect(preview).toContain('null handling risk');
+    expect(preview.length).toBeLessThanOrEqual(166);
+  });
+
   it('runs memory checks for short continuation prompts before the interval', () => {
     expect(
       shouldRunAdherenceCheck(

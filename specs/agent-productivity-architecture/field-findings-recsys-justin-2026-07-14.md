@@ -1,8 +1,8 @@
 # Field Findings: recsys_justin 실사용 환경 조사 (2026-07-14)
 
 > **조사 일시**: 2026-07-14 KST
-> **조사 환경**: buzzni desktop (`/home/buzzni`), 사용자 실사용 머신
-> **조사 대상 프로젝트**: `/home/buzzni/projects/recsys_justin` (project_hash `76f983b1`) 외 6개
+> **조사 환경**: local desktop (사용자 실사용 머신)
+> **조사 대상 프로젝트**: local project (project_hash `76f983b1`) 외 6개
 > **설치 버전**: 전역 설치 `claude-memory-layer@1.0.41` ← **최신 릴리스 1.0.55 대비 14개 버전 뒤처짐 (핵심 변수)**
 > **조사 방법**: 실제 SQLite DB(`~/.claude-code/memory/projects/*/events.sqlite`) 직접 쿼리 + `~/.claude/settings.json` hook 설정 + `dist/` 소스 검사 + repo 내 MarkdownMirror 산출물 검토
 > **목적**: 이 spec(Pillar A~D)의 문제 정의를 **실사용 데이터로 검증**한 결과를 기록. 다음 에이전트가 여기서 이어서 작업할 수 있게 함.
@@ -188,7 +188,7 @@ cur.execute("""SELECT confidence, count(*), avg(selected_count)
 - Hook 설정: `~/.claude/settings.json`
 - 설치본: `~/.nvm/versions/node/v22.20.0/lib/node_modules/claude-memory-layer/` (v1.0.41)
 - curated 메모리 성공 사례: `~/.claude/projects/-home-buzzni-projects-recsys-justin/memory/benimaru-runtime-split-deploy.md`
-- raw 미러 (git 커밋됨): `/home/buzzni/projects/recsys_justin/memory/{user_prompt,agent_response,session_summary,tool_observation}/`
+- raw 미러 (git 커밋됨): local project의 `memory/{user_prompt,agent_response,session_summary,tool_observation}/`
 - 집계 스크립트: 이 문서 §3의 python 스니펫 패턴으로 모든 표 재현 가능 (sqlite3 CLI는 이 머신에 없음 — python3 stdlib 사용)
 
 주의: 위 수치는 2026-07-14 09:44 KST 시점 스냅샷. 이 조사 자체가 새 events/traces를 만들었으므로 재측정 시 소폭 증가해 있을 것.

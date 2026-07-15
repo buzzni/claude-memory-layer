@@ -44,6 +44,20 @@ export interface SQLiteEventStoreOptions extends SQLiteOptions {
   vectorOutbox?: false | VectorOutbox | Partial<OutboxConfig>;
 }
 
+export interface DerivationLiveness {
+  graduation: {
+    attempts: number;
+    lastAttemptAt: string | null;
+    lastSuccessAt: string | null;
+    lastStatus: 'success' | 'not_eligible' | 'failed' | null;
+    lastErrorCategory: 'graduation_failed' | null;
+  };
+  sources: {
+    graduatedEvents: number;
+    curatedLessons: number;
+  };
+}
+
 type QueryRewriteKind = 'none' | 'follow-up-context' | 'intent-rewrite';
 
 type RetrievalTraceDetailRecord = {
@@ -664,6 +678,7 @@ export class SQLiteEventStore {
         source_event_ids TEXT NOT NULL DEFAULT '[]',
         failure_modes_json TEXT NOT NULL DEFAULT '[]',
         skill_candidate INTEGER NOT NULL DEFAULT 0,
+        source_class TEXT NOT NULL DEFAULT 'derived',
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         UNIQUE(project_hash, name)
@@ -926,6 +941,15 @@ export class SQLiteEventStore {
     this.addColumnIfMissing('retrieval_traces', 'candidate_details_json', 'TEXT');
     this.addColumnIfMissing('retrieval_traces', 'raw_query_text', 'TEXT');
     this.addColumnIfMissing('retrieval_traces', 'query_rewrite_kind', 'TEXT');
+
+    // Explicit curation reuses the existing lesson artifact while preserving
+    // whether the item came from a reviewed/manual capture or a derivation.
+    this.addColumnIfMissing('memory_lessons', 'source_class', `TEXT NOT NULL DEFAULT 'derived'`);
+    try {
+      sqliteExec(this.db, `CREATE INDEX IF NOT EXISTS idx_memory_lessons_project_source_class ON memory_lessons(project_hash, source_class, updated_at DESC);`);
+    } catch {
+      // index/table may not exist in partial migrations
+    }
     try {
       sqliteExec(this.db, `CREATE INDEX IF NOT EXISTS idx_retrieval_traces_query_rewrite_kind ON retrieval_traces(query_rewrite_kind);`);
     } catch {
@@ -2090,6 +2114,192 @@ export class SQLiteEventStore {
   }
 
   /**
+   * Return bounded graduation candidates in evidence order.  Graduation only
+   * benefits rows with durable access evidence, and ordering by creation time
+   * would permanently starve an older memory in a busy project.
+   */
+  async getGraduationCandidates(level: string, options: { limit: number }): Promise<MemoryEvent[]> {
+    await this.initialize();
+
+    const rows = sqliteAll<Record<string, unknown>>(
+      this.db,
+      `SELECT e.* FROM events e
+       INNER JOIN memory_levels ml ON e.id = ml.event_id
+       WHERE ml.level = ?
+         AND e.access_count > 0
+         AND ${notActiveQuarantinedSql('e.metadata')}
+       ORDER BY e.access_count DESC,
+                COALESCE(e.last_accessed_at, e.timestamp) DESC,
+                e.timestamp DESC
+       LIMIT ?`,
+      [level, options.limit]
+    );
+
+    return rows.map(row => this.rowToEvent(row));
+  }
+
+  /** Durable access evidence used to hydrate one-shot graduation workers. */
+  async getGraduationMetrics(eventIds: string[]): Promise<Array<{
+    eventId: string;
+    accessCount: number;
+    lastAccessed: Date;
+    crossSessionRefs: number;
+    confidence: number;
+  }>> {
+    await this.initialize();
+    if (eventIds.length === 0) return [];
+    const placeholders = eventIds.map(() => '?').join(', ');
+    const rows = sqliteAll<{ id: string; access_count: number; last_accessed_at: string | null; timestamp: string }>(
+      this.db,
+      `SELECT id, access_count, last_accessed_at, timestamp
+       FROM events
+       WHERE id IN (${placeholders})
+         AND access_count > 0
+         AND ${notActiveQuarantinedSql('metadata')}`,
+      eventIds
+    );
+    const sessionRows = sqliteAll<{ event_id: string; session_count: number }>(
+      this.db,
+      `SELECT event_id, COUNT(DISTINCT session_id) AS session_count
+       FROM memory_helpfulness
+       WHERE event_id IN (${placeholders})
+       GROUP BY event_id`,
+      eventIds
+    );
+    const sessionCounts = new Map(sessionRows.map((row) => [row.event_id, Number(row.session_count)]));
+    return rows.map((row) => ({
+      eventId: row.id,
+      accessCount: Number(row.access_count),
+      lastAccessed: toDateFromSQLite(row.last_accessed_at ?? row.timestamp),
+      crossSessionRefs: Math.max(0, (sessionCounts.get(row.id) ?? 0) - 1),
+      // Access is recorded only after the hook's strict injection filter.
+      confidence: 1
+    }));
+  }
+
+  /**
+   * Persist an aggregate graduation attempt.  The rows deliberately contain
+   * no event content, project paths, prompt text, or underlying error text so
+   * they can safely feed the productivity health report.
+   */
+  async recordGraduationRun(input: {
+    startedAt: Date;
+    finishedAt: Date;
+    status: 'success' | 'not_eligible' | 'failed';
+    evaluated: number;
+    graduated: number;
+  }): Promise<void> {
+    await this.initialize();
+    if (this.readOnly) return;
+
+    const buildId = randomUUID();
+    const status = input.status;
+    const startedAt = input.startedAt.toISOString();
+    const finishedAt = input.finishedAt.toISOString();
+    const latencyMs = Math.max(0, input.finishedAt.getTime() - input.startedAt.getTime());
+
+    sqliteRun(
+      this.db,
+      `INSERT INTO build_runs (
+         build_id, started_at, finished_at, extractor_model, extractor_prompt_hash,
+         embedder_model, embedding_version, idris_version, schema_version, status, error
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)` ,
+      [
+        buildId,
+        startedAt,
+        finishedAt,
+        'graduation-rules',
+        'not-applicable',
+        'not-applicable',
+        'not-applicable',
+        'graduation-worker-v1',
+        String(SQLITE_SCHEMA_VERSION),
+        status,
+        status === 'failed' ? 'graduation_failed' : null
+      ]
+    );
+
+    sqliteRun(
+      this.db,
+      `INSERT INTO pipeline_metrics (id, ts, stage, latency_ms, success, error, session_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?)` ,
+      [
+        randomUUID(),
+        finishedAt,
+        'graduation',
+        latencyMs,
+        status === 'failed' ? 0 : 1,
+        status === 'failed' ? 'graduation_failed' : null,
+        null
+      ]
+    );
+  }
+
+  /** Aggregate-only worker liveness for health/status surfaces. */
+  async getDerivationLiveness(projectHash?: string): Promise<DerivationLiveness> {
+    await this.initialize();
+
+    const attempts = sqliteGet<{ count: number }>(
+      this.db,
+      `SELECT COUNT(*) AS count FROM build_runs WHERE idris_version = ?`,
+      ['graduation-worker-v1']
+    );
+    const latest = sqliteGet<{ status: string; finished_at: string | null }>(
+      this.db,
+      `SELECT status, finished_at FROM build_runs
+       WHERE idris_version = ?
+       ORDER BY started_at DESC, build_id DESC
+       LIMIT 1`,
+      ['graduation-worker-v1']
+    );
+    const latestSuccessful = sqliteGet<{ finished_at: string | null }>(
+      this.db,
+      `SELECT finished_at FROM build_runs
+       WHERE idris_version = ? AND status IN ('success', 'not_eligible')
+       ORDER BY started_at DESC, build_id DESC
+       LIMIT 1`,
+      ['graduation-worker-v1']
+    );
+    const lastStatus = latest?.status === 'success' || latest?.status === 'not_eligible' || latest?.status === 'failed'
+      ? latest.status
+      : null;
+    const graduatedEvents = sqliteGet<{ count: number }>(
+      this.db,
+      `SELECT COUNT(*) AS count
+       FROM memory_levels ml
+       INNER JOIN events e ON e.id = ml.event_id
+       WHERE ml.level != 'L0' AND ${notActiveQuarantinedSql('e.metadata')}`
+    );
+    let curatedLessons = 0;
+    try {
+      const curated = sqliteGet<{ count: number }>(
+        this.db,
+        projectHash
+          ? `SELECT COUNT(*) AS count FROM memory_lessons WHERE source_class = 'curated' AND project_hash = ?`
+          : `SELECT COUNT(*) AS count FROM memory_lessons WHERE source_class = 'curated'`,
+        projectHash ? [projectHash] : []
+      );
+      curatedLessons = Number(curated?.count ?? 0);
+    } catch {
+      // Older/read-only stores may predate the source_class migration.
+    }
+
+    return {
+      graduation: {
+        attempts: Number(attempts?.count ?? 0),
+        lastAttemptAt: latest?.finished_at ?? null,
+        lastSuccessAt: latestSuccessful?.finished_at ?? null,
+        lastStatus,
+        lastErrorCategory: lastStatus === 'failed' ? 'graduation_failed' : null
+      },
+      sources: {
+        graduatedEvents: Number(graduatedEvents?.count ?? 0),
+        curatedLessons
+      }
+    };
+  }
+
+  /**
    * Get memory level for a specific event
    */
   async getEventLevel(eventId: string): Promise<string | null> {
@@ -2798,6 +3008,50 @@ export class SQLiteEventStore {
         event: this.rowToEvent(row),
         rank: 0
       }));
+    }
+  }
+
+  /**
+   * Dedicated L1+ answer-evidence lane.  Graduation alone is not sufficient:
+   * prompts and raw tool output can be promoted for continuity, but only final
+   * responses/summaries are allowed to compete as direct answer evidence.
+   */
+  async searchGraduatedEvidence(
+    query: string,
+    limit: number = 10
+  ): Promise<Array<{ event: MemoryEvent; rank: number; level: string; accessCount: number }>> {
+    await this.initialize();
+    const searchTerms = query
+      .replace(/['"(){}[\]^~*?:\\/-]/g, ' ')
+      .split(/\s+/)
+      .filter(term => term.length > 1)
+      .map(term => `"${term}"*`)
+      .join(' OR ');
+    if (!searchTerms) return [];
+
+    try {
+      const rows = sqliteAll<Record<string, unknown>>(
+        this.db,
+        `SELECT e.*, fts.rank, ml.level
+         FROM events_fts fts
+         JOIN events e ON e.id = fts.event_id
+         JOIN memory_levels ml ON ml.event_id = e.id
+         WHERE events_fts MATCH ?
+           AND ml.level != 'L0'
+           AND e.event_type IN ('user_prompt', 'agent_response', 'session_summary')
+           AND ${notActiveQuarantinedSql('e.metadata')}
+         ORDER BY fts.rank, ml.level DESC, e.access_count DESC
+         LIMIT ?`,
+        [searchTerms, limit]
+      );
+      return rows.map((row) => ({
+        event: this.rowToEvent(row),
+        rank: Number(row.rank),
+        level: String(row.level),
+        accessCount: Number(row.access_count ?? 0)
+      }));
+    } catch {
+      return [];
     }
   }
 

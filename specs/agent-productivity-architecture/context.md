@@ -46,6 +46,7 @@ CML이 이 탐색 결과를 증류해 캐시하고(개인), 그 캐시를 배포
 | 토큰 효율 방향 = provenance 보존 native compression (Headroom은 참조만) | `docs/HERMES_CML_HEADROOM_OPERATING_MODEL.md` |
 | Hermes provider는 read-only pre-turn prefetch (`mem-context-pack`) | 같은 문서 |
 | 기존 KPI: usefulRecallRateMin 0.45, memoryHitRateMin 0.35 등 | `config/kpi-thresholds.json` |
+| recsys_justin 실사용: 주입률 99.4%, high 판정 92.6%, 2,711 events 전부 L0, 동일 repo 4-store 분절, helpfulness proxy 천장 효과 | `field-findings-recsys-justin-2026-07-14.md` |
 
 ## 4. 설계 결정 기록
 
@@ -55,6 +56,15 @@ CML이 이 탐색 결과를 증류해 캐시하고(개인), 그 캐시를 배포
 4. **privacy gate 선행**: 공유 기능은 private-tags 최소 슬라이스 + secret 패턴 차단이 구현된 후에만 출시.
 5. **Measure first**: Phase 0에서 baseline 계측 없이는 어떤 개선도 "비약적 향상"을 주장할 수 없다. exploration cost(첫 Edit 이전 Read/Grep/Glob 수)를 대표 지표로 채택.
 6. **k8s-manifests의 `memory/` 디렉토리 관찰**: MarkdownMirror 산출물이 이미 repo에 수동 복사되어 쓰이고 있음 → git-committed memory에 대한 실수요 확인. 단, 현재 산출물은 raw 이벤트 미러(user_prompt/tool_observation 일자별)라 노이즈가 크므로, Tier 1 export는 **curated(Brief/결정/lessons)만** 내보낸다.
+7. **Pipeline liveness before Brief**: Project Brief는 L1+/operations 재료가 실제 생성되고 최근 worker run이 관측될 때만 준비 상태로 본다. `build_runs=0` 또는 L1+=0을 빈 Brief 성공으로 숨기지 않는다.
+8. **Legacy helpfulness는 gate가 아님**: `session_continued` 중심 helpfulness는 천장 효과가 있어 보조 지표로만 둔다. 자동 주입 승격은 direct human labels, shadow replay, exploration/token delta를 사용한다.
+9. **Repo identity는 로컬 P0**: git worktree와 하위 경로를 같은 canonical repo identity로 묶되, 먼저 read-only alias/dry-run을 제공하고 ambiguous/nested repo는 fail-closed한다.
+10. **Injection observability는 privacy-bounded**: source refs, policy version, score/cutoff, digest는 보존한다. redacted preview는 local/private 및 짧은 retention에서만 허용하고 public output에는 포함하지 않는다.
+11. **CLI/API first confirmed by field use**: 별도 기동 dashboard는 보조 surface다. field readiness와 next action은 `health`/`stats`에서 먼저 제공한다.
+12. **Upgrade와 실행 모델을 분리 진단**: 구버전 canary와 worker lifecycle 검증을 별도 실험으로 수행한다. 사용자 전역 설치를 계획 실행 중 임의 변경하지 않는다.
+13. **명시적 curation은 자동 증류의 대체가 아닌 병행 1급 경로**: 실사용에서 검증된 유일한 recall 성공 사례(Finding D)는 수동 증류물이었고, CML에는 이를 담을 표면이 없었다 (코드 확인: `lesson add`/`mem-lesson-save` 부재, `LessonService.promoteCandidate`는 내부 전용). FR-A7/APA-21로 명시 저장 경로를 열고, Brief의 `no_derived_sources`는 L1+ 또는 curated source로 해소한다. 자동 graduation 소생(APA-17)의 우선순위는 유지된다.
+14. **피드백 없는 제품은 신뢰를 잃는다**: 주입이 사용자에게 보이지 않아 "저장만 하는 도구"로 인식됐고, 14-버전 skew도 무신호로 방치됐다. FR-D4/APA-22로 stats 요약 노출과 bounded version-skew 안내를 제공하되, hook critical path 알림과 자동 업데이트는 금지한다.
+15. **검색 성공은 답변 성공이 아니다**: 2026-07-14 recsys field test에서 direct hook은 candidate를 반환했지만 비표준 JSON envelope 때문에 실제 Claude는 context를 받지 못했다. 또한 prompt-only/tool-only 결과는 관련성이 높아도 answerable하지 않았다. FR-A3b/APA-23은 agent delivery contract, episode expansion, evidence utility, answerability, eval isolation을 하나의 P0 gate로 묶는다.
 
 ## 5. 관련 기존 스펙
 
