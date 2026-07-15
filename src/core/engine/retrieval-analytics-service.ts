@@ -45,6 +45,53 @@ export interface HelpfulnessStats {
   helpful: number;
   neutral: number;
   unhelpful: number;
+  /** Evaluated retrievals that had responses to check content grounding against */
+  contentEvaluated?: number;
+  /** Average content-grounding score (0..1) over contentEvaluated rows */
+  avgContentOverlap?: number;
+  /** Rows whose content grounding cleared the "actually used" threshold */
+  groundedCount?: number;
+}
+
+export interface UsefulnessEvidenceMatch {
+  memorySnippet: string;
+  responseSnippet: string;
+  responseEventId: string;
+  similarity: number;
+  matchType: string;
+}
+
+export interface UsefulnessHistoryMemory {
+  eventId: string;
+  eventType: string | null;
+  summary: string;
+  retrievalScore: number;
+  helpfulnessScore: number | null;
+  contentOverlapScore: number | null;
+  evidence: UsefulnessEvidenceMatch[];
+  measuredAt: string | null;
+  source: string;
+}
+
+export interface UsefulnessHistoryEntry {
+  traceId: string | null;
+  kind: 'query' | 'session_start';
+  sessionId: string | null;
+  question: string;
+  queryText: string | null;
+  strategy: string | null;
+  confidence: string | null;
+  candidateCount: number;
+  selectedCount: number;
+  createdAt: Date;
+  memories: UsefulnessHistoryMemory[];
+}
+
+export interface UsefulnessHistoryOptions {
+  limit?: number;
+  offset?: number;
+  sessionId?: string;
+  withSelectionsOnly?: boolean;
 }
 
 export interface HelpfulMemory {
@@ -106,6 +153,7 @@ export interface RetrievalAnalyticsStore {
   getUnevaluatedSessions(currentSessionId: string, limit?: number): Promise<string[]>;
   getHelpfulMemories(limit?: number): Promise<HelpfulMemory[]>;
   getHelpfulnessStats(since?: Date): Promise<HelpfulnessStats>;
+  getUsefulnessHistory?(options?: UsefulnessHistoryOptions): Promise<UsefulnessHistoryEntry[]>;
 }
 
 export interface RetrievalAnalyticsServiceDeps {
@@ -169,6 +217,16 @@ export class RetrievalAnalyticsService {
   async getHelpfulnessStats(since?: Date): Promise<HelpfulnessStats> {
     await this.deps.initialize();
     return this.deps.retrievalStore.getHelpfulnessStats(since);
+  }
+
+  /**
+   * Per-question evidence history: which memories were injected for each
+   * retrieval query and how useful they turned out to be.
+   */
+  async getUsefulnessHistory(options: UsefulnessHistoryOptions = {}): Promise<UsefulnessHistoryEntry[]> {
+    await this.deps.initialize();
+    if (!this.deps.retrievalStore.getUsefulnessHistory) return [];
+    return this.deps.retrievalStore.getUsefulnessHistory(options);
   }
 
   /**

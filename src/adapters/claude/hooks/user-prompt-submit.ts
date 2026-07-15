@@ -75,12 +75,18 @@ function getDynamicMinScore(prompt: string): number {
   return BASE_MIN_SCORE;
 }
 
+/**
+ * The exact memory text placed into the prompt. Also recorded per retrieval
+ * (memory_helpfulness.injected_content) so grounding evaluation compares
+ * answers against what the model actually saw, not the full stored event.
+ */
+function memoryInjectionPreview(content: string): string {
+  return content.length > 300 ? content.substring(0, 300) + '...' : content;
+}
+
 function formatMemoryContext(items: Array<{ type: string; content: string }>): string {
   if (items.length === 0) return '';
-  const lines = items.map((m) => {
-    const preview = m.content.length > 300 ? m.content.substring(0, 300) + '...' : m.content;
-    return `- [${m.type}] ${preview}`;
-  });
+  const lines = items.map((m) => `- [${m.type}] ${memoryInjectionPreview(m.content)}`);
   return `💡 **Related memories found:**\n\n${lines.join('\n\n')}`;
 }
 
@@ -383,6 +389,10 @@ export async function main(): Promise<string> {
         getHookInjectionPolicy()
       );
 
+      // One trace id shared by the query trace and every helpfulness row it
+      // produced, so the dashboard can show question -> memories -> evidence.
+      const retrievalTraceId = randomUUID();
+
       if (injectableMemories.length > 0) {
         // Increment access count only for high-confidence memories injected into the prompt.
         const eventIds = injectableMemories.map((m) => m.id).filter((v): v is string => Boolean(v));
@@ -398,7 +408,12 @@ export async function main(): Promise<string> {
               m.id,
               input.session_id,
               m.score ?? minScore,
-              input.prompt
+              input.prompt,
+              {
+                traceId: retrievalTraceId,
+                source: 'user_prompt',
+                injectedContent: memoryInjectionPreview(m.content)
+              }
             );
           } catch { /* non-critical */ }
         }
@@ -411,6 +426,7 @@ export async function main(): Promise<string> {
       const selectedIds = injectableMemories.map((m) => m.id).filter((v): v is string => Boolean(v));
       try {
         await memoryService.recordQueryTrace({
+          traceId: retrievalTraceId,
           sessionId: input.session_id,
           queryText: retrievalQuery,
           rawQueryText: input.prompt,

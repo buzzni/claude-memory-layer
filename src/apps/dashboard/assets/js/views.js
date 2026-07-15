@@ -19,11 +19,13 @@ function switchView(viewName, options = {}) {
 
   // Load view content
   switch (viewName) {
+    case 'usefulness': return loadUsefulnessView();
     case 'knowledge-graph': return loadKnowledgeGraphView();
     case 'memory-banks': return loadMemoryBanksView();
     case 'sessions': return loadSessionInspectorView();
     case 'user-prompts': return loadUserPromptsView();
     case 'playground': return loadPlaygroundView();
+    case 'diagnostics': return loadDiagnosticsView();
     case 'configuration': return loadConfigurationView();
     default: return Promise.resolve();
   }

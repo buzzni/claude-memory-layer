@@ -48,6 +48,10 @@
             <i class="ri-dashboard-line"></i>
             <span>Overview</span>
           </li>
+          <li class="nav-item" data-nav="usefulness">
+            <i class="ri-medal-line"></i>
+            <span>Usefulness</span>
+          </li>
           <li class="nav-item" data-nav="knowledge-graph">
             <i class="ri-database-2-line"></i>
             <span>Knowledge Graph</span>
@@ -67,6 +71,10 @@
           <li class="nav-item" data-nav="playground">
             <i class="ri-flask-line"></i>
             <span>Playground</span>
+          </li>
+          <li class="nav-item" data-nav="diagnostics">
+            <i class="ri-heart-pulse-line"></i>
+            <span>Diagnostics</span>
           </li>
           <li class="nav-item" data-nav="configuration">
             <i class="ri-settings-4-line"></i>
@@ -92,8 +100,8 @@
         <!-- Header -->
         <header class="top-header">
           <div class="page-title">
-            <h1>Dashboard</h1>
-            <p>Real-time memory visualization & management</p>
+            <h1>Overview</h1>
+            <p>At-a-glance health, activity, and memory pipeline — drill into Usefulness for evidence</p>
           </div>
 
           <div class="header-actions">
@@ -153,6 +161,22 @@
             <div class="stat-label">
               <i class="ri-node-tree"></i> Vector Nodes
             </div>
+          </div>
+        </div>
+
+        <!-- Usefulness hero strip: the one-line answer to "is memory helping?" -->
+        <div class="card usefulness-strip" id="overview-usefulness-strip" role="button" tabindex="0" title="Open the Usefulness page for evidence history">
+          <div class="usefulness-strip-score">
+            <div class="memory-usefulness-score score-unknown" id="overview-usefulness-score">-</div>
+            <div class="usefulness-strip-caption">Memory Usefulness</div>
+          </div>
+          <div class="usefulness-strip-body">
+            <div id="overview-usefulness-note" class="usefulness-strip-note">Measuring whether injected memories actually helped answers…</div>
+            <div id="overview-usefulness-metrics" class="usefulness-strip-metrics"></div>
+          </div>
+          <div class="usefulness-strip-cta">
+            <span>Evidence history</span>
+            <i class="ri-arrow-right-line"></i>
           </div>
         </div>
 
@@ -258,42 +282,6 @@
             </div>
 
 
-            <!-- Progressive Disclosure Search -->
-            <div class="card disclosure-card">
-              <div class="card-header" style="align-items:flex-end;">
-                <div class="card-title">
-                  <i class="ri-search-eye-line"></i>
-                  <span>Progressive Retrieval Disclosure</span>
-                </div>
-                <div id="disclosure-scope-badge" class="scope-mini-badge">Search → Expand → Source · Project scope follows sidebar</div>
-                <div class="disclosure-controls">
-                  <label class="disclosure-toggle"><input type="checkbox" id="disclosure-include-shared"> Shared</label>
-                  <select id="disclosure-strategy" class="project-dropdown compact">
-                    <option value="auto">auto</option>
-                    <option value="fast">fast</option>
-                    <option value="deep">deep</option>
-                  </select>
-                  <input id="disclosure-topk" class="search-input compact" type="number" min="1" max="20" value="8" title="Top K">
-                </div>
-              </div>
-              <div class="disclosure-search-row">
-                <div class="search-wrapper disclosure-search-wrapper">
-                  <i class="ri-search-line"></i>
-                  <input type="text" id="disclosure-search-input" class="search-input" placeholder="Search memory with search → expand → source...">
-                </div>
-                <button id="disclosure-search-btn" class="btn btn-secondary"><i class="ri-search-eye-line"></i><span>Search</span></button>
-              </div>
-              <div id="disclosure-status" class="disclosure-status"></div>
-              <div class="disclosure-layout">
-                <div id="disclosure-results" class="disclosure-results">
-                  <div class="disclosure-empty">Search memory to inspect compact envelopes, expansion context, and raw sources.</div>
-                </div>
-                <div id="disclosure-drilldown" class="disclosure-drilldown">
-                  <div class="disclosure-empty">No result selected.</div>
-                </div>
-              </div>
-            </div>
-
             <!-- Activity Chart -->
             <div class="card">
                <div class="card-header">
@@ -322,22 +310,6 @@
                 <div id="status-dot" class="status-dot"></div>
                 <span id="status-text" style="color:var(--text-muted); font-weight:500;">Idle</span>
               </div>
-            </div>
-
-            <!-- Vector Health -->
-            <div class="card">
-              <div class="card-header" style="align-items:flex-start;">
-                <div class="card-title">
-                  <i class="ri-pulse-line"></i>
-                  <span>Vector Health</span>
-                </div>
-                <button id="vector-health-recover-btn" class="sort-btn" title="Recover stale processing and retryable failed outbox jobs">Recover</button>
-              </div>
-              <div id="vector-health-summary" style="padding:8px 0; font-size:13px; color:var(--text-muted);">Loading vector health...</div>
-              <div id="vector-health-queue-list" class="shared-list" style="margin-top:10px;">
-                <div style="padding:12px; text-align:center; color:var(--text-muted); font-size:13px;">Loading...</div>
-              </div>
-              <div id="vector-health-recovery-result" style="padding:8px 0 0; font-size:12px; color:var(--text-muted);">No recovery run in this dashboard session.</div>
             </div>
 
             <!-- Shared Knowledge -->
@@ -387,21 +359,84 @@
                 <div class="section-label">Graduation Distribution</div>
                 <div id="graduation-bars"></div>
               </div>
+            </div>
 
-              <div style="margin-top:20px;">
-                <div class="section-label">Memory Usefulness Score</div>
-                <div class="memory-usefulness-panel">
-                  <div class="memory-usefulness-header">
-                    <div class="memory-usefulness-score score-unknown" id="memory-usefulness-score">-</div>
-                    <div id="memory-usefulness-summary" class="memory-usefulness-summary">Loading...</div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- ========== VIEW: Usefulness ========== -->
+      <div id="view-usefulness" class="page-view">
+        <header class="top-header">
+          <div class="page-title">
+            <h1>Memory Usefulness</h1>
+            <p>Did injected memories actually help? Score, per-question evidence, and retrieval quality</p>
+          </div>
+          <div class="header-actions">
+            <span id="usefulness-window-controls" style="display:flex; gap:6px;">
+              <button class="sort-btn" data-use-window="24h">24h</button>
+              <button class="sort-btn active" data-use-window="7d">7d</button>
+              <button class="sort-btn" data-use-window="30d">30d</button>
+            </span>
+            <button id="usefulness-refresh" class="btn btn-secondary">
+              <i class="ri-refresh-line"></i>
+              <span>Refresh</span>
+            </button>
+          </div>
+        </header>
+
+        <div class="usefulness-grid">
+          <!-- Left: evidence history (the star of this page) -->
+          <div class="usefulness-main-col">
+            <div class="card">
+              <div class="card-header" style="align-items:flex-end;">
+                <div>
+                  <div class="card-title">
+                    <i class="ri-chat-check-line"></i>
+                    <span>Evidence History — Question → Memories → Answer</span>
                   </div>
-                  <div id="memory-usefulness-breakdown" class="memory-usefulness-breakdown"></div>
-                  <div id="memory-usefulness-diagnostics" class="memory-usefulness-diagnostics"></div>
+                  <div class="session-muted" style="margin-top:6px;">
+                    Each question, the memories injected for it, and the answer snippets proving the memory was used.
+                  </div>
                 </div>
+                <div class="disclosure-controls">
+                  <label class="disclosure-toggle">
+                    <input type="checkbox" id="usefulness-history-filter" checked> With memories only
+                  </label>
+                </div>
+              </div>
+              <div id="usefulness-history-list" class="usefulness-history-list">
+                <div class="disclosure-empty">Loading evidence history...</div>
+              </div>
+              <div class="usefulness-history-footer">
+                <button id="usefulness-history-load-more" class="btn btn-secondary" hidden>
+                  <i class="ri-arrow-down-line"></i><span>Load more</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Right: score, distribution, retrieval quality -->
+          <div class="usefulness-side-col">
+            <div class="card">
+              <div class="card-header">
+                <div class="card-title">
+                  <i class="ri-medal-line"></i>
+                  <span>Usefulness Score</span>
+                </div>
+              </div>
+              <div class="memory-usefulness-panel">
+                <div class="memory-usefulness-header">
+                  <div class="memory-usefulness-score score-unknown" id="memory-usefulness-score">-</div>
+                  <div id="memory-usefulness-summary" class="memory-usefulness-summary">Loading...</div>
+                </div>
+                <div id="memory-usefulness-breakdown" class="memory-usefulness-breakdown"></div>
+                <div id="memory-usefulness-diagnostics" class="memory-usefulness-diagnostics"></div>
               </div>
 
               <div style="margin-top:20px;">
-                <div class="section-label">Helpfulness</div>
+                <div class="section-label">Helpfulness Distribution</div>
                 <div id="helpfulness-summary" style="padding:8px 0; font-size:13px; color:var(--text-muted);">Loading...</div>
               </div>
 
@@ -430,13 +465,19 @@
                   <div style="padding:12px; text-align:center; color:var(--text-muted); font-size:13px;">Loading...</div>
                 </div>
               </div>
+            </div>
 
-              <div style="margin-top:20px;">
-                <div class="section-label">Retrieval Trace (1:1)</div>
-                <div id="retrieval-trace-summary" style="padding:8px 0; font-size:13px; color:var(--text-muted);">Loading...</div>
-                <div id="retrieval-trace-list" class="shared-list">
-                  <div style="padding:12px; text-align:center; color:var(--text-muted); font-size:13px;">Loading...</div>
+            <div class="card">
+              <div class="card-header">
+                <div class="card-title">
+                  <i class="ri-route-line"></i>
+                  <span>Retrieval Quality</span>
                 </div>
+              </div>
+              <div class="section-label">Retrieval Trace (1:1)</div>
+              <div id="retrieval-trace-summary" style="padding:8px 0; font-size:13px; color:var(--text-muted);">Loading...</div>
+              <div id="retrieval-trace-list" class="shared-list">
+                <div style="padding:12px; text-align:center; color:var(--text-muted); font-size:13px;">Loading...</div>
               </div>
 
               <div style="margin-top:20px;">
@@ -447,122 +488,7 @@
                 </div>
               </div>
             </div>
-
-            <!-- Memory Operations -->
-            <div class="card">
-              <div class="card-header">
-                <div class="card-title">
-                  <i class="ri-stack-line"></i>
-                  <span>Memory Operations</span>
-                </div>
-              </div>
-              <div id="operations-stats-summary" style="padding:8px 0; font-size:13px; color:var(--text-muted);">Loading operation aggregates...</div>
-
-              <div style="margin-top:16px;">
-                <div class="section-label">Facet Dimensions</div>
-                <div id="operations-facets-list" class="shared-list">
-                  <div style="padding:12px; text-align:center; color:var(--text-muted); font-size:13px;">Loading...</div>
-                </div>
-              </div>
-
-              <div style="margin-top:16px;">
-                <div class="section-label">Action Statuses</div>
-                <div id="operations-actions-list" class="shared-list">
-                  <div style="padding:12px; text-align:center; color:var(--text-muted); font-size:13px;">Loading...</div>
-                </div>
-              </div>
-
-              <div style="margin-top:16px;">
-                <div class="section-label">Active Lease Types</div>
-                <div id="operations-leases-list" class="shared-list">
-                  <div style="padding:12px; text-align:center; color:var(--text-muted); font-size:13px;">Loading...</div>
-                </div>
-              </div>
-
-              <div style="margin-top:16px;">
-                <div class="section-label">Retention Decisions</div>
-                <div id="operations-retention-list" class="shared-list">
-                  <div style="padding:12px; text-align:center; color:var(--text-muted); font-size:13px;">Loading...</div>
-                </div>
-              </div>
-
-              <div style="margin-top:16px;">
-                <div class="section-label">Governance Audit by Day</div>
-                <div id="operations-governance-list" class="shared-list">
-                  <div style="padding:12px; text-align:center; color:var(--text-muted); font-size:13px;">Loading...</div>
-                </div>
-              </div>
-
-              <div style="margin-top:16px;">
-                <div class="section-label">Lesson Confidence</div>
-                <div id="operations-lessons-list" class="shared-list">
-                  <div style="padding:12px; text-align:center; color:var(--text-muted); font-size:13px;">Loading...</div>
-                </div>
-              </div>
-            </div>
-
-            <!-- Perspective Memory -->
-            <div class="card">
-              <div class="card-header">
-                <div class="card-title">
-                  <i class="ri-team-line"></i>
-                  <span>Perspective Memory</span>
-                </div>
-              </div>
-              <div id="perspective-stats-summary" style="padding:8px 0; font-size:13px; color:var(--text-muted);">Loading perspective aggregates...</div>
-
-              <div style="margin-top:16px;">
-                <div class="section-label">Actor Card Panel</div>
-                <div id="perspective-cards-list" class="shared-list">
-                  <div style="padding:12px; text-align:center; color:var(--text-muted); font-size:13px;">Loading...</div>
-                </div>
-              </div>
-
-              <div style="margin-top:16px;">
-                <div class="section-label">Actors & Session Membership</div>
-                <div id="perspective-actors-list" class="shared-list">
-                  <div style="padding:12px; text-align:center; color:var(--text-muted); font-size:13px;">Loading...</div>
-                </div>
-              </div>
-
-              <div style="margin-top:16px;">
-                <div class="section-label">Observation Timeline / Filters</div>
-                <div id="perspective-observations-list" class="shared-list">
-                  <div style="padding:12px; text-align:center; color:var(--text-muted); font-size:13px;">Loading...</div>
-                </div>
-              </div>
-
-              <div style="margin-top:16px;">
-                <div class="section-label">Observer → Observed Graph</div>
-                <div id="perspective-graph-list" class="shared-list">
-                  <div style="padding:12px; text-align:center; color:var(--text-muted); font-size:13px;">Loading...</div>
-                </div>
-              </div>
-
-              <div style="margin-top:16px;">
-                <div class="section-label">Source Evidence Coverage</div>
-                <div id="perspective-evidence-list" class="shared-list">
-                  <div style="padding:12px; text-align:center; color:var(--text-muted); font-size:13px;">Loading...</div>
-                </div>
-              </div>
-
-              <div style="margin-top:16px;">
-                <div class="section-label">Contradiction Review Queue</div>
-                <div id="perspective-contradictions-list" class="shared-list">
-                  <div style="padding:12px; text-align:center; color:var(--text-muted); font-size:13px;">Loading...</div>
-                </div>
-              </div>
-
-              <div style="margin-top:16px;">
-                <div class="section-label">What Changed After Consolidation?</div>
-                <div id="perspective-activity-list" class="shared-list">
-                  <div style="padding:12px; text-align:center; color:var(--text-muted); font-size:13px;">Loading...</div>
-                </div>
-              </div>
-            </div>
-
           </div>
-
         </div>
       </div>
 
@@ -723,6 +649,189 @@
             <div class="disclosure-empty">Expansion/source details will appear here.</div>
           </div>
         </div>
+
+        <!-- Progressive Disclosure Search -->
+        <div class="card disclosure-card" style="margin-top:16px;">
+          <div class="card-header" style="align-items:flex-end;">
+            <div class="card-title">
+              <i class="ri-search-eye-line"></i>
+              <span>Progressive Retrieval Disclosure</span>
+            </div>
+            <div id="disclosure-scope-badge" class="scope-mini-badge">Search → Expand → Source · Project scope follows sidebar</div>
+            <div class="disclosure-controls">
+              <label class="disclosure-toggle"><input type="checkbox" id="disclosure-include-shared"> Shared</label>
+              <select id="disclosure-strategy" class="project-dropdown compact">
+                <option value="auto">auto</option>
+                <option value="fast">fast</option>
+                <option value="deep">deep</option>
+              </select>
+              <input id="disclosure-topk" class="search-input compact" type="number" min="1" max="20" value="8" title="Top K">
+            </div>
+          </div>
+          <div class="disclosure-search-row">
+            <div class="search-wrapper disclosure-search-wrapper">
+              <i class="ri-search-line"></i>
+              <input type="text" id="disclosure-search-input" class="search-input" placeholder="Search memory with search → expand → source...">
+            </div>
+            <button id="disclosure-search-btn" class="btn btn-secondary"><i class="ri-search-eye-line"></i><span>Search</span></button>
+          </div>
+          <div id="disclosure-status" class="disclosure-status"></div>
+          <div class="disclosure-layout">
+            <div id="disclosure-results" class="disclosure-results">
+              <div class="disclosure-empty">Search memory to inspect compact envelopes, expansion context, and raw sources.</div>
+            </div>
+            <div id="disclosure-drilldown" class="disclosure-drilldown">
+              <div class="disclosure-empty">No result selected.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ========== VIEW: Diagnostics ========== -->
+      <div id="view-diagnostics" class="page-view">
+        <header class="top-header">
+          <div class="page-title">
+            <h1>Diagnostics</h1>
+            <p>Internal pipeline health: vector queues, memory operations, and perspective layers</p>
+          </div>
+          <div class="header-actions">
+            <button id="diagnostics-refresh" class="btn btn-secondary">
+              <i class="ri-refresh-line"></i>
+              <span>Refresh</span>
+            </button>
+          </div>
+        </header>
+
+        <div class="diagnostics-grid">
+          <!-- Vector Health -->
+          <div class="card">
+            <div class="card-header" style="align-items:flex-start;">
+              <div class="card-title">
+                <i class="ri-pulse-line"></i>
+                <span>Vector Health</span>
+              </div>
+              <button id="vector-health-recover-btn" class="sort-btn" title="Recover stale processing and retryable failed outbox jobs">Recover</button>
+            </div>
+            <div id="vector-health-summary" style="padding:8px 0; font-size:13px; color:var(--text-muted);">Loading vector health...</div>
+            <div id="vector-health-queue-list" class="shared-list" style="margin-top:10px;">
+              <div style="padding:12px; text-align:center; color:var(--text-muted); font-size:13px;">Loading...</div>
+            </div>
+            <div id="vector-health-recovery-result" style="padding:8px 0 0; font-size:12px; color:var(--text-muted);">No recovery run in this dashboard session.</div>
+          </div>
+
+          <!-- Memory Operations -->
+          <div class="card">
+            <div class="card-header">
+              <div class="card-title">
+                <i class="ri-stack-line"></i>
+                <span>Memory Operations</span>
+              </div>
+            </div>
+            <div id="operations-stats-summary" style="padding:8px 0; font-size:13px; color:var(--text-muted);">Loading operation aggregates...</div>
+
+            <div style="margin-top:16px;">
+              <div class="section-label">Facet Dimensions</div>
+              <div id="operations-facets-list" class="shared-list">
+                <div style="padding:12px; text-align:center; color:var(--text-muted); font-size:13px;">Loading...</div>
+              </div>
+            </div>
+
+            <div style="margin-top:16px;">
+              <div class="section-label">Action Statuses</div>
+              <div id="operations-actions-list" class="shared-list">
+                <div style="padding:12px; text-align:center; color:var(--text-muted); font-size:13px;">Loading...</div>
+              </div>
+            </div>
+
+            <div style="margin-top:16px;">
+              <div class="section-label">Active Lease Types</div>
+              <div id="operations-leases-list" class="shared-list">
+                <div style="padding:12px; text-align:center; color:var(--text-muted); font-size:13px;">Loading...</div>
+              </div>
+            </div>
+
+            <div style="margin-top:16px;">
+              <div class="section-label">Retention Decisions</div>
+              <div id="operations-retention-list" class="shared-list">
+                <div style="padding:12px; text-align:center; color:var(--text-muted); font-size:13px;">Loading...</div>
+              </div>
+            </div>
+
+            <div style="margin-top:16px;">
+              <div class="section-label">Governance Audit by Day</div>
+              <div id="operations-governance-list" class="shared-list">
+                <div style="padding:12px; text-align:center; color:var(--text-muted); font-size:13px;">Loading...</div>
+              </div>
+            </div>
+
+            <div style="margin-top:16px;">
+              <div class="section-label">Lesson Confidence</div>
+              <div id="operations-lessons-list" class="shared-list">
+                <div style="padding:12px; text-align:center; color:var(--text-muted); font-size:13px;">Loading...</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Perspective Memory -->
+          <div class="card">
+            <div class="card-header">
+              <div class="card-title">
+                <i class="ri-team-line"></i>
+                <span>Perspective Memory</span>
+              </div>
+            </div>
+            <div id="perspective-stats-summary" style="padding:8px 0; font-size:13px; color:var(--text-muted);">Loading perspective aggregates...</div>
+
+            <div style="margin-top:16px;">
+              <div class="section-label">Actor Card Panel</div>
+              <div id="perspective-cards-list" class="shared-list">
+                <div style="padding:12px; text-align:center; color:var(--text-muted); font-size:13px;">Loading...</div>
+              </div>
+            </div>
+
+            <div style="margin-top:16px;">
+              <div class="section-label">Actors & Session Membership</div>
+              <div id="perspective-actors-list" class="shared-list">
+                <div style="padding:12px; text-align:center; color:var(--text-muted); font-size:13px;">Loading...</div>
+              </div>
+            </div>
+
+            <div style="margin-top:16px;">
+              <div class="section-label">Observation Timeline / Filters</div>
+              <div id="perspective-observations-list" class="shared-list">
+                <div style="padding:12px; text-align:center; color:var(--text-muted); font-size:13px;">Loading...</div>
+              </div>
+            </div>
+
+            <div style="margin-top:16px;">
+              <div class="section-label">Observer → Observed Graph</div>
+              <div id="perspective-graph-list" class="shared-list">
+                <div style="padding:12px; text-align:center; color:var(--text-muted); font-size:13px;">Loading...</div>
+              </div>
+            </div>
+
+            <div style="margin-top:16px;">
+              <div class="section-label">Source Evidence Coverage</div>
+              <div id="perspective-evidence-list" class="shared-list">
+                <div style="padding:12px; text-align:center; color:var(--text-muted); font-size:13px;">Loading...</div>
+              </div>
+            </div>
+
+            <div style="margin-top:16px;">
+              <div class="section-label">Contradiction Review Queue</div>
+              <div id="perspective-contradictions-list" class="shared-list">
+                <div style="padding:12px; text-align:center; color:var(--text-muted); font-size:13px;">Loading...</div>
+              </div>
+            </div>
+
+            <div style="margin-top:16px;">
+              <div class="section-label">What Changed After Consolidation?</div>
+              <div id="perspective-activity-list" class="shared-list">
+                <div style="padding:12px; text-align:center; color:var(--text-muted); font-size:13px;">Loading...</div>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
 
       <!-- ========== VIEW: Configuration ========== -->
@@ -816,6 +925,7 @@
   <script src="assets/js/overview.js"></script>
   <script src="assets/js/modals.js"></script>
   <script src="assets/js/views.js"></script>
+  <script src="assets/js/usefulness.js"></script>
   <script src="assets/js/chat.js"></script>
   <script src="assets/js/disclosure.js"></script>
 </body>

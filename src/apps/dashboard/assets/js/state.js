@@ -67,7 +67,13 @@ const state = {
   disclosureSource: null,
   isDisclosureLoading: false,
   playgroundLastRun: null,
-  isPlaygroundLoading: false
+  isPlaygroundLoading: false,
+  usefulnessWindow: '7d',
+  usefulnessHistory: [],
+  usefulnessHistoryOffset: 0,
+  usefulnessHistoryHasMore: false,
+  usefulnessHistoryFilter: true,
+  isUsefulnessHistoryLoading: false
 };
 
 // Utils
