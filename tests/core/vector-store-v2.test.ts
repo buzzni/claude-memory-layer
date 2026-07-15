@@ -139,4 +139,30 @@ describe('VectorStore V2 upsert', () => {
       expect.objectContaining({ id: 'task-1' })
     ]);
   });
+
+  it('reopens and retries an idempotent upsert after a Lance commit conflict', async () => {
+    const table = mocks.makeTable('conversations');
+    table.delete.mockRejectedValueOnce(new Error(
+      'lance error: Commit conflict: concurrent commit cannot be resolved. Please rerun the operation.'
+    ));
+    const store = new VectorStore('/tmp/cml-vectors');
+
+    await expect(store.upsert(record())).resolves.toBeUndefined();
+
+    expect(mocks.db.openTable).toHaveBeenCalledTimes(2);
+    expect(table.delete).toHaveBeenCalledTimes(2);
+    expect(table.add).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not retry unrelated Lance write failures', async () => {
+    const table = mocks.makeTable('conversations');
+    table.delete.mockRejectedValueOnce(new Error('permission denied'));
+    const store = new VectorStore('/tmp/cml-vectors');
+
+    await expect(store.upsert(record())).rejects.toThrow('permission denied');
+
+    expect(mocks.db.openTable).toHaveBeenCalledTimes(1);
+    expect(table.delete).toHaveBeenCalledTimes(1);
+    expect(table.add).not.toHaveBeenCalled();
+  });
 });

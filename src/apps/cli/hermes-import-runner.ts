@@ -81,9 +81,6 @@ export async function runHermesImportOnce(
     : deps.getMemoryServiceForProject(targetProjectPath);
   const importer = deps.createImporter(memoryService, { stateDbPath: getStateDbPathOption(options) });
 
-  await memoryService.initialize();
-  await memoryService.ensureEmbeddingModelForImport({ autoMigrate: true });
-
   const importOptions: ImportOptions = {
     limit: parsePositiveInteger(options.limit, 'limit'),
     sessionLimit: parsePositiveInteger(options.sessionLimit, 'session-limit'),
@@ -96,6 +93,9 @@ export async function runHermesImportOnce(
   let result: ImportResult;
 
   try {
+    await memoryService.initialize();
+    await memoryService.ensureEmbeddingModelForImport({ autoMigrate: true });
+
     if (options.session) {
       mode = 'session';
       result = await importer.importSession(options.session, {

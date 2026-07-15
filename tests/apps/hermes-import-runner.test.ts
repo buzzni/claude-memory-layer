@@ -96,4 +96,13 @@ describe('Hermes import runner', () => {
     await expect(runHermesImportOnce({ sessionLimit: '1.5' }, deps)).rejects.toThrow('Invalid --session-limit');
     await expect(runHermesImportOnce({ sessionLimit: '1e2' }, deps)).rejects.toThrow('Invalid --session-limit');
   });
+
+  it('shuts down the writable service when embedding migration setup fails', async () => {
+    projectService.ensureEmbeddingModelForImport.mockRejectedValueOnce(new Error('migration failed'));
+
+    await expect(runHermesImportOnce({}, deps)).rejects.toThrow('migration failed');
+
+    expect(projectService.shutdown).toHaveBeenCalledTimes(1);
+    expect(importer.importProject).not.toHaveBeenCalled();
+  });
 });

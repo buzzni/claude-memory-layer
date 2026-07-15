@@ -76,9 +76,6 @@ export async function runCodexImportOnce(
     : deps.getMemoryServiceForProject(targetProjectPath);
   const importer = deps.createImporter(memoryService, { sessionsDir: options.sessionsDir });
 
-  await memoryService.initialize();
-  await memoryService.ensureEmbeddingModelForImport({ autoMigrate: true });
-
   const importOptions: ImportOptions = {
     limit: parsePositiveInteger(options.limit, 'limit'),
     sessionLimit: parsePositiveInteger(options.sessionLimit, 'session-limit'),
@@ -91,6 +88,9 @@ export async function runCodexImportOnce(
   let result: ImportResult;
 
   try {
+    await memoryService.initialize();
+    await memoryService.ensureEmbeddingModelForImport({ autoMigrate: true });
+
     if (options.session) {
       mode = 'session';
       result = await importer.importSessionFile(options.session, {
