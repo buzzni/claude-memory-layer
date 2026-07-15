@@ -1,8 +1,8 @@
 # Project Health Report Schema — Agent Productivity Architecture
 
-> **Status**: Draft contract for Phase 0 → Phase 2 implementation
-> **Spec**: `specs/agent-productivity-architecture/spec.md` v1.0.1
-> **Baseline values last revalidated**: 2026-07-07T13:07:08Z
+> **Status**: Draft contract for Phase 0 → field-readiness → Phase 2 implementation
+> **Spec**: `specs/agent-productivity-architecture/spec.md` v1.0.2
+> **Baseline values last revalidated**: 2026-07-14
 > **Primary principle**: CLI/API first, dashboard second. Dashboard v2 must render this report; it must not duplicate memory selection or business logic.
 
 ## 1. Purpose
@@ -35,6 +35,11 @@ This document intentionally separates the **Phase 0 MVP contract** from the rich
   Project Brief readiness, richer pipeline health, evidence, redaction summary,
   and dashboard card mapping. These fields are product direction and acceptance
   criteria for later phases, not missing Phase 0 implementation.
+- **Field-readiness additive slice, partially implemented**: graduation worker
+  liveness (`attempts`, last attempt/success/status/error category) and
+  graduated/curated source readiness are now included. Canonical repo alias
+  count, installed/hook version skew, consolidation, injection
+  abstention/score buckets, and direct-label coverage remain future additions.
 
 The schema version remains `agent-productivity-health-v1` across the MVP and
 target shape. Additive fields are allowed; incompatible removals or semantic
@@ -217,6 +222,8 @@ interface ProjectHealthReport {
     id: string;
     displayName?: string;
     repoIdentity?: string; // normalized/redacted, never local absolute path
+    aliasCount?: number; // physical stores/legacy hashes represented by the canonical identity
+    identityStatus?: 'canonical' | 'path-fallback' | 'ambiguous' | 'unknown';
     sourceScope: 'project' | 'workspace' | 'team' | 'unknown';
   };
   requestedProfile: AgentProfile;
@@ -259,7 +266,16 @@ interface MemoryQualitySummary {
   retrievalTraces: {
     totalRecentTraces: number;
     selectedRate?: number;
+    injectionRate?: number;
+    abstentionRate?: number;
     injectionWasteRate?: number;
+    scoreBuckets?: Record<string, number>;
+    directLabelCoverage?: number;
+    harmfulLabelCount?: number;
+    legacyHelpfulnessProxy?: {
+      average?: number;
+      ceilingWarning: boolean;
+    };
     lowConfidenceTraceCount: number;
     emptyCandidateCount: number;
   };
@@ -302,6 +318,20 @@ interface AgentReadinessSummary {
 
 interface PipelineHealthSummary {
   sqlite: ComponentHealth;
+  runtime?: { // required by the field-readiness slice; optional for legacy v1 payloads
+    installedVersion?: string;
+    hookTargetVersion?: string;
+    versionSkew: boolean | 'unknown';
+    daemon: ComponentHealth;
+  };
+  derivation?: { // required by the field-readiness slice; optional for legacy v1 payloads
+    l0Count?: number;
+    derivedCount?: number;
+    graduation: WorkerHealth;
+    consolidation: WorkerHealth;
+    briefSourceReady: boolean;
+    blockedReasons: string[];
+  };
   vectorOutbox: ComponentHealth & {
     pendingRows?: number;
     failedRows?: number;
@@ -330,6 +360,15 @@ interface SourceHealth {
   freshnessMinutes?: number;
   importedSessionsRecent?: number;
   blockedReasons: string[];
+}
+
+interface WorkerHealth extends ComponentHealth {
+  enabled?: boolean;
+  running?: boolean;
+  lastAttemptAt?: string;
+  lastSuccessAt?: string;
+  lastResult?: 'success' | 'not_eligible' | 'failed' | 'never_run';
+  lastErrorCategory?: string; // category only; never raw error content/path
 }
 
 interface RiskGateSummary {
@@ -521,6 +560,10 @@ Phase 2 target gates:
 | `vector-outbox-health` | warning/error | failed rows below threshold | no | no |
 | `source-freshness` | warning/error | configured source freshness within threshold | no | no |
 | `private-tags-export` | blocker | private-tagged artifacts excluded | no | yes |
+| `project-identity-canonical` | blocker | repo identity is canonical and unambiguous | yes | yes |
+| `derivation-pipeline-observed` | blocker | eligible input has an explicit worker result; not `never_run` | yes | no |
+| `brief-source-ready` | blocker | L1+/operations or approved safe fallback source exists | yes | no |
+| `injection-direct-evidence` | blocker | direct-label/replay coverage is sufficient and harmful labels are zero | yes | no |
 
 ## 8. Dashboard Mapping
 
@@ -552,8 +595,9 @@ Phase 2+ follow-up:
 
 5. Add runtime schema validation for the richer target `ProjectHealthReport`.
 6. Add replay/frontier/Project Brief/evidence/redaction fields as additive schema expansions.
-7. Render in dashboard as a thin client.
-8. Only after the report is stable, add richer drill-down endpoints.
+7. Add field-readiness runtime/derivation/identity/injection evidence fields before Brief or enforce rollout.
+8. Render in dashboard as a thin client only after CLI/API pilot use.
+9. Only after the report is stable, add richer drill-down endpoints.
 
 ## 10. Acceptance Criteria
 

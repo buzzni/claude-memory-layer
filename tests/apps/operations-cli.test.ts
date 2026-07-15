@@ -353,6 +353,53 @@ describe('memory operations CLI commands', () => {
     }
   });
 
+  it('captures and lists an explicit curated lesson without requiring a raw event', async () => {
+    const fixture = createCliFixture('curated-lesson');
+    try {
+      const dryRun = expectJsonCommand(fixture, [
+        'lesson', 'add',
+        '--project', fixture.projectDir,
+        '--name', 'Deploy GPU before API',
+        '--trigger', 'When rolling out the runtime split',
+        '--steps', 'Roll out GPU,Verify readiness,Roll out API',
+        '--actor', 'operator',
+        '--json'
+      ]);
+      expect(dryRun).toMatchObject({ operation: 'mem-lesson-save', dryRun: true, projectHash: fixture.projectHash });
+      expect(existsSync(fixture.dbPath)).toBe(false);
+
+      const saved = expectJsonCommand(fixture, [
+        'lesson', 'add',
+        '--project', fixture.projectDir,
+        '--name', 'Deploy GPU before API',
+        '--trigger', 'When rolling out the runtime split',
+        '--steps', 'Roll out GPU,Verify readiness,Roll out API',
+        '--actor', 'operator',
+        '--apply',
+        '--json'
+      ]);
+      expect(saved).toMatchObject({
+        operation: 'mem-lesson-save',
+        dryRun: false,
+        projectHash: fixture.projectHash,
+        lesson: { sourceClass: 'curated', sourceSessionIds: ['curated:operator'] }
+      });
+      expect(queryCount(fixture.dbPath, "SELECT COUNT(*) AS count FROM memory_lessons WHERE source_class = 'curated'")).toBe(1);
+      expect(queryCount(fixture.dbPath, "SELECT COUNT(*) AS count FROM memory_governance_audit WHERE operation = 'lesson_capture'")).toBe(1);
+
+      const listed = expectJsonCommand(fixture, [
+        'lesson', 'list',
+        '--project', fixture.projectDir,
+        '--curated-only',
+        '--json'
+      ]);
+      expect(listed).toMatchObject({ operation: 'mem-lesson-list', projectHash: fixture.projectHash, count: 1 });
+      expect((listed.lessons as JsonObject[])[0]).toMatchObject({ name: 'Deploy GPU before API', sourceClass: 'curated' });
+    } finally {
+      rmSync(fixture.home, { recursive: true, force: true });
+    }
+  }, SLOW_CLI_TEST_TIMEOUT_MS);
+
   it('validates dry-run mutation input before reporting success or opening storage', () => {
     const fixture = createCliFixture('invalid-dry-run');
     rmSync(fixture.home, { recursive: true, force: true });

@@ -7,10 +7,16 @@ import type {
   ProjectScopeRepairOptions,
   ProjectScopeRepairResult
 } from '../types.js';
+import type { DerivationLiveness } from '../sqlite-event-store.js';
 
 interface RankedKeywordResult {
   event: MemoryEvent;
   rank: number;
+}
+
+export interface GraduatedEvidenceResult extends RankedKeywordResult {
+  level: string;
+  accessCount: number;
 }
 
 export interface MemorySessionTurn {
@@ -33,6 +39,7 @@ export interface MemoryStats {
 
 interface QueryStore {
   keywordSearch(query: string, topK: number): Promise<RankedKeywordResult[]>;
+  searchGraduatedEvidence?(query: string, limit: number): Promise<GraduatedEvidenceResult[]>;
   getEvent(id: string): Promise<MemoryEvent | null>;
   getSessionEvents(sessionId: string): Promise<MemoryEvent[]>;
   getRecentEvents(limit: number): Promise<MemoryEvent[]>;
@@ -55,6 +62,7 @@ interface QueryMaintenanceStore extends QueryStore {
   countSessionTurns(sessionId: string): Promise<number>;
   backfillTurnIds(): Promise<number>;
   deleteSessionEvents(sessionId: string): Promise<number>;
+  getDerivationLiveness(projectHash?: string): Promise<DerivationLiveness>;
 }
 
 interface MemoryQueryServiceDeps {
@@ -84,16 +92,25 @@ export class MemoryQueryService {
     const results = await this.queryStore.keywordSearch(query, options?.topK ?? 10);
     if (results.length === 0) return [];
 
-    const maxRank = Math.min(...results.map((r) => r.rank), -0.001);
-    const minRank = Math.max(...results.map((r) => r.rank), -1000);
-    const rankRange = maxRank - minRank || 1;
+    // FTS5/BM25 ranks are ordered ascending: the smallest value is the best.
+    // Normalize best->1 and worst->0. The previous formula inverted this and
+    // filtered exact matches while retaining the weakest tail results.
+    const bestRank = Math.min(...results.map((r) => r.rank));
+    const worstRank = Math.max(...results.map((r) => r.rank));
+    const rankRange = worstRank - bestRank;
 
     return results
       .map((r) => ({
         event: r.event,
-        score: 1 - (r.rank - minRank) / rankRange
+        score: rankRange === 0 ? 1 : 1 - (r.rank - bestRank) / rankRange
       }))
       .filter((r) => !options?.minScore || r.score >= options.minScore);
+  }
+
+  async searchGraduatedEvidence(query: string, limit: number = 10): Promise<GraduatedEvidenceResult[]> {
+    await this.initialize();
+    if (!this.queryStore.searchGraduatedEvidence) return [];
+    return this.queryStore.searchGraduatedEvidence(query, limit);
   }
 
   async getEvent(id: string): Promise<MemoryEvent | null> {
@@ -181,6 +198,11 @@ export class MemoryQueryService {
   async getEventLevel(eventId: string): Promise<string | null> {
     await this.initialize();
     return this.getMaintenanceStore('getEventLevel').getEventLevel(eventId);
+  }
+
+  async getDerivationLiveness(projectHash?: string): Promise<DerivationLiveness> {
+    await this.initialize();
+    return this.getMaintenanceStore('getDerivationLiveness').getDerivationLiveness(projectHash);
   }
 
   async getSessionTurns(

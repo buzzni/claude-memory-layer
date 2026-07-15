@@ -20,11 +20,14 @@ import * as path from 'path';
 import * as os from 'os';
 import { getLightweightMemoryService } from '../../../services/memory-service.js';
 import { writeTurnState, readLastAssistantSnippet } from '../../../core/turn-state.js';
-import { retrieveSemanticMemories } from './semantic-daemon-client.js';
+import { retrieveSemanticMemories, scheduleSemanticGraduation } from './semantic-daemon-client.js';
 import { readStdin, readNumberEnv } from './hook-runtime.js';
+import { formatClaudeContextHookOutput, isHookEvaluationMode } from './hook-output.js';
 import {
   filterHookInjectableMemories,
   getHookInjectionPolicy,
+  scoreGraduatedEvidence,
+  selectHookEpisodeSeeds,
   summarizeHookInjectionConfidence,
   type HookMemoryCandidate
 } from './prompt-injection-policy.js';
@@ -34,6 +37,8 @@ import type { UserPromptSubmitInput, UserPromptSubmitOutput } from '../../../cor
 // value (e.g. a typo) falls back to the default instead of producing NaN, which
 // would silently make every threshold comparison false and return no memories.
 const MAX_MEMORIES = readNumberEnv('CLAUDE_MEMORY_MAX_COUNT', 5, { integer: true, min: 0 });
+const MAX_CANDIDATES = Math.max(MAX_MEMORIES, MAX_MEMORIES * 3);
+const MAX_EPISODE_SEED_CANDIDATES = Math.max(MAX_CANDIDATES, MAX_MEMORIES * 10);
 // Tuned default for noise/recall balance on shopping_assistant-like corpus
 const BASE_MIN_SCORE = readNumberEnv('CLAUDE_MEMORY_MIN_SCORE', 0.4, { min: 0, max: 1 });
 const FALLBACK_MIN_SCORE = readNumberEnv('CLAUDE_MEMORY_FALLBACK_MIN_SCORE', 0.3, { min: 0, max: 1 });
@@ -43,6 +48,15 @@ const SEMANTIC_TIMEOUT_MS = readNumberEnv('CLAUDE_MEMORY_SEMANTIC_TIMEOUT_MS', 2
 const ADHERENCE_INTERVAL_TURNS = readNumberEnv('CLAUDE_MEMORY_ADHERENCE_INTERVAL_TURNS', 3, { integer: true, min: 1 });
 
 const ADHERENCE_STATE_DIR = path.join(os.homedir(), '.claude-code', 'memory');
+
+function isExcludedEvaluationSession(sessionId: string | undefined): boolean {
+  if (!isHookEvaluationMode() || !sessionId) return false;
+  const prefixes = (process.env.CLAUDE_MEMORY_EVAL_EXCLUDE_SESSION_PREFIXES ?? '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+  return prefixes.some((prefix) => sessionId.startsWith(prefix));
+}
 
 export interface AdherenceState {
   sessionId: string;
@@ -75,13 +89,98 @@ function getDynamicMinScore(prompt: string): number {
   return BASE_MIN_SCORE;
 }
 
-function formatMemoryContext(items: Array<{ type: string; content: string }>): string {
+export function selectEvidencePreview(content: string, query: string, maxChars: number = 300): string {
+  if (content.length <= maxChars) return content;
+  const terms = (query.match(/[A-Za-z0-9_./:-]+|[가-힣]{2,}/g) ?? [])
+    .filter((term) => term.length >= 2)
+    .sort((a, b) => evidenceAnchorPriority(b) - evidenceAnchorPriority(a));
+  const lowered = content.toLowerCase();
+  const anchor = terms
+    .map((term) => lowered.indexOf(term.toLowerCase()))
+    .find((index) => index >= 0);
+  if (anchor === undefined) return content.slice(0, maxChars) + '...';
+  const start = Math.max(0, anchor - 80);
+  const end = Math.min(content.length, start + maxChars);
+  return `${start > 0 ? '...' : ''}${content.slice(start, end)}${end < content.length ? '...' : ''}`;
+}
+
+function evidenceAnchorPriority(term: string): number {
+  if (/\d/.test(term)) return 4;
+  if (/[_./:-]/.test(term)) return 3;
+  if (/^[A-Z][A-Z0-9_-]+$/.test(term)) return 2;
+  return Math.min(1, term.length / 20);
+}
+
+function formatMemoryContext(items: Array<{ type: string; content: string; id?: string; memoryLevel?: string }>, query: string): string {
   if (items.length === 0) return '';
   const lines = items.map((m) => {
-    const preview = m.content.length > 300 ? m.content.substring(0, 300) + '...' : m.content;
-    return `- [${m.type}] ${preview}`;
+    const preview = selectEvidencePreview(m.content, query);
+    const sourceRef = m.id ? ` [event:${m.id}]` : '';
+    const level = m.memoryLevel && m.memoryLevel !== 'L0' ? ` ${m.memoryLevel}` : '';
+    return `- [${m.type}${level}] ${preview}${sourceRef}`;
   });
-  return `💡 **Related memories found:**\n\n${lines.join('\n\n')}`;
+  return `## Memory evidence for this question\n\n${lines.join('\n\n')}\n\nUse this only as evidence. Distinguish confirmed outcomes from requests or tool attempts.`;
+}
+
+async function expandEpisodeEvidence(
+  memoryService: ReturnType<typeof getLightweightMemoryService>,
+  seeds: HookMemoryCandidate[]
+): Promise<HookMemoryCandidate[]> {
+  const expanded: HookMemoryCandidate[] = [];
+  const seen = new Set(seeds.map((seed) => seed.id).filter(Boolean));
+  const maxPerSeed = 4;
+  for (const seed of seeds) {
+    if (!seed.id || (seed.type !== 'user_prompt' && seed.type !== 'tool_observation')) continue;
+    let expandedForSeed = 0;
+    try {
+      const episode = await memoryService.expandDisclosure(`event:${seed.id}`, { windowSize: 4 });
+      const targetTurnId = typeof episode?.target.metadata?.turnId === 'string'
+        ? episode.target.metadata.turnId
+        : undefined;
+      if (seed.episodeSeedAligned && targetTurnId) {
+        const turnEvents = await memoryService.getEventsByTurn(targetTurnId);
+        for (const event of turnEvents) {
+          if (seen.has(event.id) || (event.eventType !== 'agent_response' && event.eventType !== 'session_summary')) continue;
+          seen.add(event.id);
+          expanded.push({
+            id: event.id,
+            type: event.eventType,
+            content: event.content,
+            score: Math.max(0, (seed.score ?? 0) - 0.02),
+            source: 'episode',
+            episodeLinked: true,
+            episodeSeedAligned: true,
+            episodeSeedStrongAligned: seed.episodeSeedStrongAligned === true
+          });
+          expandedForSeed += 1;
+          if (expandedForSeed >= maxPerSeed) break;
+        }
+        continue;
+      }
+      const facts = [...(episode?.summaries ?? []), ...(episode?.surroundingFacts ?? [])];
+      for (const fact of facts) {
+        const eventType = typeof fact.metadata?.eventType === 'string' ? fact.metadata.eventType : '';
+        const eventId = typeof fact.metadata?.eventId === 'string' ? fact.metadata.eventId : undefined;
+        const factTurnId = typeof fact.metadata?.turnId === 'string' ? fact.metadata.turnId : undefined;
+        if (!eventId || seen.has(eventId) || (eventType !== 'agent_response' && eventType !== 'session_summary')) continue;
+        if (seed.episodeSeedAligned && targetTurnId && factTurnId !== targetTurnId) continue;
+        seen.add(eventId);
+        expanded.push({
+          id: eventId,
+          type: eventType,
+          content: fact.snippet,
+          score: Math.max(0, (seed.score ?? 0) - 0.02),
+          source: 'episode',
+          episodeLinked: Boolean(targetTurnId && factTurnId && targetTurnId === factTurnId),
+          episodeSeedAligned: seed.episodeSeedAligned === true,
+          episodeSeedStrongAligned: seed.episodeSeedStrongAligned === true
+        });
+        expandedForSeed += 1;
+        if (expandedForSeed >= maxPerSeed) break;
+      }
+    } catch { /* episode expansion is best-effort */ }
+  }
+  return expanded;
 }
 
 function getAdherenceStatePath(sessionId: string): string {
@@ -269,7 +368,7 @@ export async function main(): Promise<string> {
     const turnId = randomUUID();
 
     // Persist turn state so PostToolUse and Stop hooks can read it
-    writeTurnState(input.session_id, turnId);
+    if (!isHookEvaluationMode()) writeTurnState(input.session_id, turnId);
 
     // Use lightweight service (SQLite only, no embedder/vector - FAST!)
     const memoryService = getLightweightMemoryService(input.session_id);
@@ -283,24 +382,8 @@ export async function main(): Promise<string> {
 
     // On first turn of a new session, backfill helpfulness for sessions
     // that ended without Stop hook (crash, force-close, etc.)
-    if (currentTurn === 1) {
+    if (!isHookEvaluationMode() && currentTurn === 1) {
       memoryService.evaluatePendingSessions(input.session_id).catch(() => {});
-    }
-
-    // Store only non-trivial prompts (skip /commands, short inputs)
-    if (shouldStorePrompt(input.prompt)) {
-      await memoryService.storeUserPrompt(
-        input.session_id,
-        input.prompt,
-        {
-          turnId,
-          adherence: {
-            checked: adherenceDecision.run,
-            reason: adherenceDecision.reason,
-            turn: currentTurn
-          }
-        }
-      );
     }
 
     // Search strategy: turn-1 always enforce adherence check,
@@ -308,6 +391,7 @@ export async function main(): Promise<string> {
     if (ENABLE_SEARCH && shouldRunMemorySearch(input.prompt, adherenceDecision)) {
       const minScore = getDynamicMinScore(input.prompt);
       let mergedMemories: HookMemoryCandidate[] = [];
+      const episodeSeedCandidates: HookMemoryCandidate[] = [];
 
       // On turn 2+, enrich ambiguous follow-up retrieval with the previous user prompt
       // and assistant response so short prompts ("그거 고쳐줘") resolve correctly.
@@ -335,11 +419,58 @@ export async function main(): Promise<string> {
           );
           mergedMemories = semanticMemories.map((memory) => ({
             ...memory,
-            source: 'semantic'
-          }));
+            source: 'semantic' as const
+          })).filter((memory) => !isExcludedEvaluationSession(memory.sessionId));
         } catch {
           // Semantic retrieval is best-effort; fallback below handles the rest
         }
+      }
+
+      // Promotion is useful only if it changes recall. Add a bounded L1+
+      // answer lane, but score by lexical/entity coverage before applying the
+      // small level/access prior. Prompts and tool output never enter this lane.
+      const graduated = await memoryService.searchGraduatedEvidence(
+        retrievalQuery,
+        Math.max(50, MAX_CANDIDATES * 4)
+      );
+      const graduatedRanks = graduated.map((result) => result.rank);
+      const bestGraduatedRank = graduatedRanks.length > 0 ? Math.min(...graduatedRanks) : 0;
+      const worstGraduatedRank = graduatedRanks.length > 0 ? Math.max(...graduatedRanks) : 0;
+      const graduatedRankRange = worstGraduatedRank - bestGraduatedRank || 1;
+      const existingGraduatedById = new Map(
+        mergedMemories
+          .map((memory, index) => [memory.id, index] as const)
+          .filter((entry): entry is [string, number] => Boolean(entry[0]))
+      );
+      const scoredGraduated = graduated
+        .map((result) => {
+          const candidate: HookMemoryCandidate = {
+            type: result.event.eventType,
+            content: result.event.content,
+            id: result.event.id,
+            sessionId: result.event.sessionId,
+            source: 'graduated',
+            memoryLevel: result.level,
+            accessCount: result.accessCount,
+            retrievalRankScore: (worstGraduatedRank - result.rank) / graduatedRankRange
+          };
+          return { candidate, score: scoreGraduatedEvidence(retrievalQuery, candidate) };
+        })
+        .filter((item): item is { candidate: HookMemoryCandidate; score: number } => item.score !== null)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, MAX_CANDIDATES);
+      for (const { candidate, score } of scoredGraduated) {
+        const existingIndex = candidate.id ? existingGraduatedById.get(candidate.id) : undefined;
+        if (existingIndex !== undefined) {
+          // A raw vector score and a graduated lexical score are not on the
+          // same calibration scale. Once an event is L1+, use the stricter
+          // graduated score so a broad semantic hit cannot hide exact evidence.
+          mergedMemories[existingIndex] = { ...mergedMemories[existingIndex], ...candidate, score };
+          continue;
+        }
+        if (mergedMemories.length >= MAX_CANDIDATES) continue;
+        mergedMemories.push({ ...candidate, score });
+        if (candidate.id) existingGraduatedById.set(candidate.id, mergedMemories.length - 1);
       }
 
       const shouldUseKeywordFallback =
@@ -347,51 +478,94 @@ export async function main(): Promise<string> {
         RETRIEVAL_MODE === 'hybrid' ||
         mergedMemories.length === 0;
 
-      if (shouldUseKeywordFallback && mergedMemories.length < MAX_MEMORIES) {
+      if (shouldUseKeywordFallback) {
         let usedFallbackFloor = false;
-        let results = await memoryService.keywordSearch(retrievalQuery, {
-          topK: MAX_MEMORIES,
-          minScore
+        const allKeywordResults = await memoryService.keywordSearch(retrievalQuery, {
+          topK: MAX_EPISODE_SEED_CANDIDATES
         });
+        let results = allKeywordResults.filter((result) => result.score >= minScore);
 
         // recall rescue: if nothing found at tuned threshold, retry with fallback floor
         if (results.length === 0 && FALLBACK_MIN_SCORE < minScore) {
           usedFallbackFloor = true;
-          results = await memoryService.keywordSearch(retrievalQuery, {
-            topK: MAX_MEMORIES,
-            minScore: FALLBACK_MIN_SCORE
+          results = allKeywordResults.filter((result) => result.score >= FALLBACK_MIN_SCORE);
+        }
+
+        for (const result of allKeywordResults) {
+          episodeSeedCandidates.push({
+            type: result.event.eventType,
+            content: result.event.content,
+            id: result.event.id,
+            sessionId: result.event.sessionId,
+            score: result.score,
+            source: 'keyword',
+            fallback: result.score < minScore
           });
         }
 
-        const existingIds = new Set(mergedMemories.map((m) => m.id).filter(Boolean));
+        const existingById = new Map(
+          mergedMemories
+            .map((memory, index) => [memory.id, index] as const)
+            .filter((entry): entry is [string, number] => Boolean(entry[0]))
+        );
         for (const r of results) {
-          if (existingIds.has(r.event.id)) continue;
-          mergedMemories.push({
+          const keywordCandidate: HookMemoryCandidate = {
             type: r.event.eventType,
             content: r.event.content,
             id: r.event.id,
+            sessionId: r.event.sessionId,
             score: r.score,
             source: 'keyword',
             fallback: usedFallbackFloor
-          });
-          if (mergedMemories.length >= MAX_MEMORIES) break;
+          };
+          const existingIndex = existingById.get(r.event.id);
+          if (existingIndex !== undefined) {
+            const existing = mergedMemories[existingIndex];
+            // Semantic and FTS scores have different calibration. An exact
+            // keyword prompt must not keep a weaker semantic score merely
+            // because it entered the merged list first; that suppresses the
+            // same-turn episode bridge for otherwise exact recall queries.
+            if ((existing?.score ?? 0) < r.score) {
+              mergedMemories[existingIndex] = {
+                ...existing,
+                score: r.score,
+                source: 'keyword',
+                fallback: usedFallbackFloor
+              };
+            }
+            continue;
+          }
+          mergedMemories.push(keywordCandidate);
+          existingById.set(r.event.id, mergedMemories.length - 1);
+          // Keep a bounded second lane instead of letting semantic/graduated
+          // candidates fill the entire pool before exact FTS prompts arrive.
+          if (mergedMemories.length >= MAX_CANDIDATES * 2) break;
         }
       }
 
+      const injectionPolicy = getHookInjectionPolicy();
+      const episodeSeedPool = Array.from(new Map(
+        [...mergedMemories, ...episodeSeedCandidates]
+          .filter((candidate): candidate is HookMemoryCandidate & { id: string } => Boolean(candidate.id))
+          .map((candidate) => [candidate.id, candidate])
+      ).values());
+      const episodeSeeds = selectHookEpisodeSeeds(episodeSeedPool, injectionPolicy, retrievalQuery);
+      const episodeEvidence = await expandEpisodeEvidence(memoryService, episodeSeeds);
       const injectableMemories = filterHookInjectableMemories(
-        mergedMemories,
-        getHookInjectionPolicy()
+        [...mergedMemories, ...episodeEvidence],
+        injectionPolicy,
+        retrievalQuery
       );
 
       if (injectableMemories.length > 0) {
         // Increment access count only for high-confidence memories injected into the prompt.
         const eventIds = injectableMemories.map((m) => m.id).filter((v): v is string => Boolean(v));
-        if (eventIds.length > 0) {
+        if (!isHookEvaluationMode() && eventIds.length > 0) {
           await memoryService.incrementMemoryAccess(eventIds);
         }
 
         // Record each injected retrieval for helpfulness tracking.
-        for (const m of injectableMemories) {
+        for (const m of isHookEvaluationMode() ? [] : injectableMemories) {
           if (!m.id) continue;
           try {
             await memoryService.recordRetrieval(
@@ -403,41 +577,69 @@ export async function main(): Promise<string> {
           } catch { /* non-critical */ }
         }
 
-        context = formatMemoryContext(injectableMemories);
+        context = formatMemoryContext(injectableMemories, retrievalQuery);
       }
 
       // Record query-level trace for dashboard stats (retrieval_traces table)
       const allCandidateIds = mergedMemories.map((m) => m.id).filter((v): v is string => Boolean(v));
       const selectedIds = injectableMemories.map((m) => m.id).filter((v): v is string => Boolean(v));
-      try {
-        await memoryService.recordQueryTrace({
-          sessionId: input.session_id,
-          queryText: retrievalQuery,
-          rawQueryText: input.prompt,
-          queryRewriteKind,
-          strategy: RETRIEVAL_MODE,
-          candidateEventIds: allCandidateIds,
-          selectedEventIds: selectedIds,
-          confidence: summarizeHookInjectionConfidence(injectableMemories)
-        });
-      } catch { /* non-critical */ }
+      if (!isHookEvaluationMode()) {
+        try {
+          await memoryService.recordQueryTrace({
+            sessionId: input.session_id,
+            queryText: retrievalQuery,
+            rawQueryText: input.prompt,
+            queryRewriteKind,
+            strategy: RETRIEVAL_MODE,
+            candidateEventIds: allCandidateIds,
+            selectedEventIds: selectedIds,
+            confidence: summarizeHookInjectionConfidence(injectableMemories)
+          });
+        } catch { /* non-critical */ }
+
+        // Access/helpfulness evidence above must be durable before graduation
+        // is scheduled. The daemon only acknowledges the schedule here; the
+        // bounded pass runs later and never delays this hook with worker work.
+        try {
+          await scheduleSemanticGraduation(input.session_id);
+        } catch { /* non-critical */ }
+      }
     }
 
-    writeAdherenceState({
-      sessionId: input.session_id,
-      turnCount: currentTurn,
-      lastCheckedTurn: adherenceDecision.run ? currentTurn : adherenceState.lastCheckedTurn,
-      lastPrompt: input.prompt,
-      lastReason: adherenceDecision.reason,
-      updatedAt: new Date().toISOString()
-    });
+    // Persist after retrieval so the current prompt cannot be retrieved as an
+    // exact keyword match and injected back into the same turn.
+    if (!isHookEvaluationMode() && shouldStorePrompt(input.prompt)) {
+      await memoryService.storeUserPrompt(
+        input.session_id,
+        input.prompt,
+        {
+          turnId,
+          adherence: {
+            checked: adherenceDecision.run,
+            reason: adherenceDecision.reason,
+            turn: currentTurn
+          }
+        }
+      );
+    }
 
-    const output: UserPromptSubmitOutput = { context };
+    if (!isHookEvaluationMode()) {
+      writeAdherenceState({
+        sessionId: input.session_id,
+        turnCount: currentTurn,
+        lastCheckedTurn: adherenceDecision.run ? currentTurn : adherenceState.lastCheckedTurn,
+        lastPrompt: input.prompt,
+        lastReason: adherenceDecision.reason,
+        updatedAt: new Date().toISOString()
+      });
+    }
+
+    const output: UserPromptSubmitOutput = JSON.parse(formatClaudeContextHookOutput('UserPromptSubmit', context));
     return JSON.stringify(output);
   } catch (error) {
     if (process.env.CLAUDE_MEMORY_DEBUG) {
       console.error('Memory hook error:', error);
     }
-    return JSON.stringify({ context: '' });
+    return formatClaudeContextHookOutput('UserPromptSubmit', '');
   }
 }

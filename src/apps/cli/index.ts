@@ -17,6 +17,7 @@ import {
   getLightweightMemoryServiceForProject
 } from '../../services/memory-service.js';
 import { getProjectStoragePath, resolveProjectStoragePath, hashProjectPath } from '../../core/registry/project-path.js';
+import { resolveCanonicalRepoIdentity } from '../../core/registry/repo-identity.js';
 import { createSessionHistoryImporter, type ProgressEvent } from '../../services/session-history-importer.js';
 import {
   createCodexSessionHistoryImporter,
@@ -29,7 +30,8 @@ import {
 import { bootstrapKnowledgeBase } from '../../services/bootstrap-organizer.js';
 import { startServer, stopServer, isServerRunning } from '../server/index.js';
 import { SQLiteEventStore } from '../../core/sqlite-event-store.js';
-import { createSQLiteDatabase, sqliteClose, sqliteGet, type SQLiteDatabase } from '../../core/sqlite-wrapper.js';
+import type { DerivationLiveness } from '../../core/sqlite-event-store.js';
+import { createSQLiteDatabase, sqliteAll, sqliteClose, sqliteGet, type SQLiteDatabase } from '../../core/sqlite-wrapper.js';
 import { MongoSyncWorker, type MongoSyncDirection } from '../../core/mongo-sync-worker.js';
 import { applyPrivacyFilter, maskSensitiveInput } from '../../core/privacy/filter.js';
 import type { Config, OutboxStats, OutboxQueueStats } from '../../core/types.js';
@@ -39,6 +41,8 @@ import {
   CheckpointRepository,
   FacetRepository,
   FrontierService,
+  LessonRepository,
+  LessonService,
   backfillPerspectiveSessionActors,
   type FrontierItem,
   type MemoryAction,
@@ -224,8 +228,10 @@ function resolveHealthStoragePath(projectPathOrHash: string | undefined): string
 }
 
 function createHealthMemoryService(projectPathOrHash: string | undefined): MemoryService {
+  const project = resolveHealthProjectIdentity(projectPathOrHash);
   return new MemoryService({
     storagePath: resolveHealthStoragePath(projectPathOrHash),
+    ...(project.scope === 'project' ? { projectHash: project.id } : {}),
     readOnly: true,
     lightweightMode: true,
     analyticsEnabled: false,
@@ -256,6 +262,69 @@ function emptyHealthQueue(): OutboxQueueStats {
 
 function emptyHealthOutbox(): OutboxStats {
   return { embedding: emptyHealthQueue(), vector: emptyHealthQueue() };
+}
+
+function emptyHealthDerivationLiveness(): DerivationLiveness {
+  return {
+    graduation: {
+      attempts: 0,
+      lastAttemptAt: null,
+      lastSuccessAt: null,
+      lastStatus: null,
+      lastErrorCategory: null
+    },
+    sources: { graduatedEvents: 0, curatedLessons: 0 }
+  };
+}
+
+function scanCanonicalProjectStores(canonicalId: string): { scannedStoreCount: number; matchingStoreCount: number; unreadableStoreCount: number } {
+  const projectsRoot = path.join(os.homedir(), '.claude-code', 'memory', 'projects');
+  let scannedStoreCount = 0;
+  let matchingStoreCount = 0;
+  let unreadableStoreCount = 0;
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(projectsRoot, { withFileTypes: true });
+  } catch {
+    return { scannedStoreCount, matchingStoreCount, unreadableStoreCount };
+  }
+
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !/^[a-f0-9]{8}$/.test(entry.name)) continue;
+    const dbPath = path.join(projectsRoot, entry.name, 'events.sqlite');
+    if (!fs.existsSync(dbPath)) continue;
+    scannedStoreCount++;
+    let db: SQLiteDatabase | undefined;
+    try {
+      db = createSQLiteDatabase(dbPath, { readonly: true, walMode: false });
+      const sessionsTable = sqliteGet<{ name: string }>(
+        db,
+        `SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`,
+        ['sessions']
+      );
+      if (!sessionsTable) continue;
+      const rows = sqliteAll<{ project_path: string | null }>(
+        db,
+        `SELECT DISTINCT project_path FROM sessions
+         WHERE project_path IS NOT NULL AND TRIM(project_path) != ''
+         LIMIT 20`
+      );
+      if (rows.some((row) => {
+        try {
+          return resolveCanonicalRepoIdentity(row.project_path!).canonicalId === canonicalId;
+        } catch {
+          return false;
+        }
+      })) {
+        matchingStoreCount++;
+      }
+    } catch {
+      unreadableStoreCount++;
+    } finally {
+      if (db) sqliteClose(db);
+    }
+  }
+  return { scannedStoreCount, matchingStoreCount, unreadableStoreCount };
 }
 
 function parseCommaList(value: string | undefined): string[] | undefined {
@@ -486,6 +555,15 @@ function splitOperationList(value: string | string[] | undefined, maxItems: numb
   )).slice(0, maxItems);
 }
 
+function splitCuratedOperationList(value: string | string[] | undefined, maxItems: number): string[] {
+  const raw = Array.isArray(value) ? value : (value ? [value] : []);
+  return Array.from(new Set(
+    raw.flatMap((item) => item.split(','))
+      .map((item) => item.trim())
+      .filter(Boolean)
+  )).slice(0, maxItems);
+}
+
 function parseOperationStateJson(value: string | undefined): Record<string, unknown> {
   if (!value) return {};
   const parsed = JSON.parse(value) as unknown;
@@ -629,6 +707,38 @@ function formatOperationCheckpoint(checkpoint: MemoryCheckpoint): Record<string,
     sourceEventIds: compactOperationStringArray(checkpoint.sourceEventIds, 10, 120),
     createdAt: isoOperationDate(checkpoint.createdAt),
     expiresAt: isoOperationDate(checkpoint.expiresAt)
+  };
+}
+
+function formatOperationLesson(lesson: {
+  lessonId: string;
+  projectHash?: string;
+  name: string;
+  trigger: string;
+  steps: string[];
+  confidence: number;
+  sourceSessionIds: string[];
+  sourceEventIds: string[];
+  failureModes: string[];
+  skillCandidate: boolean;
+  sourceClass: 'derived' | 'curated';
+  createdAt: Date;
+  updatedAt: Date;
+}): Record<string, unknown> {
+  return {
+    lessonId: lesson.lessonId,
+    projectHash: lesson.projectHash,
+    name: lesson.name,
+    trigger: lesson.trigger,
+    steps: compactOperationStringArray(lesson.steps, 10, 500),
+    confidence: lesson.confidence,
+    sourceSessionIds: compactOperationStringArray(lesson.sourceSessionIds, 10, 120),
+    sourceEventIds: compactOperationStringArray(lesson.sourceEventIds, 10, 120),
+    failureModes: compactOperationStringArray(lesson.failureModes, 10, 300),
+    skillCandidate: lesson.skillCandidate,
+    sourceClass: lesson.sourceClass,
+    createdAt: isoOperationDate(lesson.createdAt),
+    updatedAt: isoOperationDate(lesson.updatedAt)
   };
 }
 
@@ -1034,17 +1144,20 @@ program
 
       let stats: Pick<MemoryStats, 'totalEvents' | 'vectorCount' | 'levelStats'>;
       let outbox: OutboxStats;
+      let derivation: DerivationLiveness;
       if (healthStoreExists(projectPath)) {
         service = createHealthMemoryService(projectPath);
-        [stats, outbox] = await Promise.all([
+        [stats, outbox, derivation] = await Promise.all([
           service.getStats(),
-          service.getOutboxStats()
+          service.getOutboxStats(),
+          service.getDerivationLiveness()
         ]);
       } else {
         stats = emptyHealthStats();
         outbox = emptyHealthOutbox();
+        derivation = emptyHealthDerivationLiveness();
       }
-      console.log(JSON.stringify(buildProductivityHealthReport({ stats, outbox, project, profile, mode }), null, 2));
+      console.log(JSON.stringify(buildProductivityHealthReport({ stats, outbox, derivation, project, profile, mode }), null, 2));
     } catch (error) {
       const message = error instanceof Error
         ? error.message
@@ -1129,14 +1242,15 @@ program
   });
 
 /**
- * Process command - manually process pending embeddings
+ * Process command - manually process pending embeddings and bounded derivation
  */
 program
   .command('process')
-  .description('Process pending embeddings')
+  .description('Process pending embeddings and run one bounded graduation pass')
   .option('-p, --project <path>', 'Project path (defaults to cwd)')
   .option('--dry-run-recovery', 'Preview stale outbox recovery without mutating or processing embeddings')
   .option('--no-recover-stuck', 'Skip stale processing outbox recovery before processing')
+  .option('--no-graduation', 'Skip the bounded graduation pass')
   .option('--lock-path <path>', 'Override process lock path (advanced)')
   .action(async (options) => {
     let service: ReturnType<typeof getMemoryServiceForProject> | undefined;
@@ -1185,6 +1299,11 @@ program
       console.log('⏳ Processing pending embeddings...');
       const count = await service.processPendingEmbeddings();
       console.log(`✅ Processed ${count} embeddings`);
+      if (processOptions.graduation) {
+        console.log('⏳ Running bounded graduation pass...');
+        const graduation = await service.forceGraduation();
+        console.log(`✅ Graduation evaluated ${graduation.evaluated} memories; promoted ${graduation.graduated}`);
+      }
     } catch (error) {
       console.error('Process failed:', error);
       process.exit(1);
@@ -1563,6 +1682,79 @@ checkpointCommand
     });
     writeOperationOutput(payload, options);
   }, 'Checkpoint list'));
+
+const lessonCommand = program
+  .command('lesson')
+  .description('Capture and list curated project-scoped lessons');
+
+lessonCommand
+  .command('add')
+  .description('Save a reviewed lesson; dry-run unless --apply is supplied')
+  .requiredOption('-p, --project <path>', 'Project path')
+  .requiredOption('--name <name>', 'Short stable lesson name')
+  .requiredOption('--trigger <trigger>', 'When to apply this lesson')
+  .requiredOption('--steps <steps>', 'Comma-separated ordered steps')
+  .option('--confidence <number>', 'Confidence between 0 and 1', '1')
+  .option('--source-session-ids <ids>', 'Comma-separated safe source session refs')
+  .option('--source-event-ids <ids>', 'Comma-separated existing project event refs')
+  .option('--failure-modes <items>', 'Comma-separated failure-mode reminders')
+  .option('--no-skill-candidate', 'Do not mark this lesson as a skill/runbook candidate')
+  .option('--actor <actor>', 'Actor for governance audit', 'cml-cli')
+  .option('--apply', 'Persist the curated lesson; omitted means dry-run')
+  .option('--json', 'Print machine-readable JSON')
+  .action((options) => runOperationCli(async () => {
+    const context = resolveOperationProject(options.project);
+    const input = {
+      projectHash: context.projectHash,
+      actor: requiredOperationOption(options.actor, 'actor'),
+      name: requiredOperationOption(options.name, 'name'),
+      trigger: requiredOperationOption(options.trigger, 'trigger'),
+      steps: splitCuratedOperationList(options.steps, 100),
+      confidence: parseOperationNumber(options.confidence, 1, 0, 1, 'confidence'),
+      sourceSessionIds: splitCuratedOperationList(options.sourceSessionIds, 100),
+      sourceEventIds: splitCuratedOperationList(options.sourceEventIds, 100),
+      failureModes: splitCuratedOperationList(options.failureModes, 100),
+      skillCandidate: options.skillCandidate !== false
+    };
+    if (input.steps.length === 0) throw new Error('steps must contain at least one item');
+    if (!options.apply) {
+      writeOperationOutput({ operation: 'mem-lesson-save', projectHash: context.projectHash, dryRun: true, wouldSave: input }, options);
+      return;
+    }
+    const lesson = await withOperationWriteDatabase(context, async (db) => new LessonService(db).saveCurated(input));
+    writeOperationOutput({
+      operation: 'mem-lesson-save',
+      projectHash: context.projectHash,
+      dryRun: false,
+      lesson: formatOperationLesson(lesson)
+    }, options);
+  }, 'Lesson add'));
+
+lessonCommand
+  .command('list')
+  .description('List project-scoped curated and derived lessons')
+  .requiredOption('-p, --project <path>', 'Project path')
+  .option('--curated-only', 'Only return explicitly curated lessons')
+  .option('--limit <count>', 'Maximum lessons to return', '50')
+  .option('--json', 'Print machine-readable JSON')
+  .action((options) => runOperationCli(async () => {
+    const context = resolveOperationProject(options.project);
+    const emptyPayload = { operation: 'mem-lesson-list', projectHash: context.projectHash, count: 0, lessons: [] as unknown[] };
+    const payload = await withOperationExistingDatabase(context, emptyPayload, ['memory_lessons'], async (db) => {
+      const lessons = await new LessonRepository(db).list({
+        projectHash: context.projectHash,
+        limit: parseOperationLimit(options.limit, 50, 1, 100)
+      });
+      const filtered = options.curatedOnly ? lessons.filter((lesson) => lesson.sourceClass === 'curated') : lessons;
+      return {
+        operation: 'mem-lesson-list',
+        projectHash: context.projectHash,
+        count: filtered.length,
+        lessons: filtered.map(formatOperationLesson)
+      };
+    });
+    writeOperationOutput(payload, options);
+  }, 'Lesson list'));
 
 /**
  * Retention command - dry-run lifecycle audits for project-scoped memory
@@ -2628,6 +2820,54 @@ mcpCmd
       console.log('   Restart Claude Desktop to load the new MCP server.\n');
     } catch (error) {
       console.error('MCP install failed:', error);
+      process.exit(1);
+    }
+  });
+
+/**
+ * Project identity commands are diagnostics only.  They never move, merge, or
+ * delete existing project stores; applying canonical write routing requires a
+ * separately reviewed migration command.
+ */
+const projectCmd = program
+  .command('project')
+  .description('Inspect project storage identity and safe alias candidates');
+
+projectCmd
+  .command('identity')
+  .description('Inspect canonical repository identity')
+  .command('scan')
+  .description('Read-only scan for root/worktree/subdirectory alias candidates')
+  .option('-p, --project <path>', 'Project path (defaults to cwd)')
+  .option('--dry-run', 'Required acknowledgement that this command does not modify storage')
+  .option('--json', 'Print a machine-readable aggregate report')
+  .action((options: { project?: string; dryRun?: boolean; json?: boolean }) => {
+    try {
+      const identity = resolveCanonicalRepoIdentity(options.project ?? process.cwd());
+      const stores = scanCanonicalProjectStores(identity.canonicalId);
+      const report = {
+        schemaVersion: 'project-identity-scan-v1',
+        mode: 'dry-run',
+        canonicalId: identity.canonicalId,
+        kind: identity.kind,
+        isWorktree: identity.isWorktree,
+        scannedStoreCount: stores.scannedStoreCount,
+        candidateLegacyStoreCount: stores.matchingStoreCount,
+        unreadableStoreCount: stores.unreadableStoreCount,
+        writeRouting: identity.writeRouting,
+        note: 'No project stores were moved, merged, deleted, or re-routed.'
+      };
+      if (options.json) {
+        console.log(JSON.stringify(report, null, 2));
+        return;
+      }
+      console.log(`Canonical identity: ${report.canonicalId}`);
+      console.log(`Resolver: ${report.kind}`);
+      console.log(`Worktree: ${report.isWorktree ? 'yes' : 'no'}`);
+      console.log(`Legacy store candidates: ${report.candidateLegacyStoreCount} (scanned ${report.scannedStoreCount})`);
+      console.log('Dry run only. No project stores were moved, merged, deleted, or re-routed.');
+    } catch {
+      console.error('Project identity scan failed');
       process.exit(1);
     }
   });

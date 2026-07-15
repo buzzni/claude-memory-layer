@@ -211,6 +211,9 @@ const MemoryLessonStringArraySchema = z.preprocess((value) => {
     .filter((item) => typeof item !== 'string' || item.length > 0);
 }, z.array(MemoryLessonNonEmptyStringSchema)).default([]);
 
+export const MemoryLessonSourceClassSchema = z.enum(['derived', 'curated']);
+export type MemoryLessonSourceClass = z.infer<typeof MemoryLessonSourceClassSchema>;
+
 export const MemoryLessonSchema = z.object({
   lessonId: z.string().uuid(),
   projectHash: MemoryLessonNonEmptyStringSchema.optional(),
@@ -222,6 +225,7 @@ export const MemoryLessonSchema = z.object({
   sourceEventIds: MemoryLessonStringArraySchema,
   failureModes: MemoryLessonStringArraySchema,
   skillCandidate: z.boolean().default(false),
+  sourceClass: MemoryLessonSourceClassSchema.default('derived'),
   createdAt: z.date(),
   updatedAt: z.date()
 });
@@ -238,6 +242,7 @@ export const UpsertMemoryLessonInputSchema = z.object({
   sourceEventIds: MemoryLessonStringArraySchema,
   failureModes: MemoryLessonStringArraySchema,
   skillCandidate: z.boolean().default(false),
+  sourceClass: MemoryLessonSourceClassSchema.default('derived'),
   actor: MemoryLessonNonEmptyStringSchema.optional()
 }).superRefine((value, ctx) => {
   if (value.sourceSessionIds.length === 0 && value.sourceEventIds.length === 0) {
@@ -615,7 +620,10 @@ export interface SessionStartInput {
 }
 
 export interface SessionStartOutput {
-  context?: string;
+  hookSpecificOutput: {
+    hookEventName: 'SessionStart';
+    additionalContext?: string;
+  };
 }
 
 export interface UserPromptSubmitInput {
@@ -624,7 +632,10 @@ export interface UserPromptSubmitInput {
 }
 
 export interface UserPromptSubmitOutput {
-  context?: string;
+  hookSpecificOutput: {
+    hookEventName: 'UserPromptSubmit';
+    additionalContext?: string;
+  };
 }
 
 // Stop Hook Input (matches actual Claude Code hook format)

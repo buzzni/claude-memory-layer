@@ -9,7 +9,7 @@ import {
   getReadOnlyMemoryService,
   MemoryService
 } from '../../../services/memory-service.js';
-import { resolveProjectStoragePath } from '../../../core/registry/project-path.js';
+import { hashProjectPath, resolveProjectStoragePath } from '../../../core/registry/project-path.js';
 
 type ApiErrorStatus = 400 | 401 | 403 | 404 | 409 | 422 | 500;
 
@@ -42,9 +42,11 @@ export function getServiceFromQuery(c: Context): MemoryService {
   const project = c.req.query('project') || c.req.query('projectId');
   if (project) {
     const storagePath = resolveProjectStoragePath(project);
+    const projectHash = /^[a-f0-9]{8}$/.test(project) ? project : hashProjectPath(project);
 
     return new MemoryService({
       storagePath,
+      projectHash,
       readOnly: true,
       analyticsEnabled: false,
       sharedStoreConfig: DISABLED_SHARED_STORE_CONFIG
@@ -62,9 +64,11 @@ export function getWritableServiceFromQuery(c: Context): MemoryService {
   const project = c.req.query('project') || c.req.query('projectId');
   if (project) {
     const storagePath = resolveProjectStoragePath(project);
+    const projectHash = /^[a-f0-9]{8}$/.test(project) ? project : hashProjectPath(project);
 
     return new MemoryService({
       storagePath,
+      projectHash,
       readOnly: false,
       lightweightMode: true,
       analyticsEnabled: false,
@@ -90,9 +94,11 @@ export function getLightweightServiceFromQuery(c: Context): MemoryService {
   const project = c.req.query('project') || c.req.query('projectId');
   if (project) {
     const storagePath = resolveProjectStoragePath(project);
+    const projectHash = /^[a-f0-9]{8}$/.test(project) ? project : hashProjectPath(project);
 
     return new MemoryService({
       storagePath,
+      projectHash,
       readOnly: true,
       lightweightMode: true,
       analyticsEnabled: false,

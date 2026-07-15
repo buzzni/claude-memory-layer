@@ -14,6 +14,7 @@ export const MEMORY_GOVERNANCE_AUDIT_OPERATIONS = [
   'quarantine',
   'verify',
   'lesson_promote',
+  'lesson_capture',
   'actor_card_upsert',
   'perspective_observation_create',
   'perspective_observation_delete'

@@ -27,6 +27,7 @@ interface MemoryLessonRow {
   source_event_ids: string;
   failure_modes_json: string;
   skill_candidate: number;
+  source_class?: string;
   created_at: string;
   updated_at: string;
 }
@@ -71,6 +72,7 @@ function sanitizeParsedLesson(input: ParsedLessonUpsert): ParsedLessonUpsert {
     sourceSessionIds: sanitizeStringArray(input.sourceSessionIds),
     sourceEventIds: sanitizeStringArray(input.sourceEventIds),
     failureModes: sanitizeStringArray(input.failureModes),
+    sourceClass: input.sourceClass,
     actor: input.actor ? sanitizeString(input.actor) : undefined
   };
 }
@@ -87,6 +89,7 @@ function rowToLesson(row: MemoryLessonRow): MemoryLesson {
     sourceEventIds: parseStringArray(row.source_event_ids),
     failureModes: parseStringArray(row.failure_modes_json),
     skillCandidate: Number(row.skill_candidate) === 1,
+    sourceClass: row.source_class === 'curated' ? 'curated' : 'derived',
     createdAt: toDateFromSQLite(row.created_at),
     updatedAt: toDateFromSQLite(row.updated_at)
   });
@@ -104,15 +107,18 @@ function lessonToAuditJson(lesson: MemoryLesson): Record<string, unknown> {
     sourceEventIds: lesson.sourceEventIds,
     failureModes: lesson.failureModes,
     skillCandidate: lesson.skillCandidate,
+    sourceClass: lesson.sourceClass,
     createdAt: lesson.createdAt.toISOString(),
     updatedAt: lesson.updatedAt.toISOString()
   };
 }
 
+export type LessonAuditOperation = 'lesson_promote' | 'lesson_capture';
+
 export class LessonRepository {
   constructor(private readonly db: SQLiteDatabase) {}
 
-  async upsert(input: unknown): Promise<MemoryLesson> {
+  async upsert(input: unknown, auditOperation: LessonAuditOperation = 'lesson_promote'): Promise<MemoryLesson> {
     const parsed = sanitizeParsedLesson(UpsertMemoryLessonInputSchema.parse(input));
     const existingById = parsed.lessonId ? this.get(parsed.lessonId) : null;
     const existingByName = this.findByProjectAndName(parsed.projectHash, parsed.name);
@@ -130,7 +136,7 @@ export class LessonRepository {
         this.db,
         `UPDATE memory_lessons
          SET name = ?, trigger = ?, steps_json = ?, confidence = ?, source_session_ids = ?,
-             source_event_ids = ?, failure_modes_json = ?, skill_candidate = ?, updated_at = ?
+             source_event_ids = ?, failure_modes_json = ?, skill_candidate = ?, source_class = ?, updated_at = ?
          WHERE lesson_id = ? AND project_hash = ?`,
         [
           parsed.name,
@@ -141,13 +147,14 @@ export class LessonRepository {
           JSON.stringify(parsed.sourceEventIds),
           JSON.stringify(parsed.failureModes),
           parsed.skillCandidate ? 1 : 0,
+          parsed.sourceClass,
           now,
           existing.lessonId,
           projectHashToStorage(existing.projectHash)
         ]
       );
       const saved = this.require(existing.lessonId);
-      await this.auditLessonUpsert(parsed, existing, saved);
+      await this.auditLessonUpsert(parsed, existing, saved, auditOperation);
       return saved;
     }
 
@@ -157,8 +164,8 @@ export class LessonRepository {
       `INSERT INTO memory_lessons (
         lesson_id, project_hash, name, trigger, steps_json, confidence,
         source_session_ids, source_event_ids, failure_modes_json, skill_candidate,
-        created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        source_class, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         lessonId,
         projectHashToStorage(parsed.projectHash),
@@ -170,13 +177,14 @@ export class LessonRepository {
         JSON.stringify(parsed.sourceEventIds),
         JSON.stringify(parsed.failureModes),
         parsed.skillCandidate ? 1 : 0,
+        parsed.sourceClass,
         now,
         now
       ]
     );
 
     const saved = this.require(lessonId);
-    await this.auditLessonUpsert(parsed, null, saved);
+    await this.auditLessonUpsert(parsed, null, saved, auditOperation);
     return saved;
   }
 
@@ -221,10 +229,11 @@ export class LessonRepository {
   private async auditLessonUpsert(
     input: ParsedLessonUpsert,
     before: MemoryLesson | null,
-    after: MemoryLesson
+    after: MemoryLesson,
+    operation: LessonAuditOperation
   ): Promise<void> {
     await writeGovernanceAuditEntry(this.db, {
-      operation: 'lesson_promote',
+      operation,
       actor: input.actor ?? 'cml-core',
       projectHash: input.projectHash,
       targetType: 'lesson',

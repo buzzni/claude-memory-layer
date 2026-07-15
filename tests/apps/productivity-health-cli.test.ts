@@ -40,7 +40,7 @@ describe('productivity health CLI', () => {
     expect(report.project.id).toMatch(/^[a-f0-9]{8}$/);
     expect(report.signals.storage.totalEvents).toBe(0);
     expect(report.signals.storage.vectorCount).toBe(0);
-    expect(report.riskGates.map((gate) => gate.id)).toEqual(['project-scope-known', 'outbox-healthy', 'memory-density']);
+    expect(report.riskGates.map((gate) => gate.id)).toEqual(['project-scope-known', 'outbox-healthy', 'memory-density', 'derivation-liveness', 'derived-sources-ready']);
     expect(report.summary.warningReasons).toContain('memory_density_low');
     expect(report.nextBestAction).toContain('Import or capture project context');
   });

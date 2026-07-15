@@ -35,6 +35,7 @@ import {
 } from '../core/engine/embedding-maintenance-service.js';
 import type { MemoryRuntimeService } from '../core/engine/memory-runtime-service.js';
 import type { GraduationRunResult } from '../core/graduation-worker.js';
+import type { DerivationLiveness } from '../core/sqlite-event-store.js';
 import type { IngestInterceptor } from '../core/ingest-interceptor.js';
 import type { MemoryIngestService } from '../core/engine/memory-ingest-service.js';
 import type { MemoryQueryService } from '../core/engine/memory-query-service.js';
@@ -391,6 +392,16 @@ export class MemoryService {
    */
   async getEventLevel(eventId: string): Promise<string | null> {
     return this.queryService.getEventLevel(eventId);
+  }
+
+  /** Answer-capable L1+ evidence lane used by strict hook retrieval. */
+  async searchGraduatedEvidence(query: string, limit: number = 10) {
+    return this.queryService.searchGraduatedEvidence(query, limit);
+  }
+
+  /** Aggregate-only graduation liveness for health and status surfaces. */
+  async getDerivationLiveness(): Promise<DerivationLiveness> {
+    return this.queryService.getDerivationLiveness(this.projectHash ?? undefined);
   }
 
   /**

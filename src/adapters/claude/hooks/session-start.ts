@@ -7,6 +7,7 @@ import { getLightweightMemoryService } from '../../../services/memory-service.js
 import { registerSession } from '../../../core/registry/session-registry.js';
 import { ensureDaemonRunning } from './semantic-daemon-client.js';
 import { readStdin } from './hook-runtime.js';
+import { formatClaudeContextHookOutput, isHookEvaluationMode } from './hook-output.js';
 import type { SessionStartInput, SessionStartOutput } from '../../../core/types.js';
 
 export async function main(): Promise<string> {
@@ -16,7 +17,7 @@ export async function main(): Promise<string> {
   try {
     input = JSON.parse(await readStdin());
   } catch {
-    return JSON.stringify({ context: '' });
+    return formatClaudeContextHookOutput('SessionStart', '');
   }
 
   // Register session with project path for other hooks to find
@@ -33,14 +34,20 @@ export async function main(): Promise<string> {
 
   try {
     // Start session in memory service
-    await memoryService.startSession(input.session_id, input.cwd);
+    if (!isHookEvaluationMode()) {
+      await memoryService.startSession(input.session_id, input.cwd);
+    }
 
     // Backfill session summaries for recent sessions that ended without Stop hook
     // (crash, force-close, etc.). Run in background - non-blocking.
-    memoryService.backfillMissingSummaries(input.session_id, 5).catch(() => {});
+    if (!isHookEvaluationMode()) {
+      memoryService.backfillMissingSummaries(input.session_id, 5).catch(() => {});
+    }
 
     // Get recent context for this project (now automatically scoped)
-    const recentEvents = await memoryService.getRecentEvents(10);
+    const recentEvents = process.env.CLAUDE_MEMORY_EVAL_DISABLE_SESSION_CONTEXT === 'true'
+      ? []
+      : await memoryService.getRecentEvents(10);
 
     let context = '';
     if (recentEvents.length > 0) {
@@ -51,13 +58,13 @@ export async function main(): Promise<string> {
       }
     }
 
-    const output: SessionStartOutput = { context };
+    const output: SessionStartOutput = JSON.parse(formatClaudeContextHookOutput('SessionStart', context));
     return JSON.stringify(output);
   } catch (error) {
     if (process.env.CLAUDE_MEMORY_DEBUG) {
       console.error('Memory hook error:', error);
     }
-    return JSON.stringify({ context: '' });
+    return formatClaudeContextHookOutput('SessionStart', '');
   } finally {
     try {
       await memoryService.close();

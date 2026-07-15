@@ -204,3 +204,15 @@ Session-start의 백필 메커니즘도 요약을 생성하지 못하고 있음.
 - `specs/endless-mode/` - 세션 연속성
 - `specs/entity-edge-model/` - 엔티티 추적
 - `specs/selective-tool-observation/` - Tool observation 선택적 저장 (부분 설계됨)
+
+## 2026-07-14 recsys_justin answer-utilization field finding
+
+- corpus: active events 2,000, vectors 2,000, sessions 54에서 시작.
+- 직접 hook 실행은 relevant candidate를 찾았지만 실제 Claude CLI는 관련/무관 질문 모두 `근거 부족`으로 답했다.
+- 원인은 retrieval 자체보다 Claude adapter delivery contract였다: 현재 `{context}`는 JSON으로 인식되지만 context injection field가 아니었다.
+- 검색 결과도 answer utility가 불균일했다. PR 167은 과거 요청만, incident는 단일 kubectl observation, GitOps는 최종 agent responses를 반환했다.
+- 따라서 본 개선은 “관련 이벤트 검색”이 아니라 “답변 가능한 evidence bundle 전달”을 성공 단위로 삼는다.
+- 평가 프롬프트가 실제 corpus에 저장되어 self-match가 발생했으므로 이후 field benchmark는 eval mode와 synthetic-session exclusion을 사용한다.
+- 구현 후 eval mode는 semantic daemon trace까지 mutation을 차단했고, 23-case field selection smoke에서 12 relevant/11 abstention을 모두 맞췄다. 다만 이는 hand-labeled retrieval/injection 평가이며 provider 답변 품질과 동일시하지 않는다.
+- 2026-07-14 hook-only graduation canary에서 `recsys_justin`의 graduation attempts가 0→3으로 증가했고 L1+가 9→159로 늘었다. Hook은 strict-filtered access evidence 저장 뒤 daemon schedule ack만 기다리며, 실제 bounded pass는 background에서 실행한다. 6개 concurrent retrieval은 1개 pass로 dedupe됐다.
+- 실제 Claude는 공식 envelope의 evidence를 읽는 것이 확인됐지만, 첫 run에서 관련성이 약한 linked tool evidence를 근거 부족으로 거절했다. answer/summary가 있으면 tool evidence는 명령·로그 의도에서만 허용하도록 보정했다.

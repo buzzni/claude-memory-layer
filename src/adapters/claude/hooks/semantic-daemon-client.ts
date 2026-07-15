@@ -17,14 +17,16 @@ interface SemanticMemory {
   content: string;
   id?: string;
   score?: number;
+  sessionId?: string;
 }
 
 interface SemanticDaemonRequest {
-  type: 'retrieve';
+  type: 'retrieve' | 'graduate';
   sessionId: string;
-  prompt: string;
-  topK: number;
-  minScore: number;
+  prompt?: string;
+  topK?: number;
+  minScore?: number;
+  evaluation?: boolean;
 }
 
 interface SemanticDaemonResponse {
@@ -54,7 +56,8 @@ export async function retrieveSemanticMemories(
     sessionId: request.sessionId,
     prompt: request.prompt,
     topK: request.topK,
-    minScore: request.minScore
+    minScore: request.minScore,
+    evaluation: process.env.CLAUDE_MEMORY_EVAL_MODE === 'true'
   };
 
   try {
@@ -71,6 +74,31 @@ export async function retrieveSemanticMemories(
       }
       throw retryError;
     });
+  }
+}
+
+/**
+ * Ask the long-lived daemon to schedule graduation after the hook has durably
+ * recorded which strict-filtered memories were actually injected.  Waiting
+ * only for this local acknowledgement removes the access-recording race; the
+ * graduation pass itself remains outside the hook response path.
+ */
+export async function scheduleSemanticGraduation(
+  sessionId: string,
+  timeoutMs: number = 500
+): Promise<void> {
+  const payload: SemanticDaemonRequest = {
+    type: 'graduate',
+    sessionId,
+    evaluation: process.env.CLAUDE_MEMORY_EVAL_MODE === 'true'
+  };
+
+  try {
+    await requestFromDaemon(payload, timeoutMs);
+  } catch (error) {
+    if (!isConnectionError(error)) throw error;
+    await ensureDaemonRunning();
+    await requestFromDaemon(payload, timeoutMs);
   }
 }
 
@@ -207,4 +235,3 @@ function isConnectionError(error: unknown): boolean {
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
-

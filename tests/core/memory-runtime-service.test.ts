@@ -214,7 +214,7 @@ describe('createMemoryRuntimeService', () => {
     expect(harness.service.getVectorWorker()).toBeNull();
   });
 
-  it('embedding-only mode starts vector worker but skips graduation worker', async () => {
+  it('embedding-only mode skips the periodic worker but supports a reusable bounded graduation pass', async () => {
     const harness = makeHarness({ embeddingOnly: true });
 
     await harness.service.initialize();
@@ -228,11 +228,15 @@ describe('createMemoryRuntimeService', () => {
       'endless.initializeFromSavedMode',
       'shared.initialize'
     ]);
-    await expect(harness.service.forceGraduation()).resolves.toEqual({ evaluated: 0, graduated: 0, byLevel: {} });
+    await expect(harness.service.forceGraduation()).resolves.toEqual({ evaluated: 2, graduated: 1, byLevel: { L0: 1 } });
+    await expect(harness.service.forceGraduation()).resolves.toEqual({ evaluated: 2, graduated: 1, byLevel: { L0: 1 } });
+    expect(harness.calls.filter((call) => call === 'createGraduationWorker')).toHaveLength(1);
+    expect(harness.calls.filter((call) => call === 'graduationWorker.start')).toHaveLength(0);
+    expect(harness.calls.filter((call) => call === 'graduationWorker.forceRun')).toHaveLength(2);
   });
 
-  it('returns a fresh empty graduation result when no graduation worker exists', async () => {
-    const harness = makeHarness({ embeddingOnly: true });
+  it('returns a fresh empty graduation result when mutation is disabled', async () => {
+    const harness = makeHarness({ readOnly: true });
     await harness.service.initialize();
 
     const first = await harness.service.forceGraduation();
