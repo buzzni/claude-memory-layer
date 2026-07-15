@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => {
     getHelpfulnessStats: vi.fn(),
     getRecentRetrievalTraces: vi.fn(),
     getRetrievalTraceStats: vi.fn(),
+    getUsefulnessHistory: vi.fn(),
   };
 
   return {
@@ -62,9 +63,9 @@ class TestElement {
   classList = { add() {}, remove() {}, toggle() {} };
 }
 
-function loadOverviewWithElements(elements: Record<string, TestElement>) {
+function loadOverviewWithElements(elements: Record<string, TestElement>, files = ['state.js', 'views.js', 'overview.js']) {
   const dashboardDir = join(process.cwd(), 'src/apps/dashboard/assets/js');
-  const source = ['state.js', 'views.js', 'overview.js']
+  const source = files
     .map(file => readFileSync(join(dashboardDir, file), 'utf-8'))
     .join('\n');
   const context = {
@@ -81,14 +82,19 @@ function loadOverviewWithElements(elements: Record<string, TestElement>) {
     },
   };
 
+  const usefulnessHooks = files.includes('usefulness.js')
+    ? ', renderUsefulnessHistory, updateOverviewUsefulnessStrip'
+    : '';
   vm.runInNewContext(
-    `${source}\n;globalThis.__dashboardTestHooks = { state, updateMemoryUsefulnessUI, updateRetrievalTraceUI };`,
+    `${source}\n;globalThis.__dashboardTestHooks = { state, updateMemoryUsefulnessUI, updateRetrievalTraceUI${usefulnessHooks} };`,
     context
   );
   return (context as unknown as { __dashboardTestHooks: {
     state: Record<string, any>;
     updateMemoryUsefulnessUI: () => void;
     updateRetrievalTraceUI: () => void;
+    renderUsefulnessHistory: () => void;
+    updateOverviewUsefulnessStrip: () => void;
   }}).__dashboardTestHooks;
 }
 
@@ -113,6 +119,9 @@ describe('dashboard memory usefulness stats', () => {
       helpful: 3,
       neutral: 1,
       unhelpful: 0,
+      contentEvaluated: 3,
+      avgContentOverlap: 0.6,
+      groundedCount: 2,
     });
     mocks.service.getRecentRetrievalTraces.mockReset().mockResolvedValue([
       {
@@ -174,10 +183,12 @@ describe('dashboard memory usefulness stats', () => {
     const body = await res.json();
 
     expect(body.window).toBe('7d');
-    expect(body.score).toEqual({ value: 64.4, label: 'good', confidence: 1 });
+    expect(body.score).toEqual({ value: 64, label: 'good', confidence: 1 });
     expect(body.generatedAt).toBe('2026-05-08T12:00:00.000Z');
     expect(body.metrics).toMatchObject({
       avgHelpfulnessScore: 0.8,
+      contentGroundingRate: 0.6,
+      groundedRecallRate: 0.6667,
       usefulRecallRate: 0.75,
       memoryHitRate: 0.3333,
       retrievalUsageRate: 0.6667,
@@ -207,9 +218,12 @@ describe('dashboard memory usefulness stats', () => {
       unhelpful: 0,
       totalEvaluated: 4,
       totalRetrievals: 5,
+      contentEvaluated: 3,
+      groundedCount: 2,
     });
     expect(body.components.map((c: any) => c.key)).toEqual([
       'avgHelpfulnessScore',
+      'contentGroundingRate',
       'usefulRecallRate',
       'memoryHitRate',
       'retrievalUsageRate',
@@ -257,13 +271,77 @@ describe('dashboard memory usefulness stats', () => {
     mocks.service.getRecentRetrievalTraces.mockResolvedValue([]);
     const zeroRes = await createApp().request('/api/stats/usefulness?window=24h');
     const zeroBody = await zeroRes.json();
-    expect(zeroBody.score).toEqual({ value: 0, label: 'low', confidence: 0.35 });
+    expect(zeroBody.score).toEqual({ value: 0, label: 'low', confidence: 0.3 });
 
     mocks.service.getEventsAfter.mockResolvedValue([]);
     mocks.service.getRecentRetrievalTraces.mockResolvedValue([]);
     const emptyRes = await createApp().request('/api/stats/usefulness?window=24h');
     const emptyBody = await emptyRes.json();
     expect(emptyBody.score).toEqual({ value: 0, label: 'unknown', confidence: 0 });
+  });
+
+  it('returns per-question evidence history without rewritten query text', async () => {
+    mocks.service.getUsefulnessHistory.mockReset().mockResolvedValue([
+      {
+        traceId: 'trace-1',
+        kind: 'query',
+        sessionId: 's1',
+        question: 'how do I deploy this project?',
+        queryText: 'PRIVATE_REWRITTEN_QUERY_SHOULD_NOT_LEAK',
+        strategy: 'hybrid',
+        confidence: 'high',
+        candidateCount: 3,
+        selectedCount: 1,
+        createdAt: new Date('2026-05-08T10:10:00.000Z'),
+        memories: [
+          {
+            eventId: 'mem-1',
+            eventType: 'agent_response',
+            summary: 'The deploy port is 37777…',
+            retrievalScore: 0.9,
+            helpfulnessScore: 0.82,
+            contentOverlapScore: 0.7,
+            evidence: [
+              {
+                memorySnippet: 'The deploy port is 37777',
+                responseSnippet: 'the deploy port is 37777',
+                responseEventId: 'resp-1',
+                similarity: 1,
+                matchType: 'exact'
+              }
+            ],
+            measuredAt: '2026-05-08 10:20:00',
+            source: 'user_prompt'
+          }
+        ]
+      }
+    ]);
+
+    const res = await createApp().request('/api/stats/usefulness-history?limit=10');
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.entries).toHaveLength(1);
+    expect(body.entries[0]).toMatchObject({
+      traceId: 'trace-1',
+      kind: 'query',
+      question: 'how do I deploy this project?',
+      selectedCount: 1,
+    });
+    expect(body.entries[0]).not.toHaveProperty('queryText');
+    expect(JSON.stringify(body)).not.toContain('PRIVATE_REWRITTEN_QUERY_SHOULD_NOT_LEAK');
+    expect(body.entries[0].memories[0]).toMatchObject({
+      eventId: 'mem-1',
+      helpfulnessScore: 0.82,
+      contentOverlapScore: 0.7,
+    });
+    expect(body.entries[0].memories[0].evidence[0].matchType).toBe('exact');
+    expect(mocks.service.getUsefulnessHistory).toHaveBeenCalledWith({
+      limit: 10,
+      offset: 0,
+      sessionId: undefined,
+      withSelectionsOnly: false,
+    });
   });
 
   it('returns a generic error when usefulness calculation fails', async () => {
@@ -684,6 +762,99 @@ describe('dashboard memory usefulness stats', () => {
     expect(elements['retrieval-review-list'].innerHTML).toContain('Unable to load bad retrieval cases');
     expect(elements['retrieval-review-summary'].innerHTML).not.toContain('/Users/private/retrieval-store');
     expect(elements['retrieval-review-list'].innerHTML).not.toContain('PRIVATE_DASHBOARD_ERROR_SHOULD_NOT_LEAK');
+  });
+
+  it('renders the evidence history with question, grounding, and answer snippets', () => {
+    const elements = {
+      'usefulness-history-list': new TestElement(),
+    };
+    const hooks = loadOverviewWithElements(elements, ['state.js', 'views.js', 'overview.js', 'usefulness.js']);
+
+    hooks.state.usefulnessHistory = [
+      {
+        traceId: 'trace-1',
+        kind: 'query',
+        sessionId: 'session-abcdef123456',
+        question: 'how do I deploy this project?',
+        strategy: 'hybrid',
+        confidence: 'high',
+        candidateCount: 3,
+        selectedCount: 1,
+        createdAt: '2026-05-08T10:10:00.000Z',
+        memories: [
+          {
+            eventId: 'mem-1',
+            eventType: 'agent_response',
+            summary: 'The deploy port is 37777…',
+            retrievalScore: 0.9,
+            helpfulnessScore: 0.82,
+            contentOverlapScore: 0.7,
+            evidence: [
+              {
+                memorySnippet: 'The deploy port is 37777',
+                responseSnippet: 'the deploy port is 37777 <script>alert(1)</script>',
+                responseEventId: 'resp-1',
+                similarity: 1,
+                matchType: 'exact'
+              }
+            ],
+            measuredAt: '2026-05-08 10:20:00',
+            source: 'user_prompt'
+          }
+        ]
+      },
+      {
+        traceId: 'trace-untracked',
+        kind: 'query',
+        sessionId: 'session-2',
+        question: 'untracked automatic query',
+        strategy: 'auto',
+        confidence: 'high',
+        candidateCount: 4,
+        selectedCount: 2,
+        createdAt: '2026-05-08T09:00:00.000Z',
+        memories: []
+      }
+    ];
+
+    hooks.renderUsefulnessHistory();
+
+    const html = elements['usefulness-history-list'].innerHTML;
+    expect(html).toContain('how do I deploy this project?');
+    expect(html).toContain('1 used in answer');
+    expect(html).toContain('grounding 70%');
+    expect(html).toContain('82%');
+    expect(html).toContain('The deploy port is 37777');
+    // Evidence snippets must be HTML-escaped.
+    expect(html).not.toContain('<script>alert(1)</script>');
+    expect(html).toContain('&lt;script&gt;');
+    // Selected-but-untracked traces explain themselves instead of claiming nothing was injected.
+    expect(html).toContain('2 memories were selected, but per-memory tracking is unavailable');
+  });
+
+  it('renders the overview usefulness strip from the usefulness payload', () => {
+    const elements = {
+      'overview-usefulness-score': new TestElement(),
+      'overview-usefulness-note': new TestElement(),
+      'overview-usefulness-metrics': new TestElement(),
+    };
+    const hooks = loadOverviewWithElements(elements, ['state.js', 'views.js', 'overview.js', 'usefulness.js']);
+
+    hooks.state.memoryUsefulness = {
+      window: '7d',
+      score: { value: 71.5, label: 'good', confidence: 0.9 },
+      metrics: { avgHelpfulnessScore: 0.8, contentGroundingRate: 0.55, memoryHitRate: 0.6 },
+      counts: { retrievalQueries: 42 },
+      diagnostics: [],
+    };
+
+    hooks.updateOverviewUsefulnessStrip();
+
+    expect(elements['overview-usefulness-score'].textContent).toBe('71.5');
+    expect(elements['overview-usefulness-score'].className).toContain('score-good');
+    expect(elements['overview-usefulness-metrics'].innerHTML).toContain('55%');
+    expect(elements['overview-usefulness-metrics'].innerHTML).toContain('42');
+    expect(elements['overview-usefulness-note'].textContent).toContain('good');
   });
 
   it('renders the usefulness score and component percentages in the overview dashboard', () => {

@@ -66,7 +66,9 @@ import {
   type RetrievalOrchestrator,
   type RetrievalTrace,
   type RetrievalTraceStats,
-  type RetrieveMemoriesOptions
+  type RetrieveMemoriesOptions,
+  type UsefulnessHistoryEntry,
+  type UsefulnessHistoryOptions
 } from '../core/engine/retrieval-services.js';
 export { getProjectStoragePath, hashProjectPath } from '../core/registry/project-path.js';
 export {
@@ -541,8 +543,14 @@ export class MemoryService {
   /**
    * Record a memory retrieval for helpfulness tracking
    */
-  async recordRetrieval(eventId: string, sessionId: string, score: number, query: string): Promise<void> {
-    return this.retrievalOrchestrator.recordRetrieval(eventId, sessionId, score, query);
+  async recordRetrieval(
+    eventId: string,
+    sessionId: string,
+    score: number,
+    query: string,
+    options?: { traceId?: string; source?: string; injectedContent?: string }
+  ): Promise<void> {
+    return this.retrievalOrchestrator.recordRetrieval(eventId, sessionId, score, query, options);
   }
 
   /**
@@ -580,6 +588,15 @@ export class MemoryService {
    */
   async getHelpfulnessStats(since?: Date): Promise<HelpfulnessStats> {
     return this.retrievalAnalyticsService.getHelpfulnessStats(since);
+  }
+
+  /**
+   * Per-question usefulness/evidence history for the dashboard: each
+   * retrieval query with its injected memories, measured helpfulness,
+   * content grounding, and evidence snippets.
+   */
+  async getUsefulnessHistory(options: UsefulnessHistoryOptions = {}): Promise<UsefulnessHistoryEntry[]> {
+    return this.retrievalAnalyticsService.getUsefulnessHistory(options);
   }
 
   /**
