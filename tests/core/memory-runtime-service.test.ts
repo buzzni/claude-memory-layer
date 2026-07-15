@@ -36,6 +36,7 @@ function makeHarness(options?: { readOnly?: boolean; lightweightMode?: boolean; 
   const vectorWorker = {
     start: () => { calls.push('vectorWorker.start'); },
     stop: () => { calls.push('vectorWorker.stop'); },
+    waitForIdle: async () => { calls.push('vectorWorker.waitForIdle'); },
     processAll: async () => {
       calls.push('vectorWorker.processAll');
       return 3;
@@ -44,6 +45,7 @@ function makeHarness(options?: { readOnly?: boolean; lightweightMode?: boolean; 
   const vectorWorkerV2 = {
     start: () => { calls.push('vectorWorkerV2.start'); },
     stop: () => { calls.push('vectorWorkerV2.stop'); },
+    waitForIdle: async () => { calls.push('vectorWorkerV2.waitForIdle'); },
     processAll: async () => {
       calls.push('vectorWorkerV2.processAll');
       return 5;
@@ -196,6 +198,8 @@ describe('createMemoryRuntimeService', () => {
       'endless.shutdown',
       'vectorWorker.stop',
       'vectorWorkerV2.stop',
+      'vectorWorker.waitForIdle',
+      'vectorWorkerV2.waitForIdle',
       'shared.close',
       'sqlite.close'
     ]);
@@ -257,8 +261,33 @@ describe('createMemoryRuntimeService', () => {
       'graduationWorker.stop',
       'endless.shutdown',
       'vectorWorker.stop',
+      'vectorWorker.waitForIdle',
       'shared.close',
       'sqlite.close'
     ]);
+  });
+
+  it('waits for an active vector batch before closing backing services', async () => {
+    const harness = makeHarness();
+    let releaseIdle!: () => void;
+    const idle = new Promise<void>(resolve => {
+      releaseIdle = resolve;
+    });
+    harness.vectorWorker.waitForIdle = async () => {
+      harness.calls.push('vectorWorker.waitForIdle:blocked');
+      await idle;
+    };
+    await harness.service.initialize();
+    harness.calls.length = 0;
+
+    const shutdown = harness.service.shutdown();
+    await Promise.resolve();
+
+    expect(harness.calls).toContain('vectorWorker.waitForIdle:blocked');
+    expect(harness.calls).not.toContain('shared.close');
+
+    releaseIdle();
+    await shutdown;
+    expect(harness.calls.slice(-2)).toEqual(['shared.close', 'sqlite.close']);
   });
 });

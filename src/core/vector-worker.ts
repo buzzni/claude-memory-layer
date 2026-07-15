@@ -44,6 +44,7 @@ export class VectorWorker {
   private running = false;
   private stopping = false;
   private pollTimeout: NodeJS.Timeout | null = null;
+  private activeBatch: Promise<number> | null = null;
 
   constructor(
     eventStore: EventStore,
@@ -83,6 +84,22 @@ export class VectorWorker {
    * Process a single batch of outbox items
    */
   async processBatch(): Promise<number> {
+    if (this.activeBatch) {
+      return this.activeBatch;
+    }
+
+    const batch = this.processBatchExclusive();
+    this.activeBatch = batch;
+    try {
+      return await batch;
+    } finally {
+      if (this.activeBatch === batch) {
+        this.activeBatch = null;
+      }
+    }
+  }
+
+  private async processBatchExclusive(): Promise<number> {
     const items = await this.eventStore.getPendingOutboxItems(this.config.batchSize);
 
     if (items.length === 0) {
@@ -185,9 +202,12 @@ export class VectorWorker {
     let processed: number;
 
     do {
+      if (this.stopping) {
+        break;
+      }
       processed = await this.processBatch();
       totalProcessed += processed;
-    } while (processed > 0);
+    } while (processed > 0 && !this.stopping);
 
     return totalProcessed;
   }
@@ -197,6 +217,18 @@ export class VectorWorker {
    */
   isRunning(): boolean {
     return this.running;
+  }
+
+  /** Wait for an in-flight batch before closing native/database resources. */
+  async waitForIdle(): Promise<void> {
+    while (this.activeBatch) {
+      const batch = this.activeBatch;
+      try {
+        await batch;
+      } catch {
+        // The caller that started the batch owns error reporting.
+      }
+    }
   }
 }
 
@@ -396,6 +428,7 @@ export class VectorWorkerV2 {
   private running = false;
   private stopping = false;
   private pollTimeout: NodeJS.Timeout | null = null;
+  private activeBatch: Promise<number> | null = null;
 
   constructor(
     db: Database,
@@ -440,6 +473,22 @@ export class VectorWorkerV2 {
    * Process a single batch of outbox jobs
    */
   async processBatch(): Promise<number> {
+    if (this.activeBatch) {
+      return this.activeBatch;
+    }
+
+    const batch = this.processBatchExclusive();
+    this.activeBatch = batch;
+    try {
+      return await batch;
+    } finally {
+      if (this.activeBatch === batch) {
+        this.activeBatch = null;
+      }
+    }
+  }
+
+  private async processBatchExclusive(): Promise<number> {
     const jobs = await this.outbox.claimJobs(this.config.batchSize);
 
     if (jobs.length === 0) {
@@ -532,9 +581,12 @@ export class VectorWorkerV2 {
     let processed: number;
 
     do {
+      if (this.stopping) {
+        break;
+      }
       processed = await this.processBatch();
       totalProcessed += processed;
-    } while (processed > 0);
+    } while (processed > 0 && !this.stopping);
 
     return totalProcessed;
   }
@@ -558,6 +610,18 @@ export class VectorWorkerV2 {
    */
   isRunning(): boolean {
     return this.running;
+  }
+
+  /** Wait for an in-flight batch before closing native/database resources. */
+  async waitForIdle(): Promise<void> {
+    while (this.activeBatch) {
+      const batch = this.activeBatch;
+      try {
+        await batch;
+      } catch {
+        // The caller that started the batch owns error reporting.
+      }
+    }
   }
 
   /**

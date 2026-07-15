@@ -311,6 +311,7 @@ function setupEventListeners() {
   }
 
   setupDisclosureSearchListeners();
+  setupUsefulnessViewListeners();
 }
 
 // --- Data Fetching ---

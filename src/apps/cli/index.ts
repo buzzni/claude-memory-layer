@@ -107,6 +107,10 @@ import {
   resolveProcessCommandOptions
 } from './process-command.js';
 import {
+  formatImportLockBusy,
+  resolveImportCommandLockOptions
+} from './import-command.js';
+import {
   formatVectorStatusJsonReport,
   formatVectorStatusReport,
   resolveVectorStatusCommandOptions
@@ -2007,6 +2011,7 @@ program
   .option('--session-limit <number>', 'Limit recent matching sessions to import')
   .option('-f, --force', 'Force reimport: delete existing events and reimport with turn_id grouping')
   .option('--embedding-model <name>', `Embedding model override (default: ${DEFAULT_EMBEDDING_MODEL}, or env CLAUDE_MEMORY_EMBEDDING_MODEL; fallback: ${DEFAULT_EMBEDDING_FALLBACK_MODEL} or env CLAUDE_MEMORY_EMBEDDING_FALLBACK_MODEL)`)
+  .option('--lock-path <path>', 'Override vector worker lock path (advanced)')
   .option('-v, --verbose', 'Show detailed progress')
   .action(async (options) => {
     const startTime = Date.now();
@@ -2018,9 +2023,8 @@ program
       process.env.CLAUDE_MEMORY_EMBEDDING_MODEL = options.embeddingModel;
     }
 
-    // Use project-specific memory service
-    const service = getMemoryServiceForProject(targetProjectPath);
-    const importer = createSessionHistoryImporter(service);
+    let service: MemoryService | undefined;
+    let workerLock: WorkerLock | undefined;
 
     const importOpts = {
       limit: parsePositiveIntegerOption(options.limit, 'limit'),
@@ -2031,6 +2035,22 @@ program
     };
 
     try {
+      const lockOptions = resolveImportCommandLockOptions(options);
+      workerLock = new WorkerLock(lockOptions.lockPath);
+      const lockResult = workerLock.acquire();
+      if (!lockResult.acquired) {
+        console.log(formatImportLockBusy(
+          lockOptions,
+          'holderPid' in lockResult ? lockResult.holderPid : null
+        ));
+        return;
+      }
+
+      service = lockOptions.storageScope === 'global'
+        ? getDefaultMemoryService()
+        : getMemoryServiceForProject(targetProjectPath);
+      const importer = createSessionHistoryImporter(service);
+
       console.log('\n⏳ Initializing memory service...');
       await service.initialize();
       console.log(`  ✅ Ready (embedder: ${service.getEmbeddingModelName()})\n`);
@@ -2066,28 +2086,17 @@ program
         // Import all sessions from all projects
         console.log('📥 Importing all sessions from all projects');
         console.log('   ⚠️  Using global storage (use -p for project-specific)\n');
-        const globalService = getDefaultMemoryService();
-        const globalImporter = createSessionHistoryImporter(globalService);
-        await globalService.initialize();
-        console.log(`  ✅ Global service ready (embedder: ${globalService.getEmbeddingModelName()})`);
-        const globalMigration = await globalService.ensureEmbeddingModelForImport({ autoMigrate: true });
-        if (globalMigration.changed) {
-          console.log('🔁 Global embedding migration detected');
-          console.log(`   Previous: ${globalMigration.previousModel || 'legacy-unknown'}`);
-          console.log(`   Current:  ${globalMigration.currentModel}`);
-          console.log(`   Re-queued embeddings: ${globalMigration.enqueued}`);
-        }
-        result = await globalImporter.importAll(importOpts);
+        console.log(`  ✅ Global service ready (embedder: ${service.getEmbeddingModelName()})`);
+        result = await importer.importAll(importOpts);
 
         // Process embeddings
         console.log('\n🧠 Processing embeddings...');
-        const embedCount = await globalService.processPendingEmbeddings();
+        const embedCount = await service.processPendingEmbeddings();
 
         const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
         printImportSummary(result, embedCount);
         console.log(`\n⏱️  Completed in ${elapsed}s`);
 
-        await globalService.shutdown();
         return;
       } else {
         // Default: import current project
@@ -2107,10 +2116,15 @@ program
       printImportSummary(result, embedCount);
       console.log(`\n⏱️  Completed in ${elapsed}s`);
 
-      await service.shutdown();
     } catch (error) {
       console.error('\n❌ Import failed:', error);
-      process.exit(1);
+      process.exitCode = 1;
+    } finally {
+      await service?.shutdown().catch(shutdownError => {
+        console.error('\n⚠️  Import shutdown failed:', shutdownError);
+        process.exitCode = 1;
+      });
+      workerLock?.release();
     }
   });
 
@@ -2209,10 +2223,23 @@ codexCmd
   .option('--session-limit <number>', 'Limit recent matching sessions to import')
   .option('-f, --force', 'Delete existing events for each imported session before reimporting')
   .option('-v, --verbose', 'Show detailed progress')
+  .option('--lock-path <path>', 'Override vector worker lock path (advanced)')
   .option('--no-process-embeddings', 'Skip processing pending embeddings after import')
   .action(async (options) => {
     const startTime = Date.now();
+    let workerLock: WorkerLock | undefined;
     try {
+      const lockOptions = resolveImportCommandLockOptions(options);
+      workerLock = new WorkerLock(lockOptions.lockPath);
+      const lockResult = workerLock.acquire();
+      if (!lockResult.acquired) {
+        console.log(formatImportLockBusy(
+          lockOptions,
+          'holderPid' in lockResult ? lockResult.holderPid : null
+        ));
+        return;
+      }
+
       if (options.all && !options.project && !options.session) {
         console.log('\n📥 Importing all Codex sessions into global memory');
         console.log('   ⚠️  Use --project to keep memory scoped to one project.\n');
@@ -2233,7 +2260,9 @@ codexCmd
       console.log(`\n⏱️  Codex import completed in ${elapsed}s (${outcome.mode}, ${outcome.storageScope} storage)`);
     } catch (error) {
       console.error('Codex import failed:', error instanceof Error ? error.message : error);
-      process.exit(1);
+      process.exitCode = 1;
+    } finally {
+      workerLock?.release();
     }
   });
 
@@ -2292,10 +2321,23 @@ hermesCmd
   .option('--session-limit <number>', 'Limit recent matching sessions to import')
   .option('-f, --force', 'Delete existing events for each imported session before reimporting')
   .option('-v, --verbose', 'Show detailed progress')
+  .option('--lock-path <path>', 'Override vector worker lock path (advanced)')
   .option('--no-process-embeddings', 'Skip processing pending embeddings after import')
   .action(async (options) => {
     const startTime = Date.now();
+    let workerLock: WorkerLock | undefined;
     try {
+      const lockOptions = resolveImportCommandLockOptions(options);
+      workerLock = new WorkerLock(lockOptions.lockPath);
+      const lockResult = workerLock.acquire();
+      if (!lockResult.acquired) {
+        console.log(formatImportLockBusy(
+          lockOptions,
+          'holderPid' in lockResult ? lockResult.holderPid : null
+        ));
+        return;
+      }
+
       if (options.all && !options.project && !options.session) {
         console.log('\n📥 Importing all Hermes sessions into global memory');
         console.log('   ⚠️  Use --project to keep memory scoped to one project.\n');
@@ -2316,7 +2358,9 @@ hermesCmd
       console.log(`\n⏱️  Hermes import completed in ${elapsed}s (${outcome.mode}, ${outcome.storageScope} storage)`);
     } catch (error) {
       console.error('Hermes import failed:', error instanceof Error ? error.message : error);
-      process.exit(1);
+      process.exitCode = 1;
+    } finally {
+      workerLock?.release();
     }
   });
 

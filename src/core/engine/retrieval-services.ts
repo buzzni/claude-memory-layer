@@ -146,7 +146,11 @@ export type {
   RetrievalAnalyticsServiceDeps,
   RetrievalAnalyticsStore,
   RetrievalTrace,
-  RetrievalTraceStats
+  RetrievalTraceStats,
+  UsefulnessEvidenceMatch,
+  UsefulnessHistoryEntry,
+  UsefulnessHistoryMemory,
+  UsefulnessHistoryOptions
 } from './retrieval-analytics-service.js';
 export {
   RetrievalDisclosureService,

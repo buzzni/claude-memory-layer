@@ -37,6 +37,7 @@ import {
 import { MarkdownMirror } from './markdown-mirror.js';
 import { VectorOutbox, type OutboxConfig } from './vector-outbox.js';
 import { normalizeRetrievalDebugLanes, type RetrievalDebugLane } from './retrieval-debug-lanes.js';
+import { computeMemoryUsageEvidence, type EvidenceMatch } from './usefulness-evidence.js';
 
 export interface SQLiteEventStoreOptions extends SQLiteOptions {
   markdownMirrorRoot?: string;
@@ -903,6 +904,21 @@ export class SQLiteEventStore {
       }
     } catch {
       // action edge table may not exist in partial migrations
+    }
+
+    // Best-effort forward migration for helpfulness evidence columns:
+    // trace_id links each injected memory back to its retrieval_traces row
+    // (question -> memory), content grounding measures whether later
+    // assistant responses actually reused the memory's content.
+    this.addColumnIfMissing('memory_helpfulness', 'trace_id', 'TEXT');
+    this.addColumnIfMissing('memory_helpfulness', 'source', `TEXT DEFAULT 'user_prompt'`);
+    this.addColumnIfMissing('memory_helpfulness', 'content_overlap_score', 'REAL');
+    this.addColumnIfMissing('memory_helpfulness', 'evidence_json', 'TEXT');
+    this.addColumnIfMissing('memory_helpfulness', 'injected_content', 'TEXT');
+    try {
+      sqliteExec(this.db, `CREATE INDEX IF NOT EXISTS idx_helpfulness_trace ON memory_helpfulness(trace_id);`);
+    } catch {
+      // index/table may not exist in partial migrations
     }
 
     // Best-effort forward migration for retrieval trace detail columns
@@ -2206,16 +2222,31 @@ export class SQLiteEventStore {
   /**
    * Record a memory retrieval for helpfulness tracking
    */
-  async recordRetrieval(eventId: string, sessionId: string, score: number, query: string): Promise<void> {
+  async recordRetrieval(
+    eventId: string,
+    sessionId: string,
+    score: number,
+    query: string,
+    options?: { traceId?: string; source?: string; injectedContent?: string }
+  ): Promise<void> {
     if (this.readOnly) return;
     await this.initialize();
 
     const id = randomUUID();
+    // created_at needs millisecond precision: datetime('now') is second-only,
+    // so the triggering prompt (stored moments earlier with an ISO ms
+    // timestamp in the same second) would count as "after" the retrieval.
     sqliteRun(
       this.db,
-      `INSERT INTO memory_helpfulness (id, event_id, session_id, retrieval_score, query_preview, created_at)
-       VALUES (?, ?, ?, ?, ?, datetime('now'))`,
-      [id, eventId, sessionId, score, query.slice(0, 100)]
+      `INSERT INTO memory_helpfulness (id, event_id, session_id, retrieval_score, query_preview, trace_id, source, injected_content, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id, eventId, sessionId, score, query.slice(0, 200),
+        options?.traceId || null,
+        options?.source || 'user_prompt',
+        options?.injectedContent ? options.injectedContent.slice(0, 2000) : null,
+        new Date().toISOString()
+      ]
     );
   }
 
@@ -2261,6 +2292,21 @@ export class SQLiteEventStore {
 
     const promptEvents = sessionEvents.filter((e: any) => e.event_type === 'user_prompt');
     const toolEvents = sessionEvents.filter((e: any) => e.event_type === 'tool_observation');
+    const responseEvents = sessionEvents.filter((e: any) => e.event_type === 'agent_response');
+
+    // Look up the injected memories' content once so each retrieval can be
+    // checked for content grounding against the responses that followed it.
+    const retrievedEventIds = Array.from(new Set(retrievals.map((r) => r.event_id as string).filter(Boolean)));
+    const memoryContentById = new Map<string, string>();
+    for (let i = 0; i < retrievedEventIds.length; i += 100) {
+      const chunk = retrievedEventIds.slice(i, i + 100);
+      const rows = sqliteAll<{ id: string; content: string }>(
+        this.db,
+        `SELECT id, content FROM events WHERE id IN (${chunk.map(() => '?').join(',')})`,
+        chunk
+      );
+      for (const row of rows) memoryContentById.set(row.id, row.content);
+    }
 
     // Count successful vs failed tools
     let toolSuccessCount = 0;
@@ -2275,15 +2321,25 @@ export class SQLiteEventStore {
     }
     const toolSuccessRatio = toolTotalCount > 0 ? toolSuccessCount / toolTotalCount : 0.5;
 
+    // Events store ISO timestamps while memory_helpfulness.created_at uses
+    // SQLite datetime('now') ("YYYY-MM-DD HH:MM:SS", UTC). Comparing the raw
+    // strings marks any same-day event as "after", so compare epoch millis.
+    const toEpochMs = (value: unknown): number => {
+      const raw = String(value || '');
+      const iso = raw.includes('T') ? raw : `${raw.replace(' ', 'T')}Z`;
+      const ms = new Date(iso).getTime();
+      return Number.isFinite(ms) ? ms : 0;
+    };
+
     for (const retrieval of retrievals) {
-      const retrievalTime = retrieval.created_at as string;
+      const retrievalTimeMs = toEpochMs(retrieval.created_at);
 
       // 1. Session continued after retrieval?
-      const eventsAfter = sessionEvents.filter((e: any) => e.timestamp > retrievalTime);
+      const eventsAfter = sessionEvents.filter((e: any) => toEpochMs(e.timestamp) > retrievalTimeMs);
       const sessionContinued = eventsAfter.length > 0 ? 1 : 0;
 
       // 2. How many prompts came after?
-      const promptsAfter = promptEvents.filter((e: any) => e.timestamp > retrievalTime);
+      const promptsAfter = promptEvents.filter((e: any) => toEpochMs(e.timestamp) > retrievalTimeMs);
       const promptCountAfter = promptsAfter.length;
 
       // 3. Was a similar query asked again? (simple word overlap check)
@@ -2301,18 +2357,51 @@ export class SQLiteEventStore {
         }
       }
 
+      // 4. Content grounding: did the assistant responses after this
+      //    retrieval actually reuse the memory's content? This is the most
+      //    direct usefulness signal we have — the behavioral signals below
+      //    only approximate it.
+      const responsesAfter = responseEvents
+        .filter((e: any) => toEpochMs(e.timestamp) > retrievalTimeMs)
+        .map((e: any) => ({ id: e.id as string, content: e.content as string }));
+      // Grounding must be checked against what was actually injected into the
+      // prompt (hooks truncate memories), not the full stored event — otherwise
+      // facts the model never saw would count as "used". Full content is the
+      // fallback for legacy rows recorded before the snapshot column existed.
+      const memoryContent = (retrieval.injected_content as string)
+        || memoryContentById.get(retrieval.event_id as string)
+        || '';
+      let contentOverlapScore: number | null = null;
+      let evidenceMatches: EvidenceMatch[] = [];
+      if (responsesAfter.length > 0 && memoryContent) {
+        const evidence = computeMemoryUsageEvidence(memoryContent, responsesAfter);
+        contentOverlapScore = evidence.contentOverlapScore;
+        evidenceMatches = evidence.matches;
+      }
+
       // Calculate helpfulness score
       // Weights tuned for shopping-assistant-like corpora where sessions
       // continue on the same topic (was_reasked was over-penalising normal conversation flow)
       const retrievalScore = retrieval.retrieval_score as number || 0;
       // More prompts after retrieval = memory was actually useful to the conversation
       const promptNorm = Math.min(promptCountAfter / 2, 1.0);
-      const helpfulnessScore = (
-        0.40 * Math.min(retrievalScore, 1.0) +
-        0.30 * promptNorm +
-        0.20 * toolSuccessRatio +
-        0.10 * (sessionContinued ? 1.0 : 0.0)
-      );
+      // When content grounding is measurable it dominates the score; the
+      // legacy behavioral-only formula remains the fallback (e.g. session
+      // ended right after retrieval, so no responses followed).
+      const helpfulnessScore = contentOverlapScore !== null
+        ? (
+          0.45 * contentOverlapScore +
+          0.20 * Math.min(retrievalScore, 1.0) +
+          0.15 * promptNorm +
+          0.10 * toolSuccessRatio +
+          0.10 * (sessionContinued ? 1.0 : 0.0)
+        )
+        : (
+          0.40 * Math.min(retrievalScore, 1.0) +
+          0.30 * promptNorm +
+          0.20 * toolSuccessRatio +
+          0.10 * (sessionContinued ? 1.0 : 0.0)
+        );
 
       sqliteRun(
         this.db,
@@ -2320,10 +2409,14 @@ export class SQLiteEventStore {
          SET session_continued = ?, prompt_count_after = ?,
              tool_success_count = ?, tool_total_count = ?,
              was_reasked = ?, helpfulness_score = ?,
+             content_overlap_score = ?, evidence_json = ?,
              measured_at = datetime('now')
          WHERE id = ?`,
         [sessionContinued, promptCountAfter, toolSuccessCount, toolTotalCount,
-         wasReasked, helpfulnessScore, retrieval.id]
+         wasReasked, helpfulnessScore,
+         contentOverlapScore,
+         evidenceMatches.length > 0 ? JSON.stringify(evidenceMatches) : null,
+         retrieval.id]
       );
     }
   }
@@ -2377,6 +2470,9 @@ export class SQLiteEventStore {
     helpful: number;
     neutral: number;
     unhelpful: number;
+    contentEvaluated: number;
+    avgContentOverlap: number;
+    groundedCount: number;
   }> {
     await this.initialize();
 
@@ -2388,6 +2484,15 @@ export class SQLiteEventStore {
       ? `WHERE datetime(created_at) >= datetime(?)`
       : ``;
 
+    // Read-only dashboards can open legacy DBs where the grounding-column
+    // migration never ran; degrade to zeros instead of failing the query.
+    const hasGroundingColumns = this.hasTableColumn('memory_helpfulness', 'content_overlap_score');
+    const groundingSelect = hasGroundingColumns
+      ? `COUNT(content_overlap_score) as content_evaluated,
+         AVG(content_overlap_score) as avg_content_overlap,
+         SUM(CASE WHEN content_overlap_score >= 0.3 THEN 1 ELSE 0 END) as grounded_count`
+      : `0 as content_evaluated, 0 as avg_content_overlap, 0 as grounded_count`;
+
     const stats = sqliteGet<Record<string, unknown>>(
       this.db,
       `SELECT
@@ -2395,7 +2500,8 @@ export class SQLiteEventStore {
          COUNT(*) as total_evaluated,
          SUM(CASE WHEN helpfulness_score >= 0.7 THEN 1 ELSE 0 END) as helpful,
          SUM(CASE WHEN helpfulness_score >= 0.4 AND helpfulness_score < 0.7 THEN 1 ELSE 0 END) as neutral,
-         SUM(CASE WHEN helpfulness_score < 0.4 THEN 1 ELSE 0 END) as unhelpful
+         SUM(CASE WHEN helpfulness_score < 0.4 THEN 1 ELSE 0 END) as unhelpful,
+         ${groundingSelect}
        FROM memory_helpfulness
        ${evaluatedWhere}`,
       sinceIso ? [sinceIso] : []
@@ -2413,8 +2519,229 @@ export class SQLiteEventStore {
       totalRetrievals: (totalRow?.total as number) || 0,
       helpful: (stats?.helpful as number) || 0,
       neutral: (stats?.neutral as number) || 0,
-      unhelpful: (stats?.unhelpful as number) || 0
+      unhelpful: (stats?.unhelpful as number) || 0,
+      contentEvaluated: (stats?.content_evaluated as number) || 0,
+      avgContentOverlap: Math.round(((stats?.avg_content_overlap as number) || 0) * 100) / 100,
+      groundedCount: (stats?.grounded_count as number) || 0
     };
+  }
+
+  /**
+   * Per-question usefulness history: each retrieval query (or session-start
+   * injection batch) with the memories it injected, their measured
+   * helpfulness, content grounding, and evidence snippets. Powers the
+   * dashboard's evidence-history drill-down.
+   */
+  async getUsefulnessHistory(options: {
+    limit?: number;
+    offset?: number;
+    sessionId?: string;
+    withSelectionsOnly?: boolean;
+  } = {}): Promise<Array<{
+    traceId: string | null;
+    kind: 'query' | 'session_start';
+    sessionId: string | null;
+    question: string;
+    queryText: string | null;
+    strategy: string | null;
+    confidence: string | null;
+    candidateCount: number;
+    selectedCount: number;
+    createdAt: Date;
+    memories: Array<{
+      eventId: string;
+      eventType: string | null;
+      summary: string;
+      retrievalScore: number;
+      helpfulnessScore: number | null;
+      contentOverlapScore: number | null;
+      evidence: EvidenceMatch[];
+      measuredAt: string | null;
+      source: string;
+    }>;
+  }>> {
+    await this.initialize();
+
+    const limit = Math.min(Math.max(options.limit ?? 20, 1), 100);
+    const offset = Math.max(options.offset ?? 0, 0);
+
+    // Read-only dashboards can open legacy DBs where the trace-link migration
+    // (trace_id/source columns) never ran; fall back to trace-only history.
+    const hasTraceLink = this.hasTableColumn('memory_helpfulness', 'trace_id');
+
+    const sessionFilterTrace = options.sessionId ? `AND session_id = ?` : '';
+    const selectionFilter = options.withSelectionsOnly ? `AND selected_count > 0` : '';
+    const params: unknown[] = [];
+    if (options.sessionId) params.push(options.sessionId);
+    if (hasTraceLink && options.sessionId) params.push(options.sessionId);
+    params.push(limit, offset);
+
+    // Unified, paginated timeline of "questions": retrieval traces plus
+    // session-start injection batches (which have no retrieval_traces row).
+    const sessionStartBranch = hasTraceLink
+      ? `UNION ALL
+         SELECT 'session_start' AS kind,
+                COALESCE(trace_id, 'ss-' || session_id) AS id,
+                session_id,
+                MIN(created_at) AS created_at
+         FROM memory_helpfulness
+         WHERE source = 'session_start' ${sessionFilterTrace}
+         GROUP BY COALESCE(trace_id, 'ss-' || session_id), session_id`
+      : '';
+    const heads = sqliteAll<Record<string, unknown>>(
+      this.db,
+      `SELECT * FROM (
+         SELECT 'query' AS kind, trace_id AS id, session_id, created_at
+         FROM retrieval_traces
+         WHERE 1=1 ${sessionFilterTrace} ${selectionFilter}
+         ${sessionStartBranch}
+       )
+       ORDER BY created_at DESC
+       LIMIT ? OFFSET ?`,
+      params
+    );
+
+    const entries: Array<{
+      traceId: string | null;
+      kind: 'query' | 'session_start';
+      sessionId: string | null;
+      question: string;
+      queryText: string | null;
+      strategy: string | null;
+      confidence: string | null;
+      candidateCount: number;
+      selectedCount: number;
+      createdAt: Date;
+      memories: Array<{
+        eventId: string;
+        eventType: string | null;
+        summary: string;
+        retrievalScore: number;
+        helpfulnessScore: number | null;
+        contentOverlapScore: number | null;
+        evidence: EvidenceMatch[];
+        measuredAt: string | null;
+        source: string;
+      }>;
+    }> = [];
+
+    for (const head of heads) {
+      const kind = head.kind as 'query' | 'session_start';
+      const headId = head.id as string;
+
+      let trace: Record<string, unknown> | undefined;
+      if (kind === 'query') {
+        trace = sqliteGet<Record<string, unknown>>(
+          this.db,
+          `SELECT * FROM retrieval_traces WHERE trace_id = ?`,
+          [headId]
+        );
+        if (!trace) continue;
+      }
+
+      // Helpfulness rows for this head: primary link via trace_id; legacy
+      // fallback matches by session + selected event id within ±3 minutes.
+      let helpRows: Record<string, unknown>[] = hasTraceLink
+        ? sqliteAll<Record<string, unknown>>(
+          this.db,
+          `SELECT * FROM memory_helpfulness WHERE trace_id = ? ORDER BY created_at ASC`,
+          [headId]
+        )
+        : [];
+      if (kind === 'query' && helpRows.length === 0 && trace) {
+        const selectedIds: string[] = (() => {
+          try { return JSON.parse((trace.selected_event_ids as string) || '[]'); } catch { return []; }
+        })();
+        if (selectedIds.length > 0 && trace.session_id) {
+          const legacyOnlyFilter = hasTraceLink ? `AND trace_id IS NULL` : '';
+          helpRows = sqliteAll<Record<string, unknown>>(
+            this.db,
+            `SELECT * FROM memory_helpfulness
+             WHERE session_id = ? ${legacyOnlyFilter}
+               AND event_id IN (${selectedIds.map(() => '?').join(',')})
+               AND ABS(strftime('%s', created_at) - strftime('%s', ?)) <= 180
+             ORDER BY created_at ASC`,
+            [trace.session_id, ...selectedIds, trace.created_at]
+          );
+        }
+      }
+      if (kind === 'session_start' && helpRows.length === 0 && headId.startsWith('ss-')) {
+        helpRows = sqliteAll<Record<string, unknown>>(
+          this.db,
+          `SELECT * FROM memory_helpfulness
+           WHERE source = 'session_start' AND trace_id IS NULL AND session_id = ?
+           ORDER BY created_at ASC`,
+          [head.session_id]
+        );
+      }
+
+      // Hydrate memory summaries.
+      const eventIds = Array.from(new Set(helpRows.map((row) => row.event_id as string).filter(Boolean)));
+      const eventById = new Map<string, { content: string; event_type: string }>();
+      if (eventIds.length > 0) {
+        const rows = sqliteAll<{ id: string; content: string; event_type: string }>(
+          this.db,
+          `SELECT id, content, event_type FROM events WHERE id IN (${eventIds.map(() => '?').join(',')})`,
+          eventIds
+        );
+        for (const row of rows) eventById.set(row.id, row);
+      }
+
+      const memories = helpRows.map((row) => {
+        const event = eventById.get(row.event_id as string);
+        let evidence: EvidenceMatch[] = [];
+        try {
+          const parsed = JSON.parse((row.evidence_json as string) || '[]');
+          if (Array.isArray(parsed)) evidence = parsed;
+        } catch { /* legacy/corrupt rows have no evidence */ }
+        const summary = event
+          ? event.content.substring(0, 240) + (event.content.length > 240 ? '…' : '')
+          : '(event no longer available)';
+        return {
+          eventId: row.event_id as string,
+          eventType: event?.event_type ?? null,
+          summary,
+          retrievalScore: (row.retrieval_score as number) ?? 0,
+          helpfulnessScore: row.measured_at ? ((row.helpfulness_score as number) ?? null) : null,
+          contentOverlapScore: (row.content_overlap_score as number) ?? null,
+          evidence,
+          measuredAt: (row.measured_at as string) ?? null,
+          source: (row.source as string) || 'user_prompt'
+        };
+      });
+
+      if (kind === 'query' && trace) {
+        entries.push({
+          traceId: headId,
+          kind,
+          sessionId: (trace.session_id as string) ?? null,
+          question: (trace.raw_query_text as string) || (trace.query_text as string) || '',
+          queryText: (trace.query_text as string) ?? null,
+          strategy: (trace.strategy as string) ?? null,
+          confidence: (trace.confidence as string) ?? null,
+          candidateCount: (trace.candidate_count as number) ?? 0,
+          selectedCount: (trace.selected_count as number) ?? 0,
+          createdAt: toDateFromSQLite(trace.created_at as string),
+          memories
+        });
+      } else {
+        entries.push({
+          traceId: headId.startsWith('ss-') ? null : headId,
+          kind: 'session_start',
+          sessionId: (head.session_id as string) ?? null,
+          question: 'Session start — recent project context injected',
+          queryText: null,
+          strategy: 'session-start',
+          confidence: null,
+          candidateCount: memories.length,
+          selectedCount: memories.length,
+          createdAt: toDateFromSQLite(head.created_at as string),
+          memories
+        });
+      }
+    }
+
+    return entries;
   }
 
   /**
@@ -2578,6 +2905,7 @@ export class SQLiteEventStore {
 
 
   async recordRetrievalTrace(input: {
+    traceId?: string;
     sessionId?: string;
     projectHash?: string;
     queryText: string;
@@ -2607,7 +2935,7 @@ export class SQLiteEventStore {
   }): Promise<void> {
     await this.initialize();
 
-    const traceId = randomUUID();
+    const traceId = input.traceId || randomUUID();
     const queryRewriteKind = normalizeQueryRewriteKind(input.queryRewriteKind);
     const candidateDetails = normalizeRetrievalTraceDetails(input.candidateDetails);
     const selectedDetails = normalizeRetrievalTraceDetails(input.selectedDetails);

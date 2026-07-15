@@ -99,8 +99,9 @@ function getServiceForSession(sessionId: string): MemoryService {
       : path.join(os.homedir(), '.claude-code', 'memory'),
     projectHash: projectInfo?.projectHash,
     projectPath: projectInfo?.projectPath,
-    readOnly: false,
-    embeddingOnly: true,
+    // The daemon only serves retrieval requests. Keeping it read-only prevents
+    // a long-lived query process from becoming an uncoordinated Lance writer.
+    readOnly: true,
     analyticsEnabled: false,
     sharedStoreConfig: DISABLED_SHARED_STORE_CONFIG
   });
@@ -125,7 +126,8 @@ export async function handleSemanticDaemonRequest(raw: string): Promise<Semantic
         sessionId: input.sessionId,
         intentRewrite: true,
         adaptiveRerank: true,
-        projectScopeMode: 'strict'
+        projectScopeMode: 'strict',
+        recordTrace: false
       });
     } catch (error) {
       if (!isVectorSessionFilterError(error)) {
@@ -139,7 +141,8 @@ export async function handleSemanticDaemonRequest(raw: string): Promise<Semantic
         minScore: input.minScore,
         intentRewrite: true,
         adaptiveRerank: true,
-        projectScopeMode: 'strict'
+        projectScopeMode: 'strict',
+        recordTrace: false
       });
     }
 

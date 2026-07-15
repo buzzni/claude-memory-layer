@@ -43,6 +43,8 @@ export interface RetrieveMemoriesOptions {
 }
 
 export interface RecordQueryTraceInput {
+  /** Caller-provided trace id so helpfulness rows can link back to this trace */
+  traceId?: string;
   sessionId?: string;
   queryText: string;
   rawQueryText?: string;
@@ -80,6 +82,7 @@ interface RetrievalTraceDetail {
 export interface RetrievalTraceStore {
   getHelpfulnessStats(): Promise<HelpfulnessStats>;
   recordRetrievalTrace(input: {
+    traceId?: string;
     sessionId?: string;
     projectHash?: string;
     queryText: string;
@@ -97,7 +100,13 @@ export interface RetrievalTraceStore {
 
 export interface RetrievalAccessStore {
   incrementAccessCount(eventIds: string[]): Promise<void>;
-  recordRetrieval(eventId: string, sessionId: string, score: number, query: string): Promise<void>;
+  recordRetrieval(
+    eventId: string,
+    sessionId: string,
+    score: number,
+    query: string,
+    options?: { traceId?: string; source?: string; injectedContent?: string }
+  ): Promise<void>;
 }
 
 export interface RetrievalOrchestratorDeps {
@@ -227,10 +236,11 @@ export class RetrievalOrchestrator {
     eventId: string,
     sessionId: string,
     score: number,
-    query: string
+    query: string,
+    options?: { traceId?: string; source?: string; injectedContent?: string }
   ): Promise<void> {
     await this.deps.initialize();
-    await this.deps.accessStore.recordRetrieval(eventId, sessionId, score, query);
+    await this.deps.accessStore.recordRetrieval(eventId, sessionId, score, query, options);
   }
 
   private resolveGraphHopOptions(

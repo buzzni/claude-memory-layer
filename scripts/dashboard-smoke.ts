@@ -42,10 +42,18 @@ async function main(): Promise<void> {
     'global-empty-state',
     'disclosure-search-btn',
     'disclosure-scope-badge',
-    'Search → Expand → Source'
+    'Search → Expand → Source',
+    'view-usefulness',
+    'view-diagnostics',
+    'usefulness-history-list',
+    'overview-usefulness-strip',
+    'assets/js/usefulness.js'
   ]) {
     assertContains('dashboard HTML', html, needle);
   }
+  const usefulnessJs = readFileSync(join(process.cwd(), 'src/apps/dashboard/assets/js/usefulness.js'), 'utf-8');
+  assertContains('usefulness JS', usefulnessJs, 'usefulness-history');
+  assertContains('usefulness JS', usefulnessJs, 'loadDiagnosticsView');
   assertContains('session inspector JS', views, 'Open in Sessions');
   assertContains('session inspector JS', views, 'Jump target');
   assertContains('disclosure JS', disclosure, 'Inspect evidence');
@@ -57,6 +65,10 @@ async function main(): Promise<void> {
   try {
     await waitForHealth(baseUrl);
     await fetchOk(`${baseUrl}/api/projects`);
+    const historyBody = await fetchOk(`${baseUrl}/api/stats/usefulness-history?limit=5`).then(r => r.json());
+    if (!Array.isArray(historyBody.entries)) {
+      throw new Error('/api/stats/usefulness-history did not return an entries array');
+    }
     const page = await fetchOk(baseUrl).then(response => response.text());
     assertContains('served dashboard HTML', page, 'scope-context-bar');
     assertContains('served dashboard HTML', page, 'disclosure-search-btn');

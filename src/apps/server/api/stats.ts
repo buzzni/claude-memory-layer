@@ -666,6 +666,7 @@ type KpiMetrics = {
 
 type MemoryUsefulnessComponentKey =
   | 'avgHelpfulnessScore'
+  | 'contentGroundingRate'
   | 'usefulRecallRate'
   | 'memoryHitRate'
   | 'retrievalUsageRate'
@@ -698,6 +699,9 @@ type HelpfulnessStatsLike = {
   helpful?: number;
   neutral?: number;
   unhelpful?: number;
+  contentEvaluated?: number;
+  avgContentOverlap?: number;
+  groundedCount?: number;
 };
 
 type RetrievalTraceLike = {
@@ -1001,6 +1005,7 @@ function buildMemoryUsefulnessDiagnostics(input: {
     queryYieldRate: number;
     evaluationCoverage: number;
     selectionRate: number;
+    contentGroundingRate?: number;
   };
   counts: {
     promptCount: number;
@@ -1011,6 +1016,7 @@ function buildMemoryUsefulnessDiagnostics(input: {
     candidateMemories: number;
     totalEvaluated: number;
     totalRetrievals: number;
+    contentEvaluated?: number;
   };
 }): MemoryUsefulnessDiagnostic[] {
   const { metrics, counts } = input;
@@ -1065,6 +1071,21 @@ function buildMemoryUsefulnessDiagnostics(input: {
       title: 'Injected memories are not translating into outcomes',
       detail: `${counts.totalEvaluated} evaluated retrievals averaged ${(metrics.avgHelpfulnessScore * 100).toFixed(1)}% helpfulness.`,
       action: 'Review low-scoring retrieval samples for stale decisions, cross-project noise, or raw transcript snippets.'
+    });
+  }
+
+  const contentEvaluated = counts.contentEvaluated ?? 0;
+  const contentGroundingRate = metrics.contentGroundingRate ?? 0;
+  if (contentEvaluated >= 5 && contentGroundingRate < 0.3) {
+    diagnostics.push({
+      key: 'low-content-grounding',
+      severity: 'warn',
+      metric: 'contentGroundingRate',
+      value: contentGroundingRate,
+      target: 0.3,
+      title: 'Answers rarely reuse injected memory content',
+      detail: `${contentEvaluated} retrievals were checked against later responses, but grounding averaged ${(contentGroundingRate * 100).toFixed(1)}%.`,
+      action: 'Injected memories may be topically related but not actionable. Review the evidence history for memories that never appear in answers, and tighten injection thresholds or improve memory quality.'
     });
   }
 
@@ -1163,6 +1184,9 @@ function computeMemoryUsefulnessSummary(
   const helpful = Number(helpfulness.helpful || 0);
   const neutral = Number(helpfulness.neutral || 0);
   const unhelpful = Number(helpfulness.unhelpful || 0);
+  const contentEvaluated = Number(helpfulness.contentEvaluated || 0);
+  const avgContentOverlap = Number(helpfulness.avgContentOverlap || 0);
+  const groundedCount = Number(helpfulness.groundedCount || 0);
 
   const retrievalsPerPrompt = safeRatio(retrievalQueries, promptCount);
   const metrics = {
@@ -1171,6 +1195,8 @@ function computeMemoryUsefulnessSummary(
     memoryHitRate: round(safeRatio(memoryCheckedPrompts, promptCount)),
     retrievalUsageRate: round(Math.min(1, retrievalsPerPrompt)),
     queryYieldRate: round(safeRatio(queriesWithSelected, retrievalQueries)),
+    contentGroundingRate: round(normalizeMetric(avgContentOverlap)),
+    groundedRecallRate: round(safeRatio(groundedCount, contentEvaluated)),
     evaluationCoverage: round(safeRatio(totalEvaluated, totalRetrievals)),
     retrievalsPerPrompt: round(retrievalsPerPrompt),
     avgCandidatesPerQuery: round(safeRatio(totalCandidateCount, retrievalQueries), 2),
@@ -1197,13 +1223,16 @@ function computeMemoryUsefulnessSummary(
     totalRetrievals,
     helpful,
     neutral,
-    unhelpful
+    unhelpful,
+    contentEvaluated,
+    groundedCount
   };
 
   const componentSpecs: Omit<MemoryUsefulnessComponent, 'contribution'>[] = [
-    { key: 'avgHelpfulnessScore', label: 'Average helpfulness score', value: metrics.avgHelpfulnessScore, weight: 0.3, available: totalEvaluated > 0 },
-    { key: 'usefulRecallRate', label: 'Useful recall rate', value: metrics.usefulRecallRate, weight: 0.25, available: totalEvaluated > 0 },
-    { key: 'memoryHitRate', label: 'Memory hit rate', value: metrics.memoryHitRate, weight: 0.2, available: promptCount > 0 },
+    { key: 'avgHelpfulnessScore', label: 'Average helpfulness score', value: metrics.avgHelpfulnessScore, weight: 0.25, available: totalEvaluated > 0 },
+    { key: 'contentGroundingRate', label: 'Answer grounding rate', value: metrics.contentGroundingRate, weight: 0.15, available: contentEvaluated > 0 },
+    { key: 'usefulRecallRate', label: 'Useful recall rate', value: metrics.usefulRecallRate, weight: 0.2, available: totalEvaluated > 0 },
+    { key: 'memoryHitRate', label: 'Memory hit rate', value: metrics.memoryHitRate, weight: 0.15, available: promptCount > 0 },
     { key: 'retrievalUsageRate', label: 'Retrieval usage rate', value: metrics.retrievalUsageRate, weight: 0.15, available: promptCount > 0 },
     { key: 'queryYieldRate', label: 'Query yield rate', value: metrics.queryYieldRate, weight: 0.1, available: retrievalQueries > 0 }
   ];
@@ -1805,6 +1834,53 @@ statsRouter.get('/usefulness', async (c) => {
   } catch (error) {
     console.error('[stats/usefulness] failed to calculate dashboard metrics', error);
     return c.json({ error: 'Unable to calculate memory usefulness statistics' }, 500);
+  } finally {
+    await memoryService.shutdown();
+  }
+});
+
+// GET /api/stats/usefulness-history - Per-question evidence history:
+// which memories were injected for each question, how helpful they measured,
+// and the matched answer snippets that justify the score.
+statsRouter.get('/usefulness-history', async (c) => {
+  const limit = Math.min(parseInt(c.req.query('limit') || '20', 10) || 20, 100);
+  const offset = Math.max(parseInt(c.req.query('offset') || '0', 10) || 0, 0);
+  const sessionId = c.req.query('sessionId') || undefined;
+  const withSelectionsOnly = c.req.query('withSelectionsOnly') === 'true';
+  const memoryService = getLightweightServiceFromQuery(c);
+
+  try {
+    await memoryService.initialize();
+    const entries = await memoryService.getUsefulnessHistory({
+      limit,
+      offset,
+      sessionId,
+      withSelectionsOnly
+    });
+
+    return c.json({
+      limit,
+      offset,
+      hasMore: entries.length >= limit,
+      entries: entries.map((entry) => ({
+        traceId: entry.traceId,
+        kind: entry.kind,
+        sessionId: entry.sessionId,
+        // The user's question (raw prompt) is the point of this endpoint and
+        // is already exposed by /api/events; the rewritten query text is
+        // intentionally omitted (matches /api/stats/retrieval-traces).
+        question: entry.question,
+        strategy: entry.strategy,
+        confidence: entry.confidence,
+        candidateCount: entry.candidateCount,
+        selectedCount: entry.selectedCount,
+        createdAt: entry.createdAt.toISOString(),
+        memories: entry.memories
+      }))
+    });
+  } catch (error) {
+    console.error('[stats/usefulness-history] failed to load evidence history', error);
+    return c.json({ limit, offset, hasMore: false, entries: [] });
   } finally {
     await memoryService.shutdown();
   }

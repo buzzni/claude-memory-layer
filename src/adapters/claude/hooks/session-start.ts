@@ -3,6 +3,7 @@
  * Called when a new Claude Code session starts
  */
 
+import { randomUUID } from 'crypto';
 import { getLightweightMemoryService } from '../../../services/memory-service.js';
 import { registerSession } from '../../../core/registry/session-registry.js';
 import { ensureDaemonRunning } from './semantic-daemon-client.js';
@@ -44,10 +45,34 @@ export async function main(): Promise<string> {
 
     let context = '';
     if (recentEvents.length > 0) {
+      const injectedEvents = recentEvents.slice(0, 3);
       context = `## Previous Session Context\n\nYou have worked on this project before. Here are some relevant memories:\n\n`;
-      for (const event of recentEvents.slice(0, 3)) {
+      for (const event of injectedEvents) {
         const date = event.timestamp.toISOString().split('T')[0];
         context += `- **${date}**: ${event.content.slice(0, 150)}...\n`;
+      }
+
+      // Session-start injections used to be invisible to usefulness metrics.
+      // Track them like prompt-time retrievals so helpfulness evaluation and
+      // the evidence history cover this injection path too. One shared batch
+      // id groups the injected memories into a single history entry.
+      const batchTraceId = randomUUID();
+      for (const event of injectedEvents) {
+        try {
+          await memoryService.recordRetrieval(
+            event.id,
+            input.session_id,
+            0.5,
+            '[session-start] recent project context',
+            {
+              traceId: batchTraceId,
+              source: 'session_start',
+              // Only the first 150 chars are injected above — grounding must
+              // be measured against that snapshot, not the full event.
+              injectedContent: event.content.slice(0, 150)
+            }
+          );
+        } catch { /* non-critical telemetry */ }
       }
     }
 

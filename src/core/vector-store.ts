@@ -18,6 +18,9 @@ export interface SearchResult {
 
 type LanceTable = lancedb.Table;
 
+const MAX_LANCE_COMMIT_ATTEMPTS = 3;
+const LANCE_COMMIT_RETRY_BASE_DELAY_MS = 20;
+
 type VectorRow = {
   id: string;
   eventId: string;
@@ -204,10 +207,7 @@ export class VectorStore {
 
     const existingTable = await this.getExistingTable(tableName);
     if (existingTable) {
-      for (const row of rows) {
-        await existingTable.delete(`id = ${toLanceSqlString(row.id)}`);
-      }
-      await existingTable.add(rows);
+      await this.writeExistingRowsWithRetry(tableName, existingTable, rows);
       return;
     }
 
@@ -219,10 +219,33 @@ export class VectorStore {
         throw error;
       }
       const racedTable = await this.openTable(tableName);
-      for (const row of rows) {
-        await racedTable.delete(`id = ${toLanceSqlString(row.id)}`);
+      await this.writeExistingRowsWithRetry(tableName, racedTable, rows);
+    }
+  }
+
+  private async writeExistingRowsWithRetry(
+    tableName: string,
+    initialTable: LanceTable,
+    rows: VectorRow[]
+  ): Promise<void> {
+    let table = initialTable;
+
+    for (let attempt = 1; attempt <= MAX_LANCE_COMMIT_ATTEMPTS; attempt++) {
+      try {
+        for (const row of rows) {
+          await table.delete(`id = ${toLanceSqlString(row.id)}`);
+        }
+        await table.add(rows);
+        return;
+      } catch (error) {
+        if (!isLanceCommitConflict(error) || attempt === MAX_LANCE_COMMIT_ATTEMPTS) {
+          throw error;
+        }
+
+        this.tableCache.delete(tableName);
+        await delay(LANCE_COMMIT_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1));
+        table = await this.openTable(tableName);
       }
-      await racedTable.add(rows);
     }
   }
 
@@ -292,4 +315,15 @@ function toLanceSqlString(value: string): string {
 function isAlreadyExistsError(error: unknown): boolean {
   const message = String(error instanceof Error ? error.message : error).toLowerCase();
   return message.includes('already exists');
+}
+
+function isLanceCommitConflict(error: unknown): boolean {
+  const message = String(error instanceof Error ? error.message : error).toLowerCase();
+  return message.includes('commit conflict')
+    && message.includes('concurrent commit')
+    && message.includes('rerun the operation');
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }

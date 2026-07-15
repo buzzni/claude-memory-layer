@@ -1097,6 +1097,11 @@ function updateGraduationBars() {
 }
 
 function updateMemoryUsefulnessUI() {
+  // Keep the compact Overview strip in sync (defined in usefulness.js;
+  // absent in isolated test harnesses).
+  if (typeof updateOverviewUsefulnessStrip === 'function') {
+    updateOverviewUsefulnessStrip();
+  }
   const scoreEl = document.getElementById('memory-usefulness-score');
   const summaryEl = document.getElementById('memory-usefulness-summary');
   const breakdownEl = document.getElementById('memory-usefulness-breakdown');

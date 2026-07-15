@@ -150,8 +150,16 @@ export function createMemoryRuntimeService(deps: MemoryRuntimeServicesDeps): Mem
         vectorWorkerV2.stop();
       }
 
-      await deps.sharedMemoryServices.close();
-      await deps.sqliteStore.close();
+      await Promise.all([
+        vectorWorker?.waitForIdle(),
+        vectorWorkerV2?.waitForIdle()
+      ]);
+
+      try {
+        await deps.sharedMemoryServices.close();
+      } finally {
+        await deps.sqliteStore.close();
+      }
     },
 
     async processPendingEmbeddings(): Promise<number> {
