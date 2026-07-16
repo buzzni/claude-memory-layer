@@ -7,6 +7,7 @@ export interface RawProcessCommandOptions {
   project?: string;
   recoverStuck?: boolean;
   dryRunRecovery?: boolean;
+  graduation?: boolean;
   lockPath?: string;
 }
 
@@ -14,6 +15,7 @@ export interface ProcessCommandOptions {
   projectPath: string;
   recoverStuck: boolean;
   dryRunRecovery: boolean;
+  graduation: boolean;
   lockPath: string;
 }
 
@@ -51,6 +53,7 @@ export function resolveProcessCommandOptions(
   const projectPath = explicitProject ?? cwd;
   const dryRunRecovery = options.dryRunRecovery === true;
   const recoverStuck = options.recoverStuck !== false;
+  const graduation = options.graduation !== false;
   if (dryRunRecovery && !recoverStuck) {
     throw new Error('--dry-run-recovery cannot be combined with --no-recover-stuck');
   }
@@ -60,6 +63,7 @@ export function resolveProcessCommandOptions(
     projectPath,
     recoverStuck,
     dryRunRecovery,
+    graduation,
     lockPath: explicitLockPath ?? path.join(getProjectStoragePath(projectPath), 'vector-worker.lock')
   };
 }

@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => {
     shutdown: vi.fn(),
     getStats: vi.fn(),
     getOutboxStats: vi.fn(),
+    getDerivationLiveness: vi.fn(),
   };
   return {
     service,
@@ -72,6 +73,16 @@ describe('productivity health API', () => {
     mocks.service.shutdown.mockReset().mockResolvedValue(undefined);
     mocks.service.getStats.mockReset().mockResolvedValue(defaultStats());
     mocks.service.getOutboxStats.mockReset().mockResolvedValue(defaultOutbox());
+    mocks.service.getDerivationLiveness.mockReset().mockResolvedValue({
+      graduation: {
+        attempts: 1,
+        lastAttemptAt: '2026-07-14T00:00:00.000Z',
+        lastSuccessAt: '2026-07-14T00:00:00.000Z',
+        lastStatus: 'not_eligible',
+        lastErrorCategory: null
+      },
+      sources: { graduatedEvents: 0, curatedLessons: 1 }
+    });
     mocks.getLightweightServiceFromQuery.mockClear();
     mocks.getServiceFromQuery.mockClear();
     mocks.getWritableServiceFromQuery.mockClear();
@@ -94,11 +105,17 @@ describe('productivity health API', () => {
         outbox: {
           totals: { pending: 0, processing: 0, failed: 0, retryableFailed: 0, quarantinedFailed: 0, stuckProcessing: 0, total: 8, oldestProcessingAgeMs: null },
         },
+        derivation: {
+          graduation: { attempts: 1, lastStatus: 'not_eligible', lastErrorCategory: null },
+          sources: { graduatedEvents: 0, curatedLessons: 1 },
+        },
       },
       riskGates: [
         { id: 'project-scope-known', severity: 'blocker', status: 'pass' },
         { id: 'outbox-healthy', severity: 'warning', status: 'pass' },
         { id: 'memory-density', severity: 'warning', status: 'pass' },
+        { id: 'derivation-liveness', severity: 'blocker', status: 'pass' },
+        { id: 'derived-sources-ready', severity: 'blocker', status: 'pass' },
       ],
       nextBestAction: 'No immediate maintenance action required.',
     });

@@ -11,6 +11,7 @@ import { getLightweightServiceFromQuery, getWritableServiceFromQuery } from './u
 import { hashProjectPath, resolveProjectStoragePath } from '../../../core/registry/project-path.js';
 import type { MemoryStats } from '../../../core/engine/memory-query-service.js';
 import type { OutboxQueueStats, OutboxStats } from '../../../core/types.js';
+import type { DerivationLiveness } from '../../../core/sqlite-event-store.js';
 import {
   buildProductivityHealthReport,
   parseProductivityHealthMode,
@@ -101,6 +102,19 @@ function emptyProductivityOutbox(): OutboxStats {
   return { embedding: emptyProductivityQueue(), vector: emptyProductivityQueue() };
 }
 
+function emptyProductivityDerivationLiveness(): DerivationLiveness {
+  return {
+    graduation: {
+      attempts: 0,
+      lastAttemptAt: null,
+      lastSuccessAt: null,
+      lastStatus: null,
+      lastErrorCategory: null
+    },
+    sources: { graduatedEvents: 0, curatedLessons: 0 }
+  };
+}
+
 // GET /api/health/setup
 // Aggregate-only install/provider readiness for dashboard setup guidance.
 healthRouter.get('/setup', async (c) => {
@@ -178,6 +192,7 @@ healthRouter.get('/productivity', async (c) => {
       return c.json(buildProductivityHealthReport({
         stats: emptyProductivityStats(),
         outbox: emptyProductivityOutbox(),
+        derivation: emptyProductivityDerivationLiveness(),
         project,
         profile,
         mode
@@ -186,12 +201,13 @@ healthRouter.get('/productivity', async (c) => {
 
     memoryService = getLightweightServiceFromQuery(c);
     await memoryService.initialize();
-    const [stats, outbox] = await Promise.all([
+    const [stats, outbox, derivation] = await Promise.all([
       memoryService.getStats(),
-      memoryService.getOutboxStats()
+      memoryService.getOutboxStats(),
+      memoryService.getDerivationLiveness()
     ]);
 
-    return c.json(buildProductivityHealthReport({ stats, outbox, project, profile, mode }));
+    return c.json(buildProductivityHealthReport({ stats, outbox, derivation, project, profile, mode }));
   } catch (error) {
     const status = error instanceof Error && error.message.startsWith('Invalid --') ? 400 : 500;
     return c.json({

@@ -47,6 +47,9 @@ const mocks = vi.hoisted(() => {
   const lessonRepository = {
     list: vi.fn()
   };
+  const lessonService = {
+    saveCurated: vi.fn()
+  };
   const graphPathService = {
     expand: vi.fn()
   };
@@ -69,6 +72,7 @@ const mocks = vi.hoisted(() => {
     frontierService,
     checkpointRepository,
     lessonRepository,
+    lessonService,
     graphPathService,
     queryEntityExtractor,
     FacetRepository: vi.fn(function FacetRepositoryMock() { return facetRepository; }),
@@ -76,6 +80,7 @@ const mocks = vi.hoisted(() => {
     FrontierService: vi.fn(function FrontierServiceMock() { return frontierService; }),
     CheckpointRepository: vi.fn(function CheckpointRepositoryMock() { return checkpointRepository; }),
     LessonRepository: vi.fn(function LessonRepositoryMock() { return lessonRepository; }),
+    LessonService: vi.fn(function LessonServiceMock() { return lessonService; }),
     GraphPathService: vi.fn(function GraphPathServiceMock() { return graphPathService; }),
     QueryEntityExtractor: vi.fn(function QueryEntityExtractorMock() { return queryEntityExtractor; }),
     runRetentionAudit: vi.fn()
@@ -102,6 +107,7 @@ vi.mock('../../src/core/operations/index.js', () => ({
   FrontierService: mocks.FrontierService,
   CheckpointRepository: mocks.CheckpointRepository,
   LessonRepository: mocks.LessonRepository,
+  LessonService: mocks.LessonService,
   GraphPathService: mocks.GraphPathService,
   QueryEntityExtractor: mocks.QueryEntityExtractor,
   runRetentionAudit: mocks.runRetentionAudit
@@ -149,6 +155,7 @@ function resetOperationMocks() {
   mocks.FrontierService.mockClear();
   mocks.CheckpointRepository.mockClear();
   mocks.LessonRepository.mockClear();
+  mocks.LessonService.mockClear();
   mocks.GraphPathService.mockClear();
   mocks.QueryEntityExtractor.mockClear();
   mocks.runRetentionAudit.mockReset();
@@ -192,6 +199,21 @@ function resetOperationMocks() {
   });
   mocks.checkpointRepository.list.mockReset().mockResolvedValue([]);
   mocks.lessonRepository.list.mockReset().mockResolvedValue([]);
+  mocks.lessonService.saveCurated.mockReset().mockResolvedValue({
+    lessonId: '33333333-3333-4333-8333-333333333333',
+    projectHash: 'deadbeef',
+    name: 'Deploy GPU before API',
+    trigger: 'When rolling out a runtime split',
+    steps: ['Roll out GPU', 'Verify readiness', 'Roll out API'],
+    confidence: 1,
+    sourceSessionIds: ['curated:operator'],
+    sourceEventIds: [],
+    failureModes: [],
+    skillCandidate: true,
+    sourceClass: 'curated',
+    createdAt: new Date('2026-05-01T00:00:00.000Z'),
+    updatedAt: new Date('2026-05-01T00:00:00.000Z')
+  });
   mocks.graphPathService.expand.mockReset().mockReturnValue({
     startNodes: [],
     effectiveMaxHops: 1,
@@ -224,7 +246,8 @@ describe('MCP memory operation tool definitions', () => {
     'mem-checkpoint-list',
     'mem-retention-audit',
     'mem-graph-query',
-    'mem-lesson-list'
+    'mem-lesson-list',
+    'mem-lesson-save'
   ];
 
   it('registers the curated memory operations tool surface exactly once', () => {
@@ -308,6 +331,13 @@ describe('MCP memory operation tool definitions', () => {
     const lessonList = propertiesFor('mem-lesson-list');
     expect(lessonList.minConfidence).toMatchObject({ type: 'number', minimum: 0, maximum: 1 });
     expect(lessonList.limit).toMatchObject({ type: 'number', maximum: 100 });
+
+    const lessonSave = propertiesFor('mem-lesson-save');
+    expect(requiredFor('mem-lesson-save')).toEqual(expect.arrayContaining([
+      'projectPath', 'name', 'trigger', 'steps', 'actor'
+    ]));
+    expect(lessonSave.steps).toMatchObject({ type: 'array', maxItems: 100 });
+    expect(lessonSave.confidence).toMatchObject({ type: 'number', minimum: 0, maximum: 1 });
   });
 });
 
@@ -365,6 +395,33 @@ describe('MCP memory operation handlers', () => {
     expect(mocks.sqliteInstances[0].close).toHaveBeenCalledTimes(1);
     expect(payload).toMatchObject({ operation: 'mem-facet-query', projectHash: 'deadbeef', count: 1 });
     expect(JSON.stringify(payload)).toContain('release');
+    expect(JSON.stringify(payload)).not.toContain('/repo/app');
+  });
+
+  it('saves an explicit curated lesson with an actor and returns compact safe provenance', async () => {
+    const result = await handleToolCall('mem-lesson-save', {
+      projectPath: '/repo/app',
+      actor: 'operator',
+      name: 'Deploy GPU before API',
+      trigger: 'When rolling out a runtime split',
+      steps: ['Roll out GPU', 'Verify readiness', 'Roll out API'],
+      sourceSessionIds: ['session-safe']
+    });
+
+    const payload = jsonOf(result);
+    expect(result.isError).not.toBe(true);
+    expect(mocks.LessonService).toHaveBeenCalledWith(mocks.fakeDb);
+    expect(mocks.lessonService.saveCurated).toHaveBeenCalledWith(expect.objectContaining({
+      projectHash: 'deadbeef',
+      actor: 'operator',
+      name: 'Deploy GPU before API',
+      sourceSessionIds: ['session-safe']
+    }));
+    expect(payload).toMatchObject({
+      operation: 'mem-lesson-save',
+      projectHash: 'deadbeef',
+      lesson: { sourceClass: 'curated', name: 'Deploy GPU before API' }
+    });
     expect(JSON.stringify(payload)).not.toContain('/repo/app');
   });
 

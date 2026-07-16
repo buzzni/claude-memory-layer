@@ -3,6 +3,7 @@
  * Implementation of tool calls
  */
 
+import { existsSync } from 'node:fs';
 import * as path from 'node:path';
 
 import {
@@ -11,7 +12,7 @@ import {
   type MemoryService
 } from '../../services/memory-service.js';
 import { SQLiteEventStore } from '../../core/sqlite-event-store.js';
-import type { SQLiteDatabase } from '../../core/sqlite-wrapper.js';
+import { createSQLiteDatabase, sqliteClose, sqliteGet, type SQLiteDatabase } from '../../core/sqlite-wrapper.js';
 import { createSessionHistoryImporter, type ImportResult } from '../../services/session-history-importer.js';
 import { createCodexSessionHistoryImporter } from '../../services/codex-session-history-importer.js';
 import { createHermesSessionHistoryImporter } from '../../services/hermes-session-history-importer.js';
@@ -32,6 +33,7 @@ import {
   FrontierService,
   GraphPathService,
   LessonRepository,
+  LessonService,
   PerspectiveObservationRepository,
   QueryEntityExtractor,
   RETENTION_POLICY_VERSION,
@@ -59,6 +61,7 @@ import type {
   ActorCard,
   Config,
   EventType,
+  MemoryLesson,
   MemoryActor,
   MemoryEvent,
   OutboxStats,
@@ -195,6 +198,7 @@ const MEMORY_OPERATION_TOOL_NAMES = new Set([
   'mem-retention-audit',
   'mem-graph-query',
   'mem-lesson-list',
+  'mem-lesson-save',
   'mem-actor-list',
   'mem-actor-card-get',
   'mem-actor-card-upsert',
@@ -237,6 +241,8 @@ async function handleMemoryOperationTool(name: string, args: Record<string, unkn
         return jsonResult(handleGraphQuery(context, args));
       case 'mem-lesson-list':
         return jsonResult(await handleLessonList(context, args));
+      case 'mem-lesson-save':
+        return jsonResult(await handleLessonSave(context, args));
       case 'mem-actor-list':
         return jsonResult(await handleActorList(context, args));
       case 'mem-actor-card-get':
@@ -493,6 +499,56 @@ async function handleLessonList(context: MemoryOperationContext, args: Record<st
   };
 }
 
+async function handleLessonSave(context: MemoryOperationContext, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const lesson = await new LessonService(context.db).saveCurated({
+    projectHash: context.projectHash,
+    actor: requiredOperationString(args.actor, 'actor'),
+    name: requiredOperationString(args.name, 'name'),
+    trigger: requiredOperationString(args.trigger, 'trigger'),
+    steps: requiredOperationStringArray(args.steps, 'steps', 100),
+    confidence: typeof args.confidence === 'number' ? args.confidence : undefined,
+    sourceSessionIds: optionalOperationStringArray(args.sourceSessionIds, 'sourceSessionIds', 100),
+    sourceEventIds: optionalOperationStringArray(args.sourceEventIds, 'sourceEventIds', 100),
+    failureModes: optionalOperationStringArray(args.failureModes, 'failureModes', 100),
+    skillCandidate: typeof args.skillCandidate === 'boolean' ? args.skillCandidate : undefined
+  });
+  return {
+    operation: 'mem-lesson-save',
+    projectHash: context.projectHash,
+    lesson: formatLesson(lesson)
+  };
+}
+
+function formatLesson(lesson: {
+  lessonId: string;
+  name: string;
+  trigger: string;
+  confidence: number;
+  skillCandidate: boolean;
+  sourceClass: string;
+  steps: string[];
+  failureModes: string[];
+  sourceEventIds: string[];
+  sourceSessionIds: string[];
+  createdAt: Date;
+  updatedAt: Date;
+}): Record<string, unknown> {
+  return {
+    lessonId: sanitizeOperationString(lesson.lessonId, 120),
+    name: sanitizeOperationString(lesson.name, 240),
+    trigger: sanitizeOperationString(lesson.trigger, 500),
+    confidence: Number(lesson.confidence),
+    skillCandidate: Boolean(lesson.skillCandidate),
+    sourceClass: lesson.sourceClass === 'curated' ? 'curated' : 'derived',
+    steps: lesson.steps.slice(0, 10).map((step) => sanitizeOperationString(step, 500)),
+    failureModes: lesson.failureModes.slice(0, 10).map((mode) => sanitizeOperationString(mode, 300)),
+    sourceEventIds: lesson.sourceEventIds.slice(0, 10).map((id) => sanitizeOperationString(id, 120)),
+    sourceSessionIds: lesson.sourceSessionIds.slice(0, 10).map((id) => sanitizeOperationString(id, 120)),
+    createdAt: isoDate(lesson.createdAt),
+    updatedAt: isoDate(lesson.updatedAt)
+  };
+}
+
 async function handleActorList(context: MemoryOperationContext, args: Record<string, unknown>): Promise<Record<string, unknown>> {
   const repository = new ActorRepository(context.db);
   const actors = await repository.list(omitUndefined({
@@ -618,6 +674,19 @@ function requiredOperationString(value: unknown, field: string): string {
     throw new Error(`${field} is required`);
   }
   return value.trim();
+}
+
+function optionalOperationStringArray(value: unknown, field: string, maxItems: number): string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new Error(`${field} must be an array`);
+  return stringArrayOperationArg(value, maxItems);
+}
+
+function requiredOperationStringArray(value: unknown, field: string, maxItems: number): string[] {
+  if (!Array.isArray(value)) throw new Error(`${field} must be an array`);
+  const values = stringArrayOperationArg(value, maxItems);
+  if (values.length === 0) throw new Error(`${field} must contain at least one item`);
+  return values;
 }
 
 function booleanArg(value: unknown, fallback: boolean): boolean {
@@ -1296,6 +1365,7 @@ async function handleMemContextPack(memoryService: MemoryService, args: Record<s
 
   const search = await retrieveMcpMemories(memoryService, query, { topK: retrievalTopK, sessionId, retrievalMode });
   const recentEvents = await memoryService.getRecentEvents(recentLimit);
+  const curatedLessons = await loadCuratedLessons(projectPath);
 
   const timelineEvents = selectContextPackTimelineEvents(
     recentEvents,
@@ -1393,10 +1463,12 @@ async function handleMemContextPack(memoryService: MemoryService, args: Record<s
   }
 
   if (genericContinuationQuery) {
+    appendCuratedLessons(lines, curatedLessons);
     appendRecentTimeline(lines, sessions, formatOptions);
     appendRelevantMemories(lines, relevantMemories, formatOptions);
   } else {
     appendRelevantMemories(lines, relevantMemories, formatOptions);
+    appendCuratedLessons(lines, curatedLessons);
     appendRecentTimeline(lines, sessions, formatOptions);
   }
 
@@ -1678,6 +1750,28 @@ interface ContextPackMemory {
   score: number;
 }
 
+async function loadCuratedLessons(projectPath: string | undefined): Promise<MemoryLesson[]> {
+  if (!projectPath || !path.isAbsolute(projectPath)) return [];
+  const dbPath = path.join(getProjectStoragePath(projectPath), 'events.sqlite');
+  if (!existsSync(dbPath)) return [];
+  let db: SQLiteDatabase | undefined;
+  try {
+    db = createSQLiteDatabase(dbPath, { readonly: true, walMode: false });
+    const table = sqliteGet<{ name: string }>(
+      db,
+      `SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`,
+      ['memory_lessons']
+    );
+    if (!table) return [];
+    const lessons = await new LessonRepository(db).list({ projectHash: hashProjectPath(projectPath), limit: 20 });
+    return lessons.filter((lesson) => lesson.sourceClass === 'curated').slice(0, 3);
+  } catch {
+    return [];
+  } finally {
+    if (db) sqliteClose(db);
+  }
+}
+
 interface ContextPackFormatOptions {
   compression: ContextCompressionMode;
   telemetry?: ContextCompressionMetadata[];
@@ -1909,6 +2003,19 @@ function appendRelevantMemories(
     const match = memories[i];
     lines.push(formatRelevantMemoryLine(match.event, match.score, i + 1, formatOptions));
   }
+}
+
+function appendCuratedLessons(lines: string[], lessons: MemoryLesson[]): void {
+  if (lessons.length === 0) return;
+  lines.push('### Curated Lessons', '');
+  for (const lesson of lessons.slice(0, 3)) {
+    lines.push(`- [lesson:${sanitizeOperationString(lesson.lessonId, 120)}] ${sanitizeOperationString(lesson.name, 180)}`);
+    lines.push(`  - Apply when: ${sanitizeOperationString(lesson.trigger, 240)}`);
+    for (const step of lesson.steps.slice(0, 5)) {
+      lines.push(`  - ${sanitizeOperationString(step, 300)}`);
+    }
+  }
+  lines.push('- Details: use mem-lesson-list with the same projectPath.', '');
 }
 
 function appendRecentTimeline(

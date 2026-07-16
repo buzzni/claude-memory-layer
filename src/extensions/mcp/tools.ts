@@ -606,6 +606,63 @@ export const tools: Tool[] = [
     }
   },
   {
+    name: 'mem-lesson-save',
+    description: 'Save a reviewed project-scoped lesson or rule as a curated memory. Rejects private or credential-like content and preserves compact provenance.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectPath: requiredProjectPathProperty,
+        name: {
+          type: 'string',
+          description: 'Short stable name for the curated lesson.'
+        },
+        trigger: {
+          type: 'string',
+          description: 'When this lesson should be applied.'
+        },
+        steps: {
+          type: 'array',
+          items: { type: 'string' },
+          maxItems: 100,
+          description: 'Ordered, compact safe steps. At least one step is required.'
+        },
+        confidence: {
+          type: 'number',
+          minimum: 0,
+          maximum: 1,
+          description: 'Confidence in the reviewed lesson (default: 1).'
+        },
+        sourceSessionIds: {
+          type: 'array',
+          items: { type: 'string' },
+          maxItems: 100,
+          description: 'Optional safe source session references.'
+        },
+        sourceEventIds: {
+          type: 'array',
+          items: { type: 'string' },
+          maxItems: 100,
+          description: 'Optional existing project event references; their privacy and project scope are validated.'
+        },
+        failureModes: {
+          type: 'array',
+          items: { type: 'string' },
+          maxItems: 100,
+          description: 'Optional bounded failure-mode reminders.'
+        },
+        skillCandidate: {
+          type: 'boolean',
+          description: 'Whether the lesson can be considered for a reusable skill/runbook (default: true).'
+        },
+        actor: {
+          type: 'string',
+          description: 'Actor responsible for this explicit curation and governance audit.'
+        }
+      },
+      required: ['projectPath', 'name', 'trigger', 'steps', 'actor']
+    }
+  },
+  {
     name: 'mem-actor-list',
     description: 'List project-scoped or global memory actors with compact privacy-safe identity metadata.',
     inputSchema: {

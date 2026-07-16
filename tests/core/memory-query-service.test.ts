@@ -148,4 +148,25 @@ describe('MemoryQueryService', () => {
     expect(queryStore.getSessionEvents).toHaveBeenCalledWith('session-1');
     expect(queryStore.getRecentEvents).toHaveBeenCalledWith(2);
   });
+
+  it('normalizes ascending FTS ranks with the strongest match at score one', async () => {
+    const initialize = vi.fn(async () => {});
+    const strongest = event({ id: '11111111-1111-4111-8111-111111111111' });
+    const middle = event({ id: '22222222-2222-4222-8222-222222222222' });
+    const weakest = event({ id: '33333333-3333-4333-8333-333333333333' });
+    const service = new MemoryQueryService(initialize, {
+      keywordSearch: vi.fn(async () => [
+        { event: strongest, rank: -12 },
+        { event: middle, rank: -7 },
+        { event: weakest, rank: -2 }
+      ]),
+      getSessionEvents: vi.fn(async () => []),
+      getRecentEvents: vi.fn(async () => [])
+    });
+
+    await expect(service.keywordSearch('exact query', { minScore: 0.4 })).resolves.toEqual([
+      { event: strongest, score: 1 },
+      { event: middle, score: 0.5 }
+    ]);
+  });
 });

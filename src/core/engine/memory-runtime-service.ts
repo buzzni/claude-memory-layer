@@ -83,6 +83,7 @@ export function createMemoryRuntimeService(deps: MemoryRuntimeServicesDeps): Mem
   let vectorWorker: VectorWorker | null = null;
   let vectorWorkerV2: VectorWorkerV2 | null = null;
   let graduationWorker: GraduationWorker | null = null;
+  let oneShotGraduationWorker: GraduationWorker | null = null;
 
   return {
     async initialize(): Promise<void> {
@@ -174,10 +175,22 @@ export function createMemoryRuntimeService(deps: MemoryRuntimeServicesDeps): Mem
     },
 
     async forceGraduation(): Promise<GraduationRunResult> {
-      if (!graduationWorker) {
+      if (graduationWorker) {
+        return graduationWorker.forceRun();
+      }
+      if (deps.readOnly || deps.lightweightMode) {
         return createEmptyGraduationResult();
       }
-      return graduationWorker.forceRun();
+
+      // Embedding-only runtimes (notably the Claude semantic daemon) skip the
+      // periodic graduation worker to keep their background footprint small.
+      // They can still execute an explicitly scheduled bounded pass without
+      // enabling endless/shared services or a five-minute timer.
+      oneShotGraduationWorker ??= createGraduationWorker(
+        deps.eventStore,
+        deps.graduation
+      );
+      return oneShotGraduationWorker.forceRun();
     },
 
     recordMemoryAccess(eventId: string, sessionId: string, confidence: number = 1.0): void {

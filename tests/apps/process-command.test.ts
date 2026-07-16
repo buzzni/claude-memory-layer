@@ -40,13 +40,15 @@ describe('process command recovery preview', () => {
     expect(resolveProcessCommandOptions({ project: '/repo/app', dryRunRecovery: true })).toMatchObject({
       projectPath: '/repo/app',
       recoverStuck: true,
-      dryRunRecovery: true
+      dryRunRecovery: true,
+      graduation: true
     });
 
     expect(resolveProcessCommandOptions({ project: '/repo/app', recoverStuck: false })).toMatchObject({
       projectPath: '/repo/app',
       recoverStuck: false,
-      dryRunRecovery: false
+      dryRunRecovery: false,
+      graduation: true
     });
   });
 
@@ -60,6 +62,7 @@ describe('process command recovery preview', () => {
       projectPath: '/repo/private app',
       recoverStuck: true,
       dryRunRecovery: false,
+      graduation: true,
       lockPath: '/tmp/cml-private-store/vector-worker.lock'
     });
 
@@ -74,6 +77,11 @@ describe('process command recovery preview', () => {
       '/cwd',
       { getProjectStoragePath: () => '/tmp/cml-private-store' }
     )).toThrow('--lock-path must not be empty');
+  });
+
+  it('runs graduation by default and permits an explicit opt-out', () => {
+    expect(resolveProcessCommandOptions({ project: '/repo/app' }).graduation).toBe(true);
+    expect(resolveProcessCommandOptions({ project: '/repo/app', graduation: false }).graduation).toBe(false);
   });
 
   it('formats aggregate-only lock contention output without outbox row details', () => {

@@ -1,5 +1,6 @@
 import type { OutboxQueueStats, OutboxStats } from './types.js';
 import type { MemoryStats } from './engine/memory-query-service.js';
+import type { DerivationLiveness } from './sqlite-event-store.js';
 
 export const PRODUCTIVITY_HEALTH_SCHEMA_VERSION = 'agent-productivity-health-v1' as const;
 
@@ -21,6 +22,7 @@ export interface ProductivityHealthProjectIdentity {
 export interface ProductivityHealthReportInput {
   stats: Pick<MemoryStats, 'totalEvents' | 'vectorCount' | 'levelStats'>;
   outbox: OutboxStats;
+  derivation?: DerivationLiveness;
   project: ProductivityHealthProjectIdentity;
   profile?: ProductivityHealthProfile;
   mode?: ProductivityHealthMode;
@@ -28,7 +30,7 @@ export interface ProductivityHealthReportInput {
 }
 
 export interface ProductivityHealthRiskGate {
-  id: 'project-scope-known' | 'outbox-healthy' | 'memory-density';
+  id: 'project-scope-known' | 'outbox-healthy' | 'memory-density' | 'derivation-liveness' | 'derived-sources-ready';
   severity: ProductivityHealthRiskGateSeverity;
   status: ProductivityHealthRiskGateStatus;
   message?: string;
@@ -55,6 +57,7 @@ export interface ProductivityHealthReport {
       vector: OutboxQueueStats;
       totals: OutboxQueueStats;
     };
+    derivation: DerivationLiveness;
   };
   riskGates: ProductivityHealthRiskGate[];
   nextBestAction: string;
@@ -92,11 +95,16 @@ export function buildProductivityHealthReport(input: ProductivityHealthReportInp
   const projectGate = buildProjectScopeGate(input.project);
   const outboxGate = buildOutboxGate(totals);
   const densityGate = buildMemoryDensityGate(storage.totalEvents);
-  const riskGates = [projectGate, outboxGate, densityGate];
+  const derivation = normalizeDerivationLiveness(input.derivation);
+  const derivationGate = buildDerivationLivenessGate(storage.totalEvents, derivation);
+  const sourcesGate = buildDerivedSourcesGate(storage.totalEvents, derivation);
+  const riskGates = [projectGate, outboxGate, densityGate, derivationGate, sourcesGate];
 
   if (projectGate.status === 'warn') warningReasons.push('project_scope_unknown');
   if (outboxGate.status === 'warn') warningReasons.push('outbox_requires_attention');
   if (densityGate.status === 'warn') warningReasons.push('memory_density_low');
+  if (derivationGate.status === 'warn') warningReasons.push('pipeline_never_run');
+  if (sourcesGate.status === 'warn') warningReasons.push('no_derived_sources');
 
   const status: ProductivityHealthStatus = riskGates.some((gate) => gate.status === 'warn')
     ? 'needs-attention'
@@ -112,10 +120,33 @@ export function buildProductivityHealthReport(input: ProductivityHealthReportInp
     summary: { warningReasons },
     signals: {
       storage,
-      outbox: { embedding, vector, totals }
+      outbox: { embedding, vector, totals },
+      derivation
     },
     riskGates,
-    nextBestAction: selectNextBestAction({ projectGate, outboxGate, densityGate })
+    nextBestAction: selectNextBestAction({ projectGate, outboxGate, densityGate, derivationGate, sourcesGate })
+  };
+}
+
+function normalizeDerivationLiveness(value: DerivationLiveness | undefined): DerivationLiveness {
+  const graduation = value?.graduation;
+  const status = graduation?.lastStatus === 'success' || graduation?.lastStatus === 'not_eligible' || graduation?.lastStatus === 'failed'
+    ? graduation.lastStatus
+    : null;
+  return {
+    graduation: {
+      attempts: numberOrZero(graduation?.attempts),
+      lastAttemptAt: safeIsoTimestamp(graduation?.lastAttemptAt),
+      lastSuccessAt: safeIsoTimestamp(graduation?.lastSuccessAt),
+      lastStatus: status,
+      lastErrorCategory: status === 'failed' && graduation?.lastErrorCategory === 'graduation_failed'
+        ? 'graduation_failed'
+        : null
+    },
+    sources: {
+      graduatedEvents: numberOrZero(value?.sources?.graduatedEvents),
+      curatedLessons: numberOrZero(value?.sources?.curatedLessons)
+    }
   };
 }
 
@@ -155,16 +186,48 @@ function buildMemoryDensityGate(totalEvents: number): ProductivityHealthRiskGate
   return { id: 'memory-density', severity: 'warning', status: 'pass' };
 }
 
+function buildDerivationLivenessGate(totalEvents: number, derivation: DerivationLiveness): ProductivityHealthRiskGate {
+  if (totalEvents > 0 && derivation.graduation.attempts === 0) {
+    return {
+      id: 'derivation-liveness',
+      severity: 'blocker',
+      status: 'warn',
+      message: 'Memories exist but graduation has never run; execute claude-memory-layer process.'
+    };
+  }
+  return { id: 'derivation-liveness', severity: 'blocker', status: 'pass' };
+}
+
+function buildDerivedSourcesGate(totalEvents: number, derivation: DerivationLiveness): ProductivityHealthRiskGate {
+  if (totalEvents > 0 && derivation.sources.graduatedEvents === 0 && derivation.sources.curatedLessons === 0) {
+    return {
+      id: 'derived-sources-ready',
+      severity: 'blocker',
+      status: 'warn',
+      message: 'No graduated memories or curated lessons are available for a Project Brief.'
+    };
+  }
+  return { id: 'derived-sources-ready', severity: 'blocker', status: 'pass' };
+}
+
 function selectNextBestAction(input: {
   projectGate: ProductivityHealthRiskGate;
   outboxGate: ProductivityHealthRiskGate;
   densityGate: ProductivityHealthRiskGate;
+  derivationGate: ProductivityHealthRiskGate;
+  sourcesGate: ProductivityHealthRiskGate;
 }): string {
   if (input.outboxGate.status === 'warn') {
     return 'Run claude-memory-layer process --dry-run-recovery, then process pending embeddings.';
   }
   if (input.densityGate.status === 'warn') {
     return 'Import or capture project context before relying on productivity memory guidance.';
+  }
+  if (input.derivationGate.status === 'warn') {
+    return 'Run claude-memory-layer process to execute one bounded graduation pass.';
+  }
+  if (input.sourcesGate.status === 'warn') {
+    return 'Capture a reviewed lesson or promote eligible memories before generating a Project Brief.';
   }
   if (input.projectGate.status === 'warn') {
     return 'Provide a project path or project hash before relying on project-scoped productivity guidance.';
@@ -213,6 +276,12 @@ function maxNullable(a: number | null, b: number | null): number | null {
   if (a === null) return b;
   if (b === null) return a;
   return Math.max(a, b);
+}
+
+function safeIsoTimestamp(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
 }
 
 function numberOrZero(value: number | null | undefined): number {

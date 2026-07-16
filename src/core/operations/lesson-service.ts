@@ -1,7 +1,8 @@
 import { z } from 'zod';
 
 import { sqliteAll, type SQLiteDatabase } from '../sqlite-wrapper.js';
-import type { MemoryLesson } from '../types.js';
+import { applyPrivacyFilter } from '../privacy/filter.js';
+import type { Config, MemoryLesson } from '../types.js';
 import { LessonCandidateService, type LessonCandidate } from './lesson-candidate-service.js';
 import { LessonRepository } from './lesson-repository.js';
 
@@ -57,6 +58,31 @@ export const PromoteLessonCandidateInputSchema = z.object({
   }
 });
 export type PromoteLessonCandidateInput = z.input<typeof PromoteLessonCandidateInputSchema>;
+
+const CURATED_PRIVACY_CONFIG: Config['privacy'] = {
+  excludePatterns: ['password', 'secret', 'api_key', 'api-key', 'token', 'bearer'],
+  anonymize: false,
+  privateTags: {
+    enabled: true,
+    marker: '[REDACTED]',
+    preserveLineCount: false,
+    supportedFormats: ['xml', 'bracket', 'comment']
+  }
+};
+
+export const SaveCuratedLessonInputSchema = z.object({
+  projectHash: NonEmptyStringSchema,
+  actor: NonEmptyStringSchema,
+  name: NonEmptyStringSchema,
+  trigger: NonEmptyStringSchema,
+  steps: PromotionStringArraySchema.refine((steps) => steps.length > 0, 'steps must contain at least one step'),
+  confidence: z.number().min(0).max(1).default(1),
+  sourceSessionIds: PromotionStringArraySchema.default([]),
+  sourceEventIds: PromotionStringArraySchema.default([]),
+  failureModes: PromotionStringArraySchema.default([]),
+  skillCandidate: z.boolean().default(true)
+});
+export type SaveCuratedLessonInput = z.input<typeof SaveCuratedLessonInputSchema>;
 
 interface SourceEventRow {
   id: string;
@@ -166,6 +192,18 @@ function normalizeGeneratedCandidate(candidate: LessonCandidate): ReviewedLesson
   return ReviewedLessonCandidateSchema.parse(candidate);
 }
 
+function curatedSourceSessionRef(actor: string): string {
+  return `curated:${actor.replace(/[^A-Za-z0-9._:-]/g, '_').slice(0, 96)}`;
+}
+
+function assertCuratedPayloadIsShareSafe(input: z.output<typeof SaveCuratedLessonInputSchema>): void {
+  const text = [input.name, input.trigger, ...input.steps, ...input.failureModes].join('\n');
+  const result = applyPrivacyFilter(text, CURATED_PRIVACY_CONFIG);
+  if (result.metadata.hasPrivateTags || result.metadata.hasUnmatchedTags || result.metadata.patternMatchCount > 0) {
+    throw new Error('curated lesson contains private or credential-like content');
+  }
+}
+
 export class LessonService {
   private readonly candidateService: LessonCandidateService;
   private readonly lessonRepository: LessonRepository;
@@ -191,6 +229,23 @@ export class LessonService {
     this.validateSourceEvents(candidate.projectHash, candidate.sourceEventIds);
 
     return this.lessonRepository.upsert(candidateToLessonInput(candidate, parsed.actor));
+  }
+
+  async saveCurated(input: unknown): Promise<MemoryLesson> {
+    const parsed = SaveCuratedLessonInputSchema.parse(input);
+    assertCuratedPayloadIsShareSafe(parsed);
+    if (parsed.sourceEventIds.length > 0) {
+      this.validateSourceEvents(parsed.projectHash, parsed.sourceEventIds);
+    }
+    const sourceSessionIds = uniqueStrings(parsed.sourceSessionIds);
+    if (sourceSessionIds.length === 0 && parsed.sourceEventIds.length === 0) {
+      sourceSessionIds.push(curatedSourceSessionRef(parsed.actor));
+    }
+    return this.lessonRepository.upsert({
+      ...parsed,
+      sourceSessionIds,
+      sourceClass: 'curated'
+    }, 'lesson_capture');
   }
 
   private async resolveGeneratedCandidate(

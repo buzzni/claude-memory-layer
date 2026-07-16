@@ -120,6 +120,21 @@ export class GraduationPipeline {
   }
 
   /**
+   * Restore durable access evidence before a bounded worker run.  Hooks and
+   * one-shot CLI workers do not share a process, so relying only on the
+   * in-memory map would make every fresh `process` invocation ineligible.
+   */
+  hydrateMetrics(metrics: EventMetrics[]): void {
+    for (const metric of metrics) {
+      if (metric.accessCount <= 0) continue;
+      const existing = this.metrics.get(metric.eventId);
+      if (!existing || metric.accessCount >= existing.accessCount) {
+        this.metrics.set(metric.eventId, { ...metric });
+      }
+    }
+  }
+
+  /**
    * Evaluate if an event should graduate to the next level
    */
   async evaluateGraduation(eventId: string, currentLevel: MemoryLevel): Promise<GraduationResult> {

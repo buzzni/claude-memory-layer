@@ -521,3 +521,215 @@ SELECT
 | `src/hooks/semantic-daemon.ts` | 모델 헬스체크 강화 | 2 |
 | `src/server/api/stats.ts` | 모델 상태 지표 추가 | 2 |
 | `src/cli/index.ts` | graduation --repair 커맨드 | 2 |
+
+## Phase 4 — Evidence-to-answer loop (2026-07-14)
+
+### Task 4.1 — Claude delivery contract
+
+- [x] SessionStart/UserPromptSubmit output을 official `additionalContext` envelope로 변경한다.
+- [x] empty/error fallback도 valid event envelope로 통일한다.
+- [x] 실제 Claude CLI가 `additionalContext`를 읽고 주입 event 내용을 명시적으로 판정하는 것을 확인했다. 최종 answer-quality gate는 Task 4.4에서 계속 추적한다.
+
+### Task 4.2 — Evaluation isolation
+
+- [x] `CLAUDE_MEMORY_EVAL_MODE=true`에서 corpus/trace/helpfulness/adherence mutation을 차단한다.
+- [x] semantic daemon request까지 evaluation flag를 전달해 `events=2023`, `retrieval_traces=241` 전후 불변을 확인했다.
+- [ ] 과거 synthetic `7777...`/`8888...` 세션은 운영 성능평가 집계에서 제외한다. 삭제는 별도 승인 작업이다.
+
+### Task 4.3 — Evidence utility and episode expansion
+
+- [x] event-type utility prior와 prompt-only answerability abstention을 추가한다.
+- [x] user/tool seed에서 ±4 event episode를 확장하고 response/summary evidence를 병합한다.
+- [x] episode-linked evidence는 seed relevance를 상속하되 source ref를 보존한다.
+- [ ] episode를 canonical artifact로 저장하는 후속 단계는 shadow 평가 후 결정한다.
+
+### Task 4.4 — Progressive field evaluation
+
+1. `recsys_justin` 5-case smoke: PR review, production incident, feature change, GitOps, unrelated control.
+2. gate: unrelated=0, prompt-only answer=0, answerable relevant ≥4/5, cross-project=0.
+3. gate 통과 시 20+ queries로 확대: incident/procedure/decision/review/continuation/no-match 균형 표본.
+4. memory off/on actual-answer 비교에서 grounded fact coverage, unsupported claim, abstention을 판정한다.
+5. 결과에 따라 evidence bonus, episode window, score-cliff를 조정하되 no-match gate는 악화시키지 않는다.
+
+**Definition of Done**:
+
+- typecheck/test/lint/build/architecture/privacy/retrieval replay green.
+- small→expanded field report에 corpus 규모, 제외 규칙, case별 selected evidence type, latency, pass/fail을 기록.
+- 실제 Claude가 injected evidence를 사용한 사례와 올바르게 abstain한 사례를 각각 확보.
+
+### 2026-07-14 실행 결과
+
+- 5-case gate: 5/5. incident/feature/GitOps는 answer evidence를 주입했고 PR prompt-only와 unrelated control은 abstain했다.
+- 확대 23-case: TP=12, FN=0, FP=0, TN=11; selection precision/recall/accuracy=1.0. p50=123.1ms, p95=371.8ms.
+- 확대 표본은 identifier가 분명한 hand-labeled field smoke이므로 일반화 성능의 최종 수치가 아니다. golden replay no-match accuracy=1, forbidden hits=0도 별도 통과했다.
+- 실제 Claude delivery는 확인됐다. 첫 relevant answer run은 GitHub/Argo 인접 tool evidence가 섞여 안전하게 `근거 부족` 처리했고, 이후 answer가 있으면 tool attempt를 기본 제외하도록 튜닝했다. post-tuning direct hook은 올바른 Argo agent response 1건만 반환했다.
+- post-tuning actual provider run 두 번은 CLI stdout이 비어 최종 generated-answer 개선 판정은 미완료다. selection gate는 green이지만 answer-quality enforce 승격은 아직 보류한다.
+
+## Phase 5 — Hook-only automatic graduation (2026-07-14)
+
+### Task 5.1 — One-shot runtime contract
+
+- [x] embedding-only writable runtime에서 periodic worker를 시작하지 않고 `forceGraduation()` one-shot을 허용한다.
+- [x] read-only/lightweight runtime은 기존처럼 mutation 없는 empty result를 유지한다.
+- [x] one-shot worker는 호출마다 새 인스턴스를 만들지 않고 runtime 동안 재사용한다.
+
+### Task 5.2 — Semantic daemon scheduler
+
+- [x] strict-filtered access/helpfulness evidence를 저장한 뒤 Hook이 daemon에 project별 background graduation을 예약한다.
+- [x] default cooldown 5분, 짧은 post-response delay, in-flight dedupe를 적용한다.
+- [x] eval mode/환경변수 disable을 지원하고 daemon shutdown에서 pending timer/running promise를 정리한다.
+- [x] schedule ack만 Hook에서 기다리고 worker failure가 retrieval response에 영향을 주지 않게 한다.
+
+### Task 5.3 — Candidate fairness and verification
+
+- [x] SQLite graduation candidate를 `access_count`, `last_accessed_at`, timestamp 순으로 선택한다.
+- [x] distinct retrieval session을 durable cross-session evidence로 복원한다.
+- [x] scheduler/runtime/store 단위 테스트와 hook integration test를 추가한다.
+- [x] `recsys_justin` 실제 store에서 attempt telemetry, L1+ delta, retrieval latency를 소규모→확대 검수한다.
+
+### 2026-07-14 실행 결과
+
+- 기준선: events=2,023, L0=2,014, L1=9, accessed L0=285, graduation attempts=0.
+- 첫 실제 Hook canary: 수동 `process` 없이 attempt=1, worker latency=5ms, L0 50건이 L1로 승격됐다. Hook wall time은 0.88s였다.
+- 6개 동시 semantic retrieval burst: wall time=203.6ms, attempt는 1회만 증가해 in-flight dedupe를 확인했고 추가 50건이 L1로 승격됐다.
+- access-write race 제거 후 실제 Hook 재검증: attempt=3, 최종 L0=1,866/L1=126/L2=33. durable cross-session evidence로 L1→L2도 33건 발생했다.
+- eval canary는 levels/attempts/events/retrieval traces가 모두 불변이었다.
+- 전체 회귀: 158 test files/920 tests, typecheck/lint(0 errors)/architecture/replay/privacy/build green.
+
+## Phase 6 — Graduated evidence utilization (2026-07-14)
+
+### Task 6.1 — Level-aware answer lane
+
+- [x] L1+ `user_prompt`/`agent_response`/`session_summary` FTS lane을 추가한다.
+- [x] prompt는 episode seed로만, response와 non-template summary만 direct answer로 사용한다.
+- [x] semantic result와 graduated result가 같은 event면 calibrated graduated score로 통일한다.
+
+### Task 6.2 — Entity and intent calibration
+
+- [x] query/identifier/entity coverage와 entity proximity를 점수에 반영한다.
+- [x] 원인·장애 질문에는 causal/outcome evidence가 없는 일반 가이드를 제외한다.
+- [x] graduated top plateau에는 0.02 strict score-cliff를 적용한다.
+- [x] level/access prior는 answer-capable type에만 작게 적용한다.
+- [x] question boilerplate를 lexical overlap에서 제거하고 graduated level prior 중복 가중치를 제거한다.
+
+### Task 6.3 — Progressive validation
+
+- [x] 8-case promoted-memory gate를 before/after 비교한다.
+- [x] 20+ topic/no-match field set으로 확대한다.
+- [x] 실제 Claude answer에서 injected L1/L2 citation의 grounded fact coverage를 확인한다.
+- [x] 전체 regression/privacy/build gate와 eval immutability를 재확인한다.
+
+### 소규모 실행 결과
+
+- 변경 전: answerable 6개 중 정확한 top evidence 3개, prompt-only/no-match 2개는 abstain.
+- 단순 level boost 실험은 긴 promoted 문서가 다수 주입되는 회귀를 보여 폐기했다.
+- 최종 calibrated lane: git author L2, wshop deploy L2, TRIGGER_SEARCH L1, S3 limit L1, release scope L2, ssgshop CrashLoop L1을 각각 1건씩 정확히 선택했다.
+- PR 167 prompt-only와 unrelated travel은 모두 abstain하여 8/8 통과. latency p50≈138ms, max=172ms.
+- 정밀 positive 12건 + prompt-only/unrelated 8건 확대 gate는 20/20 통과했다. final run latency는 p50=141.6ms, p95=425.1ms였다.
+- 실제 Claude Code `UserPromptSubmit` event에서 S3 PutObject L1 `a6d442e2…`가 주입되었고, Claude가 5GB single-PUT limit·8.3GB artifact·multipart 해결을 근거와 일치하게 답했다.
+- 실 provider no-match에서 `화성의 대기 조성`에 CI runner L0가 잘못 주입되는 경계 사례를 발견했다. `어떻게`를 question boilerplate로 제거하고 2개 strong-term gate를 유지해, 수정 후 동일 hook은 `additionalContext` 없이 abstain했다.
+- `95b2c36 / No changes`에서 넓은 L2 release 문서가 정확한 L1 incident를 앞서는 중복 level-prior를 제거했고, 수정 후 L1 `6c9bbdab…`를 선택했다.
+- 최종 gate: 158 test files/926 tests, typecheck, lint(0 errors/41 existing warnings), architecture(221 files), golden replay(no-match 1.0/forbidden 0/failed 0), public-output privacy(0 findings), build, `git diff --check` 모두 통과했다.
+- eval 전후 `recsys_justin` canonical store는 events=2,025, retrieval traces=251, L0/L1/L2=1,866/126/33으로 불변이었다.
+
+## Phase 7 — 100-case field benchmark and evaluation Skill (2026-07-14)
+
+### Task 7.1 — Privacy-safe local dataset generation
+
+- [x] same-turn prompt/response pair에서 deterministic 80 positive case를 생성한다.
+- [x] identifier counterfactual 10건과 unrelated no-match 10건을 추가한다.
+- [x] raw dataset을 ignored local artifact로 저장하고 aggregate manifest만 공유한다.
+
+### Task 7.2 — Hook-realistic evaluator
+
+- [x] eval-mode `UserPromptSubmit` runner와 top-1/hit/no-match/latency metric을 구현한다.
+- [x] level/kind breakdown과 query-free failure diagnostics를 출력한다.
+- [x] evaluation 전후 store immutability를 검증한다.
+
+### Task 7.3 — Iterative quality improvement
+
+- [x] 100-case baseline을 실행하고 failure taxonomy를 작성한다.
+- [x] precision/recall/no-match 저하 원인을 정책에 반영한다.
+- [x] 동일 frozen dataset으로 재평가해 개선폭과 남은 한계를 기록한다.
+
+### Task 7.4 — Reusable Skill and gates
+
+- [x] `evaluate-memory-retrieval` Skill을 `~/.codex/skills`에 생성하고 runner workflow를 연결한다.
+- [x] Skill metadata/validation/smoke를 통과한다.
+- [x] 전체 test/typecheck/lint/architecture/replay/privacy/build gate를 통과한다.
+
+### 2026-07-14 실행 결과
+
+- 629 same-turn pair에서 privacy/quality filter를 통과한 positive 80건, counterfactual 10건, unrelated 10건을 생성했다. positive중 28건은 L1/L2, source session은 42개다.
+- raw query dataset/report는 `benchmarks/field-memory/*.local*.json`(0600, gitignored)에만 저장하고 schema와 runner만 커밋 대상으로 둔다.
+- 초기 baseline은 overall 32%, positive hit 22.5%, top-1 10%, no-match 70%였다.
+- exact prompt를 answer ranking과 분리한 episode seed, same-turn 전체 조회, weak numeric/boilerplate 차단, counterfactual 생성 수정, FTS candidate pool 확대를 반영했다.
+- 가장 큰 원인은 BM25 ascending rank를 반대로 정규화해 exact result=0, weak tail=1로 만들던 버그였다. 방향 수정과 semantic/keyword duplicate의 stronger calibration merge를 추가했다.
+- 최종 frozen-set gate는 overall 100%, positive hit 100%, positive top-1 98.75%, no-match 100%, unexpected injection/error 0이다.
+- concurrency=1 latency는 p50=148.1ms/p95=439.5ms, concurrency=4 burst는 p50=268.3ms/p95=1,043.5ms였다. 두 실행 모두 `storeImmutable=true`였다.
+- Skill `quick_validate.py`, Python compile, bundled wrapper 100-case mature gate가 통과했다.
+- 전체 회귀 게이트는 159 test files/935 tests, typecheck, lint(0 errors/41 existing warnings), architecture(222 files), golden replay(no-match 1.0/forbidden 0/failed 0), public-output privacy(0 findings), build, `git diff --check`를 통과했다.
+- Skill 전방 테스트에서 저장소 루트 기준 wrapper 경로가 모호한 문제를 발견해, 어느 작업 디렉터리에서도 실행 가능한 `${CODEX_HOME:-$HOME/.codex}` 경로와 transient session 정리 규칙을 명시했다.
+- 과거 field eval이 남긴 transient session mapping 9개를 정리하고 evaluator에 `finally` unregister를 추가했다. 최종 재실행 후 canonical store는 events=2,025, retrieval traces=251, L0/L1/L2=1,866/126/33, transient eval sessions=0으로 확인됐다.
+- threshold를 의도적으로 실패시킨 100-case 실행과 unit test에서도 transient eval sessions=0을 확인해 실패 경로 정리를 고정했다.
+
+## Phase 8 — Frozen field fixture and npm release (2026-07-14)
+
+### Task 8.1 — Corpus freeze
+
+- [x] 기존 100-case dataset과 평가 당시 SQLite corpus를 별도 ignored `.local` fixture 디렉터리로 동결한다.
+- [x] WAL-consistent backup, file mode `0600`, checksum, corpus count manifest를 구현한다.
+
+### Task 8.2 — Isolated replay
+
+- [x] evaluator에 `--fixture`/`--freeze-to` workflow를 추가한다.
+- [x] fixture 전용 disposable `HOME`과 transient registry를 사용해 live project store/daemon과 분리한다.
+- [x] frozen fixture로 기존 mature gate와 store immutability를 재검증한다.
+
+### Task 8.3 — Release
+
+- [x] Skill과 문서에 frozen fixture workflow를 반영한다.
+- [x] self-dependency/package contents/full regression gate를 확인한다.
+- [x] patch version을 배포하고 npm registry에서 설치 가능 여부를 확인한다.
+
+### 2026-07-14 실행 결과
+
+- `benchmarks/field-memory/fixtures/recsys-justin-100-2026-07-14.local/`에 100-case dataset, SQLite snapshot, checksum/count manifest를 모두 `0600`으로 동결했다. 전체 디렉터리는 gitignored다.
+- fixture snapshot은 events=2,025, retrieval traces=251, L0/L1/L2=1,866/126/33이며 dataset/store SHA-256 검증을 매 실행 선행한다.
+- Hook이 canonical snapshot에 WAL/SHM을 만들지 않도록 매 실행마다 OS temp 아래 disposable HOME/DB copy를 만들고 종료 시 삭제한다. live semantic daemon 영향도 차단하기 위해 fixture replay는 keyword mode로 고정했다.
+- frozen replay 결과는 concurrency=1/4 모두 overall 100%, positive hit 100%, positive top-1 98.75%, no-match 100%, unexpected injection/error 0, `storeImmutable=true`였다.
+- 두 번의 반복 replay 뒤 canonical fixture checksum은 모두 일치했고 snapshot 디렉터리에 WAL/SHM 파일은 0개였다.
+- self-dependency `(empty)`, npm dry-run 56 files/5.3MB, 159 files/935 tests, typecheck, lint(0 errors/41 existing warnings), architecture, replay, privacy, build gate를 통과했다.
+- `claude-memory-layer@1.0.56`을 npm `latest`로 publish했고 registry integrity 조회와 clean temp install에서 package version/bin entry를 재확인했다.
+
+## Phase 9 — 200-case hard-query field benchmark (2026-07-14)
+
+### Task 9.1 — Difficulty taxonomy
+
+- [x] 기본 구성을 positive 150/counterfactual 25/unrelated 25로 확대한다.
+- [x] exact/contextual/compressed/paraphrased/noisy query style과 easy/standard/hard 난이도 label을 추가한다.
+- [x] plausible identifier swap과 기술 인접 no-match 질문으로 negative 난이도를 높인다.
+
+### Task 9.2 — Evaluation and fixture
+
+- [x] difficulty/style별 hit/top-1/no-match metric과 query-free failure metadata를 추가한다.
+- [x] deterministic/privacy/schema 단위 테스트를 추가한다.
+- [x] 200-case dataset+SQLite snapshot을 새 ignored frozen fixture로 생성한다.
+
+### Task 9.3 — Iterative improvement
+
+- [x] frozen hard set baseline을 실행하고 miss/wrong-top1/unexpected-injection을 분류한다.
+- [x] case-specific 예외 없이 일반 retrieval 정책을 개선하고 같은 fixture로 재평가한다.
+- [x] full regression/privacy/build gate와 Skill workflow를 갱신한다.
+
+### 2026-07-15 실행 결과
+
+- 새 fixture `recsys-justin-200-hard-2026-07-14.local`은 positive 150/counterfactual 25/unrelated 25이며 easy 30/standard 40/hard 130이다.
+- positive는 exact/contextual/compressed/paraphrased/noisy를 각 30건 포함한다. counterfactual은 `zz` 표식 대신 plausible identifier를 사용하면서 원문 구조를 유지한다.
+- 최초 hard baseline은 overall 98%, positive hit 97.33%, top-1 95.33%, no-match 100%였고 miss 4건이 모두 noisy-clue L0에 집중됐다.
+- episode seed를 3→5로 확대하고 seed별 episode budget을 분리했으며, direct injection pool을 늘리지 않고 episode 전용 FTS 후보를 50까지 조회했다.
+- 모든 distinctive identifier와 lexical clue 4개 이상이 일치한 prompt만 strong-aligned로 승격해 same-turn answer가 lexical distractor보다 우선하도록 했다. plausible counterfactual은 anchor coverage가 0이라 이 경로를 통과하지 않는다.
+- 최종 concurrency=1/4 gate는 overall 99.5%, positive hit 99.33%, top-1 98%, no-match 100%, hard hit 99.23%, hard top-1 97.69%, unexpected injection/error 0, `storeImmutable=true`다.
+- 남은 noisy L0 1건은 동일 identifier를 공유하는 FTS prompt 후보가 50개 이상인 모호성 사례로 유지했다. case-specific 예외나 무제한 후보 확장은 적용하지 않았다.
+- 전체 회귀는 159 test files/938 tests, typecheck, lint(0 errors/41 existing warnings), architecture(222 files), golden replay(no-match 1/forbidden 0/failed 0), privacy(0 findings), build를 통과했고 Skill validator와 dataset schema JSON 검증도 통과했다.
+- `claude-memory-layer@1.0.57`을 npm `latest`로 publish했다. registry의 integrity/shasum 조회와 `--prefer-online` clean temp install에서 package version과 CLI bin entry를 재검증했다.

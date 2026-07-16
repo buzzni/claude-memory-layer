@@ -152,6 +152,55 @@ afterEach(() => {
 });
 
 describe('LessonService manual promotion', () => {
+  it('captures an explicit curated lesson without a prior raw event and records stable provenance', async () => {
+    const { store, lessonService, cleanup } = await createFixture();
+    const projectHash = 'project-curated-capture';
+
+    const first = await lessonService.saveCurated({
+      projectHash,
+      actor: 'operator',
+      name: 'Deploy GPU before API',
+      trigger: 'When rolling out the runtime split after a model change',
+      steps: ['Roll out the GPU workload first', 'Verify readiness', 'Roll out the API workload'],
+      failureModes: ['Do not deploy the API before the GPU workload is ready']
+    });
+    const second = await lessonService.saveCurated({
+      projectHash,
+      actor: 'operator',
+      name: 'Deploy GPU before API',
+      trigger: 'When rolling out the runtime split after a model change',
+      steps: ['Roll out the GPU workload first', 'Verify readiness', 'Roll out the API workload', 'Record the rollout result']
+    });
+    const storedAuditRows = auditRows(store);
+    await cleanup();
+
+    expect(first.sourceClass).toBe('curated');
+    expect(first.sourceSessionIds).toEqual(['curated:operator']);
+    expect(first.sourceEventIds).toEqual([]);
+    expect(second.lessonId).toBe(first.lessonId);
+    expect(second.steps).toContain('Record the rollout result');
+    expect(storedAuditRows).toHaveLength(2);
+    expect(storedAuditRows.every((row) => row.operation === 'lesson_capture')).toBe(true);
+  });
+
+  it('fails closed when an explicit curated lesson contains private or credential-like content', async () => {
+    const { store, lessonService, cleanup } = await createFixture();
+
+    await expect(lessonService.saveCurated({
+      projectHash: 'project-curated-secret',
+      actor: 'operator',
+      name: 'Unsafe deployment detail',
+      trigger: 'When token=fixture-secret is available',
+      steps: ['Use the secret to deploy']
+    })).rejects.toThrow(/private or credential/i);
+    const storedLessons = lessonRows(store);
+    const storedAuditRows = auditRows(store);
+    await cleanup();
+
+    expect(storedLessons).toHaveLength(0);
+    expect(storedAuditRows).toHaveLength(0);
+  });
+
   it('promotes an explicitly approved generated candidate with source refs and one audit row', async () => {
     const { store, candidateService, lessonService, cleanup } = await createFixture();
     const projectHash = 'project-promote-generated';

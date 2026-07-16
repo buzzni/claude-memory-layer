@@ -1,8 +1,8 @@
 # Phase 0 Baseline Report — Agent Productivity Architecture
 
 > **Generated**: 2026-07-07T12:09:58Z
-> **Last revalidated**: 2026-07-07T13:52:43Z
-> **Spec**: `specs/agent-productivity-architecture/spec.md` v1.0.1
+> **Last revalidated**: 2026-07-14 (field baseline appended; deterministic gates last rerun 2026-07-07T13:52:43Z)
+> **Spec**: `specs/agent-productivity-architecture/spec.md` v1.0.2
 > **Purpose**: 기능 구현 전 현재 main/worktree 기준의 재현 가능한 baseline과 safety guardrail을 고정한다.
 
 ## 1. Executive Summary
@@ -15,6 +15,7 @@ Phase 0의 핵심 guardrail은 현재 기준으로 대체로 준비되어 있다
 - Public-output privacy scan gate: **PASS** (`npm run check:public-output-privacy -- --json`)
 - Golden fixture coverage: continuation / Korean short follow-up / decision recall / topic-shift no-match / cross-project trap / stale trap을 이미 포함
 - 주요 개선 필요: Project Brief 전용 fixture, health report API/CLI 계약, injection mode observe/preview/enforce fixture, real session A/B exploration-cost fixture
+- 2026-07-14 field baseline은 별도 blocker를 드러냈다: 주입률 99.4%, L1+와 pipeline run 0, helpfulness proxy 천장 효과, 동일 repo의 4-store 분절. 따라서 deterministic retrieval gate가 green이어도 Brief/enforce-ready를 의미하지 않는다.
 
 ## 2. Commands Run
 
@@ -164,6 +165,30 @@ Interpretation:
 - Official QA remains **N/A** until reader hypotheses and a judge run are executed; these metrics are retrieval-only.
 - The npm script now covers fresh-clone smoke reproducibility; full LongMemEval_S scoring still requires passing `--input <external dataset>` after `--`.
 
+### 3.4 2026-07-14 Field Baseline — recsys_justin
+
+Source: [`field-findings-recsys-justin-2026-07-14.md`](./field-findings-recsys-justin-2026-07-14.md). 아래 값은 2026-07-14 09:44 KST snapshot이며 설치본은 `1.0.41`이다. 최신 코드 자체의 회귀로 단정하지 않고, version skew와 hook-only worker lifecycle을 분리 진단한다.
+
+| Area | Metric | Field baseline | Interpretation |
+|---|---|---:|---|
+| Injection | prompts with selected memory | 175 / 176 (99.4%) | abstention이 사실상 없음 |
+| Injection | selected memories per prompt | avg 3.62, max 5 | candidate 대부분이 그대로 통과 |
+| Injection | `high` confidence | 163 / 176 (92.6%) | threshold 또는 scoring distribution 포화 가능성 |
+| Knowledge pipeline | events | 2,711 across 7 stores | capture는 동작 |
+| Knowledge pipeline | L1+ / build runs / consolidated memories | 0 / 0 / 0 | failure보다 never-scheduled 가능성이 큼 |
+| Helpfulness proxy | average score | 0.887 | 천장 효과로 gate 부적합 |
+| Helpfulness proxy | session continued / re-asked | 99% / 73% | 상충 신호가 고득점에 함께 존재 |
+| Repo identity | same-repo family stores | 4 | root/worktree/subdirectory 맥락 분절 |
+| Product surface | dashboard process | not running | CLI/API-first 우선순위 근거 |
+
+Field-derived comparison gates:
+
+- 동일한 privacy-safe shadow fixture에서 새 injection policy는 injection rate를 99.4% 대비 최소 30%p 낮추거나, 유지할 근거를 direct human labels로 입증해야 한다.
+- meta/topic-shift/no-match injection ≤5%, no-match accuracy 1.0, forbidden/cross-project hit 0.
+- pipeline은 eligible input마다 `success | not_eligible | failed` 중 하나의 run result를 남겨야 하며 무기록 상태는 허용하지 않는다.
+- legacy helpfulness는 informational baseline이다. `usefulRecallRateMin` gate는 direct label 또는 검증된 A/B outcome으로 재정의하기 전까지 자동 주입 승격에 사용하지 않는다.
+- canonical identity 적용 전후로 동일 repo alias 수와 통합 event/session aggregate를 비교하되, physical store의 자동 병합/삭제는 하지 않는다.
+
 ## 4. Fixture Inventory
 
 ### 4.1 Existing replay fixtures
@@ -254,12 +279,18 @@ Every later phase should update this table with before/after deltas.
 | LongMemEval npm script reproducibility | PASS via checked-in mini fixture and default npm script | Stay PASS; expand fixture coverage over time |
 | Public-output privacy/path leak | Automated via `check:public-output-privacy` | Stay PASS; add new public surfaces to the scan |
 | Project Health Report MVP | Implemented in current slice as aggregate CLI/API JSON | Extend toward full target schema before dashboard work |
+| Field injection rate | 99.4% (175/176, v1.0.41 field snapshot) | Same-fixture shadow rate ≥30%p reduction or direct-label justification |
+| Field meta/no-match injection | not separately classified | ≤5% |
+| Field L1+ / pipeline runs | 0 / 0 across 2,711 events | eligible inputs always produce an explicit run result; Brief readiness not blocked |
+| Legacy helpfulness avg | 0.887 with proxy ceiling | informational only; replace gate with direct labels/A/B outcome |
+| Same-repo store fragmentation | 4 stores in observed repo family | one canonical identity via safe aliases; unrelated repo merge 0 |
 
 ## 8. Recommended Next Work
 
-1. Broaden the LongMemEval smoke fixture beyond the mini checked-in sample while keeping the default npm gate deterministic.
-2. Add every new generated Markdown/API/dashboard/export surface to `check:public-output-privacy` as it ships.
-3. Extend the current `claude-memory-layer health --productivity --json` MVP toward the full target schema in `project-health-report-schema.md` before any dashboard UI work.
-4. Add Project Brief-only replay fixtures after the Brief MVP exists.
-5. Add observe/preview/enforce injection mode regression fixtures before making enforce mode a default.
-6. Add real-session anonymized exploration-cost A/B fixture set for Phase 5.
+1. Add pipeline liveness/version-skew/Brief-readiness diagnostics and reproduce the `build_runs=0` condition on controlled fixtures.
+2. Implement FR-D1 direct accounting plus privacy-bounded injection auditability; freeze a sanitized field shadow fixture.
+3. Add canonical repo identity scan/read-only aliases before write routing or multi-agent watcher work.
+4. Calibrate injection policy in observe mode against the field baseline; do not use legacy helpfulness as the promotion gate.
+5. Extend `health --productivity --json` with the new blocker/readiness fields before Dashboard work.
+6. Create Brief-only fixtures only after a healthy derived source path or approved safe fallback exists.
+7. Broaden LongMemEval and real-session A/B fixtures while keeping default gates deterministic.
