@@ -7,10 +7,10 @@
  */
 
 import * as crypto from 'node:crypto';
-import { execFileSync } from 'node:child_process';
 import * as path from 'node:path';
 
 import { hashProjectPath, normalizeProjectPath } from './project-path.js';
+import { runGit } from './git-utils.js';
 
 export type RepoIdentityKind = 'git-remote-common-dir' | 'git-common-dir' | 'path-fallback';
 
@@ -94,19 +94,6 @@ export function sanitizeGitRemote(value: string | null | undefined): string | nu
     .replace(/:/, '/');
   const safe = withoutScheme.replace(/^[^@\s/]+@/, '').replace(/\/+/g, '/').toLowerCase();
   return safe.length > 0 ? safe : null;
-}
-
-function runGit(projectPath: string, args: string[]): string | null {
-  try {
-    const output = execFileSync('git', ['-C', projectPath, ...args], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: 1_000
-    }).trim();
-    return output || null;
-  } catch {
-    return null;
-  }
 }
 
 function normalizeGitPath(value: string | null, basePath: string): string | null {
