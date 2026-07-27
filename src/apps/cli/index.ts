@@ -89,6 +89,12 @@ import {
   resolveLegacyProjectScopeRepairOptions
 } from './repair-command.js';
 import {
+  formatPruneToolObservationVectorsResult,
+  resolvePruneToolObservationVectorsOptions
+} from './prune-tool-observation-vectors-command.js';
+import { pruneToolObservationVectors } from '../../core/operations/tool-observation-vector-backfill.js';
+import { VectorStore } from '../../core/vector-store.js';
+import {
   formatRetentionAuditReport,
   resolveRetentionAuditOptions
 } from './retention-audit-command.js';
@@ -1370,6 +1376,43 @@ repairCommand
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`Repair failed: ${message}`);
+      process.exit(1);
+    }
+  });
+
+repairCommand
+  .command('prune-tool-observation-vectors')
+  .description('Delete already-embedded tool_observation vectors from LanceDB (dry-run by default)')
+  .option('-p, --project <path>', 'Project path (defaults to cwd)')
+  .option('--apply', 'Delete vectors and remove their outbox rows (default is dry-run preview)')
+  .action(async (options) => {
+    try {
+      const pruneOptions = resolvePruneToolObservationVectorsOptions(options);
+      const storagePath = getProjectStoragePath(pruneOptions.projectPath);
+      const dbPath = path.join(storagePath, 'events.sqlite');
+
+      if (pruneOptions.dryRun && !fs.existsSync(dbPath)) {
+        console.log(formatPruneToolObservationVectorsResult({
+          dryRun: true,
+          scanned: 0,
+          vectorsDeleted: 0,
+          outboxRowsRemoved: 0,
+          sampleEventIds: []
+        }));
+        return;
+      }
+
+      const store = new SQLiteEventStore(dbPath, { readonly: pruneOptions.dryRun });
+      const vectorStore = new VectorStore(path.join(storagePath, 'vectors'));
+      try {
+        const result = await pruneToolObservationVectors(store, vectorStore, { dryRun: pruneOptions.dryRun });
+        console.log(formatPruneToolObservationVectorsResult(result));
+      } finally {
+        await store.close().catch(() => undefined);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Prune tool_observation vectors failed: ${message}`);
       process.exit(1);
     }
   });

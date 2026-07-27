@@ -112,7 +112,7 @@ export class VectorStore {
 
     // Apply session filter if specified
     if (sessionId) {
-      query = query.where(`sessionId = ${toLanceSqlString(sessionId)}`);
+      query = query.where(toLanceColumnEquals('sessionId', sessionId));
     }
 
     const results = await query.toArray();
@@ -149,7 +149,28 @@ export class VectorStore {
     await this.initialize();
     const table = await this.getExistingTable(this.defaultTableName);
     if (!table) return;
-    await table.delete(`eventId = ${toLanceSqlString(eventId)}`);
+    await table.delete(toLanceColumnEquals('eventId', eventId));
+  }
+
+  /**
+   * Delete a vector by event ID from every table that could hold it: the
+   * legacy conversations table plus every `event_vectors_<embeddingVersion>`
+   * table (there can be more than one after an embedding model migration).
+   */
+  async deleteEventEverywhere(eventId: string): Promise<void> {
+    await this.initialize();
+    if (!this.db) return;
+
+    const tableNames = await this.db.tableNames();
+    const targetTables = tableNames.filter(
+      (name) => name === this.defaultTableName || name.startsWith('event_vectors_')
+    );
+
+    for (const tableName of targetTables) {
+      const table = await this.getExistingTable(tableName);
+      if (!table) continue;
+      await table.delete(toLanceColumnEquals('eventId', eventId));
+    }
   }
 
   /**
@@ -193,7 +214,7 @@ export class VectorStore {
 
     const results = await table
       .search([])
-      .where(`eventId = ${toLanceSqlString(eventId)}`)
+      .where(toLanceColumnEquals('eventId', eventId))
       .limit(1)
       .toArray();
 
@@ -310,6 +331,15 @@ function slugifyTablePart(value: string): string {
 
 function toLanceSqlString(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
+}
+
+/**
+ * Lance's predicate parser lowercases unquoted identifiers, so camelCase
+ * columns (eventId, sessionId) silently fail to match the schema unless
+ * backtick-quoted (double quotes parse without error but never match either).
+ */
+function toLanceColumnEquals(column: string, value: string): string {
+  return `\`${column}\` = ${toLanceSqlString(value)}`;
 }
 
 function isAlreadyExistsError(error: unknown): boolean {

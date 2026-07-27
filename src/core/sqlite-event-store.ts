@@ -286,13 +286,14 @@ export class SQLiteEventStore {
     return new VectorOutbox(this.db, option ?? {});
   }
 
-  private enqueueVectorOutboxEventSync(eventId: string): void {
+  private enqueueVectorOutboxEventSync(eventId: string, eventType: string): void {
     if (!this.vectorOutbox) return;
+    if (eventType === 'tool_observation') return;
     this.vectorOutbox.enqueueSync('event', eventId);
   }
 
-  private async enqueueVectorOutboxEvent(eventId: string): Promise<void> {
-    this.enqueueVectorOutboxEventSync(eventId);
+  private async enqueueVectorOutboxEvent(eventId: string, eventType: string): Promise<void> {
+    this.enqueueVectorOutboxEventSync(eventId, eventType);
   }
 
   /**
@@ -1026,7 +1027,7 @@ export class SQLiteEventStore {
 
     if (existing) {
       try {
-        await this.enqueueVectorOutboxEvent(existing.event_id);
+        await this.enqueueVectorOutboxEvent(existing.event_id, input.eventType);
       } catch (error) {
         return {
           success: false,
@@ -1076,7 +1077,7 @@ export class SQLiteEventStore {
         );
         insertDedup.run(dedupeKey, id);
         insertLevel.run(id);
-        this.enqueueVectorOutboxEventSync(id);
+        this.enqueueVectorOutboxEventSync(id, input.eventType);
       });
 
       transaction();
@@ -1425,7 +1426,7 @@ export class SQLiteEventStore {
 
         insertDedup.run(dedupeKey, ev.id);
         insertLevel.run(ev.id);
-        this.enqueueVectorOutboxEventSync(ev.id);
+        this.enqueueVectorOutboxEventSync(ev.id, ev.eventType);
         inserted++;
         insertedEvents.push(ev);
       }
@@ -1766,6 +1767,34 @@ export class SQLiteEventStore {
     return result;
   }
 
+
+  /**
+   * List event IDs for a given event type (used by maintenance/backfill tooling).
+   */
+  async listEventIdsByType(eventType: string): Promise<string[]> {
+    await this.initialize();
+    const rows = sqliteAll<{ id: string }>(
+      this.db,
+      `SELECT id FROM events WHERE event_type = ? ORDER BY timestamp ASC`,
+      [eventType]
+    );
+    return rows.map((row) => row.id);
+  }
+
+  /**
+   * Remove vector_outbox rows for the given event ids (item_kind = 'event').
+   * Used after pruning already-embedded vectors so the outbox stops reporting
+   * them as done work.
+   */
+  async removeVectorOutboxRowsForEventIds(eventIds: string[]): Promise<number> {
+    if (eventIds.length === 0) return 0;
+    await this.initialize();
+    const placeholders = eventIds.map(() => '?').join(', ');
+    const result = this.db.prepare(
+      `DELETE FROM vector_outbox WHERE item_kind = 'event' AND item_id IN (${placeholders})`
+    ).run(...eventIds);
+    return Number(result.changes ?? 0);
+  }
 
   /**
    * Repair legacy imported events that predate canonical project scope metadata.

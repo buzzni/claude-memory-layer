@@ -165,4 +165,34 @@ describe('VectorStore V2 upsert', () => {
     expect(table.delete).toHaveBeenCalledTimes(1);
     expect(table.add).not.toHaveBeenCalled();
   });
+
+  it('deleteEventEverywhere removes the event from the legacy table and every event_vectors_* table, but not unrelated tables', async () => {
+    mocks.db.tableNames.mockResolvedValue([
+      'conversations',
+      'event_vectors_v1',
+      'event_vectors_minilm_l6_v2_0',
+      'task_title_vectors_v1'
+    ]);
+    const legacyTable = mocks.makeTable('conversations');
+    const eventTableV1 = mocks.makeTable('event_vectors_v1');
+    const eventTableV2 = mocks.makeTable('event_vectors_minilm_l6_v2_0');
+    const taskTable = mocks.makeTable('task_title_vectors_v1');
+    const store = new VectorStore('/tmp/cml-vectors');
+
+    await store.deleteEventEverywhere("tool-event-'1");
+
+    expect(legacyTable.delete).toHaveBeenCalledWith("`eventId` = 'tool-event-''1'");
+    expect(eventTableV1.delete).toHaveBeenCalledWith("`eventId` = 'tool-event-''1'");
+    expect(eventTableV2.delete).toHaveBeenCalledWith("`eventId` = 'tool-event-''1'");
+    expect(taskTable.delete).not.toHaveBeenCalled();
+  });
+
+  it('deleteEventEverywhere is a no-op when no matching tables exist', async () => {
+    mocks.db.tableNames.mockResolvedValue(['task_title_vectors_v1']);
+    const taskTable = mocks.makeTable('task_title_vectors_v1');
+    const store = new VectorStore('/tmp/cml-vectors');
+
+    await expect(store.deleteEventEverywhere('event-1')).resolves.toBeUndefined();
+    expect(taskTable.delete).not.toHaveBeenCalled();
+  });
 });
