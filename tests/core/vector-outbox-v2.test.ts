@@ -166,6 +166,79 @@ describe('automatic vector_outbox enqueue boundaries', () => {
     }
   });
 
+  it('never enqueues tool_observation events for embedding, from append() or duplicates', async () => {
+    const dbPath = createTempDbPath();
+    const store = new SQLiteEventStore(dbPath, {
+      vectorOutbox: { embeddingVersion: 'auto-tool-observation-v1' }
+    });
+
+    try {
+      await store.initialize();
+      const first = await store.append({
+        eventType: 'tool_observation',
+        sessionId: 'session-tool-observation',
+        timestamp: new Date('2026-05-25T00:00:00.000Z'),
+        content: 'tool observation content that must never be embedded'
+      });
+      const duplicate = await store.append({
+        eventType: 'tool_observation',
+        sessionId: 'session-tool-observation',
+        timestamp: new Date('2026-05-25T00:00:01.000Z'),
+        content: 'tool observation content that must never be embedded'
+      });
+
+      expect(first).toMatchObject({ success: true, isDuplicate: false });
+      expect(duplicate).toMatchObject({ success: true, isDuplicate: true });
+      expect(readOutboxRows(store.getDatabase() as Database.Database)).toEqual([]);
+    } finally {
+      await store.close();
+    }
+  });
+
+  it('listEventIdsByType and removeVectorOutboxRowsForEventIds support pruning already-embedded tool_observation vectors', async () => {
+    const dbPath = createTempDbPath();
+    // Simulate events embedded before the tool_observation exclusion existed:
+    // enqueue rows directly rather than through append(), which now skips them.
+    const store = new SQLiteEventStore(dbPath, {
+      vectorOutbox: { embeddingVersion: 'legacy-v1' }
+    });
+
+    try {
+      await store.initialize();
+      const toolEvent = await store.append({
+        eventType: 'tool_observation',
+        sessionId: 'session-legacy-tool',
+        timestamp: new Date('2026-05-25T00:00:00.000Z'),
+        content: 'legacy tool observation embedded before the exclusion fix'
+      });
+      const promptEvent = await store.append({
+        eventType: 'user_prompt',
+        sessionId: 'session-legacy-tool',
+        timestamp: new Date('2026-05-25T00:00:01.000Z'),
+        content: 'user prompt should be unaffected'
+      });
+      if (!toolEvent.success || !promptEvent.success) throw new Error('append failed');
+
+      const db = store.getDatabase() as Database.Database;
+      const outbox = new VectorOutbox(db, { embeddingVersion: 'legacy-v1' });
+      outbox.enqueueSync('event', toolEvent.eventId);
+      outbox.enqueueSync('event', promptEvent.eventId);
+
+      const toolObservationIds = await store.listEventIdsByType('tool_observation');
+      expect(toolObservationIds).toEqual([toolEvent.eventId]);
+
+      const removed = await store.removeVectorOutboxRowsForEventIds(toolObservationIds);
+      expect(removed).toBe(1);
+
+      const rows = readOutboxRows(db);
+      expect(rows).toEqual([
+        { item_kind: 'event', item_id: promptEvent.eventId, embedding_version: 'legacy-v1', status: 'pending' }
+      ]);
+    } finally {
+      await store.close();
+    }
+  });
+
   it('enqueues only newly imported events and skips imported duplicates', async () => {
     const dbPath = createTempDbPath();
     const store = new SQLiteEventStore(dbPath, {
@@ -209,8 +282,7 @@ describe('automatic vector_outbox enqueue boundaries', () => {
       const rows = readOutboxRows(store.getDatabase() as Database.Database);
       expect(rows).toEqual([
         { item_kind: 'event', item_id: eventA.id, embedding_version: 'auto-import-v1', status: 'pending' },
-        { item_kind: 'event', item_id: eventB.id, embedding_version: 'auto-import-v1', status: 'pending' },
-        { item_kind: 'event', item_id: eventC.id, embedding_version: 'auto-import-v1', status: 'pending' }
+        { item_kind: 'event', item_id: eventB.id, embedding_version: 'auto-import-v1', status: 'pending' }
       ]);
       expectPrivateSentinelsAbsent(rows, [
         'PRIVATE_IMPORT_EVENT_A_SENTINEL',
