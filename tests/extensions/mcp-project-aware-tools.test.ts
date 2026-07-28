@@ -9,7 +9,9 @@ const mocks = vi.hoisted(() => {
       getRecentEvents: vi.fn(),
       getSessionHistory: vi.fn(),
       getOutboxStats: vi.fn(),
-      getStats: vi.fn()
+      getStats: vi.fn(),
+      getDistinctSessionCount: vi.fn(),
+      getEventTypeCounts: vi.fn()
     };
   }
 
@@ -43,6 +45,8 @@ function resetService(service: typeof mocks.defaultService) {
     vector: { pending: 0, processing: 0, failed: 0, total: 0, stuckProcessing: 0, oldestProcessingAgeMs: null }
   });
   service.getStats.mockReset().mockResolvedValue({ totalEvents: 0, vectorCount: 0 });
+  service.getDistinctSessionCount.mockReset().mockResolvedValue(0);
+  service.getEventTypeCounts.mockReset().mockResolvedValue([]);
 }
 
 describe('MCP project-aware memory tools', () => {
@@ -428,15 +432,10 @@ describe('MCP project-aware memory tools', () => {
       vectorCount: 3,
       levelStats: [{ level: 'working', count: 7 }]
     });
-    mocks.projectService.getRecentEvents.mockResolvedValue([
-      {
-        id: 'event-stats-1',
-        sessionId: 'session-stats-a',
-        eventType: 'user_prompt',
-        timestamp: new Date('2026-05-05T01:00:00.000Z'),
-        content: 'stats event',
-        metadata: {}
-      }
+    mocks.projectService.getDistinctSessionCount.mockResolvedValue(4);
+    mocks.projectService.getEventTypeCounts.mockResolvedValue([
+      { eventType: 'tool_observation', count: 5 },
+      { eventType: 'user_prompt', count: 2 }
     ]);
     mocks.projectService.getOutboxStats.mockResolvedValue({
       embedding: { pending: 2, processing: 1, failed: 2, retryableFailed: 1, quarantinedFailed: 1, total: 5, stuckProcessing: 1, oldestProcessingAgeMs: 600000 },
@@ -460,6 +459,12 @@ describe('MCP project-aware memory tools', () => {
     expect(text).toContain('MCP/CLI parity');
     expect(text).toContain('restart');
     expect(text).not.toContain('/repo/app');
+    // Aggregated in SQL, not by scanning a capped page of materialized events.
+    expect(text).toContain('**Total Events**: 7');
+    expect(text).toContain('**Sessions**: 4');
+    expect(text).toContain('- tool_observation: 5');
+    expect(text).toContain('- user_prompt: 2');
+    expect(mocks.projectService.getRecentEvents).not.toHaveBeenCalled();
   });
 
   it('falls back to the global memory service when projectPath is absent', async () => {

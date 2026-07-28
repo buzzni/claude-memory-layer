@@ -246,7 +246,12 @@ export class MemoryIngestService {
       }
 
       if (!result.isDuplicate) {
-        if (options.embeddingContent) {
+        // tool_observation is excluded from semantic embedding (see the V2
+        // vector_outbox skip in SQLiteEventStore.append()) — raw tool output,
+        // including full Agent/Task subagent responses, otherwise dominates
+        // and outranks actual prompts/answers in mem-search. This is the
+        // parallel legacy embedding_outbox path; it must skip the same way.
+        if (options.embeddingContent && options.operation !== 'tool_observation') {
           await this.eventStore.enqueueForEmbedding(result.eventId, options.embeddingContent);
         }
         try {

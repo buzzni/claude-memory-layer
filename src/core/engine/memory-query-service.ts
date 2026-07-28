@@ -43,6 +43,7 @@ interface QueryStore {
   getEvent(id: string): Promise<MemoryEvent | null>;
   getSessionEvents(sessionId: string): Promise<MemoryEvent[]>;
   getRecentEvents(limit: number): Promise<MemoryEvent[]>;
+  countEvents?(): Promise<number>;
 }
 
 interface QueryMaintenanceStore extends QueryStore {
@@ -179,12 +180,17 @@ export class MemoryQueryService {
     await this.initialize();
 
     const deps = this.getStatsDeps();
-    const recentEvents = await this.queryStore.getRecentEvents(10000);
+    // Counting via SQL, not by materializing rows: the old
+    // getRecentEvents(10000).length both capped the reported total at 10k and
+    // loaded every event body into memory to produce a single number.
+    const totalEvents = this.queryStore.countEvents
+      ? await this.queryStore.countEvents()
+      : (await this.queryStore.getRecentEvents(10000)).length;
     const vectorCount = await deps.vectorStore.count();
     const levelStats = await deps.graduation.getStats();
 
     return {
-      totalEvents: recentEvents.length,
+      totalEvents,
       vectorCount,
       levelStats
     };
