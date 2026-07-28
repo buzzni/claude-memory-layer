@@ -225,6 +225,28 @@ describe('MemoryIngestService ingest pipeline', () => {
     expect(store.enqueueForEmbedding).not.toHaveBeenCalled();
     expect(markdownMirror.append).not.toHaveBeenCalled();
   });
+
+  it('never enqueues tool_observation for embedding on a successful append, even though the legacy outbox path would otherwise embed every operation', async () => {
+    // SQLiteEventStore.append() already skips tool_observation for the V2
+    // vector_outbox (see the fix in append()/importEvents()); this is the
+    // parallel legacy embedding_outbox path storeToolObservation used to
+    // reach unconditionally via `embeddingContent`, which kept re-polluting
+    // semantic search with raw tool output (including full Agent/Task
+    // subagent responses) after every "fix".
+    const { service, store, markdownMirror, createToolEmbedding } = createService();
+
+    const result = await service.storeToolObservation('session-1', {
+      toolName: 'Agent',
+      success: true,
+      metadata: { turnId: 'turn-3' },
+      output: 'subagent review output'
+    } as ToolObservationPayload);
+
+    expect(result).toEqual({ success: true, eventId: 'event-1', isDuplicate: false });
+    expect(createToolEmbedding).toHaveBeenCalledOnce();
+    expect(store.enqueueForEmbedding).not.toHaveBeenCalled();
+    expect(markdownMirror.append).toHaveBeenCalledOnce();
+  });
 });
 
 describe('MemoryIngestService session summary generation', () => {
