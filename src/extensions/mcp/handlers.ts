@@ -2499,18 +2499,23 @@ function formatMcpOutboxQueueStats(stats: McpOutboxStats['embedding']): string {
 
 async function handleMemStats(memoryService: MemoryService, args: Record<string, unknown>): Promise<ToolResult> {
   const stats = await memoryService.getStats();
-  const recentEvents = await memoryService.getRecentEvents(10000);
   const outboxStats = await readMcpOutboxStats(memoryService);
   const storageView = buildMcpStatsStorageView(optionalString(args.projectPath));
 
-  const uniqueSessions = new Set(recentEvents.map(e => e.sessionId));
+  // Aggregate in SQL. Deriving these by scanning 10k materialized events both
+  // silently capped every number at the scan limit and pulled the full event
+  // bodies into memory to compute three integers.
+  const [sessionCount, eventTypeCounts] = await Promise.all([
+    memoryService.getDistinctSessionCount(),
+    memoryService.getEventTypeCounts()
+  ]);
 
   const lines: string[] = [
     '## Memory Statistics',
     '',
     `- **Total Events**: ${stats.totalEvents}`,
     `- **Total Vectors**: ${stats.vectorCount}`,
-    `- **Sessions**: ${uniqueSessions.size}`,
+    `- **Sessions**: ${sessionCount}`,
     '',
     '### Storage View / Freshness',
     '',
@@ -2529,13 +2534,8 @@ async function handleMemStats(memoryService: MemoryService, args: Record<string,
     ''
   ];
 
-  const eventsByType = recentEvents.reduce((acc, e) => {
-    acc[e.eventType] = (acc[e.eventType] || 0) + 1;
-    return acc;
-  }, {} as Record<string, number>);
-
-  for (const [type, count] of Object.entries(eventsByType)) {
-    lines.push(`- ${type}: ${count}`);
+  for (const { eventType, count } of eventTypeCounts) {
+    lines.push(`- ${eventType}: ${count}`);
   }
 
   return {

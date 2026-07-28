@@ -648,6 +648,114 @@ describe('VectorWorkerV2 runtime processing', () => {
       'session-runtime-1'
     ]);
   });
+
+  it('writes a claimed batch through a single upsert so each vector does not become its own Lance version', async () => {
+    const db = createDb();
+    const outbox = new VectorOutbox(db, { embeddingVersion: 'worker-v2' });
+    for (let i = 0; i < 5; i++) {
+      await outbox.enqueue('event', `event-batch-${i}`);
+    }
+    const upsertCalls: unknown[][] = [];
+    const contentProvider: ContentProvider = {
+      getContent: async (itemKind, itemId) => ({
+        content: `content-${itemId}`,
+        metadata: { itemKind, eventType: 'user_prompt', sessionId: 'session-batch' }
+      })
+    };
+    const embedder = { embed: async () => ({ vector: [0.1, 0.2, 0.3] }) };
+    const vectorStore = {
+      upsertBatch: async (records: unknown[]) => {
+        upsertCalls.push(records);
+      }
+    };
+    const worker = new VectorWorkerV2(
+      db,
+      vectorStore as never,
+      embedder as never,
+      { batchSize: 10, embeddingVersion: 'worker-v2' },
+      contentProvider
+    );
+
+    await expect(worker.processAll()).resolves.toBe(5);
+
+    expect(upsertCalls).toHaveLength(1);
+    expect(upsertCalls[0]).toHaveLength(5);
+    expect(db.prepare("SELECT COUNT(*) as count FROM vector_outbox WHERE status = 'done'").get())
+      .toEqual({ count: 5 });
+  });
+
+  it('fails only the job whose embedding threw and still batches the rest', async () => {
+    const db = createDb();
+    const outbox = new VectorOutbox(db, { embeddingVersion: 'worker-v2' });
+    await outbox.enqueue('event', 'event-ok-1');
+    const poisonJobId = await outbox.enqueue('event', 'event-poison');
+    await outbox.enqueue('event', 'event-ok-2');
+    const upsertCalls: unknown[][] = [];
+    const contentProvider: ContentProvider = {
+      getContent: async (itemKind, itemId) => ({
+        content: `content-${itemId}`,
+        metadata: { itemKind, eventType: 'user_prompt', sessionId: 'session-batch' }
+      })
+    };
+    const embedder = {
+      embed: async (content: string) => {
+        if (content.includes('event-poison')) throw new Error('embedding blew up');
+        return { vector: [0.1, 0.2, 0.3] };
+      }
+    };
+    const vectorStore = {
+      upsertBatch: async (records: unknown[]) => {
+        upsertCalls.push(records);
+      }
+    };
+    const worker = new VectorWorkerV2(
+      db,
+      vectorStore as never,
+      embedder as never,
+      { batchSize: 10, embeddingVersion: 'worker-v2' },
+      contentProvider
+    );
+
+    await expect(worker.processBatch()).resolves.toBe(2);
+
+    expect(upsertCalls).toHaveLength(1);
+    expect(upsertCalls[0]).toHaveLength(2);
+    const rows = db.prepare('SELECT job_id, status FROM vector_outbox ORDER BY job_id').all() as Array<{ job_id: string; status: string }>;
+    expect(rows.find(row => row.job_id === poisonJobId)?.status).not.toBe('done');
+    expect(rows.filter(row => row.status === 'done')).toHaveLength(2);
+  });
+
+  it('marks the whole batch retryable when the single batched vector write fails', async () => {
+    const db = createDb();
+    const outbox = new VectorOutbox(db, { embeddingVersion: 'worker-v2' });
+    for (let i = 0; i < 3; i++) {
+      await outbox.enqueue('event', `event-write-fail-${i}`);
+    }
+    const contentProvider: ContentProvider = {
+      getContent: async (itemKind, itemId) => ({
+        content: `content-${itemId}`,
+        metadata: { itemKind, eventType: 'user_prompt', sessionId: 'session-batch' }
+      })
+    };
+    const embedder = { embed: async () => ({ vector: [0.1, 0.2, 0.3] }) };
+    const vectorStore = {
+      upsertBatch: async () => {
+        throw new Error('lance write failed');
+      }
+    };
+    const worker = new VectorWorkerV2(
+      db,
+      vectorStore as never,
+      embedder as never,
+      { batchSize: 10, embeddingVersion: 'worker-v2' },
+      contentProvider
+    );
+
+    await expect(worker.processBatch()).resolves.toBe(0);
+
+    const rows = db.prepare('SELECT status FROM vector_outbox').all() as Array<{ status: string }>;
+    expect(rows.every(row => row.status !== 'done')).toBe(true);
+  });
 });
 
 describe('DefaultContentProvider perspective observation support', () => {

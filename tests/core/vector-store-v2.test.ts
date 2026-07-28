@@ -1,8 +1,13 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { VectorRecord } from '../../src/core/types.js';
 
 const mocks = vi.hoisted(() => {
-  const tables = new Map<string, { add: ReturnType<typeof vi.fn>; delete: ReturnType<typeof vi.fn>; countRows: ReturnType<typeof vi.fn> }>();
+  const tables = new Map<string, {
+    add: ReturnType<typeof vi.fn>;
+    delete: ReturnType<typeof vi.fn>;
+    countRows: ReturnType<typeof vi.fn>;
+    optimize: ReturnType<typeof vi.fn>;
+  }>();
 
   const makeTable = (name: string) => {
     const existing = tables.get(name);
@@ -10,7 +15,8 @@ const mocks = vi.hoisted(() => {
     const table = {
       add: vi.fn().mockResolvedValue(undefined),
       delete: vi.fn().mockResolvedValue(undefined),
-      countRows: vi.fn().mockResolvedValue(0)
+      countRows: vi.fn().mockResolvedValue(0),
+      optimize: vi.fn().mockResolvedValue({})
     };
     tables.set(name, table);
     return table;
@@ -114,7 +120,7 @@ describe('VectorStore V2 upsert', () => {
     expect(mocks.db.openTable).not.toHaveBeenCalledWith('conversations');
   });
 
-  it('batch upsert groups records by inferred versioned table and deletes each id before adding', async () => {
+  it('batch upsert groups records by inferred versioned table and deletes every id in one commit before adding', async () => {
     mocks.db.tableNames.mockResolvedValue(['entry_vectors_v1', 'task_title_vectors_v1']);
     const entryTable = mocks.makeTable('entry_vectors_v1');
     const taskTable = mocks.makeTable('task_title_vectors_v1');
@@ -128,8 +134,8 @@ describe('VectorStore V2 upsert', () => {
 
     expect(mocks.db.openTable).toHaveBeenCalledWith('entry_vectors_v1');
     expect(mocks.db.openTable).toHaveBeenCalledWith('task_title_vectors_v1');
-    expect(entryTable.delete).toHaveBeenCalledWith("id = 'entry-1'");
-    expect(entryTable.delete).toHaveBeenCalledWith("id = 'entry-2'");
+    expect(entryTable.delete).toHaveBeenCalledTimes(1);
+    expect(entryTable.delete).toHaveBeenCalledWith("id IN ('entry-1', 'entry-2')");
     expect(entryTable.add).toHaveBeenCalledWith([
       expect.objectContaining({ id: 'entry-1' }),
       expect.objectContaining({ id: 'entry-2' })
@@ -194,5 +200,74 @@ describe('VectorStore V2 upsert', () => {
 
     await expect(store.deleteEventEverywhere('event-1')).resolves.toBeUndefined();
     expect(taskTable.delete).not.toHaveBeenCalled();
+  });
+});
+
+describe('VectorStore version pruning', () => {
+  beforeEach(() => {
+    mocks.tables.clear();
+    mocks.db.tableNames.mockReset().mockResolvedValue(['conversations']);
+    mocks.db.openTable.mockClear();
+    mocks.db.createTable.mockClear();
+    mocks.connect.mockReset().mockResolvedValue(mocks.db);
+    delete process.env.CLAUDE_MEMORY_LANCE_OPTIMIZE_EVERY;
+    delete process.env.CLAUDE_MEMORY_LANCE_VERSION_RETENTION_MS;
+  });
+
+  afterEach(() => {
+    delete process.env.CLAUDE_MEMORY_LANCE_OPTIMIZE_EVERY;
+    delete process.env.CLAUDE_MEMORY_LANCE_VERSION_RETENTION_MS;
+  });
+
+  it('prunes superseded versions once the accumulated commit count crosses the threshold', async () => {
+    process.env.CLAUDE_MEMORY_LANCE_OPTIMIZE_EVERY = '4';
+    const table = mocks.makeTable('conversations');
+    const store = new VectorStore('/tmp/cml-vectors');
+
+    // Each upsert is 2 commits (one batched delete + one add).
+    await store.upsert(record({ id: 'a' }));
+    expect(table.optimize).not.toHaveBeenCalled();
+
+    await store.upsert(record({ id: 'b' }));
+    expect(table.optimize).toHaveBeenCalledTimes(1);
+    expect(table.optimize).toHaveBeenCalledWith({ cleanupOlderThan: expect.any(Date) });
+
+    // Counter resets, so the next crossing needs another 4 commits.
+    await store.upsert(record({ id: 'c' }));
+    expect(table.optimize).toHaveBeenCalledTimes(1);
+  });
+
+  it('never prunes when the interval is disabled', async () => {
+    process.env.CLAUDE_MEMORY_LANCE_OPTIMIZE_EVERY = '0';
+    const table = mocks.makeTable('conversations');
+    const store = new VectorStore('/tmp/cml-vectors');
+
+    for (let i = 0; i < 10; i++) {
+      await store.upsert(record({ id: `id-${i}` }));
+    }
+
+    expect(table.optimize).not.toHaveBeenCalled();
+  });
+
+  it('keeps the write successful when pruning fails', async () => {
+    process.env.CLAUDE_MEMORY_LANCE_OPTIMIZE_EVERY = '1';
+    const table = mocks.makeTable('conversations');
+    table.optimize.mockRejectedValue(new Error('optimize unavailable'));
+    const store = new VectorStore('/tmp/cml-vectors');
+
+    await expect(store.upsert(record())).resolves.toBeUndefined();
+    expect(table.add).toHaveBeenCalledTimes(1);
+  });
+
+  it('optimizeAll prunes every table so pre-existing version bloat can be reclaimed', async () => {
+    mocks.db.tableNames.mockResolvedValue(['conversations', 'event_vectors_v1']);
+    const legacyTable = mocks.makeTable('conversations');
+    const eventTable = mocks.makeTable('event_vectors_v1');
+    const store = new VectorStore('/tmp/cml-vectors');
+
+    await store.optimizeAll();
+
+    expect(legacyTable.optimize).toHaveBeenCalledTimes(1);
+    expect(eventTable.optimize).toHaveBeenCalledTimes(1);
   });
 });

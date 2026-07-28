@@ -21,6 +21,18 @@ type LanceTable = lancedb.Table;
 const MAX_LANCE_COMMIT_ATTEMPTS = 3;
 const LANCE_COMMIT_RETRY_BASE_DELAY_MS = 20;
 
+/**
+ * Every Lance write is a new dataset version, and each version manifest embeds
+ * the full fragment list — so N un-pruned versions cost O(N^2) on disk. Without
+ * periodic pruning a busy project accumulates gigabytes of manifests for a few
+ * hundred megabytes of vectors. Optimize on a commit counter instead.
+ */
+const DEFAULT_OPTIMIZE_EVERY_N_COMMITS = 50;
+const DEFAULT_VERSION_RETENTION_MS = 60 * 60 * 1000;
+
+/** Lance parses the whole predicate string, so chunk oversized `id IN (...)` deletes. */
+const MAX_DELETE_PREDICATE_IDS = 200;
+
 type VectorRow = {
   id: string;
   eventId: string;
@@ -35,6 +47,7 @@ type VectorRow = {
 export class VectorStore {
   private db: lancedb.Connection | null = null;
   private readonly tableCache = new Map<string, LanceTable>();
+  private readonly commitsSinceOptimize = new Map<string, number>();
   private readonly defaultTableName = 'conversations';
 
   constructor(private dbPath: string) {}
@@ -250,13 +263,15 @@ export class VectorStore {
     rows: VectorRow[]
   ): Promise<void> {
     let table = initialTable;
+    const deletePredicates = buildIdDeletePredicates(rows.map(row => row.id));
 
     for (let attempt = 1; attempt <= MAX_LANCE_COMMIT_ATTEMPTS; attempt++) {
       try {
-        for (const row of rows) {
-          await table.delete(`id = ${toLanceSqlString(row.id)}`);
+        for (const predicate of deletePredicates) {
+          await table.delete(predicate);
         }
         await table.add(rows);
+        await this.maybeOptimize(tableName, table, deletePredicates.length + 1);
         return;
       } catch (error) {
         if (!isLanceCommitConflict(error) || attempt === MAX_LANCE_COMMIT_ATTEMPTS) {
@@ -268,6 +283,38 @@ export class VectorStore {
         table = await this.openTable(tableName);
       }
     }
+  }
+
+  /**
+   * Compact fragments and prune superseded versions across every table.
+   *
+   * Writers call this automatically via the commit counter; expose it so
+   * maintenance paths can reclaim space accumulated before that existed.
+   */
+  async optimizeAll(): Promise<void> {
+    await this.initialize();
+    if (!this.db) return;
+
+    for (const tableName of await this.db.tableNames()) {
+      const table = await this.getExistingTable(tableName);
+      if (!table) continue;
+      this.commitsSinceOptimize.set(tableName, 0);
+      await optimizeTable(table);
+    }
+  }
+
+  private async maybeOptimize(tableName: string, table: LanceTable, commits: number): Promise<void> {
+    const threshold = resolveOptimizeCommitInterval();
+    if (threshold <= 0) return;
+
+    const pending = (this.commitsSinceOptimize.get(tableName) ?? 0) + commits;
+    if (pending < threshold) {
+      this.commitsSinceOptimize.set(tableName, pending);
+      return;
+    }
+
+    this.commitsSinceOptimize.set(tableName, 0);
+    await optimizeTable(table);
   }
 
   private async getExistingTable(tableName: string): Promise<LanceTable | null> {
@@ -318,6 +365,52 @@ export class VectorStore {
       timestamp: record.timestamp,
       metadata: JSON.stringify(record.metadata || {})
     };
+  }
+}
+
+/**
+ * One `id IN (...)` delete per chunk instead of one delete per row: each Lance
+ * delete is its own commit, so per-row deletes made a 32-record batch cost 33
+ * versions instead of 2.
+ */
+function buildIdDeletePredicates(ids: string[]): string[] {
+  if (ids.length === 0) return [];
+  if (ids.length === 1) return [`id = ${toLanceSqlString(ids[0])}`];
+
+  const predicates: string[] = [];
+  for (let offset = 0; offset < ids.length; offset += MAX_DELETE_PREDICATE_IDS) {
+    const chunk = ids.slice(offset, offset + MAX_DELETE_PREDICATE_IDS);
+    predicates.push(`id IN (${chunk.map(toLanceSqlString).join(', ')})`);
+  }
+  return predicates;
+}
+
+function resolveOptimizeCommitInterval(): number {
+  const raw = process.env.CLAUDE_MEMORY_LANCE_OPTIMIZE_EVERY;
+  if (raw === undefined) return DEFAULT_OPTIMIZE_EVERY_N_COMMITS;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_OPTIMIZE_EVERY_N_COMMITS;
+}
+
+function resolveVersionRetentionMs(): number {
+  const raw = process.env.CLAUDE_MEMORY_LANCE_VERSION_RETENTION_MS;
+  if (raw === undefined) return DEFAULT_VERSION_RETENTION_MS;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_VERSION_RETENTION_MS;
+}
+
+/**
+ * Best-effort maintenance: a failed compaction must never fail the write that
+ * triggered it, and older lancedb builds have no `optimize` at all.
+ */
+async function optimizeTable(table: LanceTable): Promise<void> {
+  const optimize = (table as { optimize?: (options?: { cleanupOlderThan?: Date }) => Promise<unknown> }).optimize;
+  if (typeof optimize !== 'function') return;
+
+  try {
+    await optimize.call(table, { cleanupOlderThan: new Date(Date.now() - resolveVersionRetentionMs()) });
+  } catch {
+    // Compaction is opportunistic; retry on the next threshold crossing.
   }
 }
 

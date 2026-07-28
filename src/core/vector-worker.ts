@@ -495,46 +495,74 @@ export class VectorWorkerV2 {
       return 0;
     }
 
+    // Embed per job so one bad item can't poison the batch, but write the
+    // whole batch in a single upsert: every per-record upsert was its own pair
+    // of Lance commits, and un-pruned versions cost O(N^2) on disk.
+    const embedded: Array<{ job: OutboxJob; record: VectorRecord }> = [];
+    const skipped: OutboxJob[] = [];
     let successCount = 0;
 
     for (const job of jobs) {
       try {
-        await this.processJob(job);
+        const record = await this.buildRecord(job);
+        if (record) {
+          embedded.push({ job, record });
+        } else {
+          skipped.push(job);
+        }
+      } catch (error) {
+        await this.markJobFailed(job, error);
+      }
+    }
+
+    if (embedded.length > 0) {
+      try {
+        await this.vectorStore.upsertBatch(embedded.map(entry => entry.record));
+      } catch (error) {
+        for (const entry of embedded) {
+          await this.markJobFailed(entry.job, error);
+        }
+        embedded.length = 0;
+      }
+    }
+
+    for (const job of [...skipped, ...embedded.map(entry => entry.job)]) {
+      try {
         await this.outbox.markDone(job.jobId);
         successCount++;
       } catch (error) {
-        // Only try to mark as failed if not stopping (DB might be closed)
-        if (!this.stopping) {
-          try {
-            const errorMessage = error instanceof Error ? error.message : String(error);
-            await this.outbox.markFailed(job.jobId, errorMessage);
-          } catch {
-            // Database might be closed during shutdown, ignore
-          }
-        }
+        await this.markJobFailed(job, error);
       }
     }
 
     return successCount;
   }
 
+  private async markJobFailed(job: OutboxJob, error: unknown): Promise<void> {
+    // Only try to mark as failed if not stopping (DB might be closed)
+    if (this.stopping) return;
+    try {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      await this.outbox.markFailed(job.jobId, errorMessage);
+    } catch {
+      // Database might be closed during shutdown, ignore
+    }
+  }
+
   /**
-   * Process a single job
+   * Resolve and embed a single job. Returns null when the item no longer
+   * exists, which is a skip (marked done) rather than a failure.
    */
-  private async processJob(job: OutboxJob): Promise<void> {
-    // Get content
+  private async buildRecord(job: OutboxJob): Promise<VectorRecord | null> {
     const contentData = await this.contentProvider.getContent(job.itemKind, job.itemId);
 
     if (!contentData) {
-      // Item not found, mark as done (skip)
-      return;
+      return null;
     }
 
-    // Generate embedding
     const embedding = await this.embedder.embed(contentData.content);
 
-    // Upsert to vector store
-    const record: VectorRecord = {
+    return {
       id: `${job.itemKind}_${job.itemId}_${job.embeddingVersion}`,
       eventId: job.itemKind === 'event' ? job.itemId : '',
       sessionId: (contentData.metadata.sessionId as string) ?? '',
@@ -547,9 +575,6 @@ export class VectorWorkerV2 {
         embeddingVersion: job.embeddingVersion
       }
     };
-
-    // Use idempotent upsert (delete + add)
-    await this.vectorStore.upsertBatch([record]);
   }
 
   /**

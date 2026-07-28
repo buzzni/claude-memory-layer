@@ -61,7 +61,8 @@ function createService() {
     getEventsByTurn: vi.fn(async () => events),
     countSessionTurns: vi.fn(async () => 11),
     backfillTurnIds: vi.fn(async () => 13),
-    deleteSessionEvents: vi.fn(async () => 17)
+    deleteSessionEvents: vi.fn(async () => 17),
+    countEvents: vi.fn(async () => 31)
   };
   const vectorStore = {
     count: vi.fn(async () => 19)
@@ -118,15 +119,25 @@ describe('MemoryQueryService', () => {
     const { service, initialize, queryStore, vectorStore, graduation } = createService();
 
     await expect(service.getStats()).resolves.toEqual({
-      totalEvents: 1,
+      totalEvents: 31,
       vectorCount: 19,
       levelStats: [{ level: 'working', count: 23 }]
     });
 
     expect(initialize).toHaveBeenCalledOnce();
-    expect(queryStore.getRecentEvents).toHaveBeenCalledWith(10000);
+    // Counted in SQL, not by materializing a capped page of events.
+    expect(queryStore.countEvents).toHaveBeenCalledOnce();
+    expect(queryStore.getRecentEvents).not.toHaveBeenCalled();
     expect(vectorStore.count).toHaveBeenCalledOnce();
     expect(graduation.getStats).toHaveBeenCalledOnce();
+  });
+
+  it('falls back to scanning recent events for the total when the store cannot count', async () => {
+    const { service, queryStore } = createService();
+    delete (queryStore as { countEvents?: unknown }).countEvents;
+
+    await expect(service.getStats()).resolves.toMatchObject({ totalEvents: 1 });
+    expect(queryStore.getRecentEvents).toHaveBeenCalledWith(10000);
   });
 
   it('keeps lightweight read methods usable with only the narrow query store', async () => {
