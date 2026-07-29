@@ -93,6 +93,14 @@ import {
   resolvePruneToolObservationVectorsOptions
 } from './prune-tool-observation-vectors-command.js';
 import { pruneToolObservationVectors } from '../../core/operations/tool-observation-vector-backfill.js';
+import {
+  formatAutoHealToolObservationVectorsResult,
+  resolveAutoHealToolObservationVectorsOptions
+} from './auto-heal-tool-observation-vectors-command.js';
+import {
+  needsToolObservationVectorAutoHeal,
+  runToolObservationVectorAutoHeal
+} from '../../core/operations/tool-observation-vector-auto-heal.js';
 import { VectorStore } from '../../core/vector-store.js';
 import {
   formatRetentionAuditReport,
@@ -1414,6 +1422,60 @@ repairCommand
       const message = error instanceof Error ? error.message : String(error);
       console.error(`Prune tool_observation vectors failed: ${message}`);
       process.exit(1);
+    }
+  });
+
+/**
+ * Internal command: SessionStart spawns this detached (see session-start.ts)
+ * so the one-time tool_observation vector cleanup runs out-of-process,
+ * isolated from the hook's own DB handles and 30s watchdog. Also safe and
+ * idempotent to run manually — the flag check makes repeat invocations a
+ * fast no-op once healed.
+ */
+repairCommand
+  .command('auto-heal-tool-observation-vectors')
+  .description('Internal: self-triggered one-time cleanup of already-embedded tool_observation vectors')
+  .option('-p, --project <path>', 'Project path (defaults to cwd)')
+  .option('--lock-path <path>', 'Override auto-heal lock path (advanced)')
+  .action(async (options) => {
+    let store: SQLiteEventStore | undefined;
+    let workerLock: WorkerLock | undefined;
+
+    try {
+      const healOptions = resolveAutoHealToolObservationVectorsOptions(options);
+      const storagePath = getProjectStoragePath(healOptions.projectPath);
+      const dbPath = path.join(storagePath, 'events.sqlite');
+
+      if (!fs.existsSync(dbPath)) {
+        console.log(formatAutoHealToolObservationVectorsResult({ status: 'no-store' }));
+        return;
+      }
+
+      const lockPath = healOptions.lockPath ?? path.join(storagePath, 'auto-heal.lock');
+      workerLock = new WorkerLock(lockPath);
+      const lockResult = workerLock.acquire();
+      if (!lockResult.acquired) {
+        console.log(formatAutoHealToolObservationVectorsResult({ status: 'lock-busy' }));
+        workerLock = undefined;
+        return;
+      }
+
+      store = new SQLiteEventStore(dbPath);
+      if (!(await needsToolObservationVectorAutoHeal(store))) {
+        console.log(formatAutoHealToolObservationVectorsResult({ status: 'already-healed' }));
+        return;
+      }
+
+      const vectorStore = new VectorStore(path.join(storagePath, 'vectors'));
+      const result = await runToolObservationVectorAutoHeal(store, vectorStore);
+      console.log(formatAutoHealToolObservationVectorsResult({ status: 'healed', result }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Auto-heal tool_observation vectors failed: ${message}`);
+      process.exitCode = 1;
+    } finally {
+      if (store) await store.close().catch(() => undefined);
+      if (workerLock) workerLock.release();
     }
   });
 
