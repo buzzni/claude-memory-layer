@@ -7,6 +7,7 @@ import { randomUUID } from 'crypto';
 import { getLightweightMemoryService } from '../../../services/memory-service.js';
 import { registerSession } from '../../../core/registry/session-registry.js';
 import { ensureDaemonRunning } from './semantic-daemon-client.js';
+import { spawnToolObservationVectorAutoHealIfNeeded } from './tool-observation-vector-auto-heal-client.js';
 import { readStdin } from './hook-runtime.js';
 import { formatClaudeContextHookOutput, isHookEvaluationMode } from './hook-output.js';
 import type { SessionStartInput, SessionStartOutput } from '../../../core/types.js';
@@ -28,6 +29,13 @@ export async function main(): Promise<string> {
   // can process any pending embedding_outbox items immediately.
   ensureDaemonRunning().catch(() => {
     // Ignore - daemon will start on first prompt if needed
+  });
+
+  // Self-heal stores that embedded tool_observation vectors before the
+  // ingest-side fix existed. Cheap no-op once healed; the real cleanup (if
+  // needed) runs detached so a large backlog can't block this hook.
+  spawnToolObservationVectorAutoHealIfNeeded(input.cwd).catch(() => {
+    // Best-effort; next session's cheap check will retry.
   });
 
   // Use lightweight service to avoid starting background workers in hook process
