@@ -155,7 +155,7 @@ describe('MemoryQueryService', () => {
     await expect(service.getRecentEvents(2)).resolves.toBe(events);
 
     expect(initialize).toHaveBeenCalledTimes(3);
-    expect(queryStore.keywordSearch).toHaveBeenCalledWith('query', 3);
+    expect(queryStore.keywordSearch).toHaveBeenCalledWith('query', 3, { includeToolObservations: undefined });
     expect(queryStore.getSessionEvents).toHaveBeenCalledWith('session-1');
     expect(queryStore.getRecentEvents).toHaveBeenCalledWith(2);
   });

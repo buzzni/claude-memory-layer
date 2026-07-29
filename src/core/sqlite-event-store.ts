@@ -2987,8 +2987,21 @@ export class SQLiteEventStore {
    * Fast keyword search using FTS5
    * Returns events matching the search query, ranked by relevance
    */
-  async keywordSearch(query: string, limit: number = 10): Promise<Array<{event: MemoryEvent; rank: number}>> {
+  async keywordSearch(
+    query: string,
+    limit: number = 10,
+    options?: { includeToolObservations?: boolean }
+  ): Promise<Array<{event: MemoryEvent; rank: number}>> {
     await this.initialize();
+
+    // tool_observation events typically outnumber prompts/answers several-fold
+    // (they are kept as events but excluded from embedding), so an unfiltered
+    // FTS query returns mostly raw tool output and crowds answer-type events
+    // out of the limit window. Excluded by default to mirror the embedding
+    // policy; callers that intentionally want tool evidence (episode seeding,
+    // explicit eventType filters) opt in.
+    const includeToolObservations = options?.includeToolObservations === true;
+    const toolObservationSql = includeToolObservations ? '' : `AND e.event_type != 'tool_observation'`;
 
     // Escape special FTS5 characters and prepare search terms
     const searchTerms = query
@@ -3010,6 +3023,7 @@ export class SQLiteEventStore {
          JOIN events e ON e.id = fts.event_id
          WHERE events_fts MATCH ?
            AND ${notActiveQuarantinedSql('e.metadata')}
+           ${toolObservationSql}
          ORDER BY fts.rank
          LIMIT ?`,
         [searchTerms, limit]
@@ -3028,6 +3042,7 @@ export class SQLiteEventStore {
         `SELECT *, 0 as rank FROM events
          WHERE content LIKE ?
            AND ${notActiveQuarantinedSql()}
+           ${includeToolObservations ? '' : `AND event_type != 'tool_observation'`}
          ORDER BY timestamp DESC
          LIMIT ?`,
         [likePattern, limit]

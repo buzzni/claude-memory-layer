@@ -826,6 +826,9 @@ export class Retriever {
     const recent = await this.eventStore.getRecentEvents(input.limit * 4);
     const tokens = this.tokenize(query);
     const filtered = recent
+      // Match the FTS lane's default: raw tool output outnumbers answer-type
+      // events several-fold and would crowd them out of the limit window.
+      .filter((e) => e.eventType !== 'tool_observation')
       .filter((e) => (input.sessionId ? e.sessionId === input.sessionId : true))
       .map((e) => ({ e, overlap: this.keywordOverlap(tokens, this.tokenize(e.content)) }))
       .filter((r) => r.overlap > 0)

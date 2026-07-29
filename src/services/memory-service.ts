@@ -281,7 +281,7 @@ export class MemoryService {
    */
   async keywordSearch(
     query: string,
-    options?: { topK?: number; minScore?: number }
+    options?: { topK?: number; minScore?: number; includeToolObservations?: boolean }
   ): Promise<Array<{event: MemoryEvent; score: number}>> {
     return this.queryService.keywordSearch(query, options);
   }

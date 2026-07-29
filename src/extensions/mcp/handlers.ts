@@ -1129,6 +1129,17 @@ async function retrieveMcpMemories(
   options: McpMemoryRetrievalOptions
 ): Promise<McpMemoryRetrievalResult> {
   const fetchTopK = Math.max(options.topK, options.fetchTopK ?? options.topK);
+
+  // Explicit tool_observation queries need their own lane: those events are
+  // excluded from both embedding (no semantic hits) and the default keyword
+  // lane, so the hybrid path can no longer return them at all.
+  if (options.eventType === 'tool_observation') {
+    const candidates = options.sessionId
+      ? rankSessionKeywordMatches(query, await memoryService.getSessionHistory(options.sessionId), fetchTopK)
+      : await memoryService.keywordSearch(query, { topK: fetchTopK, includeToolObservations: true });
+    return { memories: selectMcpMemoryResults(candidates, options.topK, options.eventType) };
+  }
+
   try {
     const retrieveOptions = {
       topK: fetchTopK,

@@ -38,7 +38,7 @@ export interface MemoryStats {
 }
 
 interface QueryStore {
-  keywordSearch(query: string, topK: number): Promise<RankedKeywordResult[]>;
+  keywordSearch(query: string, topK: number, options?: { includeToolObservations?: boolean }): Promise<RankedKeywordResult[]>;
   searchGraduatedEvidence?(query: string, limit: number): Promise<GraduatedEvidenceResult[]>;
   getEvent(id: string): Promise<MemoryEvent | null>;
   getSessionEvents(sessionId: string): Promise<MemoryEvent[]>;
@@ -86,11 +86,13 @@ export class MemoryQueryService {
 
   async keywordSearch(
     query: string,
-    options?: { topK?: number; minScore?: number }
+    options?: { topK?: number; minScore?: number; includeToolObservations?: boolean }
   ): Promise<Array<{ event: MemoryEvent; score: number }>> {
     await this.initialize();
 
-    const results = await this.queryStore.keywordSearch(query, options?.topK ?? 10);
+    const results = await this.queryStore.keywordSearch(query, options?.topK ?? 10, {
+      includeToolObservations: options?.includeToolObservations
+    });
     if (results.length === 0) return [];
 
     // FTS5/BM25 ranks are ordered ascending: the smallest value is the best.
