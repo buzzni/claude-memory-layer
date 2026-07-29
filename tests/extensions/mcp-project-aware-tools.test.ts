@@ -180,6 +180,40 @@ describe('MCP project-aware memory tools', () => {
     expect(text).not.toContain('user prompt result should be filtered out');
   });
 
+  it('routes explicit tool_observation mem-search through the opted-in keyword lane instead of the hybrid path', async () => {
+    // tool_observation is excluded from embedding and from the default
+    // keyword lane, so the hybrid path can never return it; the handler must
+    // use the explicit keyword opt-in or eventType filtering silently returns
+    // nothing.
+    mocks.projectService.keywordSearch.mockResolvedValue([
+      {
+        score: 0.7,
+        event: {
+          id: 'event-tool-1',
+          sessionId: 'session-tools',
+          eventType: 'tool_observation',
+          timestamp: new Date('2026-05-05T00:00:00.000Z'),
+          content: '{"toolName":"Bash","toolOutput":"explicit tool evidence stays reachable"}',
+          metadata: {}
+        }
+      }
+    ]);
+
+    const result = await handleToolCall('mem-search', {
+      query: 'tool evidence',
+      projectPath: '/repo/app',
+      eventType: 'tool_observation'
+    });
+
+    const text = String(result.content[0]?.text ?? '');
+    expect(result.isError).not.toBe(true);
+    expect(mocks.projectService.retrieveMemories).not.toHaveBeenCalled();
+    expect(mocks.projectService.keywordSearch).toHaveBeenCalledWith('tool evidence', expect.objectContaining({
+      includeToolObservations: true
+    }));
+    expect(text).toContain('explicit tool evidence stays reachable');
+  });
+
   it('normalizes invalid mem-search topK values before retrieval', async () => {
     mocks.projectService.retrieveMemories.mockResolvedValue({ memories: [] });
 

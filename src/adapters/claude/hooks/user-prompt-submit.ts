@@ -481,7 +481,13 @@ export async function main(): Promise<string> {
       if (shouldUseKeywordFallback) {
         let usedFallbackFloor = false;
         const allKeywordResults = await memoryService.keywordSearch(retrievalQuery, {
-          topK: MAX_EPISODE_SEED_CANDIDATES
+          topK: MAX_EPISODE_SEED_CANDIDATES,
+          // Episode seeding intentionally accepts tool_observation matches:
+          // a tool call from the same turn is often the strongest anchor for
+          // finding that turn's answer (selectHookEpisodeSeeds handles the
+          // type-aware ranking). This opt-in preserves that behavior now that
+          // keywordSearch excludes tool_observation by default.
+          includeToolObservations: true
         });
         let results = allKeywordResults.filter((result) => result.score >= minScore);
 
