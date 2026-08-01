@@ -48,7 +48,11 @@ import {
   type MemoryAction,
   type MemoryCheckpoint,
   type MemoryFacetAssignment,
-  type PerspectiveSessionActorBackfillResult
+  type PerspectiveSessionActorBackfillResult,
+  formatRedactionPlan,
+  planMarkdownRedaction,
+  planSqliteRedaction,
+  requeueEmbeddings
 } from '../../core/operations/index.js';
 import {
   CreateCheckpointInputSchema,
@@ -1421,6 +1425,61 @@ repairCommand
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`Prune tool_observation vectors failed: ${message}`);
+      process.exit(1);
+    }
+  });
+
+repairCommand
+  .command('redact-credentials')
+  .description('Redact credentials already stored in SQLite, the markdown mirror and vectors (dry-run by default)')
+  .option('-p, --project <path>', 'Project path (defaults to cwd)')
+  .option('--apply', 'Write the redactions (default is a dry-run preview)')
+  .action(async (options) => {
+    try {
+      const projectPath: string = options.project ?? process.cwd();
+      const dryRun = options.apply !== true;
+      const storagePath = getProjectStoragePath(projectPath);
+      const dbPath = path.join(storagePath, 'events.sqlite');
+
+      if (!fs.existsSync(dbPath)) {
+        console.log(formatRedactionPlan({
+          dryRun, rowChanges: [], fileChanges: [],
+          affectedEventIds: [], vectorsDeleted: 0, embeddingsRequeued: 0
+        }));
+        return;
+      }
+
+      const store = new SQLiteEventStore(dbPath, { readonly: dryRun });
+      let vectorsDeleted = 0;
+      let embeddingsRequeued = 0;
+      try {
+        await store.initialize();
+        const db = store.getDatabase();
+        const { rowChanges, affectedEventIds } = planSqliteRedaction(db, { apply: !dryRun });
+        const fileChanges = planMarkdownRedaction(storagePath, { apply: !dryRun });
+
+        if (!dryRun && affectedEventIds.length > 0) {
+          // Lance rows cannot be edited in place, so the stale vectors are
+          // dropped and the redacted content is queued for re-embedding.
+          const vectorStore = new VectorStore(path.join(storagePath, 'vectors'));
+          for (const eventId of affectedEventIds) {
+            try {
+              await vectorStore.deleteEventEverywhere(eventId);
+              vectorsDeleted += 1;
+            } catch { /* a missing vector is not an error here */ }
+          }
+          embeddingsRequeued = requeueEmbeddings(db, affectedEventIds, { apply: true });
+        }
+
+        console.log(formatRedactionPlan({
+          dryRun, rowChanges, fileChanges, affectedEventIds, vectorsDeleted, embeddingsRequeued
+        }));
+      } finally {
+        await store.close().catch(() => undefined);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Redact credentials failed: ${message}`);
       process.exit(1);
     }
   });

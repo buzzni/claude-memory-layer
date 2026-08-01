@@ -128,3 +128,32 @@ describe('vendor-prefixed token redaction', () => {
     expect(applyPrivacyFilter(benign, privacy).content).toBe(benign);
   });
 });
+
+describe('source code is not mistaken for credentials', () => {
+  // Found on live data: `getAccessToken: () => storage.get(…)` was rewritten to
+  // `getAccess[REDACTED] => storage.get(…)`, corrupting 22 stored discussions
+  // of real source files. The keyword rules had no word boundary, so the
+  // `Token:` inside a camelCase identifier looked like `token=value`.
+  it.each([
+    ['type annotation', 'export async function sync(accessToken: Promise<CloudSyncResult>)'],
+    ['arrow function', 'authInterceptors(base, { getAccessToken: () => storage.get(K.ACCESS_TOKEN) })'],
+    ['destructuring', 'const { mode, cloudAccessToken } = useAppModeStore((s) => ({ mode: s.mode, cloudAccessToken }))'],
+    ['interface fields', 'interface Cfg { clientSecret: string; apiKey: string }'],
+    ['optional fields', 'type T = { apiKey?: string; token?: number }'],
+    ['quoted type name', 'apiKey: "string"'],
+    ['prose', 'token 만료 시간을 어떻게 늘리지?']
+  ])('leaves %s untouched', (_label, source) => {
+    expect(applyPrivacyFilter(source, privacy).content).toBe(source);
+  });
+
+  // The discriminator is the value, not the key: a camelCase key with a long
+  // quoted literal is still a credential.
+  it.each([
+    ['double-quoted jwt', 'accessToken: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"'],
+    ['single-quoted secret', "clientSecret: 'abc123def456ghi'"],
+    ['snake_case assignment', 'access_token=eyJhbGciOiJIUzI1NiJ9abc'],
+    ['bare password', 'password: Zt9wQx2027@']
+  ])('still redacts %s', (_label, source) => {
+    expect(applyPrivacyFilter(source, privacy).content).toContain('[REDACTED]');
+  });
+});

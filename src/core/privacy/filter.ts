@@ -19,15 +19,39 @@ export interface FilterResult {
 }
 
 // Sensitive data patterns
+/**
+ * Rejects values that are code rather than a credential: an already-redacted
+ * marker, a type annotation, an arrow function, or an opening bracket.
+ */
+const NOT_A_SECRET_VALUE =
+  '(?!\\[REDACTED\\])(?![({\\[]|=>|\\s*$)'
+  // The optional quote matters: `apiKey: "string"` is still a type, not a key.
+  + '(?![\'"]?(?:string|number|boolean|any|unknown|void|never|null|undefined|true|false'
+  + '|Promise|Record|Array|Partial|Readonly)\\b)';
+
 const SENSITIVE_PATTERNS = [
   // Credential-bearing URLs/connection strings with userinfo before the host.
   // Redact the whole URI so usernames, credentials, hosts, paths, and query
   // params do not leak either.
   /\b[a-z][a-z0-9+.-]*:\/\/[^\s'"`<>/@]+@[^\s'"`<>]+/gi,
-  /(?:[\w.-]+[-_])?password\s*[:=]\s*(?!\[REDACTED\])['"]?[^\s'"]+/gi,
-  /(?:[\w.-]+[-_])?api[-_]?key\s*[:=]\s*(?!\[REDACTED\])['"]?[^\s'"]+/gi,
-  /(?:[\w.-]+[-_])?secret\s*[:=]\s*(?!\[REDACTED\])['"]?[^\s'"]+/gi,
-  /(?:[\w.-]+[-_])?token\s*[:=]\s*(?!\[REDACTED\])['"]?[^\s'"]+/gi,
+  // Two guards keep source code out of these rules. Without them a stored
+  // discussion of real code gets mangled — `getAccessToken: () => …` became
+  // `getAccess[REDACTED] => …` on live data.
+  //
+  // The leading lookbehind rejects camelCase identifiers (`getAccessToken:`),
+  // while underscore/dash forms (`access_token=…`) still match through the
+  // optional prefix group. The trailing guard rejects values that are plainly
+  // code rather than a secret: a type annotation, an arrow function, or an
+  // opening bracket.
+  new RegExp(`(?<![A-Za-z0-9])(?:[\\w.-]+[-_])?password\\s*[:=]\\s*${NOT_A_SECRET_VALUE}['"]?[^\\s'"]+`, 'gi'),
+  new RegExp(`(?<![A-Za-z0-9])(?:[\\w.-]+[-_])?api[-_]?key\\s*[:=]\\s*${NOT_A_SECRET_VALUE}['"]?[^\\s'"]+`, 'gi'),
+  new RegExp(`(?<![A-Za-z0-9])(?:[\\w.-]+[-_])?secret\\s*[:=]\\s*${NOT_A_SECRET_VALUE}['"]?[^\\s'"]+`, 'gi'),
+  new RegExp(`(?<![A-Za-z0-9])(?:[\\w.-]+[-_])?token\\s*[:=]\\s*${NOT_A_SECRET_VALUE}['"]?[^\\s'"]+`, 'gi'),
+  // camelCase keys are excluded above because `accessToken: () => …` is code.
+  // But `accessToken: "eyJhbGciOi…"` is a real credential, and the difference
+  // is the value, not the key. A quoted, long, secret-shaped literal is the
+  // one camelCase form worth redacting.
+  /[A-Za-z0-9_.-]*(?:password|secret|token|api[-_]?key)\s*[:=]\s*['"][A-Za-z0-9._\-+/=]{12,}['"]/gi,
   /bearer\s+[a-zA-Z0-9\-_.]+/gi,
   /AWS[_-]?ACCESS[_-]?KEY[_-]?ID\s*[:=]\s*['"]?[A-Z0-9]+/gi,
   /AWS[_-]?SECRET[_-]?ACCESS[_-]?KEY\s*[:=]\s*['"]?[^\s'"]+/gi,
