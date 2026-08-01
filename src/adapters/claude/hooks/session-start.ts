@@ -6,7 +6,8 @@
 import { randomUUID } from 'crypto';
 import { getLightweightMemoryService } from '../../../services/memory-service.js';
 import { registerSession } from '../../../core/registry/session-registry.js';
-import { ensureDaemonRunning } from './semantic-daemon-client.js';
+import { ensureDaemonRunning, scheduleSessionSummary } from './semantic-daemon-client.js';
+import { isLlmSummaryEnabled } from '../../llm/session-summary-llm.js';
 import { spawnToolObservationVectorAutoHealIfNeeded } from './tool-observation-vector-auto-heal-client.js';
 import { readStdin } from './hook-runtime.js';
 import { formatClaudeContextHookOutput, isHookEvaluationMode } from './hook-output.js';
@@ -49,8 +50,22 @@ export async function main(): Promise<string> {
 
     // Backfill session summaries for recent sessions that ended without Stop hook
     // (crash, force-close, etc.). Run in background - non-blocking.
+    //
+    // Routed through the same daemon-scheduled LLM path Stop uses, not the
+    // local rule-based generator: this backfill previously called
+    // generateSessionSummary directly, which kept reintroducing the
+    // table-of-contents summary shape the LLM path exists to replace, on
+    // every session that needed a backfill.
     if (!isHookEvaluationMode()) {
-      memoryService.backfillMissingSummaries(input.session_id, 5).catch(() => {});
+      if (isLlmSummaryEnabled()) {
+        memoryService.getSessionsWithoutSummary(input.session_id, 5)
+          .then((sessionIds) => Promise.all(
+            sessionIds.map((sessionId) => scheduleSessionSummary(sessionId).catch(() => {}))
+          ))
+          .catch(() => {});
+      } else {
+        memoryService.backfillMissingSummaries(input.session_id, 5).catch(() => {});
+      }
     }
 
     // Get recent context for this project (now automatically scoped)

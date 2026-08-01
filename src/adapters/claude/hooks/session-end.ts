@@ -5,7 +5,6 @@
 
 import { getLightweightMemoryService } from '../../../services/memory-service.js';
 import type { SessionEndInput } from '../../../core/types.js';
-import { generateSessionSummary } from '../transcript/turn-reconstructor.js';
 import { readStdin } from './hook-runtime.js';
 
 export async function main(): Promise<string> {
@@ -20,14 +19,15 @@ export async function main(): Promise<string> {
     const sessionEvents = await memoryService.getSessionHistory(input.session_id);
 
     if (sessionEvents.length > 0) {
-      // Generate a simple session summary
-      const summary = generateSessionSummary(sessionEvents);
-
-      // Store session summary
-      await memoryService.storeSessionSummary(input.session_id, summary);
-
-      // End session with summary
-      await memoryService.endSession(input.session_id, summary);
+      // The Stop hook already asks the daemon to build the outcome-focused
+      // summary (see stop.ts / session-summary-llm.ts). This hook used to
+      // also generate its own rule-based table-of-contents summary and store
+      // it unconditionally — with no check for an existing summary — which
+      // measurably kept producing the "Session with N prompts..." text the
+      // LLM summary was built to replace, sometimes racing ahead of it.
+      // endSession's own `summary` column is separate bookkeeping (not an
+      // injectable session_summary event) and is fine to leave unset here.
+      await memoryService.endSession(input.session_id);
 
       // Evaluate helpfulness of memory retrievals in this session
       try {

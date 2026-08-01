@@ -221,6 +221,11 @@ export class MemoryService {
     return this.ingestService.backfillMissingSummaries(currentSessionId, limit);
   }
 
+  /** Session ids missing a summary; see MemoryIngestService.getSessionsWithoutSummary. */
+  async getSessionsWithoutSummary(currentSessionId: string, limit = 5): Promise<string[]> {
+    return this.ingestService.getSessionsWithoutSummary(currentSessionId, limit);
+  }
+
   /**
    * Generate a rule-based session summary from stored events.
    * Called at session end (Stop hook) when no LLM-generated summary exists.
