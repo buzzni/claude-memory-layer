@@ -198,3 +198,17 @@ describe('unary/increment expressions are not mistaken for credentials', () => {
     expect(applyPrivacyFilter(source, privacy).content).toBe(source);
   });
 });
+
+describe('process.env references are not mistaken for credentials', () => {
+  // Found on live data: `const TOKEN = process.env.TOKEN || randomBytes(32)…`
+  // reads the variable, it does not contain the secret.
+  it('leaves an env-var reference untouched', () => {
+    const source = "const TOKEN = process.env.TOKEN || randomBytes(32).toString('hex')";
+    expect(applyPrivacyFilter(source, privacy).content).toBe(source);
+  });
+
+  it('still redacts a literal value assigned from a non-env source', () => {
+    const source = 'const apiKey = "sk_live_abcdef123456"';
+    expect(applyPrivacyFilter(source, privacy).content).toContain('[REDACTED]');
+  });
+});
