@@ -61,9 +61,9 @@ function updateProjectScopeUI() {
     return;
   }
 
-  if (label) label.textContent = 'Scope: All projects';
-  if (detail) detail.textContent = 'Global aggregate view. Select a project for live project-local sessions and retrieval evidence.';
-  if (disclosureBadge) disclosureBadge.textContent = 'Search → Expand → Source · Global scope unless a project is selected';
+  if (label) label.textContent = 'Scope: Global Store';
+  if (detail) detail.textContent = 'Unscoped shared/global memory store only. Select a project for project-local sessions and retrieval evidence.';
+  if (disclosureBadge) disclosureBadge.textContent = 'Search → Expand → Source · Global Store unless a project is selected';
   if (empty) empty.hidden = !(eventCount === 0 && sessionCount === 0 && vectorCount === 0);
 }
 
@@ -315,4 +315,3 @@ function setupEventListeners() {
 }
 
 // --- Data Fetching ---
-

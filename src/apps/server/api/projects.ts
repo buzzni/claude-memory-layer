@@ -106,17 +106,29 @@ projectsRouter.get('/', async (c) => {
     const projectHashes = fs.readdirSync(projectsDir)
       .filter(name => {
         const fullPath = path.join(projectsDir, name);
-        return fs.statSync(fullPath).isDirectory();
+        if (!/^[a-f0-9]{8}$/.test(name)) return false;
+        try {
+          const dbPath = path.join(fullPath, 'events.sqlite');
+          return fs.statSync(fullPath).isDirectory()
+            && fs.statSync(dbPath).isFile()
+            && fs.statSync(dbPath).size > 0;
+        } catch {
+          return false;
+        }
       });
 
     // Load session registry to map hashes to project paths
     const registry = loadSessionRegistry();
-    const hashToPath = new Map<string, string>();
+    const hashToEntries = new Map<string, Array<{ projectPath: string; registeredAt?: string }>>();
     for (const entry of Object.values(registry.sessions)) {
-      if (!hashToPath.has(entry.projectHash)) {
-        hashToPath.set(entry.projectHash, entry.projectPath);
-      }
+      const entries = hashToEntries.get(entry.projectHash) || [];
+      entries.push(entry);
+      hashToEntries.set(entry.projectHash, entries);
     }
+    const hashToPath = new Map(Array.from(hashToEntries.entries()).map(([hash, entries]) => [
+      hash,
+      selectPreferredProjectPath(entries)
+    ]));
 
     // Build project list
     const projects = projectHashes.map(hash => {
@@ -148,12 +160,28 @@ projectsRouter.get('/', async (c) => {
 });
 
 function getRegisteredProjectPath(registry: ReturnType<typeof loadSessionRegistry>, hash: string): string | undefined {
-  for (const entry of Object.values(registry.sessions)) {
-    if (entry.projectHash === hash) {
-      return entry.projectPath;
-    }
-  }
-  return undefined;
+  const entries = Object.values(registry.sessions).filter((entry) => entry.projectHash === hash);
+  return entries.length > 0 ? selectPreferredProjectPath(entries) : undefined;
+}
+
+export function selectPreferredProjectPath(entries: Array<{ projectPath: string; registeredAt?: string }>): string {
+  const selected = [...entries].sort((a, b) => {
+    const aWorktree = /[\\/](?:\.aplus[\\/]worktrees|worktrees)[\\/]/.test(a.projectPath) ? 1 : 0;
+    const bWorktree = /[\\/](?:\.aplus[\\/]worktrees|worktrees)[\\/]/.test(b.projectPath) ? 1 : 0;
+    if (aWorktree !== bWorktree) return aWorktree - bWorktree;
+    const registeredDelta = Date.parse(b.registeredAt || '') - Date.parse(a.registeredAt || '');
+    if (Number.isFinite(registeredDelta) && registeredDelta !== 0) return registeredDelta;
+    return a.projectPath.length - b.projectPath.length;
+  })[0]?.projectPath || '';
+  const inferredCanonicalPath = inferCanonicalProjectPath(selected);
+  return inferredCanonicalPath !== selected && fs.existsSync(inferredCanonicalPath)
+    ? inferredCanonicalPath
+    : selected;
+}
+
+export function inferCanonicalProjectPath(projectPath: string): string {
+  const marker = projectPath.match(/[\\/]\.aplus[\\/]worktrees[\\/]/);
+  return marker?.index === undefined ? projectPath : projectPath.slice(0, marker.index);
 }
 
 function summarizeProjectEvents(events: ProjectDetailEvent[]) {

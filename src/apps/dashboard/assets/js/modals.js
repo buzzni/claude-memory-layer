@@ -147,7 +147,7 @@ async function showEventsListModal() {
 }
 
 async function showSessionsModal() {
-  document.getElementById('list-modal-title').textContent = 'Active Sessions';
+  document.getElementById('list-modal-title').textContent = 'Stored Sessions';
   const body = document.getElementById('list-modal-body');
   body.innerHTML = '<div style="text-align:center; padding:40px; color:var(--text-muted);">Loading sessions...</div>';
   openModal('list-modal');
@@ -316,4 +316,3 @@ function showVectorsModal() {
 // =============================================
 // Sidebar Navigation
 // =============================================
-

@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => {
     getEventsByLevel: vi.fn(),
     getMostAccessedMemories: vi.fn(),
     getHelpfulnessStats: vi.fn(),
+    getHelpfulnessStatsByDay: vi.fn(),
     getHelpfulMemories: vi.fn(),
     getRecentRetrievalTraces: vi.fn(),
     getEndlessModeStatus: vi.fn()
@@ -75,6 +76,7 @@ describe('stats API lightweight read paths', () => {
     mocks.service.getEventsByLevel.mockReset().mockResolvedValue([]);
     mocks.service.getMostAccessedMemories.mockReset().mockResolvedValue([]);
     mocks.service.getHelpfulnessStats.mockReset().mockResolvedValue({ avgScore: 0, totalEvaluated: 0, totalRetrievals: 0, helpful: 0, neutral: 0, unhelpful: 0 });
+    mocks.service.getHelpfulnessStatsByDay.mockReset().mockResolvedValue([]);
     mocks.service.getHelpfulMemories.mockReset().mockResolvedValue([]);
     mocks.service.getRecentRetrievalTraces.mockReset().mockResolvedValue([]);
     mocks.service.getEndlessModeStatus.mockReset().mockResolvedValue({ mode: 'session', continuityScore: 0, workingSetSize: 0, consolidatedCount: 0 });
@@ -190,5 +192,70 @@ describe('stats API lightweight read paths', () => {
     const cutoff = mocks.service.getEventsAfter.mock.calls[0][0];
     expect(typeof cutoff).toBe('string');
     expect(new Date(cutoff).getTime()).toBeLessThan(Date.now());
+    expect(mocks.service.getHelpfulnessStats).toHaveBeenCalledTimes(2);
+    const [currentSince, currentUntil] = mocks.service.getHelpfulnessStats.mock.calls[0];
+    const [previousSince, previousUntil] = mocks.service.getHelpfulnessStats.mock.calls[1];
+    expect(previousUntil.getTime()).toBe(currentSince.getTime());
+    expect(currentUntil.getTime() - currentSince.getTime()).toBe(7 * 24 * 60 * 60 * 1000);
+    expect(previousSince).toBeInstanceOf(Date);
+  });
+
+  it('GET /api/stats/kpi uses distinct helpfulness windows for current, previous, and daily trend', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-05-08T12:00:00.000Z'));
+    try {
+      mocks.service.getEventsAfter.mockResolvedValue([
+        { id: 'p1', eventType: 'user_prompt', sessionId: 's1', timestamp: new Date('2026-05-08T10:00:00.000Z'), content: 'prompt', metadata: {} }
+      ]);
+      mocks.service.getHelpfulnessStats
+        .mockResolvedValueOnce({ totalEvaluated: 2, helpful: 1 })
+        .mockResolvedValueOnce({ totalEvaluated: 2, helpful: 2 });
+      mocks.service.getHelpfulnessStatsByDay.mockResolvedValue([
+        { date: '2026-05-08', totalEvaluated: 4, helpful: 3 }
+      ]);
+
+      const res = await createApp().request('/api/stats/kpi?project=abc12345&window=7d');
+      const body = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(body.metrics.usefulRecallRate).toBe(0.5);
+      expect(body.previousMetrics.usefulRecallRate).toBe(1);
+      expect(body.deltas.usefulRecallRate).toBe(-0.5);
+      expect(body.availability.usefulRecallRate).toEqual({
+        currentEvaluated: 2,
+        previousEvaluated: 2,
+        currentAvailable: true,
+        previousAvailable: true,
+      });
+      expect(body.trend.daily[0].usefulRecallRate).toBe(0.75);
+      expect(mocks.service.getHelpfulnessStats).toHaveBeenCalledTimes(2);
+      expect(mocks.service.getHelpfulnessStatsByDay).toHaveBeenCalledTimes(1);
+      expect(mocks.service.getHelpfulnessStatsByDay).toHaveBeenCalledWith(
+        new Date('2026-04-08T00:00:00.000Z'),
+        new Date('2026-05-09T00:00:00.000Z')
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('GET /api/stats/kpi distinguishes missing recall evaluations from a measured zero', async () => {
+    mocks.service.getEventsAfter.mockResolvedValue([
+      { id: 'p1', eventType: 'user_prompt', sessionId: 's1', timestamp: new Date(), content: 'prompt', metadata: {} }
+    ]);
+    mocks.service.getHelpfulnessStats.mockResolvedValue({ totalEvaluated: 0, helpful: 0 });
+    mocks.service.getHelpfulnessStatsByDay.mockResolvedValue([
+      { date: new Date().toISOString().slice(0, 10), totalEvaluated: 0, helpful: 0 }
+    ]);
+
+    const res = await createApp().request('/api/stats/kpi?project=abc12345&window=7d');
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.metrics.usefulRecallRate).toBe(0);
+    expect(body.deltas.usefulRecallRate).toBeNull();
+    expect(body.availability.usefulRecallRate.currentAvailable).toBe(false);
+    expect(body.trend.daily[0].usefulRecallRate).toBeNull();
+    expect(body.alerts.some((alert: any) => alert.metric === 'usefulRecallRate')).toBe(false);
   });
 });

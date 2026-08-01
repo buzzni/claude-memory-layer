@@ -96,7 +96,7 @@ function updateProjectDetailUI() {
     </div>
     <div class="stats-grid kpi-grid" style="margin-top:0; margin-bottom:14px;">
       <div class="stat-card kpi-card"><div class="stat-value">${formatNumber(storage.eventCount || 0)} events</div><div class="stat-label"><i class="ri-file-list-3-line"></i> total</div></div>
-      <div class="stat-card kpi-card"><div class="stat-value">${formatNumber(sessions.total || 0)} sessions</div><div class="stat-label"><i class="ri-discuss-line"></i> active</div></div>
+      <div class="stat-card kpi-card"><div class="stat-value">${formatNumber(sessions.total || 0)} sessions</div><div class="stat-label"><i class="ri-discuss-line"></i> stored</div></div>
       <div class="stat-card kpi-card"><div class="stat-value">${formatNumber(storage.vectorCount || 0)} vectors</div><div class="stat-label"><i class="ri-node-tree"></i> indexed</div></div>
       <div class="stat-card kpi-card"><div class="stat-value">${formatNumber(retrieval.totalQueries || 0)}</div><div class="stat-label"><i class="ri-search-eye-line"></i> ${selectionRate}</div></div>
     </div>
@@ -285,13 +285,30 @@ function updateKpiCardsUI() {
     const el = document.getElementById(id);
     if (el) el.textContent = value;
   };
-  set('kpi-useful-recall', percentText(m.usefulRecallRate));
+  const usefulRecallAvailability = state.kpi?.availability?.usefulRecallRate;
+  const usefulRecallAvailable = usefulRecallAvailability
+    ? usefulRecallAvailability.currentAvailable === true
+    : true;
+  const previousUsefulRecallAvailable = usefulRecallAvailability
+    ? usefulRecallAvailability.previousAvailable === true
+    : d?.usefulRecallRate !== null && d?.usefulRecallRate !== undefined;
+  set('kpi-useful-recall', usefulRecallAvailable ? percentText(m.usefulRecallRate) : '-');
   set('kpi-completion-turns', Number(m.avgCompletionTurns || 0).toFixed(2));
   set('kpi-rework-rate', percentText(m.reworkRate));
   set('kpi-failure-rate', percentText(m.postChangeFailureRate));
 
   if (d) {
-    renderDelta('kpi-useful-recall-delta', d.usefulRecallRate, false, true);
+    if (usefulRecallAvailable && d.usefulRecallRate !== null && d.usefulRecallRate !== undefined) {
+      renderDelta('kpi-useful-recall-delta', d.usefulRecallRate, false, true);
+    } else {
+      const recallDelta = document.getElementById('kpi-useful-recall-delta');
+      if (recallDelta) {
+        recallDelta.className = 'kpi-delta neutral';
+        recallDelta.textContent = usefulRecallAvailable && !previousUsefulRecallAvailable
+          ? 'No prior-window evaluations'
+          : 'No evaluated recalls';
+      }
+    }
     renderDelta('kpi-completion-turns-delta', d.avgCompletionTurns, true, false);
     renderDelta('kpi-rework-rate-delta', d.reworkRate, true, true);
     renderDelta('kpi-failure-rate-delta', d.postChangeFailureRate, true, true);
@@ -314,7 +331,9 @@ function renderKpiTrendChart() {
 
   const daily = state.kpi?.trend?.daily || [];
   const categories = daily.map(d => d.date);
-  const useful = daily.map(d => Number(d.usefulRecallRate || 0) * 100);
+  const useful = daily.map(d => d.usefulRecallRate === null || d.usefulRecallRate === undefined
+    ? null
+    : Number(d.usefulRecallRate) * 100);
   const rework = daily.map(d => Number(d.reworkRate || 0) * 100);
   const fail = daily.map(d => Number(d.postChangeFailureRate || 0) * 100);
 
@@ -1121,12 +1140,13 @@ function updateMemoryUsefulnessUI() {
   const score = payload.score || {};
   const counts = payload.counts || {};
   const label = score.label || 'unknown';
+  const insufficient = score.status === 'insufficient-data' || score.value === null || score.value === undefined;
   const confidencePct = ((score.confidence || 0) * 100).toFixed(0);
-  scoreEl.textContent = Number(score.value || 0).toFixed(1).replace(/\.0$/, '');
+  scoreEl.textContent = insufficient ? '-' : Number(score.value).toFixed(1).replace(/\.0$/, '');
   scoreEl.className = `memory-usefulness-score score-${label}`;
 
   summaryEl.innerHTML = `
-    <span class="usefulness-pill usefulness-${escapeHtml(label)}">${escapeHtml(label)}</span>
+    <span class="usefulness-pill usefulness-${escapeHtml(label)}">${insufficient ? 'insufficient data' : escapeHtml(label)}</span>
     <span><strong>${formatNumber(counts.retrievalQueries || 0)}</strong> queries</span>
     <span><strong>${formatNumber(counts.rewrittenQueries || 0)}</strong> rewritten</span>
     <span><strong>${formatNumber(counts.promptCount || 0)}</strong> prompts</span>
@@ -1493,4 +1513,3 @@ async function checkEndlessStatus() {
 // =============================================
 // Modal System
 // =============================================
-

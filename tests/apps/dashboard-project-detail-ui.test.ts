@@ -81,6 +81,8 @@ describe('dashboard project detail card', () => {
     expect(card.innerHTML).toContain('shop-app');
     expect(card.innerHTML).toContain('42 events');
     expect(card.innerHTML).toContain('7 sessions');
+    expect(card.innerHTML).toContain('stored');
+    expect(card.innerHTML).not.toContain('> active<');
     expect(card.innerHTML).toContain('31 vectors');
     expect(card.innerHTML).toContain('37.0% selection');
     expect(card.innerHTML).toContain('3 pending');

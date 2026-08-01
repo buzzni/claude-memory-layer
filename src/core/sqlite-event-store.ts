@@ -2702,7 +2702,7 @@ export class SQLiteEventStore {
   /**
    * Get helpfulness statistics for dashboard
    */
-  async getHelpfulnessStats(since?: Date): Promise<{
+  async getHelpfulnessStats(since?: Date, until?: Date): Promise<{
     avgScore: number;
     totalEvaluated: number;
     totalRetrievals: number;
@@ -2716,12 +2716,21 @@ export class SQLiteEventStore {
     await this.initialize();
 
     const sinceIso = since?.toISOString();
-    const evaluatedWhere = sinceIso
-      ? `WHERE measured_at IS NOT NULL AND datetime(created_at) >= datetime(?)`
-      : `WHERE measured_at IS NOT NULL`;
-    const totalWhere = sinceIso
-      ? `WHERE datetime(created_at) >= datetime(?)`
-      : ``;
+    const untilIso = until?.toISOString();
+    const timeClauses: string[] = [];
+    const timeParams: string[] = [];
+    if (sinceIso) {
+      timeClauses.push('datetime(created_at) >= datetime(?)');
+      timeParams.push(sinceIso);
+    }
+    if (untilIso) {
+      timeClauses.push('datetime(created_at) < datetime(?)');
+      timeParams.push(untilIso);
+    }
+    const timeWhere = timeClauses.length > 0 ? `WHERE ${timeClauses.join(' AND ')}` : '';
+    const evaluatedWhere = timeClauses.length > 0
+      ? `WHERE measured_at IS NOT NULL AND ${timeClauses.join(' AND ')}`
+      : 'WHERE measured_at IS NOT NULL';
 
     // Read-only dashboards can open legacy DBs where the grounding-column
     // migration never ran; degrade to zeros instead of failing the query.
@@ -2743,13 +2752,13 @@ export class SQLiteEventStore {
          ${groundingSelect}
        FROM memory_helpfulness
        ${evaluatedWhere}`,
-      sinceIso ? [sinceIso] : []
+      timeParams
     );
 
     const totalRow = sqliteGet<Record<string, unknown>>(
       this.db,
-      `SELECT COUNT(*) as total FROM memory_helpfulness ${totalWhere}`,
-      sinceIso ? [sinceIso] : []
+      `SELECT COUNT(*) as total FROM memory_helpfulness ${timeWhere}`,
+      timeParams
     );
 
     return {
@@ -2763,6 +2772,54 @@ export class SQLiteEventStore {
       avgContentOverlap: Math.round(((stats?.avg_content_overlap as number) || 0) * 100) / 100,
       groundedCount: (stats?.grounded_count as number) || 0
     };
+  }
+
+  /**
+   * Aggregate helpfulness by UTC day with one range scan.
+   *
+   * Both legacy SQLite timestamps (`YYYY-MM-DD HH:mm:ss`) and current ISO
+   * timestamps share a sortable `YYYY-MM-DD` prefix. Date-only boundaries
+   * therefore preserve compatibility while allowing idx_helpfulness_created_at
+   * to serve the range predicate (unlike datetime(created_at)).
+   */
+  async getHelpfulnessStatsByDay(since: Date, until: Date): Promise<Array<{
+    date: string;
+    avgScore: number;
+    totalEvaluated: number;
+    totalRetrievals: number;
+    helpful: number;
+    neutral: number;
+    unhelpful: number;
+  }>> {
+    await this.initialize();
+    const sinceDay = since.toISOString().slice(0, 10);
+    const untilDay = until.toISOString().slice(0, 10);
+    const rows = sqliteAll<Record<string, unknown>>(
+      this.db,
+      `SELECT
+         substr(created_at, 1, 10) AS date,
+         AVG(CASE WHEN measured_at IS NOT NULL THEN helpfulness_score END) AS avg_score,
+         SUM(CASE WHEN measured_at IS NOT NULL THEN 1 ELSE 0 END) AS total_evaluated,
+         COUNT(*) AS total_retrievals,
+         SUM(CASE WHEN measured_at IS NOT NULL AND helpfulness_score >= 0.7 THEN 1 ELSE 0 END) AS helpful,
+         SUM(CASE WHEN measured_at IS NOT NULL AND helpfulness_score >= 0.4 AND helpfulness_score < 0.7 THEN 1 ELSE 0 END) AS neutral,
+         SUM(CASE WHEN measured_at IS NOT NULL AND helpfulness_score < 0.4 THEN 1 ELSE 0 END) AS unhelpful
+       FROM memory_helpfulness
+       WHERE created_at >= ? AND created_at < ?
+       GROUP BY substr(created_at, 1, 10)
+       ORDER BY date ASC`,
+      [sinceDay, untilDay]
+    );
+
+    return rows.map((row) => ({
+      date: String(row.date || ''),
+      avgScore: Math.round(((row.avg_score as number) || 0) * 100) / 100,
+      totalEvaluated: (row.total_evaluated as number) || 0,
+      totalRetrievals: (row.total_retrievals as number) || 0,
+      helpful: (row.helpful as number) || 0,
+      neutral: (row.neutral as number) || 0,
+      unhelpful: (row.unhelpful as number) || 0
+    }));
   }
 
   /**

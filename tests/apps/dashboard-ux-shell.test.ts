@@ -4,6 +4,26 @@ import { join } from 'node:path';
 import * as vm from 'node:vm';
 
 describe('dashboard UX shell affordances', () => {
+  it('labels scope and session totals without implying an all-project aggregate or liveness', () => {
+    const html = readFileSync(join(process.cwd(), 'src/apps/dashboard/index.html'), 'utf-8');
+    expect(html).toContain('Global Store');
+    expect(html).toContain('Stored Sessions');
+    expect(html).not.toContain('All (Global)');
+    expect(html).not.toContain('Active Sessions');
+  });
+
+  it('contains narrow-screen guards for header and usefulness layout', () => {
+    const css = readFileSync(join(process.cwd(), 'src/apps/dashboard/style.css'), 'utf-8');
+    const mobileStart = css.indexOf('@media (max-width: 600px)');
+    const mobileEnd = css.indexOf('/* ==========================================', mobileStart);
+    expect(mobileStart).toBeGreaterThanOrEqual(0);
+    expect(mobileEnd).toBeGreaterThan(mobileStart);
+    const mobileCss = css.slice(mobileStart, mobileEnd);
+    expect(mobileCss).toMatch(/\.top-header\s*\{[^}]*flex-direction:\s*column/);
+    expect(mobileCss).toMatch(/\.search-wrapper\s*\{[^}]*width:\s*100%\s*!important/);
+    expect(mobileCss).toMatch(/\.usefulness-strip\s*\{[^}]*flex-direction:\s*column/);
+  });
+
   it('declares global project scope context and empty-state containers in the dashboard shell', () => {
     const html = readFileSync(join(process.cwd(), 'src/apps/dashboard/index.html'), 'utf-8');
 

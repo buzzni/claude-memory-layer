@@ -41,7 +41,7 @@ vi.mock('../../src/services/memory-service.js', async (importOriginal) => {
   };
 });
 
-const { projectsRouter } = await import('../../src/apps/server/api/projects.js');
+const { projectsRouter, inferCanonicalProjectPath, selectPreferredProjectPath } = await import('../../src/apps/server/api/projects.js');
 
 function createApp() {
   const app = new Hono();
@@ -119,5 +119,13 @@ describe('project detail dashboard API', () => {
     ]) {
       expect(serialized).not.toContain(privateSentinel);
     }
+  });
+
+  it('prefers a canonical checkout path over a newer worktree alias for the same hash', () => {
+    expect(selectPreferredProjectPath([
+      { projectPath: '/repos/shop/.aplus/worktrees/task-1', registeredAt: '2026-06-03T00:00:00Z' },
+      { projectPath: '/repos/shop', registeredAt: '2026-06-01T00:00:00Z' },
+    ])).toBe('/repos/shop');
+    expect(inferCanonicalProjectPath('/repos/shop/.aplus/worktrees/task-1')).toBe('/repos/shop');
   });
 });

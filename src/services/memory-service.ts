@@ -55,6 +55,7 @@ import {
 import { createMemoryServiceRegistry } from './memory-service-registry.js';
 import {
   type AccessedMemory,
+  type DailyHelpfulnessStats,
   type HelpfulMemory,
   type HelpfulnessStats,
   type RecordQueryTraceInput,
@@ -618,8 +619,13 @@ export class MemoryService {
   /**
    * Get helpfulness statistics for dashboard
    */
-  async getHelpfulnessStats(since?: Date): Promise<HelpfulnessStats> {
-    return this.retrievalAnalyticsService.getHelpfulnessStats(since);
+  async getHelpfulnessStats(since?: Date, until?: Date): Promise<HelpfulnessStats> {
+    return this.retrievalAnalyticsService.getHelpfulnessStats(since, until);
+  }
+
+  /** Get one aggregate per UTC day using a single indexed range query. */
+  async getHelpfulnessStatsByDay(since: Date, until: Date): Promise<DailyHelpfulnessStats[]> {
+    return this.retrievalAnalyticsService.getHelpfulnessStatsByDay(since, until);
   }
 
   /**
