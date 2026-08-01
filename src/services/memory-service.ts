@@ -131,7 +131,8 @@ export class MemoryService {
       defaultSharedStoreConfig: DEFAULT_ENABLED_SHARED_STORE_CONFIG,
       initialize: () => this.initialize(),
       getProjectHash: () => this.projectHash,
-      getProjectPath: () => this.projectPath
+      getProjectPath: () => this.projectPath,
+      llmSummaryGenerator: config.llmSummaryGenerator
     });
 
     this.retrievalOrchestrator = composition.retrievalOrchestrator;
@@ -226,6 +227,15 @@ export class MemoryService {
    */
   async generateSessionSummary(sessionId: string): Promise<void> {
     return this.ingestService.generateSessionSummary(sessionId);
+  }
+
+  /**
+   * Generate an outcome-focused summary via the injected LLM generator.
+   * Slow: callers must keep this off any hook response path.
+   * Returns false when nothing durable was stored.
+   */
+  async generateLlmSessionSummary(sessionId: string): Promise<boolean> {
+    return this.ingestService.generateLlmSessionSummary(sessionId);
   }
 
   /**

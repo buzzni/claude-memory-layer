@@ -21,7 +21,7 @@ interface SemanticMemory {
 }
 
 interface SemanticDaemonRequest {
-  type: 'retrieve' | 'graduate';
+  type: 'retrieve' | 'graduate' | 'summarize';
   sessionId: string;
   prompt?: string;
   topK?: number;
@@ -89,6 +89,30 @@ export async function scheduleSemanticGraduation(
 ): Promise<void> {
   const payload: SemanticDaemonRequest = {
     type: 'graduate',
+    sessionId,
+    evaluation: process.env.CLAUDE_MEMORY_EVAL_MODE === 'true'
+  };
+
+  try {
+    await requestFromDaemon(payload, timeoutMs);
+  } catch (error) {
+    if (!isConnectionError(error)) throw error;
+    await ensureDaemonRunning();
+    await requestFromDaemon(payload, timeoutMs);
+  }
+}
+
+/**
+ * Ask the daemon to build this session's outcome-focused summary. The daemon
+ * acknowledges immediately and runs the LLM call in the background, so the Stop
+ * hook never waits on it.
+ */
+export async function scheduleSessionSummary(
+  sessionId: string,
+  timeoutMs: number = 500
+): Promise<void> {
+  const payload: SemanticDaemonRequest = {
+    type: 'summarize',
     sessionId,
     evaluation: process.env.CLAUDE_MEMORY_EVAL_MODE === 'true'
   };
