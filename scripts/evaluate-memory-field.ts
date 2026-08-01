@@ -316,6 +316,11 @@ async function evaluateCases(
         const context = parsed.hookSpecificOutput?.additionalContext ?? '';
         executions[index] = {
           caseId: item.caseId,
+          // Scraped back out of the prompt text that formatMemoryContext()
+          // builds in src/adapters/claude/hooks/user-prompt-submit.ts. That
+          // marker is a contract between the two files: changing its shape
+          // there, or adding any other `[event:...]`-looking text to the
+          // injected block, silently zeroes hit/top1 here instead of failing.
           selectedEventIds: Array.from(context.matchAll(/\[event:([a-f0-9-]+)\]/giu), (match) => match[1] ?? '').filter(Boolean),
           hasContext: context.trim().length > 0,
           latencyMs: Number((performance.now() - started).toFixed(1))

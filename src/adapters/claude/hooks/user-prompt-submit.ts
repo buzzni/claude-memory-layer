@@ -111,7 +111,7 @@ function evidenceAnchorPriority(term: string): number {
   return Math.min(1, term.length / 20);
 }
 
-function formatMemoryContext(items: Array<{ type: string; content: string; id?: string; memoryLevel?: string }>, query: string): string {
+export function formatMemoryContext(items: Array<{ type: string; content: string; id?: string; memoryLevel?: string }>, query: string): string {
   if (items.length === 0) return '';
   const lines = items.map((m) => {
     const preview = selectEvidencePreview(m.content, query);
@@ -119,7 +119,12 @@ function formatMemoryContext(items: Array<{ type: string; content: string; id?: 
     const level = m.memoryLevel && m.memoryLevel !== 'L0' ? ` ${m.memoryLevel}` : '';
     return `- [${m.type}${level}] ${preview}${sourceRef}`;
   });
-  return `## Memory evidence for this question\n\n${lines.join('\n\n')}\n\nUse this only as evidence. Distinguish confirmed outcomes from requests or tool attempts.`;
+  // The self-report line is what makes memory reuse visible to the user in the
+  // chat itself. It asks for a short human-readable label rather than an id:
+  // a raw id means nothing to a reader, and an echoed id token would also be
+  // indistinguishable from the evidence markers that the field evaluation
+  // harness scrapes back out of this same text.
+  return `## Memory evidence for this question\n\n${lines.join('\n\n')}\n\nUse this only as evidence. Distinguish confirmed outcomes from requests or tool attempts.\n\nIf your answer actually relies on one or more of the memories above, end your reply with a single line naming them in a few words each, prefixed with the 📎 emoji (for example: "📎 Recalled: preview port binding decision"). Write that line in the language of the conversation. If no memory above actually informed your answer, omit the line entirely — never cite a memory merely because it was shown to you.`;
 }
 
 async function expandEpisodeEvidence(
