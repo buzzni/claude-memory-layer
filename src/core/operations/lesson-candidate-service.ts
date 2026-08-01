@@ -66,6 +66,9 @@ interface SessionProfile {
   taskPatterns: Set<string>;
   successSignals: Set<ToolPattern>;
   hasFailureSignal: boolean;
+  /** Timestamps of the last failure/success signal, used to detect recovery. */
+  lastFailureTimestamp: string | null;
+  lastSuccessTimestamp: string | null;
   hasPrivacyConflict: boolean;
 }
 
@@ -247,6 +250,11 @@ function orderedTools(tools: Set<ToolPattern>): ToolPattern[] {
   return TOOL_ORDER.filter((tool) => tools.has(tool));
 }
 
+function maxTimestamp(current: string | null, candidate: string): string {
+  if (!current) return candidate;
+  return candidate.localeCompare(current) > 0 ? candidate : current;
+}
+
 function sortedStrings(values: Iterable<string>): string[] {
   return Array.from(new Set(Array.from(values))).sort((a, b) => a.localeCompare(b));
 }
@@ -274,13 +282,31 @@ function profileSignature(profile: SessionProfile): string | null {
   return `tools:${tools.join('+')}|files:${fileCategories.join('+') || 'none'}|task:${taskKey}`;
 }
 
+/**
+ * A session qualifies when its workflow demonstrably ended in success.
+ *
+ * This deliberately does not veto every session that ever logged a failure.
+ * The failure tokens (error/failed/blocked) appear somewhere in 93.7% of real
+ * sessions — often inside unrelated tool output — so a whole-session veto made
+ * nearly everything ineligible (measured: 120 of 121 sessions skipped). Worse,
+ * it excluded exactly the sessions worth learning from: the ones that hit a
+ * problem and then resolved it. What matters is recovery, so a failure only
+ * disqualifies a session when no success signal follows it.
+ */
 function hasEnoughSuccess(profile: SessionProfile): boolean {
-  if (profile.hasFailureSignal) return false;
   if (profile.successEventIds.length === 0) return false;
+  if (!hasRecoveredFromFailure(profile)) return false;
   const successTools = profile.successSignals;
   const testSignal = successTools.has('focused-test') || successTools.has('full-suite');
   const validationSignal = successTools.has('typecheck') || successTools.has('build') || successTools.has('static-privacy-scan');
   return successTools.has('verified-commit') || (testSignal && validationSignal);
+}
+
+function hasRecoveredFromFailure(profile: SessionProfile): boolean {
+  if (!profile.hasFailureSignal) return true;
+  if (!profile.lastSuccessTimestamp) return false;
+  if (!profile.lastFailureTimestamp) return true;
+  return profile.lastSuccessTimestamp.localeCompare(profile.lastFailureTimestamp) >= 0;
 }
 
 function confidenceForGroup(group: SessionProfile[], tools: ToolPattern[], fileCategories: string[], taskPatterns: string[]): number {
@@ -395,16 +421,25 @@ export class LessonCandidateService {
   }
 
   private buildSessionProfiles(input: ParsedLessonCandidateInput): SessionProfile[] {
+    // Take the newest events, then restore chronological order for profiling.
+    // Scanning `timestamp ASC LIMIT n` meant a long-lived project only ever
+    // inspected its oldest window: with the 2000-event default this project saw
+    // 32 of 207 sessions, all of them ancient. Recent work is what carries
+    // reusable patterns.
     const rows = sqliteAll<EventRow>(
       this.db,
       `SELECT id, event_type, session_id, timestamp, content, metadata
-       FROM events
-       WHERE (
-         json_extract(CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END, '$.scope.project.hash') = ?
-         OR json_extract(CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END, '$.projectHash') = ?
+       FROM (
+         SELECT id, event_type, session_id, timestamp, content, metadata
+         FROM events
+         WHERE (
+           json_extract(CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END, '$.scope.project.hash') = ?
+           OR json_extract(CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END, '$.projectHash') = ?
+         )
+         ORDER BY timestamp DESC
+         LIMIT ?
        )
-       ORDER BY timestamp ASC
-       LIMIT ?`,
+       ORDER BY timestamp ASC`,
       [input.projectHash, input.projectHash, input.eventLimit]
     );
     const profilesBySession = new Map<string, SessionProfile>();
@@ -420,6 +455,12 @@ export class LessonCandidateService {
 
       const tools = extractToolPatterns(row.content);
       const success = isSuccessSignal(row.content);
+      if (isFailureSignal(row.content)) {
+        profile.lastFailureTimestamp = maxTimestamp(profile.lastFailureTimestamp, row.timestamp);
+      }
+      if (success) {
+        profile.lastSuccessTimestamp = maxTimestamp(profile.lastSuccessTimestamp, row.timestamp);
+      }
       for (const tool of Array.from(tools)) {
         profile.tools.add(tool);
         if (success) profile.successSignals.add(tool);
@@ -446,6 +487,8 @@ export class LessonCandidateService {
         taskPatterns: new Set<string>(),
         successSignals: new Set<ToolPattern>(),
         hasFailureSignal: false,
+        lastFailureTimestamp: null,
+        lastSuccessTimestamp: null,
         hasPrivacyConflict: false
       };
       profilesBySession.set(row.session_id, profile);

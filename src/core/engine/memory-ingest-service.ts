@@ -48,7 +48,22 @@ export interface MemoryIngestServiceOptions {
   getProjectPath?: () => string | null;
   summaryDeriver?: SummaryDeriver;
   perspectiveDeriver?: PerspectiveDeriverLike;
+  /**
+   * Injected so core stays free of child-process/CLI concerns. Returns null
+   * when the session holds nothing durable, which must store nothing rather
+   * than fall back to the rule-based text.
+   */
+  llmSummaryGenerator?: LlmSummaryGenerator;
 }
+
+export interface LlmSummaryGenerated {
+  text: string;
+  metadata: Record<string, unknown>;
+}
+
+export type LlmSummaryGenerator = (
+  events: Array<{ eventType: string; content: string }>
+) => Promise<LlmSummaryGenerated | null>;
 
 /**
  * Thin-core ingest service for session lifecycle and event writes.
@@ -66,6 +81,7 @@ export class MemoryIngestService {
   private readonly getProjectPath: () => string | null;
   private readonly summaryDeriver: SummaryDeriver;
   private readonly perspectiveDeriver?: PerspectiveDeriverLike;
+  private readonly llmSummaryGenerator?: LlmSummaryGenerator;
   private readonly ingestInterceptors = new IngestInterceptorRegistry();
 
   constructor(options: MemoryIngestServiceOptions) {
@@ -77,6 +93,7 @@ export class MemoryIngestService {
     this.getProjectPath = options.getProjectPath ?? (() => null);
     this.summaryDeriver = options.summaryDeriver ?? createSummaryDeriver();
     this.perspectiveDeriver = options.perspectiveDeriver;
+    this.llmSummaryGenerator = options.llmSummaryGenerator;
   }
 
   registerIngestBefore(interceptor: IngestInterceptor): () => void {
@@ -194,6 +211,32 @@ export class MemoryIngestService {
     if (!summary) return;
 
     await this.storeSessionSummary(sessionId, summary.text, summary.metadata);
+  }
+
+  /**
+   * Generate an outcome-focused summary through the injected LLM generator.
+   *
+   * Slow by nature, so callers must keep it off any hook response path. On
+   * failure or when the session holds nothing durable this stores nothing: the
+   * session then still has no summary and stays eligible for a later backfill
+   * attempt. It deliberately does not fall back to the rule-based text, whose
+   * table-of-contents shape is the reason this path exists.
+   */
+  async generateLlmSessionSummary(sessionId: string): Promise<boolean> {
+    await this.initialize();
+    if (!this.llmSummaryGenerator) return false;
+
+    const events = await this.eventStore.getSessionEvents(sessionId);
+    if (events.length < 3) return false;
+    if (events.some((event) => event.eventType === 'session_summary')) return false;
+
+    const summary = await this.llmSummaryGenerator(
+      events.map((event) => ({ eventType: event.eventType, content: event.content }))
+    );
+    if (!summary) return false;
+
+    await this.storeSessionSummary(sessionId, summary.text, summary.metadata);
+    return true;
   }
 
   async storeToolObservation(

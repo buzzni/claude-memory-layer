@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   handleSemanticDaemonRequest,
+  isDaemonBuildStale,
   isValidSemanticDaemonRequest,
   isVectorSessionFilterError,
   makeSemanticDaemonErrorResponse,
@@ -59,5 +60,29 @@ describe('Claude semantic daemon adapter', () => {
   it('formats daemon errors without leaking non-Error values', () => {
     expect(makeSemanticDaemonErrorResponse(new Error('boom'))).toEqual({ ok: false, error: 'boom' });
     expect(makeSemanticDaemonErrorResponse('boom')).toEqual({ ok: false, error: 'unknown daemon error' });
+  });
+});
+
+describe('Claude semantic daemon build staleness', () => {
+  it('treats an unchanged build fingerprint as fresh', () => {
+    expect(isDaemonBuildStale('123.5:4096', '123.5:4096')).toBe(false);
+  });
+
+  it('detects a rebuilt daemon script by mtime or size change', () => {
+    expect(isDaemonBuildStale('999.0:4096', '123.5:4096')).toBe(true);
+    expect(isDaemonBuildStale('123.5:8192', '123.5:4096')).toBe(true);
+  });
+
+  it('never reports stale when a fingerprint is unavailable', () => {
+    // An unreadable script must not make the daemon refuse all work.
+    expect(isDaemonBuildStale(null, '123.5:4096')).toBe(false);
+    expect(isDaemonBuildStale('123.5:4096', null)).toBe(false);
+    expect(isDaemonBuildStale(null, null)).toBe(false);
+  });
+
+  it('accepts summarize requests so a fresh build does not reject the new type', () => {
+    expect(isValidSemanticDaemonRequest({ type: 'summarize', sessionId: 'session-1' })).toBe(true);
+    expect(isValidSemanticDaemonRequest({ type: 'summarize', sessionId: 'session-1', evaluation: true })).toBe(true);
+    expect(isValidSemanticDaemonRequest({ type: 'summarize', sessionId: '' })).toBe(false);
   });
 });

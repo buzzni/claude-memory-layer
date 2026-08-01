@@ -25,6 +25,9 @@ interface CreateServiceOptions {
   perspectiveDeriver?: {
     deriveFromEvent: (event: MemoryEvent, options?: { projectHash?: string | null; projectPath?: string | null }) => Promise<unknown>;
   };
+  llmSummaryGenerator?: (
+    events: Array<{ eventType: string; content: string }>
+  ) => Promise<{ text: string; metadata: Record<string, unknown> } | null>;
 }
 
 function createService(options: CreateServiceOptions = {}) {
@@ -54,7 +57,8 @@ function createService(options: CreateServiceOptions = {}) {
       createToolEmbedding,
       getProjectHash: () => options.projectHash ?? null,
       getProjectPath: () => options.projectPath ?? null,
-      perspectiveDeriver: options.perspectiveDeriver
+      perspectiveDeriver: options.perspectiveDeriver,
+      llmSummaryGenerator: options.llmSummaryGenerator
     }),
     initialize,
     store,
@@ -347,5 +351,67 @@ describe('MemoryIngestService session summary generation', () => {
     expect(store.getSessionEvents).toHaveBeenCalledWith('broken');
     expect(appended).toHaveLength(1);
     expect(appended[0].sessionId).toBe('candidate');
+  });
+});
+
+describe('MemoryIngestService LLM session summary', () => {
+  const sessionEvents = [
+    event({ id: '11111111-1111-4111-8111-111111111111', sessionId: 's', eventType: 'user_prompt', content: '자동 업데이트가 왜 안 보이지' }),
+    event({ id: '22222222-2222-4222-8222-222222222222', sessionId: 's', eventType: 'agent_response', content: 'publish 설정 누락이 원인' }),
+    event({ id: '33333333-3333-4333-8333-333333333333', sessionId: 's', eventType: 'tool_observation', content: '{}', metadata: { toolName: 'Bash' } })
+  ];
+
+  it('stores the generated outcome summary', async () => {
+    const { service, appended } = createService({
+      eventsBySession: { s: sessionEvents },
+      llmSummaryGenerator: async () => ({ text: '- 결정: publish 설정 추가', metadata: { generated: 'llm' } })
+    });
+
+    await expect(service.generateLlmSessionSummary('s')).resolves.toBe(true);
+    expect(appended).toHaveLength(1);
+    expect(appended[0].eventType).toBe('session_summary');
+    expect(appended[0].content).toBe('- 결정: publish 설정 추가');
+  });
+
+  it('stores nothing when the session holds no durable content', async () => {
+    const { service, appended } = createService({
+      eventsBySession: { s: sessionEvents },
+      llmSummaryGenerator: async () => null
+    });
+
+    await expect(service.generateLlmSessionSummary('s')).resolves.toBe(false);
+    expect(appended).toHaveLength(0);
+  });
+
+  it('does not fall back to the rule-based summary when the generator throws', async () => {
+    const { service, appended } = createService({
+      eventsBySession: { s: sessionEvents },
+      llmSummaryGenerator: async () => { throw new Error('provider timed out'); }
+    });
+
+    await expect(service.generateLlmSessionSummary('s')).rejects.toThrow('provider timed out');
+    // Nothing stored: the session stays eligible for a later backfill retry
+    // instead of being permanently filled with table-of-contents text.
+    expect(appended).toHaveLength(0);
+  });
+
+  it('skips sessions that already have a summary', async () => {
+    const generator = vi.fn(async () => ({ text: '- x', metadata: {} }));
+    const { service, appended } = createService({
+      eventsBySession: {
+        s: [...sessionEvents, event({ id: '44444444-4444-4444-8444-444444444444', sessionId: 's', eventType: 'session_summary', content: 'old' })]
+      },
+      llmSummaryGenerator: generator
+    });
+
+    await expect(service.generateLlmSessionSummary('s')).resolves.toBe(false);
+    expect(generator).not.toHaveBeenCalled();
+    expect(appended).toHaveLength(0);
+  });
+
+  it('is inert when no generator is configured', async () => {
+    const { service, appended } = createService({ eventsBySession: { s: sessionEvents } });
+    await expect(service.generateLlmSessionSummary('s')).resolves.toBe(false);
+    expect(appended).toHaveLength(0);
   });
 });

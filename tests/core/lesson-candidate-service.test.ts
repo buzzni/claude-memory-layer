@@ -192,3 +192,84 @@ describe('LessonCandidateService', () => {
     expect(result.candidates).toHaveLength(0);
   });
 });
+
+describe('LessonCandidateService failure recovery semantics', () => {
+  it('keeps sessions that hit a failure and then recovered', async () => {
+    const { store, service, cleanup } = await createFixture();
+    const projectHash = 'project-recovery';
+    const withEarlyFailure = (sessionId: string, offset: number): MemoryEvent[] => [
+      memoryEvent({
+        sessionId,
+        eventType: 'tool_observation',
+        index: offset - 1,
+        metadata: projectMetadata(projectHash),
+        content: 'terminal: npm test -- --run failed with exit_code 1; 2 tests failed'
+      }),
+      ...implementationSession(sessionId, projectHash, offset)
+    ];
+
+    await store.importEvents([
+      ...withEarlyFailure('session-recovered-a', 1),
+      ...withEarlyFailure('session-recovered-b', 21)
+    ]);
+
+    const result = await service.findCandidates({ projectHash });
+    await cleanup();
+
+    // The whole-session failure veto used to drop exactly these sessions, which
+    // are the ones worth learning from.
+    expect(result.eligibleSessions).toBe(2);
+    expect(result.candidates.length).toBeGreaterThan(0);
+  });
+
+  it('drops sessions whose last signal is still a failure', async () => {
+    const { store, service, cleanup } = await createFixture();
+    const projectHash = 'project-unrecovered';
+    const endingInFailure = (sessionId: string, offset: number): MemoryEvent[] => [
+      ...implementationSession(sessionId, projectHash, offset),
+      memoryEvent({
+        sessionId,
+        eventType: 'tool_observation',
+        index: offset + 10,
+        metadata: projectMetadata(projectHash),
+        content: 'terminal: npm run build failed with exit_code 1'
+      })
+    ];
+
+    await store.importEvents([
+      ...endingInFailure('session-broken-a', 1),
+      ...endingInFailure('session-broken-b', 21)
+    ]);
+
+    const result = await service.findCandidates({ projectHash });
+    await cleanup();
+
+    expect(result.eligibleSessions).toBe(0);
+    expect(result.candidates).toEqual([]);
+  });
+
+  it('scans the most recent events rather than the oldest window', async () => {
+    const { store, service, cleanup } = await createFixture();
+    const projectHash = 'project-recent-window';
+    const filler: MemoryEvent[] = Array.from({ length: 30 }, (_, index) => memoryEvent({
+      sessionId: `session-ancient-${index}`,
+      eventType: 'user_prompt',
+      index,
+      metadata: projectMetadata(projectHash),
+      content: 'ancient unrelated chatter'
+    }));
+
+    await store.importEvents([
+      ...filler,
+      ...implementationSession('session-recent-a', projectHash, 100),
+      ...implementationSession('session-recent-b', projectHash, 120)
+    ]);
+
+    // A window smaller than the whole corpus must still reach the newest work.
+    const result = await service.findCandidates({ projectHash, eventLimit: 20 });
+    await cleanup();
+
+    expect(result.candidates.length).toBeGreaterThan(0);
+    expect(result.candidates[0].sourceSessionIds).toEqual(['session-recent-a', 'session-recent-b']);
+  });
+});

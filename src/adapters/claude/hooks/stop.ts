@@ -18,6 +18,8 @@ import { readTurnState, clearTurnState, writeLastAssistantSnippet } from '../../
 import type { StopInput, Config } from '../../../core/types.js';
 import { extractAssistantMessages } from '../transcript/turn-reconstructor.js';
 import { readStdin, readNumberEnv } from './hook-runtime.js';
+import { scheduleSessionSummary } from './semantic-daemon-client.js';
+import { isLlmSummaryEnabled } from '../../llm/session-summary-llm.js';
 
 // Default privacy config
 const DEFAULT_PRIVACY_CONFIG: Config['privacy'] = {
@@ -92,9 +94,18 @@ export async function main(): Promise<string> {
       // non-critical
     }
 
-    // Generate session summary from recent events (rule-based, no LLM needed)
+    // Session summary. The LLM path produces the decisions/failures/constraints
+    // a later session can actually reuse, but it is far too slow to run here, so
+    // the daemon is asked to build it in the background. A failed or skipped
+    // summary leaves the session without one, which keeps it eligible for the
+    // session-start backfill to retry. There is deliberately no rule-based
+    // fallback: that text grounds at 0.9% and is what this path replaces.
     try {
-      await memoryService.generateSessionSummary(input.session_id);
+      if (isLlmSummaryEnabled()) {
+        await scheduleSessionSummary(input.session_id);
+      } else {
+        await memoryService.generateSessionSummary(input.session_id);
+      }
     } catch {
       // non-critical
     }

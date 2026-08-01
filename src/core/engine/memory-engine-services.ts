@@ -23,7 +23,7 @@ import {
   createPerspectiveDeriver
 } from '../operations/index.js';
 import { VectorStore } from '../vector-store.js';
-import { MemoryIngestService } from './memory-ingest-service.js';
+import { MemoryIngestService, type LlmSummaryGenerator } from './memory-ingest-service.js';
 import { MemoryQueryService } from './memory-query-service.js';
 import {
   createRetrievalServices,
@@ -48,6 +48,7 @@ export interface MemoryEngineServicesOptions {
   memoryOperationsConfig?: MemoryOperationsConfig;
   sharedStore?: RetrievalDisclosureSharedStore;
   createToolObservationEmbedding: (payload: ToolObservationPayload) => string;
+  llmSummaryGenerator?: LlmSummaryGenerator;
   factories?: MemoryEngineServicesFactories;
 }
 
@@ -138,7 +139,8 @@ export function createMemoryEngineServices(options: MemoryEngineServicesOptions)
     createToolEmbedding: options.createToolObservationEmbedding,
     getProjectHash: options.getProjectHash,
     getProjectPath: options.getProjectPath,
-    perspectiveDeriver
+    perspectiveDeriver,
+    llmSummaryGenerator: options.llmSummaryGenerator
   });
   const queryService = new MemoryQueryService(
     () => sqliteStore.initialize(),

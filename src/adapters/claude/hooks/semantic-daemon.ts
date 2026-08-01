@@ -8,9 +8,10 @@ import { getSessionProject } from '../../../core/registry/session-registry.js';
 import { WorkerLock } from '../../../core/worker-lock.js';
 import { readNumberEnv } from './hook-runtime.js';
 import { AutoGraduationScheduler, isAutoGraduationEnabled } from './semantic-daemon-graduation.js';
+import { generateLlmSessionSummary, isLlmSummaryEnabled } from '../../llm/session-summary-llm.js';
 
 export interface SemanticDaemonRequest {
-  type?: 'retrieve' | 'graduate';
+  type?: 'retrieve' | 'graduate' | 'summarize';
   sessionId?: string;
   prompt?: string;
   topK?: number;
@@ -52,6 +53,38 @@ let idleTimer: NodeJS.Timeout | null = null;
 let shuttingDown = false;
 let processHandlersInstalled = false;
 
+/**
+ * Build fingerprint of the daemon script this process actually loaded.
+ *
+ * A daemon is long-lived, so `npm install`/`npm run build` replaces dist/ while
+ * the old code keeps serving from memory, and the client only checks whether
+ * *something* is listening. A stale daemon rejects request types it does not
+ * know ("invalid request"), and callers that swallow errors then lose work
+ * silently — observed with the `summarize` request after adding it. The idle
+ * timeout alone is not enough because every connection resets it, so a busy
+ * machine can keep a stale daemon alive indefinitely.
+ */
+function readDaemonScriptFingerprint(): string | null {
+  try {
+    const scriptPath = new URL(import.meta.url).pathname;
+    const stats = fs.statSync(scriptPath);
+    return `${stats.mtimeMs}:${stats.size}`;
+  } catch {
+    // Unreadable script: fall back to "never stale" rather than refusing work.
+    return null;
+  }
+}
+
+const startupScriptFingerprint = readDaemonScriptFingerprint();
+
+export function isDaemonBuildStale(
+  current: string | null = readDaemonScriptFingerprint(),
+  startup: string | null = startupScriptFingerprint
+): boolean {
+  if (startup === null || current === null) return false;
+  return current !== startup;
+}
+
 function scheduleIdleShutdown(): void {
   if (idleTimer) {
     clearTimeout(idleTimer);
@@ -77,7 +110,9 @@ export function isValidSemanticDaemonRequest(
   input: SemanticDaemonRequest
 ): boolean {
   if (typeof input.sessionId !== 'string' || input.sessionId.length === 0) return false;
-  if (input.type === 'graduate') return input.evaluation === undefined || typeof input.evaluation === 'boolean';
+  if (input.type === 'graduate' || input.type === 'summarize') {
+    return input.evaluation === undefined || typeof input.evaluation === 'boolean';
+  }
   return input.type === 'retrieve'
     && typeof input.prompt === 'string'
     && input.prompt.length > 0
@@ -152,6 +187,46 @@ function getProjectKeyForSession(sessionId: string): string {
   return getSessionProject(sessionId)?.projectHash || '__global__';
 }
 
+/**
+ * Generate the outcome-focused session summary outside the hook response path.
+ *
+ * The cached daemon service is read-only, so this builds a short-lived writable
+ * one exactly like the graduation path does.
+ */
+async function runSessionSummaryWithWriterLock(sessionId: string): Promise<void> {
+  if (!isLlmSummaryEnabled()) return;
+
+  const projectInfo = getSessionProject(sessionId);
+  const storagePath = projectInfo
+    ? getProjectStoragePath(projectInfo.projectPath)
+    : path.join(os.homedir(), '.claude-code', 'memory');
+  const writerLock = new WorkerLock(path.join(storagePath, 'summary-worker.lock'));
+  const lockResult = writerLock.acquire();
+  if (!lockResult.acquired) return;
+
+  const service = new MemoryService({
+    storagePath,
+    projectHash: projectInfo?.projectHash,
+    projectPath: projectInfo?.projectPath,
+    readOnly: false,
+    analyticsEnabled: false,
+    sharedStoreConfig: DISABLED_SHARED_STORE_CONFIG,
+    llmSummaryGenerator: (events) => generateLlmSessionSummary(events)
+  });
+
+  try {
+    await service.initialize();
+    await service.generateLlmSessionSummary(sessionId);
+  } catch (error) {
+    if (process.env.CLAUDE_MEMORY_DEBUG) {
+      console.error('[semantic-daemon] session summary failed:', error);
+    }
+  } finally {
+    await service.shutdown().catch(() => undefined);
+    writerLock.release();
+  }
+}
+
 export async function handleSemanticDaemonRequest(raw: string): Promise<SemanticDaemonResponse> {
   const input = parseSemanticDaemonRequest(raw);
   if (!isValidSemanticDaemonRequest(input)) {
@@ -160,6 +235,16 @@ export async function handleSemanticDaemonRequest(raw: string): Promise<Semantic
 
   try {
     const sessionId = input.sessionId!;
+    if (input.type === 'summarize') {
+      // Fire-and-forget: the LLM call is far slower than the Stop hook's
+      // response budget, so acknowledge immediately and summarize in the
+      // background. A failure leaves the session without a summary, which
+      // keeps it eligible for the session-start backfill to retry.
+      if (input.evaluation !== true) {
+        void runSessionSummaryWithWriterLock(sessionId).catch(() => undefined);
+      }
+      return { ok: true, memories: [] };
+    }
     if (input.type === 'graduate') {
       autoGraduationScheduler.schedule(
         getProjectKeyForSession(sessionId),
@@ -215,6 +300,16 @@ export async function handleSemanticDaemonRequest(raw: string): Promise<Semantic
 
 function createServer(): net.Server {
   return net.createServer({ allowHalfOpen: true }, (socket) => {
+    if (isDaemonBuildStale()) {
+      // Drop the connection instead of answering: every client already retries
+      // through ensureDaemonRunning() on a connection error, so refusing here
+      // makes the retry land on a daemon running the new build. Answering with
+      // an error object would instead surface as a normal failed request.
+      socket.destroy();
+      void shutdown(0).catch(() => process.exit(0));
+      return;
+    }
+
     scheduleIdleShutdown();
     socket.setEncoding('utf8');
 

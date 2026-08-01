@@ -37,7 +37,8 @@ import {
   type MemoryRuntimeServicesDeps
 } from './memory-runtime-service.js';
 import type {
-  MemoryIngestService
+  MemoryIngestService,
+  LlmSummaryGenerator
 } from './memory-ingest-service.js';
 import type {
   MemoryQueryService
@@ -88,6 +89,7 @@ export interface MemoryServiceCompositionOptions {
   initialize: () => Promise<void>;
   getProjectHash: () => string | null;
   getProjectPath?: () => string | null;
+  llmSummaryGenerator?: LlmSummaryGenerator;
   factories?: MemoryServiceCompositionFactories;
 }
 
@@ -151,7 +153,8 @@ export function createMemoryServiceComposition(
       payload.toolName,
       payload.metadata || {},
       payload.success
-    )
+    ),
+    llmSummaryGenerator: options.llmSummaryGenerator
   });
 
   const endlessMemoryServices = (factories.createEndlessMemoryServices ?? defaultCreateEndlessMemoryServices)({
