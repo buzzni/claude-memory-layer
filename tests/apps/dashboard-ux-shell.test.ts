@@ -4,6 +4,22 @@ import { join } from 'node:path';
 import * as vm from 'node:vm';
 
 describe('dashboard UX shell affordances', () => {
+  it('labels scope and session totals without implying an all-project aggregate or liveness', () => {
+    const html = readFileSync(join(process.cwd(), 'src/apps/dashboard/index.html'), 'utf-8');
+    expect(html).toContain('Global Store');
+    expect(html).toContain('Stored Sessions');
+    expect(html).not.toContain('All (Global)');
+    expect(html).not.toContain('Active Sessions');
+  });
+
+  it('contains narrow-screen guards for header and usefulness layout', () => {
+    const css = readFileSync(join(process.cwd(), 'src/apps/dashboard/style.css'), 'utf-8');
+    expect(css).toContain('@media (max-width: 600px)');
+    expect(css).toContain('.top-header {\n    flex-direction: column;');
+    expect(css).toContain('.search-wrapper {\n    width: 100% !important;');
+    expect(css).toContain('.usefulness-strip {\n    flex-direction: column;');
+  });
+
   it('declares global project scope context and empty-state containers in the dashboard shell', () => {
     const html = readFileSync(join(process.cwd(), 'src/apps/dashboard/index.html'), 'utf-8');
 

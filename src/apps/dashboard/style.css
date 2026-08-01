@@ -73,6 +73,7 @@ body {
 .app-container {
   display: flex;
   min-height: 100vh;
+  min-width: 0;
 }
 
 /* Sidebar */
@@ -953,6 +954,43 @@ body {
 }
 
 @media (max-width: 600px) {
+  .app-container,
+  .main-content,
+  .page-view,
+  .card {
+    min-width: 0;
+    max-width: 100%;
+  }
+  .main-content {
+    width: 100%;
+    padding: 16px;
+    overflow-x: hidden;
+  }
+  .top-header {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 16px;
+    margin-bottom: 24px;
+  }
+  .header-actions {
+    width: 100%;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  .search-wrapper {
+    width: 100% !important;
+    min-width: 0;
+  }
+  .usefulness-strip {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .usefulness-strip-score {
+    align-items: flex-start;
+  }
+  .usefulness-strip-cta {
+    justify-content: flex-end;
+  }
   .stats-grid {
     grid-template-columns: 1fr;
   }

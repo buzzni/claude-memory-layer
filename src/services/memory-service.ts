@@ -618,8 +618,8 @@ export class MemoryService {
   /**
    * Get helpfulness statistics for dashboard
    */
-  async getHelpfulnessStats(since?: Date): Promise<HelpfulnessStats> {
-    return this.retrievalAnalyticsService.getHelpfulnessStats(since);
+  async getHelpfulnessStats(since?: Date, until?: Date): Promise<HelpfulnessStats> {
+    return this.retrievalAnalyticsService.getHelpfulnessStats(since, until);
   }
 
   /**

@@ -2702,7 +2702,7 @@ export class SQLiteEventStore {
   /**
    * Get helpfulness statistics for dashboard
    */
-  async getHelpfulnessStats(since?: Date): Promise<{
+  async getHelpfulnessStats(since?: Date, until?: Date): Promise<{
     avgScore: number;
     totalEvaluated: number;
     totalRetrievals: number;
@@ -2716,12 +2716,21 @@ export class SQLiteEventStore {
     await this.initialize();
 
     const sinceIso = since?.toISOString();
-    const evaluatedWhere = sinceIso
-      ? `WHERE measured_at IS NOT NULL AND datetime(created_at) >= datetime(?)`
-      : `WHERE measured_at IS NOT NULL`;
-    const totalWhere = sinceIso
-      ? `WHERE datetime(created_at) >= datetime(?)`
-      : ``;
+    const untilIso = until?.toISOString();
+    const timeClauses: string[] = [];
+    const timeParams: string[] = [];
+    if (sinceIso) {
+      timeClauses.push('datetime(created_at) >= datetime(?)');
+      timeParams.push(sinceIso);
+    }
+    if (untilIso) {
+      timeClauses.push('datetime(created_at) < datetime(?)');
+      timeParams.push(untilIso);
+    }
+    const timeWhere = timeClauses.length > 0 ? `WHERE ${timeClauses.join(' AND ')}` : '';
+    const evaluatedWhere = timeClauses.length > 0
+      ? `WHERE measured_at IS NOT NULL AND ${timeClauses.join(' AND ')}`
+      : 'WHERE measured_at IS NOT NULL';
 
     // Read-only dashboards can open legacy DBs where the grounding-column
     // migration never ran; degrade to zeros instead of failing the query.
@@ -2743,13 +2752,13 @@ export class SQLiteEventStore {
          ${groundingSelect}
        FROM memory_helpfulness
        ${evaluatedWhere}`,
-      sinceIso ? [sinceIso] : []
+      timeParams
     );
 
     const totalRow = sqliteGet<Record<string, unknown>>(
       this.db,
-      `SELECT COUNT(*) as total FROM memory_helpfulness ${totalWhere}`,
-      sinceIso ? [sinceIso] : []
+      `SELECT COUNT(*) as total FROM memory_helpfulness ${timeWhere}`,
+      timeParams
     );
 
     return {

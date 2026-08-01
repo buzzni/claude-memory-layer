@@ -198,7 +198,7 @@ function updateChatProjectScope() {
     const proj = state.projects.find(p => p.hash === state.currentProject);
     el.textContent = `Scope: ${proj?.projectName || state.currentProject}`;
   } else {
-    el.textContent = 'Scope: All (Global)';
+    el.textContent = 'Scope: Global Store';
   }
 }
 
@@ -388,4 +388,3 @@ function renderMarkdown(text) {
 
   return html;
 }
-

@@ -210,19 +210,22 @@ function updateOverviewUsefulnessStrip() {
   const metrics = payload.metrics || {};
   const counts = payload.counts || {};
   const label = score.label || 'unknown';
-  scoreEl.textContent = Number(score.value || 0).toFixed(1).replace(/\.0$/, '');
+  const insufficient = score.status === 'insufficient-data' || score.value === null || score.value === undefined;
+  scoreEl.textContent = insufficient ? '-' : Number(score.value).toFixed(1).replace(/\.0$/, '');
   scoreEl.className = `memory-usefulness-score score-${label}`;
 
   const topDiagnostic = (payload.diagnostics || [])[0];
-  noteEl.textContent = topDiagnostic
+  noteEl.textContent = insufficient
+    ? 'Insufficient outcome evidence — evaluate retrieved memories before interpreting this score.'
+    : topDiagnostic
     ? topDiagnostic.title
     : `Memory is ${label} in the last ${payload.window || 'window'} — open Usefulness for per-question evidence.`;
 
   if (metricsEl) {
-    const pct = (v) => v === undefined || v === null ? 'n/a' : `${(v * 100).toFixed(0)}%`;
+    const pct = (v, available = true) => !available || v === undefined || v === null ? 'n/a' : `${(v * 100).toFixed(0)}%`;
     metricsEl.innerHTML = `
-      <span title="Average of measured helpfulness scores"><strong>${pct(metrics.avgHelpfulnessScore)}</strong> helpfulness</span>
-      <span title="How much injected memory content reappears in answers"><strong>${pct(metrics.contentGroundingRate)}</strong> grounding</span>
+      <span title="Average of measured helpfulness scores"><strong>${pct(metrics.avgHelpfulnessScore, !insufficient)}</strong> helpfulness</span>
+      <span title="How much injected memory content reappears in answers"><strong>${pct(metrics.contentGroundingRate, !insufficient)}</strong> grounding</span>
       <span title="Share of prompts that ran a memory check"><strong>${pct(metrics.memoryHitRate)}</strong> hit rate</span>
       <span><strong>${formatNumber(counts.retrievalQueries || 0)}</strong> queries</span>
     `;

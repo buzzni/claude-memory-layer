@@ -36,6 +36,35 @@ async function appendEvent(
 }
 
 describe('usefulness evidence history (store integration)', () => {
+  it('supports a half-open helpfulness time range for KPI comparisons', async () => {
+    const dbPath = tempDbPath();
+    const store = new SQLiteEventStore(dbPath);
+    await store.initialize();
+    const memoryId = await appendEvent(store, 'agent_response', 'old', 'Reusable memory', new Date('2026-01-01T00:00:00Z'));
+    await store.recordRetrieval(memoryId, 's1', 0.9, 'first');
+    await store.recordRetrieval(memoryId, 's2', 0.9, 'second');
+
+    const db = new Database(dbPath);
+    db.prepare(`UPDATE memory_helpfulness SET created_at = ?, measured_at = ?, helpfulness_score = ? WHERE session_id = ?`)
+      .run('2026-01-01T12:00:00.000Z', '2026-01-01T12:05:00.000Z', 1, 's1');
+    db.prepare(`UPDATE memory_helpfulness SET created_at = ?, measured_at = ?, helpfulness_score = ? WHERE session_id = ?`)
+      .run('2026-01-02T12:00:00.000Z', '2026-01-02T12:05:00.000Z', 0.2, 's2');
+    db.close();
+
+    const firstDay = await store.getHelpfulnessStats(
+      new Date('2026-01-01T00:00:00.000Z'),
+      new Date('2026-01-02T00:00:00.000Z')
+    );
+    const secondDay = await store.getHelpfulnessStats(
+      new Date('2026-01-02T00:00:00.000Z'),
+      new Date('2026-01-03T00:00:00.000Z')
+    );
+
+    expect(firstDay).toMatchObject({ totalRetrievals: 1, totalEvaluated: 1, helpful: 1, unhelpful: 0 });
+    expect(secondDay).toMatchObject({ totalRetrievals: 1, totalEvaluated: 1, helpful: 0, unhelpful: 1 });
+    await store.close();
+  });
+
   it('links question -> injected memory -> grounded helpfulness with evidence', async () => {
     const store = new SQLiteEventStore(tempDbPath());
     await store.initialize();

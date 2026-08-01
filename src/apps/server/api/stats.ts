@@ -1245,6 +1245,7 @@ function computeMemoryUsefulnessSummary(
     : 0;
   const scoreValue = round(weightedScore * 100, 1);
   const confidence = round(safeRatio(availableWeight, totalWeight), 2);
+  const hasOutcomeEvidence = totalEvaluated > 0 || contentEvaluated > 0;
   const components = componentSpecs.map((component) => ({
     ...component,
     contribution: component.available ? round(component.value * component.weight * 100, 2) : 0
@@ -1253,9 +1254,10 @@ function computeMemoryUsefulnessSummary(
   return {
     window,
     score: {
-      value: scoreValue,
-      label: usefulnessScoreLabel(scoreValue, confidence),
-      confidence
+      value: hasOutcomeEvidence ? scoreValue : null,
+      label: hasOutcomeEvidence ? usefulnessScoreLabel(scoreValue, confidence) : 'unknown',
+      confidence,
+      ...(hasOutcomeEvidence ? {} : { status: 'insufficient-data' as const })
     },
     metrics,
     counts,
@@ -1999,22 +2001,36 @@ statsRouter.get('/kpi', async (c) => {
     const allEvents = await memoryService.getEventsAfter(new Date(now - lookbackMs).toISOString());
     const events = allEvents.filter((e) => inWindow(e, now, window));
 
-    const helpfulness = await memoryService.getHelpfulnessStats();
-    const usefulRecallRate = helpfulness.totalEvaluated > 0
-      ? round(safeRatio(helpfulness.helpful, helpfulness.totalEvaluated))
+    const windowMs = windowToMs(window);
+    const currentStart = new Date(now - windowMs);
+    const currentEnd = new Date(now);
+    const previousStart = new Date(now - windowMs * 2);
+    const previousEnd = currentStart;
+    const [currentHelpfulness, previousHelpfulness] = await Promise.all([
+      memoryService.getHelpfulnessStats(currentStart, currentEnd),
+      memoryService.getHelpfulnessStats(previousStart, previousEnd)
+    ]);
+    const usefulRecallRate = currentHelpfulness.totalEvaluated > 0
+      ? round(safeRatio(currentHelpfulness.helpful, currentHelpfulness.totalEvaluated))
+      : 0;
+    const previousUsefulRecallRate = previousHelpfulness.totalEvaluated > 0
+      ? round(safeRatio(previousHelpfulness.helpful, previousHelpfulness.totalEvaluated))
       : 0;
 
     const metrics = computeKpiMetrics(events, usefulRecallRate);
 
-    const windowMs = windowToMs(window);
     const prevEvents = allEvents.filter((e) => {
       const age = now - e.timestamp.getTime();
       return age > windowMs && age <= windowMs * 2;
     });
-    const previousMetrics = computeKpiMetrics(prevEvents, usefulRecallRate);
+    const previousMetrics = computeKpiMetrics(prevEvents, previousUsefulRecallRate);
+    const currentUsefulRecallAvailable = currentHelpfulness.totalEvaluated > 0;
+    const previousUsefulRecallAvailable = previousHelpfulness.totalEvaluated > 0;
     const deltas = {
       memoryHitRate: round(metrics.memoryHitRate - previousMetrics.memoryHitRate),
-      usefulRecallRate: round(metrics.usefulRecallRate - previousMetrics.usefulRecallRate),
+      usefulRecallRate: currentUsefulRecallAvailable && previousUsefulRecallAvailable
+        ? round(metrics.usefulRecallRate - previousMetrics.usefulRecallRate)
+        : null,
       avgCompletionTurns: round(metrics.avgCompletionTurns - previousMetrics.avgCompletionTurns, 2),
       timeToFirstValidEditMinutes: round(metrics.timeToFirstValidEditMinutes - previousMetrics.timeToFirstValidEditMinutes, 2),
       reworkRate: round(metrics.reworkRate - previousMetrics.reworkRate),
@@ -2034,9 +2050,21 @@ statsRouter.get('/kpi', async (c) => {
       buckets.set(day, arr);
     }
 
-    const trendDaily = Array.from(buckets.entries())
-      .sort((a, b) => a[0].localeCompare(b[0]))
+    const trendEntries = Array.from(buckets.entries())
+      .sort((a, b) => a[0].localeCompare(b[0]));
+    const trendHelpfulness = new Map(await Promise.all(trendEntries.map(async ([date]) => {
+      const dayStart = new Date(`${date}T00:00:00.000Z`);
+      const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
+      const stats = await memoryService.getHelpfulnessStats(dayStart, dayEnd);
+      return [date, stats] as const;
+    })));
+
+    const trendDaily = trendEntries
       .map(([date, dayEvents]) => {
+        const dayHelpfulness = trendHelpfulness.get(date);
+        const dayUsefulRecallRate = dayHelpfulness && dayHelpfulness.totalEvaluated > 0
+          ? round(safeRatio(dayHelpfulness.helpful, dayHelpfulness.totalEvaluated))
+          : null;
         const dayPrompts = dayEvents.filter((e) => e.eventType === 'user_prompt');
         const dayPromptCount = dayPrompts.length;
         const dayMemoryHit = dayPrompts.filter((p) => (p.metadata as any)?.adherence?.checked).length;
@@ -2088,7 +2116,7 @@ statsRouter.get('/kpi', async (c) => {
         return {
           date,
           memoryHitRate: round(safeRatio(dayMemoryHit, dayPromptCount)),
-          usefulRecallRate,
+          usefulRecallRate: dayUsefulRecallRate,
           reworkRate: round(safeRatio(dayReworkCount, dayEditActions.length)),
           postChangeFailureRate: round(safeRatio(dayFailedTests.length, dayTests.length)),
           avgCompletionTurns: round(safeRatio(dayTurnsTotal, dayTurnsSamples), 2)
@@ -2096,7 +2124,7 @@ statsRouter.get('/kpi', async (c) => {
       });
 
     const alerts: Array<{ metric: string; level: 'warn'; message: string; value: number; threshold: number }> = [];
-    if (metrics.usefulRecallRate < thresholds.usefulRecallRateMin) {
+    if (currentUsefulRecallAvailable && metrics.usefulRecallRate < thresholds.usefulRecallRateMin) {
       alerts.push({ metric: 'usefulRecallRate', level: 'warn', message: 'Useful recall rate is below threshold', value: metrics.usefulRecallRate, threshold: thresholds.usefulRecallRateMin });
     }
     if (metrics.reworkRate > thresholds.reworkRateMax) {
@@ -2117,6 +2145,14 @@ statsRouter.get('/kpi', async (c) => {
       metrics,
       previousMetrics,
       deltas,
+      availability: {
+        usefulRecallRate: {
+          currentEvaluated: currentHelpfulness.totalEvaluated,
+          previousEvaluated: previousHelpfulness.totalEvaluated,
+          currentAvailable: currentUsefulRecallAvailable,
+          previousAvailable: previousUsefulRecallAvailable
+        }
+      },
       trend: {
         daily: trendDaily
       },

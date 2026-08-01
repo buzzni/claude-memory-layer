@@ -86,13 +86,14 @@ function loadOverviewWithElements(elements: Record<string, TestElement>, files =
     ? ', renderUsefulnessHistory, updateOverviewUsefulnessStrip'
     : '';
   vm.runInNewContext(
-    `${source}\n;globalThis.__dashboardTestHooks = { state, updateMemoryUsefulnessUI, updateRetrievalTraceUI${usefulnessHooks} };`,
+    `${source}\n;globalThis.__dashboardTestHooks = { state, updateMemoryUsefulnessUI, updateRetrievalTraceUI, updateKpiCardsUI${usefulnessHooks} };`,
     context
   );
   return (context as unknown as { __dashboardTestHooks: {
     state: Record<string, any>;
     updateMemoryUsefulnessUI: () => void;
     updateRetrievalTraceUI: () => void;
+    updateKpiCardsUI: () => void;
     renderUsefulnessHistory: () => void;
     updateOverviewUsefulnessStrip: () => void;
   }}).__dashboardTestHooks;
@@ -271,13 +272,13 @@ describe('dashboard memory usefulness stats', () => {
     mocks.service.getRecentRetrievalTraces.mockResolvedValue([]);
     const zeroRes = await createApp().request('/api/stats/usefulness?window=24h');
     const zeroBody = await zeroRes.json();
-    expect(zeroBody.score).toEqual({ value: 0, label: 'low', confidence: 0.3 });
+    expect(zeroBody.score).toEqual({ value: null, label: 'unknown', confidence: 0.3, status: 'insufficient-data' });
 
     mocks.service.getEventsAfter.mockResolvedValue([]);
     mocks.service.getRecentRetrievalTraces.mockResolvedValue([]);
     const emptyRes = await createApp().request('/api/stats/usefulness?window=24h');
     const emptyBody = await emptyRes.json();
-    expect(emptyBody.score).toEqual({ value: 0, label: 'unknown', confidence: 0 });
+    expect(emptyBody.score).toEqual({ value: null, label: 'unknown', confidence: 0, status: 'insufficient-data' });
   });
 
   it('returns per-question evidence history without rewritten query text', async () => {
@@ -855,6 +856,58 @@ describe('dashboard memory usefulness stats', () => {
     expect(elements['overview-usefulness-metrics'].innerHTML).toContain('55%');
     expect(elements['overview-usefulness-metrics'].innerHTML).toContain('42');
     expect(elements['overview-usefulness-note'].textContent).toContain('good');
+  });
+
+  it('renders insufficient outcome evidence without a misleading numeric score', () => {
+    const elements = {
+      'overview-usefulness-score': new TestElement(),
+      'overview-usefulness-note': new TestElement(),
+      'overview-usefulness-metrics': new TestElement(),
+    };
+    const hooks = loadOverviewWithElements(elements, ['state.js', 'views.js', 'overview.js', 'usefulness.js']);
+
+    hooks.state.memoryUsefulness = {
+      window: '7d',
+      score: { value: null, label: 'unknown', confidence: 0.4, status: 'insufficient-data' },
+      metrics: { memoryHitRate: 1, retrievalUsageRate: 1 },
+      counts: { retrievalQueries: 4, totalEvaluated: 0 },
+      diagnostics: [],
+    };
+
+    hooks.updateOverviewUsefulnessStrip();
+
+    expect(elements['overview-usefulness-score'].textContent).toBe('-');
+    expect(elements['overview-usefulness-score'].className).toContain('score-unknown');
+    expect(elements['overview-usefulness-note'].textContent).toContain('Insufficient outcome evidence');
+    expect(elements['overview-usefulness-metrics'].innerHTML).toContain('<strong>n/a</strong> helpfulness');
+    expect(elements['overview-usefulness-metrics'].innerHTML).toContain('<strong>n/a</strong> grounding');
+  });
+
+  it('renders unevaluated Useful Recall KPI as unavailable instead of zero percent', () => {
+    const elements = {
+      'kpi-useful-recall': new TestElement(),
+      'kpi-useful-recall-delta': new TestElement(),
+      'kpi-completion-turns': new TestElement(),
+      'kpi-rework-rate': new TestElement(),
+      'kpi-failure-rate': new TestElement(),
+      'kpi-completion-turns-delta': new TestElement(),
+      'kpi-rework-rate-delta': new TestElement(),
+      'kpi-failure-rate-delta': new TestElement(),
+      'kpi-alerts': new TestElement(),
+    };
+    const hooks = loadOverviewWithElements(elements);
+    hooks.state.kpi = {
+      metrics: { usefulRecallRate: 0, avgCompletionTurns: 1, reworkRate: 0, postChangeFailureRate: 0 },
+      deltas: { usefulRecallRate: null, avgCompletionTurns: 0, reworkRate: 0, postChangeFailureRate: 0 },
+      availability: { usefulRecallRate: { currentAvailable: false, previousAvailable: false } },
+      alerts: [],
+    };
+
+    hooks.updateKpiCardsUI();
+
+    expect(elements['kpi-useful-recall'].textContent).toBe('-');
+    expect(elements['kpi-useful-recall-delta'].textContent).toBe('No evaluated recalls');
+    expect(elements['kpi-alerts'].innerHTML).toContain('No KPI alerts');
   });
 
   it('renders the usefulness score and component percentages in the overview dashboard', () => {
