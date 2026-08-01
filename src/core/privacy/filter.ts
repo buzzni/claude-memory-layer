@@ -30,7 +30,10 @@ const NOT_A_SECRET_VALUE =
   + '|Promise|Record|Array|Partial|Readonly)\\b)'
   // `token = json.dumps(...)` assigns in code: the secret would be the result
   // of the call, not this expression.
-  + '(?![A-Za-z_$][\\w.$]*\\s*\\()';
+  + '(?![A-Za-z_$][\\w.$]*\\s*\\()'
+  // `var token = ++fitRetryToken` — a credential literal never starts with a
+  // unary/increment operator, so this is unambiguously a variable reference.
+  + '(?!\\+\\+|--|!|~)';
 
 const SENSITIVE_PATTERNS = [
   // Credential-bearing URLs/connection strings with userinfo before the host.
