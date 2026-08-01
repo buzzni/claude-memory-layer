@@ -1,4 +1,4 @@
-export type HookMemorySource = 'semantic' | 'keyword' | 'graduated' | 'episode' | 'unknown';
+export type HookMemorySource = 'semantic' | 'keyword' | 'graduated' | 'episode' | 'lesson' | 'unknown';
 
 export interface HookMemoryCandidate {
   type: string;
@@ -147,12 +147,21 @@ function rankHookCandidates(
     .filter(({ candidate }) => !query || (
       candidate.source === 'episode' && candidate.episodeLinked && candidate.episodeSeedAligned
     ) || hasQueryMemoryAlignment(query, candidate.content, 2))
+    // The rule-based session-summary generator emits a table of contents
+    // ("Session with N prompts. Topics discussed: ..."), not a result. The
+    // graduated lane already excludes this via scoreGraduatedEvidence; the
+    // semantic/keyword lanes must exclude it too or it keeps winning the
+    // evidenceUtilityBonus('session_summary') = 0.12 slot on session_summary's
+    // own high type bonus alone, with nothing answerable inside it.
+    .filter(({ candidate }) =>
+      candidate.type !== 'session_summary' || !isPromptOnlySessionSummary(candidate.content)
+    )
     .map(({ candidate, index }) => ({
       candidate,
       index,
       effectiveScore: Math.max(0,
         (candidate.score ?? 0)
-        + (query ? evidenceUtilityBonus(candidate.type) : 0)
+        + (query ? evidenceUtilityBonus(candidate.type, query) : 0)
         + (query ? graduatedEvidenceBonus(candidate) : 0)
         + (candidate.source === 'episode' && candidate.episodeLinked && candidate.episodeSeedStrongAligned
           ? 0.42
@@ -185,27 +194,55 @@ function applyScoreCliff(
 
 function applyAnswerabilityGate(candidates: HookMemoryCandidate[], query: string): HookMemoryCandidate[] {
   const answerEvidence = candidates.filter((candidate) =>
-    candidate.type === 'agent_response' || candidate.type === 'session_summary'
+    candidate.type === 'agent_response'
+    || candidate.type === 'session_summary'
+    || candidate.type === 'lesson'
   );
   if (answerEvidence.length > 0) {
     const toolEvidence = hasToolEvidenceIntent(query)
-      ? candidates.filter((candidate) => candidate.type === 'tool_observation')
+      ? candidates.filter((candidate) =>
+        candidate.type === 'tool_observation' && toolEvidenceMatchesQueryAnchors(candidate, query)
+      )
       : [];
     return [...answerEvidence, ...toolEvidence];
   }
-  const toolEvidence = candidates.filter((candidate) => candidate.type === 'tool_observation');
-  if (toolEvidence.length > 0) return toolEvidence;
+  // No tool-only fallback. Injecting raw tool attempts because nothing better
+  // survived ranking produced 131 traces whose memories were never used in an
+  // answer (grounding 0.2%). Abstaining is cheaper than unusable context.
   return isContinuationQuery(query) ? candidates : [];
 }
 
-function hasToolEvidenceIntent(query: string): boolean {
-  return /\b(?:kubectl|curl|sql|command|log|output|stack trace)\b|(?:명령|로그|출력|스택\s*트레이스)/iu.test(query);
+/**
+ * A tool observation may only accompany an answer when the query's distinctive
+ * identifiers actually occur in it. Queries without identifiers cannot be
+ * verified this way, so they keep the intent-only behaviour.
+ */
+function toolEvidenceMatchesQueryAnchors(candidate: HookMemoryCandidate, query: string): boolean {
+  const anchors = identifierAnchors(query);
+  if (anchors.length === 0) return true;
+  const lowered = candidate.content.toLowerCase();
+  return anchors.some((anchor) => lowered.includes(anchor.toLowerCase()));
 }
 
-function evidenceUtilityBonus(type: string): number {
+function hasToolEvidenceIntent(query: string): boolean {
+  // "command", "log", and "output" are deliberately absent: <task-notification>
+  // payloads embed <output-file>, which made nearly every notification look like
+  // a tool-evidence request. Retrieval queries are also enriched with the
+  // previous turn, so generic words match far beyond the current question.
+  return /\b(?:kubectl|curl|psql|sql|stderr|stdout|traceback|stack\s*trace|exit\s*code)\b|(?:명령어|스택\s*트레이스|종료\s*코드|터미널)/iu
+    .test(query);
+}
+
+function evidenceUtilityBonus(type: string, query: string): number {
+  // Lessons are human-reviewed runbooks rather than transcript, so they outrank
+  // every derived evidence type.
+  if (type === 'lesson') return 0.16;
   if (type === 'session_summary') return 0.12;
   if (type === 'agent_response') return 0.10;
-  if (type === 'tool_observation') return 0.03;
+  // Tool observations only earn a slot when the question actually asks for tool
+  // evidence; otherwise they are pushed below answer evidence instead of
+  // consuming the bounded injection budget.
+  if (type === 'tool_observation') return hasToolEvidenceIntent(query) ? 0.03 : -0.15;
   if (type === 'user_prompt') return -0.10;
   return 0;
 }
@@ -275,6 +312,66 @@ export function scoreGraduatedEvidence(query: string, candidate: HookMemoryCandi
     + levelPrior
     + accessPrior
   );
+}
+
+export interface LessonEvidenceInput {
+  lessonId: string;
+  name: string;
+  trigger?: string;
+  steps: string[];
+  failureModes?: string[];
+  confidence: number;
+}
+
+/**
+ * Render a curated lesson as injectable evidence, scored by query coverage.
+ *
+ * Lessons live outside the events table, so they reach the prompt only through
+ * this lane. The score stays lexical and deterministic for the same reason the
+ * graduated lane does: a reviewed runbook must not outrank exact evidence just
+ * for being curated, so confidence is only a small tie-breaker.
+ */
+export function scoreLessonEvidence(
+  query: string,
+  lesson: LessonEvidenceInput
+): HookMemoryCandidate | null {
+  const content = formatLessonContent(lesson);
+  if (!hasQueryMemoryAlignment(query, content, 2)) return null;
+
+  const queryTerms = meaningfulTerms(query);
+  const contentTerms = new Set(meaningfulTerms(content));
+  const overlap = queryTerms.filter((term) => contentTerms.has(term)).length;
+  if (overlap < Math.min(3, queryTerms.length)) return null;
+
+  const coverage = overlap / Math.max(1, Math.min(queryTerms.length, 8));
+  const anchors = identifierAnchors(query);
+  const lowered = content.toLowerCase();
+  const matchedAnchors = anchors.filter((anchor) => lowered.includes(anchor.toLowerCase())).length;
+  const anchorCoverage = anchors.length === 0 ? 0 : matchedAnchors / anchors.length;
+  if (anchors.length >= 2 && matchedAnchors < Math.ceil(anchors.length * 0.6)) return null;
+
+  const confidencePrior = Math.min(0.05, Math.max(0, lesson.confidence) * 0.05);
+  const score = Math.min(0.98, 0.5 + coverage * 0.28 + anchorCoverage * 0.12 + confidencePrior);
+
+  return {
+    id: lesson.lessonId,
+    type: 'lesson',
+    content,
+    score,
+    source: 'lesson'
+  };
+}
+
+function formatLessonContent(lesson: LessonEvidenceInput): string {
+  const parts = [lesson.name];
+  if (lesson.trigger) parts.push(`적용 시점: ${lesson.trigger}`);
+  if (lesson.steps.length > 0) {
+    parts.push(lesson.steps.slice(0, 8).map((step) => `- ${step}`).join('\n'));
+  }
+  if (lesson.failureModes && lesson.failureModes.length > 0) {
+    parts.push(`주의: ${lesson.failureModes.slice(0, 4).join(' / ')}`);
+  }
+  return parts.join('\n');
 }
 
 function isPromptOnlySessionSummary(content: string): boolean {
@@ -366,7 +463,12 @@ function thresholdFor(candidate: HookMemoryCandidate, policy: HookInjectionPolic
       ? policy.fallbackKeywordMinScore
       : policy.keywordMinScore;
   }
-  if (candidate.source === 'semantic' || candidate.source === 'graduated' || candidate.source === 'episode') {
+  if (
+    candidate.source === 'semantic'
+    || candidate.source === 'graduated'
+    || candidate.source === 'episode'
+    || candidate.source === 'lesson'
+  ) {
     return policy.semanticMinScore;
   }
   return policy.minScore;

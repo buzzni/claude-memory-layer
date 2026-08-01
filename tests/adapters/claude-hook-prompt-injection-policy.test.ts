@@ -6,6 +6,7 @@ import {
   filterHookInjectableMemories,
   getHookInjectionPolicy,
   scoreGraduatedEvidence,
+  scoreLessonEvidence,
   selectHookEpisodeSeeds,
   summarizeHookInjectionConfidence,
   type HookMemoryCandidate
@@ -305,6 +306,30 @@ describe('Claude hook prompt injection policy', () => {
       .toEqual([answer, tool]);
   });
 
+  it('abstains instead of falling back to tool attempts when no answer evidence survives', () => {
+    const tool: HookMemoryCandidate = {
+      id: 'tool', type: 'tool_observation', content: 'Argo CD 배포 pod 상태를 출력했다', score: 0.92, source: 'semantic'
+    };
+    const tail: HookMemoryCandidate = {
+      id: 'tail', type: 'tool_observation', content: 'Argo CD 배포 pod 이전 상태', score: 0.88, source: 'semantic'
+    };
+    expect(filterHookInjectableMemories([tool, tail], getHookInjectionPolicy(), 'Argo CD 배포 pod 원인을 알려줘'))
+      .toEqual([]);
+  });
+
+  it('requires a query identifier anchor before attaching tool evidence to an answer', () => {
+    const answer: HookMemoryCandidate = {
+      id: 'answer', type: 'agent_response',
+      content: 'benimaru v1 pod 재기동 원인은 stderr 의 timestamp 불일치였다', score: 0.86, source: 'semantic'
+    };
+    const unrelatedTool: HookMemoryCandidate = {
+      id: 'tool', type: 'tool_observation',
+      content: 'benimaru v2 pod stderr 를 출력했다', score: 0.9, source: 'semantic'
+    };
+    expect(filterHookInjectableMemories([answer, unrelatedTool], getHookInjectionPolicy(), 'benimaru v1 pod stderr 원인'))
+      .toEqual([answer]);
+  });
+
   it('uses promoted answer evidence as a bounded prior rather than promoting raw requests', () => {
     const query = 'aiaas ssgshop benimaru v1 pod CrashLoopBackOff 직접 원인';
     const exact: HookMemoryCandidate = {
@@ -341,6 +366,25 @@ describe('Claude hook prompt injection policy', () => {
       id: 'summary', type: 'session_summary', source: 'graduated', memoryLevel: 'L2', accessCount: 5,
       content: 'Session with 1 user prompts and 0 responses. Topics discussed: PR 167 코드 리뷰 해줘'
     })).toBeNull();
+  });
+
+  it('rejects prompt-only generated summaries from the semantic/keyword lanes too', () => {
+    const tocSummary: HookMemoryCandidate = {
+      id: 'toc-en', type: 'session_summary', source: 'semantic', score: 0.95,
+      content: 'Session with 1 user prompts and 0 responses.\nTopics discussed:\n- PR 167 코드 리뷰 해줘'
+    };
+    const tocSummaryKo: HookMemoryCandidate = {
+      id: 'toc-ko', type: 'session_summary', source: 'keyword', score: 0.95,
+      content: '[2026-07-28] 1턴 세션. 주요 작업: PR 167 코드 리뷰 해줘. 사용 툴: Bash, Edit'
+    };
+    const answer: HookMemoryCandidate = {
+      id: 'answer', type: 'agent_response', source: 'semantic', score: 0.7,
+      content: 'PR 167 코드 리뷰 핵심 위험은 인증 우회 가능성이었다'
+    };
+    expect(filterHookInjectableMemories([tocSummary, answer], getHookInjectionPolicy(), 'PR 167 코드 리뷰 핵심 위험'))
+      .toEqual([answer]);
+    expect(filterHookInjectableMemories([tocSummaryKo, answer], getHookInjectionPolicy(), 'PR 167 코드 리뷰 핵심 위험'))
+      .toEqual([answer]);
   });
 
   it('uses a tighter score cliff for calibrated graduated evidence', () => {
@@ -396,5 +440,48 @@ describe('Claude hook prompt injection policy', () => {
       source: 'keyword'
     }));
     expect(filterHookInjectableMemories(hookCandidates, getHookInjectionPolicy())).toEqual([]);
+  });
+});
+
+describe('curated lesson injection lane', () => {
+  const lesson = {
+    lessonId: 'lesson-1',
+    name: 'preview 포트 충돌 복구 절차',
+    trigger: 'preview 서버가 EADDRINUSE 로 죽을 때',
+    steps: ['남은 preview 프로세스를 정리한다', '포트 바인딩을 확인한다'],
+    failureModes: ['프로세스를 죽이지 않고 재시도하면 같은 오류가 반복된다'],
+    confidence: 0.9
+  };
+
+  it('surfaces a lesson that covers the query', () => {
+    const candidate = scoreLessonEvidence('preview 서버 EADDRINUSE 포트 충돌 복구', lesson);
+    expect(candidate).not.toBeNull();
+    expect(candidate?.type).toBe('lesson');
+    expect(candidate?.source).toBe('lesson');
+    expect(candidate?.content).toContain('preview 포트 충돌 복구 절차');
+    expect(candidate?.content).toContain('남은 preview 프로세스를 정리한다');
+  });
+
+  it('abstains when the lesson does not cover the query', () => {
+    expect(scoreLessonEvidence('데스크탑 앱 자동 업데이트 서명 오류', lesson)).toBeNull();
+  });
+
+  it('treats a lesson as answer evidence so it is not dropped by the gate', () => {
+    const query = 'preview 서버 EADDRINUSE 포트 충돌 복구';
+    const candidate = scoreLessonEvidence(query, lesson)!;
+    expect(filterHookInjectableMemories([candidate], getHookInjectionPolicy(), query))
+      .toEqual([candidate]);
+  });
+
+  it('ranks a curated lesson above a same-scored transcript answer', () => {
+    const query = 'preview 서버 EADDRINUSE 포트 충돌 복구';
+    const lessonCandidate = scoreLessonEvidence(query, lesson)!;
+    const answer: HookMemoryCandidate = {
+      id: 'answer', type: 'agent_response', source: 'semantic',
+      score: lessonCandidate.score,
+      content: 'preview 서버 EADDRINUSE 포트 충돌은 남은 프로세스 때문이었다'
+    };
+    const result = filterHookInjectableMemories([answer, lessonCandidate], getHookInjectionPolicy(), query);
+    expect(result[0].type).toBe('lesson');
   });
 });
