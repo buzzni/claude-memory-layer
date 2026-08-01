@@ -25,3 +25,4 @@ export * from './perspective-query-agent.js';
 export * from './perspective-consolidator.js';
 export * from './perspective-session-actor-backfill.js';
 export * from './tool-observation-vector-backfill.js';
+export * from './credential-redaction.js';
