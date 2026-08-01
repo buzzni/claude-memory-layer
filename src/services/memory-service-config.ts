@@ -2,6 +2,7 @@ import * as os from 'os';
 import * as path from 'path';
 
 import type { MemoryOperationsConfig, SharedStoreConfig } from '../core/types.js';
+import type { LlmSummaryGenerator } from '../core/engine/memory-ingest-service.js';
 
 export interface MemoryServiceConfig {
   storagePath: string;
@@ -15,6 +16,11 @@ export interface MemoryServiceConfig {
   embeddingOnly?: boolean;
   /** AgentMemory-inspired operations feature config (default: disabled). */
   operations?: MemoryOperationsConfig;
+  /**
+   * Outcome-focused session summary generator. Injected by the adapter layer
+   * (it shells out to a local CLI) so core and services stay platform-agnostic.
+   */
+  llmSummaryGenerator?: LlmSummaryGenerator;
 }
 
 const SHARED_STORAGE_PATH = path.join(os.homedir(), '.claude-code', 'memory', 'shared');
