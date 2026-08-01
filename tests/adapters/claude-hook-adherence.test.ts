@@ -157,7 +157,10 @@ describe('formatMemoryContext', () => {
   // Mirrors the scraper in scripts/evaluate-memory-field.ts, which recovers the
   // injected event ids from this text to score retrieval. Any marker the
   // instruction text adds would be counted as a selected memory for every case.
-  const EVAL_EVENT_MARKER = /\[event:([a-f0-9-]+)\]/giu;
+  // Built per call: a shared /g regex carries lastIndex between assertions.
+  function scrapeEventIds(context: string): string[] {
+    return Array.from(context.matchAll(/\[event:([a-f0-9-]+)\]/giu), (match) => match[1] ?? '');
+  }
 
   it('marks each memory with its event id for the evaluation harness', () => {
     const context = formatMemoryContext(
@@ -168,8 +171,7 @@ describe('formatMemoryContext', () => {
       'PR 167'
     );
 
-    const scraped = Array.from(context.matchAll(EVAL_EVENT_MARKER), (match) => match[1]);
-    expect(scraped).toEqual([
+    expect(scrapeEventIds(context)).toEqual([
       '3cf7e0c0-5dbe-4d91-90ed-524254e6bd4f',
       '70958fdb-14fe-4385-a8ad-24cbaa4ffc60'
     ]);
@@ -179,20 +181,22 @@ describe('formatMemoryContext', () => {
     const context = formatMemoryContext([{ type: 'lesson', content: '아이디 없는 근거' }], '질문');
 
     expect(context).toContain('아이디 없는 근거');
-    expect(Array.from(context.matchAll(EVAL_EVENT_MARKER))).toHaveLength(0);
+    expect(scrapeEventIds(context)).toEqual([]);
   });
 
   it('asks the model to self-report the memories it actually relied on', () => {
     const context = formatMemoryContext(
-      [{ type: 'lesson', content: '어떤 메모리 내용', id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' }],
-      '질문'
+      [{ type: 'lesson', content: 'some recalled decision', id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' }],
+      'question'
     );
 
     expect(context).toContain('📎');
-    expect(context).toContain('actually relies');
-    // Must stay language-neutral: this plugin ships to non-Korean users too.
-    expect(context).toContain('language of the conversation');
     expect(context).toMatch(/omit the line/i);
+    // The instruction must carry no hardcoded natural language of its own: this
+    // plugin ships to non-Korean users, so the label has to follow the
+    // conversation. Asserting on the absence of Hangul pins the actual
+    // invariant rather than one particular English phrasing of it.
+    expect(context).not.toMatch(/[가-힣]/);
   });
 
   it('returns an empty string when there is nothing to inject', () => {
