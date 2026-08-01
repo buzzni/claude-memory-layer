@@ -33,7 +33,12 @@ const NOT_A_SECRET_VALUE =
   + '(?![A-Za-z_$][\\w.$]*\\s*\\()'
   // `var token = ++fitRetryToken` — a credential literal never starts with a
   // unary/increment operator, so this is unambiguously a variable reference.
-  + '(?!\\+\\+|--|!|~)';
+  + '(?!\\+\\+|--|!|~)'
+  // `const TOKEN = process.env.TOKEN || randomBytes(32)…` reads the variable
+  // rather than containing it — a very common Node.js pattern in this kind of
+  // codebase, and unambiguous because a literal secret is never spelled
+  // `process.env.<NAME>`.
+  + '(?!process\\.env\\.)';
 
 const SENSITIVE_PATTERNS = [
   // Credential-bearing URLs/connection strings with userinfo before the host.
