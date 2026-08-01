@@ -200,6 +200,16 @@ export class MemoryIngestService {
   }
 
   /**
+   * Session ids missing a summary, for callers that want to backfill through
+   * the LLM path (see semantic-daemon-client's scheduleSessionSummary) rather
+   * than this class's own rule-based generateSessionSummary.
+   */
+  async getSessionsWithoutSummary(currentSessionId: string, limit = 5): Promise<string[]> {
+    await this.initialize();
+    return this.eventStore.getSessionsWithoutSummary(currentSessionId, limit);
+  }
+
+  /**
    * Generate a rule-based session summary from stored events.
    * Skips short sessions and sessions that already contain a summary event.
    */

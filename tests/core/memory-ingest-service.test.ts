@@ -415,3 +415,15 @@ describe('MemoryIngestService LLM session summary', () => {
     expect(appended).toHaveLength(0);
   });
 });
+
+describe('MemoryIngestService.getSessionsWithoutSummary', () => {
+  it('delegates to the event store without generating a rule-based summary', async () => {
+    const { service, store } = createService({
+      eventsBySession: { s: [] }
+    });
+    store.getSessionsWithoutSummary = vi.fn(async () => ['a', 'b']);
+
+    await expect(service.getSessionsWithoutSummary('current', 5)).resolves.toEqual(['a', 'b']);
+    expect(store.getSessionsWithoutSummary).toHaveBeenCalledWith('current', 5);
+  });
+});
