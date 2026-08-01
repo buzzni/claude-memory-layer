@@ -23,6 +23,7 @@ import { writeTurnState, readLastAssistantSnippet } from '../../../core/turn-sta
 import { retrieveSemanticMemories, scheduleSemanticGraduation } from './semantic-daemon-client.js';
 import { readStdin, readNumberEnv } from './hook-runtime.js';
 import { formatClaudeContextHookOutput, isHookEvaluationMode } from './hook-output.js';
+import { applyPrivacyFilter } from '../../../core/privacy/index.js';
 import {
   filterHookInjectableMemories,
   getHookInjectionPolicy,
@@ -32,7 +33,7 @@ import {
   summarizeHookInjectionConfidence,
   type HookMemoryCandidate
 } from './prompt-injection-policy.js';
-import type { UserPromptSubmitInput, UserPromptSubmitOutput } from '../../../core/types.js';
+import type { Config, UserPromptSubmitInput, UserPromptSubmitOutput } from '../../../core/types.js';
 
 // Configuration. All numeric env vars go through readNumberEnv so an invalid
 // value (e.g. a typo) falls back to the default instead of producing NaN, which
@@ -69,6 +70,37 @@ export interface AdherenceState {
 }
 
 export type AdherenceDecision = { run: boolean; reason: string };
+
+/**
+ * Privacy config for prompt persistence.
+ *
+ * The Stop hook filters assistant responses and PostToolUse filters tool
+ * output, but user prompts were stored verbatim — so a credential pasted into
+ * a question was written to the events table and then copied into every
+ * derived artifact: query_preview, retrieval_traces, the adherence state file
+ * and any session summary quoting the prompt. Real leaks were found this way.
+ */
+const PROMPT_PRIVACY_CONFIG: Config['privacy'] = {
+  excludePatterns: ['password', 'secret', 'api_key', 'token', 'bearer'],
+  anonymize: false,
+  privateTags: {
+    enabled: true,
+    marker: '[PRIVATE]',
+    preserveLineCount: false,
+    supportedFormats: ['xml']
+  }
+};
+
+/**
+ * Redact a prompt before it is persisted.
+ *
+ * Retrieval itself keeps using the raw prompt: redaction is only about what
+ * gets written down, and searching on the redacted form would lose recall for
+ * questions that merely mention a credential-shaped word.
+ */
+export function redactForStorage(text: string): string {
+  return applyPrivacyFilter(text, PROMPT_PRIVACY_CONFIG).content;
+}
 
 /**
  * Determine if a prompt is worth storing as a memory.
@@ -605,7 +637,7 @@ export async function main(): Promise<string> {
               m.id,
               input.session_id,
               m.score ?? minScore,
-              input.prompt,
+              redactForStorage(input.prompt),
               {
                 traceId: retrievalTraceId,
                 source: 'user_prompt',
@@ -626,8 +658,8 @@ export async function main(): Promise<string> {
           await memoryService.recordQueryTrace({
             traceId: retrievalTraceId,
             sessionId: input.session_id,
-            queryText: retrievalQuery,
-            rawQueryText: input.prompt,
+            queryText: redactForStorage(retrievalQuery),
+            rawQueryText: redactForStorage(input.prompt),
             queryRewriteKind,
             strategy: RETRIEVAL_MODE,
             candidateEventIds: allCandidateIds,
@@ -650,7 +682,7 @@ export async function main(): Promise<string> {
     if (!isHookEvaluationMode() && shouldStorePrompt(input.prompt)) {
       await memoryService.storeUserPrompt(
         input.session_id,
-        input.prompt,
+        redactForStorage(input.prompt),
         {
           turnId,
           adherence: {
@@ -667,7 +699,9 @@ export async function main(): Promise<string> {
         sessionId: input.session_id,
         turnCount: currentTurn,
         lastCheckedTurn: adherenceDecision.run ? currentTurn : adherenceState.lastCheckedTurn,
-        lastPrompt: input.prompt,
+        // Also redacted: this file feeds the next turn's retrieval-query
+        // enrichment, so an unfiltered prompt here would resurface a secret.
+        lastPrompt: redactForStorage(input.prompt),
         lastReason: adherenceDecision.reason,
         updatedAt: new Date().toISOString()
       });

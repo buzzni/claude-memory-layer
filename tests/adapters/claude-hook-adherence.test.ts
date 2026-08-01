@@ -6,7 +6,8 @@ import {
   shouldRunAdherenceCheck,
   type AdherenceState,
   selectEvidencePreview,
-  formatMemoryContext
+  formatMemoryContext,
+  redactForStorage
 } from '../../src/adapters/claude/hooks/user-prompt-submit.js';
 
 function adherenceState(overrides: Partial<AdherenceState> = {}): AdherenceState {
@@ -201,5 +202,22 @@ describe('formatMemoryContext', () => {
 
   it('returns an empty string when there is nothing to inject', () => {
     expect(formatMemoryContext([], '질문')).toBe('');
+  });
+});
+
+describe('prompt redaction before persistence', () => {
+  // Assistant responses and tool output were already filtered; user prompts
+  // were not, so a pasted credential reached the events table and from there
+  // query_preview, retrieval_traces and the adherence state file.
+  it('redacts credentials from anything written down', () => {
+    expect(redactForStorage('id:tester@example.com password:Zt9wQx2027@ 로 로그인해줘'))
+      .not.toContain('Zt9wQx2027');
+    expect(redactForStorage('hugging face token hf_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 왜 안되지'))
+      .not.toContain('hf_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789');
+  });
+
+  it('leaves an ordinary question unchanged', () => {
+    const question = 'preview 서버가 죽는 원인이 뭐야?';
+    expect(redactForStorage(question)).toBe(question);
   });
 });

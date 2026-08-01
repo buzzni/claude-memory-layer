@@ -97,3 +97,34 @@ describe('privacy filter', () => {
     expect(result.content).not.toContain('[REDACTED]');
   });
 });
+
+describe('vendor-prefixed token redaction', () => {
+  // The `token\s*[:=]` rule only fires when a token is introduced with a colon
+  // or equals sign. A key pasted as prose — which is how a real Hugging Face
+  // token reached the store — has neither.
+  const prose = (value: string) => `hugging face token ${value} Invalid token. Please check`;
+
+  it.each([
+    ['hugging face', 'hf_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'],
+    ['github oauth', 'gho_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'],
+    ['github fine-grained pat', 'github_pat_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnop'],
+    ['anthropic', 'sk-ant-ABCDEFGHIJKLMNOPQRSTUVWXYZ01'],
+    ['gitlab', 'glpat-ABCDEFGHIJKLMNOPQRSTUV'],
+    ['slack', 'xoxb-ABCDEFGHIJKLMNOPQRSTUV'],
+    ['aws access key id', 'AKIAABCDEFGHIJKLMNOP']
+  ])('redacts a %s token pasted without a key/value separator', (_label, secret) => {
+    const result = applyPrivacyFilter(prose(secret), privacy);
+    expect(result.content).not.toContain(secret);
+    expect(result.content).toContain('[REDACTED]');
+  });
+
+  it('leaves ordinary prose containing the word token untouched', () => {
+    const benign = '이 API 의 token 만료 시간을 어떻게 늘리지?';
+    expect(applyPrivacyFilter(benign, privacy).content).toBe(benign);
+  });
+
+  it('does not redact short identifiers that merely start with a vendor prefix', () => {
+    const benign = 'hf_small 이라는 변수명을 쓰고 있어';
+    expect(applyPrivacyFilter(benign, privacy).content).toBe(benign);
+  });
+});
