@@ -11,6 +11,7 @@ import type { SharedMemoryServices } from '../extensions/shared-memory/index.js'
 import type {
   AppendResult,
   MemoryEvent,
+  MemoryLesson,
   ToolObservationPayload,
   MemoryMode,
   EndlessModeConfig,
@@ -227,6 +228,11 @@ export class MemoryService {
    */
   async generateSessionSummary(sessionId: string): Promise<void> {
     return this.ingestService.generateSessionSummary(sessionId);
+  }
+
+  /** Curated project lessons, for the prompt-injection lesson lane. */
+  async listProjectLessons(limit = 25): Promise<MemoryLesson[]> {
+    return this.queryService.listProjectLessons(this.projectHash ?? '', limit);
   }
 
   /**

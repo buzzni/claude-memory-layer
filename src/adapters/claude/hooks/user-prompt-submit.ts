@@ -27,6 +27,7 @@ import {
   filterHookInjectableMemories,
   getHookInjectionPolicy,
   scoreGraduatedEvidence,
+  scoreLessonEvidence,
   selectHookEpisodeSeeds,
   summarizeHookInjectionConfidence,
   type HookMemoryCandidate
@@ -477,6 +478,23 @@ export async function main(): Promise<string> {
         mergedMemories.push({ ...candidate, score });
         if (candidate.id) existingGraduatedById.set(candidate.id, mergedMemories.length - 1);
       }
+
+      // Curated lesson lane. Lessons are not events, so no other lane can ever
+      // surface them; without this the lesson feature is write-only.
+      try {
+        const lessons = await memoryService.listProjectLessons(MAX_CANDIDATES);
+        for (const lesson of lessons) {
+          const candidate = scoreLessonEvidence(retrievalQuery, {
+            lessonId: String(lesson.lessonId ?? ''),
+            name: String(lesson.name ?? ''),
+            trigger: lesson.trigger ? String(lesson.trigger) : undefined,
+            steps: Array.isArray(lesson.steps) ? lesson.steps.map(String) : [],
+            failureModes: Array.isArray(lesson.failureModes) ? lesson.failureModes.map(String) : [],
+            confidence: Number(lesson.confidence ?? 0)
+          });
+          if (candidate) mergedMemories.push(candidate);
+        }
+      } catch { /* lesson lane is supplementary */ }
 
       const shouldUseKeywordFallback =
         RETRIEVAL_MODE === 'keyword' ||

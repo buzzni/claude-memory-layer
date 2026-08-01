@@ -1,5 +1,6 @@
 import type {
   MemoryEvent,
+  MemoryLesson,
   OutboxStats,
   OutboxStatsOptions,
   OutboxRecoveryOptions,
@@ -8,6 +9,8 @@ import type {
   ProjectScopeRepairResult
 } from '../types.js';
 import type { DerivationLiveness } from '../sqlite-event-store.js';
+import type { SQLiteDatabase } from '../sqlite-wrapper.js';
+import { LessonRepository } from '../operations/lesson-repository.js';
 
 interface RankedKeywordResult {
   event: MemoryEvent;
@@ -44,6 +47,8 @@ interface QueryStore {
   getSessionEvents(sessionId: string): Promise<MemoryEvent[]>;
   getRecentEvents(limit: number): Promise<MemoryEvent[]>;
   countEvents?(): Promise<number>;
+  /** Present on the SQLite store; lessons live outside the events table. */
+  getDatabase?(): SQLiteDatabase;
 }
 
 interface QueryMaintenanceStore extends QueryStore {
@@ -83,6 +88,25 @@ export class MemoryQueryService {
     private readonly queryStore: QueryStore,
     private readonly deps?: MemoryQueryServiceDeps
   ) {}
+
+  /**
+   * Curated lessons for prompt injection.
+   *
+   * Lessons are stored outside the events table, so they never appear in
+   * semantic or keyword retrieval. Without this lookup the whole lesson feature
+   * is write-only: an agent can save runbooks that nothing will ever surface.
+   */
+  async listProjectLessons(projectHash: string, limit = 25): Promise<MemoryLesson[]> {
+    await this.initialize();
+    const db = this.queryStore.getDatabase?.();
+    if (!db || !projectHash) return [];
+    try {
+      return await new LessonRepository(db).list({ projectHash, limit });
+    } catch {
+      // Lesson retrieval is supplementary: never fail a prompt over it.
+      return [];
+    }
+  }
 
   async keywordSearch(
     query: string,
