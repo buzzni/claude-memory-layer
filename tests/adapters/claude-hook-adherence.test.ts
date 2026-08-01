@@ -5,7 +5,8 @@ import {
   shouldRunMemorySearch,
   shouldRunAdherenceCheck,
   type AdherenceState,
-  selectEvidencePreview
+  selectEvidencePreview,
+  formatMemoryContext
 } from '../../src/adapters/claude/hooks/user-prompt-submit.js';
 
 function adherenceState(overrides: Partial<AdherenceState> = {}): AdherenceState {
@@ -149,5 +150,52 @@ describe('Claude user prompt adherence trigger heuristics', () => {
   it('does not classify whitespace-only prompt normalization as query rewrite', () => {
     expect(getRetrievalQueryRewriteKind('  상태 확인만 해줘  ', '상태 확인만 해줘')).toBe('none');
     expect(getRetrievalQueryRewriteKind('그거 계속', 'Previous user: 이전\nCurrent user: 그거 계속')).toBe('follow-up-context');
+  });
+});
+
+describe('formatMemoryContext', () => {
+  // Mirrors the scraper in scripts/evaluate-memory-field.ts, which recovers the
+  // injected event ids from this text to score retrieval. Any marker the
+  // instruction text adds would be counted as a selected memory for every case.
+  const EVAL_EVENT_MARKER = /\[event:([a-f0-9-]+)\]/giu;
+
+  it('marks each memory with its event id for the evaluation harness', () => {
+    const context = formatMemoryContext(
+      [
+        { type: 'lesson', content: 'PR 167 리뷰에서 null 처리 위험 발견', id: '3cf7e0c0-5dbe-4d91-90ed-524254e6bd4f' },
+        { type: 'agent_response', content: '두 번째 근거', id: '70958fdb-14fe-4385-a8ad-24cbaa4ffc60' }
+      ],
+      'PR 167'
+    );
+
+    const scraped = Array.from(context.matchAll(EVAL_EVENT_MARKER), (match) => match[1]);
+    expect(scraped).toEqual([
+      '3cf7e0c0-5dbe-4d91-90ed-524254e6bd4f',
+      '70958fdb-14fe-4385-a8ad-24cbaa4ffc60'
+    ]);
+  });
+
+  it('adds no phantom event marker when a memory carries no id', () => {
+    const context = formatMemoryContext([{ type: 'lesson', content: '아이디 없는 근거' }], '질문');
+
+    expect(context).toContain('아이디 없는 근거');
+    expect(Array.from(context.matchAll(EVAL_EVENT_MARKER))).toHaveLength(0);
+  });
+
+  it('asks the model to self-report the memories it actually relied on', () => {
+    const context = formatMemoryContext(
+      [{ type: 'lesson', content: '어떤 메모리 내용', id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' }],
+      '질문'
+    );
+
+    expect(context).toContain('📎');
+    expect(context).toContain('actually relies');
+    // Must stay language-neutral: this plugin ships to non-Korean users too.
+    expect(context).toContain('language of the conversation');
+    expect(context).toMatch(/omit the line/i);
+  });
+
+  it('returns an empty string when there is nothing to inject', () => {
+    expect(formatMemoryContext([], '질문')).toBe('');
   });
 });
