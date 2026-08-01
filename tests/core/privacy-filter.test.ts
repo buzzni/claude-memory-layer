@@ -157,3 +157,32 @@ describe('source code is not mistaken for credentials', () => {
     expect(applyPrivacyFilter(source, privacy).content).toContain('[REDACTED]');
   });
 });
+
+describe('documentation prose is not mistaken for credentials', () => {
+  // On a real store the loose bearer rule matched 29 documentation phrases
+  // against a single actual token.
+  it.each([
+    ['scheme description', 'Auth: Bearer token (Header/Cookie)'],
+    ['jwt description', 'All sync endpoints require Bearer JWT auth'],
+    ['python assignment', 'if token = json.dumps(payload):'],
+    ['js assignment', 'const token = getToken(user)']
+  ])('leaves %s untouched', (_label, source) => {
+    expect(applyPrivacyFilter(source, privacy).content).toBe(source);
+  });
+
+  it('still redacts a real bearer credential', () => {
+    const header = 'Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9abcdef';
+    expect(applyPrivacyFilter(header, privacy).content).toContain('[REDACTED]');
+  });
+
+  // The config-driven excludePatterns loop mirrors the built-in keyword rules,
+  // so it needs the same value guard or it silently reintroduces every false
+  // positive the built-ins were taught to avoid.
+  it('applies the same guard to config-driven patterns', () => {
+    const custom: typeof privacy = { ...privacy, excludePatterns: ['token'] };
+    expect(applyPrivacyFilter('if token = json.dumps(payload):', custom).content)
+      .toBe('if token = json.dumps(payload):');
+    expect(applyPrivacyFilter('token: Zt9wQx2027abc', custom).content)
+      .toContain('[REDACTED]');
+  });
+});
