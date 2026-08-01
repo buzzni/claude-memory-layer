@@ -32,6 +32,7 @@ import {
   FacetRepository,
   FrontierService,
   GraphPathService,
+  LessonCandidateService,
   LessonRepository,
   LessonService,
   PerspectiveObservationRepository,
@@ -197,6 +198,7 @@ const MEMORY_OPERATION_TOOL_NAMES = new Set([
   'mem-checkpoint-list',
   'mem-retention-audit',
   'mem-graph-query',
+  'mem-lesson-candidates',
   'mem-lesson-list',
   'mem-lesson-save',
   'mem-actor-list',
@@ -239,6 +241,8 @@ async function handleMemoryOperationTool(name: string, args: Record<string, unkn
         return jsonResult(handleRetentionAudit(context, args));
       case 'mem-graph-query':
         return jsonResult(handleGraphQuery(context, args));
+      case 'mem-lesson-candidates':
+        return jsonResult(await handleLessonCandidates(context, args));
       case 'mem-lesson-list':
         return jsonResult(await handleLessonList(context, args));
       case 'mem-lesson-save':
@@ -496,6 +500,32 @@ async function handleLessonList(context: MemoryOperationContext, args: Record<st
       createdAt: isoDate(lesson.createdAt),
       updatedAt: isoDate(lesson.updatedAt)
     }))
+  };
+}
+
+async function handleLessonCandidates(context: MemoryOperationContext, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const result = await new LessonCandidateService(context.db).findCandidates({
+    projectHash: context.projectHash,
+    minSessions: typeof args.minSessions === 'number' ? args.minSessions : undefined,
+    limit: numberArg(args.limit, 25, 1, 100)
+  });
+  return {
+    operation: 'mem-lesson-candidates',
+    projectHash: context.projectHash,
+    scannedSessions: result.scannedSessions,
+    eligibleSessions: result.eligibleSessions,
+    count: result.candidates.length,
+    candidates: result.candidates.map((candidate) => ({
+      candidateId: sanitizeOperationString(candidate.candidateId, 120),
+      name: sanitizeOperationString(candidate.name, 240),
+      trigger: sanitizeOperationString(candidate.trigger, 500),
+      confidence: candidate.confidence,
+      steps: candidate.steps.slice(0, 10).map((step) => sanitizeOperationString(step, 500)),
+      failureModes: candidate.failureModes.slice(0, 10).map((mode) => sanitizeOperationString(mode, 300)),
+      sourceSessionIds: candidate.sourceSessionIds.slice(0, 10).map((id) => sanitizeOperationString(id, 120)),
+      sourceEventIds: candidate.sourceEventIds.slice(0, 10).map((id) => sanitizeOperationString(id, 120))
+    })),
+    note: 'Read-only detection. Review a candidate and call mem-lesson-save to promote it into a curated lesson.'
   };
 }
 

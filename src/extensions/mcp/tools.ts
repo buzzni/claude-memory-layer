@@ -606,6 +606,28 @@ export const tools: Tool[] = [
     }
   },
   {
+    name: 'mem-lesson-candidates',
+    description: 'Detect not-yet-saved reusable workflow patterns (rule-based, from repeated successful tool sequences across sessions) so they can be reviewed and promoted with mem-lesson-save. Read-only — does not write a lesson.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectPath: requiredProjectPathProperty,
+        minSessions: {
+          type: 'number',
+          minimum: 2,
+          maximum: 10,
+          description: 'Minimum number of sessions sharing a pattern before it counts as a candidate (default: 2).'
+        },
+        limit: {
+          type: 'number',
+          maximum: 100,
+          description: 'Maximum candidates to return (default: 25, max: 100).'
+        }
+      },
+      required: ['projectPath']
+    }
+  },
+  {
     name: 'mem-lesson-save',
     description: 'Save a reviewed project-scoped lesson or rule as a curated memory. Rejects private or credential-like content and preserves compact provenance.',
     inputSchema: {
