@@ -46,7 +46,7 @@ export class Embedder {
     });
 
     try {
-      this.pipeline = await withSuppressedKnownTransformersWarnings(() => pipeline('feature-extraction', this.modelName));
+      this.pipeline = await this.loadPipelineWithCorruptionRecovery(pipeline, this.modelName);
       this.activeModelName = this.modelName;
       this.initialized = true;
       return;
@@ -57,9 +57,41 @@ export class Embedder {
       }
 
       console.warn(`[Embedder] Primary model failed (${this.modelName}). Falling back to ${fallbackModel}`);
-      this.pipeline = await withSuppressedKnownTransformersWarnings(() => pipeline('feature-extraction', fallbackModel));
+      this.pipeline = await this.loadPipelineWithCorruptionRecovery(pipeline, fallbackModel);
       this.activeModelName = fallbackModel;
       this.initialized = true;
+    }
+  }
+
+  /**
+   * Load a model, self-healing a truncated/corrupted cache.
+   *
+   * @huggingface/transformers only checks whether a cached file *exists*
+   * before skipping the download, not whether it is valid. A download
+   * interrupted mid-write (killed process, lost connection) leaves a file
+   * that exists but fails ONNX parsing — every future load hits the same
+   * error forever, since nothing ever re-downloads it. This was observed on
+   * a real machine after a global npm install: two ~450MB files, sizes not
+   * matching the known-good ~470MB build, failing with
+   * "Load model from <path> failed:Protobuf parsing failed." on every
+   * attempt. Detecting that shape, clearing the specific model's cache
+   * directory, and retrying once converts a permanently stuck install into
+   * one that repairs itself on the next start.
+   */
+  private async loadPipelineWithCorruptionRecovery(
+    pipeline: FeatureExtractionPipelineFactory,
+    modelName: string
+  ): Promise<NonNullable<Embedder['pipeline']>> {
+    try {
+      return await withSuppressedKnownTransformersWarnings(() => pipeline('feature-extraction', modelName));
+    } catch (error) {
+      if (!isCorruptedModelCacheError(error)) throw error;
+
+      const cleared = await clearModelCacheDirectory(modelName);
+      if (!cleared) throw error;
+
+      console.warn(`[Embedder] Detected a corrupted cache for ${modelName}; cleared it and retrying.`);
+      return await withSuppressedKnownTransformersWarnings(() => pipeline('feature-extraction', modelName));
     }
   }
 
@@ -231,4 +263,66 @@ async function loadTransformersPipeline(): Promise<FeatureExtractionPipelineFact
   ) => Promise<{ pipeline: unknown }>;
   const transformers = await dynamicImport('@huggingface/transformers');
   return transformers.pipeline as FeatureExtractionPipelineFactory;
+}
+
+/**
+ * Matches ONNX Runtime's model-load failure text, which is how a truncated
+ * download surfaces: the file exists (so nothing re-downloads it) but is not
+ * a valid protobuf. Intentionally narrow — only errors that name onnx/protobuf
+ * loading are treated as a corrupted cache; a model that is merely missing or
+ * a network failure during download should surface as-is.
+ */
+export function isCorruptedModelCacheError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /load model from .*failed/i.test(message)
+    || /protobuf parsing failed/i.test(message)
+    || /invalid[_ ]protobuf/i.test(message)
+    || /onnxruntime[^a-z]*error/i.test(message);
+}
+
+async function resolveTransformersCacheDir(): Promise<string | undefined> {
+  const dynamicImport = new Function('specifier', 'return import(specifier)') as (
+    specifier: string
+  ) => Promise<{ env: { cacheDir?: string } }>;
+  const transformers = await dynamicImport('@huggingface/transformers');
+  return transformers.env?.cacheDir;
+}
+
+/**
+ * Delete a model's cache directory so the library re-downloads it from
+ * scratch. Returns false (not true-with-no-op) when the cache directory
+ * cannot even be determined, so the caller knows recovery was not actually
+ * attempted and should surface the original error instead of retrying
+ * against the same corrupted files.
+ *
+ * `cacheDir` is injectable so tests can exercise the path-safety logic
+ * directly: the production caller (below) resolves it via an indirect
+ * dynamic import of @huggingface/transformers, which — like the rest of this
+ * file's lazy loading — does not share module state with a bundler/test
+ * runner's own transformed import of the same package.
+ */
+export async function clearModelCacheDirectory(
+  modelName: string,
+  cacheDir?: string
+): Promise<boolean> {
+  try {
+    const resolvedCacheDirInput = cacheDir ?? await resolveTransformersCacheDir();
+    if (!resolvedCacheDirInput) return false;
+
+    const fs = await import('node:fs/promises');
+    const path = await import('node:path');
+    const modelDir = path.join(resolvedCacheDirInput, modelName);
+
+    // Guard against a misconfigured cacheDir turning this into `rm -rf` of
+    // something unrelated: only remove a path that actually resolves inside
+    // the resolved cache directory.
+    const resolvedCacheDir = path.resolve(resolvedCacheDirInput);
+    const resolvedModelDir = path.resolve(modelDir);
+    if (!resolvedModelDir.startsWith(resolvedCacheDir + path.sep)) return false;
+
+    await fs.rm(resolvedModelDir, { recursive: true, force: true });
+    return true;
+  } catch {
+    return false;
+  }
 }
