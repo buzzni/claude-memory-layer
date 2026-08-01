@@ -34,6 +34,17 @@ const SENSITIVE_PATTERNS = [
   /-----BEGIN\s+(RSA\s+)?PRIVATE\s+KEY-----[\s\S]*?-----END\s+(RSA\s+)?PRIVATE\s+KEY-----/g,
   /ghp_[a-zA-Z0-9]{36}/g,  // GitHub Personal Access Token
   /sk-[a-zA-Z0-9]{48}/g,   // OpenAI API Key
+  // Vendor-prefixed tokens. The `token\s*[:=]` rule above only fires when a
+  // token is introduced with a colon or equals sign, so a key pasted as prose
+  // ("hugging face token hf_… Invalid token") slipped through untouched. These
+  // prefixes are distinctive enough to match on their own.
+  /\bhf_[a-zA-Z0-9]{30,}/g,            // Hugging Face access token
+  /\bgh[opsu]_[a-zA-Z0-9]{36,}/g,      // GitHub OAuth/server/user tokens
+  /\bgithub_pat_[a-zA-Z0-9_]{50,}/g,   // GitHub fine-grained PAT
+  /\bsk-ant-[a-zA-Z0-9_-]{20,}/g,      // Anthropic API key
+  /\bglpat-[a-zA-Z0-9_-]{20,}/g,       // GitLab personal access token
+  /\bxox[abprs]-[a-zA-Z0-9-]{10,}/g,   // Slack tokens
+  /\bAKIA[0-9A-Z]{16}\b/g,             // AWS access key id
 ];
 
 const CLI_SECRET_OPTION_PATTERNS = [
