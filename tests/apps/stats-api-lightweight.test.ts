@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => {
     getEventsByLevel: vi.fn(),
     getMostAccessedMemories: vi.fn(),
     getHelpfulnessStats: vi.fn(),
+    getHelpfulnessStatsByDay: vi.fn(),
     getHelpfulMemories: vi.fn(),
     getRecentRetrievalTraces: vi.fn(),
     getEndlessModeStatus: vi.fn()
@@ -75,6 +76,7 @@ describe('stats API lightweight read paths', () => {
     mocks.service.getEventsByLevel.mockReset().mockResolvedValue([]);
     mocks.service.getMostAccessedMemories.mockReset().mockResolvedValue([]);
     mocks.service.getHelpfulnessStats.mockReset().mockResolvedValue({ avgScore: 0, totalEvaluated: 0, totalRetrievals: 0, helpful: 0, neutral: 0, unhelpful: 0 });
+    mocks.service.getHelpfulnessStatsByDay.mockReset().mockResolvedValue([]);
     mocks.service.getHelpfulMemories.mockReset().mockResolvedValue([]);
     mocks.service.getRecentRetrievalTraces.mockReset().mockResolvedValue([]);
     mocks.service.getEndlessModeStatus.mockReset().mockResolvedValue({ mode: 'session', continuityScore: 0, workingSetSize: 0, consolidatedCount: 0 });
@@ -207,8 +209,10 @@ describe('stats API lightweight read paths', () => {
       ]);
       mocks.service.getHelpfulnessStats
         .mockResolvedValueOnce({ totalEvaluated: 2, helpful: 1 })
-        .mockResolvedValueOnce({ totalEvaluated: 2, helpful: 2 })
-        .mockResolvedValueOnce({ totalEvaluated: 4, helpful: 3 });
+        .mockResolvedValueOnce({ totalEvaluated: 2, helpful: 2 });
+      mocks.service.getHelpfulnessStatsByDay.mockResolvedValue([
+        { date: '2026-05-08', totalEvaluated: 4, helpful: 3 }
+      ]);
 
       const res = await createApp().request('/api/stats/kpi?project=abc12345&window=7d');
       const body = await res.json();
@@ -224,11 +228,12 @@ describe('stats API lightweight read paths', () => {
         previousAvailable: true,
       });
       expect(body.trend.daily[0].usefulRecallRate).toBe(0.75);
-      expect(mocks.service.getHelpfulnessStats).toHaveBeenCalledTimes(3);
-      expect(mocks.service.getHelpfulnessStats.mock.calls[2]).toEqual([
-        new Date('2026-05-08T00:00:00.000Z'),
+      expect(mocks.service.getHelpfulnessStats).toHaveBeenCalledTimes(2);
+      expect(mocks.service.getHelpfulnessStatsByDay).toHaveBeenCalledTimes(1);
+      expect(mocks.service.getHelpfulnessStatsByDay).toHaveBeenCalledWith(
+        new Date('2026-04-08T00:00:00.000Z'),
         new Date('2026-05-09T00:00:00.000Z')
-      ]);
+      );
     } finally {
       vi.useRealTimers();
     }
@@ -239,6 +244,9 @@ describe('stats API lightweight read paths', () => {
       { id: 'p1', eventType: 'user_prompt', sessionId: 's1', timestamp: new Date(), content: 'prompt', metadata: {} }
     ]);
     mocks.service.getHelpfulnessStats.mockResolvedValue({ totalEvaluated: 0, helpful: 0 });
+    mocks.service.getHelpfulnessStatsByDay.mockResolvedValue([
+      { date: new Date().toISOString().slice(0, 10), totalEvaluated: 0, helpful: 0 }
+    ]);
 
     const res = await createApp().request('/api/stats/kpi?project=abc12345&window=7d');
     const body = await res.json();

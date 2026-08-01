@@ -62,6 +62,34 @@ describe('usefulness evidence history (store integration)', () => {
 
     expect(firstDay).toMatchObject({ totalRetrievals: 1, totalEvaluated: 1, helpful: 1, unhelpful: 0 });
     expect(secondDay).toMatchObject({ totalRetrievals: 1, totalEvaluated: 1, helpful: 0, unhelpful: 1 });
+
+    // Legacy rows used SQLite's space-separated datetime format. The daily
+    // range query must aggregate both formats while retaining indexable raw
+    // created_at bounds.
+    const legacyId = await appendEvent(store, 'agent_response', 'old', 'Legacy memory', new Date('2026-01-01T00:00:00Z'));
+    await store.recordRetrieval(legacyId, 's3', 0.9, 'legacy');
+    const legacyDb = new Database(dbPath);
+    legacyDb.prepare(`UPDATE memory_helpfulness SET created_at = ?, measured_at = ?, helpfulness_score = ? WHERE session_id = ?`)
+      .run('2026-01-02 18:00:00', '2026-01-02 18:05:00', 0.8, 's3');
+    legacyDb.close();
+
+    const daily = await store.getHelpfulnessStatsByDay(
+      new Date('2026-01-01T00:00:00.000Z'),
+      new Date('2026-01-03T00:00:00.000Z')
+    );
+    expect(daily).toEqual([
+      expect.objectContaining({ date: '2026-01-01', totalRetrievals: 1, totalEvaluated: 1, helpful: 1 }),
+      expect.objectContaining({ date: '2026-01-02', totalRetrievals: 2, totalEvaluated: 2, helpful: 1, unhelpful: 1 }),
+    ]);
+    const planDb = new Database(dbPath);
+    const queryPlan = planDb.prepare(`EXPLAIN QUERY PLAN
+      SELECT substr(created_at, 1, 10), COUNT(*)
+      FROM memory_helpfulness
+      WHERE created_at >= ? AND created_at < ?
+      GROUP BY substr(created_at, 1, 10)`)
+      .all('2026-01-01', '2026-01-03') as Array<{ detail: string }>;
+    planDb.close();
+    expect(queryPlan.map((step) => step.detail).join(' ')).toContain('idx_helpfulness_created_at');
     await store.close();
   });
 

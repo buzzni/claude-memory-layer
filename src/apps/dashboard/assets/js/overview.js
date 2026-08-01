@@ -289,6 +289,9 @@ function updateKpiCardsUI() {
   const usefulRecallAvailable = usefulRecallAvailability
     ? usefulRecallAvailability.currentAvailable === true
     : true;
+  const previousUsefulRecallAvailable = usefulRecallAvailability
+    ? usefulRecallAvailability.previousAvailable === true
+    : d?.usefulRecallRate !== null && d?.usefulRecallRate !== undefined;
   set('kpi-useful-recall', usefulRecallAvailable ? percentText(m.usefulRecallRate) : '-');
   set('kpi-completion-turns', Number(m.avgCompletionTurns || 0).toFixed(2));
   set('kpi-rework-rate', percentText(m.reworkRate));
@@ -301,7 +304,9 @@ function updateKpiCardsUI() {
       const recallDelta = document.getElementById('kpi-useful-recall-delta');
       if (recallDelta) {
         recallDelta.className = 'kpi-delta neutral';
-        recallDelta.textContent = 'No evaluated recalls';
+        recallDelta.textContent = usefulRecallAvailable && !previousUsefulRecallAvailable
+          ? 'No prior-window evaluations'
+          : 'No evaluated recalls';
       }
     }
     renderDelta('kpi-completion-turns-delta', d.avgCompletionTurns, true, false);

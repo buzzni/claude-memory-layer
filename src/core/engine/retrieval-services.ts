@@ -141,6 +141,7 @@ export {
 } from './retrieval-analytics-service.js';
 export type {
   AccessedMemory,
+  DailyHelpfulnessStats,
   HelpfulMemory,
   HelpfulnessStats,
   RetrievalAnalyticsServiceDeps,

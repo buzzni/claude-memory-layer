@@ -14,10 +14,14 @@ describe('dashboard UX shell affordances', () => {
 
   it('contains narrow-screen guards for header and usefulness layout', () => {
     const css = readFileSync(join(process.cwd(), 'src/apps/dashboard/style.css'), 'utf-8');
-    expect(css).toContain('@media (max-width: 600px)');
-    expect(css).toContain('.top-header {\n    flex-direction: column;');
-    expect(css).toContain('.search-wrapper {\n    width: 100% !important;');
-    expect(css).toContain('.usefulness-strip {\n    flex-direction: column;');
+    const mobileStart = css.indexOf('@media (max-width: 600px)');
+    const mobileEnd = css.indexOf('/* ==========================================', mobileStart);
+    expect(mobileStart).toBeGreaterThanOrEqual(0);
+    expect(mobileEnd).toBeGreaterThan(mobileStart);
+    const mobileCss = css.slice(mobileStart, mobileEnd);
+    expect(mobileCss).toMatch(/\.top-header\s*\{[^}]*flex-direction:\s*column/);
+    expect(mobileCss).toMatch(/\.search-wrapper\s*\{[^}]*width:\s*100%\s*!important/);
+    expect(mobileCss).toMatch(/\.usefulness-strip\s*\{[^}]*flex-direction:\s*column/);
   });
 
   it('declares global project scope context and empty-state containers in the dashboard shell', () => {

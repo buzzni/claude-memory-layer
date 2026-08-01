@@ -910,6 +910,32 @@ describe('dashboard memory usefulness stats', () => {
     expect(elements['kpi-alerts'].innerHTML).toContain('No KPI alerts');
   });
 
+  it('explains when only the prior Useful Recall window lacks evaluations', () => {
+    const elements = {
+      'kpi-useful-recall': new TestElement(),
+      'kpi-useful-recall-delta': new TestElement(),
+      'kpi-completion-turns': new TestElement(),
+      'kpi-rework-rate': new TestElement(),
+      'kpi-failure-rate': new TestElement(),
+      'kpi-completion-turns-delta': new TestElement(),
+      'kpi-rework-rate-delta': new TestElement(),
+      'kpi-failure-rate-delta': new TestElement(),
+      'kpi-alerts': new TestElement(),
+    };
+    const hooks = loadOverviewWithElements(elements);
+    hooks.state.kpi = {
+      metrics: { usefulRecallRate: 0.75, avgCompletionTurns: 1, reworkRate: 0, postChangeFailureRate: 0 },
+      deltas: { usefulRecallRate: null, avgCompletionTurns: 0, reworkRate: 0, postChangeFailureRate: 0 },
+      availability: { usefulRecallRate: { currentAvailable: true, previousAvailable: false } },
+      alerts: [],
+    };
+
+    hooks.updateKpiCardsUI();
+
+    expect(elements['kpi-useful-recall'].textContent).toBe('75.0%');
+    expect(elements['kpi-useful-recall-delta'].textContent).toBe('No prior-window evaluations');
+  });
+
   it('renders the usefulness score and component percentages in the overview dashboard', () => {
     const elements = {
       'memory-usefulness-score': new TestElement(),

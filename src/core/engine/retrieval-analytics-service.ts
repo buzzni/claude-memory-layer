@@ -53,6 +53,16 @@ export interface HelpfulnessStats {
   groundedCount?: number;
 }
 
+export interface DailyHelpfulnessStats {
+  date: string;
+  avgScore: number;
+  totalEvaluated: number;
+  totalRetrievals: number;
+  helpful: number;
+  neutral: number;
+  unhelpful: number;
+}
+
 export interface UsefulnessEvidenceMatch {
   memorySnippet: string;
   responseSnippet: string;
@@ -153,6 +163,7 @@ export interface RetrievalAnalyticsStore {
   getUnevaluatedSessions(currentSessionId: string, limit?: number): Promise<string[]>;
   getHelpfulMemories(limit?: number): Promise<HelpfulMemory[]>;
   getHelpfulnessStats(since?: Date, until?: Date): Promise<HelpfulnessStats>;
+  getHelpfulnessStatsByDay?(since: Date, until: Date): Promise<DailyHelpfulnessStats[]>;
   getUsefulnessHistory?(options?: UsefulnessHistoryOptions): Promise<UsefulnessHistoryEntry[]>;
 }
 
@@ -217,6 +228,11 @@ export class RetrievalAnalyticsService {
   async getHelpfulnessStats(since?: Date, until?: Date): Promise<HelpfulnessStats> {
     await this.deps.initialize();
     return this.deps.retrievalStore.getHelpfulnessStats(since, until);
+  }
+
+  async getHelpfulnessStatsByDay(since: Date, until: Date): Promise<DailyHelpfulnessStats[]> {
+    await this.deps.initialize();
+    return this.deps.retrievalStore.getHelpfulnessStatsByDay?.(since, until) || [];
   }
 
   /**

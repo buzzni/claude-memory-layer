@@ -18,7 +18,7 @@
 
 ### Delivered
 
-- helpfulness 통계의 `[since, until)` 조회와 KPI current/previous/daily 분리
+- helpfulness 통계의 `[since, until)` 조회와 KPI current/previous 분리, 인덱스 범위 기반 단일 daily 집계
 - outcome evidence가 없을 때 `score.value: null`, `status: insufficient-data`
 - 평가가 없는 Useful Recall KPI/일별 추세를 unavailable로 처리하고 임계치 경고에서 제외
 - Global Store / Stored Sessions 의미 정정
@@ -29,7 +29,7 @@
 ### Verification results
 
 - targeted Vitest: 6 files, 38 tests passed
-- full Vitest: 172 files, 1,090 tests passed
+- full Vitest: 172 files, 1,091 tests passed
 - TypeScript typecheck: passed
 - ESLint: 0 errors, 기존 경고 44개
 - build: passed

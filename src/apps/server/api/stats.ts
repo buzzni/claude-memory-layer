@@ -2052,12 +2052,15 @@ statsRouter.get('/kpi', async (c) => {
 
     const trendEntries = Array.from(buckets.entries())
       .sort((a, b) => a[0].localeCompare(b[0]));
-    const trendHelpfulness = new Map(await Promise.all(trendEntries.map(async ([date]) => {
-      const dayStart = new Date(`${date}T00:00:00.000Z`);
-      const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
-      const stats = await memoryService.getHelpfulnessStats(dayStart, dayEnd);
-      return [date, stats] as const;
-    })));
+    const trendStart = new Date(now - trendWindowMs);
+    trendStart.setUTCHours(0, 0, 0, 0);
+    const trendEnd = new Date(now);
+    trendEnd.setUTCHours(0, 0, 0, 0);
+    trendEnd.setUTCDate(trendEnd.getUTCDate() + 1);
+    const trendHelpfulness = new Map(
+      (await memoryService.getHelpfulnessStatsByDay(trendStart, trendEnd))
+        .map((stats) => [stats.date, stats] as const)
+    );
 
     const trendDaily = trendEntries
       .map(([date, dayEvents]) => {
