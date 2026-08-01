@@ -27,7 +27,10 @@ const NOT_A_SECRET_VALUE =
   '(?!\\[REDACTED\\])(?![({\\[]|=>|\\s*$)'
   // The optional quote matters: `apiKey: "string"` is still a type, not a key.
   + '(?![\'"]?(?:string|number|boolean|any|unknown|void|never|null|undefined|true|false'
-  + '|Promise|Record|Array|Partial|Readonly)\\b)';
+  + '|Promise|Record|Array|Partial|Readonly)\\b)'
+  // `token = json.dumps(...)` assigns in code: the secret would be the result
+  // of the call, not this expression.
+  + '(?![A-Za-z_$][\\w.$]*\\s*\\()';
 
 const SENSITIVE_PATTERNS = [
   // Credential-bearing URLs/connection strings with userinfo before the host.
@@ -52,7 +55,11 @@ const SENSITIVE_PATTERNS = [
   // is the value, not the key. A quoted, long, secret-shaped literal is the
   // one camelCase form worth redacting.
   /[A-Za-z0-9_.-]*(?:password|secret|token|api[-_]?key)\s*[:=]\s*['"][A-Za-z0-9._\-+/=]{12,}['"]/gi,
-  /bearer\s+[a-zA-Z0-9\-_.]+/gi,
+  // "Bearer token", "Bearer JWT" and friends are how documentation names the
+  // scheme, not a secret. On a real store the loose form matched 29 such
+  // phrases against a single actual token, so the word after Bearer must not be
+  // one of those nouns and the value has to be long enough to be a credential.
+  /bearer\s+(?!token\b|jwt\b|auth\b|authentication\b|access\b|scheme\b|header\b|prefix\b)[a-zA-Z0-9\-_.]{16,}/gi,
   /AWS[_-]?ACCESS[_-]?KEY[_-]?ID\s*[:=]\s*['"]?[A-Z0-9]+/gi,
   /AWS[_-]?SECRET[_-]?ACCESS[_-]?KEY\s*[:=]\s*['"]?[^\s'"]+/gi,
   /-----BEGIN\s+(RSA\s+)?PRIVATE\s+KEY-----[\s\S]*?-----END\s+(RSA\s+)?PRIVATE\s+KEY-----/g,
@@ -159,10 +166,15 @@ export function applyPrivacyFilter(
   }
 
   // 3. Custom pattern filtering from config
+  //
+  // This mirrors the built-in keyword rules, so it needs the same value guard.
+  // Without it the config list silently re-introduced every false positive the
+  // built-ins had been taught to avoid — `token = json.dumps(payload)` was
+  // still being rewritten to `[REDACTED]` through this loop alone.
   for (const patternStr of config.excludePatterns || []) {
     try {
       const regex = new RegExp(
-        `(^|[^\\w-])(${patternStr})\\s*[:=]\\s*['"]?[^\\s'"]+`,
+        `(^|[^\\w-])(${patternStr})\\s*[:=]\\s*${NOT_A_SECRET_VALUE}['"]?[^\\s'"]+`,
         'gi'
       );
       const matches = filtered.match(regex);
