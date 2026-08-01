@@ -186,3 +186,15 @@ describe('documentation prose is not mistaken for credentials', () => {
       .toContain('[REDACTED]');
   });
 });
+
+describe('unary/increment expressions are not mistaken for credentials', () => {
+  // Found on live data: `var token = ++fitRetryToken` — a JS retry counter,
+  // not a secret. A credential literal never starts with an operator.
+  it.each([
+    ['increment', 'var token = ++fitRetryToken'],
+    ['decrement', 'let secret = --remainingAttempts'],
+    ['negation', 'const password = !isValid']
+  ])('leaves %s untouched', (_label, source) => {
+    expect(applyPrivacyFilter(source, privacy).content).toBe(source);
+  });
+});
