@@ -24,6 +24,29 @@ describe('dashboard UX shell affordances', () => {
     expect(mobileCss).toMatch(/\.usefulness-strip\s*\{[^}]*flex-direction:\s*column/);
   });
 
+  it('keeps disclosure details in view as a dismissible drawer on narrow screens', () => {
+    const html = readFileSync(join(process.cwd(), 'src/apps/dashboard/index.html'), 'utf-8');
+    const css = readFileSync(join(process.cwd(), 'src/apps/dashboard/style.css'), 'utf-8');
+    const tabletStart = css.indexOf('@media (max-width: 1100px)');
+    const tabletEnd = css.indexOf('@media (max-width: 600px)', tabletStart);
+    const tabletCss = css.slice(tabletStart, tabletEnd);
+
+    expect(html).toContain('id="disclosure-drilldown"');
+    expect(html).toContain('aria-label="Search result details"');
+    expect(html).toContain('id="disclosure-drawer-backdrop"');
+    expect(tabletCss).toMatch(/\.disclosure-drilldown\s*\{[^}]*position:\s*fixed/);
+    expect(tabletCss).toMatch(/\.disclosure-drilldown\.open\s*\{[^}]*transform:\s*translateX\(0\)/);
+    expect(tabletCss).toContain('.disclosure-drawer-backdrop:not([hidden])');
+  });
+
+  it('declares actionable overview activity cards', () => {
+    const html = readFileSync(join(process.cwd(), 'src/apps/dashboard/index.html'), 'utf-8');
+
+    expect(html).toContain('id="overview-recent-questions"');
+    expect(html).toContain('id="overview-memory-impact"');
+    expect(html).toContain('id="overview-useful-memories"');
+  });
+
   it('declares global project scope context and empty-state containers in the dashboard shell', () => {
     const html = readFileSync(join(process.cwd(), 'src/apps/dashboard/index.html'), 'utf-8');
 

@@ -114,6 +114,100 @@ function updateProjectDetailUI() {
   `;
 }
 
+function overviewActivityTime(value) {
+  if (!value) return '';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? '' : date.toLocaleString();
+}
+
+function overviewEmptyState(message) {
+  return `<div class="overview-activity-empty">${escapeHtml(message)}</div>`;
+}
+
+function updateOverviewActivityUI() {
+  const questionsEl = document.getElementById('overview-recent-questions');
+  const impactEl = document.getElementById('overview-memory-impact');
+  const usefulEl = document.getElementById('overview-useful-memories');
+
+  if (questionsEl) {
+    const prompts = state.overviewRecentPrompts || [];
+    questionsEl.innerHTML = prompts.length === 0
+      ? overviewEmptyState('No recent questions in this scope.')
+      : prompts.map(prompt => `
+          <button class="overview-activity-item" onclick="jumpToSession(${jsAttrArg(prompt.sessionId)}, ${jsAttrArg(prompt.id)})">
+            <span class="overview-activity-icon"><i class="ri-question-line"></i></span>
+            <span class="overview-activity-copy">
+              <strong>${escapeHtml(prompt.preview || '(empty question)')}</strong>
+              <span>${escapeHtml(overviewActivityTime(prompt.timestamp))} · session ${escapeHtml(String(prompt.sessionId || '').slice(0, 8))}</span>
+            </span>
+            <i class="ri-arrow-right-s-line overview-activity-arrow"></i>
+          </button>
+        `).join('');
+  }
+
+  if (impactEl) {
+    const entries = state.overviewUsefulnessEntries || [];
+    if (entries.length === 0) {
+      impactEl.innerHTML = overviewEmptyState('No recent retrieval evidence in this scope.');
+    } else {
+      const withoutMemory = entries.filter(entry => (entry.selectedCount || 0) === 0).length;
+      const awaitingEvaluation = entries.filter(entry => {
+        const memories = entry.memories || [];
+        return memories.length > 0 && memories.every(memory => memory.helpfulnessScore === null || memory.helpfulnessScore === undefined);
+      }).length;
+      const gapChips = [
+        `<span class="overview-signal-chip${withoutMemory > 0 ? ' signal-warn' : ''}">${withoutMemory} without memory</span>`,
+        `<span class="overview-signal-chip">${awaitingEvaluation} awaiting evaluation</span>`,
+      ].join('');
+
+      impactEl.innerHTML = `
+        <div class="overview-signal-row">${gapChips}</div>
+        ${entries.slice(0, 5).map(entry => {
+          const memories = entry.memories || [];
+          const grounded = memories.filter(memory => (memory.contentOverlapScore || 0) >= 0.3);
+          const measured = memories.filter(memory => memory.helpfulnessScore !== null && memory.helpfulnessScore !== undefined);
+          const bestScore = measured.length > 0 ? Math.max(...measured.map(memory => memory.helpfulnessScore)) : null;
+          const bestMemory = memories.find(memory => memory.eventId) || null;
+          const impactSummary = memories.length === 0
+            ? ((entry.selectedCount || 0) > 0
+              ? `${entry.selectedCount} selected · per-memory tracking unavailable`
+              : 'no memory selected')
+            : `${memories.length} injected · ${grounded.length} used in answer${bestScore === null ? ' · evaluation pending' : ` · ${(bestScore * 100).toFixed(0)}% helpful`}`;
+          const action = bestMemory
+            ? `onclick="openDetailModalByEvent(${jsAttrArg(bestMemory.eventId)})" title="Open the memory used for this answer"`
+            : `onclick="jumpToSession(${jsAttrArg(entry.sessionId)}, '')" title="Open this session"`;
+          return `
+            <button class="overview-activity-item" ${action}>
+              <span class="overview-activity-icon impact"><i class="ri-links-line"></i></span>
+              <span class="overview-activity-copy">
+                <strong>${escapeHtml(entry.question || '(no question text)')}</strong>
+                <span>${escapeHtml(impactSummary)}</span>
+              </span>
+              <i class="ri-arrow-right-s-line overview-activity-arrow"></i>
+            </button>
+          `;
+        }).join('')}
+      `;
+    }
+  }
+
+  if (usefulEl) {
+    const memories = state.helpfulness?.topMemories || [];
+    usefulEl.innerHTML = memories.length === 0
+      ? overviewEmptyState('No evaluated memories yet.')
+      : memories.slice(0, 5).map(memory => `
+          <button class="overview-activity-item" onclick="openDetailModalByEvent(${jsAttrArg(memory.eventId)})">
+            <span class="overview-activity-icon useful"><i class="ri-thumb-up-line"></i></span>
+            <span class="overview-activity-copy">
+              <strong>${escapeHtml(memory.summary || '(no summary)')}</strong>
+              <span>${(Number(memory.helpfulnessScore || 0) * 100).toFixed(0)}% helpful · ${formatNumber(memory.accessCount || 0)} uses</span>
+            </span>
+            <i class="ri-arrow-right-s-line overview-activity-arrow"></i>
+          </button>
+        `).join('');
+  }
+}
+
 async function refreshData() {
   const btn = document.getElementById('refresh-btn');
   if(btn) btn.classList.add('loading');
@@ -123,7 +217,7 @@ async function refreshData() {
   const kpiWindowAtStart = state.kpiWindow;
 
   try {
-    const [stats, shared, mostAccessed, helpfulness, memoryUsefulness, retrievalTraces, retrievalReviewQueue, operationsStats, perspectiveStats, adherenceSummary, vectorHealth, projectDetail] = await Promise.all([
+    const [stats, shared, mostAccessed, helpfulness, memoryUsefulness, retrievalTraces, retrievalReviewQueue, operationsStats, perspectiveStats, adherenceSummary, vectorHealth, projectDetail, recentPrompts, overviewUsefulness] = await Promise.all([
       fetch(apiUrl(`${API_BASE}/stats`)).then(r => r.json()).catch(() => null),
       fetch(apiUrl(`${API_BASE}/stats/shared`)).then(r => r.json()).catch(() => null),
       fetch(apiUrl(`${API_BASE}/stats/most-accessed`, { limit: 10 })).then(r => r.json()).catch(() => null),
@@ -137,7 +231,9 @@ async function refreshData() {
       fetch(apiUrl(`${API_BASE}/health`)).then(r => r.ok ? r.json() : null).catch(() => null),
       state.currentProject
         ? fetch(apiUrl(`${API_BASE}/projects/${encodeURIComponent(state.currentProject)}/detail`)).then(r => r.ok ? r.json() : null).catch(() => null)
-        : Promise.resolve(null)
+        : Promise.resolve(null),
+      fetch(apiUrl(`${API_BASE}/events`, { type: 'user_prompt', sort: 'recent', limit: 6 })).then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch(apiUrl(`${API_BASE}/stats/usefulness-history`, { limit: 6, withSelectionsOnly: 'false' })).then(r => r.ok ? r.json() : null).catch(() => null)
     ]);
 
     if (
@@ -161,12 +257,15 @@ async function refreshData() {
     state.vectorHealth = vectorHealth;
     state.projectDetail = projectDetail;
     state.projectDetailProject = state.currentProject || null;
+    state.overviewRecentPrompts = recentPrompts?.events || [];
+    state.overviewUsefulnessEntries = overviewUsefulness?.entries || [];
 
     await loadKpiData();
     if (refreshRequestId !== state.refreshRequestId) return;
 
     updateStatsUI();
     updateProjectDetailUI();
+    updateOverviewActivityUI();
     updateSharedUI();
     updateMemoryUsageUI();
     updateKpiCardsUI();

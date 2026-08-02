@@ -86,7 +86,7 @@ function loadOverviewWithElements(elements: Record<string, TestElement>, files =
     ? ', renderUsefulnessHistory, updateOverviewUsefulnessStrip'
     : '';
   vm.runInNewContext(
-    `${source}\n;globalThis.__dashboardTestHooks = { state, updateMemoryUsefulnessUI, updateRetrievalTraceUI, updateKpiCardsUI${usefulnessHooks} };`,
+    `${source}\n;globalThis.__dashboardTestHooks = { state, updateMemoryUsefulnessUI, updateRetrievalTraceUI, updateKpiCardsUI, updateOverviewActivityUI${usefulnessHooks} };`,
     context
   );
   return (context as unknown as { __dashboardTestHooks: {
@@ -94,6 +94,7 @@ function loadOverviewWithElements(elements: Record<string, TestElement>, files =
     updateMemoryUsefulnessUI: () => void;
     updateRetrievalTraceUI: () => void;
     updateKpiCardsUI: () => void;
+    updateOverviewActivityUI: () => void;
     renderUsefulnessHistory: () => void;
     updateOverviewUsefulnessStrip: () => void;
   }}).__dashboardTestHooks;
@@ -934,6 +935,68 @@ describe('dashboard memory usefulness stats', () => {
 
     expect(elements['kpi-useful-recall'].textContent).toBe('75.0%');
     expect(elements['kpi-useful-recall-delta'].textContent).toBe('No prior-window evaluations');
+  });
+
+  it('renders recent questions, memory impact, and useful memories on the overview', () => {
+    const elements = {
+      'overview-recent-questions': new TestElement(),
+      'overview-memory-impact': new TestElement(),
+      'overview-useful-memories': new TestElement(),
+    };
+    const hooks = loadOverviewWithElements(elements);
+
+    hooks.state.overviewRecentPrompts = [
+      {
+        id: 'prompt-1',
+        sessionId: 'session-1',
+        timestamp: '2026-05-08T10:00:00.000Z',
+        preview: 'How do I deploy <script>alert(1)</script>?',
+      },
+    ];
+    hooks.state.overviewUsefulnessEntries = [
+      {
+        sessionId: 'session-1',
+        question: 'How do I deploy?',
+        createdAt: '2026-05-08T10:00:00.000Z',
+        selectedCount: 1,
+        memories: [
+          { eventId: 'memory-1', summary: 'Use port 37777', helpfulnessScore: 0.82, contentOverlapScore: 0.7 },
+        ],
+      },
+      {
+        sessionId: 'session-2',
+        question: 'What changed?',
+        createdAt: '2026-05-08T09:00:00.000Z',
+        selectedCount: 0,
+        memories: [],
+      },
+    ];
+    hooks.state.helpfulness = {
+      topMemories: [
+        { eventId: 'memory-1', summary: 'Use port 37777', helpfulnessScore: 0.82, accessCount: 4 },
+      ],
+    };
+
+    hooks.updateOverviewActivityUI();
+
+    const questionsHtml = elements['overview-recent-questions'].innerHTML;
+    expect(questionsHtml).toContain('How do I deploy');
+    expect(questionsHtml).not.toContain('<script>alert(1)</script>');
+    expect(questionsHtml).toContain('jumpToSession');
+
+    const impactHtml = elements['overview-memory-impact'].innerHTML;
+    expect(impactHtml).toContain('1 used in answer');
+    expect(impactHtml).toContain('82% helpful');
+    expect(impactHtml).toContain('1 without memory');
+    expect(impactHtml).toContain('no memory selected');
+    expect(impactHtml).not.toContain('0 injected · 0 used in answer · evaluation pending');
+    expect(impactHtml).toContain('openDetailModalByEvent');
+
+    const usefulHtml = elements['overview-useful-memories'].innerHTML;
+    expect(usefulHtml).toContain('Use port 37777');
+    expect(usefulHtml).toContain('82% helpful');
+    expect(usefulHtml).toContain('4 uses');
+    expect(usefulHtml).toContain('openDetailModalByEvent');
   });
 
   it('renders the usefulness score and component percentages in the overview dashboard', () => {

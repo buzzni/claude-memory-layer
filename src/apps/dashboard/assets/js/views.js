@@ -1058,8 +1058,15 @@ function debounce(func, wait) {
   };
 }
 
-function handleSearch(query) {
-  console.log('Searching for:', query);
+async function handleSearch(query) {
+  const normalized = String(query || '').trim();
+  if (!normalized) return;
+
+  await switchView('playground');
+  const disclosureInput = document.getElementById('disclosure-search-input');
+  if (!disclosureInput) return;
+  disclosureInput.value = normalized;
+  await handleDisclosureSearch();
 }
 
 function escapeHtml(unsafe) {
@@ -1078,4 +1085,3 @@ function jsAttrArg(value) {
 // --- Chat Panel ---
 
 const CHAT_STORAGE_KEY = 'code-memory-chat-history';
-

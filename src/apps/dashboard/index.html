@@ -107,7 +107,7 @@
           <div class="header-actions">
             <div class="search-wrapper">
               <i class="ri-search-line"></i>
-              <input type="text" id="search-input" class="search-input" placeholder="Search memories...">
+              <input type="text" id="search-input" class="search-input" placeholder="Search memories and press Enter...">
             </div>
 
             <button id="refresh-btn" class="btn btn-secondary">
@@ -178,6 +178,32 @@
             <span>Evidence history</span>
             <i class="ri-arrow-right-line"></i>
           </div>
+        </div>
+
+        <div class="overview-action-grid">
+          <section class="card overview-action-card" aria-labelledby="overview-recent-questions-title">
+            <div class="card-header">
+              <div class="card-title" id="overview-recent-questions-title"><i class="ri-question-answer-line"></i><span>Recent Questions</span></div>
+              <button class="inline-action-btn" onclick="switchView('user-prompts')">View all</button>
+            </div>
+            <div class="overview-activity-list" id="overview-recent-questions"><div class="overview-activity-empty">Loading recent questions…</div></div>
+          </section>
+
+          <section class="card overview-action-card" aria-labelledby="overview-memory-impact-title">
+            <div class="card-header">
+              <div class="card-title" id="overview-memory-impact-title"><i class="ri-links-line"></i><span>Recent Memory Impact</span></div>
+              <button class="inline-action-btn" onclick="switchView('usefulness')">Evidence</button>
+            </div>
+            <div class="overview-activity-list" id="overview-memory-impact"><div class="overview-activity-empty">Loading retrieval evidence…</div></div>
+          </section>
+
+          <section class="card overview-action-card" aria-labelledby="overview-useful-memories-title">
+            <div class="card-header">
+              <div class="card-title" id="overview-useful-memories-title"><i class="ri-thumb-up-line"></i><span>Useful Memories</span></div>
+              <button class="inline-action-btn" onclick="switchView('usefulness')">View all</button>
+            </div>
+            <div class="overview-activity-list" id="overview-useful-memories"><div class="overview-activity-empty">Loading evaluated memories…</div></div>
+          </section>
         </div>
 
         <!-- KPI Cards -->
@@ -680,12 +706,14 @@
             <div id="disclosure-results" class="disclosure-results">
               <div class="disclosure-empty">Search memory to inspect compact envelopes, expansion context, and raw sources.</div>
             </div>
-            <div id="disclosure-drilldown" class="disclosure-drilldown">
+            <div id="disclosure-drilldown" class="disclosure-drilldown" role="region" aria-label="Search result details" aria-live="polite" aria-hidden="true" tabindex="-1">
               <div class="disclosure-empty">No result selected.</div>
             </div>
           </div>
         </div>
       </div>
+
+      <button id="disclosure-drawer-backdrop" class="disclosure-drawer-backdrop" type="button" aria-label="Close search result details" onclick="closeDisclosureDrawer()" hidden></button>
 
       <!-- ========== VIEW: Diagnostics ========== -->
       <div id="view-diagnostics" class="page-view">

@@ -81,6 +81,46 @@ function renderDisclosureJumpButton(target, label = 'Open in Sessions') {
     </button>`;
 }
 
+function syncDisclosureDrawerVisibility() {
+  const drawer = document.getElementById('disclosure-drilldown');
+  const backdrop = document.getElementById('disclosure-drawer-backdrop');
+  if (drawer) {
+    drawer.classList.toggle('open', state.isDisclosureDrawerOpen);
+    drawer.setAttribute?.('aria-hidden', state.isDisclosureDrawerOpen ? 'false' : 'true');
+  }
+  if (backdrop) backdrop.hidden = !state.isDisclosureDrawerOpen;
+  document.body?.classList.toggle('disclosure-drawer-open', state.isDisclosureDrawerOpen);
+}
+
+function openDisclosureDrawer() {
+  state.isDisclosureDrawerOpen = true;
+  syncDisclosureDrawerVisibility();
+  document.getElementById('disclosure-drilldown')?.focus?.();
+}
+
+function closeDisclosureDrawer() {
+  state.isDisclosureDrawerOpen = false;
+  state.disclosureSelectedId = null;
+  state.disclosureExpansion = null;
+  state.disclosureSource = null;
+  syncDisclosureDrawerVisibility();
+  renderDisclosureResults();
+  renderDisclosureDrilldown();
+}
+
+function disclosureDrawerHeader() {
+  return `
+    <div class="disclosure-drawer-header">
+      <div>
+        <div class="disclosure-drawer-kicker">Selected memory</div>
+        <strong>Search result details</strong>
+      </div>
+      <button type="button" class="modal-close-btn disclosure-drawer-close" onclick="closeDisclosureDrawer()" aria-label="Close search result details">
+        <i class="ri-close-line"></i>
+      </button>
+    </div>`;
+}
+
 async function handleDisclosureSearch() {
   const input = document.getElementById('disclosure-search-input');
   const query = (input?.value || '').trim();
@@ -91,6 +131,8 @@ async function handleDisclosureSearch() {
   const strategy = document.getElementById('disclosure-strategy')?.value || 'auto';
   const topK = parseInt(document.getElementById('disclosure-topk')?.value || '8', 10);
 
+  state.isDisclosureDrawerOpen = false;
+  syncDisclosureDrawerVisibility();
   state.isDisclosureLoading = true;
   state.disclosureResults = [];
   state.disclosureMeta = null;
@@ -201,6 +243,7 @@ async function loadDisclosureDrilldown(resultId) {
   state.disclosureSelectedId = resultId;
   state.disclosureExpansion = null;
   state.disclosureSource = null;
+  openDisclosureDrawer();
   renderDisclosureResults();
   renderDisclosureDrilldown(true);
 
@@ -225,11 +268,11 @@ function renderDisclosureDrilldown(isLoading = false, message = null, isError = 
   const container = document.getElementById('disclosure-drilldown');
   if (!container) return;
   if (isLoading) {
-    container.innerHTML = '<div class="disclosure-empty">Loading expand/source layers...</div>';
+    container.innerHTML = `${disclosureDrawerHeader()}<div class="disclosure-empty">Loading expand/source layers...</div>`;
     return;
   }
   if (message && isError) {
-    container.innerHTML = `<div class="disclosure-empty" style="color:var(--error);">${escapeHtml(message)}</div>`;
+    container.innerHTML = `${disclosureDrawerHeader()}<div class="disclosure-empty" style="color:var(--error);">${escapeHtml(message)}</div>`;
     return;
   }
   if (!state.disclosureSelectedId) {
@@ -250,11 +293,20 @@ function renderDisclosureDrilldown(isLoading = false, message = null, isError = 
       <span>${escapeHtml(buildSafeDisclosurePreview(f.snippet || f.title || f.id || ''))}</span>
     </div>`).join('') || '<div class="disclosure-empty compact">No surrounding facts.</div>';
 
-  const related = (expansion.relatedSources || []).map(s => `
-    <div class="disclosure-source-ref">
-      <span class="disclosure-chip">${escapeHtml(s.sourceRef)} · ${escapeHtml(s.sourceType || 'source')}</span>
-      ${renderDisclosureProvenance(s.metadata, ['sourceProjectHash', 'sourceEntryId', 'topics'])}
-    </div>`).join('') || '<span class="disclosure-chip">no source refs</span>';
+  const related = (expansion.relatedSources || []).map(s => {
+    const relatedEventId = normalizeDisclosureEventId(Array.isArray(s.eventIds) ? s.eventIds[0] : null);
+    const relatedAction = relatedEventId
+      ? `<button type="button" class="inline-action-btn" onclick="openDetailModal(${disclosureAttrArg(relatedEventId)})">Open event</button>`
+      : '';
+    return `
+      <div class="disclosure-source-ref">
+        <div class="disclosure-related-source-head">
+          <span class="disclosure-chip">${escapeHtml(s.sourceRef)} · ${escapeHtml(s.sourceType || 'source')}</span>
+          ${relatedAction}
+        </div>
+        ${renderDisclosureProvenance(s.metadata, ['sourceProjectHash', 'sourceEntryId', 'topics'])}
+      </div>`;
+  }).join('') || '<span class="disclosure-chip">no source refs</span>';
 
   const rawEvent = source?.primaryEvent || source?.rawEvents?.[0] || source?.rawEvent || source?.event || null;
   const isSharedSource = source?.sourceType === 'shared_troubleshooting';
@@ -276,8 +328,22 @@ function renderDisclosureDrilldown(isLoading = false, message = null, isError = 
     getDisclosureJumpTarget(source, rawEvent, expansion.target),
     'Open in Sessions'
   );
+  const target = expansion.target || {};
+  const targetMetadata = target.metadata || {};
+  const targetTime = targetMetadata.timestamp ? new Date(targetMetadata.timestamp).toLocaleString() : null;
+  const targetSession = target.sessionId || targetMetadata.sessionId || rawEvent?.sessionId || null;
+  const targetReasons = (target.reasons || [])
+    .map(reason => `<span class="disclosure-chip">${escapeHtml(reason)}</span>`)
+    .join('');
 
   container.innerHTML = `
+    ${disclosureDrawerHeader()}
+    <div class="disclosure-detail-meta">
+      <span class="event-type-badge ${eventTypeBadgeClass(targetMetadata.eventType || target.resultType)}">${escapeHtml(targetMetadata.eventType || target.resultType || 'memory')}</span>
+      ${targetTime ? `<span><i class="ri-time-line"></i> ${escapeHtml(targetTime)}</span>` : ''}
+      ${targetSession ? `<span><i class="ri-chat-1-line"></i> ${escapeHtml(String(targetSession).slice(0, 12))}...</span>` : ''}
+      ${targetReasons}
+    </div>
     <div class="disclosure-stepper" aria-label="Search → Expand → Source">
       <span class="active">1 Search result</span>
       <span class="active">2 Expanded context</span>
@@ -290,7 +356,7 @@ function renderDisclosureDrilldown(isLoading = false, message = null, isError = 
       <div class="modal-content-block">${escapeHtml(buildSafeDisclosurePreview(expansion.expandedContext || expansion.target?.snippet || ''))}</div>
       <div class="modal-section-title">Surrounding context</div>
       <div class="disclosure-context-list">${surrounding}</div>
-      <div class="modal-section-title">Related sources</div>
+      <div class="modal-section-title">Related data</div>
       <div class="disclosure-reasons">${related}</div>
     </div>
     <div class="disclosure-layer">
