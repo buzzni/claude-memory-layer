@@ -11,6 +11,8 @@ const state = {
   sharedStats: null,
   mostAccessed: null,
   helpfulness: null,
+  overviewRecentPrompts: [],
+  overviewUsefulnessEntries: [],
   memoryUsefulness: null,
   retrievalTraces: null,
   retrievalReviewQueue: null,
@@ -66,6 +68,7 @@ const state = {
   disclosureExpansion: null,
   disclosureSource: null,
   isDisclosureLoading: false,
+  isDisclosureDrawerOpen: false,
   playgroundLastRun: null,
   isPlaygroundLoading: false,
   usefulnessWindow: '7d',
@@ -111,4 +114,3 @@ function apiUrl(path, params = {}) {
   }
   return url.toString();
 }
-

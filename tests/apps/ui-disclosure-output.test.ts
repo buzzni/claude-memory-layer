@@ -10,12 +10,14 @@ class TestElement {
   checked = false;
   style: Record<string, string> = {};
   disabled = false;
+  focusCalls = 0;
   classList = { add() {}, remove() {}, toggle() {} };
   dataset: Record<string, string> = {};
   options: unknown[] = [];
   addEventListener() {}
   querySelectorAll() { return []; }
   appendChild() {}
+  focus() { this.focusCalls += 1; }
 }
 
 type FetchStub = (...args: any[]) => Promise<{ ok: boolean; json: () => Promise<unknown> }>;
@@ -45,12 +47,14 @@ function loadDashboardWithElements(
   };
 
   vm.runInNewContext(
-    `${source}\n;globalThis.__dashboardTestHooks = { state, handleDisclosureSearch, renderDisclosureResults, renderDisclosureDrilldown, getDisclosureJumpTarget };`,
+    `${source}\n;globalThis.__dashboardTestHooks = { state, handleSearch, handleDisclosureSearch, loadDisclosureDrilldown, renderDisclosureResults, renderDisclosureDrilldown, getDisclosureJumpTarget };`,
     context
   );
   return (context as unknown as { __dashboardTestHooks: {
     state: Record<string, any>;
+    handleSearch: (query: string) => Promise<void>;
     handleDisclosureSearch: () => Promise<void>;
+    loadDisclosureDrilldown: (resultId: string) => Promise<void>;
     renderDisclosureResults: () => void;
     renderDisclosureDrilldown: () => void;
     getDisclosureJumpTarget: (...candidates: any[]) => { sessionId: string; eventId: string | null } | null;
@@ -58,6 +62,94 @@ function loadDashboardWithElements(
 }
 
 describe('dashboard retrieval disclosure provenance output', () => {
+  it('routes the overview search into disclosure results instead of logging a no-op', async () => {
+    const elements = {
+      'view-playground': new TestElement(),
+      'disclosure-search-input': new TestElement(),
+      'disclosure-search-btn': new TestElement(),
+      'disclosure-include-shared': new TestElement(),
+      'disclosure-strategy': new TestElement(),
+      'disclosure-topk': new TestElement(),
+      'disclosure-status': new TestElement(),
+      'disclosure-results': new TestElement(),
+      'disclosure-drilldown': new TestElement(),
+      'disclosure-drawer-backdrop': new TestElement(),
+    };
+    elements['disclosure-strategy'].value = 'fast';
+    elements['disclosure-topk'].value = '5';
+    const requests: string[] = [];
+    const hooks = loadDashboardWithElements(elements, async (url) => {
+      requests.push(String(url));
+      return {
+        ok: true,
+        json: async () => ({ results: [], meta: { total: 0 } })
+      };
+    });
+
+    await hooks.handleSearch('memoryhub dashboard');
+
+    expect(hooks.state.currentView).toBe('playground');
+    expect(elements['disclosure-search-input'].value).toBe('memoryhub dashboard');
+    expect(requests.some(url => url.includes('/api/search/disclosure'))).toBe(true);
+  });
+
+  it('opens an in-viewport detail drawer with related data when a result is selected', async () => {
+    const elements = {
+      'disclosure-results': new TestElement(),
+      'disclosure-drilldown': new TestElement(),
+      'disclosure-drawer-backdrop': new TestElement(),
+    };
+    const requestedUrls: string[] = [];
+    const hooks = loadDashboardWithElements(elements, async (url) => {
+      requestedUrls.push(String(url));
+      if (String(url).includes('/expand')) {
+        return {
+          ok: true,
+          json: async () => ({
+            target: {
+              id: 'event:e1',
+              resultType: 'source',
+              title: 'Useful deployment answer',
+              snippet: 'Use port 37777',
+              sourceRef: 'event:e1',
+              sessionId: 'session-1',
+              reasons: ['keyword_match'],
+              metadata: { eventId: 'e1', eventType: 'agent_response', timestamp: '2026-08-02T10:00:00.000Z' }
+            },
+            surroundingFacts: [{ id: 'event:e2', resultType: 'source', snippet: 'Related prompt' }],
+            relatedSources: [{ sourceRef: 'event:e2', sourceType: 'raw_event', eventIds: ['e2'] }],
+            expandedContext: 'Use port 37777'
+          })
+        };
+      }
+      return {
+        ok: true,
+        json: async () => ({
+          sourceRef: 'event:e1',
+          sourceType: 'raw_event',
+          primaryEvent: {
+            id: 'e1',
+            eventType: 'agent_response',
+            sessionId: 'session-1',
+            timestamp: '2026-08-02T10:00:00.000Z',
+            content: 'Use port 37777'
+          }
+        })
+      };
+    });
+
+    await hooks.loadDisclosureDrilldown('event:e1');
+
+    expect(hooks.state.isDisclosureDrawerOpen).toBe(true);
+    expect(elements['disclosure-drilldown'].focusCalls).toBeGreaterThan(0);
+    expect(elements['disclosure-drilldown'].innerHTML).toContain('Search result details');
+    expect(elements['disclosure-drilldown'].innerHTML).toContain('Related data');
+    expect(elements['disclosure-drilldown'].innerHTML).toContain('agent_response');
+    expect(elements['disclosure-drilldown'].innerHTML).toContain('Open in Sessions');
+    expect(requestedUrls.some(url => url.includes('/expand'))).toBe(true);
+    expect(requestedUrls.some(url => url.includes('/source'))).toBe(true);
+  });
+
   it('renders shared search results with source/project/topics provenance', () => {
     const elements = { 'disclosure-results': new TestElement() };
     const hooks = loadDashboardWithElements(elements);
@@ -132,6 +224,7 @@ describe('dashboard retrieval disclosure provenance output', () => {
       'disclosure-status': new TestElement(),
       'disclosure-results': new TestElement(),
       'disclosure-drilldown': new TestElement(),
+      'disclosure-drawer-backdrop': new TestElement(),
     };
     elements['disclosure-search-input'].value = 'memoryhub';
     elements['disclosure-strategy'].value = 'fast';
@@ -159,10 +252,13 @@ describe('dashboard retrieval disclosure provenance output', () => {
         })
       };
     });
+    hooks.state.isDisclosureDrawerOpen = true;
 
     await hooks.handleDisclosureSearch();
 
     expect(hooks.state.isDisclosureLoading).toBe(false);
+    expect(hooks.state.isDisclosureDrawerOpen).toBe(false);
+    expect(elements['disclosure-drawer-backdrop'].hidden).toBe(true);
     expect(elements['disclosure-search-btn'].disabled).toBe(false);
     expect(elements['disclosure-status'].textContent).toContain('Search layer returned 1 result');
     expect(elements['disclosure-results'].innerHTML).not.toContain('Searching...');

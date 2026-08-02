@@ -122,7 +122,11 @@ function setupEventListeners() {
   // Search
   const searchInput = document.getElementById('search-input');
   if (searchInput) {
-    searchInput.addEventListener('input', debounce((e) => handleSearch(e.target.value), 300));
+    searchInput.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      handleSearch(e.target.value);
+    });
   }
 
   // User prompt search
@@ -258,6 +262,8 @@ function setupEventListeners() {
     if (e.key === 'Escape') {
       if (state.isChatOpen) {
         closeChatPanel();
+      } else if (state.isDisclosureDrawerOpen) {
+        closeDisclosureDrawer();
       } else {
         closeAllModals();
       }
