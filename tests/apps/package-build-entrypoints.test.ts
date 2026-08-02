@@ -14,6 +14,7 @@ describe('package build entrypoints', () => {
     const buildScript = readFileSync('scripts/build.ts', 'utf-8');
 
     expect(pkg.main).toBe('dist/index.js');
+    expect(buildScript).toContain("target: 'node20'");
     expect(buildScript).toContain("entryPoints: ['src/index.ts']");
     expect(buildScript).toContain("outfile: 'dist/index.js'");
   });

@@ -3,6 +3,11 @@
  * AXIOMMIND Principle 7: Standard JSON format for vectors
  */
 
+import { existsSync, readFileSync } from 'node:fs';
+import { createRequire as createNodeRequire } from 'node:module';
+import { dirname as pathDirname, join, parse } from 'node:path';
+import { fileURLToPath as urlToFilePath, pathToFileURL } from 'node:url';
+
 export interface EmbeddingResult {
   vector: number[];
   model: string;
@@ -16,6 +21,7 @@ type FeatureExtractionPipelineFactory = (
 
 export const DEFAULT_EMBEDDING_MODEL = 'Xenova/multilingual-e5-small';
 export const DEFAULT_EMBEDDING_FALLBACK_MODEL = 'intfloat/multilingual-e5-small';
+const MANAGED_EMBEDDING_BACKEND_DIR = '.claude-memory-layer-embedding-backend';
 
 export class Embedder {
   private pipeline: ((input: string, options?: Record<string, unknown>) => Promise<{ data: Float32Array }>) | null = null;
@@ -248,20 +254,64 @@ export function createEmbeddingBackendUnavailableError(cause: unknown): Error & 
       '  ONNXRUNTIME_NODE_INSTALL_CUDA=skip npm install -g claude-memory-layer@latest',
       '',
       'If you are inside a local checkout or package directory, repair only the backend with:',
-      '  ONNXRUNTIME_NODE_INSTALL_CUDA=skip npm install --no-save --no-package-lock --omit=dev @huggingface/transformers@3.8.1'
+      '  ONNXRUNTIME_NODE_INSTALL_CUDA=skip node scripts/postinstall-embedding-backend.cjs'
     ].join('\n')
   ) as Error & { cause?: unknown };
   error.cause = cause;
   return error;
 }
 
+function findPackageRoot(startUrl: string = import.meta.url): string | undefined {
+  let currentDir = pathDirname(urlToFilePath(startUrl));
+  const filesystemRoot = parse(currentDir).root;
+
+  while (currentDir !== filesystemRoot) {
+    const manifestPath = join(currentDir, 'package.json');
+    if (existsSync(manifestPath)) {
+      try {
+        const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as { name?: string };
+        if (manifest.name === 'claude-memory-layer') return currentDir;
+      } catch {
+        // Continue upward when an unrelated package manifest is unreadable.
+      }
+    }
+    currentDir = pathDirname(currentDir);
+  }
+
+  return undefined;
+}
+
+export function resolveTransformersModuleSpecifier(
+  packageRoot: string | undefined = findPackageRoot()
+): string {
+  if (!packageRoot) return '@huggingface/transformers';
+
+  const backendRoot = join(packageRoot, 'node_modules', MANAGED_EMBEDDING_BACKEND_DIR);
+  const backendManifest = join(backendRoot, 'package.json');
+  if (!existsSync(backendManifest)) return '@huggingface/transformers';
+
+  try {
+    const backendRequire = createNodeRequire(pathToFileURL(backendManifest));
+    return pathToFileURL(backendRequire.resolve('@huggingface/transformers')).href;
+  } catch {
+    return '@huggingface/transformers';
+  }
+}
+
+async function loadTransformersModule(): Promise<{
+  pipeline: unknown;
+  env?: { cacheDir?: string };
+}> {
+  const dynamicImport = new Function('specifier', 'return import(specifier)') as (
+    specifier: string
+  ) => Promise<{ pipeline: unknown; env?: { cacheDir?: string } }>;
+  return dynamicImport(resolveTransformersModuleSpecifier());
+}
+
 async function loadTransformersPipeline(): Promise<FeatureExtractionPipelineFactory> {
   // Keep @huggingface/transformers lazy so importing MemoryService or pure
   // adapter helpers does not eagerly dlopen onnxruntime native bindings.
-  const dynamicImport = new Function('specifier', 'return import(specifier)') as (
-    specifier: string
-  ) => Promise<{ pipeline: unknown }>;
-  const transformers = await dynamicImport('@huggingface/transformers');
+  const transformers = await loadTransformersModule();
   return transformers.pipeline as FeatureExtractionPipelineFactory;
 }
 
@@ -281,10 +331,7 @@ export function isCorruptedModelCacheError(error: unknown): boolean {
 }
 
 async function resolveTransformersCacheDir(): Promise<string | undefined> {
-  const dynamicImport = new Function('specifier', 'return import(specifier)') as (
-    specifier: string
-  ) => Promise<{ env: { cacheDir?: string } }>;
-  const transformers = await dynamicImport('@huggingface/transformers');
+  const transformers = await loadTransformersModule();
   return transformers.env?.cacheDir;
 }
 

@@ -2,17 +2,65 @@
 'use strict';
 
 const { execFileSync, spawnSync } = require('node:child_process');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const EMBEDDING_BACKEND_PACKAGE_NAME = '@huggingface/transformers';
 const EMBEDDING_BACKEND_VERSION = '3.8.1';
 const EMBEDDING_BACKEND_PACKAGE = `${EMBEDDING_BACKEND_PACKAGE_NAME}@${EMBEDDING_BACKEND_VERSION}`;
+const MANAGED_EMBEDDING_BACKEND_DIR = '.claude-memory-layer-embedding-backend';
+const SHARP_VERSION = '0.35.3';
 const REPAIR_GUARD_ENV = 'CLAUDE_MEMORY_LAYER_EMBEDDING_POSTINSTALL_REPAIR';
 const SKIP_ENV = 'CLAUDE_MEMORY_LAYER_SKIP_EMBEDDING_POSTINSTALL';
 const EMBEDDING_BACKEND_HEALTHCHECK_SCRIPT = `
-import('${EMBEDDING_BACKEND_PACKAGE_NAME}')
-  .then(() => undefined)
+import { createRequire } from 'node:module';
+import { realpathSync } from 'node:fs';
+import { sep } from 'node:path';
+import { pathToFileURL } from 'node:url';
+const backendRoot = process.argv[1];
+const realBackendRoot = realpathSync(backendRoot);
+const backendRequire = createRequire(pathToFileURL(backendRoot + '/package.json'));
+const transformersEntry = realpathSync(backendRequire.resolve('${EMBEDDING_BACKEND_PACKAGE_NAME}'));
+const sharpEntry = realpathSync(backendRequire.resolve('sharp'));
+if (!transformersEntry.startsWith(realBackendRoot + sep) || !sharpEntry.startsWith(realBackendRoot + sep)) {
+  process.exit(1);
+}
+Promise.all([
+  import(pathToFileURL(transformersEntry).href),
+  Promise.resolve().then(() => backendRequire('sharp'))
+])
+  .then(([, sharp]) => {
+    if (sharp.versions?.sharp !== '${SHARP_VERSION}') process.exit(1);
+  })
   .catch(() => process.exit(1));
 `;
+
+function getManagedBackendDir(rootDir = process.cwd()) {
+  return path.join(rootDir, 'node_modules', MANAGED_EMBEDDING_BACKEND_DIR);
+}
+
+function createManagedBackendManifest() {
+  return {
+    private: true,
+    dependencies: {
+      [EMBEDDING_BACKEND_PACKAGE_NAME]: EMBEDDING_BACKEND_VERSION
+    },
+    overrides: {
+      sharp: SHARP_VERSION
+    }
+  };
+}
+
+function ensureManagedBackendManifest(rootDir = process.cwd(), fsImpl = fs) {
+  const backendDir = getManagedBackendDir(rootDir);
+  const manifestPath = path.join(backendDir, 'package.json');
+  const content = `${JSON.stringify(createManagedBackendManifest(), null, 2)}\n`;
+  fsImpl.mkdirSync(backendDir, { recursive: true });
+  if (!fsImpl.existsSync(manifestPath) || fsImpl.readFileSync(manifestPath, 'utf8') !== content) {
+    fsImpl.writeFileSync(manifestPath, content);
+  }
+  return backendDir;
+}
 
 function parseCudaMajor(output) {
   const releaseMatch = String(output).match(/release\s+(\d+)(?:\.\d+)?/i);
@@ -53,7 +101,12 @@ function isSkipRequested(env = process.env) {
 
 function isEmbeddingBackendAvailable(rootDir = process.cwd(), execFileSyncImpl = execFileSync) {
   try {
-    execFileSyncImpl(process.execPath, ['--input-type=module', '--eval', EMBEDDING_BACKEND_HEALTHCHECK_SCRIPT], {
+    execFileSyncImpl(process.execPath, [
+      '--input-type=module',
+      '--eval',
+      EMBEDDING_BACKEND_HEALTHCHECK_SCRIPT,
+      getManagedBackendDir(rootDir)
+    ], {
       cwd: rootDir,
       stdio: 'ignore'
     });
@@ -76,13 +129,12 @@ function createRepairEnv(env = process.env) {
   };
 }
 
-function createNpmInstallArgs() {
+function createNpmInstallArgs(rootDir = process.cwd()) {
   return [
     'install',
-    '--no-save',
-    '--no-package-lock',
-    '--omit=dev',
-    EMBEDDING_BACKEND_PACKAGE
+    '--prefix',
+    getManagedBackendDir(rootDir),
+    '--omit=dev'
   ];
 }
 
@@ -106,9 +158,10 @@ function runPostinstall({
   }
 
   log('[claude-memory-layer] Embedding backend is missing or needs CUDA 11 CPU-only repair. Repairing with CPU-only ONNX Runtime...');
+  ensureManagedBackendManifest(rootDir);
 
   const npmCommand = platform === 'win32' ? 'npm.cmd' : 'npm';
-  const result = spawnSyncImpl(npmCommand, createNpmInstallArgs(), {
+  const result = spawnSyncImpl(npmCommand, createNpmInstallArgs(rootDir), {
     cwd: rootDir,
     env: createRepairEnv(env),
     stdio: 'inherit'
@@ -131,6 +184,11 @@ if (require.main === module) {
 
 module.exports = {
   EMBEDDING_BACKEND_PACKAGE,
+  MANAGED_EMBEDDING_BACKEND_DIR,
+  SHARP_VERSION,
+  getManagedBackendDir,
+  createManagedBackendManifest,
+  ensureManagedBackendManifest,
   parseCudaMajor,
   parseCudaMajorFromEnv,
   detectCudaMajor,

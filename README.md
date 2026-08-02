@@ -22,11 +22,14 @@ Claude Memory Layer는 AI 에이전트의 대화와 작업 이벤트를 프로�
 - **Dashboard 운영성 강화**: local-only 기본 bind, 선택적 password gate, Vector Health 카드, Perspective Memory aggregate 카드, retrieval trace/score breakdown과 aggregate-only strategy/context-pack telemetry를 제공합니다.
 - **Codex/Hermes history ingest**: 원본 세션은 read-only validate/replay로 먼저 확인하고, 명시적 import로만 프로젝트 메모리에 반영합니다.
 - **Hermes/CML/Headroom 운영 모델**: Hermes built-in memory, `session_search`, CML context-pack, read-only Hermes provider, Headroom reference stance는 [`docs/HERMES_CML_HEADROOM_OPERATING_MODEL.md`](docs/HERMES_CML_HEADROOM_OPERATING_MODEL.md)에 정리되어 있습니다.
-- **npm 설치 안정화**: `@huggingface/transformers`는 optional dependency + postinstall repair로 설치하며, CUDA 11 환경에서는 CPU-only ONNX Runtime으로 자동 복구합니다.
+- **npm 설치 안정화**: `@huggingface/transformers`는 보안 버전의 `sharp`를 고정한 격리 backend로 설치하며, CUDA 11 환경에서는 CPU-only ONNX Runtime으로 자동 복구합니다.
 
 ## 빠른 시작 (신규 프로젝트 기준)
 
 아래 순서대로 하면 됩니다.
+
+> **Runtime requirement:** Claude Memory Layer 2.0.0부터 Node.js 20.19 이상이 필요합니다.
+> Hono 정적 파일 서버와 로컬 embedding 이미지 backend의 보안 수정 버전을 사용하기 위한 최소 버전입니다.
 
 ### 0) 최초 1회(머신 전체) 설치
 
@@ -50,7 +53,7 @@ npx claude-memory-layer status
 ```
 
 - `install`은 **한 번만** 하면 됩니다(Claude Code hooks 등록).
-- Embedding backend은 런타임 필수 기능이지만, npm 설치 단계에서는 `optionalDependencies` + postinstall repair로 처리합니다. CUDA 11 환경에서 `onnxruntime-node`의 GPU 바이너리 자동 설치가 실패해도 패키지 설치 자체를 살리고 CPU-only backend로 복구하기 위해서입니다.
+- Embedding backend은 런타임 필수 기능이며, postinstall이 패키지 내부의 격리된 관리 디렉터리에 설치합니다. 이 경계에서 `sharp` 보안 버전을 강제하고, CUDA 11 환경에서는 `onnxruntime-node`를 CPU-only로 설치합니다.
 - 이후 프로젝트별로 메모리 저장소가 자동 분리됩니다.
 - `install` / `uninstall`은 `~/.claude/settings.json`을 수정합니다.
 
@@ -62,7 +65,7 @@ Linux x64 서버에 CUDA 11이 설치되어 있으면 `@huggingface/transformers
 Error: CUDA 11 binaries are not supported by this script yet.
 ```
 
-Claude Memory Layer는 로컬 semantic/vector embedding에 필요한 `@huggingface/transformers`를 런타임 필수 backend로 취급합니다. 다만 CUDA 11 환경에서 하위 의존성 설치가 먼저 실패하는 문제를 피하려고 npm dependency level에서는 optional로 두고, 설치 중 postinstall repair가 `ONNXRUNTIME_NODE_INSTALL_CUDA=skip`으로 CPU-only ONNX Runtime을 자동 복구합니다. npm 로그에 `onnxruntime-node`의 CUDA 11 stack trace가 보이더라도 최종 exit code가 0이고 `claude-memory-layer --version`이 동작하면 정상입니다. 최신 버전에서는 일반적으로 아래 명령이 그대로 동작해야 합니다.
+Claude Memory Layer는 로컬 semantic/vector embedding에 필요한 `@huggingface/transformers`를 런타임 필수 backend로 취급합니다. 설치 중 postinstall repair가 이를 격리된 관리 디렉터리에 설치하면서 `ONNXRUNTIME_NODE_INSTALL_CUDA=skip`으로 CPU-only ONNX Runtime과 보안 수정된 `sharp`를 함께 고정합니다. npm 로그의 최종 exit code가 0이고 `claude-memory-layer --version`이 동작하면 정상입니다. 최신 버전에서는 일반적으로 아래 명령이 그대로 동작해야 합니다.
 
 ```bash
 npm install -g claude-memory-layer@latest
@@ -86,7 +89,11 @@ claude-memory-layer --version
 ONNXRUNTIME_NODE_INSTALL_CUDA=skip npm install
 ```
 
-이미 설치된 패키지 디렉터리에서 backend만 손상/누락된 경우에는 postinstall repair와 런타임 오류 메시지가 동일한 CPU-only 복구 명령을 안내합니다.
+이미 설치된 패키지 디렉터리에서 backend만 손상/누락된 경우에는 해당 패키지 디렉터리에서 아래 복구 스크립트를 실행할 수 있습니다.
+
+```bash
+ONNXRUNTIME_NODE_INSTALL_CUDA=skip node scripts/postinstall-embedding-backend.cjs
+```
 
 `npm warn deprecated ...` 경고는 하위 의존성 경고이며 설치 실패 원인이 아닙니다.
 
@@ -328,7 +335,7 @@ MCP client가 환경에 따라 PATH를 못 찾으면 `command -v claude-memory-l
 |------|------|------|
 | Claude Code hooks / CLI | Stable | `install`, `search`, `import`, `stats`, `dashboard`, `process` |
 | SQLite event store / project registry | Stable | 프로젝트별 canonical source of truth, WAL 기반 동시 읽기/쓰기 |
-| LanceDB vector index / Embedder | Stable accelerator | `@huggingface/transformers` optional + postinstall repair, versioned vector tables |
+| LanceDB vector index / Embedder | Stable accelerator | 격리된 `@huggingface/transformers` backend + security-pinned `sharp`, versioned vector tables |
 | Vector Outbox V2 | Implemented | transactional enqueue, worker lock, stale recovery, `vector-status`, dashboard Vector Health |
 | Progressive disclosure / retrieval traces | Implemented | `search --disclosure`, `expand`, `source`, score breakdown, privacy-safe lanes, aggregate-only strategy/context-pack telemetry |
 | MCP server | Implemented | package bin `claude-memory-layer-mcp`, project-aware read tools + audited operation tools |

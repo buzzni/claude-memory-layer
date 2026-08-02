@@ -21,7 +21,7 @@ fs.mkdirSync(outdir, { recursive: true });
 const commonOptions: esbuild.BuildOptions = {
   bundle: true,
   platform: 'node',
-  target: 'node18',
+  target: 'node20',
   format: 'esm',
   sourcemap: true,
   external: [

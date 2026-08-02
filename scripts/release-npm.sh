@@ -57,6 +57,13 @@ require_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "Required command not found: $1"
 }
 
+verify_managed_backend_security() {
+  MANAGED_BACKEND_DIR="./node_modules/${PACKAGE_NAME}/node_modules/.claude-memory-layer-embedding-backend"
+  [[ -f "${MANAGED_BACKEND_DIR}/package-lock.json" ]] || die "Managed embedding backend lockfile is missing."
+  npm ls --prefix "$MANAGED_BACKEND_DIR" @huggingface/transformers sharp
+  npm audit --omit=dev --prefix "$MANAGED_BACKEND_DIR"
+}
+
 BUMP="patch"
 TAG="latest"
 OTP="${NPM_OTP:-}"
@@ -275,6 +282,7 @@ else
   warn "No executable bin found in packed tarball smoke test."
 fi
 node -e "const p=require('./node_modules/${PACKAGE_NAME}/package.json'); console.log(JSON.stringify({name:p.name, version:p.version, bin:p.bin, dependencies:p.dependencies, optionalDependencies:p.optionalDependencies}, null, 2))"
+verify_managed_backend_security
 popd >/dev/null
 rm -rf "$TMP_DIR"
 TMP_DIR=""
@@ -324,6 +332,7 @@ if [[ "$SKIP_SMOKE" -eq 0 ]]; then
     warn "No executable bin found for smoke test."
   fi
   node -e "const p=require('./node_modules/${PACKAGE_NAME}/package.json'); console.log(JSON.stringify({name:p.name, version:p.version, bin:p.bin, dependencies:p.dependencies, optionalDependencies:p.optionalDependencies}, null, 2))"
+  verify_managed_backend_security
   popd >/dev/null
   rm -rf "$TMP_DIR"
   TMP_DIR=""

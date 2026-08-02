@@ -18,11 +18,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Test the advertised support floor (engines.node >=18) and current LTS.
-        node-version: ['18', '20', '22']
+        # Test the advertised support floor and current LTS.
+        node-version: ['20', '22']
     env:
-      # The embedding backend is an optional native dep; skip its postinstall
-      # network fetch in CI so installs stay fast and deterministic.
+      # Skip the isolated embedding backend's postinstall network fetch in CI;
+      # the development dependency still covers compile and unit-test imports.
       CLAUDE_MEMORY_LAYER_SKIP_EMBEDDING_POSTINSTALL: '1'
       ONNXRUNTIME_NODE_INSTALL_CUDA: skip
     steps:
@@ -43,12 +43,7 @@ jobs:
       - name: Lint
         run: npm run lint
 
-      # The test toolchain (vitest 4 / rolldown) imports `styleText` from
-      # node:util, which only exists on Node >= 20.12, so tests run on the
-      # dev-supported runtimes (devEngines.runtime >= 20.19). Node 18 still
-      # verifies the published engines floor via typecheck/lint/build.
       - name: Test
-        if: matrix.node-version != '18'
         run: npm run test:run
 
       - name: Build

@@ -1,3 +1,8 @@
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import { describe, expect, it, vi } from 'vitest';
 
 import {
@@ -6,6 +11,7 @@ import {
   createEmbeddingBackendUnavailableError,
   isKnownBenignTransformersWarning,
   isMissingTransformersDependencyError,
+  resolveTransformersModuleSpecifier,
   withSuppressedKnownTransformersWarnings
 } from '../../src/extensions/vector/embedder.js';
 import { ConfigSchema } from '../../src/core/types.js';
@@ -33,8 +39,37 @@ describe('Embedder warning suppression', () => {
     expect(friendly.message).toContain('Required embedding backend is not installed');
     expect(friendly.message).toContain('Claude Memory Layer requires @huggingface/transformers');
     expect(friendly.message).toContain('ONNXRUNTIME_NODE_INSTALL_CUDA=skip npm install -g claude-memory-layer@latest');
-    expect(friendly.message).toContain('ONNXRUNTIME_NODE_INSTALL_CUDA=skip npm install --no-save --no-package-lock --omit=dev @huggingface/transformers@3.8.1');
+    expect(friendly.message).toContain('ONNXRUNTIME_NODE_INSTALL_CUDA=skip node scripts/postinstall-embedding-backend.cjs');
     expect(friendly.cause).toBe(missingBackendError);
+  });
+
+  it('resolves transformers from the isolated managed backend when present', () => {
+    const packageRoot = mkdtempSync(join(tmpdir(), 'cml-managed-embedding-test-'));
+    const transformersDir = join(
+      packageRoot,
+      'node_modules',
+      '.claude-memory-layer-embedding-backend',
+      'node_modules',
+      '@huggingface',
+      'transformers'
+    );
+
+    try {
+      mkdirSync(transformersDir, { recursive: true });
+      writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({ name: 'claude-memory-layer' }));
+      writeFileSync(
+        join(packageRoot, 'node_modules', '.claude-memory-layer-embedding-backend', 'package.json'),
+        JSON.stringify({ private: true })
+      );
+      writeFileSync(join(transformersDir, 'package.json'), JSON.stringify({ name: '@huggingface/transformers', main: 'index.js' }));
+      writeFileSync(join(transformersDir, 'index.js'), 'module.exports = {};\n');
+
+      expect(realpathSync(fileURLToPath(resolveTransformersModuleSpecifier(packageRoot)))).toBe(
+        realpathSync(join(transformersDir, 'index.js'))
+      );
+    } finally {
+      rmSync(packageRoot, { recursive: true, force: true });
+    }
   });
 
   it('recognizes known benign transformer warnings', () => {
