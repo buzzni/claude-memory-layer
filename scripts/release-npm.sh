@@ -64,6 +64,18 @@ verify_managed_backend_security() {
   npm audit --omit=dev --prefix "$MANAGED_BACKEND_DIR"
 }
 
+retry_npm_view() {
+  local attempt
+  for attempt in 1 2 3 4 5; do
+    if npm view "$@"; then return 0; fi
+    if [[ "$attempt" -lt 5 ]]; then
+      warn "npm registry has not propagated the published version yet; retrying (${attempt}/5)."
+      sleep 2
+    fi
+  done
+  return 1
+}
+
 BUMP="patch"
 TAG="latest"
 OTP="${NPM_OTP:-}"
@@ -316,8 +328,8 @@ fi
 npm publish "${PUBLISH_ARGS[@]}"
 
 log "Verifying npm registry"
-npm view "${PACKAGE_NAME}@${NEW_VERSION}" version
-npm view "$PACKAGE_NAME" version dist-tags --json
+retry_npm_view "${PACKAGE_NAME}@${NEW_VERSION}" version
+retry_npm_view "$PACKAGE_NAME" version dist-tags --json
 
 if [[ "$SKIP_SMOKE" -eq 0 ]]; then
   log "Running fresh-install smoke test"

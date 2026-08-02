@@ -20,5 +20,6 @@ describe('release npm script safety gates', () => {
     expect(script).toContain('PACK_TGZ=');
     expect(script).toContain('npm audit --omit=dev --prefix "$MANAGED_BACKEND_DIR"');
     expect(script).toContain('npm ls --prefix "$MANAGED_BACKEND_DIR" @huggingface/transformers sharp');
+    expect(script).toContain('retry_npm_view "${PACKAGE_NAME}@${NEW_VERSION}" version');
   });
 });
