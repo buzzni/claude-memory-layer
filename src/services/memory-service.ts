@@ -54,6 +54,7 @@ import {
   type MemoryServiceConfig
 } from './memory-service-config.js';
 import { createMemoryServiceRegistry } from './memory-service-registry.js';
+import { loadMemoryOperationsConfig } from './operations-config-loader.js';
 import {
   type AccessedMemory,
   type DailyHelpfulnessStats,
@@ -779,7 +780,10 @@ export class MemoryService {
 }
 
 const defaultRegistry = createMemoryServiceRegistry<MemoryService>({
-  createService: (config) => new MemoryService(config),
+  // operations flags come from ~/.claude-code/memory/operations.json unless a
+  // caller passes them explicitly; without this, no production surface (hooks,
+  // MCP server, daemon) could ever enable codifyLite/graphExpansion/etc.
+  createService: (config) => new MemoryService({ operations: loadMemoryOperationsConfig(), ...config }),
   hashProjectPath: defaultHashProjectPath,
   getProjectStoragePath: defaultGetProjectStoragePath,
   getSessionProject: defaultGetSessionProject,

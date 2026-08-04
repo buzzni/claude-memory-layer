@@ -6,6 +6,12 @@ export default defineConfig({
     environment: 'node',
     include: ['tests/**/*.test.ts'],
     testTimeout: 15_000,
+    env: {
+      // Tests must not pick up the developer's real operations.json — the
+      // default registry loads it, so pin the loader to a nonexistent path.
+      // Individual tests override this env var for their own fixtures.
+      CLAUDE_MEMORY_OPERATIONS_CONFIG_PATH: '/nonexistent/cml-test-operations.json'
+    },
     coverage: {
       provider: 'v8',
       reporter: ['text', 'json', 'html'],
