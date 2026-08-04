@@ -49,6 +49,7 @@ export const DISABLED_MEMORY_OPERATIONS_CONFIG: MemoryOperationsConfig = {
   actions: { enabled: true },
   retention: { enabled: false, policyVersion: 'v1' },
   graphExpansion: { enabled: false, maxHops: 1 },
+  codifyLite: { enabled: false },
   lessons: { enabled: false },
   perspectiveMemory: {
     enabled: false,

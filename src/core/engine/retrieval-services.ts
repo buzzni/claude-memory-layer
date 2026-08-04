@@ -79,7 +79,10 @@ export function createRetrievalServices(deps: RetrievalServicesDeps): RetrievalS
     deps.vectorStore,
     deps.embedder,
     deps.matcher,
-    { queryGraphExpansionEnabled: deps.memoryOperationsConfig?.graphExpansion?.enabled === true }
+    {
+      queryGraphExpansionEnabled: deps.memoryOperationsConfig?.graphExpansion?.enabled === true,
+      sessionFileLinkEnabled: deps.memoryOperationsConfig?.codifyLite?.enabled === true
+    }
   );
   const retrievalOrchestrator = createRetrievalOrchestrator({
     initialize: deps.initialize,

@@ -169,6 +169,9 @@ export const MemoryOperationsConfigSchema = z.object({
     enabled: z.boolean().default(false),
     maxHops: z.number().int().min(0).max(5).default(1)
   }).default({}),
+  codifyLite: z.object({
+    enabled: z.boolean().default(false)
+  }).default({}),
   lessons: z.object({
     enabled: z.boolean().default(false)
   }).default({}),
@@ -443,6 +446,44 @@ export const GetActorCardInputSchema = z.object({
   observedActorId: PerspectiveMemoryNonEmptyStringSchema
 });
 export type GetActorCardInput = z.input<typeof GetActorCardInputSchema>;
+
+// ============================================================
+// Core Memory Blocks (Letta-inspired always-injected, self-editable state)
+// ============================================================
+
+export const CoreMemoryBlockKeySchema = z.enum(['project', 'user']);
+export type CoreMemoryBlockKey = z.infer<typeof CoreMemoryBlockKeySchema>;
+
+export const CORE_MEMORY_BLOCK_MAX_CHARS = 1200;
+
+export const CoreMemoryBlockSchema = z.object({
+  projectHash: PerspectiveMemoryOptionalStringSchema,
+  blockKey: CoreMemoryBlockKeySchema,
+  content: z.string().max(CORE_MEMORY_BLOCK_MAX_CHARS),
+  sourceEventIds: PerspectiveMemoryStringArraySchema,
+  updatedBy: PerspectiveMemoryOptionalStringSchema,
+  createdAt: z.date(),
+  updatedAt: z.date()
+});
+export type CoreMemoryBlock = z.infer<typeof CoreMemoryBlockSchema>;
+
+export const UpsertCoreMemoryBlockInputSchema = z.object({
+  projectHash: PerspectiveMemoryOptionalStringSchema,
+  blockKey: CoreMemoryBlockKeySchema,
+  content: z.string().trim().max(
+    CORE_MEMORY_BLOCK_MAX_CHARS,
+    `core memory block supports at most ${CORE_MEMORY_BLOCK_MAX_CHARS} characters`
+  ),
+  sourceEventIds: PerspectiveMemoryStringArraySchema,
+  updatedBy: PerspectiveMemoryOptionalStringSchema
+});
+export type UpsertCoreMemoryBlockInput = z.input<typeof UpsertCoreMemoryBlockInputSchema>;
+
+export const GetCoreMemoryBlockInputSchema = z.object({
+  projectHash: PerspectiveMemoryOptionalStringSchema,
+  blockKey: CoreMemoryBlockKeySchema.optional()
+});
+export type GetCoreMemoryBlockInput = z.input<typeof GetCoreMemoryBlockInputSchema>;
 
 export const PerspectiveObservationSchema = z.object({
   observationId: z.string().uuid(),
@@ -812,7 +853,7 @@ export interface ProjectScopeRepairResult {
 // Entity Types (Task, Condition, Artifact)
 // ============================================================
 
-export const EntityTypeSchema = z.enum(['task', 'condition', 'artifact']);
+export const EntityTypeSchema = z.enum(['task', 'condition', 'artifact', 'source_file']);
 export type EntityType = z.infer<typeof EntityTypeSchema>;
 
 export const TaskStatusSchema = z.enum([
@@ -894,7 +935,8 @@ export const RelationTypeSchema = z.enum([
   'resolves_to',
   'derived_from',
   'supersedes',
-  'source_of'
+  'source_of',
+  'touched_in'
 ]);
 export type RelationType = z.infer<typeof RelationTypeSchema>;
 

@@ -1,4 +1,5 @@
 import type {
+  CoreMemoryBlock,
   MemoryEvent,
   MemoryLesson,
   OutboxStats,
@@ -11,6 +12,7 @@ import type {
 import type { DerivationLiveness } from '../sqlite-event-store.js';
 import type { SQLiteDatabase } from '../sqlite-wrapper.js';
 import { LessonRepository } from '../operations/lesson-repository.js';
+import { CoreMemoryBlockRepository } from '../operations/core-memory-block-repository.js';
 
 interface RankedKeywordResult {
   event: MemoryEvent;
@@ -104,6 +106,24 @@ export class MemoryQueryService {
       return await new LessonRepository(db).list({ projectHash, limit });
     } catch {
       // Lesson retrieval is supplementary: never fail a prompt over it.
+      return [];
+    }
+  }
+
+  /**
+   * Core memory blocks (project/user) for unconditional session-start
+   * injection. Stored outside the events table, same reasoning as lessons:
+   * without this lookup, agent self-edits via mem-core-block-update would
+   * never resurface anywhere.
+   */
+  async getCoreMemoryBlocks(projectHash: string): Promise<CoreMemoryBlock[]> {
+    await this.initialize();
+    const db = this.queryStore.getDatabase?.();
+    if (!db || !projectHash) return [];
+    try {
+      return await new CoreMemoryBlockRepository(db).listByProject(projectHash);
+    } catch {
+      // Core memory block injection is supplementary: never fail a prompt over it.
       return [];
     }
   }

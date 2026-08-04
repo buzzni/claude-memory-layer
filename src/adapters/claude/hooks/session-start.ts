@@ -11,7 +11,28 @@ import { isLlmSummaryEnabled } from '../../llm/session-summary-llm.js';
 import { spawnToolObservationVectorAutoHealIfNeeded } from './tool-observation-vector-auto-heal-client.js';
 import { readStdin } from './hook-runtime.js';
 import { formatClaudeContextHookOutput, isHookEvaluationMode } from './hook-output.js';
-import type { SessionStartInput, SessionStartOutput } from '../../../core/types.js';
+import type { CoreMemoryBlock, SessionStartInput, SessionStartOutput } from '../../../core/types.js';
+
+const CORE_MEMORY_BLOCK_LABELS: Record<CoreMemoryBlock['blockKey'], string> = {
+  project: 'Project',
+  user: 'User'
+};
+
+/**
+ * Renders core memory blocks unconditionally (no query, no scoring) — the
+ * Letta-style "always in context" section. Empty/missing blocks are skipped
+ * silently so an unused block never pads out the context with nothing.
+ */
+export function formatCoreMemoryBlockContext(blocks: CoreMemoryBlock[]): string {
+  const nonEmpty = blocks.filter((block) => block.content.trim().length > 0);
+  if (nonEmpty.length === 0) return '';
+
+  let context = '## Core Memory\n\n';
+  for (const block of nonEmpty) {
+    context += `**${CORE_MEMORY_BLOCK_LABELS[block.blockKey]}**: ${block.content.trim()}\n\n`;
+  }
+  return context.trimEnd() + '\n';
+}
 
 export async function main(): Promise<string> {
   // Read input from stdin. Guard the parse so a malformed/empty body still emits
@@ -68,15 +89,28 @@ export async function main(): Promise<string> {
       }
     }
 
+    // Core memory blocks are unconditional (no query, no scoring) and are
+    // curated by the agent itself via mem-core-block-update, so they come
+    // first — ahead of the incidental recent-events recap below.
+    let context = '';
+    if (process.env.CLAUDE_MEMORY_EVAL_DISABLE_SESSION_CONTEXT !== 'true') {
+      try {
+        const coreBlocks = await memoryService.getCoreMemoryBlocks();
+        context = formatCoreMemoryBlockContext(coreBlocks);
+      } catch {
+        // Core memory injection is supplementary; never fail session start over it.
+      }
+    }
+
     // Get recent context for this project (now automatically scoped)
     const recentEvents = process.env.CLAUDE_MEMORY_EVAL_DISABLE_SESSION_CONTEXT === 'true'
       ? []
       : await memoryService.getRecentEvents(10);
 
-    let context = '';
     if (recentEvents.length > 0) {
+      if (context) context += '\n';
       const injectedEvents = recentEvents.slice(0, 3);
-      context = `## Previous Session Context\n\nYou have worked on this project before. Here are some relevant memories:\n\n`;
+      context += `## Previous Session Context\n\nYou have worked on this project before. Here are some relevant memories:\n\n`;
       for (const event of injectedEvents) {
         const date = event.timestamp.toISOString().split('T')[0];
         context += `- **${date}**: ${event.content.slice(0, 150)}...\n`;

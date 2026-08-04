@@ -17,7 +17,9 @@ export const MEMORY_GOVERNANCE_AUDIT_OPERATIONS = [
   'lesson_capture',
   'actor_card_upsert',
   'perspective_observation_create',
-  'perspective_observation_delete'
+  'perspective_observation_delete',
+  'core_memory_block_update',
+  'entity_supersede'
 ] as const;
 
 export type MemoryGovernanceAuditOperation = typeof MEMORY_GOVERNANCE_AUDIT_OPERATIONS[number];

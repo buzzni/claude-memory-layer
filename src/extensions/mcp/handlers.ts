@@ -12,6 +12,7 @@ import {
   type MemoryService
 } from '../../services/memory-service.js';
 import { SQLiteEventStore } from '../../core/sqlite-event-store.js';
+import { EntityRepo } from '../../core/entity-repo.js';
 import { createSQLiteDatabase, sqliteClose, sqliteGet, type SQLiteDatabase } from '../../core/sqlite-wrapper.js';
 import { createSessionHistoryImporter, type ImportResult } from '../../services/session-history-importer.js';
 import { createCodexSessionHistoryImporter } from '../../services/codex-session-history-importer.js';
@@ -29,6 +30,7 @@ import {
   ActorCardRepository,
   ActorRepository,
   CheckpointRepository,
+  CoreMemoryBlockRepository,
   FacetRepository,
   FrontierService,
   GraphPathService,
@@ -39,12 +41,14 @@ import {
   QueryEntityExtractor,
   RETENTION_POLICY_VERSION,
   runRetentionAudit,
+  TemporalGraphService,
   type FrontierItem,
   type GraphPathExpandResult,
   type MemoryAction,
   type MemoryCheckpoint,
   type MemoryFacetAssignment,
-  type QueryEntityCandidate
+  type QueryEntityCandidate,
+  type TemporalGraphExpandResult
 } from '../../core/operations/index.js';
 import { DEFAULT_EMBEDDING_MODEL } from '../../extensions/vector/embedder.js';
 import {
@@ -61,6 +65,9 @@ import {
 import type {
   ActorCard,
   Config,
+  CoreMemoryBlock,
+  CoreMemoryBlockKey,
+  Entity,
   EventType,
   MemoryLesson,
   MemoryActor,
@@ -204,6 +211,9 @@ const MEMORY_OPERATION_TOOL_NAMES = new Set([
   'mem-actor-list',
   'mem-actor-card-get',
   'mem-actor-card-upsert',
+  'mem-entity-supersede',
+  'mem-core-block-get',
+  'mem-core-block-update',
   'mem-perspective-query',
   'mem-perspective-context',
   'mem-perspective-observation-create',
@@ -253,6 +263,12 @@ async function handleMemoryOperationTool(name: string, args: Record<string, unkn
         return jsonResult(await handleActorCardGet(context, args));
       case 'mem-actor-card-upsert':
         return jsonResult(await handleActorCardUpsert(context, args));
+      case 'mem-entity-supersede':
+        return jsonResult(await handleEntitySupersede(context, args));
+      case 'mem-core-block-get':
+        return jsonResult(await handleCoreMemoryBlockGet(context, args));
+      case 'mem-core-block-update':
+        return jsonResult(await handleCoreMemoryBlockUpdate(context, args));
       case 'mem-perspective-query':
         return jsonResult(await handlePerspectiveQuery(context, args));
       case 'mem-perspective-context':
@@ -457,19 +473,32 @@ function handleGraphQuery(context: MemoryOperationContext, args: Record<string, 
     { maxCandidates: numberArg(args.candidateLimit, 20, 1, 50) }
   );
   const startNodes = uniqueEntityStartNodes(extraction.candidates);
-  const graph = new GraphPathService(context.db).expand({
-    startNodes,
-    direction: graphDirectionArg(args.direction),
-    maxHops: numberArg(args.maxHops, 1, 1, 2),
-    maxResults: numberArg(args.limit, 20, 1, 100)
-  });
-  return {
+  const direction = graphDirectionArg(args.direction);
+  const maxHops = numberArg(args.maxHops, 1, 1, 2);
+  const maxResults = numberArg(args.limit, 20, 1, 100);
+  const asOf = optionalDateArg(args.asOf, 'asOf');
+
+  const base = {
     operation: 'mem-graph-query',
     projectHash: context.projectHash,
     query: sanitizeOperationString(query, 500),
-    candidates: extraction.candidates.map(formatQueryEntityCandidate),
-    graph: formatGraphResult(graph)
+    candidates: extraction.candidates.map(formatQueryEntityCandidate)
   };
+
+  if (asOf) {
+    const temporal = new TemporalGraphService(context.db).expand({
+      startNodes,
+      asOf,
+      knownAt: optionalDateArg(args.knownAt, 'knownAt'),
+      direction,
+      maxHops,
+      maxResults
+    });
+    return { ...base, temporal: formatTemporalGraphResult(temporal) };
+  }
+
+  const graph = new GraphPathService(context.db).expand({ startNodes, direction, maxHops, maxResults });
+  return { ...base, graph: formatGraphResult(graph) };
 }
 
 async function handleLessonList(context: MemoryOperationContext, args: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -627,6 +656,80 @@ async function handleActorCardUpsert(context: MemoryOperationContext, args: Reco
   };
 }
 
+async function handleEntitySupersede(context: MemoryOperationContext, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const repository = new EntityRepo(context.db);
+  const { old: oldEntity, new: newEntity, alreadySuperseded } = await repository.supersede(
+    requiredOperationString(args.oldEntityId, 'oldEntityId'),
+    requiredOperationString(args.newEntityId, 'newEntityId'),
+    {
+      actor: sanitizeOperationString(requiredOperationString(args.actor, 'actor'), 120),
+      sourceEventIds: stringArrayOperationArg(args.sourceEventIds, 20)
+    }
+  );
+  return {
+    operation: 'mem-entity-supersede',
+    projectHash: context.projectHash,
+    alreadySuperseded,
+    old: formatEntity(oldEntity),
+    new: formatEntity(newEntity)
+  };
+}
+
+function formatEntity(entity: Entity): Record<string, unknown> {
+  return {
+    entityId: entity.entityId,
+    entityType: entity.entityType,
+    title: sanitizeOperationString(entity.title, 200),
+    status: entity.status,
+    stage: entity.stage,
+    createdAt: isoDate(entity.createdAt),
+    updatedAt: isoDate(entity.updatedAt)
+  };
+}
+
+function coreMemoryBlockKeyArg(value: unknown): CoreMemoryBlockKey | undefined {
+  if (value === undefined) return undefined;
+  if (value !== 'project' && value !== 'user') {
+    throw new Error('blockKey must be "project" or "user"');
+  }
+  return value;
+}
+
+async function handleCoreMemoryBlockGet(context: MemoryOperationContext, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const repository = new CoreMemoryBlockRepository(context.db);
+  const blockKey = coreMemoryBlockKeyArg(args.blockKey);
+  let blocks: CoreMemoryBlock[];
+  if (blockKey) {
+    const block = await repository.get({ projectHash: context.projectHash, blockKey });
+    blocks = block ? [block] : [];
+  } else {
+    blocks = await repository.listByProject(context.projectHash);
+  }
+  return {
+    operation: 'mem-core-block-get',
+    projectHash: context.projectHash,
+    blocks: blocks.map(formatCoreMemoryBlock)
+  };
+}
+
+async function handleCoreMemoryBlockUpdate(context: MemoryOperationContext, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const repository = new CoreMemoryBlockRepository(context.db);
+  const block = await repository.upsert({
+    projectHash: context.projectHash,
+    blockKey: requiredOperationString(args.blockKey, 'blockKey'),
+    // Empty content is the documented way to retire a stale block: the
+    // session-start hook skips empty blocks, so this clears the injection.
+    content: requiredPossiblyEmptyOperationString(args.content, 'content'),
+    sourceEventIds: stringArrayOperationArg(args.sourceEventIds, 20),
+    updatedBy: sanitizeOperationString(requiredOperationString(args.actor, 'actor'), 120)
+  });
+  return {
+    operation: 'mem-core-block-update',
+    projectHash: context.projectHash,
+    block: formatCoreMemoryBlock(block)
+  };
+}
+
 async function handlePerspectiveQuery(context: MemoryOperationContext, args: Record<string, unknown>): Promise<Record<string, unknown>> {
   const repository = new PerspectiveObservationRepository(context.db);
   const observations = await repository.query(buildPerspectiveObservationQuery(context, args));
@@ -706,6 +809,18 @@ function requiredOperationString(value: unknown, field: string): string {
   return value.trim();
 }
 
+/**
+ * The field must be present and a string, but may be empty. Used where an
+ * empty value is a meaningful instruction (clearing a core memory block)
+ * rather than a missing argument.
+ */
+function requiredPossiblyEmptyOperationString(value: unknown, field: string): string {
+  if (typeof value !== 'string') {
+    throw new Error(`${field} is required`);
+  }
+  return value.trim();
+}
+
 function optionalOperationStringArray(value: unknown, field: string, maxItems: number): string[] {
   if (value === undefined) return [];
   if (!Array.isArray(value)) throw new Error(`${field} must be an array`);
@@ -733,6 +848,14 @@ function stringArrayOperationArg(value: unknown, maxItems: number): string[] {
 
 function graphDirectionArg(value: unknown): 'outgoing' | 'incoming' | 'both' {
   return value === 'outgoing' || value === 'incoming' || value === 'both' ? value : 'both';
+}
+
+function optionalDateArg(value: unknown, fieldName: string): Date | undefined {
+  if (value === undefined || value === null || value === '') return undefined;
+  if (typeof value !== 'string') throw new Error(`${fieldName} must be an ISO-8601 date string`);
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) throw new Error(`${fieldName} must be a valid ISO-8601 date string`);
+  return parsed;
 }
 
 const MEMORY_ACTOR_KINDS = new Set(['user', 'assistant', 'subagent', 'tool', 'system', 'integration', 'unknown']);
@@ -913,6 +1036,19 @@ function formatActorCard(card: ActorCard): Record<string, unknown> {
   };
 }
 
+function formatCoreMemoryBlock(block: CoreMemoryBlock): Record<string, unknown> {
+  return {
+    projectHash: block.projectHash,
+    blockKey: block.blockKey,
+    content: sanitizeOperationString(block.content, 1200),
+    sourceEventIds: compactStringArray(block.sourceEventIds, 10, 120),
+    sourceRefs: sourceRefHints(block.sourceEventIds),
+    updatedBy: block.updatedBy ? sanitizeOperationString(block.updatedBy, 120) : undefined,
+    createdAt: isoDate(block.createdAt),
+    updatedAt: isoDate(block.updatedAt)
+  };
+}
+
 function formatPerspectiveObservation(observation: PerspectiveObservation): Record<string, unknown> {
   return omitUndefined({
     observationId: observation.observationId,
@@ -1007,6 +1143,17 @@ function formatGraphResult(result: GraphPathExpandResult): Record<string, unknow
   return {
     startNodes: compactArray(result.startNodes, 10),
     effectiveMaxHops: result.effectiveMaxHops,
+    paths: compactArray(result.paths, 20)
+  };
+}
+
+function formatTemporalGraphResult(result: TemporalGraphExpandResult): Record<string, unknown> {
+  return {
+    startNodes: compactArray(result.startNodes, 10),
+    asOf: result.asOf,
+    knownAt: result.knownAt,
+    effectiveMaxHops: result.effectiveMaxHops,
+    supported: result.supported,
     paths: compactArray(result.paths, 20)
   };
 }

@@ -10,6 +10,7 @@ import type { PromotionResult } from '../core/shared-promoter.js';
 import type { SharedMemoryServices } from '../extensions/shared-memory/index.js';
 import type {
   AppendResult,
+  CoreMemoryBlock,
   MemoryEvent,
   MemoryLesson,
   ToolObservationPayload,
@@ -239,6 +240,11 @@ export class MemoryService {
   /** Curated project lessons, for the prompt-injection lesson lane. */
   async listProjectLessons(limit = 25): Promise<MemoryLesson[]> {
     return this.queryService.listProjectLessons(this.projectHash ?? '', limit);
+  }
+
+  /** Core memory blocks (project/user), for unconditional session-start injection. */
+  async getCoreMemoryBlocks(): Promise<CoreMemoryBlock[]> {
+    return this.queryService.getCoreMemoryBlocks(this.projectHash ?? '');
   }
 
   /**
