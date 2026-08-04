@@ -298,14 +298,32 @@ export function resolveTransformersModuleSpecifier(
   }
 }
 
-async function loadTransformersModule(): Promise<{
+interface TransformersModuleLike {
   pipeline: unknown;
   env?: { cacheDir?: string };
-}> {
+  default?: TransformersModuleLike;
+}
+
+/**
+ * CJS interop: the managed-backend specifier is resolved with require
+ * semantics, which picks transformers' `require` condition
+ * (dist/transformers.node.cjs). `import()` of that CJS file exposes the real
+ * exports under `default` when cjs-module-lexer cannot lex them as named
+ * exports — leaving `namespace.pipeline` undefined ("pipeline is not a
+ * function" at embed time). Unwrap `default` whenever it, not the namespace,
+ * carries the pipeline.
+ */
+export function normalizeTransformersNamespace(namespace: TransformersModuleLike): TransformersModuleLike {
+  if (typeof namespace.pipeline === 'function') return namespace;
+  if (namespace.default && typeof namespace.default.pipeline === 'function') return namespace.default;
+  return namespace;
+}
+
+async function loadTransformersModule(): Promise<TransformersModuleLike> {
   const dynamicImport = new Function('specifier', 'return import(specifier)') as (
     specifier: string
-  ) => Promise<{ pipeline: unknown; env?: { cacheDir?: string } }>;
-  return dynamicImport(resolveTransformersModuleSpecifier());
+  ) => Promise<TransformersModuleLike>;
+  return normalizeTransformersNamespace(await dynamicImport(resolveTransformersModuleSpecifier()));
 }
 
 async function loadTransformersPipeline(): Promise<FeatureExtractionPipelineFactory> {
