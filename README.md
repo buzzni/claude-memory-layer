@@ -23,6 +23,8 @@ Claude Memory Layer는 AI 에이전트의 대화와 작업 이벤트를 프로�
 - **Codex/Hermes history ingest**: 원본 세션은 read-only validate/replay로 먼저 확인하고, 명시적 import로만 프로젝트 메모리에 반영합니다.
 - **Hermes/CML/Headroom 운영 모델**: Hermes built-in memory, `session_search`, CML context-pack, read-only Hermes provider, Headroom reference stance는 [`docs/HERMES_CML_HEADROOM_OPERATING_MODEL.md`](docs/HERMES_CML_HEADROOM_OPERATING_MODEL.md)에 정리되어 있습니다.
 - **npm 설치 안정화**: `@huggingface/transformers`는 보안 버전의 `sharp`를 고정한 격리 backend로 설치하며, CUDA 11 환경에서는 CPU-only ONNX Runtime으로 자동 복구합니다.
+- **코드 에이전트 메모리 4종 (v2.1)**: codify-lite 코드 구조 앵커링(`source_file` 엔티티 + `touched_in` 그래프 + session-file 검색 레인), Letta식 코어 메모리 블록(`mem-core-block-get/update`, SessionStart 상시 주입), Mem0식 사실 조정(`mem-entity-supersede`), Zep/Graphiti식 bitemporal 엣지 히스토리(`mem-graph-query`의 `asOf`/`knownAt`)를 제공합니다.
+- **operations.json 기능 플래그 (v2.2)**: codify-lite 등 옵트인 기능을 `~/.claude-code/memory/operations.json` 파일 하나로 켤 수 있습니다. 아래 [선택 기능 활성화](#선택-기능-활성화-operationsjson) 참고.
 
 ## 빠른 시작 (신규 프로젝트 기준)
 
@@ -345,6 +347,40 @@ MCP client가 환경에 따라 PATH를 못 찾으면 `command -v claude-memory-l
 | Dashboard | Implemented | local-only default bind, optional password, vector/perspective/trace panels |
 | External Market Context | Implemented | DART/FRED/Finnhub read-only snapshot + MCP tool |
 | Mongo sync / Endless mode / shared memory | Experimental | 고급/운영 옵션으로 취급 |
+| Codify-lite (코드 구조 앵커링) | Implemented, opt-in | `operations.json`으로 활성화, 아래 참고 |
+| Core memory blocks / entity supersede / temporal graph | Implemented | MCP 도구로 상시 사용 가능 (`mem-core-block-*`, `mem-entity-supersede`, `mem-graph-query asOf`) |
+
+## 선택 기능 활성화 (operations.json)
+
+검색 랭킹에 영향을 주는 기능은 기본적으로 꺼져 있고(옵트인), `~/.claude-code/memory/operations.json` 파일로 켭니다 (v2.2.0+):
+
+```bash
+mkdir -p ~/.claude-code/memory
+cat > ~/.claude-code/memory/operations.json <<'EOF'
+{
+  "enabled": true,
+  "codifyLite": { "enabled": true }
+}
+EOF
+```
+
+동작 방식:
+
+- **적용 범위**: 머신 전역 — 이 파일 하나로 해당 머신의 모든 프로젝트에 적용됩니다.
+- **반영 시점**: 훅은 세션마다 새 프로세스라 다음 세션부터 바로 적용됩니다. MCP 서버·semantic daemon 같은 장수 프로세스는 재시작해야 반영됩니다.
+- **끄기**: 해당 플래그를 `false`로 바꾸거나 파일을 삭제하면 됩니다.
+- **안전장치**: 파일이 없거나 JSON이 깨졌거나 스키마에 맞지 않으면 조용히 전부-꺼짐 기본값으로 동작합니다 (세션 시작을 절대 실패시키지 않음).
+- **경로 변경**: `CLAUDE_MEMORY_OPERATIONS_CONFIG_PATH` 환경변수로 다른 파일을 지정할 수 있습니다 (주로 테스트·격리용).
+
+켤 수 있는 플래그 (전체 스키마는 `MemoryOperationsConfigSchema` 참고):
+
+| 플래그 | 효과 | 권장 |
+|--------|------|------|
+| `codifyLite.enabled` | 파일을 만지는 도구 호출마다 `source_file` 엔티티/`touched_in` 엣지를 축적하고, 현재 세션이 만지는 파일과 연결된 과거 메모리를 검색에 올리는 session-file 레인을 켭니다 | 켜기 권장 |
+| `graphExpansion.enabled` | 쿼리에서 추출한 엔티티 기준 그래프 확장 검색 레인 | 랭킹 영향 미검증, 기본 유지 |
+| `retention.enabled` / `lessons.enabled` / `perspectiveMemory.*` | retention audit, lesson, perspective memory 하위 기능 | 필요 시 |
+
+참고: 코어 메모리 블록·`mem-entity-supersede`·temporal graph 조회는 플래그와 무관하게 항상 사용 가능합니다. 이 플래그들은 자동 수집·검색 랭킹처럼 "가만히 있어도 동작이 바뀌는" 부분만 게이트합니다.
 
 ## 설치 방법
 
