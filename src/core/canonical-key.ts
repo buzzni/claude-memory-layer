@@ -76,7 +76,7 @@ export function hashContent(content: string): string {
 // Entity Canonical Keys (Task Entity System)
 // ============================================================
 
-export type EntityKeyType = 'task' | 'condition' | 'artifact';
+export type EntityKeyType = 'task' | 'condition' | 'artifact' | 'source_file';
 
 /**
  * Normalize text for entity key generation
@@ -108,7 +108,31 @@ export function makeEntityCanonicalKey(
       return `cond:${project}:${normalizeForKey(identifier)}`;
     case 'artifact':
       return makeArtifactKey(identifier);
+    case 'source_file':
+      return makeSourceFileKey(identifier, project);
   }
+}
+
+/**
+ * Canonical key for a source file entity, scoped by project so the same
+ * relative path in two different projects doesn't collide.
+ * Format: file:{project}:{sha1(normalized_relative_path)}
+ */
+export function makeSourceFileKey(filePath: string, project = 'default'): string {
+  const normalized = normalizeFilePath(filePath);
+  const hash = createHash('sha1').update(normalized).digest('hex').slice(0, 16);
+  return `file:${project}:${hash}`;
+}
+
+/**
+ * Normalize a file path for stable identity across sessions:
+ * backslashes to forward slashes, no leading "./", no trailing slash.
+ */
+export function normalizeFilePath(filePath: string): string {
+  return filePath
+    .replace(/\\/g, '/')
+    .replace(/^\.\//, '')
+    .replace(/\/+$/, '');
 }
 
 /**

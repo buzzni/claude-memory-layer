@@ -162,6 +162,12 @@ export class GraphPathService {
     );
 
     for (const edge of edges) {
+      // A superseded/deprecated/contested entity is stale fact state (see
+      // EntityRepo.supersede). Excluding its edges here — not just its
+      // label — keeps traversal from surfacing or routing through it at all.
+      if (edge.src_type === 'entity' && !entityLabels.has(edge.src_id)) continue;
+      if (edge.dst_type === 'entity' && !entityLabels.has(edge.dst_id)) continue;
+
       const src = labelNode({ type: edge.src_type as NodeType, id: edge.src_id });
       const dst = labelNode({ type: edge.dst_type as NodeType, id: edge.dst_id });
       const weight = edgeWeight(edge.meta_json);

@@ -421,7 +421,7 @@ export class SQLiteEventStore {
         PRIMARY KEY(entity_type, canonical_key)
       );
 
-      -- Edges (relationships between entries/entities)
+      -- Edges (relationships between entries/entities) -- current-state projection
       CREATE TABLE IF NOT EXISTS edges (
         edge_id TEXT PRIMARY KEY,
         src_type TEXT NOT NULL,
@@ -432,6 +432,41 @@ export class SQLiteEventStore {
         meta_json TEXT,
         created_at TEXT DEFAULT (datetime('now'))
       );
+
+      -- Bitemporal edge history (Zep/Graphiti-inspired), see
+      -- docs/graph-temporal-edge-spike.md. edges above stays the fast
+      -- current-state projection; this table is the append-only source for
+      -- asOf/knownAt queries and is never hard-deleted.
+      CREATE TABLE IF NOT EXISTS edge_history (
+        history_id TEXT PRIMARY KEY,
+        edge_id TEXT NOT NULL,
+        edge_key TEXT NOT NULL,
+        src_type TEXT NOT NULL,
+        src_id TEXT NOT NULL,
+        rel_type TEXT NOT NULL,
+        dst_type TEXT NOT NULL,
+        dst_id TEXT NOT NULL,
+        weight REAL NOT NULL DEFAULT 0.5,
+        status TEXT NOT NULL DEFAULT 'active',
+        valid_from TEXT,
+        valid_to TEXT,
+        committed_at TEXT NOT NULL DEFAULT (datetime('now')),
+        superseded_by_history_id TEXT,
+        source_event_ids_json TEXT NOT NULL DEFAULT '[]',
+        evidence_json TEXT NOT NULL DEFAULT '{}',
+        meta_json TEXT NOT NULL DEFAULT '{}'
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_edge_history_key_commit
+        ON edge_history(edge_key, committed_at DESC, history_id DESC);
+      CREATE INDEX IF NOT EXISTS idx_edge_history_valid
+        ON edge_history(edge_key, valid_from, valid_to);
+      CREATE INDEX IF NOT EXISTS idx_edge_history_src
+        ON edge_history(src_id, rel_type, committed_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_edge_history_dst
+        ON edge_history(dst_id, rel_type, committed_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_edge_history_status
+        ON edge_history(status);
 
       -- Vector Outbox V2 Table
       CREATE TABLE IF NOT EXISTS vector_outbox (
@@ -725,6 +760,20 @@ export class SQLiteEventStore {
         UNIQUE(project_hash, observer_actor_id, observed_actor_id)
       );
 
+      -- Core memory blocks: small, always-injected, agent-editable per-project
+      -- resident context (Letta-style core memory), distinct from actor_cards'
+      -- per-observer-pair perspective model.
+      CREATE TABLE IF NOT EXISTS core_memory_blocks (
+        project_hash TEXT NOT NULL DEFAULT '',
+        block_key TEXT NOT NULL,
+        content TEXT NOT NULL DEFAULT '',
+        source_event_ids_json TEXT NOT NULL DEFAULT '[]',
+        updated_by TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY(project_hash, block_key)
+      );
+
       -- Perspective Memory: observer -> observed claims with evidence pointers
       CREATE TABLE IF NOT EXISTS perspective_observations (
         observation_id TEXT PRIMARY KEY,
@@ -800,6 +849,12 @@ export class SQLiteEventStore {
       CREATE INDEX IF NOT EXISTS idx_edges_src ON edges(src_id, rel_type);
       CREATE INDEX IF NOT EXISTS idx_edges_dst ON edges(dst_id, rel_type);
       CREATE INDEX IF NOT EXISTS idx_edges_rel ON edges(rel_type);
+      -- codify-lite session-file lane (Retriever.expandSessionFileLinks) filters
+      -- touched_in edges by meta_json.sessionId on every retrieval; without this
+      -- expression index the cost grows with total touched_in edge count.
+      CREATE INDEX IF NOT EXISTS idx_edges_touched_in_session
+        ON edges(json_extract(meta_json, '$.sessionId'))
+        WHERE rel_type = 'touched_in';
       CREATE INDEX IF NOT EXISTS idx_outbox_status ON vector_outbox(status);
       CREATE INDEX IF NOT EXISTS idx_outbox_created ON vector_outbox(created_at);
       CREATE INDEX IF NOT EXISTS idx_working_set_expires ON working_set(expires_at);

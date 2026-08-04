@@ -17,7 +17,7 @@ import {
   type GraphPathResult
 } from './operations/graph-path-service.js';
 import { QueryEntityExtractor } from './operations/query-entity-extractor.js';
-import type { SQLiteDatabase } from './sqlite-wrapper.js';
+import { sqliteAll, type SQLiteDatabase } from './sqlite-wrapper.js';
 import {
   hasTechnicalTermOverlap,
   isCommandArtifactQuery,
@@ -176,6 +176,7 @@ export interface SharedStoreOptions {
   sharedStore?: SharedStore;
   sharedVectorStore?: SharedVectorStore;
   queryGraphExpansionEnabled?: boolean;
+  sessionFileLinkEnabled?: boolean;
 }
 
 type EventStoreLike = EventStore & {
@@ -193,6 +194,7 @@ export class Retriever {
   private graduation?: GraduationPipeline;
   private queryRewriter?: (query: string) => Promise<string | null>;
   private readonly queryGraphExpansionEnabled: boolean;
+  private readonly sessionFileLinkEnabled: boolean;
 
   constructor(
     eventStore: EventStore,
@@ -208,6 +210,7 @@ export class Retriever {
     this.sharedStore = sharedOptions?.sharedStore;
     this.sharedVectorStore = sharedOptions?.sharedVectorStore;
     this.queryGraphExpansionEnabled = sharedOptions?.queryGraphExpansionEnabled === true;
+    this.sessionFileLinkEnabled = sharedOptions?.sessionFileLinkEnabled === true;
   }
 
   setGraduationPipeline(graduation: GraduationPipeline): void {
@@ -488,7 +491,9 @@ export class Retriever {
       ? initialResults
       : await this.expandGraphHops(initialResults, {
           query,
+          sessionId: input.sessionId,
           queryGraphEnabled: this.queryGraphExpansionEnabled,
+          sessionFileLinkEnabled: this.sessionFileLinkEnabled,
           maxHops: clampGraphHops(input.graphHop?.maxHops ?? 1),
           hopPenalty: Math.max(0, input.graphHop?.hopPenalty ?? 0.08),
           limit: input.topK * 4,
@@ -624,7 +629,15 @@ export class Retriever {
 
   private async expandGraphHops(
     seeds: SearchResult[],
-    opts: { query: string; queryGraphEnabled: boolean; maxHops: number; hopPenalty: number; limit: number }
+    opts: {
+      query: string;
+      sessionId?: string;
+      queryGraphEnabled: boolean;
+      sessionFileLinkEnabled: boolean;
+      maxHops: number;
+      hopPenalty: number;
+      limit: number;
+    }
   ): Promise<DebuggableSearchResult[]> {
     const byId = new Map<string, DebuggableSearchResult>();
     for (const s of seeds) byId.set(s.eventId, s);
@@ -674,9 +687,82 @@ export class Retriever {
       await this.expandQueryGraphPaths(opts.query, byId, opts);
     }
 
+    if (opts.sessionFileLinkEnabled && opts.sessionId) {
+      await this.expandSessionFileLinks(opts.sessionId, byId, opts);
+    }
+
     return [...byId.values()]
       .sort((a, b) => b.score - a.score || compareStable(a.eventId, b.eventId))
       .slice(0, opts.limit);
+  }
+
+  /**
+   * Codify-lite lane: surfaces memories graph-linked to SourceFile entities
+   * the current session has touched (via tool_observation `touched_in`
+   * edges), so file context beats pure recency when picking what to inject.
+   */
+  private async expandSessionFileLinks(
+    sessionId: string,
+    byId: Map<string, DebuggableSearchResult>,
+    opts: { maxHops: number; hopPenalty: number; limit: number }
+  ): Promise<void> {
+    if (!this.eventStore.getDatabase) return;
+
+    try {
+      const db = this.eventStore.getDatabase();
+      const fileRows = sqliteAll<{ dst_id: string }>(
+        db,
+        `SELECT DISTINCT dst_id FROM edges
+         WHERE rel_type = 'touched_in' AND src_type = 'event' AND dst_type = 'entity'
+           AND json_extract(meta_json, '$.sessionId') = ?
+         LIMIT 20`,
+        [sessionId]
+      );
+      if (fileRows.length === 0) return;
+
+      const expansion = new GraphPathService(db).expand({
+        startNodes: fileRows.map((row) => ({ type: 'entity' as const, id: row.dst_id })),
+        maxHops: opts.maxHops,
+        maxResults: opts.limit,
+        direction: 'both'
+      });
+
+      for (const path of expansion.paths) {
+        if (path.target.type !== 'event') continue;
+        const target = await this.eventStore.getEvent(path.target.id);
+        if (!target || target.sessionId === sessionId) continue;
+
+        const graphPath = toRetrievalGraphPathDebug(path, new Map());
+        const score = graphPathScore(path, opts.hopPenalty);
+        const existing = byId.get(target.id);
+        const graphPaths = mergeGraphPaths(existing?.graphPaths ?? [], [graphPath]);
+        const graphLane: RetrievalDebugLane = {
+          lane: 'graph_path',
+          reason: 'session_file_link',
+          score
+        };
+        const row: DebuggableSearchResult = {
+          id: existing?.id ?? `session-file-link-${path.hops}-${target.id}`,
+          eventId: target.id,
+          content: target.content,
+          score: Math.max(existing?.score ?? 0, score),
+          sessionId: target.sessionId,
+          eventType: target.eventType,
+          timestamp: target.timestamp.toISOString(),
+          semanticScore: existing?.semanticScore,
+          lexicalScore: existing?.lexicalScore,
+          recencyScore: existing?.recencyScore,
+          facetMatches: existing?.facetMatches,
+          graphPaths,
+          lanes: mergeRetrievalLanes(existing?.lanes ?? [], [graphLane])
+        };
+        byId.set(row.eventId, row);
+        if (byId.size >= opts.limit) break;
+      }
+    } catch {
+      // Legacy SQLite stores may not have operations graph tables yet. Retrieval
+      // must remain available even when session-file-link expansion cannot run.
+    }
   }
 
   private async expandQueryGraphPaths(

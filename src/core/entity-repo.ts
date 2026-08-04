@@ -12,6 +12,11 @@ import type {
   EntityStatus
 } from './types.js';
 import { makeEntityCanonicalKey } from './canonical-key.js';
+import { EdgeRepo } from './edge-repo.js';
+import {
+  sanitizeGovernanceAuditValue,
+  writeGovernanceAuditEntry
+} from './operations/governance-audit.js';
 
 export interface CreateEntityInput {
   entityType: EntityType;
@@ -137,6 +142,16 @@ export class EntityRepo {
     }
 
     const entity = await this.create(input);
+
+    // `entities` has no unique constraint on canonical_key, so two concurrent
+    // hook processes can both get past the lookup above and insert. The
+    // `entity_aliases` PK is the arbiter: re-resolve through it so every racer
+    // converges on the same entity and edges never split across duplicates.
+    const canonical = await this.findByAlias(input.entityType, canonicalKey);
+    if (canonical && canonical.entityId !== entity.entityId) {
+      return { entity: canonical, created: false };
+    }
+
     return { entity, created: true };
   }
 
@@ -324,6 +339,70 @@ export class EntityRepo {
 
     if (rows.length === 0) return null;
     return this.rowToEntity(rows[0]);
+  }
+
+  /**
+   * Fact reconciliation primitive (Mem0-style UPDATE): mark an entity
+   * superseded by a newer one and link them with a `supersedes` edge, so
+   * graph-based retrieval (GraphPathService) stops traversing/surfacing the
+   * old entity as if it were still current.
+   *
+   * Repeating the exact same supersession is an idempotent NOOP (reported via
+   * `alreadySuperseded`). Superseding an already-superseded entity by a
+   * *different* entity throws instead of silently doing nothing, so a genuine
+   * conflict (A replaced by B, then someone claims A is replaced by C) cannot
+   * be mistaken for success.
+   */
+  async supersede(
+    oldEntityId: string,
+    newEntityId: string,
+    options: { actor: string; sourceEventIds?: string[] }
+  ): Promise<{ old: Entity; new: Entity; alreadySuperseded: boolean }> {
+    const oldEntity = await this.findById(oldEntityId);
+    if (!oldEntity) throw new Error(`entity not found: ${oldEntityId}`);
+    const newEntity = await this.findById(newEntityId);
+    if (!newEntity) throw new Error(`entity not found: ${newEntityId}`);
+
+    const edges = new EdgeRepo(this.db);
+
+    if (oldEntity.status === 'superseded') {
+      const existing = await edges.findByDst(oldEntityId, 'supersedes');
+      const supersededBy = existing[0]?.srcId;
+      if (supersededBy && supersededBy !== newEntityId) {
+        throw new Error(
+          `entity ${oldEntityId} is already superseded by ${supersededBy}, not ${newEntityId}`
+        );
+      }
+      return { old: oldEntity, new: newEntity, alreadySuperseded: true };
+    }
+
+    // Link first, flip status second. These are separate statements, so if the
+    // process dies between them the recoverable state is "edge written, entity
+    // still active" (a retry completes it) rather than "entity superseded with
+    // no link", which would make the conflict check above silently NOOP.
+    await edges.upsert({
+      srcType: 'entity',
+      srcId: newEntityId,
+      relType: 'supersedes',
+      dstType: 'entity',
+      dstId: oldEntityId,
+      metaJson: { actor: options.actor }
+    });
+
+    const updated = await this.update(oldEntityId, { status: 'superseded' });
+    if (!updated) throw new Error(`entity update failed: ${oldEntityId}`);
+
+    await writeGovernanceAuditEntry(this.db, {
+      operation: 'entity_supersede',
+      actor: options.actor,
+      targetType: 'entity',
+      targetId: oldEntityId,
+      beforeJson: sanitizeGovernanceAuditValue({ status: oldEntity.status }) as Record<string, unknown>,
+      afterJson: sanitizeGovernanceAuditValue({ status: 'superseded', supersededBy: newEntityId }) as Record<string, unknown>,
+      sourceEventIds: options.sourceEventIds
+    });
+
+    return { old: updated, new: newEntity, alreadySuperseded: false };
   }
 
   /**

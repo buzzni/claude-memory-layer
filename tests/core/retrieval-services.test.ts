@@ -118,7 +118,7 @@ describe('createRetrievalServices', () => {
       vectorStore,
       embedder,
       matcher,
-      options: { queryGraphExpansionEnabled: false }
+      options: { queryGraphExpansionEnabled: false, sessionFileLinkEnabled: false }
     });
     expect(registeredRewriter).toEqual(expect.any(Function));
 

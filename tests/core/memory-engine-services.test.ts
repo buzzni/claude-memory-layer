@@ -37,6 +37,7 @@ describe('createMemoryEngineServices', () => {
     }));
     const sqliteStore = {
       initialize: vi.fn(async () => {}),
+      getDatabase: vi.fn(() => ({ marker: 'db' })),
       append,
       enqueueForEmbedding,
       upsertSession: vi.fn(async () => {}),

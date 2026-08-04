@@ -6,6 +6,7 @@
 import { dbRun, dbAll, toDate, type Database } from './db-wrapper.js';
 import { randomUUID } from 'crypto';
 import type { Edge, NodeType, RelationType } from './types.js';
+import { EdgeHistoryRepo } from './operations/edge-history-repo.js';
 
 export interface CreateEdgeInput {
   srcType: NodeType;
@@ -43,6 +44,8 @@ export class EdgeRepo {
       ]
     );
 
+    await this.recordHistory(edgeId, input);
+
     return {
       edgeId,
       srcType: input.srcType,
@@ -53,6 +56,33 @@ export class EdgeRepo {
       metaJson: input.metaJson,
       createdAt: now
     };
+  }
+
+  /**
+   * Best-effort bitemporal history recording (docs/graph-temporal-edge-spike.md).
+   * Routes every edge write through one place so asOf/knownAt queries stay
+   * consistent with the current-state edges table without requiring every
+   * existing EdgeRepo caller to change. Never blocks the current-state write.
+   */
+  private async recordHistory(edgeId: string, input: CreateEdgeInput): Promise<void> {
+    try {
+      const weightRaw = input.metaJson?.weight;
+      const weight = typeof weightRaw === 'number' && Number.isFinite(weightRaw) && weightRaw > 0
+        ? weightRaw
+        : undefined;
+      await new EdgeHistoryRepo(this.db).recordVersion({
+        edgeId,
+        srcType: input.srcType,
+        srcId: input.srcId,
+        relType: input.relType,
+        dstType: input.dstType,
+        dstId: input.dstId,
+        weight,
+        metaJson: input.metaJson
+      });
+    } catch {
+      // Temporal history is supplementary; never fail the current-state write over it.
+    }
   }
 
   /**
@@ -75,6 +105,7 @@ export class EdgeRepo {
         `UPDATE edges SET meta_json = ? WHERE edge_id = ?`,
         [JSON.stringify(input.metaJson ?? {}), existing.edgeId]
       );
+      await this.recordHistory(existing.edgeId, input);
       return { ...existing, metaJson: input.metaJson };
     }
 
@@ -156,6 +187,11 @@ export class EdgeRepo {
 
   /**
    * Delete edge by ID
+   *
+   * NOTE: the delete/replace methods below do not tombstone the corresponding
+   * `edge_history` rows, so a deleted edge stays "active" for asOf queries
+   * (see docs/graph-temporal-edge-spike.md, "Delete/quarantine current edge").
+   * They have no live callers today; wire history tombstoning before adding one.
    */
   async delete(edgeId: string): Promise<boolean> {
     await dbRun(

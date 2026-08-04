@@ -574,7 +574,15 @@ export const tools: Tool[] = [
           maximum: 2,
           description: 'Maximum bounded graph hops; operation tooling must clamp to <=2.'
         },
-        limit: operationLimitProperty
+        limit: operationLimitProperty,
+        asOf: {
+          type: 'string',
+          description: 'Optional ISO-8601 timestamp. When set, queries bitemporal edge history for the graph state valid at this modeled-world time instead of the current graph (default: now).'
+        },
+        knownAt: {
+          type: 'string',
+          description: 'Optional ISO-8601 timestamp paired with asOf: only edge versions committed at or before this system time are considered (default: now). Ignored unless asOf is also set.'
+        }
       },
       required: ['projectPath', 'query']
     }
@@ -763,6 +771,74 @@ export const tools: Tool[] = [
       },
       required: ['projectPath', 'observerActorId', 'entries', 'actor'],
       anyOf: targetActorAliasAnyOf
+    }
+  },
+  {
+    name: 'mem-entity-supersede',
+    description: 'Mark one entity (task/condition/artifact/source_file) as superseded by another through an audited fact-reconciliation write. The old entity stops being traversed/surfaced by graph-based retrieval (mem-graph-query and related retrieval lanes); it is not deleted, just excluded from "current" graph traversal. Use when a new fact contradicts or replaces an existing one, not for routine updates to the same entity.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectPath: requiredProjectPathProperty,
+        oldEntityId: {
+          type: 'string',
+          description: 'Entity id of the outdated/contradicted fact to supersede.'
+        },
+        newEntityId: {
+          type: 'string',
+          description: 'Entity id of the newer fact that replaces it. Must already exist.'
+        },
+        sourceEventIds: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Optional bounded source event references used as evidence for the supersession.'
+        },
+        actor: actorProperty
+      },
+      required: ['projectPath', 'oldEntityId', 'newEntityId', 'actor']
+    }
+  },
+  {
+    name: 'mem-core-block-get',
+    description: 'Read this project\'s core memory blocks — small, always-injected resident context shown at the start of every session (Letta-style core memory), separate from query-scored retrieval.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectPath: requiredProjectPathProperty,
+        blockKey: {
+          type: 'string',
+          enum: ['project', 'user'],
+          description: 'Optional: fetch only this block. Omit to fetch all blocks for the project.'
+        }
+      },
+      required: ['projectPath']
+    }
+  },
+  {
+    name: 'mem-core-block-update',
+    description: 'Replace one core memory block for this project through an audited, self-editable write. Core memory blocks are injected unconditionally on every SessionStart, so keep content compact and durable (conventions, active constraints) rather than transient session detail.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectPath: requiredProjectPathProperty,
+        blockKey: {
+          type: 'string',
+          enum: ['project', 'user'],
+          description: '"project" for durable project facts/conventions; "user" for the collaborator\'s preferences.'
+        },
+        content: {
+          type: 'string',
+          maxLength: 1200,
+          description: 'Full replacement text for the block (not a diff/append). Max 1200 characters — keep it dense. Pass an empty string to retire a stale block: an empty block is skipped at session start, so it stops being injected.'
+        },
+        sourceEventIds: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Optional bounded source event references used as evidence.'
+        },
+        actor: actorProperty
+      },
+      required: ['projectPath', 'blockKey', 'content', 'actor']
     }
   },
   {

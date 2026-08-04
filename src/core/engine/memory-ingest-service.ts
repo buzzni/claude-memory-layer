@@ -14,6 +14,14 @@ export interface PerspectiveDeriverLike {
   ): Promise<unknown>;
 }
 
+export interface SourceFileDeriverLike {
+  deriveFromToolObservation(
+    event: MemoryEvent,
+    payload: ToolObservationPayload,
+    context?: { projectHash?: string | null; projectPath?: string | null }
+  ): Promise<void>;
+}
+
 interface SessionRecord {
   id: string;
   startedAt?: Date;
@@ -48,6 +56,7 @@ export interface MemoryIngestServiceOptions {
   getProjectPath?: () => string | null;
   summaryDeriver?: SummaryDeriver;
   perspectiveDeriver?: PerspectiveDeriverLike;
+  sourceFileDeriver?: SourceFileDeriverLike;
   /**
    * Injected so core stays free of child-process/CLI concerns. Returns null
    * when the session holds nothing durable, which must store nothing rather
@@ -81,6 +90,7 @@ export class MemoryIngestService {
   private readonly getProjectPath: () => string | null;
   private readonly summaryDeriver: SummaryDeriver;
   private readonly perspectiveDeriver?: PerspectiveDeriverLike;
+  private readonly sourceFileDeriver?: SourceFileDeriverLike;
   private readonly llmSummaryGenerator?: LlmSummaryGenerator;
   private readonly ingestInterceptors = new IngestInterceptorRegistry();
 
@@ -93,6 +103,7 @@ export class MemoryIngestService {
     this.getProjectPath = options.getProjectPath ?? (() => null);
     this.summaryDeriver = options.summaryDeriver ?? createSummaryDeriver();
     this.perspectiveDeriver = options.perspectiveDeriver;
+    this.sourceFileDeriver = options.sourceFileDeriver;
     this.llmSummaryGenerator = options.llmSummaryGenerator;
   }
 
@@ -256,7 +267,7 @@ export class MemoryIngestService {
     const content = JSON.stringify(payload);
     const turnId = (payload.metadata as Record<string, unknown> | undefined)?.turnId;
 
-    return this.ingestEvent({
+    const result = await this.ingestEvent({
       operation: 'tool_observation',
       input: {
         eventType: 'tool_observation',
@@ -271,6 +282,40 @@ export class MemoryIngestService {
       },
       embeddingContent: this.createToolEmbedding(payload)
     });
+
+    if (result.success !== false && !result.isDuplicate) {
+      await this.runSourceFileDeriver(result.eventId, sessionId, payload);
+    }
+
+    return result;
+  }
+
+  private async runSourceFileDeriver(
+    eventId: string,
+    sessionId: string,
+    payload: ToolObservationPayload
+  ): Promise<void> {
+    if (!this.sourceFileDeriver) return;
+    try {
+      await this.sourceFileDeriver.deriveFromToolObservation(
+        {
+          id: eventId,
+          eventType: 'tool_observation',
+          sessionId,
+          timestamp: new Date(),
+          content: '',
+          canonicalKey: eventId,
+          dedupeKey: eventId
+        },
+        payload,
+        {
+          projectHash: this.getProjectHash(),
+          projectPath: this.getProjectPath()
+        }
+      );
+    } catch {
+      // Optional codify-lite derivation must never block normal memory ingestion.
+    }
   }
 
   private async ingestEvent(options: {

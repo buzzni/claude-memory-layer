@@ -201,4 +201,46 @@ describe('GraphPathService', () => {
       scoreContribution: 0.8
     });
   });
+
+  it('excludes edges touching a superseded entity, whether it is an endpoint or a mid-path hop', async () => {
+    const { store, service, cleanup } = await createFixture();
+    insertEntity(store, { entityId: 'alpha', title: 'Alpha Task' });
+    insertEntity(store, { entityId: 'beta', title: 'Beta Bridge', status: 'deprecated' });
+    insertEntity(store, { entityId: 'gamma', title: 'Gamma Target' });
+    insertEdge(store, { edgeId: 'alpha-beta', srcId: 'alpha', relType: 'evidence_of', dstId: 'beta' });
+    insertEdge(store, { edgeId: 'beta-gamma', srcId: 'beta', relType: 'derived_from', dstId: 'gamma' });
+    insertEdge(store, { edgeId: 'alpha-gamma', srcId: 'alpha', relType: 'evidence_of', dstId: 'gamma' });
+
+    const result = service.expand({
+      startNodes: [{ type: 'entity', id: 'alpha' }],
+      maxHops: 2,
+      direction: 'outgoing'
+    });
+    await cleanup();
+
+    expect(result.paths.some(path => path.target.id === 'beta')).toBe(false);
+    const gamma = result.paths.find(path => path.target.id === 'gamma');
+    expect(gamma).toBeDefined();
+    // Only the direct alpha->gamma edge should exist; the two-hop path through
+    // the superseded beta entity must not appear even as an alternate path.
+    expect(gamma?.hops).toBe(1);
+    expect(gamma?.steps.map(step => step.relationType)).toEqual(['evidence_of']);
+  });
+
+  it('returns no paths when the traversal starts from a superseded entity', async () => {
+    const { store, service, cleanup } = await createFixture();
+    insertEntity(store, { entityId: 'alpha', title: 'Alpha Task', status: 'deprecated' });
+    insertEntity(store, { entityId: 'beta', title: 'Beta Bridge' });
+    insertEdge(store, { edgeId: 'alpha-beta', srcId: 'alpha', relType: 'evidence_of', dstId: 'beta' });
+
+    const result = service.expand({
+      startNodes: [{ type: 'entity', id: 'alpha' }],
+      maxHops: 1,
+      direction: 'outgoing'
+    });
+    await cleanup();
+
+    expect(result.paths).toHaveLength(0);
+    expect(result.startNodes[0]).toEqual({ type: 'entity', id: 'alpha', name: 'alpha' });
+  });
 });

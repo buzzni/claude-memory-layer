@@ -22,6 +22,9 @@ import {
   SessionActorRepository,
   createPerspectiveDeriver
 } from '../operations/index.js';
+import { EdgeRepo } from '../edge-repo.js';
+import { EntityRepo } from '../entity-repo.js';
+import { createSourceFileDeriver } from '../derive/source-file-deriver.js';
 import { VectorStore } from '../vector-store.js';
 import { MemoryIngestService, type LlmSummaryGenerator } from './memory-ingest-service.js';
 import { MemoryQueryService } from './memory-query-service.js';
@@ -119,6 +122,12 @@ export function createMemoryEngineServices(options: MemoryEngineServicesOptions)
         config: options.memoryOperationsConfig?.perspectiveMemory
       })
     : undefined;
+  const sourceFileDeriver = shouldEnableSourceFileDeriver(options)
+    ? createSourceFileDeriver({
+        entities: new EntityRepo(sqliteStore.getDatabase()),
+        edges: new EdgeRepo(sqliteStore.getDatabase())
+      })
+    : undefined;
 
   const retrievalServices = (factories.createRetrievalServices ?? createRetrievalServices)({
     initialize: options.initialize,
@@ -140,6 +149,7 @@ export function createMemoryEngineServices(options: MemoryEngineServicesOptions)
     getProjectHash: options.getProjectHash,
     getProjectPath: options.getProjectPath,
     perspectiveDeriver,
+    sourceFileDeriver,
     llmSummaryGenerator: options.llmSummaryGenerator
   });
   const queryService = new MemoryQueryService(
@@ -169,6 +179,11 @@ function shouldEnablePerspectiveDeriver(options: MemoryEngineServicesOptions): b
   if (options.readOnly) return false;
   const perspectiveMemory = options.memoryOperationsConfig?.perspectiveMemory;
   return perspectiveMemory?.enabled === true && perspectiveMemory.deriver?.enabled === true;
+}
+
+function shouldEnableSourceFileDeriver(options: MemoryEngineServicesOptions): boolean {
+  if (options.readOnly) return false;
+  return options.memoryOperationsConfig?.codifyLite?.enabled === true;
 }
 
 function defaultCreateSQLiteEventStore(
