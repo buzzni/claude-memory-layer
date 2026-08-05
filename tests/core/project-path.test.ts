@@ -6,7 +6,7 @@ import * as path from 'node:path';
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { hashProjectPath } from '../../src/core/registry/project-path.js';
+import { hashProjectPath, resolveProjectAnchorPath } from '../../src/core/registry/project-path.js';
 
 function git(cwd: string, args: string[]): void {
   execFileSync('git', args, { cwd, stdio: 'ignore' });
@@ -62,6 +62,16 @@ describe('hashProjectPath worktree convergence', () => {
   it('keeps a non-git directory on its own pre-existing hash', () => {
     expect(hashProjectPath(standaloneDir)).toBe(legacyPathHash(standaloneDir));
     expect(hashProjectPath(standaloneDir)).not.toBe(hashProjectPath(mainRoot));
+  });
+
+  it('anchors a worktree onto its main checkout for durable per-project artifacts', () => {
+    expect(resolveProjectAnchorPath(worktreeRoot)).toBe(mainRoot);
+  });
+
+  it('anchors main checkouts, subdirectories, and non-git paths onto themselves', () => {
+    expect(resolveProjectAnchorPath(mainRoot)).toBe(mainRoot);
+    expect(resolveProjectAnchorPath(mainSubdir)).toBe(mainSubdir);
+    expect(resolveProjectAnchorPath(standaloneDir)).toBe(standaloneDir);
   });
 
   it('ignores inherited git env vars that would resolve another repository', () => {

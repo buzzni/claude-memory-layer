@@ -64,6 +64,17 @@ function resolveHashBasisPath(normalizedPath: string): string {
 }
 
 /**
+ * Resolve the durable on-disk anchor for per-project artifacts (e.g. the
+ * markdown mirror): a git worktree anchors onto the main checkout it shares a
+ * .git with, so artifacts survive worktree removal and land where the project
+ * hash already points. Main checkouts, subdirectories, and non-git paths
+ * anchor onto themselves.
+ */
+export function resolveProjectAnchorPath(projectPath: string): string {
+  return resolveHashBasisPath(normalizeProjectPath(projectPath));
+}
+
+/**
  * Generate a stable 8-character hash from a normalized project path.
  */
 export function hashProjectPath(projectPath: string): string {

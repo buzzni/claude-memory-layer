@@ -13,6 +13,7 @@ import type { EventStore } from '../event-store.js';
 import { createGraduationPipeline, type GraduationPipeline } from '../graduation.js';
 import { getDefaultMatcher, type Matcher } from '../matcher.js';
 import { MarkdownMirror } from '../md-mirror.js';
+import { resolveProjectAnchorPath } from '../registry/project-path.js';
 import type { Retriever } from '../retriever.js';
 import { SQLiteEventStore } from '../sqlite-event-store.js';
 import type { MemoryOperationsConfig, ToolObservationPayload } from '../types.js';
@@ -109,7 +110,7 @@ export function createMemoryEngineServices(options: MemoryEngineServicesOptions)
     : (factories.getDefaultEmbedder ?? getDefaultEmbedder)();
   const matcher = (factories.getDefaultMatcher ?? getDefaultMatcher)();
   const mdMirror = (factories.createMarkdownMirror ?? defaultCreateMarkdownMirror)(
-    options.cwd ?? process.cwd()
+    resolveProjectAnchorPath(options.cwd ?? process.cwd())
   );
   const graduation = (factories.createGraduationPipeline ?? defaultCreateGraduationPipeline)(
     sqliteStore as unknown as EventStore
