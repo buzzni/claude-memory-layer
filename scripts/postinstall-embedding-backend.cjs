@@ -120,13 +120,37 @@ function shouldAttemptAutoInstall({ cudaMajor, transformersAvailable, skipReques
   return !skipRequested && (!transformersAvailable || cudaMajor === 11);
 }
 
+/**
+ * npm settings that decide *where* an install lands. The parent `npm install
+ * -g claude-memory-layer` exports these, and a child process inherits them —
+ * which silently put the nested `npm install --prefix <backend>` into global
+ * mode. transformers then landed in <backend>/lib/node_modules (the global
+ * layout) rather than <backend>/node_modules, leaving the backend broken and
+ * every mem-* tool reporting "Required embedding backend is not installed".
+ *
+ * Only location settings are stripped; registry, proxy, and auth settings the
+ * install needs are left alone.
+ */
+const INHERITED_NPM_LOCATION_SETTINGS = [
+  'npm_config_global',
+  'npm_config_location',
+  'npm_config_prefix',
+  'npm_config_local_prefix'
+];
+
 function createRepairEnv(env = process.env) {
-  return {
+  const repairEnv = {
     ...env,
     ONNXRUNTIME_NODE_INSTALL_CUDA: 'skip',
     npm_config_onnxruntime_node_install_cuda: 'skip',
     [REPAIR_GUARD_ENV]: '1'
   };
+
+  for (const setting of INHERITED_NPM_LOCATION_SETTINGS) {
+    delete repairEnv[setting];
+  }
+
+  return repairEnv;
 }
 
 function createNpmInstallArgs(rootDir = process.cwd()) {
@@ -167,7 +191,15 @@ function runPostinstall({
     stdio: 'inherit'
   });
 
-  if (result.error || result.status !== 0) {
+  // A zero exit only says npm ran, not that the backend is usable — an install
+  // that lands in the wrong layout still exits 0. Re-run the health check so a
+  // broken backend is reported here instead of surfacing days later as
+  // "Required embedding backend is not installed" on every mem-* call.
+  const repaired = result.error || result.status !== 0
+    ? false
+    : isEmbeddingBackendAvailableImpl(rootDir, execFileSyncImpl);
+
+  if (!repaired) {
     warn('[claude-memory-layer] Required embedding backend repair failed. Semantic/vector embeddings may be unavailable until you run:');
     warn(`  ONNXRUNTIME_NODE_INSTALL_CUDA=skip npm install -g claude-memory-layer@latest`);
     if (result.error) warn(`  ${result.error.message}`);

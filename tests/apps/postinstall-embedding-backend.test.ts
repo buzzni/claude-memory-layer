@@ -184,6 +184,54 @@ describe('embedding backend postinstall repair', () => {
     ]);
   });
 
+  it('drops the parent npm run\'s global-install settings from the repair env', () => {
+    // `npm install -g claude-memory-layer` exports its own config to this
+    // script. Inheriting it put the nested `npm install --prefix <backend>`
+    // into global mode, so transformers landed in <backend>/lib/node_modules
+    // (the global layout) instead of <backend>/node_modules and every mem-*
+    // tool failed with "Required embedding backend is not installed".
+    const postinstall = loadPostinstallModule();
+
+    const repairEnv = postinstall.createRepairEnv({
+      npm_config_global: 'true',
+      npm_config_location: 'global',
+      npm_config_prefix: '/Users/someone/.hermes/node',
+      npm_config_local_prefix: '/Users/someone/.hermes/node/lib/node_modules/claude-memory-layer',
+      npm_config_registry: 'https://registry.example.com/',
+      PATH: '/usr/bin'
+    });
+
+    expect(repairEnv.npm_config_global).toBeUndefined();
+    expect(repairEnv.npm_config_location).toBeUndefined();
+    expect(repairEnv.npm_config_prefix).toBeUndefined();
+    expect(repairEnv.npm_config_local_prefix).toBeUndefined();
+
+    // Unrelated npm settings the user needs to reach the registry must survive.
+    expect(repairEnv.npm_config_registry).toBe('https://registry.example.com/');
+    expect(repairEnv.PATH).toBe('/usr/bin');
+    expect(repairEnv.ONNXRUNTIME_NODE_INSTALL_CUDA).toBe('skip');
+  });
+
+  it('reports failure when the install exits 0 but leaves the backend unusable', () => {
+    // The npm child can succeed while installing into the wrong layout, which
+    // is how a broken backend previously passed as "repaired" and stayed
+    // broken until every mem-* tool failed days later.
+    const postinstall = loadPostinstallModule();
+    const warnings: string[] = [];
+
+    const result = postinstall.runPostinstall({
+      rootDir: '/tmp/claude-memory-layer-package',
+      env: {},
+      isEmbeddingBackendAvailableImpl: () => false,
+      spawnSyncImpl: () => ({ status: 0 }),
+      log: () => {},
+      warn: (message: string) => warnings.push(String(message))
+    });
+
+    expect(result).toMatchObject({ attempted: true, success: false });
+    expect(warnings.join('\n')).toMatch(/repair failed|unavailable/i);
+  });
+
   it('treats a resolvable but unloadable backend as unavailable so postinstall can repair it', () => {
     const postinstall = loadPostinstallModule();
 
@@ -217,7 +265,9 @@ describe('embedding backend postinstall repair', () => {
         platform: 'linux',
         arch: 'x64',
         execFileSyncImpl: () => '',
-        isEmbeddingBackendAvailableImpl: () => false,
+        // Unavailable on the pre-check, usable once the repair has run — the
+        // health check is consulted on both sides of the install.
+        isEmbeddingBackendAvailableImpl: () => calls.length > 0,
         spawnSyncImpl: (cmd, args, options) => {
           calls.push({ cmd, args, env: options.env });
           return { status: 0 };
