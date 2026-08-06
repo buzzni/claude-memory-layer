@@ -24,8 +24,16 @@ import { hashProjectPath } from '../dist/core/index.js';
 const PROJECTS_ROOT = process.env.CLAUDE_MEMORY_PROJECTS_ROOT
   || path.join(os.homedir(), '.claude-code', 'memory', 'projects');
 
-/** Tables merged from the source store. FTS is rebuilt by the events triggers. */
-const MERGED_TABLES = ['events', 'sessions'];
+/**
+ * Tables merged from the source store, parents before children.
+ *
+ * FTS needs no entry — the events triggers maintain it. memory_levels does:
+ * an event with no graduation level is skipped by the retrieval lanes, so
+ * merging events alone lands rows that exist but never surface. Telemetry
+ * (memory_helpfulness, retrieval_traces) is deliberately left behind; it
+ * describes retrievals in a store that no longer exists.
+ */
+const MERGED_TABLES = ['events', 'sessions', 'memory_levels', 'event_dedup'];
 
 function parseArgs(argv) {
   const result = { apply: false, hashes: [], keepSource: false };
@@ -42,12 +50,21 @@ function parseArgs(argv) {
   return result;
 }
 
-function tableColumns(db, table) {
+function tableInfo(db, table, schema = 'main') {
   try {
-    return db.prepare(`PRAGMA table_info(${table})`).all().map((row) => row.name);
+    return db.prepare(`PRAGMA ${schema}.table_info(${table})`).all();
   } catch {
     return [];
   }
+}
+
+function tableColumns(db, table, schema = 'main') {
+  return tableInfo(db, table, schema).map((row) => row.name);
+}
+
+/** Primary key columns, used to reject a source whose schema cannot be matched up. */
+function primaryKeyColumns(db, table, schema = 'main') {
+  return tableInfo(db, table, schema).filter((row) => row.pk > 0).map((row) => row.name);
 }
 
 /** The project path a store was written for, taken from the sessions it recorded. */
@@ -127,11 +144,13 @@ function mergeStore(orphan, { apply, keepSource }) {
 
     for (const table of MERGED_TABLES) {
       const targetCols = tableColumns(target, table);
-      const sourceCols = new Set(
-        target.prepare(`PRAGMA src.table_info(${table})`).all().map((row) => row.name)
-      );
+      const sourceCols = new Set(tableColumns(target, table, 'src'));
       const shared = targetCols.filter((col) => sourceCols.has(col));
-      if (shared.length === 0 || !shared.includes('id')) {
+      const primaryKey = primaryKeyColumns(target, table);
+
+      // Every key column must survive the intersection, otherwise INSERT OR
+      // IGNORE cannot tell a duplicate from a new row.
+      if (shared.length === 0 || !primaryKey.every((col) => shared.includes(col))) {
         stats.tables[table] = { copied: 0, skipped: 0, note: 'incompatible schema' };
         continue;
       }
