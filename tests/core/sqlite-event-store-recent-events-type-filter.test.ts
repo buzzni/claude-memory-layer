@@ -82,6 +82,29 @@ describe('SQLiteEventStore.getRecentEvents event type filter', () => {
     await store.close();
   });
 
+  it('resolves the filtered scan from an index instead of walking the table', async () => {
+    // Without a (event_type, timestamp) index SQLite walks idx_events_timestamp
+    // backwards and evaluates the json_extract quarantine predicate on every
+    // row it visits. A store whose injectable types number fewer than the limit
+    // degrades to a full scan — on a 312MB store that measured 1.2s cold, on
+    // the SessionStart hook's critical path.
+    const store = new SQLiteEventStore(tempDbPath());
+    await store.initialize();
+    await seed(store);
+
+    const plan = store.getDatabase()
+      .prepare(
+        `EXPLAIN QUERY PLAN
+         SELECT * FROM events
+         WHERE 1=1 AND event_type IN ('session_summary', 'agent_response')
+         ORDER BY timestamp DESC LIMIT 60`
+      )
+      .all() as Array<{ detail: string }>;
+
+    expect(plan.map((row) => row.detail).join(' ')).toContain('idx_events_type_timestamp');
+    await store.close();
+  });
+
   it('treats an empty filter list as no filter rather than as "match nothing"', async () => {
     const store = new SQLiteEventStore(tempDbPath());
     await store.initialize();

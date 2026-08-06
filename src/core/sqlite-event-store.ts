@@ -847,6 +847,11 @@ export class SQLiteEventStore {
       -- Create indexes
       CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id);
       CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp);
+      -- Serves getRecentEvents' event_type filter. Without it SQLite walks
+      -- idx_events_timestamp backwards and evaluates the quarantine predicate
+      -- on every visited row; a store holding fewer matching events than the
+      -- limit then degrades into a full table scan on the SessionStart path.
+      CREATE INDEX IF NOT EXISTS idx_events_type_timestamp ON events(event_type, timestamp);
       CREATE INDEX IF NOT EXISTS idx_entries_type ON entries(entry_type);
       CREATE INDEX IF NOT EXISTS idx_entries_stage ON entries(stage);
       CREATE INDEX IF NOT EXISTS idx_entries_canonical ON entries(canonical_key);
