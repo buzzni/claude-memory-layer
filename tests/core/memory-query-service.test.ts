@@ -157,7 +157,7 @@ describe('MemoryQueryService', () => {
     expect(initialize).toHaveBeenCalledTimes(3);
     expect(queryStore.keywordSearch).toHaveBeenCalledWith('query', 3, { includeToolObservations: undefined });
     expect(queryStore.getSessionEvents).toHaveBeenCalledWith('session-1');
-    expect(queryStore.getRecentEvents).toHaveBeenCalledWith(2);
+    expect(queryStore.getRecentEvents).toHaveBeenCalledWith(2, undefined);
   });
 
   it('normalizes ascending FTS ranks with the strongest match at score one', async () => {

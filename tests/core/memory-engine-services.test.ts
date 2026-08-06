@@ -177,7 +177,7 @@ describe('createMemoryEngineServices', () => {
       expect(mdMirror.append).toHaveBeenCalledWith(expect.any(Object), 'event:user_prompt');
 
       await services.queryService.getRecentEvents(3);
-      expect(sqliteStore.getRecentEvents).toHaveBeenCalledWith(3);
+      expect(sqliteStore.getRecentEvents).toHaveBeenCalledWith(3, undefined);
       expect(sqliteStore.initialize).toHaveBeenCalledTimes(1);
       expect(initialize).not.toHaveBeenCalled();
 

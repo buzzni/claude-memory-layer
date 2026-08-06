@@ -11,12 +11,103 @@ import { isLlmSummaryEnabled } from '../../llm/session-summary-llm.js';
 import { spawnToolObservationVectorAutoHealIfNeeded } from './tool-observation-vector-auto-heal-client.js';
 import { readStdin } from './hook-runtime.js';
 import { formatClaudeContextHookOutput, isHookEvaluationMode } from './hook-output.js';
-import type { CoreMemoryBlock, SessionStartInput, SessionStartOutput } from '../../../core/types.js';
+import { isPromptOnlySessionSummary } from './prompt-injection-policy.js';
+import type {
+  CoreMemoryBlock,
+  EventType,
+  MemoryEvent,
+  SessionStartInput,
+  SessionStartOutput
+} from '../../../core/types.js';
 
 const CORE_MEMORY_BLOCK_LABELS: Record<CoreMemoryBlock['blockKey'], string> = {
   project: 'Project',
   user: 'User'
 };
+
+/**
+ * Injection tiers for the session-start lane, best first.
+ *
+ * Unlike the prompt lane there is no query here, so candidates cannot be
+ * scored — the only lever is which event types are worth injecting at all.
+ * Measured over 222 session-start injections in August 2026:
+ *
+ *   tool_observation  118 injections, content_overlap_score 0.000
+ *   agent_response     77 injections, content_overlap_score 0.123
+ *   user_prompt        14 injections, content_overlap_score 0.000
+ *   session_summary    13 injections, content_overlap_score 0.063
+ *
+ * tool_observation and user_prompt never grounded a single response, so they
+ * are excluded rather than ranked. Summaries come first because they are the
+ * only events written as durable outcomes; a raw agent_response is a snapshot
+ * of one turn.
+ */
+const SESSION_START_TIERS: EventType[] = ['session_summary', 'agent_response'];
+
+/** Per-type excerpt budgets. Summaries carry decisions, so they get more room. */
+const SESSION_START_EXCERPT_BUDGET: Partial<Record<EventType, number>> = {
+  session_summary: 900,
+  agent_response: 400
+};
+
+const DEFAULT_EXCERPT_BUDGET = 400;
+
+/** How many memories the recap injects. */
+const SESSION_START_MAX_MEMORIES = 3;
+
+/**
+ * How many injectable-type events to scan for those memories. Counted after
+ * the type filter, so this reaches weeks of history rather than hours.
+ */
+const SESSION_START_SCAN_WINDOW = 60;
+
+/**
+ * Picks what to inject at session start.
+ *
+ * This lane used to take the 3 most recent events of any type. Because
+ * tool_observation is ~84% of everything stored, recency alone meant the
+ * recap was mostly raw `{"toolName":...}` JSON truncated mid-token — 118
+ * such injections grounded exactly nothing.
+ */
+export function selectSessionStartMemories(events: MemoryEvent[], limit: number): MemoryEvent[] {
+  const usable = events.filter((event) => (
+    SESSION_START_TIERS.includes(event.eventType)
+    // The rule-based generator emits a table of contents ("Session with N
+    // prompts. Topics discussed: ...") rather than an outcome. The prompt lane
+    // already excludes it; this lane must too or it outranks real summaries on
+    // type alone.
+    && !(event.eventType === 'session_summary' && isPromptOnlySessionSummary(event.content))
+    && event.content.trim().length > 0
+  ));
+
+  return usable
+    .map((event, index) => ({ event, index }))
+    .sort((a, b) => (
+      (SESSION_START_TIERS.indexOf(a.event.eventType) - SESSION_START_TIERS.indexOf(b.event.eventType))
+      || (b.event.timestamp.getTime() - a.event.timestamp.getTime())
+      || (a.index - b.index)
+    ))
+    .slice(0, limit)
+    .map((item) => item.event);
+}
+
+/**
+ * Renders one memory as a single-line bullet.
+ *
+ * The old 150-character hard cut split JSON and sentences mid-token, leaving
+ * the model a fragment it could not act on. Budgets are per type and the cut
+ * backs off to the last sentence/clause boundary when there is one nearby.
+ */
+export function sessionStartExcerpt(event: MemoryEvent): string {
+  const collapsed = event.content.trim().replace(/\s*\n+\s*/g, ' / ');
+  const budget = SESSION_START_EXCERPT_BUDGET[event.eventType] ?? DEFAULT_EXCERPT_BUDGET;
+  if (collapsed.length <= budget) return collapsed;
+
+  const head = collapsed.slice(0, budget);
+  const boundary = Math.max(head.lastIndexOf('. '), head.lastIndexOf(' / '), head.lastIndexOf('다 '));
+  const cut = boundary >= budget * 0.6 ? head.slice(0, boundary + 1) : head;
+  return `${cut.trimEnd()}...`;
+}
 
 /**
  * Renders core memory blocks unconditionally (no query, no scoring) — the
@@ -102,18 +193,30 @@ export async function main(): Promise<string> {
       }
     }
 
-    // Get recent context for this project (now automatically scoped)
+    // Get recent context for this project (now automatically scoped).
+    //
+    // The scan is type-filtered and much wider than the 3 memories that get
+    // injected. Injectable types are a small minority of a real store —
+    // tool_observation alone is ~84% of events and session_summary about 2% —
+    // so an unfiltered window either misses summaries entirely or has to load
+    // thousands of large tool payloads to reach them.
     const recentEvents = process.env.CLAUDE_MEMORY_EVAL_DISABLE_SESSION_CONTEXT === 'true'
       ? []
-      : await memoryService.getRecentEvents(10);
+      : await memoryService.getRecentEvents(SESSION_START_SCAN_WINDOW, {
+        eventTypes: SESSION_START_TIERS
+      });
 
-    if (recentEvents.length > 0) {
+    const injectedEvents = selectSessionStartMemories(recentEvents, SESSION_START_MAX_MEMORIES);
+
+    if (injectedEvents.length > 0) {
       if (context) context += '\n';
-      const injectedEvents = recentEvents.slice(0, 3);
       context += `## Previous Session Context\n\nYou have worked on this project before. Here are some relevant memories:\n\n`;
+      const excerpts = new Map<string, string>();
       for (const event of injectedEvents) {
         const date = event.timestamp.toISOString().split('T')[0];
-        context += `- **${date}**: ${event.content.slice(0, 150)}...\n`;
+        const excerpt = sessionStartExcerpt(event);
+        excerpts.set(event.id, excerpt);
+        context += `- **${date}**: ${excerpt}\n`;
       }
 
       // Session-start injections used to be invisible to usefulness metrics.
@@ -131,9 +234,9 @@ export async function main(): Promise<string> {
             {
               traceId: batchTraceId,
               source: 'session_start',
-              // Only the first 150 chars are injected above — grounding must
-              // be measured against that snapshot, not the full event.
-              injectedContent: event.content.slice(0, 150)
+              // Grounding is measured against the exact text injected above,
+              // not the full event.
+              injectedContent: excerpts.get(event.id) ?? sessionStartExcerpt(event)
             }
           );
         } catch { /* non-critical telemetry */ }

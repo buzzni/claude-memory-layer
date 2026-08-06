@@ -37,7 +37,7 @@ import {
 } from '../core/engine/embedding-maintenance-service.js';
 import type { MemoryRuntimeService } from '../core/engine/memory-runtime-service.js';
 import type { GraduationRunResult } from '../core/graduation-worker.js';
-import type { DerivationLiveness } from '../core/sqlite-event-store.js';
+import type { DerivationLiveness, RecentEventsReadOptions } from '../core/sqlite-event-store.js';
 import type { IngestInterceptor } from '../core/ingest-interceptor.js';
 import type { MemoryIngestService } from '../core/engine/memory-ingest-service.js';
 import type { MemoryQueryService } from '../core/engine/memory-query-service.js';
@@ -368,8 +368,8 @@ export class MemoryService {
   /**
    * Get recent events
    */
-  async getRecentEvents(limit: number = 100): Promise<MemoryEvent[]> {
-    return this.queryService.getRecentEvents(limit);
+  async getRecentEvents(limit: number = 100, options?: RecentEventsReadOptions): Promise<MemoryEvent[]> {
+    return this.queryService.getRecentEvents(limit, options);
   }
 
   /**

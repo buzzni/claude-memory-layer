@@ -5,6 +5,7 @@
 
 import { randomUUID } from 'crypto';
 import {
+  EventType,
   MemoryEvent,
   MemoryEventInput,
   Session,
@@ -168,6 +169,11 @@ function notActiveQuarantinedSql(column = 'metadata'): string {
 
 interface QuarantineReadOptions {
   includeQuarantined?: boolean;
+}
+
+export interface RecentEventsReadOptions extends QuarantineReadOptions {
+  /** Restrict to these event types. An empty/omitted list means "any type". */
+  eventTypes?: EventType[];
 }
 
 function maybeQuarantinePredicate(options?: QuarantineReadOptions, column = 'metadata'): string {
@@ -1202,15 +1208,28 @@ export class SQLiteEventStore {
   }
 
   /**
-   * Get recent events
+   * Get recent events, optionally restricted to a set of event types.
+   *
+   * The type filter exists because tool_observation is the overwhelming
+   * majority of a real store (~84%). Callers that only want narrative events
+   * would otherwise have to over-fetch by an order of magnitude — and load
+   * every large tool payload along the way — just to reach a handful of
+   * summaries.
    */
-  async getRecentEvents(limit: number = 100, options?: QuarantineReadOptions): Promise<MemoryEvent[]> {
+  async getRecentEvents(limit: number = 100, options?: RecentEventsReadOptions): Promise<MemoryEvent[]> {
     await this.initialize();
+
+    const eventTypes = options?.eventTypes ?? [];
+    const typePredicate = eventTypes.length > 0
+      ? `AND event_type IN (${eventTypes.map(() => '?').join(', ')})`
+      : '';
 
     const rows = sqliteAll<Record<string, unknown>>(
       this.db,
-      `SELECT * FROM events WHERE ${maybeQuarantinePredicate(options)} ORDER BY timestamp DESC LIMIT ?`,
-      [limit]
+      `SELECT * FROM events
+       WHERE ${maybeQuarantinePredicate(options)} ${typePredicate}
+       ORDER BY timestamp DESC LIMIT ?`,
+      [...eventTypes, limit]
     );
 
     return rows.map(this.rowToEvent);

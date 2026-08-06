@@ -374,8 +374,11 @@ function formatLessonContent(lesson: LessonEvidenceInput): string {
   return parts.join('\n');
 }
 
-function isPromptOnlySessionSummary(content: string): boolean {
-  return /Session with \d+ user prompts?|Topics discussed:|\[\d{4}-\d{2}-\d{2}\].*주요 작업:/iu.test(content);
+export function isPromptOnlySessionSummary(content: string): boolean {
+  // The Korean branch is anchored on the rule-based generator's own prefix
+  // ("[date] N턴 세션", see summary-deriver.ts) rather than on the optional
+  // "주요 작업:" line, which it omits for a zero-prompt session.
+  return /Session with \d+ user prompts?|Topics discussed:|\[\d{4}-\d{2}-\d{2}\]\s*\d+턴 세션/iu.test(content);
 }
 
 function isDiagnosticQuery(query: string): boolean {
