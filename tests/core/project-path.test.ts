@@ -54,9 +54,13 @@ describe('hashProjectPath worktree convergence', () => {
     expect(hashProjectPath(mainRoot)).toBe(legacyPathHash(mainRoot));
   });
 
-  it('keeps a subdirectory of the main checkout on its own pre-existing hash', () => {
-    expect(hashProjectPath(mainSubdir)).toBe(legacyPathHash(mainSubdir));
-    expect(hashProjectPath(mainSubdir)).not.toBe(hashProjectPath(mainRoot));
+  it('hashes a subdirectory of the main checkout the same as the checkout root', () => {
+    // A session started from a subdirectory (a monorepo package, a vendored
+    // tree) used to get its own hash and therefore a cold, empty store that no
+    // other session in the same repository could ever read. It now shares the
+    // repository's memory, the same way a worktree does.
+    expect(hashProjectPath(mainSubdir)).toBe(hashProjectPath(mainRoot));
+    expect(hashProjectPath(mainSubdir)).not.toBe(legacyPathHash(mainSubdir));
   });
 
   it('keeps a non-git directory on its own pre-existing hash', () => {
@@ -68,10 +72,30 @@ describe('hashProjectPath worktree convergence', () => {
     expect(resolveProjectAnchorPath(worktreeRoot)).toBe(mainRoot);
   });
 
-  it('anchors main checkouts, subdirectories, and non-git paths onto themselves', () => {
+  it('anchors a subdirectory onto its checkout root, matching where its hash points', () => {
+    expect(resolveProjectAnchorPath(mainSubdir)).toBe(mainRoot);
+  });
+
+  it('anchors main checkouts and non-git paths onto themselves', () => {
     expect(resolveProjectAnchorPath(mainRoot)).toBe(mainRoot);
-    expect(resolveProjectAnchorPath(mainSubdir)).toBe(mainSubdir);
     expect(resolveProjectAnchorPath(standaloneDir)).toBe(standaloneDir);
+  });
+
+  it('keeps a nested repository separate from its outer repository', () => {
+    // vendored/submodule trees own their .git, so they must not be folded into
+    // the outer checkout — only paths inside the same repository converge.
+    const nested = path.join(mainRoot, 'vendor', 'inner');
+    fs.mkdirSync(nested, { recursive: true });
+    git(nested, ['init', '-q']);
+    git(nested, ['config', 'user.email', 'test@example.com']);
+    git(nested, ['config', 'user.name', 'Test']);
+    git(nested, ['commit', '-q', '--allow-empty', '-m', 'init']);
+
+    expect(hashProjectPath(nested)).not.toBe(hashProjectPath(mainRoot));
+
+    const nestedSubdir = path.join(nested, 'pkg');
+    fs.mkdirSync(nestedSubdir, { recursive: true });
+    expect(hashProjectPath(nestedSubdir)).toBe(hashProjectPath(nested));
   });
 
   it('ignores inherited git env vars that would resolve another repository', () => {

@@ -39,20 +39,28 @@ function computeHashBasisPath(normalizedPath: string): string {
   if (path.basename(absoluteCommonDir) !== '.git') return normalizedPath;
   const mainCheckoutRoot = normalizeProjectPath(path.dirname(absoluteCommonDir));
 
-  const topLevel = runGit(normalizedPath, ['rev-parse', '--show-toplevel']);
-  if (!topLevel) return normalizedPath;
+  // Guard against a git layout that reports a common dir but no work tree
+  // (a bare repo); such a path keeps hashing to itself.
+  if (!runGit(normalizedPath, ['rev-parse', '--show-toplevel'])) return normalizedPath;
 
-  // Inside the main checkout (its root or any subdirectory) the top level is
-  // the main checkout root, and the caller's own path is kept so existing
-  // project hashes never shift. Only a worktree, whose top level differs from
-  // the checkout owning the shared .git, is redirected onto the main checkout.
-  return normalizeProjectPath(topLevel) === mainCheckoutRoot ? normalizedPath : mainCheckoutRoot;
+  // Every path inside one repository resolves onto the checkout that owns the
+  // shared .git — a worktree, the checkout root, or any subdirectory of it.
+  //
+  // The root itself already hashes to this value, so existing project hashes
+  // are unchanged. Subdirectories converge onto it: a session started from a
+  // monorepo package or a vendored tree used to get its own hash, and with it
+  // a cold store no other session in the repository could read.
+  //
+  // A nested repository owns its own .git, so its common dir differs and it
+  // stays separate rather than folding into the outer checkout.
+  return mainCheckoutRoot;
 }
 
 /**
- * Resolve the path a project hash should be derived from, so that a git
- * worktree hashes to the same value as the main checkout it shares a .git
- * with. Main checkouts, subdirectories, and non-git paths hash to themselves.
+ * Resolve the path a project hash should be derived from, so that every path
+ * belonging to one repository — worktree, checkout root, or subdirectory —
+ * hashes to the main checkout that owns the shared .git. Nested repositories
+ * and non-git paths hash to themselves.
  */
 function resolveHashBasisPath(normalizedPath: string): string {
   const cached = hashBasisCache.get(normalizedPath);
@@ -65,9 +73,9 @@ function resolveHashBasisPath(normalizedPath: string): string {
 
 /**
  * Resolve the durable on-disk anchor for per-project artifacts (e.g. the
- * markdown mirror): a git worktree anchors onto the main checkout it shares a
- * .git with, so artifacts survive worktree removal and land where the project
- * hash already points. Main checkouts, subdirectories, and non-git paths
+ * markdown mirror): worktrees and subdirectories anchor onto the main checkout
+ * they share a .git with, so artifacts survive worktree removal and land where
+ * the project hash already points. Nested repositories and non-git paths
  * anchor onto themselves.
  */
 export function resolveProjectAnchorPath(projectPath: string): string {

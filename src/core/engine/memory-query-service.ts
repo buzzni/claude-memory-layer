@@ -9,7 +9,7 @@ import type {
   ProjectScopeRepairOptions,
   ProjectScopeRepairResult
 } from '../types.js';
-import type { DerivationLiveness } from '../sqlite-event-store.js';
+import type { DerivationLiveness, RecentEventsReadOptions } from '../sqlite-event-store.js';
 import type { SQLiteDatabase } from '../sqlite-wrapper.js';
 import { LessonRepository } from '../operations/lesson-repository.js';
 import { CoreMemoryBlockRepository } from '../operations/core-memory-block-repository.js';
@@ -47,7 +47,7 @@ interface QueryStore {
   searchGraduatedEvidence?(query: string, limit: number): Promise<GraduatedEvidenceResult[]>;
   getEvent(id: string): Promise<MemoryEvent | null>;
   getSessionEvents(sessionId: string): Promise<MemoryEvent[]>;
-  getRecentEvents(limit: number): Promise<MemoryEvent[]>;
+  getRecentEvents(limit: number, options?: RecentEventsReadOptions): Promise<MemoryEvent[]>;
   countEvents?(): Promise<number>;
   /** Present on the SQLite store; lessons live outside the events table. */
   getDatabase?(): SQLiteDatabase;
@@ -197,9 +197,9 @@ export class MemoryQueryService {
     return this.queryStore.getSessionEvents(sessionId);
   }
 
-  async getRecentEvents(limit: number = 100): Promise<MemoryEvent[]> {
+  async getRecentEvents(limit: number = 100, options?: RecentEventsReadOptions): Promise<MemoryEvent[]> {
     await this.initialize();
-    return this.queryStore.getRecentEvents(limit);
+    return this.queryStore.getRecentEvents(limit, options);
   }
 
   async rebuildFtsIndex(): Promise<number> {
