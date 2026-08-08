@@ -118,7 +118,11 @@ describe('selectSessionStartMemories', () => {
     expect(selected.map((e) => e.eventType)).toEqual(['agent_response']);
   });
 
-  it('prefers a real session_summary over a more recent agent_response', () => {
+  it('does not rank a session_summary above a more recent agent_response', () => {
+    // Type used to be the primary sort key, which put summaries first
+    // unconditionally. Measured across six stores that dropped session-start
+    // grounding from 0.0810 to 0.0084: the concrete tokens the next prompt
+    // reuses live in the response, not in the summary's abstract bullets.
     const selected = selectSessionStartMemories(
       [
         event('agent_response', 'Renamed the helper to resolveHashBasisPath.', '2026-08-06T10:00:00.000Z'),
@@ -127,10 +131,73 @@ describe('selectSessionStartMemories', () => {
       2
     );
 
-    expect(selected.map((e) => e.eventType)).toEqual(['session_summary', 'agent_response']);
+    expect(selected.map((e) => e.eventType)).toEqual(['agent_response', 'session_summary']);
   });
 
-  it('orders newest first inside the same tier', () => {
+  it('keeps at most one session_summary so summaries cannot crowd out responses', () => {
+    // A real store always holds more than `limit` summaries inside the scan
+    // window, so an uncapped summary preference meant agent_response was never
+    // injected at all.
+    const selected = selectSessionStartMemories(
+      [
+        event('session_summary', '- 결정: A', '2026-08-06T10:00:00.000Z'),
+        event('session_summary', '- 결정: B', '2026-08-05T10:00:00.000Z'),
+        event('session_summary', '- 결정: C', '2026-08-04T10:00:00.000Z'),
+        event('agent_response', 'PR #1693 리뷰 완료. HEAD c0ffee12.', '2026-08-03T10:00:00.000Z'),
+        event('agent_response', 'outbox lock was never released.', '2026-08-02T10:00:00.000Z')
+      ],
+      3
+    );
+
+    expect(selected.map((e) => e.eventType)).toEqual([
+      'session_summary',
+      'agent_response',
+      'agent_response'
+    ]);
+    expect(selected[0].content).toBe('- 결정: A');
+  });
+
+  it('still injects the summary when it is the only usable memory', () => {
+    const selected = selectSessionStartMemories(
+      [event('session_summary', '- 결정: 워크트리 해시를 메인 체크아웃으로 리다이렉트', '2026-08-01T10:00:00.000Z')],
+      3
+    );
+
+    expect(selected.map((e) => e.eventType)).toEqual(['session_summary']);
+  });
+
+  it('drops a duplicate memory rather than injecting the same bullet twice', () => {
+    // The same outcome gets stored more than once (a Stop-hook write and the
+    // crash backfill land as distinct events with byte-identical text).
+    // Observed in production as one bullet repeated back-to-back in a recap.
+    const selected = selectSessionStartMemories(
+      [
+        event('agent_response', 'Root cause: the outbox lock was never released.', '2026-08-06T10:00:00.000Z'),
+        event('agent_response', 'Root cause: the outbox lock was never released.', '2026-08-05T10:00:00.000Z'),
+        event('agent_response', 'distinct finding', '2026-08-04T10:00:00.000Z')
+      ],
+      3
+    );
+
+    expect(selected.map((e) => e.content)).toEqual([
+      'Root cause: the outbox lock was never released.',
+      'distinct finding'
+    ]);
+  });
+
+  it('treats memories that differ only in whitespace as duplicates', () => {
+    const selected = selectSessionStartMemories(
+      [
+        event('agent_response', 'Root cause:  the  lock leaked.', '2026-08-06T10:00:00.000Z'),
+        event('agent_response', 'Root cause: the lock leaked.\n', '2026-08-05T10:00:00.000Z')
+      ],
+      3
+    );
+
+    expect(selected).toHaveLength(1);
+  });
+
+  it('orders newest first', () => {
     const selected = selectSessionStartMemories(
       [
         event('agent_response', 'older finding', '2026-08-01T10:00:00.000Z'),
