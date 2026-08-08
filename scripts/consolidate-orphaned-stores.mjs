@@ -89,7 +89,31 @@ function countRows(db, table) {
   }
 }
 
-/** Stores whose recorded path still exists but now hashes somewhere else. */
+/**
+ * The checkout a deleted worktree path belonged to.
+ *
+ * Worktrees are disposable — they get removed once their branch merges — so
+ * the common orphan is a store whose recorded path no longer exists. Hashing
+ * needs git, and git needs the directory, so those stores could never be
+ * resolved and their events stayed stranded (1,780 events across 10 stores on
+ * one machine).
+ *
+ * The layout itself carries the answer: `<checkout>/.aplus/worktrees/<name>`
+ * and git's own `<checkout>/.git/worktrees/<name>`. Everything before the
+ * marker is the checkout that owned the worktree. Returns null when the path
+ * has no marker or the checkout is gone too — a guess is worse than skipping.
+ */
+function checkoutOwningWorktree(projectPath) {
+  for (const marker of ['/.aplus/worktrees/', '/.git/worktrees/']) {
+    const index = projectPath.indexOf(marker);
+    if (index <= 0) continue;
+    const checkout = projectPath.slice(0, index);
+    if (fs.existsSync(checkout)) return checkout;
+  }
+  return null;
+}
+
+/** Stores whose recorded path now hashes somewhere else, or is gone entirely. */
 function findOrphans(filterHashes) {
   const orphans = [];
   for (const dir of fs.readdirSync(PROJECTS_ROOT)) {
@@ -106,13 +130,22 @@ function findOrphans(filterHashes) {
     db.close();
 
     if (!projectPath) continue;
-    if (!fs.existsSync(projectPath)) continue; // path is gone; nothing to resolve onto
 
-    const target = hashProjectPath(projectPath);
+    // Resolve against the recorded path when it still exists, and against the
+    // checkout that owned it when the worktree has been removed.
+    let resolveFrom = projectPath;
+    let viaCheckout = null;
+    if (!fs.existsSync(projectPath)) {
+      viaCheckout = checkoutOwningWorktree(projectPath);
+      if (!viaCheckout) continue; // path is gone; nothing to resolve onto
+      resolveFrom = viaCheckout;
+    }
+
+    const target = hashProjectPath(resolveFrom);
     if (target === dir) continue;
     if (!fs.existsSync(path.join(PROJECTS_ROOT, target, 'events.sqlite'))) continue;
 
-    orphans.push({ dir, target, projectPath, events, sessions });
+    orphans.push({ dir, target, projectPath, events, sessions, viaCheckout });
   }
   return orphans.sort((a, b) => b.events - a.events);
 }
@@ -223,6 +256,9 @@ function main() {
   for (const orphan of orphans) {
     console.log(`${orphan.dir} → ${orphan.target}`);
     console.log(`   path: ${orphan.projectPath}`);
+    if (orphan.viaCheckout) {
+      console.log(`   worktree removed; resolved via checkout: ${orphan.viaCheckout}`);
+    }
     console.log(`   source: ${orphan.events} events, ${orphan.sessions} sessions`);
 
     // One unmergeable store must not strand the rest of the batch. The merge
