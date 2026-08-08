@@ -37,6 +37,11 @@ import {
   LessonCandidateService,
   LessonRepository,
   LessonService,
+  MemoryAssetPermissionSchema,
+  MemoryAssetPermissionService,
+  MemoryAssetStatusSchema,
+  MemoryAssetTypeSchema,
+  MemoryAssetVisibilitySchema,
   PerspectiveObservationRepository,
   QueryEntityExtractor,
   RETENTION_POLICY_VERSION,
@@ -45,6 +50,9 @@ import {
   type FrontierItem,
   type GraphPathExpandResult,
   type MemoryAction,
+  type MemoryAsset,
+  type MemoryAssetBinding,
+  type MemoryAssetGrant,
   type MemoryCheckpoint,
   type MemoryFacetAssignment,
   type QueryEntityCandidate,
@@ -272,6 +280,13 @@ const MEMORY_OPERATION_TOOL_NAMES = new Set([
   'mem-lesson-candidates',
   'mem-lesson-list',
   'mem-lesson-save',
+  'mem-asset-create',
+  'mem-asset-get',
+  'mem-asset-list',
+  'mem-asset-update',
+  'mem-asset-bind',
+  'mem-asset-grant-set',
+  'mem-asset-check',
   'mem-actor-list',
   'mem-actor-card-get',
   'mem-actor-card-upsert',
@@ -321,6 +336,20 @@ async function handleMemoryOperationTool(name: string, args: Record<string, unkn
         return jsonResult(await handleLessonList(context, args));
       case 'mem-lesson-save':
         return jsonResult(await handleLessonSave(context, args));
+      case 'mem-asset-create':
+        return jsonResult(await handleMemoryAssetCreate(context, args));
+      case 'mem-asset-get':
+        return jsonResult(await handleMemoryAssetGet(context, args));
+      case 'mem-asset-list':
+        return jsonResult(await handleMemoryAssetList(context, args));
+      case 'mem-asset-update':
+        return jsonResult(await handleMemoryAssetUpdate(context, args));
+      case 'mem-asset-bind':
+        return jsonResult(await handleMemoryAssetBind(context, args));
+      case 'mem-asset-grant-set':
+        return jsonResult(await handleMemoryAssetGrantSet(context, args));
+      case 'mem-asset-check':
+        return jsonResult(handleMemoryAssetCheck(context, args));
       case 'mem-actor-list':
         return jsonResult(await handleActorList(context, args));
       case 'mem-actor-card-get':
@@ -669,6 +698,203 @@ function formatLesson(lesson: {
     sourceSessionIds: lesson.sourceSessionIds.slice(0, 10).map((id) => sanitizeOperationString(id, 120)),
     createdAt: isoDate(lesson.createdAt),
     updatedAt: isoDate(lesson.updatedAt)
+  };
+}
+
+function requesterActorIdArg(args: Record<string, unknown>): string {
+  // Principal identifiers must remain byte-for-byte stable. Output and audit
+  // payloads are sanitized separately; mutating the id here can authorize a
+  // different principal from the one supplied by the caller.
+  return requiredOperationString(args.requesterActorId, 'requesterActorId');
+}
+
+function memoryAssetMetadataArg(value: unknown): Record<string, unknown> | undefined {
+  if (value === undefined) return undefined;
+  if (!isPlainRecord(value)) throw new Error('metadata must be an object');
+  return sanitizeOperationRecord(value);
+}
+
+async function handleMemoryAssetCreate(
+  context: MemoryOperationContext,
+  args: Record<string, unknown>
+): Promise<Record<string, unknown>> {
+  const service = new MemoryAssetPermissionService(context.db);
+  const asset = await service.create({
+    projectHash: context.projectHash,
+    requesterActorId: requesterActorIdArg(args),
+    assetId: optionalString(args.assetId),
+    assetType: MemoryAssetTypeSchema.parse(args.assetType),
+    title: requiredOperationString(args.title, 'title'),
+    status: args.status === undefined ? undefined : MemoryAssetStatusSchema.parse(args.status),
+    visibility: args.visibility === undefined ? undefined : MemoryAssetVisibilitySchema.parse(args.visibility),
+    sourceRefs: optionalOperationStringArray(args.sourceRefs, 'sourceRefs', 100),
+    metadata: memoryAssetMetadataArg(args.metadata)
+  });
+  return {
+    operation: 'mem-asset-create',
+    projectHash: context.projectHash,
+    asset: formatMemoryAsset(asset)
+  };
+}
+
+async function handleMemoryAssetGet(
+  context: MemoryOperationContext,
+  args: Record<string, unknown>
+): Promise<Record<string, unknown>> {
+  const asset = await new MemoryAssetPermissionService(context.db).get({
+    projectHash: context.projectHash,
+    requesterActorId: requesterActorIdArg(args),
+    assetId: requiredOperationString(args.assetId, 'assetId')
+  });
+  return {
+    operation: 'mem-asset-get',
+    projectHash: context.projectHash,
+    found: Boolean(asset),
+    asset: asset ? formatMemoryAsset(asset) : undefined
+  };
+}
+
+async function handleMemoryAssetList(
+  context: MemoryOperationContext,
+  args: Record<string, unknown>
+): Promise<Record<string, unknown>> {
+  const assets = await new MemoryAssetPermissionService(context.db).list({
+    projectHash: context.projectHash,
+    requesterActorId: requesterActorIdArg(args),
+    assetType: args.assetType === undefined ? undefined : MemoryAssetTypeSchema.parse(args.assetType),
+    status: args.status === undefined ? undefined : MemoryAssetStatusSchema.parse(args.status),
+    limit: numberArg(args.limit, 50, 1, 100)
+  });
+  return {
+    operation: 'mem-asset-list',
+    projectHash: context.projectHash,
+    count: assets.length,
+    assets: assets.map(formatMemoryAsset)
+  };
+}
+
+async function handleMemoryAssetUpdate(
+  context: MemoryOperationContext,
+  args: Record<string, unknown>
+): Promise<Record<string, unknown>> {
+  const asset = await new MemoryAssetPermissionService(context.db).update({
+    projectHash: context.projectHash,
+    requesterActorId: requesterActorIdArg(args),
+    assetId: requiredOperationString(args.assetId, 'assetId'),
+    expectedVersion: args.expectedVersion as number | undefined,
+    title: optionalString(args.title),
+    status: args.status === undefined ? undefined : MemoryAssetStatusSchema.parse(args.status),
+    visibility: args.visibility === undefined ? undefined : MemoryAssetVisibilitySchema.parse(args.visibility),
+    sourceRefs: hasSuppliedArg(args, 'sourceRefs')
+      ? optionalOperationStringArray(args.sourceRefs, 'sourceRefs', 100)
+      : undefined,
+    metadata: memoryAssetMetadataArg(args.metadata)
+  });
+  return {
+    operation: 'mem-asset-update',
+    projectHash: context.projectHash,
+    asset: formatMemoryAsset(asset)
+  };
+}
+
+async function handleMemoryAssetBind(
+  context: MemoryOperationContext,
+  args: Record<string, unknown>
+): Promise<Record<string, unknown>> {
+  const binding = await new MemoryAssetPermissionService(context.db).bind({
+    projectHash: context.projectHash,
+    requesterActorId: requesterActorIdArg(args),
+    assetId: requiredOperationString(args.assetId, 'assetId'),
+    actorId: requiredOperationString(args.targetActorId, 'targetActorId'),
+    injectionMode: args.injectionMode as MemoryAssetBinding['injectionMode'] | undefined,
+    priority: args.priority as number | undefined,
+    enabled: typeof args.enabled === 'boolean' ? args.enabled : undefined
+  });
+  return {
+    operation: 'mem-asset-bind',
+    projectHash: context.projectHash,
+    binding: formatMemoryAssetBinding(binding)
+  };
+}
+
+async function handleMemoryAssetGrantSet(
+  context: MemoryOperationContext,
+  args: Record<string, unknown>
+): Promise<Record<string, unknown>> {
+  const permissions = zArrayMemoryAssetPermissions(args.permissions);
+  const grant = await new MemoryAssetPermissionService(context.db).setGrant({
+    projectHash: context.projectHash,
+    requesterActorId: requesterActorIdArg(args),
+    assetId: requiredOperationString(args.assetId, 'assetId'),
+    actorId: requiredOperationString(args.targetActorId, 'targetActorId'),
+    permissions
+  });
+  return {
+    operation: 'mem-asset-grant-set',
+    projectHash: context.projectHash,
+    grant: formatMemoryAssetGrant(grant)
+  };
+}
+
+function handleMemoryAssetCheck(
+  context: MemoryOperationContext,
+  args: Record<string, unknown>
+): Record<string, unknown> {
+  const result = new MemoryAssetPermissionService(context.db).check({
+    projectHash: context.projectHash,
+    requesterActorId: requesterActorIdArg(args),
+    assetId: requiredOperationString(args.assetId, 'assetId'),
+    permission: MemoryAssetPermissionSchema.parse(args.permission)
+  });
+  return {
+    operation: 'mem-asset-check',
+    projectHash: context.projectHash,
+    assetId: requiredOperationString(args.assetId, 'assetId'),
+    decision: result.decision
+  };
+}
+
+function zArrayMemoryAssetPermissions(value: unknown): Array<'read' | 'write' | 'bind' | 'grant'> {
+  if (!Array.isArray(value)) throw new Error('permissions must be an array');
+  return value.map((permission) => MemoryAssetPermissionSchema.parse(permission));
+}
+
+function formatMemoryAsset(asset: MemoryAsset): Record<string, unknown> {
+  return {
+    assetId: sanitizeOperationString(asset.assetId, 240),
+    assetType: asset.assetType,
+    title: sanitizeOperationString(asset.title, 240),
+    ownerActorId: sanitizeOperationString(asset.ownerActorId, 240),
+    version: asset.version,
+    status: asset.status,
+    visibility: asset.visibility,
+    sourceRefs: compactStringArray(asset.sourceRefs, 20, 240),
+    metadata: asset.metadata ? compactRecord(sanitizeOperationRecord(asset.metadata), 20) : undefined,
+    createdAt: isoDate(asset.createdAt),
+    updatedAt: isoDate(asset.updatedAt)
+  };
+}
+
+function formatMemoryAssetBinding(binding: MemoryAssetBinding): Record<string, unknown> {
+  return {
+    assetId: sanitizeOperationString(binding.assetId, 240),
+    actorId: sanitizeOperationString(binding.actorId, 240),
+    injectionMode: binding.injectionMode,
+    priority: binding.priority,
+    enabled: binding.enabled,
+    createdAt: isoDate(binding.createdAt),
+    updatedAt: isoDate(binding.updatedAt)
+  };
+}
+
+function formatMemoryAssetGrant(grant: MemoryAssetGrant): Record<string, unknown> {
+  return {
+    assetId: sanitizeOperationString(grant.assetId, 240),
+    actorId: sanitizeOperationString(grant.actorId, 240),
+    permissions: grant.permissions,
+    createdBy: sanitizeOperationString(grant.createdBy, 240),
+    createdAt: isoDate(grant.createdAt),
+    updatedAt: isoDate(grant.updatedAt)
   };
 }
 

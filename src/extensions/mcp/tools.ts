@@ -20,6 +20,28 @@ const actorProperty = {
   description: 'Actor identifier recorded in governance audit metadata for state-changing operations.'
 } as const;
 
+const requesterActorIdProperty = {
+  type: 'string',
+  description: 'Memory actor id of the caller. Permission checks and governance audit records use this identity.'
+} as const;
+
+const memoryAssetIdProperty = {
+  type: 'string',
+  description: 'Project-scoped memory asset id.'
+} as const;
+
+const memoryAssetTypeProperty = {
+  type: 'string',
+  enum: ['memory', 'lesson', 'skill', 'wiki', 'code_graph'],
+  description: 'Canonical kind of the registered memory asset.'
+} as const;
+
+const memoryAssetPermissionProperty = {
+  type: 'string',
+  enum: ['read', 'write', 'bind', 'grant'],
+  description: 'Permission evaluated by the memory asset policy.'
+} as const;
+
 const targetActorAliasAnyOf = [
   { required: ['targetActorId'] },
   { required: ['observedActorId'] }
@@ -690,6 +712,118 @@ export const tools: Tool[] = [
         }
       },
       required: ['projectPath', 'name', 'trigger', 'steps', 'actor']
+    }
+  },
+  {
+    name: 'mem-asset-create',
+    description: 'Register a project-scoped memory asset. The requester becomes its owner; content stays in the referenced canonical subsystem.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectPath: requiredProjectPathProperty,
+        requesterActorId: requesterActorIdProperty,
+        assetId: memoryAssetIdProperty,
+        assetType: memoryAssetTypeProperty,
+        title: { type: 'string', maxLength: 240, description: 'Compact human-readable asset title.' },
+        status: { type: 'string', enum: ['candidate', 'active', 'deprecated', 'archived'], description: 'Initial lifecycle status (default: active).' },
+        visibility: { type: 'string', enum: ['private', 'project', 'shared'], description: 'Read visibility (default: private). Visibility never grants mutation rights.' },
+        sourceRefs: { type: 'array', items: { type: 'string' }, maxItems: 100, description: 'Bounded canonical source ids or references.' },
+        metadata: { type: 'object', description: 'Optional compact asset metadata; secrets and local paths are sanitized from public output and audit snapshots.' }
+      },
+      required: ['projectPath', 'requesterActorId', 'assetType', 'title']
+    }
+  },
+  {
+    name: 'mem-asset-get',
+    description: 'Get one memory asset only when the requester has read access; unauthorized and missing assets return the same not-found shape.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectPath: requiredProjectPathProperty,
+        requesterActorId: requesterActorIdProperty,
+        assetId: memoryAssetIdProperty
+      },
+      required: ['projectPath', 'requesterActorId', 'assetId']
+    }
+  },
+  {
+    name: 'mem-asset-list',
+    description: 'List only memory assets readable by the requester; inaccessible private assets are omitted.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectPath: requiredProjectPathProperty,
+        requesterActorId: requesterActorIdProperty,
+        assetType: memoryAssetTypeProperty,
+        status: { type: 'string', enum: ['candidate', 'active', 'deprecated', 'archived'], description: 'Optional lifecycle filter.' },
+        limit: operationLimitProperty
+      },
+      required: ['projectPath', 'requesterActorId']
+    }
+  },
+  {
+    name: 'mem-asset-update',
+    description: 'Update memory asset metadata after an owner or explicit write-grant check. Supports optimistic version checks.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectPath: requiredProjectPathProperty,
+        requesterActorId: requesterActorIdProperty,
+        assetId: memoryAssetIdProperty,
+        expectedVersion: { type: 'number', minimum: 1, description: 'Optional current version; stale writes fail instead of overwriting.' },
+        title: { type: 'string', maxLength: 240 },
+        status: { type: 'string', enum: ['candidate', 'active', 'deprecated', 'archived'] },
+        visibility: { type: 'string', enum: ['private', 'project', 'shared'] },
+        sourceRefs: { type: 'array', items: { type: 'string' }, maxItems: 100 },
+        metadata: { type: 'object' }
+      },
+      required: ['projectPath', 'requesterActorId', 'assetId']
+    }
+  },
+  {
+    name: 'mem-asset-bind',
+    description: 'Create, update, or disable an actor-to-asset injection binding after a bind permission check.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectPath: requiredProjectPathProperty,
+        requesterActorId: requesterActorIdProperty,
+        assetId: memoryAssetIdProperty,
+        targetActorId: { type: 'string', description: 'Actor receiving the asset binding.' },
+        injectionMode: { type: 'string', enum: ['direct', 'summary', 'tool', 'reference'], description: 'How a future injector should deliver the asset (default: reference).' },
+        priority: { type: 'number', minimum: -1000, maximum: 1000, description: 'Binding priority (default: 0).' },
+        enabled: { type: 'boolean', description: 'Set false to disable and revoke binding-based read access (default: true).' }
+      },
+      required: ['projectPath', 'requesterActorId', 'assetId', 'targetActorId']
+    }
+  },
+  {
+    name: 'mem-asset-grant-set',
+    description: 'Replace one actor\'s explicit asset permissions after a grant permission check. Pass an empty list to revoke all explicit permissions.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectPath: requiredProjectPathProperty,
+        requesterActorId: requesterActorIdProperty,
+        assetId: memoryAssetIdProperty,
+        targetActorId: { type: 'string', description: 'Actor whose explicit permission set is replaced.' },
+        permissions: { type: 'array', items: memoryAssetPermissionProperty, maxItems: 4, description: 'Full replacement permission set; empty means explicit grant revocation.' }
+      },
+      required: ['projectPath', 'requesterActorId', 'assetId', 'targetActorId', 'permissions']
+    }
+  },
+  {
+    name: 'mem-asset-check',
+    description: 'Explain whether the requester has a specific memory asset permission and which policy rule decided it.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectPath: requiredProjectPathProperty,
+        requesterActorId: requesterActorIdProperty,
+        assetId: memoryAssetIdProperty,
+        permission: memoryAssetPermissionProperty
+      },
+      required: ['projectPath', 'requesterActorId', 'assetId', 'permission']
     }
   },
   {
