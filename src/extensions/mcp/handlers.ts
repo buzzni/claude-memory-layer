@@ -82,6 +82,67 @@ type ToolResult = CallToolResult;
 
 type MemoryToolArgs = Record<string, unknown>;
 
+/**
+ * Cached because the MCP server's cwd is fixed for the life of the process —
+ * the client sets it at spawn — and resolving it shells out to git.
+ */
+let autoProjectPathCache: { cwd: string; resolved: string | null } | undefined;
+
+/**
+ * The project this MCP server was spawned for, inferred from its own cwd.
+ *
+ * Callers that omit `projectPath` used to land on the global store, which
+ * nothing in a hook-driven deployment ever writes to — every hook writes to a
+ * per-project store. A search without the argument therefore returned nothing
+ * while the project store held thousands of events, and the caller had no
+ * signal that it had queried the wrong place.
+ *
+ * cwd is a sound signal here: clients spawn one stdio server per session with
+ * cwd set to that session's directory. `hashProjectPath` already folds
+ * worktrees and subdirectories onto the main checkout, so any cwd inside a
+ * repository lands on exactly the store the hooks write to.
+ *
+ * Returns null unless a store already exists. That guard matters:
+ * `getMemoryServiceForProject` creates a store for whatever path it is given,
+ * so an unguarded fallback would litter `projects/` with empty stores for
+ * every non-project directory an MCP server happens to start in.
+ */
+function resolveAutoProjectPath(): string | null {
+  const cwd = process.cwd();
+  if (autoProjectPathCache?.cwd === cwd) return autoProjectPathCache.resolved;
+
+  let resolved: string | null = null;
+  try {
+    if (existsSync(path.join(getProjectStoragePath(cwd), 'events.sqlite'))) {
+      resolved = cwd;
+    }
+  } catch {
+    // Unreadable cwd or a git invocation that fails: fall back to global
+    // rather than failing the tool call.
+  }
+
+  autoProjectPathCache = { cwd, resolved };
+  return resolved;
+}
+
+/**
+ * Fills in `projectPath` from the server's cwd when the caller omitted it.
+ *
+ * Applied once at the entry point rather than at each use, because several
+ * tools read `args.projectPath` independently (the perspective validator, the
+ * import guard, the import handler); resolving in one place keeps them from
+ * disagreeing about which project a single call is about.
+ *
+ * An explicitly supplied value is never overridden, including a relative one —
+ * that stays an error rather than being silently replaced.
+ */
+export function withAutoProjectPath(args: Record<string, unknown>): Record<string, unknown> {
+  if (hasSuppliedArg(args, 'projectPath')) return args;
+  const autoPath = resolveAutoProjectPath();
+  if (!autoPath) return args;
+  return { ...args, projectPath: autoPath };
+}
+
 function resolveMemoryService(args: MemoryToolArgs): MemoryService {
   const projectPath = typeof args.projectPath === 'string' ? args.projectPath.trim() : '';
   if (projectPath.length > 0) {
@@ -123,12 +184,15 @@ function validateMemContextPackPerspectiveArgs(args: Record<string, unknown>): v
 
 export async function handleToolCall(
   name: string,
-  args: Record<string, unknown>
+  rawArgs: Record<string, unknown>
 ): Promise<ToolResult> {
   try {
     if (name === 'external-market-context') {
-      return await handleExternalMarketContext(args);
+      return await handleExternalMarketContext(rawArgs);
     }
+
+    // Every memory tool below shares one project, so resolve it once here.
+    const args = withAutoProjectPath(rawArgs);
 
     if (name === 'mem-context-pack' && hasMemContextPackPerspectiveArgs(args)) {
       validateMemContextPackPerspectiveArgs(args);
@@ -794,10 +858,18 @@ async function handlePerspectiveObservationDelete(context: MemoryOperationContex
   };
 }
 
+/**
+ * Still strict: by the time this runs, withAutoProjectPath has already filled
+ * in the cwd-derived path when one was available, so reaching the throw means
+ * neither the caller nor the environment identified a project.
+ */
 function requiredProjectPath(args: Record<string, unknown>): string {
   const projectPath = optionalString(args.projectPath);
   if (!projectPath || !isAbsoluteProjectPath(projectPath)) {
-    throw new Error('memory operation tools require an explicit absolute projectPath');
+    throw new Error(
+      'memory operation tools require an explicit absolute projectPath '
+      + `(no memory store exists for the server working directory "${process.cwd()}")`
+    );
   }
   return projectPath;
 }
