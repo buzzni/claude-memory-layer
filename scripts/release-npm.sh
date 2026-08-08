@@ -183,16 +183,7 @@ printf 'npm user: %s\n' "$NPM_USER"
 printf 'npm registry: %s\n' "$(npm config get registry)"
 
 log "Checking package metadata and self-dependency"
-node <<'NODE'
-const pkg = require('./package.json');
-const fields = ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies'];
-const offenders = fields.filter((field) => pkg[field] && Object.prototype.hasOwnProperty.call(pkg[field], pkg.name));
-if (offenders.length) {
-  console.error(`Self dependency detected for ${pkg.name} in: ${offenders.join(', ')}`);
-  process.exit(1);
-}
-console.log(JSON.stringify({ name: pkg.name, version: pkg.version, bin: pkg.bin, files: pkg.files }, null, 2));
-NODE
+node scripts/guard-release-artifact.cjs self-dependency
 
 log "Bumping version: ${OLD_VERSION} -> ${BUMP}"
 npm version "$BUMP" --no-git-tag-version >/dev/null
@@ -228,24 +219,7 @@ npm run prepublishOnly
 log "Checking npm tarball contents with npm pack --dry-run"
 PACK_JSON="$(mktemp)"
 npm pack --dry-run --json >"$PACK_JSON"
-node - "$PACK_JSON" <<'NODE'
-const fs = require('fs');
-const packPath = process.argv[2];
-const data = JSON.parse(fs.readFileSync(packPath, 'utf8'))[0];
-const suspicious = data.files
-  .map((file) => file.path)
-  .filter((path) => /(^|\/)\.claude-memory(\/|$)|(^|\/)graphify-out(\/|$)|cache|qrels|\.db$|\.sqlite|\.tgz$|^tests\/|^src\/|^specs\//.test(path));
-console.log(JSON.stringify({
-  name: data.name,
-  version: data.version,
-  filename: data.filename,
-  fileCount: data.files.length,
-  packageSize: data.size,
-  unpackedSize: data.unpackedSize,
-  suspicious,
-}, null, 2));
-if (suspicious.length) process.exit(1);
-NODE
+node scripts/guard-release-artifact.cjs tarball "$PACK_JSON"
 
 log "Scanning release diff for credential-shaped values"
 node <<'NODE'

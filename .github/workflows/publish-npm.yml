@@ -1,0 +1,150 @@
+name: Publish to npm
+
+# Triggered by a `v<semver>` tag, matching the tags scripts/release-npm.sh has
+# always created. The tag's version MUST equal package.json's version or the
+# job fails before publishing — that check is the whole point of tagging
+# rather than publishing from a branch.
+#
+# Release flow:
+#   1. Merge the change to main (CI must be green).
+#   2. Bump the version on main: `npm version <patch|minor|major> --no-git-tag-version`
+#      and commit as `chore(release): v<version>`.
+#   3. `git tag v<version> && git push origin v<version>`.
+#
+# scripts/release-npm.sh remains the local path; it runs the same guards plus a
+# managed-embedding-backend audit that needs the real postinstall download.
+#
+# Setup (already done): Settings → Secrets and variables → Actions →
+# NPM_TOKEN = an npm automation token allowed to publish this package.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  # Lets a failed publish be retried against an existing tag without having to
+  # delete and re-push it.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing v<semver> tag to publish'
+        required: true
+
+concurrency:
+  group: publish-npm-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: verify · pack · publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write # npm provenance
+    env:
+      # The isolated embedding backend downloads models over the network on
+      # postinstall. CI never exercises it, and letting it run would make every
+      # release depend on a model host being up.
+      CLAUDE_MEMORY_LAYER_SKIP_EMBEDDING_POSTINSTALL: '1'
+      ONNXRUNTIME_NODE_INSTALL_CUDA: skip
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          registry-url: https://registry.npmjs.org
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify tag matches package version
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          RAW_TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          TAG="${RAW_TAG#v}"
+          if [ "$VERSION" != "$TAG" ]; then
+            echo "::error::tag/version mismatch — tag=$TAG package.json=$VERSION"
+            exit 1
+          fi
+          echo "OK — publishing $VERSION from tag v$TAG"
+
+      - name: Verify version is not already published
+        run: |
+          NAME="$(node -p "require('./package.json').name")"
+          VERSION="$(node -p "require('./package.json').version")"
+          if npm view "$NAME@$VERSION" version >/dev/null 2>&1; then
+            echo "::error::$NAME@$VERSION already exists on npm; versions are immutable"
+            exit 1
+          fi
+
+      # The recurring failure mode for this package (see CLAUDE.md): a self
+      # dependency gets restored from package-lock.json on the next install and
+      # ships a cyclic tree.
+      - name: Guard against self-dependency
+        run: node scripts/guard-release-artifact.cjs self-dependency
+
+      - name: Audit production dependencies
+        run: npm audit --omit=dev
+
+      - name: Typecheck · lint · test · build
+        run: npm run prepublishOnly
+
+      - name: Architecture import boundaries
+        run: npm run check:architecture
+
+      - name: Guard tarball contents
+        run: |
+          npm pack --dry-run --json > /tmp/pack-dry-run.json
+          node scripts/guard-release-artifact.cjs tarball /tmp/pack-dry-run.json
+
+      - name: Pack release tarball
+        id: pack
+        run: |
+          TARBALL="$(npm pack --silent --pack-destination "$RUNNER_TEMP")"
+          echo "tarball=$RUNNER_TEMP/$TARBALL" >> "$GITHUB_OUTPUT"
+          ls -la "$RUNNER_TEMP/$TARBALL"
+
+      # Publishing the exact tarball that was just guarded, rather than letting
+      # npm re-pack at publish time, keeps what was inspected and what ships
+      # identical.
+      - name: Publish to npm
+        run: npm publish "${{ steps.pack.outputs.tarball }}" --access public --tag latest
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_PROVENANCE: 'true'
+
+      - name: Verify registry propagation
+        run: |
+          NAME="$(node -p "require('./package.json').name")"
+          VERSION="$(node -p "require('./package.json').version")"
+          for attempt in $(seq 1 20); do
+            TARBALL_URL="$(npm view "$NAME@$VERSION" dist.tarball 2>/dev/null || true)"
+            if [ -n "$TARBALL_URL" ] && curl -fsI "$TARBALL_URL" >/dev/null; then
+              echo "published: $TARBALL_URL"
+              exit 0
+            fi
+            echo "waiting for npm propagation ($attempt/20)"
+            sleep 15
+          done
+          echo "::error::$NAME@$VERSION did not propagate"
+          exit 1
+
+      # A fresh install from the registry catches packaging faults the local
+      # tree hides — a missing `files` entry, or a bin that is not executable.
+      - name: Fresh-install smoke test
+        run: |
+          NAME="$(node -p "require('./package.json').name")"
+          VERSION="$(node -p "require('./package.json').version")"
+          WORKDIR="$(mktemp -d)"
+          cd "$WORKDIR"
+          npm init -y >/dev/null
+          npm install "$NAME@$VERSION"
+          node -e "const p=require('$WORKDIR/node_modules/$NAME/package.json'); console.log(JSON.stringify({name:p.name,version:p.version,bin:p.bin},null,2))"
+          ./node_modules/.bin/claude-memory-layer --version
