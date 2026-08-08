@@ -60,6 +60,18 @@ export function canonicalMemoryAssetId(type: CanonicalMemoryAssetType, canonical
   return `${type}:${canonicalId.trim()}`;
 }
 
+export function isCanonicalMemoryAssetRegistration(
+  asset: MemoryAsset,
+  canonicalType: CanonicalMemoryAssetType,
+  canonicalId: string
+): boolean {
+  const assetId = canonicalMemoryAssetId(canonicalType, canonicalId);
+  const expectedAssetType: MemoryAssetType = canonicalType === 'lesson' ? 'lesson' : 'memory';
+  return asset.assetId === assetId
+    && asset.assetType === expectedAssetType
+    && asset.sourceRefs.includes(assetId);
+}
+
 function rowToCandidate(row: CanonicalAssetRow): CanonicalMemoryAssetCandidate {
   const assetId = canonicalMemoryAssetId(row.canonical_type, row.canonical_id);
   return {
@@ -81,7 +93,7 @@ function rowToCandidate(row: CanonicalAssetRow): CanonicalMemoryAssetCandidate {
 }
 
 function matchesCanonicalAsset(asset: MemoryAsset, candidate: CanonicalMemoryAssetCandidate): boolean {
-  return asset.assetType === candidate.assetType && asset.sourceRefs.includes(candidate.assetId);
+  return isCanonicalMemoryAssetRegistration(asset, candidate.canonicalType, candidate.canonicalId);
 }
 
 function classifyCandidate(

@@ -65,9 +65,32 @@ event ids and core-memory text remain exclusively in their canonical tables.
 If a deterministic id is already used for a different source, sync reports a
 conflict and does not overwrite it.
 
+## Canonical handler enforcement
+
+Lesson list/save and core-memory get/update handlers read the server-owned
+`CLAUDE_MEMORY_ASSET_PERMISSION_MODE` setting. Callers cannot select or
+downgrade this mode in an MCP request.
+
+- `legacy` (default): preserve existing behavior while catalog registration is rolled out.
+- `registered`: require `requesterActorId`; enforce permissions for validly registered assets and retain legacy access only for records that have not been registered yet.
+- `strict`: require `requesterActorId`; deny access to unregistered records as well as registered records without the requested permission.
+
+An invalid setting fails closed with a configuration error instead of falling
+back to `legacy`. Deterministic-id conflicts are denied in both enforcement
+modes. Read handlers omit inaccessible records, while write handlers return a
+generic permission denial. In enforcement modes, the write audit `actor` must
+match `requesterActorId` so callers cannot attribute an authorized mutation to
+another principal. New lessons cannot be created in `strict` mode;
+create and catalog them before the final mode transition.
+
+A staged migration is therefore:
+
+1. Keep `legacy`, run `mem-asset-catalog-sync` in preview mode, resolve conflicts, then apply.
+2. Restart the MCP server with `registered` and make clients pass `requesterActorId`.
+3. Register any records created during migration, verify grants/bindings, then restart with `strict`.
+
 ## Follow-up integration order
 
-1. Gate registered lesson/core-memory read and update handlers through this permission service while preserving a deliberate legacy migration mode.
-2. Feed enabled bindings into session-start and context-pack injection lanes.
-3. Add a cross-project shared-store adapter only after actor identity mapping is explicit.
-4. Add teams/roles or deny ACLs only when a concrete multi-user requirement cannot be represented by ownership, visibility, bindings, and explicit grants.
+1. Feed enabled bindings into session-start and context-pack injection lanes.
+2. Add a cross-project shared-store adapter only after actor identity mapping is explicit.
+3. Add teams/roles or deny ACLs only when a concrete multi-user requirement cannot be represented by ownership, visibility, bindings, and explicit grants.

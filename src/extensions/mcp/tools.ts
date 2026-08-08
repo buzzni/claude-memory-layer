@@ -25,6 +25,11 @@ const requesterActorIdProperty = {
   description: 'Memory actor id of the caller. Permission checks and governance audit records use this identity.'
 } as const;
 
+const canonicalRequesterActorIdProperty = {
+  type: 'string',
+  description: 'Memory actor id of the caller. Optional only in the default legacy migration mode; required for registered or strict server-side permission checks.'
+} as const;
+
 const memoryAssetIdProperty = {
   type: 'string',
   description: 'Project-scoped memory asset id.'
@@ -611,11 +616,12 @@ export const tools: Tool[] = [
   },
   {
     name: 'mem-lesson-list',
-    description: 'List project-scoped procedural lessons as compact skill/runbook candidates without raw transcript or local path disclosure.',
+    description: 'List project-scoped procedural lessons as compact skill/runbook candidates. Registered assets are permission-filtered when server enforcement is enabled.',
     inputSchema: {
       type: 'object',
       properties: {
         projectPath: requiredProjectPathProperty,
+        requesterActorId: canonicalRequesterActorIdProperty,
         skillCandidate: {
           type: 'boolean',
           description: 'Optional filter for lessons marked as manual skill candidates.'
@@ -659,11 +665,12 @@ export const tools: Tool[] = [
   },
   {
     name: 'mem-lesson-save',
-    description: 'Save a reviewed project-scoped lesson or rule as a curated memory. Rejects private or credential-like content and preserves compact provenance.',
+    description: 'Save a reviewed project-scoped lesson or rule as a curated memory. Updates to registered lessons require write access when server enforcement is enabled.',
     inputSchema: {
       type: 'object',
       properties: {
         projectPath: requiredProjectPathProperty,
+        requesterActorId: canonicalRequesterActorIdProperty,
         name: {
           type: 'string',
           description: 'Short stable name for the curated lesson.'
@@ -956,11 +963,12 @@ export const tools: Tool[] = [
   },
   {
     name: 'mem-core-block-get',
-    description: 'Read this project\'s core memory blocks — small, always-injected resident context shown at the start of every session (Letta-style core memory), separate from query-scored retrieval.',
+    description: 'Read this project\'s core memory blocks. Registered blocks are permission-filtered when server enforcement is enabled.',
     inputSchema: {
       type: 'object',
       properties: {
         projectPath: requiredProjectPathProperty,
+        requesterActorId: canonicalRequesterActorIdProperty,
         blockKey: {
           type: 'string',
           enum: ['project', 'user'],
@@ -972,11 +980,12 @@ export const tools: Tool[] = [
   },
   {
     name: 'mem-core-block-update',
-    description: 'Replace one core memory block for this project through an audited, self-editable write. Core memory blocks are injected unconditionally on every SessionStart, so keep content compact and durable (conventions, active constraints) rather than transient session detail.',
+    description: 'Replace one core memory block through an audited write. Registered blocks require write access when server enforcement is enabled.',
     inputSchema: {
       type: 'object',
       properties: {
         projectPath: requiredProjectPathProperty,
+        requesterActorId: canonicalRequesterActorIdProperty,
         blockKey: {
           type: 'string',
           enum: ['project', 'user'],

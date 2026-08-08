@@ -261,7 +261,8 @@ export type UpsertMemoryLessonInput = z.input<typeof UpsertMemoryLessonInputSche
 export const ListMemoryLessonsInputSchema = z.object({
   projectHash: MemoryLessonNonEmptyStringSchema.optional(),
   skillCandidate: z.boolean().optional(),
-  limit: z.number().int().positive().max(500).default(50)
+  limit: z.number().int().positive().max(500).default(50),
+  offset: z.number().int().nonnegative().default(0)
 });
 export type ListMemoryLessonsInput = z.input<typeof ListMemoryLessonsInputSchema>;
 

@@ -29,6 +29,7 @@ import {
   ActionRepository,
   ActorCardRepository,
   ActorRepository,
+  CanonicalMemoryAccessService,
   CheckpointRepository,
   CoreMemoryBlockRepository,
   FacetRepository,
@@ -601,18 +602,47 @@ function handleGraphQuery(context: MemoryOperationContext, args: Record<string, 
 
 async function handleLessonList(context: MemoryOperationContext, args: Record<string, unknown>): Promise<Record<string, unknown>> {
   const repository = new LessonRepository(context.db);
-  const lessons = await repository.list(omitUndefined({
+  const access = new CanonicalMemoryAccessService(context.db);
+  const requesterActorId = optionalRequesterActorIdArg(args);
+  access.requireRequester(requesterActorId);
+  const limit = numberArg(args.limit, 50, 1, 100);
+  const listInput = {
     projectHash: context.projectHash,
-    skillCandidate: typeof args.skillCandidate === 'boolean' ? args.skillCandidate : undefined,
-    limit: numberArg(args.limit, 50, 1, 100)
-  }));
+    skillCandidate: typeof args.skillCandidate === 'boolean' ? args.skillCandidate : undefined
+  };
   const minConfidence = typeof args.minConfidence === 'number' ? Math.min(1, Math.max(0, args.minConfidence)) : undefined;
-  const filtered = minConfidence === undefined
-    ? lessons
-    : lessons.filter((lesson) => Number(lesson.confidence ?? 0) >= minConfidence);
+  let filtered: MemoryLesson[];
+  if (access.mode === 'legacy') {
+    const lessons = await repository.list(omitUndefined({ ...listInput, limit }));
+    filtered = minConfidence === undefined
+      ? lessons
+      : lessons.filter((lesson) => Number(lesson.confidence ?? 0) >= minConfidence);
+  } else {
+    filtered = [];
+    const pageSize = Math.max(100, limit);
+    let offset = 0;
+    while (filtered.length < limit) {
+      const page = await repository.list(omitUndefined({ ...listInput, limit: pageSize, offset }));
+      for (const lesson of page) {
+        if (minConfidence !== undefined && Number(lesson.confidence ?? 0) < minConfidence) continue;
+        const decision = access.check({
+          projectHash: context.projectHash,
+          canonicalType: 'lesson',
+          canonicalId: lesson.lessonId,
+          requesterActorId,
+          permission: 'read'
+        });
+        if (decision.allowed) filtered.push(lesson);
+        if (filtered.length === limit) break;
+      }
+      if (page.length < pageSize) break;
+      offset += page.length;
+    }
+  }
   return {
     operation: 'mem-lesson-list',
     projectHash: context.projectHash,
+    permissionMode: access.mode,
     count: filtered.length,
     lessons: filtered.map((lesson) => ({
       lessonId: sanitizeOperationString(String(lesson.lessonId ?? ''), 120),
@@ -657,10 +687,32 @@ async function handleLessonCandidates(context: MemoryOperationContext, args: Rec
 }
 
 async function handleLessonSave(context: MemoryOperationContext, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const access = new CanonicalMemoryAccessService(context.db);
+  const requesterActorId = optionalRequesterActorIdArg(args);
+  access.requireRequester(requesterActorId);
+  const name = requiredOperationString(args.name, 'name');
+  const actor = requiredOperationString(args.actor, 'actor');
+  if (access.mode !== 'legacy') {
+    if (actor !== requesterActorId) {
+      throw new Error('actor must match requesterActorId when canonical memory permissions are enforced');
+    }
+    const existing = new LessonRepository(context.db).getByProjectAndName(context.projectHash, name);
+    if (existing) {
+      access.require({
+        projectHash: context.projectHash,
+        canonicalType: 'lesson',
+        canonicalId: existing.lessonId,
+        requesterActorId,
+        permission: 'write'
+      });
+    } else {
+      access.requireUnregisteredWrite(requesterActorId);
+    }
+  }
   const lesson = await new LessonService(context.db).saveCurated({
     projectHash: context.projectHash,
-    actor: requiredOperationString(args.actor, 'actor'),
-    name: requiredOperationString(args.name, 'name'),
+    actor,
+    name,
     trigger: requiredOperationString(args.trigger, 'trigger'),
     steps: requiredOperationStringArray(args.steps, 'steps', 100),
     confidence: typeof args.confidence === 'number' ? args.confidence : undefined,
@@ -672,6 +724,7 @@ async function handleLessonSave(context: MemoryOperationContext, args: Record<st
   return {
     operation: 'mem-lesson-save',
     projectHash: context.projectHash,
+    permissionMode: access.mode,
     lesson: formatLesson(lesson)
   };
 }
@@ -711,6 +764,10 @@ function requesterActorIdArg(args: Record<string, unknown>): string {
   // payloads are sanitized separately; mutating the id here can authorize a
   // different principal from the one supplied by the caller.
   return requiredOperationString(args.requesterActorId, 'requesterActorId');
+}
+
+function optionalRequesterActorIdArg(args: Record<string, unknown>): string | undefined {
+  return args.requesterActorId === undefined ? undefined : requesterActorIdArg(args);
 }
 
 function memoryAssetMetadataArg(value: unknown): Record<string, unknown> | undefined {
@@ -1033,6 +1090,9 @@ function coreMemoryBlockKeyArg(value: unknown): CoreMemoryBlockKey | undefined {
 
 async function handleCoreMemoryBlockGet(context: MemoryOperationContext, args: Record<string, unknown>): Promise<Record<string, unknown>> {
   const repository = new CoreMemoryBlockRepository(context.db);
+  const access = new CanonicalMemoryAccessService(context.db);
+  const requesterActorId = optionalRequesterActorIdArg(args);
+  access.requireRequester(requesterActorId);
   const blockKey = coreMemoryBlockKeyArg(args.blockKey);
   let blocks: CoreMemoryBlock[];
   if (blockKey) {
@@ -1041,27 +1101,55 @@ async function handleCoreMemoryBlockGet(context: MemoryOperationContext, args: R
   } else {
     blocks = await repository.listByProject(context.projectHash);
   }
+  const readable = access.mode === 'legacy'
+    ? blocks
+    : blocks.filter((block) => access.check({
+      projectHash: context.projectHash,
+      canonicalType: 'core_memory_block',
+      canonicalId: block.blockKey,
+      requesterActorId,
+      permission: 'read'
+    }).allowed);
   return {
     operation: 'mem-core-block-get',
     projectHash: context.projectHash,
-    blocks: blocks.map(formatCoreMemoryBlock)
+    permissionMode: access.mode,
+    blocks: readable.map(formatCoreMemoryBlock)
   };
 }
 
 async function handleCoreMemoryBlockUpdate(context: MemoryOperationContext, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const access = new CanonicalMemoryAccessService(context.db);
+  const requesterActorId = optionalRequesterActorIdArg(args);
+  access.requireRequester(requesterActorId);
+  const blockKey = coreMemoryBlockKeyArg(requiredOperationString(args.blockKey, 'blockKey'))!;
+  const actor = requiredOperationString(args.actor, 'actor');
+  if (access.mode !== 'legacy') {
+    if (actor !== requesterActorId) {
+      throw new Error('actor must match requesterActorId when canonical memory permissions are enforced');
+    }
+    access.require({
+      projectHash: context.projectHash,
+      canonicalType: 'core_memory_block',
+      canonicalId: blockKey,
+      requesterActorId,
+      permission: 'write'
+    });
+  }
   const repository = new CoreMemoryBlockRepository(context.db);
   const block = await repository.upsert({
     projectHash: context.projectHash,
-    blockKey: requiredOperationString(args.blockKey, 'blockKey'),
+    blockKey,
     // Empty content is the documented way to retire a stale block: the
     // session-start hook skips empty blocks, so this clears the injection.
     content: requiredPossiblyEmptyOperationString(args.content, 'content'),
     sourceEventIds: stringArrayOperationArg(args.sourceEventIds, 20),
-    updatedBy: sanitizeOperationString(requiredOperationString(args.actor, 'actor'), 120)
+    updatedBy: sanitizeOperationString(actor, 120)
   });
   return {
     operation: 'mem-core-block-update',
     projectHash: context.projectHash,
+    permissionMode: access.mode,
     block: formatCoreMemoryBlock(block)
   };
 }

@@ -33,3 +33,4 @@ export * from './memory-asset-permissions.js';
 export * from './memory-asset-repository.js';
 export * from './memory-asset-permission-service.js';
 export * from './memory-asset-catalog-service.js';
+export * from './canonical-memory-access-service.js';
