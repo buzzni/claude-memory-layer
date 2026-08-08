@@ -12,6 +12,11 @@
  *
  *   node scripts/consolidate-orphaned-stores.mjs
  *   node scripts/consolidate-orphaned-stores.mjs --hash ad83c813 --apply
+ *
+ * A store with no session rows has nothing to resolve from; name its owner
+ * yourself to merge it anyway:
+ *
+ *   node scripts/consolidate-orphaned-stores.mjs --hash ed6a6cfd --target 6ab6d837 --apply
  */
 import fs from 'node:fs';
 import os from 'node:os';
@@ -36,7 +41,7 @@ const PROJECTS_ROOT = process.env.CLAUDE_MEMORY_PROJECTS_ROOT
 const MERGED_TABLES = ['events', 'sessions', 'memory_levels', 'event_dedup'];
 
 function parseArgs(argv) {
-  const result = { apply: false, hashes: [], keepSource: false };
+  const result = { apply: false, hashes: [], keepSource: false, target: null };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--apply') result.apply = true;
@@ -45,6 +50,10 @@ function parseArgs(argv) {
       result.hashes.push(String(argv[i += 1]).trim().toLowerCase());
     } else if (arg.startsWith('--hash=')) {
       result.hashes.push(arg.slice('--hash='.length).trim().toLowerCase());
+    } else if (arg === '--target' && i + 1 < argv.length) {
+      result.target = String(argv[i += 1]).trim().toLowerCase();
+    } else if (arg.startsWith('--target=')) {
+      result.target = arg.slice('--target='.length).trim().toLowerCase();
     }
   }
   return result;
@@ -111,6 +120,35 @@ function checkoutOwningWorktree(projectPath) {
     if (fs.existsSync(checkout)) return checkout;
   }
   return null;
+}
+
+/**
+ * Stores named explicitly by the operator, merged into a target they chose.
+ *
+ * Automatic resolution reads the project path off the `sessions` table, and
+ * some stores hold events with no session rows at all — nothing to resolve
+ * from, however obvious the owner is from the events themselves. Rather than
+ * guess inside the tool, this lets a human state the attribution and still
+ * merge through the same audited path.
+ */
+function explicitOrphans(hashes, target) {
+  if (!fs.existsSync(path.join(PROJECTS_ROOT, target, 'events.sqlite'))) {
+    throw new Error(`target store ${target} has no events.sqlite`);
+  }
+
+  return hashes.map((dir) => {
+    if (dir === target) throw new Error(`source and target are the same store: ${dir}`);
+    const dbPath = path.join(PROJECTS_ROOT, dir, 'events.sqlite');
+    if (!fs.existsSync(dbPath)) throw new Error(`source store ${dir} has no events.sqlite`);
+
+    const db = new Database(dbPath, { readonly: true });
+    const projectPath = dominantProjectPath(db);
+    const events = countRows(db, 'events');
+    const sessions = countRows(db, 'sessions');
+    db.close();
+
+    return { dir, target, projectPath: projectPath ?? '(no recorded path — attributed manually)', events, sessions };
+  });
 }
 
 /** Stores whose recorded path now hashes somewhere else, or is gone entirely. */
@@ -190,12 +228,25 @@ function mergeStore(orphan, { apply, keepSource }) {
 
       const before = countRows(target, table);
       const list = shared.map((col) => `"${col}"`).join(', ');
-      const sql = `INSERT OR IGNORE INTO main.${table} (${list}) SELECT ${list} FROM src.${table}`;
+
+      // Child rows follow their event. An event whose content already exists
+      // in the target is dropped by INSERT OR IGNORE (dedupe_key collides),
+      // but memory_levels/event_dedup key on event_id alone, so they would
+      // insert anyway and leave rows pointing at an event that is not there.
+      const eventScoped = table === 'memory_levels' || table === 'event_dedup';
+      const guard = eventScoped
+        ? ` WHERE EXISTS (SELECT 1 FROM main.events e WHERE e.id = src.${table}.event_id)`
+        : '';
+      const sql = `INSERT OR IGNORE INTO main.${table} (${list}) SELECT ${list} FROM src.${table}${guard}`;
 
       if (apply) {
         target.prepare(sql).run();
       }
-      const sourceRows = target.prepare(`SELECT COUNT(*) AS c FROM src.${table}`).get().c;
+      // Counted through the same guard, so a dry run predicts what an apply
+      // would actually copy rather than the raw source size.
+      const sourceRows = target
+        .prepare(`SELECT COUNT(*) AS c FROM src.${table}${guard}`)
+        .get().c;
       const copied = apply ? countRows(target, table) - before : null;
       stats.tables[table] = {
         sourceRows,
@@ -243,7 +294,21 @@ function main() {
     process.exit(1);
   }
 
-  const orphans = findOrphans(options.hashes);
+  if (options.target && options.hashes.length === 0) {
+    console.error('--target requires at least one --hash');
+    process.exit(1);
+  }
+
+  let orphans;
+  try {
+    orphans = options.target
+      ? explicitOrphans(options.hashes, options.target)
+      : findOrphans(options.hashes);
+  } catch (error) {
+    console.error(error.message);
+    process.exit(1);
+  }
+
   if (orphans.length === 0) {
     console.log('No orphaned stores found.');
     return;
