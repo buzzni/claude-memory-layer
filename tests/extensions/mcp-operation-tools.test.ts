@@ -65,6 +65,9 @@ const mocks = vi.hoisted(() => {
     setGrant: vi.fn(),
     check: vi.fn()
   };
+  const memoryAssetCatalogService = {
+    sync: vi.fn()
+  };
   const identitySchema = { parse: vi.fn((value: unknown) => value) };
 
   return {
@@ -86,6 +89,7 @@ const mocks = vi.hoisted(() => {
     graphPathService,
     queryEntityExtractor,
     memoryAssetPermissionService,
+    memoryAssetCatalogService,
     FacetRepository: vi.fn(function FacetRepositoryMock() { return facetRepository; }),
     ActionRepository: vi.fn(function ActionRepositoryMock() { return actionRepository; }),
     FrontierService: vi.fn(function FrontierServiceMock() { return frontierService; }),
@@ -95,6 +99,7 @@ const mocks = vi.hoisted(() => {
     GraphPathService: vi.fn(function GraphPathServiceMock() { return graphPathService; }),
     QueryEntityExtractor: vi.fn(function QueryEntityExtractorMock() { return queryEntityExtractor; }),
     MemoryAssetPermissionService: vi.fn(function MemoryAssetPermissionServiceMock() { return memoryAssetPermissionService; }),
+    MemoryAssetCatalogService: vi.fn(function MemoryAssetCatalogServiceMock() { return memoryAssetCatalogService; }),
     identitySchema,
     runRetentionAudit: vi.fn()
   };
@@ -124,6 +129,7 @@ vi.mock('../../src/core/operations/index.js', () => ({
   GraphPathService: mocks.GraphPathService,
   QueryEntityExtractor: mocks.QueryEntityExtractor,
   MemoryAssetPermissionService: mocks.MemoryAssetPermissionService,
+  MemoryAssetCatalogService: mocks.MemoryAssetCatalogService,
   MemoryAssetPermissionSchema: mocks.identitySchema,
   MemoryAssetStatusSchema: mocks.identitySchema,
   MemoryAssetTypeSchema: mocks.identitySchema,
@@ -177,6 +183,7 @@ function resetOperationMocks() {
   mocks.GraphPathService.mockClear();
   mocks.QueryEntityExtractor.mockClear();
   mocks.MemoryAssetPermissionService.mockClear();
+  mocks.MemoryAssetCatalogService.mockClear();
   mocks.runRetentionAudit.mockReset();
 
   mocks.facetRepository.query.mockReset().mockResolvedValue([]);
@@ -271,6 +278,30 @@ function resetOperationMocks() {
     asset,
     decision: { allowed: true, permission: 'read', source: 'grant', reason: 'explicit actor grant' }
   });
+  mocks.memoryAssetCatalogService.sync.mockReset().mockResolvedValue({
+    dryRun: true,
+    projectHash: 'deadbeef',
+    totalCandidates: 1,
+    scanned: 1,
+    truncated: false,
+    planned: 1,
+    created: 0,
+    existing: 0,
+    conflicts: 0,
+    items: [{
+      action: 'create',
+      candidate: {
+        canonicalType: 'lesson',
+        canonicalId: 'lesson-1',
+        assetId: 'lesson:lesson-1',
+        assetType: 'lesson',
+        title: 'Safe deployment order',
+        status: 'active',
+        sourceRefs: ['lesson:lesson-1'],
+        metadata: { canonicalType: 'lesson', canonicalId: 'lesson-1' }
+      }
+    }]
+  });
   mocks.runRetentionAudit.mockReturnValue({
     dryRun: true,
     projectHash: 'deadbeef',
@@ -299,6 +330,7 @@ describe('MCP memory operation tool definitions', () => {
     'mem-asset-create',
     'mem-asset-get',
     'mem-asset-list',
+    'mem-asset-catalog-sync',
     'mem-asset-update',
     'mem-asset-bind',
     'mem-asset-grant-set',
@@ -409,6 +441,18 @@ describe('MCP memory operation tool definitions', () => {
       'projectPath', 'requesterActorId', 'assetId', 'targetActorId', 'permissions'
     ]));
   });
+
+  it('makes canonical asset catalog sync preview-only unless apply is explicit', () => {
+    const properties = propertiesFor('mem-asset-catalog-sync');
+    expect(requiredFor('mem-asset-catalog-sync')).toEqual(expect.arrayContaining([
+      'projectPath', 'requesterActorId'
+    ]));
+    expect(properties.apply).toMatchObject({
+      type: 'boolean',
+      description: expect.stringContaining('Default false')
+    });
+    expect(properties.limit).toMatchObject({ type: 'number', minimum: 1, maximum: 500 });
+  });
 });
 
 describe('MCP memory operation handlers', () => {
@@ -480,6 +524,26 @@ describe('MCP memory operation handlers', () => {
     expect(checked).toMatchObject({
       operation: 'mem-asset-check',
       decision: { allowed: true, source: 'grant' }
+    });
+  });
+
+  it('previews or applies canonical asset catalog registration through the project store', async () => {
+    const preview = jsonOf(await handleToolCall('mem-asset-catalog-sync', {
+      projectPath: '/repo/app', requesterActorId: 'catalog-owner', limit: 12
+    }));
+    expect(mocks.MemoryAssetCatalogService).toHaveBeenCalledWith(mocks.fakeDb);
+    expect(mocks.memoryAssetCatalogService.sync).toHaveBeenCalledWith({
+      projectHash: 'deadbeef', requesterActorId: 'catalog-owner', apply: false, limit: 12
+    });
+    expect(preview).toMatchObject({
+      operation: 'mem-asset-catalog-sync', dryRun: true, planned: 1, created: 0, returnedItems: 1
+    });
+
+    await handleToolCall('mem-asset-catalog-sync', {
+      projectPath: '/repo/app', requesterActorId: 'catalog-owner', apply: true
+    });
+    expect(mocks.memoryAssetCatalogService.sync).toHaveBeenLastCalledWith({
+      projectHash: 'deadbeef', requesterActorId: 'catalog-owner', apply: true, limit: 100
     });
   });
 

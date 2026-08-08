@@ -48,10 +48,26 @@ to avoid disclosing private asset existence. Denied `check` calls likewise use
 the same generic decision for missing and inaccessible assets. Updates can include
 `expectedVersion` for optimistic concurrency control.
 
+## Canonical catalog registration
+
+`mem-asset-catalog-sync` bridges existing project lessons and core-memory
+blocks into the permission registry without moving or copying their content.
+It is preview-only by default. Passing `apply: true` creates only missing
+assets as `private`, with `requesterActorId` as owner.
+
+Deterministic ids keep reruns idempotent:
+
+- `lesson:<lessonId>`
+- `core_memory_block:<project|user>`
+
+Each registered asset stores only that canonical id in `sourceRefs`. Evidence
+event ids and core-memory text remain exclusively in their canonical tables.
+If a deterministic id is already used for a different source, sync reports a
+conflict and does not overwrite it.
+
 ## Follow-up integration order
 
-1. Register existing lessons and core-memory blocks as assets without changing their canonical tables.
-2. Gate their read/update handlers through this permission service.
-3. Feed enabled bindings into session-start and context-pack injection lanes.
-4. Add a cross-project shared-store adapter only after actor identity mapping is explicit.
-5. Add teams/roles or deny ACLs only when a concrete multi-user requirement cannot be represented by ownership, visibility, bindings, and explicit grants.
+1. Gate registered lesson/core-memory read and update handlers through this permission service while preserving a deliberate legacy migration mode.
+2. Feed enabled bindings into session-start and context-pack injection lanes.
+3. Add a cross-project shared-store adapter only after actor identity mapping is explicit.
+4. Add teams/roles or deny ACLs only when a concrete multi-user requirement cannot be represented by ownership, visibility, bindings, and explicit grants.

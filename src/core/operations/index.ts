@@ -32,3 +32,4 @@ export * from './credential-redaction.js';
 export * from './memory-asset-permissions.js';
 export * from './memory-asset-repository.js';
 export * from './memory-asset-permission-service.js';
+export * from './memory-asset-catalog-service.js';

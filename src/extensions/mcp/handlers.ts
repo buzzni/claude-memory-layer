@@ -37,6 +37,7 @@ import {
   LessonCandidateService,
   LessonRepository,
   LessonService,
+  MemoryAssetCatalogService,
   MemoryAssetPermissionSchema,
   MemoryAssetPermissionService,
   MemoryAssetStatusSchema,
@@ -53,6 +54,7 @@ import {
   type MemoryAsset,
   type MemoryAssetBinding,
   type MemoryAssetGrant,
+  type MemoryAssetCatalogSyncResult,
   type MemoryCheckpoint,
   type MemoryFacetAssignment,
   type QueryEntityCandidate,
@@ -283,6 +285,7 @@ const MEMORY_OPERATION_TOOL_NAMES = new Set([
   'mem-asset-create',
   'mem-asset-get',
   'mem-asset-list',
+  'mem-asset-catalog-sync',
   'mem-asset-update',
   'mem-asset-bind',
   'mem-asset-grant-set',
@@ -342,6 +345,8 @@ async function handleMemoryOperationTool(name: string, args: Record<string, unkn
         return jsonResult(await handleMemoryAssetGet(context, args));
       case 'mem-asset-list':
         return jsonResult(await handleMemoryAssetList(context, args));
+      case 'mem-asset-catalog-sync':
+        return jsonResult(await handleMemoryAssetCatalogSync(context, args));
       case 'mem-asset-update':
         return jsonResult(await handleMemoryAssetUpdate(context, args));
       case 'mem-asset-bind':
@@ -773,6 +778,19 @@ async function handleMemoryAssetList(
   };
 }
 
+async function handleMemoryAssetCatalogSync(
+  context: MemoryOperationContext,
+  args: Record<string, unknown>
+): Promise<Record<string, unknown>> {
+  const result = await new MemoryAssetCatalogService(context.db).sync({
+    projectHash: context.projectHash,
+    requesterActorId: requesterActorIdArg(args),
+    apply: booleanArg(args.apply, false),
+    limit: numberArg(args.limit, 100, 1, 500)
+  });
+  return formatMemoryAssetCatalogResult(result);
+}
+
 async function handleMemoryAssetUpdate(
   context: MemoryOperationContext,
   args: Record<string, unknown>
@@ -895,6 +913,34 @@ function formatMemoryAssetGrant(grant: MemoryAssetGrant): Record<string, unknown
     createdBy: sanitizeOperationString(grant.createdBy, 240),
     createdAt: isoDate(grant.createdAt),
     updatedAt: isoDate(grant.updatedAt)
+  };
+}
+
+function formatMemoryAssetCatalogResult(result: MemoryAssetCatalogSyncResult): Record<string, unknown> {
+  const items = result.items.slice(0, 25).map((item) => ({
+    canonicalType: item.candidate.canonicalType,
+    canonicalId: sanitizeOperationString(item.candidate.canonicalId, 240),
+    assetId: sanitizeOperationString(item.candidate.assetId, 240),
+    assetType: item.candidate.assetType,
+    title: sanitizeOperationString(item.candidate.title, 240),
+    status: item.candidate.status,
+    sourceRefs: compactStringArray(item.candidate.sourceRefs, 10, 240),
+    action: item.action,
+    reason: item.reason ? sanitizeOperationString(item.reason, 300) : undefined
+  }));
+  return {
+    operation: 'mem-asset-catalog-sync',
+    projectHash: result.projectHash,
+    dryRun: result.dryRun,
+    totalCandidates: result.totalCandidates,
+    scanned: result.scanned,
+    truncated: result.truncated,
+    planned: result.planned,
+    created: result.created,
+    existing: result.existing,
+    conflicts: result.conflicts,
+    returnedItems: items.length,
+    items
   };
 }
 

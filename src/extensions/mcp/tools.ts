@@ -762,6 +762,28 @@ export const tools: Tool[] = [
     }
   },
   {
+    name: 'mem-asset-catalog-sync',
+    description: 'Preview or apply idempotent registration of canonical project lessons and core-memory blocks as private memory assets. Preview is the default and never changes canonical content.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectPath: requiredProjectPathProperty,
+        requesterActorId: requesterActorIdProperty,
+        apply: {
+          type: 'boolean',
+          description: 'When true, create missing private assets owned by requesterActorId. Default false returns a read-only preview.'
+        },
+        limit: {
+          type: 'number',
+          minimum: 1,
+          maximum: 500,
+          description: 'Maximum canonical records to inspect in deterministic order (default: 100, max: 500).'
+        }
+      },
+      required: ['projectPath', 'requesterActorId']
+    }
+  },
+  {
     name: 'mem-asset-update',
     description: 'Update memory asset metadata after an owner or explicit write-grant check. Supports optimistic version checks.',
     inputSchema: {
