@@ -90,6 +90,12 @@ jobs:
       - name: Guard against self-dependency
         run: node scripts/guard-release-artifact.cjs self-dependency
 
+      # npm only reports a repository/provenance mismatch after the tarball is
+      # uploaded and the provenance statement is in the public transparency
+      # log, so catching it here saves a whole release run.
+      - name: Guard provenance repository match
+        run: node scripts/guard-release-artifact.cjs provenance
+
       - name: Audit production dependencies
         run: npm audit --omit=dev
 
