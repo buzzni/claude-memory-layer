@@ -67,6 +67,14 @@
   ],
   "author": "Buzzni",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/buzzni/claude-memory-layer.git"
+  },
+  "homepage": "https://github.com/buzzni/claude-memory-layer#readme",
+  "bugs": {
+    "url": "https://github.com/buzzni/claude-memory-layer/issues"
+  },
   "engines": {
     "node": ">=20.19.0"
   },

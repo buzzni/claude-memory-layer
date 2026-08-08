@@ -7,6 +7,7 @@
  *
  * Usage:
  *   node scripts/guard-release-artifact.cjs self-dependency
+ *   node scripts/guard-release-artifact.cjs provenance
  *   node scripts/guard-release-artifact.cjs tarball <npm-pack-dry-run-json>
  *
  * Exits non-zero and prints what failed; prints a JSON summary on success.
@@ -63,6 +64,33 @@ function guardSelfDependency() {
 }
 
 /**
+ * npm rejects a provenance-signed publish whose package.json `repository.url`
+ * does not match the repository the signature was minted from. The registry
+ * only reports that after the tarball has been uploaded and the provenance
+ * statement written to the public transparency log, so the failure costs a
+ * full release run — v2.2.3's first attempt died exactly here with an empty
+ * `repository.url`. Checking it before publish makes that a five-second
+ * failure instead.
+ */
+function guardProvenance() {
+  const pkg = readPackageJson();
+  const url = pkg.repository && (typeof pkg.repository === 'string' ? pkg.repository : pkg.repository.url);
+  if (!url) fail('package.json has no repository.url; npm provenance requires it');
+
+  // GITHUB_REPOSITORY is "owner/name"; only set inside Actions.
+  const ghRepo = process.env.GITHUB_REPOSITORY;
+  if (ghRepo) {
+    const expected = `https://github.com/${ghRepo}`;
+    const normalized = url.replace(/^git\+/, '').replace(/\.git$/, '');
+    if (normalized !== expected) {
+      fail(`repository.url is "${normalized}", expected "${expected}" — provenance would be rejected`);
+    }
+  }
+
+  console.log(JSON.stringify({ check: 'provenance', repository: url, matchedAgainst: ghRepo || null, ok: true }));
+}
+
+/**
  * Files that must never reach the registry: sources and tests (the package
  * ships `dist/` only), and any local state that a developer machine
  * accumulates — stores, caches, evaluation qrels, stray tarballs.
@@ -97,6 +125,9 @@ const [command, ...rest] = process.argv.slice(2);
 switch (command) {
   case 'self-dependency':
     guardSelfDependency();
+    break;
+  case 'provenance':
+    guardProvenance();
     break;
   case 'tarball':
     guardTarball(rest[0]);
