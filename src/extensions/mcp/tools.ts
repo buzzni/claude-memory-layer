@@ -20,6 +20,33 @@ const actorProperty = {
   description: 'Actor identifier recorded in governance audit metadata for state-changing operations.'
 } as const;
 
+const requesterActorIdProperty = {
+  type: 'string',
+  description: 'Memory actor id of the caller. Permission checks and governance audit records use this identity.'
+} as const;
+
+const canonicalRequesterActorIdProperty = {
+  type: 'string',
+  description: 'Memory actor id of the caller. Optional only in the default legacy migration mode; required for registered or strict server-side permission checks.'
+} as const;
+
+const memoryAssetIdProperty = {
+  type: 'string',
+  description: 'Project-scoped memory asset id.'
+} as const;
+
+const memoryAssetTypeProperty = {
+  type: 'string',
+  enum: ['memory', 'lesson', 'skill', 'wiki', 'code_graph'],
+  description: 'Canonical kind of the registered memory asset.'
+} as const;
+
+const memoryAssetPermissionProperty = {
+  type: 'string',
+  enum: ['read', 'write', 'bind', 'grant'],
+  description: 'Permission evaluated by the memory asset policy.'
+} as const;
+
 const targetActorAliasAnyOf = [
   { required: ['targetActorId'] },
   { required: ['observedActorId'] }
@@ -589,11 +616,12 @@ export const tools: Tool[] = [
   },
   {
     name: 'mem-lesson-list',
-    description: 'List project-scoped procedural lessons as compact skill/runbook candidates without raw transcript or local path disclosure.',
+    description: 'List project-scoped procedural lessons as compact skill/runbook candidates. Registered assets are permission-filtered when server enforcement is enabled.',
     inputSchema: {
       type: 'object',
       properties: {
         projectPath: requiredProjectPathProperty,
+        requesterActorId: canonicalRequesterActorIdProperty,
         skillCandidate: {
           type: 'boolean',
           description: 'Optional filter for lessons marked as manual skill candidates.'
@@ -637,11 +665,12 @@ export const tools: Tool[] = [
   },
   {
     name: 'mem-lesson-save',
-    description: 'Save a reviewed project-scoped lesson or rule as a curated memory. Rejects private or credential-like content and preserves compact provenance.',
+    description: 'Save a reviewed project-scoped lesson or rule as a curated memory. Updates to registered lessons require write access when server enforcement is enabled.',
     inputSchema: {
       type: 'object',
       properties: {
         projectPath: requiredProjectPathProperty,
+        requesterActorId: canonicalRequesterActorIdProperty,
         name: {
           type: 'string',
           description: 'Short stable name for the curated lesson.'
@@ -690,6 +719,140 @@ export const tools: Tool[] = [
         }
       },
       required: ['projectPath', 'name', 'trigger', 'steps', 'actor']
+    }
+  },
+  {
+    name: 'mem-asset-create',
+    description: 'Register a project-scoped memory asset. The requester becomes its owner; content stays in the referenced canonical subsystem.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectPath: requiredProjectPathProperty,
+        requesterActorId: requesterActorIdProperty,
+        assetId: memoryAssetIdProperty,
+        assetType: memoryAssetTypeProperty,
+        title: { type: 'string', maxLength: 240, description: 'Compact human-readable asset title.' },
+        status: { type: 'string', enum: ['candidate', 'active', 'deprecated', 'archived'], description: 'Initial lifecycle status (default: active).' },
+        visibility: { type: 'string', enum: ['private', 'project', 'shared'], description: 'Read visibility (default: private). Visibility never grants mutation rights.' },
+        sourceRefs: { type: 'array', items: { type: 'string' }, maxItems: 100, description: 'Bounded canonical source ids or references.' },
+        metadata: { type: 'object', description: 'Optional compact asset metadata; secrets and local paths are sanitized from public output and audit snapshots.' }
+      },
+      required: ['projectPath', 'requesterActorId', 'assetType', 'title']
+    }
+  },
+  {
+    name: 'mem-asset-get',
+    description: 'Get one memory asset only when the requester has read access; unauthorized and missing assets return the same not-found shape.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectPath: requiredProjectPathProperty,
+        requesterActorId: requesterActorIdProperty,
+        assetId: memoryAssetIdProperty
+      },
+      required: ['projectPath', 'requesterActorId', 'assetId']
+    }
+  },
+  {
+    name: 'mem-asset-list',
+    description: 'List only memory assets readable by the requester; inaccessible private assets are omitted.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectPath: requiredProjectPathProperty,
+        requesterActorId: requesterActorIdProperty,
+        assetType: memoryAssetTypeProperty,
+        status: { type: 'string', enum: ['candidate', 'active', 'deprecated', 'archived'], description: 'Optional lifecycle filter.' },
+        limit: operationLimitProperty
+      },
+      required: ['projectPath', 'requesterActorId']
+    }
+  },
+  {
+    name: 'mem-asset-catalog-sync',
+    description: 'Preview or apply idempotent registration of canonical project lessons and core-memory blocks as private memory assets. Preview is the default and never changes canonical content.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectPath: requiredProjectPathProperty,
+        requesterActorId: requesterActorIdProperty,
+        apply: {
+          type: 'boolean',
+          description: 'When true, create missing private assets owned by requesterActorId. Default false returns a read-only preview.'
+        },
+        limit: {
+          type: 'number',
+          minimum: 1,
+          maximum: 500,
+          description: 'Maximum canonical records to inspect in deterministic order (default: 100, max: 500).'
+        }
+      },
+      required: ['projectPath', 'requesterActorId']
+    }
+  },
+  {
+    name: 'mem-asset-update',
+    description: 'Update memory asset metadata after an owner or explicit write-grant check. Supports optimistic version checks.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectPath: requiredProjectPathProperty,
+        requesterActorId: requesterActorIdProperty,
+        assetId: memoryAssetIdProperty,
+        expectedVersion: { type: 'number', minimum: 1, description: 'Optional current version; stale writes fail instead of overwriting.' },
+        title: { type: 'string', maxLength: 240 },
+        status: { type: 'string', enum: ['candidate', 'active', 'deprecated', 'archived'] },
+        visibility: { type: 'string', enum: ['private', 'project', 'shared'] },
+        sourceRefs: { type: 'array', items: { type: 'string' }, maxItems: 100 },
+        metadata: { type: 'object' }
+      },
+      required: ['projectPath', 'requesterActorId', 'assetId']
+    }
+  },
+  {
+    name: 'mem-asset-bind',
+    description: 'Create, update, or disable an actor-to-asset injection binding after a bind permission check.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectPath: requiredProjectPathProperty,
+        requesterActorId: requesterActorIdProperty,
+        assetId: memoryAssetIdProperty,
+        targetActorId: { type: 'string', description: 'Actor receiving the asset binding.' },
+        injectionMode: { type: 'string', enum: ['direct', 'summary', 'tool', 'reference'], description: 'How a future injector should deliver the asset (default: reference).' },
+        priority: { type: 'number', minimum: -1000, maximum: 1000, description: 'Binding priority (default: 0).' },
+        enabled: { type: 'boolean', description: 'Set false to disable and revoke binding-based read access (default: true).' }
+      },
+      required: ['projectPath', 'requesterActorId', 'assetId', 'targetActorId']
+    }
+  },
+  {
+    name: 'mem-asset-grant-set',
+    description: 'Replace one actor\'s explicit asset permissions after a grant permission check. Pass an empty list to revoke all explicit permissions.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectPath: requiredProjectPathProperty,
+        requesterActorId: requesterActorIdProperty,
+        assetId: memoryAssetIdProperty,
+        targetActorId: { type: 'string', description: 'Actor whose explicit permission set is replaced.' },
+        permissions: { type: 'array', items: memoryAssetPermissionProperty, maxItems: 4, description: 'Full replacement permission set; empty means explicit grant revocation.' }
+      },
+      required: ['projectPath', 'requesterActorId', 'assetId', 'targetActorId', 'permissions']
+    }
+  },
+  {
+    name: 'mem-asset-check',
+    description: 'Explain whether the requester has a specific memory asset permission and which policy rule decided it.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectPath: requiredProjectPathProperty,
+        requesterActorId: requesterActorIdProperty,
+        assetId: memoryAssetIdProperty,
+        permission: memoryAssetPermissionProperty
+      },
+      required: ['projectPath', 'requesterActorId', 'assetId', 'permission']
     }
   },
   {
@@ -800,11 +963,12 @@ export const tools: Tool[] = [
   },
   {
     name: 'mem-core-block-get',
-    description: 'Read this project\'s core memory blocks — small, always-injected resident context shown at the start of every session (Letta-style core memory), separate from query-scored retrieval.',
+    description: 'Read this project\'s core memory blocks. Registered blocks are permission-filtered when server enforcement is enabled.',
     inputSchema: {
       type: 'object',
       properties: {
         projectPath: requiredProjectPathProperty,
+        requesterActorId: canonicalRequesterActorIdProperty,
         blockKey: {
           type: 'string',
           enum: ['project', 'user'],
@@ -816,11 +980,12 @@ export const tools: Tool[] = [
   },
   {
     name: 'mem-core-block-update',
-    description: 'Replace one core memory block for this project through an audited, self-editable write. Core memory blocks are injected unconditionally on every SessionStart, so keep content compact and durable (conventions, active constraints) rather than transient session detail.',
+    description: 'Replace one core memory block through an audited write. Registered blocks require write access when server enforcement is enabled.',
     inputSchema: {
       type: 'object',
       properties: {
         projectPath: requiredProjectPathProperty,
+        requesterActorId: canonicalRequesterActorIdProperty,
         blockKey: {
           type: 'string',
           enum: ['project', 'user'],

@@ -112,6 +112,38 @@ describe('SQLiteEventStore memory operations schema', () => {
     expect(indexes).toContain('idx_memory_governance_audit_target');
   });
 
+  it('creates memory asset, actor binding, and explicit grant tables with scoped indexes', async () => {
+    const dbPath = tempDbPath();
+    const store = new SQLiteEventStore(dbPath);
+    await store.initialize();
+
+    const db = new Database(dbPath);
+    const assets = db.prepare(`PRAGMA table_info(memory_assets)`).all().map((row: any) => row.name);
+    const bindings = db.prepare(`PRAGMA table_info(memory_asset_bindings)`).all().map((row: any) => row.name);
+    const grants = db.prepare(`PRAGMA table_info(memory_asset_grants)`).all().map((row: any) => row.name);
+    const assetIndexes = db.prepare(`PRAGMA index_list(memory_assets)`).all().map((row: any) => row.name);
+    const bindingIndexes = db.prepare(`PRAGMA index_list(memory_asset_bindings)`).all().map((row: any) => row.name);
+    const grantIndexes = db.prepare(`PRAGMA index_list(memory_asset_grants)`).all().map((row: any) => row.name);
+    db.close();
+    await store.close();
+
+    expect(assets).toEqual([
+      'asset_id', 'project_hash', 'asset_type', 'title', 'owner_actor_id', 'version',
+      'status', 'visibility', 'source_refs_json', 'metadata_json', 'created_at', 'updated_at'
+    ]);
+    expect(bindings).toEqual([
+      'project_hash', 'asset_id', 'actor_id', 'injection_mode', 'priority', 'enabled', 'created_at', 'updated_at'
+    ]);
+    expect(grants).toEqual([
+      'project_hash', 'asset_id', 'actor_id', 'permissions_json', 'created_by', 'created_at', 'updated_at'
+    ]);
+    expect(assetIndexes).toEqual(expect.arrayContaining([
+      'idx_memory_assets_project_status', 'idx_memory_assets_owner'
+    ]));
+    expect(bindingIndexes).toContain('idx_memory_asset_bindings_actor');
+    expect(grantIndexes).toContain('idx_memory_asset_grants_actor');
+  });
+
   it('creates memory action, lease, and checkpoint projection tables with lookup indexes', async () => {
     const dbPath = tempDbPath();
     const store = new SQLiteEventStore(dbPath);

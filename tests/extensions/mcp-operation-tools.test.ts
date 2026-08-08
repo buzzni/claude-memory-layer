@@ -45,7 +45,8 @@ const mocks = vi.hoisted(() => {
     list: vi.fn()
   };
   const lessonRepository = {
-    list: vi.fn()
+    list: vi.fn(),
+    getByProjectAndName: vi.fn()
   };
   const lessonService = {
     saveCurated: vi.fn()
@@ -56,6 +57,31 @@ const mocks = vi.hoisted(() => {
   const queryEntityExtractor = {
     extract: vi.fn()
   };
+  const memoryAssetPermissionService = {
+    create: vi.fn(),
+    get: vi.fn(),
+    list: vi.fn(),
+    update: vi.fn(),
+    bind: vi.fn(),
+    setGrant: vi.fn(),
+    check: vi.fn()
+  };
+  const memoryAssetCatalogService = {
+    sync: vi.fn()
+  };
+  const canonicalMemoryAccessService = {
+    mode: 'legacy' as 'legacy' | 'registered' | 'strict',
+    requireRequester: vi.fn(),
+    requireUnregisteredWrite: vi.fn(),
+    check: vi.fn(),
+    require: vi.fn()
+  };
+  const coreMemoryBlockRepository = {
+    get: vi.fn(),
+    listByProject: vi.fn(),
+    upsert: vi.fn()
+  };
+  const identitySchema = { parse: vi.fn((value: unknown) => value) };
 
   return {
     fakeDb,
@@ -75,6 +101,10 @@ const mocks = vi.hoisted(() => {
     lessonService,
     graphPathService,
     queryEntityExtractor,
+    memoryAssetPermissionService,
+    memoryAssetCatalogService,
+    canonicalMemoryAccessService,
+    coreMemoryBlockRepository,
     FacetRepository: vi.fn(function FacetRepositoryMock() { return facetRepository; }),
     ActionRepository: vi.fn(function ActionRepositoryMock() { return actionRepository; }),
     FrontierService: vi.fn(function FrontierServiceMock() { return frontierService; }),
@@ -83,6 +113,11 @@ const mocks = vi.hoisted(() => {
     LessonService: vi.fn(function LessonServiceMock() { return lessonService; }),
     GraphPathService: vi.fn(function GraphPathServiceMock() { return graphPathService; }),
     QueryEntityExtractor: vi.fn(function QueryEntityExtractorMock() { return queryEntityExtractor; }),
+    MemoryAssetPermissionService: vi.fn(function MemoryAssetPermissionServiceMock() { return memoryAssetPermissionService; }),
+    MemoryAssetCatalogService: vi.fn(function MemoryAssetCatalogServiceMock() { return memoryAssetCatalogService; }),
+    CanonicalMemoryAccessService: vi.fn(function CanonicalMemoryAccessServiceMock() { return canonicalMemoryAccessService; }),
+    CoreMemoryBlockRepository: vi.fn(function CoreMemoryBlockRepositoryMock() { return coreMemoryBlockRepository; }),
+    identitySchema,
     runRetentionAudit: vi.fn()
   };
 });
@@ -110,6 +145,14 @@ vi.mock('../../src/core/operations/index.js', () => ({
   LessonService: mocks.LessonService,
   GraphPathService: mocks.GraphPathService,
   QueryEntityExtractor: mocks.QueryEntityExtractor,
+  MemoryAssetPermissionService: mocks.MemoryAssetPermissionService,
+  MemoryAssetCatalogService: mocks.MemoryAssetCatalogService,
+  CanonicalMemoryAccessService: mocks.CanonicalMemoryAccessService,
+  CoreMemoryBlockRepository: mocks.CoreMemoryBlockRepository,
+  MemoryAssetPermissionSchema: mocks.identitySchema,
+  MemoryAssetStatusSchema: mocks.identitySchema,
+  MemoryAssetTypeSchema: mocks.identitySchema,
+  MemoryAssetVisibilitySchema: mocks.identitySchema,
   runRetentionAudit: mocks.runRetentionAudit
 }));
 
@@ -158,6 +201,10 @@ function resetOperationMocks() {
   mocks.LessonService.mockClear();
   mocks.GraphPathService.mockClear();
   mocks.QueryEntityExtractor.mockClear();
+  mocks.MemoryAssetPermissionService.mockClear();
+  mocks.MemoryAssetCatalogService.mockClear();
+  mocks.CanonicalMemoryAccessService.mockClear();
+  mocks.CoreMemoryBlockRepository.mockClear();
   mocks.runRetentionAudit.mockReset();
 
   mocks.facetRepository.query.mockReset().mockResolvedValue([]);
@@ -199,6 +246,7 @@ function resetOperationMocks() {
   });
   mocks.checkpointRepository.list.mockReset().mockResolvedValue([]);
   mocks.lessonRepository.list.mockReset().mockResolvedValue([]);
+  mocks.lessonRepository.getByProjectAndName.mockReset().mockReturnValue(null);
   mocks.lessonService.saveCurated.mockReset().mockResolvedValue({
     lessonId: '33333333-3333-4333-8333-333333333333',
     projectHash: 'deadbeef',
@@ -222,6 +270,81 @@ function resetOperationMocks() {
   mocks.queryEntityExtractor.extract.mockReset().mockReturnValue({
     query: 'empty',
     candidates: []
+  });
+  const asset = {
+    assetId: 'asset-1',
+    projectHash: 'deadbeef',
+    assetType: 'lesson',
+    title: 'Safe deployment order',
+    ownerActorId: 'owner',
+    version: 1,
+    status: 'active',
+    visibility: 'private',
+    sourceRefs: ['lesson-1'],
+    createdAt: new Date('2026-05-01T00:00:00.000Z'),
+    updatedAt: new Date('2026-05-01T00:00:00.000Z')
+  };
+  mocks.memoryAssetPermissionService.create.mockReset().mockResolvedValue(asset);
+  mocks.memoryAssetPermissionService.get.mockReset().mockResolvedValue(asset);
+  mocks.memoryAssetPermissionService.list.mockReset().mockResolvedValue([asset]);
+  mocks.memoryAssetPermissionService.update.mockReset().mockResolvedValue({ ...asset, version: 2 });
+  mocks.memoryAssetPermissionService.bind.mockReset().mockResolvedValue({
+    projectHash: 'deadbeef', assetId: 'asset-1', actorId: 'agent-a', injectionMode: 'reference', priority: 0, enabled: true,
+    createdAt: new Date('2026-05-01T00:00:00.000Z'), updatedAt: new Date('2026-05-01T00:00:00.000Z')
+  });
+  mocks.memoryAssetPermissionService.setGrant.mockReset().mockResolvedValue({
+    projectHash: 'deadbeef', assetId: 'asset-1', actorId: 'agent-a', permissions: ['read'], createdBy: 'owner',
+    createdAt: new Date('2026-05-01T00:00:00.000Z'), updatedAt: new Date('2026-05-01T00:00:00.000Z')
+  });
+  mocks.memoryAssetPermissionService.check.mockReset().mockReturnValue({
+    asset,
+    decision: { allowed: true, permission: 'read', source: 'grant', reason: 'explicit actor grant' }
+  });
+  mocks.memoryAssetCatalogService.sync.mockReset().mockResolvedValue({
+    dryRun: true,
+    projectHash: 'deadbeef',
+    totalCandidates: 1,
+    scanned: 1,
+    truncated: false,
+    planned: 1,
+    created: 0,
+    existing: 0,
+    conflicts: 0,
+    items: [{
+      action: 'create',
+      candidate: {
+        canonicalType: 'lesson',
+        canonicalId: 'lesson-1',
+        assetId: 'lesson:lesson-1',
+        assetType: 'lesson',
+        title: 'Safe deployment order',
+        status: 'active',
+        sourceRefs: ['lesson:lesson-1'],
+        metadata: { canonicalType: 'lesson', canonicalId: 'lesson-1' }
+      }
+    }]
+  });
+  mocks.canonicalMemoryAccessService.mode = 'legacy';
+  mocks.canonicalMemoryAccessService.requireRequester.mockReset();
+  mocks.canonicalMemoryAccessService.requireUnregisteredWrite.mockReset().mockReturnValue({
+    allowed: true, mode: 'legacy', registered: false, source: 'legacy'
+  });
+  mocks.canonicalMemoryAccessService.check.mockReset().mockReturnValue({
+    allowed: true, mode: 'legacy', registered: false, source: 'legacy'
+  });
+  mocks.canonicalMemoryAccessService.require.mockReset().mockReturnValue({
+    allowed: true, mode: 'legacy', registered: false, source: 'legacy'
+  });
+  mocks.coreMemoryBlockRepository.get.mockReset().mockResolvedValue(null);
+  mocks.coreMemoryBlockRepository.listByProject.mockReset().mockResolvedValue([]);
+  mocks.coreMemoryBlockRepository.upsert.mockReset().mockResolvedValue({
+    projectHash: 'deadbeef',
+    blockKey: 'project',
+    content: 'Keep releases reversible',
+    sourceEventIds: [],
+    updatedBy: 'operator',
+    createdAt: new Date('2026-05-01T00:00:00.000Z'),
+    updatedAt: new Date('2026-05-01T00:00:00.000Z')
   });
   mocks.runRetentionAudit.mockReturnValue({
     dryRun: true,
@@ -247,7 +370,15 @@ describe('MCP memory operation tool definitions', () => {
     'mem-retention-audit',
     'mem-graph-query',
     'mem-lesson-list',
-    'mem-lesson-save'
+    'mem-lesson-save',
+    'mem-asset-create',
+    'mem-asset-get',
+    'mem-asset-list',
+    'mem-asset-catalog-sync',
+    'mem-asset-update',
+    'mem-asset-bind',
+    'mem-asset-grant-set',
+    'mem-asset-check'
   ];
 
   it('registers the curated memory operations tool surface exactly once', () => {
@@ -338,6 +469,41 @@ describe('MCP memory operation tool definitions', () => {
     ]));
     expect(lessonSave.steps).toMatchObject({ type: 'array', maxItems: 100 });
     expect(lessonSave.confidence).toMatchObject({ type: 'number', minimum: 0, maximum: 1 });
+
+    for (const name of ['mem-lesson-list', 'mem-lesson-save', 'mem-core-block-get', 'mem-core-block-update']) {
+      expect(propertiesFor(name).requesterActorId).toMatchObject({
+        type: 'string',
+        description: expect.stringContaining('permission checks')
+      });
+      expect(requiredFor(name)).not.toContain('requesterActorId');
+    }
+  });
+
+  it('requires requester identity and exposes only the four minimal asset permissions', () => {
+    for (const name of operationToolNames.filter((toolName) => toolName.startsWith('mem-asset-'))) {
+      expect(requiredFor(name)).toContain('requesterActorId');
+    }
+    const checkPermission = propertiesFor('mem-asset-check').permission as { enum?: string[] };
+    expect(checkPermission.enum).toEqual(['read', 'write', 'bind', 'grant']);
+    const grantPermissions = propertiesFor('mem-asset-grant-set').permissions as {
+      items?: { enum?: string[] };
+    };
+    expect(grantPermissions.items?.enum).toEqual(['read', 'write', 'bind', 'grant']);
+    expect(requiredFor('mem-asset-grant-set')).toEqual(expect.arrayContaining([
+      'projectPath', 'requesterActorId', 'assetId', 'targetActorId', 'permissions'
+    ]));
+  });
+
+  it('makes canonical asset catalog sync preview-only unless apply is explicit', () => {
+    const properties = propertiesFor('mem-asset-catalog-sync');
+    expect(requiredFor('mem-asset-catalog-sync')).toEqual(expect.arrayContaining([
+      'projectPath', 'requesterActorId'
+    ]));
+    expect(properties.apply).toMatchObject({
+      type: 'boolean',
+      description: expect.stringContaining('Default false')
+    });
+    expect(properties.limit).toMatchObject({ type: 'number', minimum: 1, maximum: 500 });
   });
 });
 
@@ -354,6 +520,138 @@ describe('MCP memory operation handlers', () => {
     expect(mocks.getDefaultMemoryService).not.toHaveBeenCalled();
     expect(mocks.getMemoryServiceForProject).not.toHaveBeenCalled();
     expect(mocks.SQLiteEventStore).not.toHaveBeenCalled();
+  });
+
+  it('routes asset create, grant, and permission explanation through the project permission service', async () => {
+    const created = await handleToolCall('mem-asset-create', {
+      projectPath: '/repo/app',
+      requesterActorId: 'owner',
+      assetType: 'lesson',
+      title: 'Safe deployment order',
+      visibility: 'private',
+      sourceRefs: ['lesson-1']
+    });
+    expect(created.isError).not.toBe(true);
+    expect(mocks.MemoryAssetPermissionService).toHaveBeenCalledWith(mocks.fakeDb);
+    expect(mocks.memoryAssetPermissionService.create).toHaveBeenCalledWith({
+      projectHash: 'deadbeef',
+      requesterActorId: 'owner',
+      assetId: undefined,
+      assetType: 'lesson',
+      title: 'Safe deployment order',
+      status: undefined,
+      visibility: 'private',
+      sourceRefs: ['lesson-1'],
+      metadata: undefined
+    });
+
+    const granted = await handleToolCall('mem-asset-grant-set', {
+      projectPath: '/repo/app',
+      requesterActorId: 'owner',
+      assetId: 'asset-1',
+      targetActorId: 'agent-a',
+      permissions: ['read']
+    });
+    expect(granted.isError).not.toBe(true);
+    expect(mocks.memoryAssetPermissionService.setGrant).toHaveBeenCalledWith({
+      projectHash: 'deadbeef',
+      requesterActorId: 'owner',
+      assetId: 'asset-1',
+      actorId: 'agent-a',
+      permissions: ['read']
+    });
+
+    const checked = jsonOf(await handleToolCall('mem-asset-check', {
+      projectPath: '/repo/app',
+      requesterActorId: 'agent-a',
+      assetId: 'asset-1',
+      permission: 'read'
+    }));
+    expect(mocks.memoryAssetPermissionService.check).toHaveBeenCalledWith({
+      projectHash: 'deadbeef',
+      requesterActorId: 'agent-a',
+      assetId: 'asset-1',
+      permission: 'read'
+    });
+    expect(checked).toMatchObject({
+      operation: 'mem-asset-check',
+      decision: { allowed: true, source: 'grant' }
+    });
+  });
+
+  it('previews or applies canonical asset catalog registration through the project store', async () => {
+    const preview = jsonOf(await handleToolCall('mem-asset-catalog-sync', {
+      projectPath: '/repo/app', requesterActorId: 'catalog-owner', limit: 12
+    }));
+    expect(mocks.MemoryAssetCatalogService).toHaveBeenCalledWith(mocks.fakeDb);
+    expect(mocks.memoryAssetCatalogService.sync).toHaveBeenCalledWith({
+      projectHash: 'deadbeef', requesterActorId: 'catalog-owner', apply: false, limit: 12
+    });
+    expect(preview).toMatchObject({
+      operation: 'mem-asset-catalog-sync', dryRun: true, planned: 1, created: 0, returnedItems: 1
+    });
+
+    await handleToolCall('mem-asset-catalog-sync', {
+      projectPath: '/repo/app', requesterActorId: 'catalog-owner', apply: true
+    });
+    expect(mocks.memoryAssetCatalogService.sync).toHaveBeenLastCalledWith({
+      projectHash: 'deadbeef', requesterActorId: 'catalog-owner', apply: true, limit: 100
+    });
+  });
+
+  it('preserves requester principal ids instead of applying output sanitization to authorization input', async () => {
+    const requesterActorId = 'actor:/owner';
+    const result = await handleToolCall('mem-asset-create', {
+      projectPath: '/repo/app',
+      requesterActorId,
+      assetType: 'memory',
+      title: 'Principal identity test'
+    });
+
+    expect(result.isError).not.toBe(true);
+    expect(mocks.memoryAssetPermissionService.create).toHaveBeenCalledWith(expect.objectContaining({
+      requesterActorId
+    }));
+  });
+
+  it('rejects malformed asset metadata before invoking the permission service', async () => {
+    const result = await handleToolCall('mem-asset-create', {
+      projectPath: '/repo/app',
+      requesterActorId: 'owner',
+      assetType: 'memory',
+      title: 'Invalid metadata',
+      metadata: 'not-an-object'
+    });
+
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toContain('metadata must be an object');
+    expect(mocks.memoryAssetPermissionService.create).not.toHaveBeenCalled();
+  });
+
+  it('redacts sensitive metadata returned by core callers before MCP output', async () => {
+    mocks.memoryAssetPermissionService.get.mockResolvedValue({
+      assetId: 'asset-secret',
+      projectHash: 'deadbeef',
+      assetType: 'memory',
+      title: 'Safe title',
+      ownerActorId: 'owner',
+      version: 1,
+      status: 'active',
+      visibility: 'private',
+      sourceRefs: [],
+      metadata: { apiKey: 'fixture-secret-value', nested: { accessToken: 'another-secret-value' } },
+      createdAt: new Date('2026-05-01T00:00:00.000Z'),
+      updatedAt: new Date('2026-05-01T00:00:00.000Z')
+    });
+
+    const result = await handleToolCall('mem-asset-get', {
+      projectPath: '/repo/app', requesterActorId: 'owner', assetId: 'asset-secret'
+    });
+    const output = textOf(result);
+    expect(result.isError).not.toBe(true);
+    expect(output).toContain('[REDACTED]');
+    expect(output).not.toContain('fixture-secret-value');
+    expect(output).not.toContain('another-secret-value');
   });
 
   it('queries facets through the project operation store and returns compact JSON without raw project paths', async () => {
@@ -423,6 +721,97 @@ describe('MCP memory operation handlers', () => {
       lesson: { sourceClass: 'curated', name: 'Deploy GPU before API' }
     });
     expect(JSON.stringify(payload)).not.toContain('/repo/app');
+  });
+
+  it('permission-filters registered lessons and reports the server-selected mode', async () => {
+    mocks.canonicalMemoryAccessService.mode = 'registered';
+    mocks.lessonRepository.list.mockResolvedValue([
+      { lessonId: 'lesson-private', projectHash: 'deadbeef', name: 'private', confidence: 1, steps: [], sourceEventIds: [], sourceSessionIds: [], failureModes: [], skillCandidate: false, createdAt: new Date('2026-05-01T00:00:00.000Z'), updatedAt: new Date('2026-05-01T00:00:00.000Z') },
+      { lessonId: 'lesson-readable', projectHash: 'deadbeef', name: 'readable', confidence: 1, steps: [], sourceEventIds: [], sourceSessionIds: [], failureModes: [], skillCandidate: false, createdAt: new Date('2026-05-01T00:00:00.000Z'), updatedAt: new Date('2026-05-01T00:00:00.000Z') }
+    ]);
+    mocks.canonicalMemoryAccessService.check.mockImplementation((input: { canonicalId: string }) => ({
+      allowed: input.canonicalId === 'lesson-readable',
+      mode: 'registered',
+      registered: true,
+      source: input.canonicalId === 'lesson-readable' ? 'grant' : 'none'
+    }));
+
+    const payload = jsonOf(await handleToolCall('mem-lesson-list', {
+      projectPath: '/repo/app', requesterActorId: 'reader', limit: 5
+    }));
+    expect(mocks.canonicalMemoryAccessService.requireRequester).toHaveBeenCalledWith('reader');
+    expect(mocks.lessonRepository.list).toHaveBeenCalledWith({ projectHash: 'deadbeef', limit: 100, offset: 0 });
+    expect(payload).toMatchObject({ operation: 'mem-lesson-list', permissionMode: 'registered', count: 1 });
+    expect(JSON.stringify(payload)).toContain('lesson-readable');
+    expect(JSON.stringify(payload)).not.toContain('lesson-private');
+  });
+
+  it('checks write permission before updating an existing curated lesson', async () => {
+    mocks.canonicalMemoryAccessService.mode = 'registered';
+    mocks.lessonRepository.getByProjectAndName.mockReturnValue({ lessonId: 'lesson-existing' });
+
+    const payload = jsonOf(await handleToolCall('mem-lesson-save', {
+      projectPath: '/repo/app',
+      requesterActorId: 'editor',
+      actor: 'editor',
+      name: 'Deploy GPU before API',
+      trigger: 'When rolling out a runtime split',
+      steps: ['Roll out GPU'],
+      sourceSessionIds: ['session-safe']
+    }));
+    expect(mocks.canonicalMemoryAccessService.require).toHaveBeenCalledWith({
+      projectHash: 'deadbeef', canonicalType: 'lesson', canonicalId: 'lesson-existing',
+      requesterActorId: 'editor', permission: 'write'
+    });
+    expect(mocks.canonicalMemoryAccessService.require.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.lessonService.saveCurated.mock.invocationCallOrder[0]
+    );
+    expect(payload).toMatchObject({ operation: 'mem-lesson-save', permissionMode: 'registered' });
+  });
+
+  it('rejects audit actor spoofing before an enforced canonical write', async () => {
+    mocks.canonicalMemoryAccessService.mode = 'registered';
+    const result = await handleToolCall('mem-lesson-save', {
+      projectPath: '/repo/app', requesterActorId: 'editor', actor: 'someone-else',
+      name: 'Protected lesson', trigger: 'When protected', steps: ['Stop'],
+      sourceSessionIds: ['session-safe']
+    });
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toContain('actor must match requesterActorId');
+    expect(mocks.lessonService.saveCurated).not.toHaveBeenCalled();
+  });
+
+  it('permission-filters core blocks and gates updates before the canonical write', async () => {
+    mocks.canonicalMemoryAccessService.mode = 'registered';
+    const block = {
+      projectHash: 'deadbeef', blockKey: 'project', content: 'Project private', sourceEventIds: [], updatedBy: 'operator',
+      createdAt: new Date('2026-05-01T00:00:00.000Z'), updatedAt: new Date('2026-05-01T00:00:00.000Z')
+    };
+    const userBlock = { ...block, blockKey: 'user', content: 'User readable' };
+    mocks.coreMemoryBlockRepository.listByProject.mockResolvedValue([block, userBlock]);
+    mocks.canonicalMemoryAccessService.check.mockImplementation((input: { canonicalId: string }) => ({
+      allowed: input.canonicalId === 'user', mode: 'registered', registered: true,
+      source: input.canonicalId === 'user' ? 'binding' : 'none'
+    }));
+
+    const read = jsonOf(await handleToolCall('mem-core-block-get', {
+      projectPath: '/repo/app', requesterActorId: 'reader'
+    }));
+    expect(read).toMatchObject({ operation: 'mem-core-block-get', permissionMode: 'registered' });
+    expect(read.blocks).toEqual([expect.objectContaining({ blockKey: 'user', content: 'User readable' })]);
+
+    const updated = jsonOf(await handleToolCall('mem-core-block-update', {
+      projectPath: '/repo/app', requesterActorId: 'editor', actor: 'editor',
+      blockKey: 'project', content: 'Keep releases reversible'
+    }));
+    expect(mocks.canonicalMemoryAccessService.require).toHaveBeenCalledWith({
+      projectHash: 'deadbeef', canonicalType: 'core_memory_block', canonicalId: 'project',
+      requesterActorId: 'editor', permission: 'write'
+    });
+    expect(mocks.canonicalMemoryAccessService.require.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.coreMemoryBlockRepository.upsert.mock.invocationCallOrder[0]
+    );
+    expect(updated).toMatchObject({ operation: 'mem-core-block-update', permissionMode: 'registered' });
   });
 
   it('routes state-changing tools with actor, projectHash, bounded evidence, and sanitized note metadata', async () => {
