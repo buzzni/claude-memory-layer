@@ -24,6 +24,7 @@ import { retrieveSemanticMemories, scheduleSemanticGraduation } from './semantic
 import { readStdin, readNumberEnv } from './hook-runtime.js';
 import { formatClaudeContextHookOutput, isHookEvaluationMode } from './hook-output.js';
 import { applyPrivacyFilter } from '../../../core/privacy/index.js';
+import { resolveCanonicalMemoryActorId } from '../../../core/operations/canonical-memory-injection-service.js';
 import {
   filterHookInjectableMemories,
   getHookInjectionPolicy,
@@ -514,15 +515,19 @@ export async function main(): Promise<string> {
       // Curated lesson lane. Lessons are not events, so no other lane can ever
       // surface them; without this the lesson feature is write-only.
       try {
-        const lessons = await memoryService.listProjectLessons(MAX_CANDIDATES);
-        for (const lesson of lessons) {
+        const lessons = await memoryService.listProjectLessonInjections(
+          resolveCanonicalMemoryActorId(input.actor_id),
+          MAX_CANDIDATES
+        );
+        for (const { value: lesson, injectionMode } of lessons) {
+          const injectedLesson = lessonForInjection(lesson, injectionMode);
           const candidate = scoreLessonEvidence(retrievalQuery, {
-            lessonId: String(lesson.lessonId ?? ''),
-            name: String(lesson.name ?? ''),
-            trigger: lesson.trigger ? String(lesson.trigger) : undefined,
-            steps: Array.isArray(lesson.steps) ? lesson.steps.map(String) : [],
-            failureModes: Array.isArray(lesson.failureModes) ? lesson.failureModes.map(String) : [],
-            confidence: Number(lesson.confidence ?? 0)
+            lessonId: String(injectedLesson.lessonId ?? ''),
+            name: String(injectedLesson.name ?? ''),
+            trigger: injectedLesson.trigger ? String(injectedLesson.trigger) : undefined,
+            steps: Array.isArray(injectedLesson.steps) ? injectedLesson.steps.map(String) : [],
+            failureModes: Array.isArray(injectedLesson.failureModes) ? injectedLesson.failureModes.map(String) : [],
+            confidence: Number(injectedLesson.confidence ?? 0)
           });
           if (candidate) mergedMemories.push(candidate);
         }
@@ -715,4 +720,21 @@ export async function main(): Promise<string> {
     }
     return formatClaudeContextHookOutput('UserPromptSubmit', '');
   }
+}
+
+export function lessonForInjection(
+  lesson: { lessonId: string; name: string; trigger: string; steps: string[]; failureModes: string[]; confidence: number },
+  injectionMode: 'direct' | 'summary' | 'reference'
+) {
+  if (injectionMode === 'direct') return lesson;
+  if (injectionMode === 'summary') {
+    return { ...lesson, steps: lesson.steps.slice(0, 2), failureModes: [] };
+  }
+  return {
+    ...lesson,
+    name: `[lesson:${lesson.lessonId}] ${lesson.name}`,
+    trigger: '',
+    steps: [],
+    failureModes: []
+  };
 }

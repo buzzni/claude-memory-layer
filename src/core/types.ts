@@ -659,6 +659,7 @@ export type AppendResult =
 export interface SessionStartInput {
   session_id: string;
   cwd: string;
+  actor_id?: string;
 }
 
 export interface SessionStartOutput {
@@ -671,6 +672,7 @@ export interface SessionStartOutput {
 export interface UserPromptSubmitInput {
   session_id: string;
   prompt: string;
+  actor_id?: string;
 }
 
 export interface UserPromptSubmitOutput {

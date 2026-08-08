@@ -41,6 +41,7 @@ import type { DerivationLiveness, RecentEventsReadOptions } from '../core/sqlite
 import type { IngestInterceptor } from '../core/ingest-interceptor.js';
 import type { MemoryIngestService } from '../core/engine/memory-ingest-service.js';
 import type { MemoryQueryService } from '../core/engine/memory-query-service.js';
+import type { CanonicalMemoryInjection } from '../core/operations/canonical-memory-injection-service.js';
 import { createMemoryServiceComposition } from '../core/engine/memory-service-composition.js';
 import {
   getProjectStoragePath as defaultGetProjectStoragePath,
@@ -243,9 +244,24 @@ export class MemoryService {
     return this.queryService.listProjectLessons(this.projectHash ?? '', limit);
   }
 
+  /** Curated lessons selected for automatic prompt injection by actor binding. */
+  async listProjectLessonInjections(
+    actorId: string | undefined,
+    limit = 25
+  ): Promise<CanonicalMemoryInjection<MemoryLesson>[]> {
+    return this.queryService.listProjectLessonInjections(this.projectHash ?? '', actorId, limit);
+  }
+
   /** Core memory blocks (project/user), for unconditional session-start injection. */
   async getCoreMemoryBlocks(): Promise<CoreMemoryBlock[]> {
     return this.queryService.getCoreMemoryBlocks(this.projectHash ?? '');
+  }
+
+  /** Core blocks selected for SessionStart injection by actor binding. */
+  async getCoreMemoryBlockInjections(
+    actorId: string | undefined
+  ): Promise<CanonicalMemoryInjection<CoreMemoryBlock>[]> {
+    return this.queryService.getCoreMemoryBlockInjections(this.projectHash ?? '', actorId);
   }
 
   /**

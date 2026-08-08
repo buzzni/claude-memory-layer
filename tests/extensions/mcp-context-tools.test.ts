@@ -135,6 +135,10 @@ describe('MCP project context tools', () => {
     }
 
     const contextPackProperties = byName.get('mem-context-pack')?.inputSchema.properties as Record<string, unknown>;
+    expect(contextPackProperties.requesterActorId).toMatchObject({
+      type: 'string',
+      description: expect.stringContaining('canonical lesson injection')
+    });
     expect(contextPackProperties.refreshLatest).toMatchObject({
       type: 'boolean',
       description: expect.stringContaining('auto-refresh')
@@ -207,6 +211,21 @@ describe('MCP project context tools', () => {
       fredSeries: ['FEDFUNDS'],
       includeSnapshot: true
     }));
+  });
+
+  it('requires a caller identity for context-pack canonical injection in enforced modes', async () => {
+    const previous = process.env.CLAUDE_MEMORY_ASSET_PERMISSION_MODE;
+    process.env.CLAUDE_MEMORY_ASSET_PERMISSION_MODE = 'strict';
+    try {
+      const result = await handleToolCall('mem-context-pack', {
+        projectPath: '/repo/app', query: 'release workflow', refreshLatest: false
+      });
+      expect(result.isError).toBe(true);
+      expect(textOf(result)).toContain('requesterActorId is required');
+    } finally {
+      if (previous === undefined) delete process.env.CLAUDE_MEMORY_ASSET_PERMISSION_MODE;
+      else process.env.CLAUDE_MEMORY_ASSET_PERMISSION_MODE = previous;
+    }
   });
 
   it('rejects invalid external-market-context providers before external fetch or memory initialization', async () => {

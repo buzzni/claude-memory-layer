@@ -89,8 +89,29 @@ A staged migration is therefore:
 2. Restart the MCP server with `registered` and make clients pass `requesterActorId`.
 3. Register any records created during migration, verify grants/bindings, then restart with `strict`.
 
+## Binding-driven injection
+
+Canonical content is injected only through an enabled actor binding once
+enforcement is active. Read visibility or a read grant alone does not cause
+automatic injection. The shared selector is used by core-memory SessionStart,
+curated-lesson prompt retrieval, and MCP context packs.
+
+Hooks use `actor_id` when the host provides it, otherwise the server-owned
+`CLAUDE_MEMORY_ACTOR_ID`. Context-pack callers pass `requesterActorId`. In
+`registered` and `strict` modes, a missing actor fails closed: hooks inject no
+canonical content and context-pack reports that `requesterActorId` is required.
+
+- `direct`: inject the full canonical block or lesson.
+- `summary`: inject a bounded core-memory summary or the lesson trigger and first two steps.
+- `reference`: inject only a reference hint; it never includes canonical body text.
+- `tool`: never auto-inject; it remains available for an explicit tool lookup.
+
+In `registered` mode, unregistered records retain legacy injection while a
+valid registered record needs an enabled binding. In `strict`, only valid,
+enabled bindings inject. Binding priority orders selected registered assets;
+legacy output order remains unchanged.
+
 ## Follow-up integration order
 
-1. Feed enabled bindings into session-start and context-pack injection lanes.
-2. Add a cross-project shared-store adapter only after actor identity mapping is explicit.
-3. Add teams/roles or deny ACLs only when a concrete multi-user requirement cannot be represented by ownership, visibility, bindings, and explicit grants.
+1. Add a cross-project shared-store adapter only after actor identity mapping is explicit.
+2. Add teams/roles or deny ACLs only when a concrete multi-user requirement cannot be represented by ownership, visibility, bindings, and explicit grants.

@@ -188,6 +188,10 @@ export const tools: Tool[] = [
           description: 'Optional: filter relevant memories by specific session ID'
         },
         projectPath: projectPathProperty,
+        requesterActorId: {
+          type: 'string',
+          description: 'Actor identity for canonical lesson injection. Required when server-side asset permission mode is registered or strict.'
+        },
         compression: {
           type: 'string',
           enum: ['off', 'safe', 'aggressive'],

@@ -42,6 +42,7 @@ const mocks = vi.hoisted(() => {
   const actorRepository = { list: vi.fn(), upsert: vi.fn(), get: vi.fn() };
   const actorCardRepository = { get: vi.fn(), upsert: vi.fn() };
   const perspectiveObservationRepository = { query: vi.fn(), create: vi.fn(), deleteSoft: vi.fn() };
+  const canonicalMemoryInjectionService = { select: vi.fn() };
 
   const noopRepository = { query: vi.fn(), assign: vi.fn(), list: vi.fn(), update: vi.fn(), create: vi.fn(), rank: vi.fn(), expand: vi.fn(), extract: vi.fn() };
 
@@ -58,6 +59,7 @@ const mocks = vi.hoisted(() => {
     actorRepository,
     actorCardRepository,
     perspectiveObservationRepository,
+    canonicalMemoryInjectionService,
     ActorRepository: vi.fn(function ActorRepositoryMock() { return actorRepository; }),
     ActorCardRepository: vi.fn(function ActorCardRepositoryMock() { return actorCardRepository; }),
     PerspectiveObservationRepository: vi.fn(function PerspectiveObservationRepositoryMock() { return perspectiveObservationRepository; }),
@@ -68,6 +70,8 @@ const mocks = vi.hoisted(() => {
     LessonRepository: vi.fn(function LessonRepositoryMock() { return noopRepository; }),
     GraphPathService: vi.fn(function GraphPathServiceMock() { return noopRepository; }),
     QueryEntityExtractor: vi.fn(function QueryEntityExtractorMock() { return noopRepository; }),
+    CanonicalMemoryInjectionService: vi.fn(function CanonicalMemoryInjectionServiceMock() { return canonicalMemoryInjectionService; }),
+    resolveCanonicalMemoryPermissionMode: vi.fn(() => 'legacy'),
     runRetentionAudit: vi.fn()
   };
 });
@@ -97,6 +101,8 @@ vi.mock('../../src/core/operations/index.js', () => ({
   LessonRepository: mocks.LessonRepository,
   GraphPathService: mocks.GraphPathService,
   QueryEntityExtractor: mocks.QueryEntityExtractor,
+  CanonicalMemoryInjectionService: mocks.CanonicalMemoryInjectionService,
+  resolveCanonicalMemoryPermissionMode: mocks.resolveCanonicalMemoryPermissionMode,
   RETENTION_POLICY_VERSION: 'retention-policy.v1',
   runRetentionAudit: mocks.runRetentionAudit
 }));
@@ -172,6 +178,9 @@ function resetMocks() {
   mocks.ActorRepository.mockClear();
   mocks.ActorCardRepository.mockClear();
   mocks.PerspectiveObservationRepository.mockClear();
+  mocks.CanonicalMemoryInjectionService.mockClear();
+  mocks.resolveCanonicalMemoryPermissionMode.mockClear().mockReturnValue('legacy');
+  mocks.canonicalMemoryInjectionService.select.mockReset().mockReturnValue({ mode: 'legacy', items: [] });
 
   mocks.actorRepository.list.mockReset().mockResolvedValue([
     {

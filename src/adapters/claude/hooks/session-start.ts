@@ -9,6 +9,10 @@ import { registerSession } from '../../../core/registry/session-registry.js';
 import { ensureDaemonRunning, scheduleSessionSummary } from './semantic-daemon-client.js';
 import { isLlmSummaryEnabled } from '../../llm/session-summary-llm.js';
 import { spawnToolObservationVectorAutoHealIfNeeded } from './tool-observation-vector-auto-heal-client.js';
+import {
+  resolveCanonicalMemoryActorId,
+  type CanonicalMemoryInjection
+} from '../../../core/operations/canonical-memory-injection-service.js';
 import { readStdin } from './hook-runtime.js';
 import { formatClaudeContextHookOutput, isHookEvaluationMode } from './hook-output.js';
 import { isPromptOnlySessionSummary } from './prompt-injection-policy.js';
@@ -170,15 +174,32 @@ export function sessionStartExcerpt(event: MemoryEvent): string {
  * Letta-style "always in context" section. Empty/missing blocks are skipped
  * silently so an unused block never pads out the context with nothing.
  */
-export function formatCoreMemoryBlockContext(blocks: CoreMemoryBlock[]): string {
-  const nonEmpty = blocks.filter((block) => block.content.trim().length > 0);
+export function formatCoreMemoryBlockContext(
+  blocks: Array<CoreMemoryBlock | CanonicalMemoryInjection<CoreMemoryBlock>>
+): string {
+  const injected = blocks.map((item): CanonicalMemoryInjection<CoreMemoryBlock> => (
+    'value' in item
+      ? item
+      : { value: item, injectionMode: 'direct', priority: 0 }
+  ));
+  const nonEmpty = injected.filter(({ value }) => value.content.trim().length > 0);
   if (nonEmpty.length === 0) return '';
 
   let context = '## Core Memory\n\n';
-  for (const block of nonEmpty) {
-    context += `**${CORE_MEMORY_BLOCK_LABELS[block.blockKey]}**: ${block.content.trim()}\n\n`;
+  for (const { value: block, injectionMode } of nonEmpty) {
+    const content = injectionMode === 'direct'
+      ? block.content.trim()
+      : injectionMode === 'summary'
+        ? compactCoreMemorySummary(block.content)
+        : `[reference: use mem-core-block-get for ${block.blockKey} block]`;
+    context += `**${CORE_MEMORY_BLOCK_LABELS[block.blockKey]}**: ${content}\n\n`;
   }
   return context.trimEnd() + '\n';
+}
+
+function compactCoreMemorySummary(content: string): string {
+  const normalized = content.trim().replace(/\s+/g, ' ');
+  return normalized.length <= 320 ? normalized : `${normalized.slice(0, 317)}...`;
 }
 
 export async function main(): Promise<string> {
@@ -236,13 +257,15 @@ export async function main(): Promise<string> {
       }
     }
 
-    // Core memory blocks are unconditional (no query, no scoring) and are
-    // curated by the agent itself via mem-core-block-update, so they come
-    // first — ahead of the incidental recent-events recap below.
+    // Core memory blocks remain a no-query/no-scoring lane and come before
+    // incidental recent events. Once asset enforcement is enabled, the
+    // service filters this lane through the active actor binding.
     let context = '';
     if (process.env.CLAUDE_MEMORY_EVAL_DISABLE_SESSION_CONTEXT !== 'true') {
       try {
-        const coreBlocks = await memoryService.getCoreMemoryBlocks();
+        const coreBlocks = await memoryService.getCoreMemoryBlockInjections(
+          resolveCanonicalMemoryActorId(input.actor_id)
+        );
         context = formatCoreMemoryBlockContext(coreBlocks);
       } catch {
         // Core memory injection is supplementary; never fail session start over it.

@@ -13,6 +13,10 @@ import type { DerivationLiveness, RecentEventsReadOptions } from '../sqlite-even
 import type { SQLiteDatabase } from '../sqlite-wrapper.js';
 import { LessonRepository } from '../operations/lesson-repository.js';
 import { CoreMemoryBlockRepository } from '../operations/core-memory-block-repository.js';
+import {
+  CanonicalMemoryInjectionService,
+  type CanonicalMemoryInjection
+} from '../operations/canonical-memory-injection-service.js';
 
 interface RankedKeywordResult {
   event: MemoryEvent;
@@ -110,8 +114,35 @@ export class MemoryQueryService {
     }
   }
 
+  async listProjectLessonInjections(
+    projectHash: string,
+    actorId: string | undefined,
+    limit = 25
+  ): Promise<CanonicalMemoryInjection<MemoryLesson>[]> {
+    await this.initialize();
+    const db = this.queryStore.getDatabase?.();
+    if (!db || !projectHash) return [];
+    try {
+      const lessons = await new LessonRepository(db).list({ projectHash, limit });
+      return new CanonicalMemoryInjectionService(db).select({
+        projectHash,
+        actorId,
+        lane: 'prompt',
+        candidates: lessons.map((lesson) => ({
+          canonicalType: 'lesson',
+          canonicalId: lesson.lessonId,
+          value: lesson
+        }))
+      }).items;
+    } catch {
+      // Injection is supplementary: a missing actor in an enforcement mode
+      // must fail closed without breaking the surrounding hook.
+      return [];
+    }
+  }
+
   /**
-   * Core memory blocks (project/user) for unconditional session-start
+   * Core memory blocks (project/user) for legacy unconditional session-start
    * injection. Stored outside the events table, same reasoning as lessons:
    * without this lookup, agent self-edits via mem-core-block-update would
    * never resurface anywhere.
@@ -124,6 +155,31 @@ export class MemoryQueryService {
       return await new CoreMemoryBlockRepository(db).listByProject(projectHash);
     } catch {
       // Core memory block injection is supplementary: never fail a prompt over it.
+      return [];
+    }
+  }
+
+  async getCoreMemoryBlockInjections(
+    projectHash: string,
+    actorId: string | undefined
+  ): Promise<CanonicalMemoryInjection<CoreMemoryBlock>[]> {
+    await this.initialize();
+    const db = this.queryStore.getDatabase?.();
+    if (!db || !projectHash) return [];
+    try {
+      const blocks = await new CoreMemoryBlockRepository(db).listByProject(projectHash);
+      return new CanonicalMemoryInjectionService(db).select({
+        projectHash,
+        actorId,
+        lane: 'session_start',
+        candidates: blocks.map((block) => ({
+          canonicalType: 'core_memory_block',
+          canonicalId: block.blockKey,
+          value: block
+        }))
+      }).items;
+    } catch {
+      // Same fail-closed hook behavior as curated lessons above.
       return [];
     }
   }

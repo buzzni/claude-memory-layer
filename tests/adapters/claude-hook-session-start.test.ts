@@ -47,6 +47,19 @@ describe('formatCoreMemoryBlockContext', () => {
     expect(context).toContain('**Project**: Kept content.');
     expect(context).not.toContain('**User**:');
   });
+
+  it('honors summary and reference binding delivery modes without exposing direct content', () => {
+    const content = 'A'.repeat(400);
+    const context = formatCoreMemoryBlockContext([
+      { value: block({ blockKey: 'project', content }), injectionMode: 'summary', priority: 1 },
+      { value: block({ blockKey: 'user', content: 'Private user preference' }), injectionMode: 'reference', priority: 0 }
+    ]);
+
+    expect(context).toContain(`${'A'.repeat(317)}...`);
+    expect(context).not.toContain(content);
+    expect(context).toContain('[reference: use mem-core-block-get for user block]');
+    expect(context).not.toContain('Private user preference');
+  });
 });
 
 let eventSeq = 0;

@@ -30,6 +30,8 @@ import {
   ActorCardRepository,
   ActorRepository,
   CanonicalMemoryAccessService,
+  CanonicalMemoryInjectionService,
+  resolveCanonicalMemoryPermissionMode,
   CheckpointRepository,
   CoreMemoryBlockRepository,
   FacetRepository,
@@ -57,6 +59,7 @@ import {
   type MemoryAssetGrant,
   type MemoryAssetCatalogSyncResult,
   type MemoryCheckpoint,
+  type CanonicalMemoryInjection,
   type MemoryFacetAssignment,
   type QueryEntityCandidate,
   type TemporalGraphExpandResult
@@ -1952,6 +1955,15 @@ async function handleMemContextPack(memoryService: MemoryService, args: Record<s
   const sessionLimit = numberArg(args.sessionLimit, 5, 1, 20);
   const sessionId = optionalString(args.sessionId);
   const projectPath = optionalString(args.projectPath);
+  const requesterActorId = optionalRequesterActorIdArg(args);
+  if (
+    projectPath
+    && path.isAbsolute(projectPath)
+    && resolveCanonicalMemoryPermissionMode() !== 'legacy'
+    && !requesterActorId
+  ) {
+    throw new Error('requesterActorId is required for canonical memory injection when permissions are enforced');
+  }
   const maxContextChars = contextPackMaxCharsArg(args);
   const compression = contextCompressionModeArg(args.compression, maxContextChars !== undefined);
   const retrievalMode = contextPackRetrievalModeArg(args.retrievalMode);
@@ -1985,7 +1997,7 @@ async function handleMemContextPack(memoryService: MemoryService, args: Record<s
 
   const search = await retrieveMcpMemories(memoryService, query, { topK: retrievalTopK, sessionId, retrievalMode });
   const recentEvents = await memoryService.getRecentEvents(recentLimit);
-  const curatedLessons = await loadCuratedLessons(projectPath);
+  const curatedLessons = await loadCuratedLessons(projectPath, requesterActorId);
 
   const timelineEvents = selectContextPackTimelineEvents(
     recentEvents,
@@ -2370,7 +2382,10 @@ interface ContextPackMemory {
   score: number;
 }
 
-async function loadCuratedLessons(projectPath: string | undefined): Promise<MemoryLesson[]> {
+async function loadCuratedLessons(
+  projectPath: string | undefined,
+  requesterActorId: string | undefined
+): Promise<CanonicalMemoryInjection<MemoryLesson>[]> {
   if (!projectPath || !path.isAbsolute(projectPath)) return [];
   const dbPath = path.join(getProjectStoragePath(projectPath), 'events.sqlite');
   if (!existsSync(dbPath)) return [];
@@ -2383,8 +2398,16 @@ async function loadCuratedLessons(projectPath: string | undefined): Promise<Memo
       ['memory_lessons']
     );
     if (!table) return [];
-    const lessons = await new LessonRepository(db).list({ projectHash: hashProjectPath(projectPath), limit: 20 });
-    return lessons.filter((lesson) => lesson.sourceClass === 'curated').slice(0, 3);
+    const projectHash = hashProjectPath(projectPath);
+    const lessons = await new LessonRepository(db).list({ projectHash, limit: 20 });
+    return new CanonicalMemoryInjectionService(db).select({
+      projectHash,
+      actorId: requesterActorId,
+      lane: 'context_pack',
+      candidates: lessons
+        .filter((lesson) => lesson.sourceClass === 'curated')
+        .map((lesson) => ({ canonicalType: 'lesson', canonicalId: lesson.lessonId, value: lesson }))
+    }).items.slice(0, 3);
   } catch {
     return [];
   } finally {
@@ -2625,13 +2648,18 @@ function appendRelevantMemories(
   }
 }
 
-function appendCuratedLessons(lines: string[], lessons: MemoryLesson[]): void {
+function appendCuratedLessons(lines: string[], lessons: CanonicalMemoryInjection<MemoryLesson>[]): void {
   if (lessons.length === 0) return;
   lines.push('### Curated Lessons', '');
-  for (const lesson of lessons.slice(0, 3)) {
+  for (const { value: lesson, injectionMode } of lessons.slice(0, 3)) {
     lines.push(`- [lesson:${sanitizeOperationString(lesson.lessonId, 120)}] ${sanitizeOperationString(lesson.name, 180)}`);
+    if (injectionMode === 'reference') {
+      lines.push('  - Reference only: use mem-lesson-list with the same projectPath for details.');
+      continue;
+    }
     lines.push(`  - Apply when: ${sanitizeOperationString(lesson.trigger, 240)}`);
-    for (const step of lesson.steps.slice(0, 5)) {
+    const stepLimit = injectionMode === 'summary' ? 2 : 5;
+    for (const step of lesson.steps.slice(0, stepLimit)) {
       lines.push(`  - ${sanitizeOperationString(step, 300)}`);
     }
   }
