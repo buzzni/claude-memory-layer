@@ -1,3 +1,5 @@
+import os from 'node:os';
+import path from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => {
@@ -501,8 +503,18 @@ describe('MCP project-aware memory tools', () => {
     expect(mocks.projectService.getRecentEvents).not.toHaveBeenCalled();
   });
 
-  it('falls back to the global memory service when projectPath is absent', async () => {
-    await handleToolCall('mem-stats', {});
+  it('falls back to the global memory service when projectPath is absent and cwd has no store', async () => {
+    // cwd is pinned to a directory that cannot have a memory store, so the
+    // assertion is about the fallback itself rather than about whichever
+    // project the test runner happened to start in. Auto-resolution from cwd
+    // is covered in mcp-auto-project-path.test.ts.
+    const cwdSpy = vi.spyOn(process, 'cwd')
+      .mockReturnValue(path.join(os.tmpdir(), `cml-no-store-${process.pid}-${Date.now()}`));
+    try {
+      await handleToolCall('mem-stats', {});
+    } finally {
+      cwdSpy.mockRestore();
+    }
 
     expect(mocks.getDefaultMemoryService).toHaveBeenCalledTimes(1);
     expect(mocks.getMemoryServiceForProject).not.toHaveBeenCalled();
