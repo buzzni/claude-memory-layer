@@ -26,7 +26,7 @@ const CORE_MEMORY_BLOCK_LABELS: Record<CoreMemoryBlock['blockKey'], string> = {
 };
 
 /**
- * Injection tiers for the session-start lane, best first.
+ * Event types worth injecting at session start.
  *
  * Unlike the prompt lane there is no query here, so candidates cannot be
  * scored — the only lever is which event types are worth injecting at all.
@@ -38,11 +38,36 @@ const CORE_MEMORY_BLOCK_LABELS: Record<CoreMemoryBlock['blockKey'], string> = {
  *   session_summary    13 injections, content_overlap_score 0.063
  *
  * tool_observation and user_prompt never grounded a single response, so they
- * are excluded rather than ranked. Summaries come first because they are the
- * only events written as durable outcomes; a raw agent_response is a snapshot
- * of one turn.
+ * are excluded. The remaining two are NOT ranked against each other by type —
+ * see SESSION_START_MAX_SUMMARIES for why.
  */
 const SESSION_START_TIERS: EventType[] = ['session_summary', 'agent_response'];
+
+/**
+ * How many of the injected memories may be session summaries.
+ *
+ * This used to be unbounded, with event type as the *primary* sort key and
+ * session_summary ranked above agent_response — on the theory that summaries
+ * are durable outcomes while a response is a snapshot of one turn. A store
+ * always has more than three summaries inside the scan window, so in practice
+ * that meant agent_response was never injected at all.
+ *
+ * Measured across six active stores, that ranking cut session-start grounding
+ * by an order of magnitude:
+ *
+ *   before (recency-led, mostly agent_response)  150 scored, overlap 0.0810, 12.0% grounded
+ *   after  (type-led, entirely session_summary)   87 scored, overlap 0.0084,  1.1% grounded
+ *
+ * The reason shows up immediately in the injected text. An agent_response
+ * carries the concrete tokens the next prompt reuses — file paths, PR numbers,
+ * branch names, HEAD SHAs — and scored 0.53-0.94. A summary is abstract prose
+ * ("- 결정: ... / - 제약: ...") that shares almost no literal token with what
+ * the user types next, and scored 0.
+ *
+ * Summaries still earn one slot: they are the only thing that survives a
+ * session boundary intact. They just cannot crowd out the grounded type.
+ */
+const SESSION_START_MAX_SUMMARIES = 1;
 
 /** Per-type excerpt budgets. Summaries carry decisions, so they get more room. */
 const SESSION_START_EXCERPT_BUDGET: Partial<Record<EventType, number>> = {
@@ -62,33 +87,64 @@ const SESSION_START_MAX_MEMORIES = 3;
 const SESSION_START_SCAN_WINDOW = 60;
 
 /**
+ * Collapses a memory to a comparison key so the same outcome is not injected
+ * twice. Summaries get regenerated (Stop hook, then the crash backfill) and
+ * land as distinct events with byte-identical text, which showed up in
+ * production as the same bullet repeated back-to-back in one recap.
+ */
+function dedupeKeyFor(event: MemoryEvent): string {
+  return event.content.trim().replace(/\s+/g, ' ').slice(0, 200);
+}
+
+/**
  * Picks what to inject at session start.
  *
  * This lane used to take the 3 most recent events of any type. Because
  * tool_observation is ~84% of everything stored, recency alone meant the
  * recap was mostly raw `{"toolName":...}` JSON truncated mid-token — 118
  * such injections grounded exactly nothing.
+ *
+ * Selection is recency-first within the injectable types, with summaries
+ * capped (see SESSION_START_MAX_SUMMARIES) rather than ranked above responses.
  */
 export function selectSessionStartMemories(events: MemoryEvent[], limit: number): MemoryEvent[] {
   const usable = events.filter((event) => (
     SESSION_START_TIERS.includes(event.eventType)
     // The rule-based generator emits a table of contents ("Session with N
     // prompts. Topics discussed: ...") rather than an outcome. The prompt lane
-    // already excludes it; this lane must too or it outranks real summaries on
-    // type alone.
+    // already excludes it; this lane must too or it takes the summary slot away
+    // from a real one.
     && !(event.eventType === 'session_summary' && isPromptOnlySessionSummary(event.content))
     && event.content.trim().length > 0
   ));
 
-  return usable
+  const byRecency = usable
     .map((event, index) => ({ event, index }))
     .sort((a, b) => (
-      (SESSION_START_TIERS.indexOf(a.event.eventType) - SESSION_START_TIERS.indexOf(b.event.eventType))
-      || (b.event.timestamp.getTime() - a.event.timestamp.getTime())
+      (b.event.timestamp.getTime() - a.event.timestamp.getTime())
       || (a.index - b.index)
-    ))
-    .slice(0, limit)
-    .map((item) => item.event);
+    ));
+
+  const selected: MemoryEvent[] = [];
+  const seen = new Set<string>();
+  let summaries = 0;
+
+  for (const { event } of byRecency) {
+    if (selected.length >= limit) break;
+    if (event.eventType === 'session_summary') {
+      if (summaries >= SESSION_START_MAX_SUMMARIES) continue;
+      summaries += 1;
+    }
+    const key = dedupeKeyFor(event);
+    if (seen.has(key)) {
+      if (event.eventType === 'session_summary') summaries -= 1;
+      continue;
+    }
+    seen.add(key);
+    selected.push(event);
+  }
+
+  return selected;
 }
 
 /**
