@@ -111,7 +111,38 @@ valid registered record needs an enabled binding. In `strict`, only valid,
 enabled bindings inject. Binding priority orders selected registered assets;
 legacy output order remains unchanged.
 
+## Actor-scoped shared troubleshooting search
+
+The first cross-project adapter is intentionally limited to the existing
+verified troubleshooting store. It is opt-in and does not change legacy
+`includeShared` retrieval, canonical asset lookup, or automatic injection.
+
+Before `mem-shared-search` can return an entry, the requester must link its
+project-local actor id in every participating project to the same opaque shared
+principal id:
+
+1. Call `mem-shared-actor-link` with an absolute `projectPath`,
+   `requesterActorId`, and `sharedPrincipalId` in project A.
+2. Repeat it in project B with the same `sharedPrincipalId` only when the two
+   local actors represent the same principal.
+3. Call `mem-shared-search` from either linked project. Results are restricted
+   to entries whose `sourceProjectHash` belongs to that principal's linked
+   project set.
+
+`mem-shared-actor-status` shows whether the current local actor is linked, and
+`mem-shared-actor-unlink` removes only that project/actor mapping. An unlinked
+actor gets `linked: false` and an empty result; it never falls back to the
+unscoped shared-store search. Relinking the same local actor replaces its old
+principal, so the prior principal immediately loses that project's entries.
+
+The mapping is a local shared-store membership record, not an external identity
+provider or a grant to canonical memory assets. In particular, it cannot make a
+private lesson/core-memory block readable, bindable, or injectable across
+projects. A future canonical-asset sharing phase must separately validate the
+source project's asset permission policy.
+
 ## Follow-up integration order
 
-1. Add a cross-project shared-store adapter only after actor identity mapping is explicit.
+1. Add source-project canonical-asset permission validation before exposing any
+   `shared` memory asset through the cross-project adapter.
 2. Add teams/roles or deny ACLs only when a concrete multi-user requirement cannot be represented by ownership, visibility, bindings, and explicit grants.

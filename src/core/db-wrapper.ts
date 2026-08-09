@@ -30,7 +30,7 @@ export interface DatabaseOptions {
  * mongo sync, or a second handle to the same file) holds a write lock.
  */
 export function createDatabase(dbPath: string, options?: DatabaseOptions): Database {
-  const db = new BetterSqlite3(dbPath, { readonly: options?.readOnly });
+  const db = new BetterSqlite3(dbPath, { readonly: options?.readOnly ?? false });
   db.pragma('busy_timeout = 5000');
   if (!options?.readOnly) {
     db.pragma('journal_mode = WAL');

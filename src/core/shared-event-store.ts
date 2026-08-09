@@ -78,6 +78,21 @@ export class SharedEventStore {
       )
     `);
 
+    // A shared principal is intentionally an explicit link between an actor in
+    // one project and the same actor in another project.  It is not an
+    // authentication provider: callers still have to supply the local actor
+    // id, and the adapter uses this table only to narrow shared reads.
+    await dbRun(this.db, `
+      CREATE TABLE IF NOT EXISTS shared_actor_identities (
+        project_hash VARCHAR NOT NULL,
+        actor_id VARCHAR NOT NULL,
+        shared_principal_id VARCHAR NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY(project_hash, actor_id)
+      )
+    `);
+
     // Indexes for troubleshooting
     await dbRun(this.db, `
       CREATE INDEX IF NOT EXISTS idx_shared_ts_confidence
@@ -90,6 +105,10 @@ export class SharedEventStore {
     await dbRun(this.db, `
       CREATE INDEX IF NOT EXISTS idx_shared_ts_source
       ON shared_troubleshooting(source_project_hash)
+    `);
+    await dbRun(this.db, `
+      CREATE INDEX IF NOT EXISTS idx_shared_actor_identities_principal
+      ON shared_actor_identities(shared_principal_id, project_hash)
     `);
 
     this.initialized = true;

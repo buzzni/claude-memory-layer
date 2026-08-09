@@ -389,6 +389,23 @@ describe('MCP memory operation tool definitions', () => {
     }
   });
 
+  it('advertises an explicit actor mapping before scoped shared search', () => {
+    const sharedToolNames = [
+      'mem-shared-actor-link',
+      'mem-shared-actor-status',
+      'mem-shared-actor-unlink',
+      'mem-shared-search'
+    ];
+    const registered = tools.map((tool) => tool.name);
+    for (const name of sharedToolNames) {
+      expect(registered.filter((registeredName) => registeredName === name)).toHaveLength(1);
+      expect(requiredFor(name)).toEqual(expect.arrayContaining(['projectPath', 'requesterActorId']));
+    }
+    expect(requiredFor('mem-shared-actor-link')).toContain('sharedPrincipalId');
+    expect(requiredFor('mem-shared-search')).toContain('query');
+    expect(String(toolByName('mem-shared-search')?.description)).toContain('explicitly linked');
+  });
+
   it('requires projectPath on all operation tools to avoid cross-project leakage', () => {
     for (const name of operationToolNames) {
       const properties = propertiesFor(name);

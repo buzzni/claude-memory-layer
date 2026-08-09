@@ -3,7 +3,7 @@
  * Implementation of tool calls
  */
 
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import * as path from 'node:path';
 
 import {
@@ -12,6 +12,8 @@ import {
   type MemoryService
 } from '../../services/memory-service.js';
 import { SQLiteEventStore } from '../../core/sqlite-event-store.js';
+import { createSharedEventStore } from '../../core/shared-event-store.js';
+import { createSharedStore, type SharedActorIdentity } from '../../core/shared-store.js';
 import { EntityRepo } from '../../core/entity-repo.js';
 import { createSQLiteDatabase, sqliteClose, sqliteGet, type SQLiteDatabase } from '../../core/sqlite-wrapper.js';
 import { createSessionHistoryImporter, type ImportResult } from '../../services/session-history-importer.js';
@@ -64,6 +66,8 @@ import {
   type QueryEntityCandidate,
   type TemporalGraphExpandResult
 } from '../../core/operations/index.js';
+import { SharedMemoryActorAdapter } from '../shared-memory/shared-memory-actor-adapter.js';
+import { DEFAULT_SHARED_STORAGE_PATH } from '../../services/memory-service-config.js';
 import { DEFAULT_EMBEDDING_MODEL } from '../../extensions/vector/embedder.js';
 import {
   isGenericContinuationQuery,
@@ -220,6 +224,10 @@ export async function handleToolCall(
       return await handleMemoryOperationTool(name, args);
     }
 
+    if (SHARED_MEMORY_ACTOR_TOOL_NAMES.has(name)) {
+      return await handleSharedMemoryActorTool(name, args);
+    }
+
     if (name === 'mem-import-latest' || (name === 'mem-context-pack' && args.refreshLatest === true)) {
       const projectPath = optionalString(args.projectPath);
       if (!projectPath || !path.isAbsolute(projectPath)) {
@@ -306,10 +314,115 @@ const MEMORY_OPERATION_TOOL_NAMES = new Set([
   'mem-perspective-observation-delete'
 ]);
 
+const SHARED_MEMORY_ACTOR_TOOL_NAMES = new Set([
+  'mem-shared-actor-link',
+  'mem-shared-actor-status',
+  'mem-shared-actor-unlink',
+  'mem-shared-search'
+]);
+
 interface MemoryOperationContext {
   projectPath: string;
   projectHash: string;
   db: SQLiteDatabase;
+}
+
+async function handleSharedMemoryActorTool(name: string, args: Record<string, unknown>): Promise<ToolResult> {
+  const projectHash = hashProjectPath(requiredProjectPath(args));
+  const requesterActorId = requesterActorIdArg(args);
+  return withSharedMemoryActorAdapter(async (adapter) => {
+    switch (name) {
+      case 'mem-shared-actor-link': {
+        const identity = await adapter.link({
+          projectHash,
+          actorId: requesterActorId,
+          sharedPrincipalId: requiredOperationString(args.sharedPrincipalId, 'sharedPrincipalId')
+        });
+        return jsonResult({ operation: name, projectHash, identity: formatSharedActorIdentity(identity) });
+      }
+      case 'mem-shared-actor-status': {
+        const identity = await adapter.status({ projectHash, actorId: requesterActorId });
+        return jsonResult({
+          operation: name,
+          projectHash,
+          linked: Boolean(identity),
+          identity: identity ? formatSharedActorIdentity(identity) : undefined
+        });
+      }
+      case 'mem-shared-actor-unlink': {
+        const unlinked = await adapter.unlink({ projectHash, actorId: requesterActorId });
+        return jsonResult({ operation: name, projectHash, unlinked });
+      }
+      case 'mem-shared-search': {
+        const result = await adapter.search({
+          projectHash,
+          actorId: requesterActorId,
+          query: requiredOperationString(args.query, 'query'),
+          topK: numberArg(args.topK, 5, 1, 20),
+          minConfidence: boundedNumberArg(args.minConfidence, 0.5, 0, 1)
+        });
+        return jsonResult({
+          operation: name,
+          projectHash,
+          linked: Boolean(result.identity),
+          sourceProjectHashes: result.sourceProjectHashes,
+          count: result.entries.length,
+          entries: result.entries.map(formatSharedTroubleshootingEntry)
+        });
+      }
+      default:
+        throw new Error(`Unknown shared memory actor tool: ${name}`);
+    }
+  });
+}
+
+async function withSharedMemoryActorAdapter<T>(
+  callback: (adapter: SharedMemoryActorAdapter) => Promise<T>
+): Promise<T> {
+  mkdirSync(DEFAULT_SHARED_STORAGE_PATH, { recursive: true });
+  const eventStore = createSharedEventStore(path.join(DEFAULT_SHARED_STORAGE_PATH, 'shared.duckdb'));
+  await eventStore.initialize();
+  try {
+    return await callback(new SharedMemoryActorAdapter(createSharedStore(eventStore)));
+  } finally {
+    await eventStore.close();
+  }
+}
+
+function formatSharedActorIdentity(identity: SharedActorIdentity): Record<string, unknown> {
+  return {
+    projectHash: sanitizeOperationString(identity.projectHash, 240),
+    actorId: sanitizeOperationString(identity.actorId, 240),
+    sharedPrincipalId: sanitizeOperationString(identity.sharedPrincipalId, 240),
+    createdAt: isoDate(identity.createdAt),
+    updatedAt: isoDate(identity.updatedAt)
+  };
+}
+
+function formatSharedTroubleshootingEntry(entry: {
+  entryId: string;
+  sourceProjectHash: string;
+  sourceEntryId: string;
+  title: string;
+  symptoms: string[];
+  rootCause: string;
+  solution: string;
+  topics: string[];
+  technologies?: string[];
+  confidence: number;
+}): Record<string, unknown> {
+  return {
+    entryId: sanitizeOperationString(entry.entryId, 240),
+    sourceProjectHash: sanitizeOperationString(entry.sourceProjectHash, 240),
+    sourceEntryId: sanitizeOperationString(entry.sourceEntryId, 240),
+    title: sanitizeOperationString(entry.title, 240),
+    symptoms: compactStringArray(entry.symptoms, 20, 240),
+    rootCause: sanitizeOperationString(entry.rootCause, 500),
+    solution: sanitizeOperationString(entry.solution, 500),
+    topics: compactStringArray(entry.topics, 20, 120),
+    technologies: compactStringArray(entry.technologies, 20, 120),
+    confidence: entry.confidence
+  };
 }
 
 async function handleMemoryOperationTool(name: string, args: Record<string, unknown>): Promise<ToolResult> {

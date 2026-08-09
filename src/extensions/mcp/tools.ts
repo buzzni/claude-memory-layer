@@ -860,6 +860,61 @@ export const tools: Tool[] = [
     }
   },
   {
+    name: 'mem-shared-actor-link',
+    description: 'Explicitly link this project-local actor to a shared principal before using actor-scoped cross-project troubleshooting search. This is a global shared-store mutation; it does not grant canonical memory-asset permissions.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectPath: requiredProjectPathProperty,
+        requesterActorId: requesterActorIdProperty,
+        sharedPrincipalId: {
+          type: 'string',
+          description: 'Stable opaque identifier representing the same actor across projects. Reusing it in another project explicitly joins that project to the same shared-search scope.'
+        }
+      },
+      required: ['projectPath', 'requesterActorId', 'sharedPrincipalId']
+    }
+  },
+  {
+    name: 'mem-shared-actor-status',
+    description: 'Inspect whether this project-local actor has an explicit shared principal link. No shared troubleshooting content is returned.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectPath: requiredProjectPathProperty,
+        requesterActorId: requesterActorIdProperty
+      },
+      required: ['projectPath', 'requesterActorId']
+    }
+  },
+  {
+    name: 'mem-shared-actor-unlink',
+    description: 'Remove this project-local actor\'s explicit shared principal link. Subsequent actor-scoped shared searches fail closed until linked again.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectPath: requiredProjectPathProperty,
+        requesterActorId: requesterActorIdProperty
+      },
+      required: ['projectPath', 'requesterActorId']
+    }
+  },
+  {
+    name: 'mem-shared-search',
+    description: 'Search verified shared troubleshooting entries only from projects explicitly linked to requesterActorId through the same shared principal. An unlinked actor receives an empty result.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectPath: requiredProjectPathProperty,
+        requesterActorId: requesterActorIdProperty,
+        query: { type: 'string', description: 'Troubleshooting query' },
+        topK: { type: 'number', minimum: 1, maximum: 20, description: 'Maximum entries to return (default: 5)' },
+        minConfidence: { type: 'number', minimum: 0, maximum: 1, description: 'Minimum verified-entry confidence (default: 0.5)' }
+      },
+      required: ['projectPath', 'requesterActorId', 'query']
+    }
+  },
+  {
     name: 'mem-actor-list',
     description: 'List project-scoped or global memory actors with compact privacy-safe identity metadata.',
     inputSchema: {
