@@ -76,6 +76,14 @@ import {
   type ClaudeSettingsWithHooks
 } from './claude-settings-hooks.js';
 import {
+  hasCodexMemoryHook,
+  mergeCodexMemoryHooks,
+  parseCodexHooksConfig,
+  removeCodexMemoryHooks,
+  REQUIRED_CODEX_HOOK_FILES,
+  type CodexHooksConfig
+} from './codex-hooks-config.js';
+import {
   formatCodexValidationReport,
   writeCodexValidationReport,
   type CodexValidationReportFormat
@@ -86,6 +94,7 @@ import {
   type HermesValidationReportFormat
 } from './hermes-validation-output.js';
 import { runCodexImportOnce } from './codex-import-runner.js';
+import { readCodexAutoImportStatus } from '../../services/codex-session-auto-import.js';
 import { runHermesImportOnce } from './hermes-import-runner.js';
 import { resolveDashboardCommandOptions } from './dashboard-command.js';
 import {
@@ -155,6 +164,7 @@ import { WorkerLock } from '../../core/worker-lock.js';
 // ============================================================
 
 const CLAUDE_SETTINGS_PATH = path.join(os.homedir(), '.claude', 'settings.json');
+const CODEX_HOOKS_PATH = path.join(os.homedir(), '.codex', 'hooks.json');
 
 type ClaudeSettings = ClaudeSettingsWithHooks;
 
@@ -199,6 +209,29 @@ function saveClaudeSettings(settings: ClaudeSettings): void {
   const tempPath = CLAUDE_SETTINGS_PATH + '.tmp';
   fs.writeFileSync(tempPath, JSON.stringify(settings, null, 2));
   fs.renameSync(tempPath, CLAUDE_SETTINGS_PATH);
+}
+
+function loadCodexHooksConfig(configPath = CODEX_HOOKS_PATH): CodexHooksConfig {
+  try {
+    if (fs.existsSync(configPath)) {
+      return parseCodexHooksConfig(JSON.parse(fs.readFileSync(configPath, 'utf-8')));
+    }
+  } catch (error) {
+    throw new Error(`Could not read Codex hooks config at ${configPath}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  return {};
+}
+
+function saveCodexHooksConfig(config: CodexHooksConfig, configPath = CODEX_HOOKS_PATH): void {
+  const dir = path.dirname(configPath);
+  fs.mkdirSync(dir, { recursive: true });
+  const tempPath = `${configPath}.${process.pid}.tmp`;
+  try {
+    fs.writeFileSync(tempPath, `${JSON.stringify(config, null, 2)}\n`);
+    fs.renameSync(tempPath, configPath);
+  } finally {
+    if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+  }
 }
 
 type CodexValidateCommandOptions = {
@@ -2528,7 +2561,112 @@ program
 
 const codexCmd = program
   .command('codex')
-  .description('Read-only Codex session scan/replay validation');
+  .description('Codex session import, validation, and lifecycle hook integration');
+
+const codexHooksCmd = codexCmd
+  .command('hooks')
+  .description('Manage Codex lifecycle hooks for automatic memory loading and ingestion');
+
+codexHooksCmd
+  .command('install')
+  .description('Install Codex SessionStart and SessionEnd memory hooks')
+  .option('--path <path>', 'Custom plugin path (defaults to auto-detect)')
+  .option('--config-path <path>', 'Codex hooks config path (default: ~/.codex/hooks.json)')
+  .action(async (options: { path?: string; configPath?: string }) => {
+    try {
+      const pluginPath = path.resolve(options.path || getPluginPath());
+      const configPath = options.configPath || CODEX_HOOKS_PATH;
+      const missingHooks = REQUIRED_CODEX_HOOK_FILES.filter((file) => (
+        !fs.existsSync(path.join(pluginPath, 'hooks', file))
+      ));
+      if (missingHooks.length > 0) {
+        throw new Error(`Codex hook files not found at ${pluginPath}; missing: ${missingHooks.join(', ')}`);
+      }
+
+      const config = loadCodexHooksConfig(configPath);
+      saveCodexHooksConfig(mergeCodexMemoryHooks(config, pluginPath), configPath);
+
+      console.log('\n✅ Codex automatic memory hooks installed!\n');
+      console.log('  SessionStart: Load project memory into Codex context');
+      console.log('  SessionEnd: Import the completed Codex transcript');
+      console.log(`  Config: ${configPath}`);
+      console.log(`  Plugin path: ${pluginPath}`);
+      console.log('\n⚠️  Restart Codex, open /hooks, and trust the new hook definitions.\n');
+    } catch (error) {
+      console.error('Codex hooks install failed:', error instanceof Error ? error.message : error);
+      process.exitCode = 1;
+    }
+  });
+
+codexHooksCmd
+  .command('status')
+  .description('Check Codex automatic memory hook status')
+  .option('--path <path>', 'Custom plugin path (defaults to auto-detect)')
+  .option('--config-path <path>', 'Codex hooks config path (default: ~/.codex/hooks.json)')
+  .option('-p, --project <path>', 'Project whose most recent automatic import status should be shown (default: cwd)')
+  .action(async (options: { path?: string; configPath?: string; project?: string }) => {
+    try {
+      const pluginPath = path.resolve(options.path || getPluginPath());
+      const configPath = options.configPath || CODEX_HOOKS_PATH;
+      const config = loadCodexHooksConfig(configPath);
+      const sessionStart = hasCodexMemoryHook(config, 'SessionStart', pluginPath);
+      const sessionEnd = hasCodexMemoryHook(config, 'SessionEnd', pluginPath);
+      const filesExist = REQUIRED_CODEX_HOOK_FILES.every((file) => (
+        fs.existsSync(path.join(pluginPath, 'hooks', file))
+      ));
+
+      console.log('\n🧠 Codex Automatic Memory Status\n');
+      console.log(`  SessionStart: ${sessionStart ? '✅ Installed' : '❌ Not installed'}`);
+      console.log(`  SessionEnd: ${sessionEnd ? '✅ Installed' : '❌ Not installed'}`);
+      console.log(`  Hook files: ${filesExist ? '✅ Found' : '❌ Not found'}`);
+      console.log(`  Config: ${configPath}`);
+      const importStatus = readCodexAutoImportStatus(path.resolve(options.project || process.cwd()));
+      if (importStatus) {
+        const counts = importStatus.status === 'success'
+          ? ` · ${importStatus.importedPrompts ?? 0} prompts · ${importStatus.importedResponses ?? 0} responses · ${importStatus.skippedDuplicates ?? 0} duplicates`
+          : ` · ${importStatus.error ?? 'unknown error'}`;
+        console.log(`  Last auto-import: ${importStatus.status === 'success' ? '✅' : '❌'} ${importStatus.status} at ${importStatus.updatedAt}${counts}`);
+      } else {
+        console.log('  Last auto-import: — No recorded run for this project');
+      }
+      if (sessionStart && sessionEnd && filesExist) {
+        console.log('\n✅ Automatic loading and ingestion are configured. Verify trust with /hooks in Codex.\n');
+      } else {
+        console.log('\n💡 Run "claude-memory-layer codex hooks install" to configure automatic memory.\n');
+      }
+    } catch (error) {
+      console.error('Codex hooks status failed:', error instanceof Error ? error.message : error);
+      process.exitCode = 1;
+    }
+  });
+
+codexHooksCmd
+  .command('uninstall')
+  .description('Remove only claude-memory-layer hooks from Codex')
+  .option('--path <path>', 'Custom plugin path (defaults to auto-detect)')
+  .option('--config-path <path>', 'Codex hooks config path (default: ~/.codex/hooks.json)')
+  .action(async (options: { path?: string; configPath?: string }) => {
+    try {
+      const pluginPath = path.resolve(options.path || getPluginPath());
+      const configPath = options.configPath || CODEX_HOOKS_PATH;
+      if (!fs.existsSync(configPath)) {
+        console.log('\n📋 No Codex memory hooks installed.\n');
+        return;
+      }
+      const config = loadCodexHooksConfig(configPath);
+      const nextConfig = removeCodexMemoryHooks(config, pluginPath);
+      if (Object.keys(nextConfig).length === 0) {
+        fs.unlinkSync(configPath);
+      } else {
+        saveCodexHooksConfig(nextConfig, configPath);
+      }
+      console.log('\n✅ Claude Memory Layer hooks removed from Codex.\n');
+      console.log('Memory data was preserved. Restart Codex for the change to take effect.\n');
+    } catch (error) {
+      console.error('Codex hooks uninstall failed:', error instanceof Error ? error.message : error);
+      process.exitCode = 1;
+    }
+  });
 
 codexCmd
   .command('validate')
