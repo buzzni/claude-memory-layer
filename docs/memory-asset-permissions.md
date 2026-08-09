@@ -168,6 +168,19 @@ shared-store location (for example, an isolated test or a separately managed
 local store). Relative values are rejected rather than resolved from the MCP
 server working directory.
 
+## Dashboard shared-actor management
+
+The dashboard's **Configuration → Shared Actor Access** card can inspect the
+mapping status for a selected project and local actor id, then remove that
+mapping if needed. It reports only whether the mapping exists and the number
+of projects linked to it; it never returns the opaque shared-principal value.
+The browser retains the entered actor id locally for convenience, but it never
+stores or accepts a shared-principal value. Creating or relinking mappings
+remains an explicit `mem-shared-actor-link` MCP operation.
+
+If no shared-store database exists yet, a dashboard status check reports the
+actor as unlinked and does not create the store.
+
 ## Follow-up integration order
 
 1. Add teams/roles or deny ACLs only when a concrete multi-user requirement

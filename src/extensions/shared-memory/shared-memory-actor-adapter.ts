@@ -38,6 +38,16 @@ export class SharedMemoryActorAdapter {
     );
   }
 
+  async scope(input: { projectHash: string; actorId: string }): Promise<{
+    identity: SharedActorIdentity | null;
+    linkedProjectCount: number;
+  }> {
+    const identity = await this.status(input);
+    if (!identity) return { identity: null, linkedProjectCount: 0 };
+    const projectHashes = await this.store.listProjectHashesForPrincipal(identity.sharedPrincipalId);
+    return { identity, linkedProjectCount: projectHashes.length };
+  }
+
   async unlink(input: { projectHash: string; actorId: string }): Promise<boolean> {
     return this.store.unlinkActorIdentity(
       NonEmptyIdSchema.parse(input.projectHash),

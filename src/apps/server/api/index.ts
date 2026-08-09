@@ -14,6 +14,7 @@ import { projectsRouter } from './projects.js';
 import { chatRouter } from './chat.js';
 import { healthRouter } from './health.js';
 import { playgroundRouter } from './playground.js';
+import { sharedMemoryRouter } from './shared-memory.js';
 
 export const apiRouter = new Hono()
   .route('/sessions', sessionsRouter)
@@ -25,4 +26,5 @@ export const apiRouter = new Hono()
   .route('/projects', projectsRouter)
   .route('/chat', chatRouter)
   .route('/health', healthRouter)
-  .route('/playground', playgroundRouter);
+  .route('/playground', playgroundRouter)
+  .route('/shared', sharedMemoryRouter);
