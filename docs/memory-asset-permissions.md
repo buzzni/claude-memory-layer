@@ -134,6 +134,9 @@ principal id:
 actor gets `linked: false` and an empty result; it never falls back to the
 unscoped shared-store search. Relinking the same local actor replaces its old
 principal, so the prior principal immediately loses that project's entries.
+Link, relink, and unlink transitions are recorded atomically in the shared
+store's `shared_actor_identity_audit` table with their before/after principal
+values.
 
 The mapping is a local shared-store membership record, not an external identity
 provider or a grant to canonical memory assets. In particular, it cannot make a
@@ -166,7 +169,9 @@ The MCP shared-actor tools use `~/.claude-code/memory/shared` by default. Set
 `CLAUDE_MEMORY_SHARED_STORAGE_PATH` to an absolute path to use a different
 shared-store location (for example, an isolated test or a separately managed
 local store). Relative values are rejected rather than resolved from the MCP
-server working directory.
+server working directory. Only `mem-shared-actor-link` creates a missing shared
+store; status, search, unlink, and canonical asset reads return their empty or
+unlinked result without creating one.
 
 ## Dashboard shared-actor management
 

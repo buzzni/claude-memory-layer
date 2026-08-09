@@ -105,18 +105,39 @@ export class SharedStore {
     actorId: string;
     sharedPrincipalId: string;
   }): Promise<SharedActorIdentity> {
-    await dbRun(
-      this.db,
-      `INSERT INTO shared_actor_identities (
-        project_hash, actor_id, shared_principal_id, created_at, updated_at
-      ) VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-      ON CONFLICT(project_hash, actor_id)
-      DO UPDATE SET
-        shared_principal_id = excluded.shared_principal_id,
-        updated_at = CURRENT_TIMESTAMP`,
-      [input.projectHash, input.actorId, input.sharedPrincipalId]
-    );
-    return this.requireActorIdentity(input.projectHash, input.actorId);
+    const transaction = this.db.transaction(() => {
+      const existing = this.db.prepare(
+        `SELECT * FROM shared_actor_identities WHERE project_hash = ? AND actor_id = ?`
+      ).get(input.projectHash, input.actorId) as Record<string, unknown> | undefined;
+      this.db.prepare(
+        `INSERT INTO shared_actor_identities (
+          project_hash, actor_id, shared_principal_id, created_at, updated_at
+        ) VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ON CONFLICT(project_hash, actor_id)
+        DO UPDATE SET
+          shared_principal_id = excluded.shared_principal_id,
+          updated_at = CURRENT_TIMESTAMP`
+      ).run(input.projectHash, input.actorId, input.sharedPrincipalId);
+      this.db.prepare(
+        `INSERT INTO shared_actor_identity_audit (
+          audit_id, operation, project_hash, actor_id,
+          before_shared_principal_id, after_shared_principal_id, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`
+      ).run(
+        randomUUID(),
+        existing && String(existing.shared_principal_id) !== input.sharedPrincipalId ? 'relink' : 'link',
+        input.projectHash,
+        input.actorId,
+        existing ? String(existing.shared_principal_id) : null,
+        input.sharedPrincipalId
+      );
+      const saved = this.db.prepare(
+        `SELECT * FROM shared_actor_identities WHERE project_hash = ? AND actor_id = ?`
+      ).get(input.projectHash, input.actorId) as Record<string, unknown> | undefined;
+      if (!saved) throw new Error('Shared actor identity was not saved');
+      return this.rowToActorIdentity(saved);
+    });
+    return transaction();
   }
 
   async getActorIdentity(projectHash: string, actorId: string): Promise<SharedActorIdentity | null> {
@@ -129,14 +150,23 @@ export class SharedStore {
   }
 
   async unlinkActorIdentity(projectHash: string, actorId: string): Promise<boolean> {
-    const existing = await this.getActorIdentity(projectHash, actorId);
-    if (!existing) return false;
-    await dbRun(
-      this.db,
-      `DELETE FROM shared_actor_identities WHERE project_hash = ? AND actor_id = ?`,
-      [projectHash, actorId]
-    );
-    return true;
+    const transaction = this.db.transaction(() => {
+      const existing = this.db.prepare(
+        `SELECT * FROM shared_actor_identities WHERE project_hash = ? AND actor_id = ?`
+      ).get(projectHash, actorId) as Record<string, unknown> | undefined;
+      if (!existing) return false;
+      this.db.prepare(
+        `DELETE FROM shared_actor_identities WHERE project_hash = ? AND actor_id = ?`
+      ).run(projectHash, actorId);
+      this.db.prepare(
+        `INSERT INTO shared_actor_identity_audit (
+          audit_id, operation, project_hash, actor_id,
+          before_shared_principal_id, after_shared_principal_id, created_at
+        ) VALUES (?, 'unlink', ?, ?, ?, NULL, CURRENT_TIMESTAMP)`
+      ).run(randomUUID(), projectHash, actorId, String(existing.shared_principal_id));
+      return true;
+    });
+    return transaction();
   }
 
   async listProjectHashesForPrincipal(sharedPrincipalId: string): Promise<string[]> {
@@ -162,8 +192,8 @@ export class SharedStore {
     const sourceProjectHashes = await this.listProjectHashesForPrincipal(sharedPrincipalId);
     if (sourceProjectHashes.length === 0) return { sourceProjectHashes, entries: [] };
 
-    const topK = options?.topK || 5;
-    const minConfidence = options?.minConfidence || 0.5;
+    const topK = options?.topK ?? 5;
+    const minConfidence = options?.minConfidence ?? 0.5;
     const searchPattern = `%${query}%`;
     const placeholders = sourceProjectHashes.map(() => '?').join(', ');
     const rows = await dbAll<Record<string, unknown>>(
@@ -371,12 +401,6 @@ export class SharedStore {
       promotedAt: toDate(row.promoted_at),
       createdAt: toDate(row.created_at)
     };
-  }
-
-  private async requireActorIdentity(projectHash: string, actorId: string): Promise<SharedActorIdentity> {
-    const identity = await this.getActorIdentity(projectHash, actorId);
-    if (!identity) throw new Error('Shared actor identity was not persisted');
-    return identity;
   }
 
   private rowToActorIdentity(row: Record<string, unknown>): SharedActorIdentity {

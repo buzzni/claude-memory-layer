@@ -12,7 +12,13 @@ async function createFixture() {
   return { eventStore, store, adapter };
 }
 
-async function promote(store: ReturnType<typeof createSharedStore>, projectHash: string, sourceEntryId: string, title: string) {
+async function promote(
+  store: ReturnType<typeof createSharedStore>,
+  projectHash: string,
+  sourceEntryId: string,
+  title: string,
+  confidence = 0.9
+) {
   await store.promoteEntry({
     sourceProjectHash: projectHash,
     sourceEntryId,
@@ -21,7 +27,7 @@ async function promote(store: ReturnType<typeof createSharedStore>, projectHash:
     rootCause: 'stale cache',
     solution: 'clear cache',
     topics: ['cache'],
-    confidence: 0.9
+    confidence
   });
 }
 
@@ -64,6 +70,22 @@ describe('SharedMemoryActorAdapter', () => {
     }
   });
 
+  it('honors an explicit zero minimum confidence', async () => {
+    const { eventStore, store, adapter } = await createFixture();
+    try {
+      await promote(store, 'project-a', 'entry-low', 'Low confidence timeout', 0.2);
+      await adapter.link({ projectHash: 'project-a', actorId: 'alice', sharedPrincipalId: 'principal-alice' });
+
+      const result = await adapter.search({
+        projectHash: 'project-a', actorId: 'alice', query: 'timeout', minConfidence: 0
+      });
+
+      expect(result.entries.map((entry) => entry.sourceEntryId)).toEqual(['entry-low']);
+    } finally {
+      await eventStore.close();
+    }
+  });
+
   it('requires the explicitly named source actor to share the requester principal', async () => {
     const { eventStore, adapter } = await createFixture();
     try {
@@ -95,6 +117,21 @@ describe('SharedMemoryActorAdapter', () => {
       await expect(adapter.unlink({ projectHash: 'project-a', actorId: 'alice' })).resolves.toBe(true);
       await expect(adapter.unlink({ projectHash: 'project-a', actorId: 'alice' })).resolves.toBe(false);
       await expect(adapter.status({ projectHash: 'project-a', actorId: 'alice' })).resolves.toBeNull();
+
+      const auditRows = eventStore.getDatabase().prepare(
+        `SELECT operation, before_shared_principal_id, after_shared_principal_id
+         FROM shared_actor_identity_audit
+         WHERE project_hash = ? AND actor_id = ? ORDER BY created_at ASC, rowid ASC`
+      ).all('project-a', 'alice') as Array<{
+        operation: string;
+        before_shared_principal_id: string | null;
+        after_shared_principal_id: string | null;
+      }>;
+      expect(auditRows).toEqual([
+        { operation: 'link', before_shared_principal_id: null, after_shared_principal_id: 'principal-old' },
+        { operation: 'relink', before_shared_principal_id: 'principal-old', after_shared_principal_id: 'principal-new' },
+        { operation: 'unlink', before_shared_principal_id: 'principal-new', after_shared_principal_id: null }
+      ]);
     } finally {
       await eventStore.close();
     }

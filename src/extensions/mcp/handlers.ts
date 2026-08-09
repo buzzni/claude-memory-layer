@@ -332,17 +332,22 @@ interface MemoryOperationContext {
 async function handleSharedMemoryActorTool(name: string, args: Record<string, unknown>): Promise<ToolResult> {
   const projectHash = hashProjectPath(requiredProjectPath(args));
   const requesterActorId = requesterActorIdArg(args);
-  return withSharedMemoryActorAdapter(async (adapter) => {
-    switch (name) {
-      case 'mem-shared-actor-link': {
+  switch (name) {
+    case 'mem-shared-actor-link': {
+      const sharedPrincipalId = requiredOperationString(args.sharedPrincipalId, 'sharedPrincipalId');
+      const result = await withSharedMemoryActorAdapter(async (adapter) => {
         const identity = await adapter.link({
           projectHash,
           actorId: requesterActorId,
-          sharedPrincipalId: requiredOperationString(args.sharedPrincipalId, 'sharedPrincipalId')
+          sharedPrincipalId
         });
         return jsonResult({ operation: name, projectHash, identity: formatSharedActorIdentity(identity) });
-      }
-      case 'mem-shared-actor-status': {
+      }, { createIfMissing: true });
+      if (!result) throw new Error('Shared memory store could not be created');
+      return result;
+    }
+    case 'mem-shared-actor-status': {
+      const result = await withSharedMemoryActorAdapter(async (adapter) => {
         const identity = await adapter.status({ projectHash, actorId: requesterActorId });
         return jsonResult({
           operation: name,
@@ -350,18 +355,27 @@ async function handleSharedMemoryActorTool(name: string, args: Record<string, un
           linked: Boolean(identity),
           identity: identity ? formatSharedActorIdentity(identity) : undefined
         });
-      }
-      case 'mem-shared-actor-unlink': {
+      });
+      return result ?? jsonResult({ operation: name, projectHash, linked: false });
+    }
+    case 'mem-shared-actor-unlink': {
+      const result = await withSharedMemoryActorAdapter(async (adapter) => {
         const unlinked = await adapter.unlink({ projectHash, actorId: requesterActorId });
         return jsonResult({ operation: name, projectHash, unlinked });
-      }
-      case 'mem-shared-search': {
+      });
+      return result ?? jsonResult({ operation: name, projectHash, unlinked: false });
+    }
+    case 'mem-shared-search': {
+      const query = requiredOperationString(args.query, 'query');
+      const topK = numberArg(args.topK, 5, 1, 20);
+      const minConfidence = boundedNumberArg(args.minConfidence, 0.5, 0, 1);
+      const result = await withSharedMemoryActorAdapter(async (adapter) => {
         const result = await adapter.search({
           projectHash,
           actorId: requesterActorId,
-          query: requiredOperationString(args.query, 'query'),
-          topK: numberArg(args.topK, 5, 1, 20),
-          minConfidence: boundedNumberArg(args.minConfidence, 0.5, 0, 1)
+          query,
+          topK,
+          minConfidence
         });
         return jsonResult({
           operation: name,
@@ -371,14 +385,29 @@ async function handleSharedMemoryActorTool(name: string, args: Record<string, un
           count: result.entries.length,
           entries: result.entries.map(formatSharedTroubleshootingEntry)
         });
+      });
+      return result ?? jsonResult({
+        operation: name,
+        projectHash,
+        linked: false,
+        sourceProjectHashes: [],
+        count: 0,
+        entries: []
+      });
+    }
+    case 'mem-shared-asset-get': {
+      const sourceProjectPath = requiredOperationString(args.sourceProjectPath, 'sourceProjectPath');
+      if (!isAbsoluteProjectPath(sourceProjectPath)) {
+        throw new Error('sourceProjectPath must be an absolute project path');
       }
-      case 'mem-shared-asset-get': {
-        const sourceProjectPath = requiredOperationString(args.sourceProjectPath, 'sourceProjectPath');
-        if (!isAbsoluteProjectPath(sourceProjectPath)) {
-          throw new Error('sourceProjectPath must be an absolute project path');
-        }
-        const sourceActorId = requiredOperationString(args.sourceActorId, 'sourceActorId');
-        const sourceProjectHash = hashProjectPath(sourceProjectPath);
+      const sourceActorId = requiredOperationString(args.sourceActorId, 'sourceActorId');
+      const sourceProjectHash = hashProjectPath(sourceProjectPath);
+      const canonicalType = requiredOperationString(args.canonicalType, 'canonicalType');
+      const canonicalId = requiredOperationString(args.canonicalId, 'canonicalId');
+      if (canonicalType !== 'lesson' && canonicalType !== 'core_memory_block') {
+        throw new Error('canonicalType must be lesson or core_memory_block');
+      }
+      const result = await withSharedMemoryActorAdapter(async (adapter) => {
         if (!await adapter.sharesPrincipalWith({
           projectHash,
           actorId: requesterActorId,
@@ -392,11 +421,20 @@ async function handleSharedMemoryActorTool(name: string, args: Record<string, un
         if (!existsSync(sourceDbPath)) return jsonResult({ operation: name, projectHash, found: false });
         const sourceDb = createSQLiteDatabase(sourceDbPath, { readonly: true, walMode: false });
         try {
+          const requiredTables = [
+            'memory_assets',
+            'memory_asset_bindings',
+            'memory_asset_grants',
+            canonicalType === 'lesson' ? 'memory_lessons' : 'core_memory_blocks'
+          ];
+          if (!requiredTables.every((tableName) => sqliteTableExists(sourceDb, tableName))) {
+            return jsonResult({ operation: name, projectHash, found: false });
+          }
           const asset = await new SharedCanonicalMemoryAssetReadService(sourceDb).get({
             projectHash: sourceProjectHash,
             actorId: sourceActorId,
-            canonicalType: requiredOperationString(args.canonicalType, 'canonicalType'),
-            canonicalId: requiredOperationString(args.canonicalId, 'canonicalId')
+            canonicalType,
+            canonicalId
           });
           return jsonResult({
             operation: name,
@@ -407,25 +445,39 @@ async function handleSharedMemoryActorTool(name: string, args: Record<string, un
         } finally {
           sqliteClose(sourceDb);
         }
-      }
-      default:
-        throw new Error(`Unknown shared memory actor tool: ${name}`);
+      });
+      return result ?? jsonResult({ operation: name, projectHash, found: false });
     }
-  });
+    default:
+      throw new Error(`Unknown shared memory actor tool: ${name}`);
+  }
 }
 
 async function withSharedMemoryActorAdapter<T>(
-  callback: (adapter: SharedMemoryActorAdapter) => Promise<T>
-): Promise<T> {
+  callback: (adapter: SharedMemoryActorAdapter) => Promise<T>,
+  options: { createIfMissing?: boolean } = {}
+): Promise<T | null> {
   const sharedStoragePath = resolveSharedMemoryStoragePath();
-  mkdirSync(sharedStoragePath, { recursive: true });
-  const eventStore = createSharedEventStore(path.join(sharedStoragePath, 'shared.duckdb'));
+  const dbPath = path.join(sharedStoragePath, 'shared.duckdb');
+  if (!existsSync(dbPath)) {
+    if (!options.createIfMissing) return null;
+    mkdirSync(sharedStoragePath, { recursive: true });
+  }
+  const eventStore = createSharedEventStore(dbPath);
   await eventStore.initialize();
   try {
     return await callback(new SharedMemoryActorAdapter(createSharedStore(eventStore)));
   } finally {
     await eventStore.close();
   }
+}
+
+function sqliteTableExists(db: SQLiteDatabase, tableName: string): boolean {
+  return Boolean(sqliteGet<{ name: string }>(
+    db,
+    `SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`,
+    [tableName]
+  ));
 }
 
 function formatSharedActorIdentity(identity: SharedActorIdentity): Record<string, unknown> {

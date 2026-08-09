@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -11,6 +11,7 @@ vi.mock('../../src/core/registry/project-path.js', () => ({
 import { LessonRepository } from '../../src/core/operations/lesson-repository.js';
 import { MemoryAssetPermissionService } from '../../src/core/operations/memory-asset-permission-service.js';
 import { SQLiteEventStore } from '../../src/core/sqlite-event-store.js';
+import { createSQLiteDatabase, sqliteClose, sqliteRun } from '../../src/core/sqlite-wrapper.js';
 import { SHARED_MEMORY_STORAGE_PATH_ENV } from '../../src/services/memory-service-config.js';
 import { handleToolCall } from '../../src/extensions/mcp/handlers.js';
 
@@ -100,5 +101,77 @@ describe('MCP shared canonical asset reads', () => {
     } finally {
       await sourceStore.close();
     }
+  });
+
+  it('returns found false when the source database predates the asset schema', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'cml-mcp-shared-asset-legacy-'));
+    tempDirs.push(root);
+    const destinationProjectPath = join(root, 'destination');
+    const sourceProjectPath = join(root, 'source');
+    process.env[SHARED_MEMORY_STORAGE_PATH_ENV] = join(root, 'shared');
+
+    await handleToolCall('mem-shared-actor-link', {
+      projectPath: destinationProjectPath, requesterActorId: 'destination-actor', sharedPrincipalId: 'principal-a'
+    });
+    await handleToolCall('mem-shared-actor-link', {
+      projectPath: sourceProjectPath, requesterActorId: 'source-actor', sharedPrincipalId: 'principal-a'
+    });
+
+    const sourceStoragePath = join(sourceProjectPath, '.cml-memory');
+    mkdirSync(sourceStoragePath, { recursive: true });
+    const legacyDb = createSQLiteDatabase(join(sourceStoragePath, 'events.sqlite'));
+    sqliteRun(legacyDb, `CREATE TABLE legacy_events (event_id TEXT PRIMARY KEY)`);
+    sqliteClose(legacyDb);
+
+    const result = await handleToolCall('mem-shared-asset-get', {
+      projectPath: destinationProjectPath,
+      requesterActorId: 'destination-actor',
+      sourceProjectPath,
+      sourceActorId: 'source-actor',
+      canonicalType: 'lesson',
+      canonicalId: 'legacy-lesson'
+    });
+
+    expect(result.isError).not.toBe(true);
+    expect(jsonOf(result)).toEqual(expect.objectContaining({ found: false }));
+    expect(textOf(result)).not.toContain('no such table');
+  });
+
+  it('does not create shared storage for status, search, unlink, or asset reads', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'cml-mcp-shared-readonly-'));
+    tempDirs.push(root);
+    const destinationProjectPath = join(root, 'destination');
+    const sourceProjectPath = join(root, 'source');
+    const sharedStorePath = join(root, 'shared');
+    process.env[SHARED_MEMORY_STORAGE_PATH_ENV] = sharedStorePath;
+
+    const status = jsonOf(await handleToolCall('mem-shared-actor-status', {
+      projectPath: destinationProjectPath, requesterActorId: 'destination-actor'
+    }));
+    const search = jsonOf(await handleToolCall('mem-shared-search', {
+      projectPath: destinationProjectPath, requesterActorId: 'destination-actor', query: 'timeout'
+    }));
+    const unlink = jsonOf(await handleToolCall('mem-shared-actor-unlink', {
+      projectPath: destinationProjectPath, requesterActorId: 'destination-actor'
+    }));
+    const asset = jsonOf(await handleToolCall('mem-shared-asset-get', {
+      projectPath: destinationProjectPath,
+      requesterActorId: 'destination-actor',
+      sourceProjectPath,
+      sourceActorId: 'source-actor',
+      canonicalType: 'lesson',
+      canonicalId: 'missing'
+    }));
+
+    expect(status).toEqual(expect.objectContaining({ linked: false }));
+    expect(search).toEqual(expect.objectContaining({ linked: false, count: 0, entries: [] }));
+    expect(unlink).toEqual(expect.objectContaining({ unlinked: false }));
+    expect(asset).toEqual(expect.objectContaining({ found: false }));
+    expect(existsSync(sharedStorePath)).toBe(false);
+
+    await handleToolCall('mem-shared-actor-link', {
+      projectPath: destinationProjectPath, requesterActorId: 'destination-actor', sharedPrincipalId: 'principal-a'
+    });
+    expect(existsSync(join(sharedStorePath, 'shared.duckdb'))).toBe(true);
   });
 });
