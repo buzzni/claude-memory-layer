@@ -79,6 +79,9 @@ async function build() {
     'post-tool-use',
     'stop',
     'session-end',
+    'codex-session-start',
+    'codex-session-end',
+    'codex-session-import-worker',
     'semantic-daemon'
   ];
 

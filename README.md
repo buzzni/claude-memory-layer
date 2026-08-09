@@ -41,6 +41,10 @@ Claude Memory Layer는 AI 에이전트의 대화와 작업 이벤트를 프로�
 npm install -g claude-memory-layer@latest
 claude-memory-layer install
 claude-memory-layer status
+
+# Codex에서도 자동 컨텍스트 적재/불러오기를 사용할 때
+claude-memory-layer codex hooks install
+claude-memory-layer codex hooks status
 ```
 
 로컬 개발 checkout에서 설치할 때:
@@ -55,9 +59,10 @@ npx claude-memory-layer status
 ```
 
 - `install`은 **한 번만** 하면 됩니다(Claude Code hooks 등록).
+- `codex hooks install`은 `~/.codex/hooks.json`에 SessionStart/SessionEnd 훅을 병합합니다. Codex를 재시작한 뒤 `/hooks`에서 새 훅 정의를 검토하고 신뢰해야 실행됩니다.
 - Embedding backend은 런타임 필수 기능이며, postinstall이 패키지 내부의 격리된 관리 디렉터리에 설치합니다. 이 경계에서 `sharp` 보안 버전을 강제하고, CUDA 11 환경에서는 `onnxruntime-node`를 CPU-only로 설치합니다.
 - 이후 프로젝트별로 메모리 저장소가 자동 분리됩니다.
-- `install` / `uninstall`은 `~/.claude/settings.json`을 수정합니다.
+- `install` / `uninstall`은 `~/.claude/settings.json`을, `codex hooks install` / `uninstall`은 `~/.codex/hooks.json`을 수정합니다. 기존의 다른 훅은 보존합니다.
 
 #### CUDA 11 / `onnxruntime-node` 설치 에러
 
@@ -323,7 +328,7 @@ MCP client가 환경에 따라 PATH를 못 찾으면 `command -v claude-memory-l
 - **Citations System**: 검색 결과를 `[mem:abc123]` 형태로 추적하고 `source`/`mem-source-ref`로 근거 확인
 - **Source Neighbor Expansion**: `mem-source-ref(includeNeighbors=true, neighborWindow=1..5)`로 MemPalace식 hit 주변 세션 이벤트를 privacy-safe preview로 함께 확인
 - **Progressive Disclosure**: index → timeline → details 순서로 필요한 만큼만 확장해 토큰 비용 절감
-- **Codex/Hermes Importers**: read-only validate/replay 후 explicit import로만 mutation 수행
+- **Codex/Hermes Importers**: read-only validate/replay와 explicit import 지원; Codex는 사용자가 설치한 lifecycle hook을 통한 프로젝트별 자동 import도 지원
 - **Perspective Query Agent**: 관점별 observation + raw memory를 읽기 전용으로 조합하고 source refs를 유지
 - **Governance Audit**: facet/action/checkpoint/perspective mutation은 actor/evidence metadata와 함께 기록
 - **Privacy Guardrails**: `<private>` 태그, credential/path redaction, aggregate-only dashboard/API/CLI 출력
@@ -341,7 +346,7 @@ MCP client가 환경에 따라 PATH를 못 찾으면 `command -v claude-memory-l
 | Vector Outbox V2 | Implemented | transactional enqueue, worker lock, stale recovery, `vector-status`, dashboard Vector Health |
 | Progressive disclosure / retrieval traces | Implemented | `search --disclosure`, `expand`, `source`, score breakdown, privacy-safe lanes, aggregate-only strategy/context-pack telemetry |
 | MCP server | Implemented | package bin `claude-memory-layer-mcp`, project-aware read tools + audited operation tools |
-| Codex/Hermes session ingestion | Implemented | validate/replay는 read-only, import는 명시적 mutation |
+| Codex/Hermes session ingestion | Implemented | validate/replay는 read-only, explicit import 지원; Codex는 opt-in SessionEnd 자동 import 지원 |
 | Memory Operations layer | Implemented | facets/actions/frontier/checkpoints/retention/graph/lessons |
 | Perspective Memory | Implemented P0/P1 | actors, actor cards, perspective observations, context-pack lanes, aggregate dashboard |
 | Dashboard | Implemented | local-only default bind, optional password, vector/perspective/trace panels |
@@ -807,7 +812,7 @@ Embeddings processed: 342
 
 ### Codex 세션 임포트
 
-Codex CLI 기록(`~/.codex/sessions`)은 기본적으로 read-only validate/replay로 먼저 확인하고, 명시적 import 명령으로만 메모리에 저장합니다:
+Codex CLI 기록(`~/.codex/sessions`)은 기본적으로 read-only validate/replay로 먼저 확인하고, 명시적 import 명령으로 메모리에 저장할 수 있습니다:
 
 ```bash
 # 읽기 전용 검증/리포트
@@ -825,6 +830,27 @@ npx claude-memory-layer codex import --all --verbose
 ```
 
 옵션: `--sessions-dir`, `--limit`, `--force`, `--no-process-embeddings`.
+
+#### Codex 자동 적재와 자동 컨텍스트 주입
+
+Codex lifecycle hook을 opt-in으로 설치하면 프로젝트별 자동 메모리를 사용할 수 있습니다.
+
+```bash
+# 최초 1회
+claude-memory-layer codex hooks install
+
+# Codex를 재시작하고 /hooks에서 정의를 검토·신뢰한 뒤 상태 확인
+claude-memory-layer codex hooks status --project /path/to/project
+
+# 제거 시 다른 Codex 훅은 보존되고 CML 훅만 제거됨
+claude-memory-layer codex hooks uninstall
+```
+
+- `SessionStart`: 해당 프로젝트의 core memory와 최근 작업 컨텍스트를 Codex에 주입합니다. 새 세션뿐 아니라 resume/clear/compact에도 적용됩니다.
+- `SessionEnd`: 완료된 현재 transcript 하나만 별도 worker에 전달해 프로젝트 저장소로 적재합니다. Codex 종료, 대화 archive/delete, 또는 열려 있지 않은 대화의 30분 유휴 종료 시 실행됩니다.
+- 자동 import는 콘텐츠 해시로 중복을 건너뛰며, embedding 계산은 hook 제한 시간 밖의 기존 vector worker가 처리합니다.
+- `codex hooks status --project <path>`는 해당 프로젝트의 마지막 자동 import 성공/실패 시각과 집계 결과를 보여줍니다. transcript 본문은 상태 파일에 기록하지 않습니다.
+- Codex transcript 형식은 Codex의 안정된 공개 API가 아니므로, `codex validate`와 importer 회귀 테스트를 함께 유지해야 합니다.
 
 ### Hermes 세션 임포트
 
