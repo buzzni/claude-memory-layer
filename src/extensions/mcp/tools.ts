@@ -915,6 +915,31 @@ export const tools: Tool[] = [
     }
   },
   {
+    name: 'mem-shared-asset-get',
+    description: 'Read one active canonical lesson or core-memory block from another project only after both named actors are explicitly linked to the same shared principal. The source asset must be registered, active, visibility=shared, and readable under the source project policy. This never auto-injects content.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectPath: requiredProjectPathProperty,
+        requesterActorId: requesterActorIdProperty,
+        sourceProjectPath: {
+          type: 'string',
+          description: 'Required absolute path of the source project. Its hash must be linked to the requester through the shared principal.'
+        },
+        sourceActorId: {
+          type: 'string',
+          description: 'Explicit source-project actor id linked to the same shared principal; it is used for the source read-permission check.'
+        },
+        canonicalType: { type: 'string', enum: ['lesson', 'core_memory_block'] },
+        canonicalId: {
+          type: 'string',
+          description: 'Lesson id, or project/user for a core-memory block.'
+        }
+      },
+      required: ['projectPath', 'requesterActorId', 'sourceProjectPath', 'sourceActorId', 'canonicalType', 'canonicalId']
+    }
+  },
+  {
     name: 'mem-actor-list',
     description: 'List project-scoped or global memory actors with compact privacy-safe identity metadata.',
     inputSchema: {

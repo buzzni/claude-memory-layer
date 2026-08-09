@@ -45,6 +45,7 @@ import {
   MemoryAssetCatalogService,
   MemoryAssetPermissionSchema,
   MemoryAssetPermissionService,
+  SharedCanonicalMemoryAssetReadService,
   MemoryAssetStatusSchema,
   MemoryAssetTypeSchema,
   MemoryAssetVisibilitySchema,
@@ -318,7 +319,8 @@ const SHARED_MEMORY_ACTOR_TOOL_NAMES = new Set([
   'mem-shared-actor-link',
   'mem-shared-actor-status',
   'mem-shared-actor-unlink',
-  'mem-shared-search'
+  'mem-shared-search',
+  'mem-shared-asset-get'
 ]);
 
 interface MemoryOperationContext {
@@ -369,6 +371,42 @@ async function handleSharedMemoryActorTool(name: string, args: Record<string, un
           count: result.entries.length,
           entries: result.entries.map(formatSharedTroubleshootingEntry)
         });
+      }
+      case 'mem-shared-asset-get': {
+        const sourceProjectPath = requiredOperationString(args.sourceProjectPath, 'sourceProjectPath');
+        if (!isAbsoluteProjectPath(sourceProjectPath)) {
+          throw new Error('sourceProjectPath must be an absolute project path');
+        }
+        const sourceActorId = requiredOperationString(args.sourceActorId, 'sourceActorId');
+        const sourceProjectHash = hashProjectPath(sourceProjectPath);
+        if (!await adapter.sharesPrincipalWith({
+          projectHash,
+          actorId: requesterActorId,
+          sourceProjectHash,
+          sourceActorId
+        })) {
+          return jsonResult({ operation: name, projectHash, found: false });
+        }
+
+        const sourceDbPath = path.join(getProjectStoragePath(sourceProjectPath), 'events.sqlite');
+        if (!existsSync(sourceDbPath)) return jsonResult({ operation: name, projectHash, found: false });
+        const sourceDb = createSQLiteDatabase(sourceDbPath, { readonly: true, walMode: false });
+        try {
+          const asset = await new SharedCanonicalMemoryAssetReadService(sourceDb).get({
+            projectHash: sourceProjectHash,
+            actorId: sourceActorId,
+            canonicalType: requiredOperationString(args.canonicalType, 'canonicalType'),
+            canonicalId: requiredOperationString(args.canonicalId, 'canonicalId')
+          });
+          return jsonResult({
+            operation: name,
+            projectHash,
+            found: Boolean(asset),
+            asset: asset ? formatSharedCanonicalMemoryAsset(asset) : undefined
+          });
+        } finally {
+          sqliteClose(sourceDb);
+        }
       }
       default:
         throw new Error(`Unknown shared memory actor tool: ${name}`);
@@ -422,6 +460,23 @@ function formatSharedTroubleshootingEntry(entry: {
     topics: compactStringArray(entry.topics, 20, 120),
     technologies: compactStringArray(entry.technologies, 20, 120),
     confidence: entry.confidence
+  };
+}
+
+function formatSharedCanonicalMemoryAsset(asset: {
+  asset: MemoryAsset;
+  canonicalType: 'lesson' | 'core_memory_block';
+  canonicalId: string;
+  value: MemoryLesson | CoreMemoryBlock;
+}): Record<string, unknown> {
+  const canonical = asset.canonicalType === 'lesson'
+    ? formatLesson(asset.value as MemoryLesson)
+    : formatCoreMemoryBlock(asset.value as CoreMemoryBlock);
+  return {
+    asset: formatMemoryAsset(asset.asset),
+    canonicalType: asset.canonicalType,
+    canonicalId: sanitizeOperationString(asset.canonicalId, 240),
+    canonical
   };
 }
 

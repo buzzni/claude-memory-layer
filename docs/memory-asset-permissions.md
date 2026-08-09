@@ -138,11 +138,32 @@ principal, so the prior principal immediately loses that project's entries.
 The mapping is a local shared-store membership record, not an external identity
 provider or a grant to canonical memory assets. In particular, it cannot make a
 private lesson/core-memory block readable, bindable, or injectable across
-projects. A future canonical-asset sharing phase must separately validate the
-source project's asset permission policy.
+projects.
+
+## Shared canonical asset reads
+
+`mem-shared-asset-get` is a read-only, explicit lookup for one source project's
+canonical lesson or core-memory block. It requires both `sourceProjectPath` and
+`sourceActorId`; the source actor must be linked to the same shared principal
+as the requester. The caller cannot obtain content by merely knowing a project
+path or an asset id.
+
+The adapter then opens the source project's SQLite database read-only and fails
+closed unless all of these conditions hold at lookup time:
+
+1. The source asset has the deterministic canonical registration for the
+   requested lesson/block.
+2. Its lifecycle status is `active` and its visibility is `shared`.
+3. The named source actor has `read` access under the source project's asset
+   policy.
+4. The referenced canonical lesson/block still exists in that same project.
+
+The response intentionally does not perform an automatic bind or injection.
+`private`, `project`, inactive, conflicting, missing, or unlinked assets return
+the same `found: false` shape, preventing source asset existence disclosure.
 
 ## Follow-up integration order
 
-1. Add source-project canonical-asset permission validation before exposing any
-   `shared` memory asset through the cross-project adapter.
-2. Add teams/roles or deny ACLs only when a concrete multi-user requirement cannot be represented by ownership, visibility, bindings, and explicit grants.
+1. Add teams/roles or deny ACLs only when a concrete multi-user requirement
+   cannot be represented by ownership, visibility, bindings, and explicit
+   grants.

@@ -45,6 +45,26 @@ export class SharedMemoryActorAdapter {
     );
   }
 
+  /**
+   * The caller supplies the source actor deliberately. Matching a principal
+   * by project alone would allow a different actor in the source project to
+   * become an accidental deputy for a private grant.
+   */
+  async sharesPrincipalWith(input: {
+    projectHash: string;
+    actorId: string;
+    sourceProjectHash: string;
+    sourceActorId: string;
+  }): Promise<boolean> {
+    const identity = await this.status({ projectHash: input.projectHash, actorId: input.actorId });
+    if (!identity) return false;
+    const sourceIdentity = await this.status({
+      projectHash: input.sourceProjectHash,
+      actorId: input.sourceActorId
+    });
+    return sourceIdentity?.sharedPrincipalId === identity.sharedPrincipalId;
+  }
+
   async search(input: {
     projectHash: string;
     actorId: string;

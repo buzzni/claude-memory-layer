@@ -35,3 +35,4 @@ export * from './memory-asset-permission-service.js';
 export * from './memory-asset-catalog-service.js';
 export * from './canonical-memory-access-service.js';
 export * from './canonical-memory-injection-service.js';
+export * from './shared-canonical-memory-asset-read-service.js';

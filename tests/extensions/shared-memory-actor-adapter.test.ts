@@ -64,6 +64,24 @@ describe('SharedMemoryActorAdapter', () => {
     }
   });
 
+  it('requires the explicitly named source actor to share the requester principal', async () => {
+    const { eventStore, adapter } = await createFixture();
+    try {
+      await adapter.link({ projectHash: 'project-a', actorId: 'alice', sharedPrincipalId: 'principal-alice' });
+      await adapter.link({ projectHash: 'project-b', actorId: 'alice-source', sharedPrincipalId: 'principal-alice' });
+      await adapter.link({ projectHash: 'project-b', actorId: 'bob-source', sharedPrincipalId: 'principal-bob' });
+
+      await expect(adapter.sharesPrincipalWith({
+        projectHash: 'project-a', actorId: 'alice', sourceProjectHash: 'project-b', sourceActorId: 'alice-source'
+      })).resolves.toBe(true);
+      await expect(adapter.sharesPrincipalWith({
+        projectHash: 'project-a', actorId: 'alice', sourceProjectHash: 'project-b', sourceActorId: 'bob-source'
+      })).resolves.toBe(false);
+    } finally {
+      await eventStore.close();
+    }
+  });
+
   it('revokes a prior principal on relink or unlink', async () => {
     const { eventStore, store, adapter } = await createFixture();
     try {

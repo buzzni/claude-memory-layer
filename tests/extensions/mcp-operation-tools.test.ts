@@ -394,7 +394,8 @@ describe('MCP memory operation tool definitions', () => {
       'mem-shared-actor-link',
       'mem-shared-actor-status',
       'mem-shared-actor-unlink',
-      'mem-shared-search'
+      'mem-shared-search',
+      'mem-shared-asset-get'
     ];
     const registered = tools.map((tool) => tool.name);
     for (const name of sharedToolNames) {
@@ -404,6 +405,12 @@ describe('MCP memory operation tool definitions', () => {
     expect(requiredFor('mem-shared-actor-link')).toContain('sharedPrincipalId');
     expect(requiredFor('mem-shared-search')).toContain('query');
     expect(String(toolByName('mem-shared-search')?.description)).toContain('explicitly linked');
+    expect(requiredFor('mem-shared-asset-get')).toEqual(expect.arrayContaining([
+      'sourceProjectPath', 'sourceActorId', 'canonicalType', 'canonicalId'
+    ]));
+    expect(propertiesFor('mem-shared-asset-get').canonicalType).toMatchObject({
+      enum: ['lesson', 'core_memory_block']
+    });
   });
 
   it('requires projectPath on all operation tools to avoid cross-project leakage', () => {
