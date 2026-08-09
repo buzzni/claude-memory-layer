@@ -56,6 +56,7 @@ function injectionModeRank(mode: 'direct' | 'summary' | 'reference'): number {
 
 export class CanonicalMemoryInjectionService {
   private readonly repository: MemoryAssetRepository;
+  private readonly env: NodeJS.ProcessEnv;
   readonly mode: CanonicalMemoryPermissionMode;
 
   constructor(
@@ -63,7 +64,8 @@ export class CanonicalMemoryInjectionService {
     options: { mode?: CanonicalMemoryPermissionMode; env?: NodeJS.ProcessEnv } = {}
   ) {
     this.repository = new MemoryAssetRepository(db);
-    this.mode = options.mode ?? resolveCanonicalMemoryPermissionMode(options.env);
+    this.env = options.env ?? process.env;
+    this.mode = options.mode ?? resolveCanonicalMemoryPermissionMode(this.env);
   }
 
   select<T>(input: {
@@ -72,7 +74,7 @@ export class CanonicalMemoryInjectionService {
     lane: CanonicalMemoryInjectionLane;
     candidates: CanonicalMemoryInjectionCandidate<T>[];
   }): CanonicalMemoryInjectionSelection<T> {
-    const actorId = resolveCanonicalMemoryActorId(input.actorId);
+    const actorId = resolveCanonicalMemoryActorId(input.actorId, this.env);
     if (this.mode !== 'legacy' && !actorId) {
       throw new Error(`actor identity is required when ${CANONICAL_MEMORY_PERMISSION_MODE_ENV}=${this.mode}`);
     }

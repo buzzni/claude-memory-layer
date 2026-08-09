@@ -123,6 +123,27 @@ describe('CanonicalMemoryInjectionService', () => {
     }
   });
 
+  it('uses the constructor environment for the fallback actor', async () => {
+    const { store, permissions } = await createFixture();
+    try {
+      await registerLesson(permissions, 'bound', 'summary', 2);
+      const service = new CanonicalMemoryInjectionService(store.getDatabase(), {
+        mode: 'strict',
+        env: { [CANONICAL_MEMORY_ACTOR_ID_ENV]: 'agent-a' }
+      });
+
+      const selection = service.select({
+        projectHash: 'project-1',
+        lane: 'context_pack',
+        candidates: [{ canonicalType: 'lesson', canonicalId: 'bound', value: 'bound' }]
+      });
+
+      expect(selection.items).toEqual([{ value: 'bound', injectionMode: 'summary', priority: 2 }]);
+    } finally {
+      await store.close();
+    }
+  });
+
   it('uses a hook input actor before the server fallback actor', () => {
     expect(resolveCanonicalMemoryActorId('input-actor', {
       [CANONICAL_MEMORY_ACTOR_ID_ENV]: 'env-actor'

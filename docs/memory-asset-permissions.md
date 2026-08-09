@@ -18,9 +18,11 @@ There are no implicit write permissions and no deny ACLs in this phase. An
 empty explicit grant replaces the previous set and acts as an auditable
 revocation. A disabled binding likewise removes binding-based read access.
 
-`shared` currently means that the asset is eligible for a future shared-store
-integration. The MCP handlers still require an absolute project path and open
-only that project's SQLite store, so it does not bypass project isolation.
+`shared` makes a canonical asset eligible for the explicit
+`mem-shared-asset-get` flow described below. It does not by itself bypass
+project isolation: the requester and named source actor must share an explicit
+principal mapping, and the source project's registration, lifecycle, and read
+policy are revalidated for every cross-project read.
 
 ## Storage
 
