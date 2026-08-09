@@ -971,6 +971,7 @@ async function loadConfigurationView() {
 
     container.innerHTML = `
       ${renderSetupProviderHealthCard(setupHealth)}
+      ${renderSharedActorManagement()}
       <div class="cfg-grid">
         <div class="cfg-section">
           <div class="cfg-section-title"><i class="ri-database-2-line"></i>Storage</div>
@@ -1039,9 +1040,89 @@ async function loadConfigurationView() {
         </div>
       </div>
     `;
+    setupSharedActorManagement();
   } catch (error) {
     container.innerHTML = `<div style="text-align:center; padding:60px; color:var(--error);">Failed to load configuration: ${escapeHtml(error.message)}</div>`;
   }
+}
+
+function renderSharedActorManagement() {
+  if (!state.currentProject) {
+    return `
+      <div class="card" style="margin-bottom:24px;">
+        <div class="card-header"><div class="card-title"><i class="ri-share-forward-line"></i><span>Shared Actor Access</span></div></div>
+        <div class="disclosure-empty">Select a project to inspect or remove its explicit shared-actor mapping.</div>
+      </div>
+    `;
+  }
+  const savedActorId = window.localStorage?.getItem('cml.dashboard.sharedActorId') || '';
+  return `
+    <div class="card" style="margin-bottom:24px;">
+      <div class="card-header"><div class="card-title"><i class="ri-share-forward-line"></i><span>Shared Actor Access</span></div></div>
+      <div style="font-size:13px; color:var(--text-muted); margin-bottom:12px;">
+        Inspect or remove this project's explicit shared-principal mapping. Create mappings with the MCP tool so the principal value is not stored in the dashboard.
+      </div>
+      <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center;">
+        <input id="shared-actor-id-input" class="search-input" style="max-width:320px;" value="${escapeHtml(savedActorId)}" placeholder="Project actor ID">
+        <button id="shared-actor-status-btn" class="btn btn-secondary">Check status</button>
+        <button id="shared-actor-unlink-btn" class="btn btn-secondary" disabled>Unlink</button>
+      </div>
+      <div id="shared-actor-status" style="font-size:13px; color:var(--text-muted); margin-top:12px;">Enter an actor ID to check the selected project's mapping.</div>
+    </div>
+  `;
+}
+
+function setupSharedActorManagement() {
+  const input = document.getElementById('shared-actor-id-input');
+  const statusButton = document.getElementById('shared-actor-status-btn');
+  const unlinkButton = document.getElementById('shared-actor-unlink-btn');
+  const status = document.getElementById('shared-actor-status');
+  if (!input || !statusButton || !unlinkButton || !status || !state.currentProject) return;
+
+  const actorId = () => String(input.value || '').trim();
+  const setStatus = (message, linked = false) => {
+    status.textContent = message;
+    unlinkButton.disabled = !linked;
+  };
+  const refresh = async () => {
+    const value = actorId();
+    if (!value) return setStatus('Enter an actor ID to check the selected project.');
+    window.localStorage?.setItem('cml.dashboard.sharedActorId', value);
+    setStatus('Checking shared actor mapping…');
+    try {
+      const response = await fetch(apiUrl(`${API_BASE}/shared/actor`, {
+        project: state.currentProject,
+        actorId: value
+      }));
+      if (!response.ok) throw new Error('status unavailable');
+      const payload = await response.json();
+      if (!payload.linked) return setStatus('No shared-principal mapping is registered for this actor.');
+      setStatus(`Linked across ${payload.linkedProjectCount || 1} project${payload.linkedProjectCount === 1 ? '' : 's'}.`, true);
+    } catch {
+      setStatus('Shared actor status is unavailable.');
+    }
+  };
+  statusButton.addEventListener('click', refresh);
+  input.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') refresh();
+  });
+  unlinkButton.addEventListener('click', async () => {
+    const value = actorId();
+    if (!value) return;
+    unlinkButton.disabled = true;
+    setStatus('Removing shared actor mapping…');
+    try {
+      const response = await fetch(apiUrl(`${API_BASE}/shared/actor`, {
+        project: state.currentProject,
+        actorId: value
+      }), { method: 'DELETE' });
+      if (!response.ok) throw new Error('unlink unavailable');
+      const payload = await response.json();
+      setStatus(payload.unlinked ? 'Shared actor mapping removed.' : 'No shared actor mapping was registered.');
+    } catch {
+      setStatus('Shared actor unlink is unavailable.');
+    }
+  });
 }
 
 // --- Helpers ---

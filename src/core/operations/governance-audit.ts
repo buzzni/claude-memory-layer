@@ -19,7 +19,11 @@ export const MEMORY_GOVERNANCE_AUDIT_OPERATIONS = [
   'perspective_observation_create',
   'perspective_observation_delete',
   'core_memory_block_update',
-  'entity_supersede'
+  'entity_supersede',
+  'memory_asset_create',
+  'memory_asset_update',
+  'memory_asset_bind',
+  'memory_asset_grant_set'
 ] as const;
 
 export type MemoryGovernanceAuditOperation = typeof MEMORY_GOVERNANCE_AUDIT_OPERATIONS[number];
@@ -123,10 +127,14 @@ function normalizeOperation(operation: MemoryGovernanceAuditOperation): MemoryGo
   return operation;
 }
 
-export async function writeGovernanceAuditEntry(
+/**
+ * Synchronous audit writer for callers that must include the audit row in an
+ * existing better-sqlite3 transaction.
+ */
+export function writeGovernanceAuditEntrySync(
   db: SQLiteDatabase,
   input: GovernanceAuditEntryInput
-): Promise<MemoryGovernanceAuditEntry> {
+): MemoryGovernanceAuditEntry {
   const entry: MemoryGovernanceAuditEntry = {
     auditId: randomUUID(),
     operation: normalizeOperation(input.operation),
@@ -161,4 +169,12 @@ export async function writeGovernanceAuditEntry(
   );
 
   return entry;
+}
+
+/** Preserve the existing async API used by repositories and external callers. */
+export async function writeGovernanceAuditEntry(
+  db: SQLiteDatabase,
+  input: GovernanceAuditEntryInput
+): Promise<MemoryGovernanceAuditEntry> {
+  return writeGovernanceAuditEntrySync(db, input);
 }

@@ -4,7 +4,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { LessonCandidateService, LessonService, type LessonCandidate } from '../../src/core/operations/index.js';
+import { LessonCandidateService, LessonRepository, LessonService, type LessonCandidate } from '../../src/core/operations/index.js';
 import { SQLiteEventStore } from '../../src/core/sqlite-event-store.js';
 import { sqliteAll, sqliteGet } from '../../src/core/sqlite-wrapper.js';
 import type { MemoryEvent } from '../../src/core/types.js';
@@ -152,6 +152,24 @@ afterEach(() => {
 });
 
 describe('LessonService manual promotion', () => {
+  it('pages lessons in stable confidence order for permission-filtered scans', async () => {
+    const { store, lessonService, cleanup } = await createFixture();
+    const projectHash = 'project-lesson-paging';
+    await lessonService.saveCurated({
+      projectHash, actor: 'operator', name: 'High confidence', trigger: 'When high', steps: ['High'], confidence: 0.9
+    });
+    await lessonService.saveCurated({
+      projectHash, actor: 'operator', name: 'Middle confidence', trigger: 'When middle', steps: ['Middle'], confidence: 0.8
+    });
+    await lessonService.saveCurated({
+      projectHash, actor: 'operator', name: 'Low confidence', trigger: 'When low', steps: ['Low'], confidence: 0.7
+    });
+
+    const page = await new LessonRepository(store.getDatabase()).list({ projectHash, limit: 1, offset: 1 });
+    await cleanup();
+    expect(page.map((lesson) => lesson.name)).toEqual(['Middle confidence']);
+  });
+
   it('captures an explicit curated lesson without a prior raw event and records stable provenance', async () => {
     const { store, lessonService, cleanup } = await createFixture();
     const projectHash = 'project-curated-capture';

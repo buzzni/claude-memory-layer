@@ -6,11 +6,14 @@ import {
   DEFAULT_ENABLED_SHARED_STORE_CONFIG as CONFIG_DEFAULT_ENABLED_SHARED_STORE_CONFIG,
   DISABLED_MEMORY_OPERATIONS_CONFIG,
   DISABLED_SHARED_STORE_CONFIG as CONFIG_DISABLED_SHARED_STORE_CONFIG,
-  DEFAULT_SHARED_STORAGE_PATH as CONFIG_DEFAULT_SHARED_STORAGE_PATH
+  DEFAULT_SHARED_STORAGE_PATH as CONFIG_DEFAULT_SHARED_STORAGE_PATH,
+  resolveSharedMemoryStoragePath,
+  SHARED_MEMORY_STORAGE_PATH_ENV
 } from '../../src/services/memory-service-config.js';
 import {
   DEFAULT_ENABLED_SHARED_STORE_CONFIG as FACADE_DEFAULT_ENABLED_SHARED_STORE_CONFIG,
-  DISABLED_SHARED_STORE_CONFIG as FACADE_DISABLED_SHARED_STORE_CONFIG
+  DISABLED_SHARED_STORE_CONFIG as FACADE_DISABLED_SHARED_STORE_CONFIG,
+  resolveSharedMemoryStoragePath as facadeResolveSharedMemoryStoragePath
 } from '../../src/services/memory-service.js';
 
 /**
@@ -69,6 +72,17 @@ describe('memory-service-config', () => {
       ...DISABLED_MEMORY_OPERATIONS_CONFIG,
       enabled: true
     });
+  });
+
+  it('allows MCP shared-store tools to use only an explicit absolute override path', () => {
+    expect(facadeResolveSharedMemoryStoragePath).toBe(resolveSharedMemoryStoragePath);
+    expect(resolveSharedMemoryStoragePath({})).toBe(CONFIG_DEFAULT_SHARED_STORAGE_PATH);
+    expect(resolveSharedMemoryStoragePath({
+      [SHARED_MEMORY_STORAGE_PATH_ENV]: '/tmp/cml-shared-store'
+    })).toBe('/tmp/cml-shared-store');
+    expect(() => resolveSharedMemoryStoragePath({
+      [SHARED_MEMORY_STORAGE_PATH_ENV]: 'relative/shared-store'
+    })).toThrow(`${SHARED_MEMORY_STORAGE_PATH_ENV} must be an absolute path`);
   });
 
   it('parses memory operations config defaults without enabling ranking-changing features', () => {

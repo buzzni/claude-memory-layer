@@ -11,6 +11,14 @@ import type {
 } from './types.js';
 import { SharedEventStore } from './shared-event-store.js';
 
+export interface SharedActorIdentity {
+  projectHash: string;
+  actorId: string;
+  sharedPrincipalId: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
 export class SharedStore {
   constructor(private sharedEventStore: SharedEventStore) {}
 
@@ -85,6 +93,120 @@ export class SharedStore {
     );
 
     return rows.map(this.rowToEntry);
+  }
+
+  /**
+   * Link a project-local actor to an explicit shared principal.  A local actor
+   * can have one principal at a time; relinking atomically revokes the old
+   * principal's access to that project's shared entries.
+   */
+  async linkActorIdentity(input: {
+    projectHash: string;
+    actorId: string;
+    sharedPrincipalId: string;
+  }): Promise<SharedActorIdentity> {
+    const transaction = this.db.transaction(() => {
+      const existing = this.db.prepare(
+        `SELECT * FROM shared_actor_identities WHERE project_hash = ? AND actor_id = ?`
+      ).get(input.projectHash, input.actorId) as Record<string, unknown> | undefined;
+      this.db.prepare(
+        `INSERT INTO shared_actor_identities (
+          project_hash, actor_id, shared_principal_id, created_at, updated_at
+        ) VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ON CONFLICT(project_hash, actor_id)
+        DO UPDATE SET
+          shared_principal_id = excluded.shared_principal_id,
+          updated_at = CURRENT_TIMESTAMP`
+      ).run(input.projectHash, input.actorId, input.sharedPrincipalId);
+      this.db.prepare(
+        `INSERT INTO shared_actor_identity_audit (
+          audit_id, operation, project_hash, actor_id,
+          before_shared_principal_id, after_shared_principal_id, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`
+      ).run(
+        randomUUID(),
+        existing && String(existing.shared_principal_id) !== input.sharedPrincipalId ? 'relink' : 'link',
+        input.projectHash,
+        input.actorId,
+        existing ? String(existing.shared_principal_id) : null,
+        input.sharedPrincipalId
+      );
+      const saved = this.db.prepare(
+        `SELECT * FROM shared_actor_identities WHERE project_hash = ? AND actor_id = ?`
+      ).get(input.projectHash, input.actorId) as Record<string, unknown> | undefined;
+      if (!saved) throw new Error('Shared actor identity was not saved');
+      return this.rowToActorIdentity(saved);
+    });
+    return transaction();
+  }
+
+  async getActorIdentity(projectHash: string, actorId: string): Promise<SharedActorIdentity | null> {
+    const rows = await dbAll<Record<string, unknown>>(
+      this.db,
+      `SELECT * FROM shared_actor_identities WHERE project_hash = ? AND actor_id = ?`,
+      [projectHash, actorId]
+    );
+    return rows[0] ? this.rowToActorIdentity(rows[0]) : null;
+  }
+
+  async unlinkActorIdentity(projectHash: string, actorId: string): Promise<boolean> {
+    const transaction = this.db.transaction(() => {
+      const existing = this.db.prepare(
+        `SELECT * FROM shared_actor_identities WHERE project_hash = ? AND actor_id = ?`
+      ).get(projectHash, actorId) as Record<string, unknown> | undefined;
+      if (!existing) return false;
+      this.db.prepare(
+        `DELETE FROM shared_actor_identities WHERE project_hash = ? AND actor_id = ?`
+      ).run(projectHash, actorId);
+      this.db.prepare(
+        `INSERT INTO shared_actor_identity_audit (
+          audit_id, operation, project_hash, actor_id,
+          before_shared_principal_id, after_shared_principal_id, created_at
+        ) VALUES (?, 'unlink', ?, ?, ?, NULL, CURRENT_TIMESTAMP)`
+      ).run(randomUUID(), projectHash, actorId, String(existing.shared_principal_id));
+      return true;
+    });
+    return transaction();
+  }
+
+  async listProjectHashesForPrincipal(sharedPrincipalId: string): Promise<string[]> {
+    const rows = await dbAll<{ project_hash: string }>(
+      this.db,
+      `SELECT DISTINCT project_hash FROM shared_actor_identities
+       WHERE shared_principal_id = ? ORDER BY project_hash ASC`,
+      [sharedPrincipalId]
+    );
+    return rows.map((row) => row.project_hash);
+  }
+
+  /**
+   * Actor-scoped shared search.  Unlike the legacy search() API, this does
+   * not reveal entries from projects that the caller's explicit principal has
+   * not linked.
+   */
+  async searchForPrincipal(
+    sharedPrincipalId: string,
+    query: string,
+    options?: { topK?: number; minConfidence?: number }
+  ): Promise<{ sourceProjectHashes: string[]; entries: SharedTroubleshootingEntry[] }> {
+    const sourceProjectHashes = await this.listProjectHashesForPrincipal(sharedPrincipalId);
+    if (sourceProjectHashes.length === 0) return { sourceProjectHashes, entries: [] };
+
+    const topK = options?.topK ?? 5;
+    const minConfidence = options?.minConfidence ?? 0.5;
+    const searchPattern = `%${query}%`;
+    const placeholders = sourceProjectHashes.map(() => '?').join(', ');
+    const rows = await dbAll<Record<string, unknown>>(
+      this.db,
+      `SELECT * FROM shared_troubleshooting
+       WHERE source_project_hash IN (${placeholders})
+       AND (title LIKE ? OR root_cause LIKE ? OR solution LIKE ?)
+       AND confidence >= ?
+       ORDER BY confidence DESC, usage_count DESC
+       LIMIT ?`,
+      [...sourceProjectHashes, searchPattern, searchPattern, searchPattern, minConfidence, topK]
+    );
+    return { sourceProjectHashes, entries: rows.map(this.rowToEntry) };
   }
 
   /**
@@ -278,6 +400,16 @@ export class SharedStore {
       lastUsedAt: row.last_used_at ? toDate(row.last_used_at) : undefined,
       promotedAt: toDate(row.promoted_at),
       createdAt: toDate(row.created_at)
+    };
+  }
+
+  private rowToActorIdentity(row: Record<string, unknown>): SharedActorIdentity {
+    return {
+      projectHash: String(row.project_hash),
+      actorId: String(row.actor_id),
+      sharedPrincipalId: String(row.shared_principal_id),
+      createdAt: toDate(row.created_at),
+      updatedAt: toDate(row.updated_at)
     };
   }
 }

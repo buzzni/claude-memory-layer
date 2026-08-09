@@ -84,6 +84,8 @@ describe('dashboard setup/provider health UI', () => {
     const setupRequest = requested.map(url => new URL(url)).find(url => url.pathname === '/api/health/setup');
     expect(setupRequest?.searchParams.get('project')).toBe('project-safe-hash');
     expect(cfg.innerHTML).toContain('Setup & Provider Health');
+    expect(cfg.innerHTML).toContain('Shared Actor Access');
+    expect(cfg.innerHTML).toContain('shared-actor-id-input');
     expect(cfg.innerHTML).toContain('needs-setup');
     expect(cfg.innerHTML).toContain('Claude CLI');
     expect(cfg.innerHTML).toContain('missing');

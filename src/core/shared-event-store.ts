@@ -78,6 +78,36 @@ export class SharedEventStore {
       )
     `);
 
+    // A shared principal is intentionally an explicit link between an actor in
+    // one project and the same actor in another project.  It is not an
+    // authentication provider: callers still have to supply the local actor
+    // id, and the adapter uses this table only to narrow shared reads.
+    await dbRun(this.db, `
+      CREATE TABLE IF NOT EXISTS shared_actor_identities (
+        project_hash VARCHAR NOT NULL,
+        actor_id VARCHAR NOT NULL,
+        shared_principal_id VARCHAR NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY(project_hash, actor_id)
+      )
+    `);
+
+    // Identity links change the set of projects visible to a shared principal.
+    // Keep their history beside the mapping so link/relink/unlink can be
+    // committed atomically even though each project has a separate database.
+    await dbRun(this.db, `
+      CREATE TABLE IF NOT EXISTS shared_actor_identity_audit (
+        audit_id VARCHAR PRIMARY KEY,
+        operation VARCHAR NOT NULL,
+        project_hash VARCHAR NOT NULL,
+        actor_id VARCHAR NOT NULL,
+        before_shared_principal_id VARCHAR,
+        after_shared_principal_id VARCHAR,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
     // Indexes for troubleshooting
     await dbRun(this.db, `
       CREATE INDEX IF NOT EXISTS idx_shared_ts_confidence
@@ -90,6 +120,14 @@ export class SharedEventStore {
     await dbRun(this.db, `
       CREATE INDEX IF NOT EXISTS idx_shared_ts_source
       ON shared_troubleshooting(source_project_hash)
+    `);
+    await dbRun(this.db, `
+      CREATE INDEX IF NOT EXISTS idx_shared_actor_identities_principal
+      ON shared_actor_identities(shared_principal_id, project_hash)
+    `);
+    await dbRun(this.db, `
+      CREATE INDEX IF NOT EXISTS idx_shared_actor_identity_audit_actor
+      ON shared_actor_identity_audit(project_hash, actor_id, created_at DESC)
     `);
 
     this.initialized = true;

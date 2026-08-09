@@ -121,7 +121,7 @@ export class LessonRepository {
   async upsert(input: unknown, auditOperation: LessonAuditOperation = 'lesson_promote'): Promise<MemoryLesson> {
     const parsed = sanitizeParsedLesson(UpsertMemoryLessonInputSchema.parse(input));
     const existingById = parsed.lessonId ? this.get(parsed.lessonId) : null;
-    const existingByName = this.findByProjectAndName(parsed.projectHash, parsed.name);
+    const existingByName = this.getByProjectAndName(parsed.projectHash, parsed.name);
     if (existingById && existingByName && existingById.lessonId !== existingByName.lessonId) {
       throw new Error('lesson name already exists for projectHash');
     }
@@ -201,17 +201,20 @@ export class LessonRepository {
       clauses.push('skill_candidate = ?');
       params.push(parsed.skillCandidate ? 1 : 0);
     }
-    params.push(parsed.limit);
+    params.push(parsed.limit, parsed.offset);
     const where = clauses.join(' AND ');
     const rows = sqliteAll<MemoryLessonRow>(
       this.db,
-      `SELECT * FROM memory_lessons WHERE ${where} ORDER BY confidence DESC, updated_at DESC LIMIT ?`,
+      `SELECT * FROM memory_lessons
+       WHERE ${where}
+       ORDER BY confidence DESC, updated_at DESC, lesson_id ASC
+       LIMIT ? OFFSET ?`,
       params
     );
     return rows.map(rowToLesson);
   }
 
-  private findByProjectAndName(projectHash: string | undefined, name: string): MemoryLesson | null {
+  getByProjectAndName(projectHash: string | undefined, name: string): MemoryLesson | null {
     const row = sqliteGet<MemoryLessonRow>(
       this.db,
       `SELECT * FROM memory_lessons WHERE project_hash = ? AND name = ?`,

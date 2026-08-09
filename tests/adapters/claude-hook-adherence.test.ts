@@ -7,7 +7,8 @@ import {
   type AdherenceState,
   selectEvidencePreview,
   formatMemoryContext,
-  redactForStorage
+  redactForStorage,
+  lessonForInjection
 } from '../../src/adapters/claude/hooks/user-prompt-submit.js';
 
 function adherenceState(overrides: Partial<AdherenceState> = {}): AdherenceState {
@@ -23,6 +24,17 @@ function adherenceState(overrides: Partial<AdherenceState> = {}): AdherenceState
 }
 
 describe('Claude user prompt adherence trigger heuristics', () => {
+  it('keeps reference-mode lesson injection to a non-body hint', () => {
+    const lesson = lessonForInjection({
+      lessonId: 'lesson-1', name: 'Safe deployment', trigger: 'When production is unstable',
+      steps: ['Inspect private rollout notes'], failureModes: ['Do not disclose credentials'], confidence: 1
+    }, 'reference');
+    expect(lesson.name).toBe('[lesson:lesson-1] Safe deployment');
+    expect(lesson.trigger).toBe('');
+    expect(lesson.steps).toEqual([]);
+    expect(lesson.failureModes).toEqual([]);
+  });
+
   it('renders a long evidence excerpt around the strongest query identifier', () => {
     const content = `${'unrelated prelude '.repeat(30)}PR 167 review found a null handling risk and required a regression test.`;
     const preview = selectEvidencePreview(content, 'PR 167 코드 리뷰 결론', 160);

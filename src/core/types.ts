@@ -261,7 +261,8 @@ export type UpsertMemoryLessonInput = z.input<typeof UpsertMemoryLessonInputSche
 export const ListMemoryLessonsInputSchema = z.object({
   projectHash: MemoryLessonNonEmptyStringSchema.optional(),
   skillCandidate: z.boolean().optional(),
-  limit: z.number().int().positive().max(500).default(50)
+  limit: z.number().int().positive().max(500).default(50),
+  offset: z.number().int().nonnegative().default(0)
 });
 export type ListMemoryLessonsInput = z.input<typeof ListMemoryLessonsInputSchema>;
 
@@ -658,6 +659,7 @@ export type AppendResult =
 export interface SessionStartInput {
   session_id: string;
   cwd: string;
+  actor_id?: string;
 }
 
 export interface SessionStartOutput {
@@ -670,6 +672,7 @@ export interface SessionStartOutput {
 export interface UserPromptSubmitInput {
   session_id: string;
   prompt: string;
+  actor_id?: string;
 }
 
 export interface UserPromptSubmitOutput {

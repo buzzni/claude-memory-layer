@@ -802,6 +802,54 @@ export class SQLiteEventStore {
         UNIQUE(project_hash, observer_actor_id, observed_actor_id, level, content_hash, source_hash)
       );
 
+      -- Memory Assets: project-scoped registry and minimal actor permissions.
+      -- Asset content remains in its canonical subsystem; this table owns only
+      -- lifecycle, provenance, and access-control metadata.
+      CREATE TABLE IF NOT EXISTS memory_assets (
+        asset_id TEXT NOT NULL,
+        project_hash TEXT NOT NULL DEFAULT '',
+        asset_type TEXT NOT NULL,
+        title TEXT NOT NULL,
+        owner_actor_id TEXT NOT NULL,
+        version INTEGER NOT NULL DEFAULT 1,
+        status TEXT NOT NULL DEFAULT 'active',
+        visibility TEXT NOT NULL DEFAULT 'private',
+        source_refs_json TEXT NOT NULL DEFAULT '[]',
+        metadata_json TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY(project_hash, asset_id)
+      );
+
+      -- An enabled binding makes a private asset readable/injectable for one
+      -- actor. It does not grant write, bind, or delegation authority.
+      CREATE TABLE IF NOT EXISTS memory_asset_bindings (
+        project_hash TEXT NOT NULL DEFAULT '',
+        asset_id TEXT NOT NULL,
+        actor_id TEXT NOT NULL,
+        injection_mode TEXT NOT NULL DEFAULT 'reference',
+        priority INTEGER NOT NULL DEFAULT 0,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY(project_hash, asset_id, actor_id),
+        FOREIGN KEY(project_hash, asset_id) REFERENCES memory_assets(project_hash, asset_id) ON DELETE CASCADE
+      );
+
+      -- Explicit grants are full replacements per asset/actor. An empty JSON
+      -- permission list is therefore an auditable revocation tombstone.
+      CREATE TABLE IF NOT EXISTS memory_asset_grants (
+        project_hash TEXT NOT NULL DEFAULT '',
+        asset_id TEXT NOT NULL,
+        actor_id TEXT NOT NULL,
+        permissions_json TEXT NOT NULL DEFAULT '[]',
+        created_by TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY(project_hash, asset_id, actor_id),
+        FOREIGN KEY(project_hash, asset_id) REFERENCES memory_assets(project_hash, asset_id) ON DELETE CASCADE
+      );
+
       -- Perspective Memory: FTS5 index for observation content queries.
       -- Use an external-content FTS table so the searchable projection stores the index,
       -- not a second raw copy of private observation text.
@@ -907,6 +955,10 @@ export class SQLiteEventStore {
       CREATE INDEX IF NOT EXISTS idx_perspective_observations_session ON perspective_observations(project_hash, session_id, level, updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_perspective_observations_source_hash ON perspective_observations(project_hash, source_hash);
       CREATE INDEX IF NOT EXISTS idx_perspective_observations_deleted ON perspective_observations(deleted_at);
+      CREATE INDEX IF NOT EXISTS idx_memory_assets_project_status ON memory_assets(project_hash, status, updated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_memory_assets_owner ON memory_assets(project_hash, owner_actor_id, updated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_memory_asset_bindings_actor ON memory_asset_bindings(project_hash, actor_id, enabled, priority DESC);
+      CREATE INDEX IF NOT EXISTS idx_memory_asset_grants_actor ON memory_asset_grants(project_hash, actor_id, updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_memory_governance_audit_project_operation ON memory_governance_audit(project_hash, operation, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_memory_governance_audit_target ON memory_governance_audit(target_type, target_id, created_at DESC);
 
