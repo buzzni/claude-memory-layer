@@ -42,6 +42,21 @@ export const DEFAULT_ENABLED_SHARED_STORE_CONFIG: SharedStoreConfig = {
 };
 
 export const DEFAULT_SHARED_STORAGE_PATH = SHARED_STORAGE_PATH;
+export const SHARED_MEMORY_STORAGE_PATH_ENV = 'CLAUDE_MEMORY_SHARED_STORAGE_PATH';
+
+/**
+ * MCP shared-actor tools open the global shared store outside a project
+ * MemoryService instance. Keep that path configurable without allowing a
+ * relative path to silently create a second store under the server cwd.
+ */
+export function resolveSharedMemoryStoragePath(env: NodeJS.ProcessEnv = process.env): string {
+  const configured = env[SHARED_MEMORY_STORAGE_PATH_ENV]?.trim();
+  if (!configured) return DEFAULT_SHARED_STORAGE_PATH;
+  if (!path.isAbsolute(configured)) {
+    throw new Error(`${SHARED_MEMORY_STORAGE_PATH_ENV} must be an absolute path`);
+  }
+  return configured;
+}
 
 export const DISABLED_MEMORY_OPERATIONS_CONFIG: MemoryOperationsConfig = {
   enabled: false,

@@ -162,6 +162,12 @@ The response intentionally does not perform an automatic bind or injection.
 `private`, `project`, inactive, conflicting, missing, or unlinked assets return
 the same `found: false` shape, preventing source asset existence disclosure.
 
+The MCP shared-actor tools use `~/.claude-code/memory/shared` by default. Set
+`CLAUDE_MEMORY_SHARED_STORAGE_PATH` to an absolute path to use a different
+shared-store location (for example, an isolated test or a separately managed
+local store). Relative values are rejected rather than resolved from the MCP
+server working directory.
+
 ## Follow-up integration order
 
 1. Add teams/roles or deny ACLs only when a concrete multi-user requirement

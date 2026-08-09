@@ -89,6 +89,8 @@ export {
   DEFAULT_ENABLED_SHARED_STORE_CONFIG,
   DEFAULT_SHARED_STORAGE_PATH,
   DISABLED_SHARED_STORE_CONFIG,
+  resolveSharedMemoryStoragePath,
+  SHARED_MEMORY_STORAGE_PATH_ENV,
   type MemoryServiceConfig
 } from './memory-service-config.js';
 

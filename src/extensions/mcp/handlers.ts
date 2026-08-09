@@ -68,7 +68,7 @@ import {
   type TemporalGraphExpandResult
 } from '../../core/operations/index.js';
 import { SharedMemoryActorAdapter } from '../shared-memory/shared-memory-actor-adapter.js';
-import { DEFAULT_SHARED_STORAGE_PATH } from '../../services/memory-service-config.js';
+import { resolveSharedMemoryStoragePath } from '../../services/memory-service-config.js';
 import { DEFAULT_EMBEDDING_MODEL } from '../../extensions/vector/embedder.js';
 import {
   isGenericContinuationQuery,
@@ -417,8 +417,9 @@ async function handleSharedMemoryActorTool(name: string, args: Record<string, un
 async function withSharedMemoryActorAdapter<T>(
   callback: (adapter: SharedMemoryActorAdapter) => Promise<T>
 ): Promise<T> {
-  mkdirSync(DEFAULT_SHARED_STORAGE_PATH, { recursive: true });
-  const eventStore = createSharedEventStore(path.join(DEFAULT_SHARED_STORAGE_PATH, 'shared.duckdb'));
+  const sharedStoragePath = resolveSharedMemoryStoragePath();
+  mkdirSync(sharedStoragePath, { recursive: true });
+  const eventStore = createSharedEventStore(path.join(sharedStoragePath, 'shared.duckdb'));
   await eventStore.initialize();
   try {
     return await callback(new SharedMemoryActorAdapter(createSharedStore(eventStore)));
