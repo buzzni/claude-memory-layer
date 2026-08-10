@@ -2763,9 +2763,12 @@ function eventBelongsToDifferentProject(event: MemoryEvent, projectPath?: string
   if (!projectPath) return false;
   const metadata = event.metadata || {};
   const metadataProjectRefs = metadataProjectReferenceValues(metadata);
+  const metadataProjectHash = metadataProjectHashValue(metadata);
 
-  if (metadataProjectRefs.length > 0) {
-    return !metadataProjectRefs.some((value) => projectReferenceMatches(value, projectPath));
+  if (metadataProjectRefs.length > 0 || metadataProjectHash) {
+    const pathMatches = metadataProjectRefs.some((value) => projectReferenceMatches(value, projectPath));
+    const hashMatches = metadataProjectHash === hashProjectPath(projectPath);
+    return !pathMatches && !hashMatches;
   }
 
   if (isUnscopedImportedHistory(metadata)) return true;
@@ -2793,6 +2796,18 @@ const PROJECT_METADATA_KEYS = new Set([
   'repositoryPath'
 ]);
 
+function metadataProjectScope(metadata: Record<string, unknown>): Record<string, unknown> | undefined {
+  if (!isPlainRecord(metadata.scope)) return undefined;
+  return isPlainRecord(metadata.scope.project) ? metadata.scope.project : undefined;
+}
+
+function metadataProjectHashValue(metadata: Record<string, unknown>): string | undefined {
+  const value = metadataProjectScope(metadata)?.hash;
+  return typeof value === 'string' && value.trim().length > 0
+    ? value.trim().toLowerCase()
+    : undefined;
+}
+
 function metadataProjectReferenceValues(metadata: Record<string, unknown>): string[] {
   const values: string[] = [];
   for (const [key, value] of Object.entries(metadata)) {
@@ -2800,6 +2815,10 @@ function metadataProjectReferenceValues(metadata: Record<string, unknown>): stri
     if (typeof value === 'string' && value.trim().length > 0) {
       values.push(value.trim());
     }
+  }
+  const scopedPath = metadataProjectScope(metadata)?.path;
+  if (typeof scopedPath === 'string' && scopedPath.trim().length > 0) {
+    values.push(scopedPath.trim());
   }
   return values;
 }
