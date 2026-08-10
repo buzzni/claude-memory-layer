@@ -26,12 +26,14 @@ export interface CodexHooksConfig {
 
 export const REQUIRED_CODEX_HOOK_FILES = [
   'codex-session-start.js',
+  'codex-user-prompt-submit.js',
   'codex-session-end.js',
   'codex-session-import-worker.js'
 ] as const;
 
 const CODEX_HOOK_FILES = {
   SessionStart: 'codex-session-start.js',
+  UserPromptSubmit: 'codex-user-prompt-submit.js',
   SessionEnd: 'codex-session-end.js'
 } as const;
 
@@ -59,6 +61,20 @@ export function getCodexMemoryHooks(pluginPath: string): Record<CodexMemoryHookN
             commandWindows: buildCodexHookWindowsCommand(pluginPath, CODEX_HOOK_FILES.SessionStart),
             statusMessage: 'Loading project memory',
             additionalContextLimit: 5000
+          }
+        ]
+      }
+    ],
+    UserPromptSubmit: [
+      {
+        hooks: [
+          {
+            type: 'command',
+            command: buildCodexHookCommand(pluginPath, CODEX_HOOK_FILES.UserPromptSubmit),
+            commandWindows: buildCodexHookWindowsCommand(pluginPath, CODEX_HOOK_FILES.UserPromptSubmit),
+            statusMessage: 'Searching memory index',
+            additionalContextLimit: 1800,
+            timeout: 10
           }
         ]
       }
