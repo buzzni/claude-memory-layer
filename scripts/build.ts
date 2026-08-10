@@ -80,6 +80,7 @@ async function build() {
     'stop',
     'session-end',
     'codex-session-start',
+    'codex-user-prompt-submit',
     'codex-session-end',
     'codex-session-import-worker',
     'semantic-daemon'

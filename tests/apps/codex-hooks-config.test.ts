@@ -27,6 +27,15 @@ describe('Codex memory hook config', () => {
         additionalContextLimit: 5000
       }]
     });
+    expect(hooks.UserPromptSubmit[0]).toMatchObject({
+      hooks: [{
+        command: "node '/tmp/cml dist/hooks/codex-user-prompt-submit.js'",
+        commandWindows: 'node "/tmp/cml dist/hooks/codex-user-prompt-submit.js"',
+        statusMessage: 'Searching memory index',
+        additionalContextLimit: 1800,
+        timeout: 10
+      }]
+    });
     expect(hooks.SessionEnd[0]).toMatchObject({
       hooks: [{
         command: "node '/tmp/cml dist/hooks/codex-session-end.js'",
@@ -69,6 +78,7 @@ describe('Codex memory hook config', () => {
     expect(twice.hooks?.SessionStart?.[0].hooks[0].command).toBe('node /other/start.js');
     expect(twice.hooks?.Stop).toEqual(original.hooks?.Stop);
     expect(hasCodexMemoryHook(twice, 'SessionStart', '/opt/claude-memory-layer/dist')).toBe(true);
+    expect(hasCodexMemoryHook(twice, 'UserPromptSubmit', '/opt/claude-memory-layer/dist')).toBe(true);
     expect(hasCodexMemoryHook(twice, 'SessionEnd', '/opt/claude-memory-layer/dist')).toBe(true);
   });
 

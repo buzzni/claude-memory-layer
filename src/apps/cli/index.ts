@@ -2569,7 +2569,7 @@ const codexHooksCmd = codexCmd
 
 codexHooksCmd
   .command('install')
-  .description('Install Codex SessionStart and SessionEnd memory hooks')
+  .description('Install Codex SessionStart, UserPromptSubmit, and SessionEnd memory hooks')
   .option('--path <path>', 'Custom plugin path (defaults to auto-detect)')
   .option('--config-path <path>', 'Codex hooks config path (default: ~/.codex/hooks.json)')
   .action(async (options: { path?: string; configPath?: string }) => {
@@ -2587,7 +2587,8 @@ codexHooksCmd
       saveCodexHooksConfig(mergeCodexMemoryHooks(config, pluginPath), configPath);
 
       console.log('\n✅ Codex automatic memory hooks installed!\n');
-      console.log('  SessionStart: Load project memory into Codex context');
+      console.log('  SessionStart: Load a compact project memory index');
+      console.log('  UserPromptSubmit: Find question-specific memory refs and report sources actually used');
       console.log('  SessionEnd: Import the completed Codex transcript');
       console.log(`  Config: ${configPath}`);
       console.log(`  Plugin path: ${pluginPath}`);
@@ -2610,6 +2611,7 @@ codexHooksCmd
       const configPath = options.configPath || CODEX_HOOKS_PATH;
       const config = loadCodexHooksConfig(configPath);
       const sessionStart = hasCodexMemoryHook(config, 'SessionStart', pluginPath);
+      const userPromptSubmit = hasCodexMemoryHook(config, 'UserPromptSubmit', pluginPath);
       const sessionEnd = hasCodexMemoryHook(config, 'SessionEnd', pluginPath);
       const filesExist = REQUIRED_CODEX_HOOK_FILES.every((file) => (
         fs.existsSync(path.join(pluginPath, 'hooks', file))
@@ -2617,6 +2619,7 @@ codexHooksCmd
 
       console.log('\n🧠 Codex Automatic Memory Status\n');
       console.log(`  SessionStart: ${sessionStart ? '✅ Installed' : '❌ Not installed'}`);
+      console.log(`  UserPromptSubmit: ${userPromptSubmit ? '✅ Installed' : '❌ Not installed'}`);
       console.log(`  SessionEnd: ${sessionEnd ? '✅ Installed' : '❌ Not installed'}`);
       console.log(`  Hook files: ${filesExist ? '✅ Found' : '❌ Not found'}`);
       console.log(`  Config: ${configPath}`);
@@ -2629,7 +2632,7 @@ codexHooksCmd
       } else {
         console.log('  Last auto-import: — No recorded run for this project');
       }
-      if (sessionStart && sessionEnd && filesExist) {
+      if (sessionStart && userPromptSubmit && sessionEnd && filesExist) {
         console.log('\n✅ Automatic loading and ingestion are configured. Verify trust with /hooks in Codex.\n');
       } else {
         console.log('\n💡 Run "claude-memory-layer codex hooks install" to configure automatic memory.\n');

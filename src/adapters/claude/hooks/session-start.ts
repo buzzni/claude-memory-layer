@@ -16,6 +16,11 @@ import {
 import { readStdin } from './hook-runtime.js';
 import { formatClaudeContextHookOutput, isHookEvaluationMode } from './hook-output.js';
 import { isPromptOnlySessionSummary } from './prompt-injection-policy.js';
+import {
+  formatMemoryReferenceContext,
+  memoryEventReferenceItem,
+  memoryReferenceSummary
+} from '../../../core/memory-reference-context.js';
 import type {
   CoreMemoryBlock,
   EventType,
@@ -202,7 +207,11 @@ function compactCoreMemorySummary(content: string): string {
   return normalized.length <= 320 ? normalized : `${normalized.slice(0, 317)}...`;
 }
 
-export async function main(): Promise<string> {
+export interface SessionStartMainOptions {
+  contextPresentation?: 'evidence' | 'reference';
+}
+
+export async function main(options: SessionStartMainOptions = {}): Promise<string> {
   // Read input from stdin. Guard the parse so a malformed/empty body still emits
   // a valid envelope instead of throwing past the hook into an unhandled rejection.
   let input: SessionStartInput;
@@ -289,13 +298,26 @@ export async function main(): Promise<string> {
 
     if (injectedEvents.length > 0) {
       if (context) context += '\n';
-      context += `## Previous Session Context\n\nYou have worked on this project before. Here are some relevant memories:\n\n`;
       const excerpts = new Map<string, string>();
-      for (const event of injectedEvents) {
-        const date = event.timestamp.toISOString().split('T')[0];
-        const excerpt = sessionStartExcerpt(event);
-        excerpts.set(event.id, excerpt);
-        context += `- **${date}**: ${excerpt}\n`;
+      if (options.contextPresentation === 'reference') {
+        context += formatMemoryReferenceContext(
+          injectedEvents.map(memoryEventReferenceItem),
+          {
+            heading: 'Previous session memory index',
+            introduction: 'These recent project memories are navigation hints, not evidence. Open a source only when it is relevant to the current task.'
+          }
+        );
+        for (const event of injectedEvents) {
+          excerpts.set(event.id, memoryReferenceSummary(event.content));
+        }
+      } else {
+        context += `## Previous Session Context\n\nYou have worked on this project before. Here are some relevant memories:\n\n`;
+        for (const event of injectedEvents) {
+          const date = event.timestamp.toISOString().split('T')[0];
+          const excerpt = sessionStartExcerpt(event);
+          excerpts.set(event.id, excerpt);
+          context += `- **${date}**: ${excerpt}\n`;
+        }
       }
 
       // Session-start injections used to be invisible to usefulness metrics.

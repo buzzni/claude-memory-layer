@@ -8,7 +8,8 @@ import {
   selectEvidencePreview,
   formatMemoryContext,
   redactForStorage,
-  lessonForInjection
+  lessonForInjection,
+  shouldPersistSubmittedPrompt
 } from '../../src/adapters/claude/hooks/user-prompt-submit.js';
 
 function adherenceState(overrides: Partial<AdherenceState> = {}): AdherenceState {
@@ -218,6 +219,16 @@ describe('formatMemoryContext', () => {
 });
 
 describe('prompt redaction before persistence', () => {
+  it('keeps Codex prompt-time retrieval read-only so SessionEnd can import complete turns', () => {
+    const prompt = 'Codex 질문별 메모리 검색을 진행해줘';
+
+    expect(shouldPersistSubmittedPrompt(prompt, { contextPresentation: 'reference' }, false)).toBe(true);
+    expect(shouldPersistSubmittedPrompt(prompt, {
+      contextPresentation: 'reference',
+      persistPrompt: false
+    }, false)).toBe(false);
+  });
+
   // Assistant responses and tool output were already filtered; user prompts
   // were not, so a pasted credential reached the events table and from there
   // query_preview, retrieval_traces and the adherence state file.

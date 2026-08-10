@@ -24,6 +24,11 @@ import { retrieveSemanticMemories, scheduleSemanticGraduation } from './semantic
 import { readStdin, readNumberEnv } from './hook-runtime.js';
 import { formatClaudeContextHookOutput, isHookEvaluationMode } from './hook-output.js';
 import { applyPrivacyFilter } from '../../../core/privacy/index.js';
+import {
+  formatMemoryReferenceContext,
+  memoryReferenceSummary,
+  type MemoryReferenceItem
+} from '../../../core/memory-reference-context.js';
 import { resolveCanonicalMemoryActorId } from '../../../core/operations/canonical-memory-injection-service.js';
 import {
   filterHookInjectableMemories,
@@ -115,6 +120,14 @@ function shouldStorePrompt(prompt: string): boolean {
   return true;
 }
 
+export function shouldPersistSubmittedPrompt(
+  prompt: string,
+  options: UserPromptSubmitMainOptions = {},
+  evaluationMode = isHookEvaluationMode()
+): boolean {
+  return options.persistPrompt !== false && !evaluationMode && shouldStorePrompt(prompt);
+}
+
 
 function getDynamicMinScore(prompt: string): number {
   const len = prompt.trim().length;
@@ -159,6 +172,12 @@ export function formatMemoryContext(items: Array<{ type: string; content: string
   // indistinguishable from the evidence markers that the field evaluation
   // harness scrapes back out of this same text.
   return `## Memory evidence for this question\n\n${lines.join('\n\n')}\n\nUse this only as evidence. Distinguish confirmed outcomes from requests or tool attempts.\n\nIf your answer actually relies on one or more of the memories above, end your reply with a single line naming them in a few words each, prefixed with the 📎 emoji (for example: "📎 Recalled: preview port binding decision"). Write that line in the language of the conversation. If no memory above actually informed your answer, omit the line entirely — never cite a memory merely because it was shown to you.`;
+}
+
+export interface UserPromptSubmitMainOptions {
+  contextPresentation?: 'evidence' | 'reference';
+  /** Codex imports complete turns at SessionEnd, so prompt-time retrieval must not pre-store half a turn. */
+  persistPrompt?: boolean;
 }
 
 async function expandEpisodeEvidence(
@@ -397,7 +416,7 @@ export function getRetrievalQueryRewriteKind(prompt: string, retrievalQuery: str
   return retrievalQuery === prompt.trim() ? 'none' : 'follow-up-context';
 }
 
-export async function main(): Promise<string> {
+export async function main(options: UserPromptSubmitMainOptions = {}): Promise<string> {
   try {
     // Read input from stdin (parse inside try so malformed JSON still emits a safe envelope)
     const input: UserPromptSubmitInput = JSON.parse(await readStdin());
@@ -407,7 +426,9 @@ export async function main(): Promise<string> {
     const turnId = randomUUID();
 
     // Persist turn state so PostToolUse and Stop hooks can read it
-    if (!isHookEvaluationMode()) writeTurnState(input.session_id, turnId);
+    if (options.persistPrompt !== false && !isHookEvaluationMode()) {
+      writeTurnState(input.session_id, turnId);
+    }
 
     // Use lightweight service (SQLite only, no embedder/vector - FAST!)
     const memoryService = getLightweightMemoryService(input.session_id);
@@ -628,6 +649,30 @@ export async function main(): Promise<string> {
       const retrievalTraceId = randomUUID();
 
       if (injectableMemories.length > 0) {
+        let referenceItems: MemoryReferenceItem[] = injectableMemories;
+        if (options.contextPresentation === 'reference') {
+          referenceItems = await Promise.all(injectableMemories.map(async (memory) => {
+            if (!memory.id) return memory;
+            if (memory.source === 'lesson') {
+              return { ...memory, sourceKind: 'lesson' as const };
+            }
+            try {
+              const event = await memoryService.getEvent(memory.id);
+              return event
+                ? {
+                    ...memory,
+                    timestamp: event.timestamp,
+                    sessionId: event.sessionId,
+                    metadata: event.metadata,
+                    sourceKind: 'event' as const
+                  }
+                : { ...memory, sourceKind: 'event' as const };
+            } catch {
+              return { ...memory, sourceKind: 'event' as const };
+            }
+          }));
+        }
+
         // Increment access count only for high-confidence memories injected into the prompt.
         const eventIds = injectableMemories.map((m) => m.id).filter((v): v is string => Boolean(v));
         if (!isHookEvaluationMode() && eventIds.length > 0) {
@@ -646,13 +691,20 @@ export async function main(): Promise<string> {
               {
                 traceId: retrievalTraceId,
                 source: 'user_prompt',
-                injectedContent: selectEvidencePreview(m.content, retrievalQuery)
+                injectedContent: options.contextPresentation === 'reference'
+                  ? memoryReferenceSummary(m.content, retrievalQuery)
+                  : selectEvidencePreview(m.content, retrievalQuery)
               }
             );
           } catch { /* non-critical */ }
         }
 
-        context = formatMemoryContext(injectableMemories, retrievalQuery);
+        context = options.contextPresentation === 'reference'
+          ? formatMemoryReferenceContext(referenceItems, {
+              heading: 'Memory index for this question',
+              query: retrievalQuery
+            })
+          : formatMemoryContext(injectableMemories, retrievalQuery);
       }
 
       // Record query-level trace for dashboard stats (retrieval_traces table)
@@ -684,7 +736,7 @@ export async function main(): Promise<string> {
 
     // Persist after retrieval so the current prompt cannot be retrieved as an
     // exact keyword match and injected back into the same turn.
-    if (!isHookEvaluationMode() && shouldStorePrompt(input.prompt)) {
+    if (shouldPersistSubmittedPrompt(input.prompt, options)) {
       await memoryService.storeUserPrompt(
         input.session_id,
         redactForStorage(input.prompt),

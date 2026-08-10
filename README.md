@@ -59,7 +59,7 @@ npx claude-memory-layer status
 ```
 
 - `install`은 **한 번만** 하면 됩니다(Claude Code hooks 등록).
-- `codex hooks install`은 `~/.codex/hooks.json`에 SessionStart/SessionEnd 훅을 병합합니다. Codex를 재시작한 뒤 `/hooks`에서 새 훅 정의를 검토하고 신뢰해야 실행됩니다.
+- `codex hooks install`은 `~/.codex/hooks.json`에 SessionStart/UserPromptSubmit/SessionEnd 훅을 병합합니다. Codex를 재시작한 뒤 `/hooks`에서 새 훅 정의를 검토하고 신뢰해야 실행됩니다.
 - Embedding backend은 런타임 필수 기능이며, postinstall이 패키지 내부의 격리된 관리 디렉터리에 설치합니다. 이 경계에서 `sharp` 보안 버전을 강제하고, CUDA 11 환경에서는 `onnxruntime-node`를 CPU-only로 설치합니다.
 - 이후 프로젝트별로 메모리 저장소가 자동 분리됩니다.
 - `install` / `uninstall`은 `~/.claude/settings.json`을, `codex hooks install` / `uninstall`은 `~/.codex/hooks.json`을 수정합니다. 기존의 다른 훅은 보존합니다.
@@ -346,7 +346,7 @@ MCP client가 환경에 따라 PATH를 못 찾으면 `command -v claude-memory-l
 | Vector Outbox V2 | Implemented | transactional enqueue, worker lock, stale recovery, `vector-status`, dashboard Vector Health |
 | Progressive disclosure / retrieval traces | Implemented | `search --disclosure`, `expand`, `source`, score breakdown, privacy-safe lanes, aggregate-only strategy/context-pack telemetry |
 | MCP server | Implemented | package bin `claude-memory-layer-mcp`, project-aware read tools + audited operation tools |
-| Codex/Hermes session ingestion | Implemented | validate/replay는 read-only, explicit import 지원; Codex는 opt-in SessionEnd 자동 import 지원 |
+| Codex/Hermes session ingestion | Implemented | validate/replay는 read-only, explicit import 지원; Codex는 opt-in SessionStart/UserPromptSubmit 조회와 SessionEnd 자동 import 지원 |
 | Memory Operations layer | Implemented | facets/actions/frontier/checkpoints/retention/graph/lessons |
 | Perspective Memory | Implemented P0/P1 | actors, actor cards, perspective observations, context-pack lanes, aggregate dashboard |
 | Dashboard | Implemented | local-only default bind, optional password, vector/perspective/trace panels |
@@ -846,7 +846,8 @@ claude-memory-layer codex hooks status --project /path/to/project
 claude-memory-layer codex hooks uninstall
 ```
 
-- `SessionStart`: 해당 프로젝트의 core memory와 최근 작업 컨텍스트를 Codex에 주입합니다. 새 세션뿐 아니라 resume/clear/compact에도 적용됩니다.
+- `SessionStart`: 해당 프로젝트의 core memory와 최근 작업 메모리 인덱스를 Codex에 주입합니다. 일반 메모리는 제목·짧은 요약·`mem:` source ref·세션/턴 위치만 제공하며, 새 세션뿐 아니라 resume/clear/compact에도 적용됩니다.
+- `UserPromptSubmit`: 질문마다 관련 메모리 인덱스를 검색합니다. Codex는 필요할 때만 `mem-source-ref`/`mem-details`로 원문을 확장하고, 실제로 사용한 경우에만 답변 끝에 `📎 Recalled memories: <title> ([mem:ID])`를 표시합니다.
 - `SessionEnd`: 완료된 현재 transcript 하나만 별도 worker에 전달해 프로젝트 저장소로 적재합니다. Codex 종료, 대화 archive/delete, 또는 열려 있지 않은 대화의 30분 유휴 종료 시 실행됩니다.
 - 자동 import는 콘텐츠 해시로 중복을 건너뛰며, embedding 계산은 hook 제한 시간 밖의 기존 vector worker가 처리합니다.
 - `codex hooks status --project <path>`는 해당 프로젝트의 마지막 자동 import 성공/실패 시각과 집계 결과를 보여줍니다. transcript 본문은 상태 파일에 기록하지 않습니다.
