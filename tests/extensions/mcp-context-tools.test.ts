@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { generateCitationId } from '../../src/core/citation-generator.js';
+import { hashProjectPath } from '../../src/core/registry/project-path.js';
 import type { MemoryEvent } from '../../src/core/types.js';
 
 const mocks = vi.hoisted(() => {
@@ -1267,6 +1268,74 @@ describe('MCP project context tools', () => {
     expect(text).not.toContain('session-same-basename-other-root');
     expect(text).not.toContain('session-legacy-unscoped');
     expect(text).not.toContain('session-other');
+  });
+
+  it('keeps project-scoped Codex imports whose scope is nested under metadata.scope.project', async () => {
+    const currentProjectHash = hashProjectPath('/repo/app');
+    const currentProjectMemory = event({
+      id: '99990000-0000-4000-8000-000000000010',
+      sessionId: 'session-codex-current',
+      eventType: 'agent_response',
+      timestamp: new Date('2026-05-05T04:00:00.000Z'),
+      content: 'Codex auto-import memory from the current project remains available.',
+      metadata: {
+        source: 'codex',
+        importedFrom: '/tmp/codex-current.jsonl',
+        scope: { project: { path: '/repo/app/.worktrees/feature' } }
+      }
+    });
+    const currentProjectTimeline = event({
+      id: '99990000-0000-4000-8000-000000000011',
+      sessionId: 'session-codex-current',
+      eventType: 'user_prompt',
+      timestamp: new Date('2026-05-05T04:01:00.000Z'),
+      content: 'Timeline includes the current project Codex auto-import.',
+      metadata: {
+        source: 'codex',
+        importedFrom: '/tmp/codex-current.jsonl',
+        scope: { project: { hash: currentProjectHash } }
+      }
+    });
+    const otherProjectMemory = event({
+      id: '99990000-0000-4000-8000-000000000012',
+      sessionId: 'session-codex-other',
+      eventType: 'agent_response',
+      timestamp: new Date('2026-05-05T04:02:00.000Z'),
+      content: 'Codex auto-import memory from another project stays isolated.',
+      metadata: {
+        source: 'codex',
+        importedFrom: '/tmp/codex-other.jsonl',
+        scope: { project: { hash: hashProjectPath('/repo/other'), path: '/repo/other' } }
+      }
+    });
+
+    mocks.projectService.retrieveMemories.mockResolvedValue({
+      memories: [
+        { event: otherProjectMemory, score: 0.98 },
+        { event: currentProjectMemory, score: 0.9 }
+      ]
+    });
+    mocks.projectService.getRecentEvents.mockResolvedValue([
+      otherProjectMemory,
+      currentProjectTimeline,
+      currentProjectMemory
+    ]);
+
+    const result = await handleToolCall('mem-context-pack', {
+      projectPath: '/repo/app',
+      query: 'Codex auto-import project scope',
+      topK: 3,
+      recentLimit: 10,
+      sessionLimit: 3
+    });
+
+    const text = textOf(result);
+    expect(result.isError).not.toBe(true);
+    expect(text).toContain('Codex auto-import memory from the current project');
+    expect(text).toContain('Timeline includes the current project Codex auto-import');
+    expect(text).toContain('session-codex-current');
+    expect(text).not.toContain('Codex auto-import memory from another project');
+    expect(text).not.toContain('session-codex-other');
   });
 
   it('prioritizes recent project timeline and suppresses low-signal search noise for generic continuation queries', async () => {
