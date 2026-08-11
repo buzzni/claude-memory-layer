@@ -39,7 +39,13 @@ Claude Memory Layer는 AI 에이전트의 대화와 작업 이벤트를 프로�
 
 ```bash
 npm install -g claude-memory-layer@latest
+
+# 기본: Claude Code 훅만 설치
 claude-memory-layer install
+
+# 또는: 훅과 주기 maintenance를 한 번에 설치
+claude-memory-layer install --with-maintenance
+
 claude-memory-layer status
 
 # Codex에서도 자동 컨텍스트 적재/불러오기를 사용할 때
@@ -59,10 +65,34 @@ npx claude-memory-layer status
 ```
 
 - `install`은 **한 번만** 하면 됩니다(Claude Code hooks 등록).
+- `npm install`만으로는 백그라운드 서비스를 등록하지 않습니다. `maintenance install` 또는 `install --with-maintenance`를 사용자가 명시적으로 실행해야 합니다.
 - `codex hooks install`은 `~/.codex/hooks.json`에 SessionStart/UserPromptSubmit/SessionEnd 훅을 병합합니다. Codex를 재시작한 뒤 `/hooks`에서 새 훅 정의를 검토하고 신뢰해야 실행됩니다.
 - Embedding backend은 런타임 필수 기능이며, postinstall이 패키지 내부의 격리된 관리 디렉터리에 설치합니다. 이 경계에서 `sharp` 보안 버전을 강제하고, CUDA 11 환경에서는 `onnxruntime-node`를 CPU-only로 설치합니다.
 - 이후 프로젝트별로 메모리 저장소가 자동 분리됩니다.
-- `install` / `uninstall`은 `~/.claude/settings.json`을, `codex hooks install` / `uninstall`은 `~/.codex/hooks.json`을 수정합니다. 기존의 다른 훅은 보존합니다.
+- `install` / `uninstall`은 `~/.claude/settings.json`을, `codex hooks install` / `uninstall`은 `~/.codex/hooks.json`을 수정합니다. `maintenance install` / `uninstall`은 사용자 계정의 launchd/systemd 정의만 변경합니다. 기존의 다른 훅과 서비스는 보존합니다.
+
+#### 선택: 자동 maintenance
+
+프로젝트별 pending embedding/vector outbox와 5분 이상 멈춘 processing 작업을 주기적으로 처리하려면 최초 1회 활성화합니다.
+
+```bash
+# macOS: ~/Library/LaunchAgents에 사용자 LaunchAgent 등록
+# Linux: ~/.config/systemd/user에 systemd user timer 등록(sudo 불필요)
+claude-memory-layer maintenance install
+
+# 기본 5분 대신 15분 주기
+claude-memory-layer maintenance install --interval 900
+
+claude-memory-layer maintenance status
+claude-memory-layer maintenance run --json
+
+# 스케줄러 정의만 제거하며 메모리 데이터는 보존
+claude-memory-layer maintenance uninstall
+```
+
+각 실행은 최근 저장소부터 순차적으로 확인하고 프로젝트별 worker lock을 사용합니다. 기본적으로 저장소당 최대 4 processing round(각 vector schema당 최대 한 batch)를 처리해 장시간 자원 독점을 피합니다. pending, retry 가능한 failed, 5분 이상 멈춘 processing 작업만 자동 복구하며 재시도 한도를 넘은 quarantined 작업은 무한 반복하지 않고 상태에 남깁니다.
+
+systemd user session이 없는 최소 Linux, 컨테이너, 일부 WSL 환경에서는 스케줄러 설치 대신 `claude-memory-layer maintenance run`을 기존 cron/작업 스케줄러에서 호출할 수 있습니다.
 
 #### CUDA 11 / `onnxruntime-node` 설치 에러
 
@@ -159,7 +189,7 @@ claude-memory-layer search "배포 이슈"
 - 특정 프로젝트를 명시하고 싶으면 대부분 명령에 `--project <path>` 사용 가능
 - 대규모 리임포트가 필요하면 `import --force` 사용
 - 최근 일부만 가져오고 싶으면 `--session-limit <n>` 또는 `--limit <n>` 사용
-- 백그라운드 worker가 못 처리한 임베딩은 `process`로 수동 처리
+- 백그라운드 worker가 못 처리한 임베딩은 opt-in `maintenance install`로 주기 처리하거나 `process`로 수동 처리
 - 상태 점검:
   - `GET /health` (서버 헬스)
   - `GET /api/health` (outbox pending/failed 포함 상세 헬스)
@@ -518,6 +548,12 @@ claude-memory-layer hermes import --project /path/to/project --verbose
 claude-memory-layer process --project /path/to/project
 claude-memory-layer process --project /path/to/project --dry-run-recovery
 claude-memory-layer vector-status --project /path/to/project
+
+# 머신 전체 프로젝트 저장소의 bounded maintenance
+claude-memory-layer maintenance run
+claude-memory-layer maintenance install --interval 300
+claude-memory-layer maintenance status
+claude-memory-layer maintenance uninstall
 
 # Perspective Memory actor/session membership backfill
 claude-memory-layer actors repair --project /path/to/project --dry-run

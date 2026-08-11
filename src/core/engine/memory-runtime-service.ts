@@ -62,7 +62,7 @@ export interface MemoryRuntimeServicesDeps {
 export interface MemoryRuntimeService {
   initialize(): Promise<void>;
   shutdown(): Promise<void>;
-  processPendingEmbeddings(): Promise<number>;
+  processPendingEmbeddings(maxBatches?: number): Promise<number>;
   forceGraduation(): Promise<GraduationRunResult>;
   recordMemoryAccess(eventId: string, sessionId: string, confidence?: number): void;
   getVectorWorker(): VectorWorker | null;
@@ -163,8 +163,18 @@ export function createMemoryRuntimeService(deps: MemoryRuntimeServicesDeps): Mem
       }
     },
 
-    async processPendingEmbeddings(): Promise<number> {
+    async processPendingEmbeddings(maxBatches?: number): Promise<number> {
       let processed = 0;
+      if (maxBatches !== undefined) {
+        const limit = Math.max(0, Math.floor(maxBatches));
+        for (let batch = 0; batch < limit; batch += 1) {
+          const batchProcessed = (vectorWorker ? await vectorWorker.processBatch() : 0)
+            + (vectorWorkerV2 ? await vectorWorkerV2.processBatch() : 0);
+          processed += batchProcessed;
+          if (batchProcessed === 0) break;
+        }
+        return processed;
+      }
       if (vectorWorker) {
         processed += await vectorWorker.processAll();
       }

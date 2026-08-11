@@ -425,8 +425,8 @@ export class MemoryService {
   /**
    * Process pending embeddings
    */
-  async processPendingEmbeddings(): Promise<number> {
-    return this.runtimeService.processPendingEmbeddings();
+  async processPendingEmbeddings(maxBatches?: number): Promise<number> {
+    return this.runtimeService.processPendingEmbeddings(maxBatches);
   }
 
   /**

@@ -138,6 +138,20 @@ import {
   resolveProcessCommandOptions
 } from './process-command.js';
 import {
+  formatMaintenanceLastRunStatus,
+  formatMaintenanceRunReport,
+  readMaintenanceLastRunStatus,
+  runMaintenanceCycle,
+  writeMaintenanceLastRunStatus
+} from './maintenance-runner.js';
+import {
+  formatMaintenanceSchedulerStatus,
+  getMaintenanceSchedulerStatus,
+  installMaintenanceScheduler,
+  parseMaintenanceInterval,
+  uninstallMaintenanceScheduler
+} from './maintenance-scheduler.js';
+import {
   formatImportLockBusy,
   resolveImportCommandLockOptions
 } from './import-command.js';
@@ -185,6 +199,18 @@ function getPluginPath(): string {
 
   // Fallback to npm global installation path
   return path.join(os.homedir(), '.npm-global', 'lib', 'node_modules', 'claude-memory-layer', 'dist');
+}
+
+function getMaintenanceCliPath(): string {
+  const candidates = [
+    process.argv[1]?.endsWith('.js') ? path.resolve(process.argv[1]) : '',
+    path.join(getPluginPath(), 'cli', 'index.js')
+  ];
+  const cliPath = candidates.find((candidate) => candidate && fs.existsSync(candidate));
+  if (!cliPath) {
+    throw new Error('Built CLI entrypoint not found. Run "npm run build" before installing maintenance.');
+  }
+  return cliPath;
 }
 
 function loadClaudeSettings(): ClaudeSettings {
@@ -855,6 +881,8 @@ program
   .command('install')
   .description('Install hooks into Claude Code settings')
   .option('--path <path>', 'Custom plugin path (defaults to auto-detect)')
+  .option('--with-maintenance', 'Also install the opt-in periodic maintenance scheduler')
+  .option('--maintenance-interval <seconds>', 'Maintenance interval in seconds', '300')
   .action(async (options) => {
     try {
       const pluginPath = options.path || getPluginPath();
@@ -879,6 +907,20 @@ program
       // Save settings
       saveClaudeSettings(nextSettings);
 
+      let maintenanceStatus: ReturnType<typeof installMaintenanceScheduler> | null = null;
+      if (options.withMaintenance === true) {
+        try {
+          maintenanceStatus = installMaintenanceScheduler({
+            intervalSeconds: parseMaintenanceInterval(options.maintenanceInterval),
+            nodePath: process.execPath,
+            cliPath: getMaintenanceCliPath()
+          });
+        } catch (error) {
+          const detail = error instanceof Error ? error.message : String(error);
+          throw new Error(`Claude hooks were installed, but periodic maintenance setup failed: ${detail}`);
+        }
+      }
+
       console.log('\n✅ Claude Memory Layer installed!\n');
       console.log('Hooks registered:');
       console.log('  - SessionStart: Register session -> project mapping');
@@ -887,6 +929,9 @@ program
       console.log('  - Stop: Store assistant responses');
       console.log('  - SessionEnd: Persist session summary\n');
       console.log('Plugin path:', pluginPath);
+      if (maintenanceStatus) {
+        console.log(`Maintenance: ${maintenanceStatus.active ? 'installed and active' : 'installed'}`);
+      }
       console.log('\n⚠️  Restart Claude Code for changes to take effect.\n');
       console.log('Commands:');
       console.log('  claude-memory-layer dashboard  - Open web dashboard');
@@ -1299,6 +1344,87 @@ program
 /**
  * Process command - manually process pending embeddings and bounded derivation
  */
+const maintenanceCommand = program
+  .command('maintenance')
+  .description('Run and manage opt-in periodic maintenance for all local project stores');
+
+maintenanceCommand
+  .command('run')
+  .description('Run one bounded, lock-safe maintenance cycle')
+  .option('-p, --project <path>', 'Process only one project instead of scanning all stores')
+  .option('--max-projects <count>', 'Maximum most-recent stores to scan')
+  .option('--max-batches <count>', 'Maximum processing rounds per store (one batch per vector schema)', '4')
+  .option('--json', 'Print a structured aggregate-only report')
+  .option('--quiet', 'Print only failures (used by periodic schedulers)')
+  .action(async (options) => {
+    try {
+      const maxProjects = options.maxProjects === undefined
+        ? undefined
+        : Number(options.maxProjects);
+      const maxBatches = Number(options.maxBatches);
+      const report = await runMaintenanceCycle({
+        projectPath: options.project,
+        maxProjects,
+        maxBatches
+      });
+      writeMaintenanceLastRunStatus(report);
+      if (options.quiet !== true) {
+        console.log(options.json ? JSON.stringify(report) : formatMaintenanceRunReport(report));
+      } else if (report.errors > 0) {
+        console.error(formatMaintenanceRunReport(report));
+      }
+      if (report.errors > 0) process.exitCode = 1;
+    } catch (error) {
+      console.error('Maintenance run failed:', error instanceof Error ? error.message : String(error));
+      process.exitCode = 1;
+    }
+  });
+
+maintenanceCommand
+  .command('install')
+  .description('Install a launchd (macOS) or systemd-user (Linux) periodic job')
+  .option('--interval <seconds>', 'Maintenance interval in seconds', '300')
+  .action((options) => {
+    try {
+      const status = installMaintenanceScheduler({
+        intervalSeconds: parseMaintenanceInterval(options.interval),
+        nodePath: process.execPath,
+        cliPath: getMaintenanceCliPath()
+      });
+      console.log(formatMaintenanceSchedulerStatus(status));
+    } catch (error) {
+      console.error('Maintenance install failed:', error instanceof Error ? error.message : String(error));
+      process.exitCode = 1;
+    }
+  });
+
+maintenanceCommand
+  .command('status')
+  .description('Check whether periodic maintenance is installed and active')
+  .action(() => {
+    try {
+      console.log(formatMaintenanceSchedulerStatus(getMaintenanceSchedulerStatus()));
+      console.log(formatMaintenanceLastRunStatus(readMaintenanceLastRunStatus()));
+    } catch (error) {
+      console.error('Maintenance status failed:', error instanceof Error ? error.message : String(error));
+      process.exitCode = 1;
+    }
+  });
+
+maintenanceCommand
+  .command('uninstall')
+  .description('Disable and remove only the periodic maintenance scheduler')
+  .action(() => {
+    try {
+      const status = uninstallMaintenanceScheduler();
+      console.log(formatMaintenanceSchedulerStatus(status));
+      console.log('Maintenance scheduler definitions were removed; memory data was preserved.');
+    } catch (error) {
+      console.error('Maintenance uninstall failed:', error instanceof Error ? error.message : String(error));
+      process.exitCode = 1;
+    }
+  });
+
 program
   .command('process')
   .description('Process pending embeddings and run one bounded graduation pass')
