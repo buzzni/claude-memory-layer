@@ -37,6 +37,10 @@ function makeHarness(options?: { readOnly?: boolean; lightweightMode?: boolean; 
     start: () => { calls.push('vectorWorker.start'); },
     stop: () => { calls.push('vectorWorker.stop'); },
     waitForIdle: async () => { calls.push('vectorWorker.waitForIdle'); },
+    processBatch: async () => {
+      calls.push('vectorWorker.processBatch');
+      return 3;
+    },
     processAll: async () => {
       calls.push('vectorWorker.processAll');
       return 3;
@@ -46,6 +50,10 @@ function makeHarness(options?: { readOnly?: boolean; lightweightMode?: boolean; 
     start: () => { calls.push('vectorWorkerV2.start'); },
     stop: () => { calls.push('vectorWorkerV2.stop'); },
     waitForIdle: async () => { calls.push('vectorWorkerV2.waitForIdle'); },
+    processBatch: async () => {
+      calls.push('vectorWorkerV2.processBatch');
+      return 5;
+    },
     processAll: async () => {
       calls.push('vectorWorkerV2.processAll');
       return 5;
@@ -202,6 +210,20 @@ describe('createMemoryRuntimeService', () => {
       'vectorWorkerV2.waitForIdle',
       'shared.close',
       'sqlite.close'
+    ]);
+  });
+
+  it('bounds explicit embedding processing by batch count for periodic maintenance', async () => {
+    const harness = makeHarness({ enableV2: true });
+    await harness.service.initialize();
+    harness.calls.length = 0;
+
+    await expect(harness.service.processPendingEmbeddings(2)).resolves.toBe(16);
+    expect(harness.calls).toEqual([
+      'vectorWorker.processBatch',
+      'vectorWorkerV2.processBatch',
+      'vectorWorker.processBatch',
+      'vectorWorkerV2.processBatch'
     ]);
   });
 
