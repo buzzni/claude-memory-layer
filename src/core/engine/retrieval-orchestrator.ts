@@ -17,6 +17,10 @@ import {
 } from '../retriever.js';
 import type { RetrievalDebugLane } from '../retrieval-debug-lanes.js';
 import type { RetrievalTelemetryContext } from '../retrieval-telemetry.js';
+import {
+  getRuntimeResourceTelemetry,
+  type RuntimeRetrievalTelemetry
+} from '../runtime-resource-telemetry.js';
 import type { MemoryOperationsConfig } from '../types.js';
 
 export interface RetrieveMemoriesOptions {
@@ -123,6 +127,7 @@ export interface RetrievalOrchestratorDeps {
   getProjectHash: () => string | null;
   hasSharedStore: () => boolean;
   memoryOperationsConfig?: MemoryOperationsConfig;
+  runtimeTelemetry?: RuntimeRetrievalTelemetry;
 }
 
 export class RetrievalOrchestrator {
@@ -139,53 +144,66 @@ export class RetrievalOrchestrator {
   ): Promise<UnifiedRetrievalResult> {
     const { recordTrace = true, telemetry, ...retrieverOptions } = options ?? {};
     const lightweightFastRead = this.isLightweightFastRead(options);
-    if (!lightweightFastRead) {
-      await this.deps.initialize();
-    }
+    const runtimeTelemetry = this.deps.runtimeTelemetry ?? getRuntimeResourceTelemetry();
+    const retrievalTier = runtimeTelemetry.isModelLoaded() ? 'hot' : 'cold';
+    const startedAt = runtimeTelemetry.now();
+    let succeeded = false;
 
-    // Note: Pending embeddings are processed by the background worker.
-    // Don't block retrieval - search with whatever vectors are available.
-    const rerankWeights = lightweightFastRead
-      ? undefined
-      : await this.getRerankWeights(options?.adaptiveRerank === true);
-    const projectHash = this.deps.getProjectHash();
-    const projectScopeMode = retrieverOptions.projectScopeMode ?? (projectHash ? 'strict' : 'global');
-    const graphHop = this.resolveGraphHopOptions(retrieverOptions.graphHop);
+    try {
+      if (!lightweightFastRead) {
+        await this.deps.initialize();
+      }
 
-    let result: UnifiedRetrievalResult;
+      // Note: Pending embeddings are processed by the background worker.
+      // Don't block retrieval - search with whatever vectors are available.
+      const rerankWeights = lightweightFastRead
+        ? undefined
+        : await this.getRerankWeights(options?.adaptiveRerank === true);
+      const projectHash = this.deps.getProjectHash();
+      const projectScopeMode = retrieverOptions.projectScopeMode ?? (projectHash ? 'strict' : 'global');
+      const graphHop = this.resolveGraphHopOptions(retrieverOptions.graphHop);
 
-    if (retrieverOptions.includeShared && this.deps.hasSharedStore()) {
-      result = await this.deps.retriever.retrieveUnified(query, {
-        ...retrieverOptions,
-        intentRewrite: retrieverOptions.intentRewrite === true,
-        rerankWeights,
-        includeShared: true,
-        graphHop,
-        projectHash: projectHash || undefined,
-        projectScopeMode,
-        allowedProjectHashes: retrieverOptions.allowedProjectHashes
-      });
-    } else {
-      result = await this.deps.retriever.retrieve(query, {
-        ...retrieverOptions,
-        intentRewrite: retrieverOptions.intentRewrite === true,
-        rerankWeights,
-        graphHop,
-        projectHash: projectHash || undefined,
-        projectScopeMode,
-        allowedProjectHashes: retrieverOptions.allowedProjectHashes
-      });
-    }
+      let result: UnifiedRetrievalResult;
 
-    if (recordTrace) {
-      try {
-        await this.recordAutomaticTrace(query, result, options, projectHash, telemetry);
-      } catch {
-        // Non-blocking telemetry.
+      if (retrieverOptions.includeShared && this.deps.hasSharedStore()) {
+        result = await this.deps.retriever.retrieveUnified(query, {
+          ...retrieverOptions,
+          intentRewrite: retrieverOptions.intentRewrite === true,
+          rerankWeights,
+          includeShared: true,
+          graphHop,
+          projectHash: projectHash || undefined,
+          projectScopeMode,
+          allowedProjectHashes: retrieverOptions.allowedProjectHashes
+        });
+      } else {
+        result = await this.deps.retriever.retrieve(query, {
+          ...retrieverOptions,
+          intentRewrite: retrieverOptions.intentRewrite === true,
+          rerankWeights,
+          graphHop,
+          projectHash: projectHash || undefined,
+          projectScopeMode,
+          allowedProjectHashes: retrieverOptions.allowedProjectHashes
+        });
+      }
+
+      if (recordTrace) {
+        try {
+          await this.recordAutomaticTrace(query, result, options, projectHash, telemetry);
+        } catch {
+          // Non-blocking telemetry.
+        }
+      }
+
+      succeeded = true;
+      return result;
+    } finally {
+      // Lexical/fast retrieval is deliberately telemetry-write-free and model-free.
+      if (!lightweightFastRead) {
+        runtimeTelemetry.recordRetrieval(retrievalTier, runtimeTelemetry.now() - startedAt, succeeded);
       }
     }
-
-    return result;
   }
 
   /**
