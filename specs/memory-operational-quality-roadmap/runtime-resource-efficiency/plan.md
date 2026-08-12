@@ -37,13 +37,13 @@
 ## 2026-08-13 — Work packets 1, 2, and decision gate
 
 - Baseline commit: `62167e2f3fbf0d4a425c6a25f8a5c7163de3ce5d` (`origin/main`)
-- Branch/PR: `feat/runtime-resource-efficiency` / PR pending final verification
+- Branch/PR: `feat/runtime-resource-efficiency` / [#73](https://github.com/buzzni/claude-memory-layer/pull/73)
 - Completed: privacy-safe process/model lifecycle schema; load/use/release/failure instrumentation; cold/hot semantic retrieval timing; aggregate current/legacy client and RSS reporting; read-only `runtime-status`; concurrent cold-load coalescing; MCP non-semantic fast-path audit and initialization fix; no-broker ADR
 - Files changed: runtime telemetry core, vector embedder, retrieval orchestration, MCP/daemon lifecycle, CLI command, tests, README, ADR, and this handoff
 - Tests and exact results: focused baseline 87/87; rebased full Vitest 208 files / 1,310 tests; typecheck; lint (0 errors, 44 existing warnings); architecture guard; public-output privacy scan; replay benchmark; LongMemEval retrieval smoke; build; source and built `runtime-status`; built MCP registration/shutdown smoke — all passed
 - Runtime/disk/store mutations: dependencies installed and tests executed with temporary `HOME=/tmp/cml-rre-home.Ym6raZ`; no real memory store or user settings mutations; one read-only pre-instrumentation process/RSS sample collected
 - Known failures or flakes: none; `npm list claude-memory-layer --depth=0` exits 1 while correctly reporting the root package with `(empty)` dependencies
 - Decisions: do not build a broker from one unversioned/unattributed RSS snapshot; retain in-process idle release and collect representative post-release samples
-- Remaining: commit/push/PR and post-release field measurement with current instrumented clients
+- Remaining: post-release field measurement with current instrumented clients
 - Safe next command: `git diff --check`
 - Rollback notes: revert telemetry/CLI instrumentation; operators may disable snapshot persistence with `CLAUDE_MEMORY_DISABLE_RUNTIME_TELEMETRY=1`; canonical memory data is unaffected
