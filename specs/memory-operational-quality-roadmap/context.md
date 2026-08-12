@@ -1,6 +1,6 @@
 # Memory Operational Quality Roadmap Context
 
-> **Version**: 0.1.1
+> **Version**: 0.2.0
 > **Status**: Draft
 > **Created**: 2026-08-12
 > **Implementation baseline**: `origin/main` at `v2.2.10` (`3d6a47f`)
@@ -19,6 +19,17 @@ This package records enough context for a later AI agent to continue implementat
 - resource measurement from a possible shared embedding broker.
 
 The intended direction is incremental. Do not rewrite the product or add new memory subsystems while these foundations are unfinished.
+
+### 1.1 Document ownership
+
+This directory is a roadmap, not one implementation specification:
+
+- this `context.md` owns shared field evidence, architecture facts, and safety history,
+- the parent `spec.md` owns global invariants and cross-feature completion criteria,
+- the parent `plan.md` owns dependency order and workstream status,
+- each child directory owns one independently reviewable feature's context, requirements, and execution plan.
+
+When facts change, update the narrowest owning document. Do not copy the full machine-wide baseline into every child spec.
 
 ## 2. Required bootstrap for a future agent
 
@@ -261,6 +272,17 @@ At the time of this spec, `origin/main` also contains `src/extensions/mcp/idle-r
 - `specs/memory-utilization-improvements/`
 - `specs/vector-outbox-v2/`
 - `specs/memory-grounding-remediation/`
+
+### 8.1 Child feature specifications
+
+- `read-only-diagnostics/` — side-effect-free status, stats, audit, and health reads
+- `recoverable-project-gc/` — dry-run discovery, quarantine, restore, and separately gated purge
+- `derived-layer-recovery/` — derived-layer audit, verified vector rebuild, and remediation guidance
+- `retrieval-telemetry/` — presentation-aware delivery and reference-navigation measurement
+- `retrieval-benchmark-expansion/` — representative anonymized retrieval regression gates
+- `session-start-experiment/` — evidence-gated SessionStart variants
+- `mcp-tool-profiles/` — modular registry, mutation metadata, and selectable tool profiles
+- `runtime-resource-efficiency/` — model lifecycle telemetry and broker decision gate
 
 ## 9. Open questions for implementation-time validation
 
