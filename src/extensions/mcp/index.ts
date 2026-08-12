@@ -12,8 +12,13 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 
-import { tools } from './tools.js';
-import { handleToolCall, shutdownMcpMemoryServices } from './handlers.js';
+import { shutdownMcpMemoryServices } from './handlers.js';
+import {
+  dispatchRegisteredToolCall,
+  getToolsForProfile,
+  resolveMcpToolProfile,
+  type McpToolProfile
+} from './registry.js';
 import { createMcpIdleResourceController, parseMcpIdleReleaseMs } from './idle-resources.js';
 import { createMcpProcessLifecycle } from './process-lifecycle.js';
 import {
@@ -38,20 +43,25 @@ const idleResources = createMcpIdleResourceController({
   idleMs: parseMcpIdleReleaseMs(process.env.CLAUDE_MEMORY_MCP_IDLE_RELEASE_MS)
 });
 
+let activeProfile: McpToolProfile = 'all';
+let activeTools = getToolsForProfile(activeProfile);
+
 // Tool listing handler
 server.setRequestHandler(ListToolsRequestSchema, async () => {
-  return { tools };
+  return { tools: activeTools };
 });
 
 // Tool call handler
 server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToolResult> => {
   const { name, arguments: args } = request.params;
-  return idleResources.run(() => handleToolCall(name, args || {}));
+  return idleResources.run(() => dispatchRegisteredToolCall(name, args || {}, activeProfile));
 });
 
 // Start server
 async function main() {
   registerRuntimeProcess('mcp');
+  activeProfile = resolveMcpToolProfile();
+  activeTools = getToolsForProfile(activeProfile);
   const transport = new StdioServerTransport();
   let lifecycleCheck: NodeJS.Timeout | null = null;
   const lifecycle = createMcpProcessLifecycle({
@@ -91,7 +101,7 @@ async function main() {
   lifecycleCheck.unref();
 
   await server.connect(transport);
-  console.error('claude-memory-layer MCP server started');
+  console.error(`claude-memory-layer MCP server started (profile=${activeProfile}, tools=${activeTools.length})`);
 }
 
 main().catch((error) => {

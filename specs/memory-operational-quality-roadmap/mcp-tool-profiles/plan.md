@@ -1,11 +1,18 @@
 # MCP Tool Profiles Plan
 
-> **State**: Incubating
+> **State**: Implementation ready for review
 > **Suggested release**: Minor
 
 ## Entry gate
 
 Capture the exact current tool list, serialized schema bytes/hash, handler parity, and mutation behavior on latest `origin/main`.
+
+Captured from `origin/main` at `9810c194e4c4f4f77d935a0878196845e9e7bc08`:
+
+- 44 tools,
+- 47,622 serialized JSON bytes,
+- SHA-256 `f3e05cbf821dddc04b038ec02aeee7cc567092261bcb0ae16bf5bba824c445c1`,
+- `handleToolCall` compatibility behavior covered by the existing MCP context, operation, perspective, shared, project-aware, and privacy suites.
 
 ## Packet 1 — Registry without behavior change
 
@@ -34,4 +41,7 @@ Capture the exact current tool list, serialized schema bytes/hash, handler parit
 
 ## Progress
 
-No implementation started; baseline capture is the next action.
+- Packet 1 implemented: generated registry owns schema references, handlers, profiles, and mutation metadata; exact `all` parity is regression-tested.
+- Packet 2 implemented: canonical server dispatch uses six bounded handler domains while `handleToolCall` remains a compatibility entrypoint.
+- Packet 3 implemented: opt-in environment selection, `all` default, 7-tool/8,694-byte `core`, mutation predicates, migration guidance, and rollback troubleshooting.
+- Merge, minor-version release, and post-install client smoke remain rollout work; this document does not mark the feature fully complete before those steps.

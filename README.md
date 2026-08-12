@@ -802,6 +802,8 @@ node dist/mcp/index.js
 
 MCP 서버는 stdio 종료·부모 프로세스 소실 시 함께 종료됩니다. 유휴 상태에서는 기본 10분 후 embedding 모델/native 자원을 반납하고 다음 도구 호출에서 다시 적재합니다. 유휴 해제 시간은 `CLAUDE_MEMORY_MCP_IDLE_RELEASE_MS`(60000~86400000ms)로 조정할 수 있습니다.
 
+MCP 도구 surface는 `CLAUDE_MEMORY_MCP_PROFILE`로 `core`, `operations`, `governance`, `experimental`, `all` 중 하나를 선택할 수 있습니다. 기본값 `all`은 기존 전체 도구 목록과 동작을 보존합니다. 작은 context/search 중심 surface가 필요하면 MCP server entry의 `env`에 `CLAUDE_MEMORY_MCP_PROFILE=core`를 설정하세요. 프로필별 범위, mutation 분류, 롤백 방법은 [`docs/MCP_TOOL_PROFILES.md`](docs/MCP_TOOL_PROFILES.md)를 참고하세요.
+
 ### 제공되는 MCP 도구
 
 | 범주 | 도구 | 설명 |
