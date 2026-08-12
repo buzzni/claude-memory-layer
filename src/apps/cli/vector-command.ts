@@ -1,5 +1,6 @@
 import type { OutboxQueueStats, OutboxStats } from '../../core/types.js';
 import type { MemoryStats } from '../../core/engine/memory-query-service.js';
+import type { ExistingStoreStatus } from '../../core/registry/existing-store.js';
 
 export interface RawVectorStatusCommandOptions {
   project?: string;
@@ -14,12 +15,14 @@ export interface VectorStatusCommandOptions {
 export interface VectorStatusReportInput {
   stats: Pick<MemoryStats, 'totalEvents' | 'vectorCount' | 'levelStats'>;
   outbox: OutboxStats;
+  storeStatus?: ExistingStoreStatus;
 }
 
 type VectorStatus = 'ok' | 'needs-attention';
 type VectorStatusRecommendedAction = 'none' | 'run-recovery' | 'inspect-quarantined';
 
 interface NormalizedVectorStatusReport {
+  store?: { status: ExistingStoreStatus };
   storage: {
     totalEvents: number;
     vectorCount: number;
@@ -50,6 +53,9 @@ export function formatVectorStatusReport(input: VectorStatusReportInput): string
   const oldestProcessingAge = report.oldestProcessingAgeMs;
   const lines = [
     'Vector Outbox Status',
+    ...(input.storeStatus && input.storeStatus !== 'existing'
+      ? [`Store status: ${input.storeStatus} (no store initialized)`]
+      : []),
     `Vector count: ${input.stats.vectorCount}`,
     `Total events: ${input.stats.totalEvents}`,
     '',
@@ -83,6 +89,7 @@ function buildVectorStatusReport(input: VectorStatusReportInput): NormalizedVect
   const status: VectorStatus = totals.failed > 0 || totals.stuckProcessing > 0 ? 'needs-attention' : 'ok';
   const oldestProcessingAgeMs = maxNullable(embedding.oldestProcessingAgeMs, vector.oldestProcessingAgeMs);
   return {
+    ...(input.storeStatus ? { store: { status: input.storeStatus } } : {}),
     storage: {
       totalEvents: numberOrZero(input.stats.totalEvents),
       vectorCount: numberOrZero(input.stats.vectorCount)

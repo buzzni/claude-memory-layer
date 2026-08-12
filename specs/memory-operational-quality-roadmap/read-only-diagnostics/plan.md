@@ -1,6 +1,6 @@
 # Read-only Diagnostics Plan
 
-> **State**: Ready
+> **State**: Implemented
 > **Suggested release**: Patch
 
 ## Packet 1 — Reproduce and inventory
@@ -35,4 +35,12 @@
 
 ## Progress
 
-No implementation started.
+- Packet 1 complete: reproduced the missing-store `vector-status` mutation and
+  inventoried CLI, server, MCP, dashboard, and maintenance read surfaces.
+- Packet 2 complete: added a reusable memory-root snapshot/diff harness covering
+  content, metadata, SQLite sidecars, and Lance artifacts.
+- Packet 3 complete: added shared non-creating store resolution plus an uncached
+  read-only diagnostics service, then migrated diagnostic CLI/API/MCP callers.
+- Verification complete: resolver/service/CLI/API/MCP invariance tests, full
+  typecheck/lint/test verification, build, architecture boundaries, and public
+  output privacy scan pass.

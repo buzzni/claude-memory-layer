@@ -3,6 +3,7 @@ import { Hono } from 'hono';
 
 const mocks = vi.hoisted(() => {
   const service = {
+    storeStatus: 'existing',
     initialize: vi.fn(),
     shutdown: vi.fn(),
     getStats: vi.fn(),
@@ -12,7 +13,7 @@ const mocks = vi.hoisted(() => {
   };
   return {
     service,
-    MemoryService: vi.fn(function MockMemoryService() { return service; }),
+    createReadOnlyDiagnosticsService: vi.fn(() => service),
     resolveProjectStoragePath: vi.fn(() => '/private/storage/path/SHOULD_NOT_LEAK'),
     loadSessionRegistry: vi.fn(() => ({
       sessions: {
@@ -35,11 +36,13 @@ vi.mock('../../src/services/memory-service.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/services/memory-service.js')>();
   return {
     ...actual,
-    DISABLED_SHARED_STORE_CONFIG: {},
-    MemoryService: mocks.MemoryService,
     loadSessionRegistry: mocks.loadSessionRegistry,
   };
 });
+
+vi.mock('../../src/services/read-only-diagnostics-service.js', () => ({
+  createReadOnlyDiagnosticsService: mocks.createReadOnlyDiagnosticsService
+}));
 
 const { projectsRouter, inferCanonicalProjectPath, selectPreferredProjectPath } = await import('../../src/apps/server/api/projects.js');
 
@@ -76,7 +79,7 @@ describe('project detail dashboard API', () => {
       embedding: { pending: 1, processing: 0, failed: 2, retryableFailed: 1, quarantinedFailed: 1, stuckProcessing: 0, total: 3, rawError: 'PRIVATE_EMBED_ERROR_SHOULD_NOT_LEAK' },
       vector: { pending: 2, processing: 1, failed: 3, retryableFailed: 0, quarantinedFailed: 3, stuckProcessing: 0, total: 4, itemIds: ['PRIVATE_VECTOR_ID_SHOULD_NOT_LEAK'] },
     });
-    mocks.MemoryService.mockClear();
+    mocks.createReadOnlyDiagnosticsService.mockClear();
     mocks.resolveProjectStoragePath.mockClear();
     mocks.loadSessionRegistry.mockClear();
   });
@@ -96,12 +99,8 @@ describe('project detail dashboard API', () => {
       outbox: { pending: 3, processing: 1, failed: 5, retryableFailed: 1, quarantinedFailed: 4, stuckProcessing: 0 },
     });
     expect(body.project).not.toHaveProperty('projectPath');
-    expect(mocks.resolveProjectStoragePath).toHaveBeenCalledWith('abc12345');
-    expect(mocks.MemoryService).toHaveBeenCalledWith(expect.objectContaining({
-      storagePath: '/private/storage/path/SHOULD_NOT_LEAK',
-      readOnly: true,
-      lightweightMode: true,
-    }));
+    expect(mocks.createReadOnlyDiagnosticsService).toHaveBeenCalledWith('abc12345');
+    expect(mocks.resolveProjectStoragePath).not.toHaveBeenCalled();
     expect(mocks.service.initialize).toHaveBeenCalledTimes(1);
     expect(mocks.service.shutdown).toHaveBeenCalledTimes(1);
 

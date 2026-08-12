@@ -15,6 +15,7 @@ import {
   type MaintenanceTarget
 } from '../../src/apps/cli/maintenance-runner.js';
 import type { OutboxStats } from '../../src/core/types.js';
+import { diffMemoryRootSnapshots, snapshotMemoryRoot } from '../helpers/memory-root-snapshot.js';
 
 const tempDirs: string[] = [];
 
@@ -50,6 +51,17 @@ describe('maintenance runner', () => {
     const targets = discoverMaintenanceTargets({ homeDir });
     expect(targets.map((target) => target.key).sort()).toEqual(['__global__', 'deadbeef']);
     expect(targets.find((target) => target.key === 'deadbeef')?.projectPath).toBe('/repo/new');
+  });
+
+  it('does not initialize or migrate empty project skeletons during discovery', () => {
+    const homeDir = mkdtempSync(path.join(tmpdir(), 'cml-maintenance-skeleton-'));
+    tempDirs.push(homeDir);
+    const memoryRoot = path.join(homeDir, '.claude-code', 'memory');
+    mkdirSync(path.join(memoryRoot, 'projects', 'abc12345'), { recursive: true });
+    const before = snapshotMemoryRoot(memoryRoot);
+
+    expect(discoverMaintenanceTargets({ homeDir })).toEqual([]);
+    expect(diffMemoryRootSnapshots(before, snapshotMemoryRoot(memoryRoot))).toEqual([]);
   });
 
   it('processes actionable stores, preserves quarantined jobs, and continues past busy/error stores', async () => {

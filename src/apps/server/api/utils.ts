@@ -10,6 +10,10 @@ import {
   MemoryService
 } from '../../../services/memory-service.js';
 import { hashProjectPath, resolveProjectStoragePath } from '../../../core/registry/project-path.js';
+import {
+  createReadOnlyDiagnosticsService,
+  type ReadOnlyDiagnosticsService
+} from '../../../services/read-only-diagnostics-service.js';
 
 type ApiErrorStatus = 400 | 401 | 403 | 404 | 409 | 422 | 500;
 
@@ -113,4 +117,14 @@ export function getLightweightServiceFromQuery(c: Context): MemoryService {
     analyticsEnabled: false,
     sharedStoreConfig: DISABLED_SHARED_STORE_CONFIG
   });
+}
+
+/**
+ * Resolve an uncached, existing-store-only reader for dashboard diagnostics.
+ * Missing stores produce an empty reader; invalid, unreadable, and corrupt
+ * targets fail without exposing their resolved filesystem path.
+ */
+export function getDiagnosticsServiceFromQuery(c: Context): ReadOnlyDiagnosticsService {
+  const project = c.req.query('project') || c.req.query('projectId');
+  return createReadOnlyDiagnosticsService(project || undefined);
 }

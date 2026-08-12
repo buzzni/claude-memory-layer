@@ -20,6 +20,7 @@ vi.mock('child_process', () => ({
 }));
 
 vi.mock('../../src/apps/server/api/utils.js', () => ({
+  getDiagnosticsServiceFromQuery: mocks.getLightweightServiceFromQuery,
   getLightweightServiceFromQuery: mocks.getLightweightServiceFromQuery,
   getWritableServiceFromQuery: vi.fn(),
 }));

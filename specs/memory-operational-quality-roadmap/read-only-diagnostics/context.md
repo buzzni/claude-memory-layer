@@ -25,3 +25,17 @@ The dated machine scan found 67 project directories plus the global store, inclu
 - Project GC belongs to [`../recoverable-project-gc/`](../recoverable-project-gc/).
 - Derived-layer integrity belongs to [`../derived-layer-recovery/`](../derived-layer-recovery/).
 - Re-measure on current `origin/main`; the original reproduction was against the `2.2.10` operating environment.
+
+## Existing-store input semantics
+
+Diagnostic callers share one resolver contract:
+
+- omitted project input selects the global store,
+- exactly eight lowercase hexadecimal characters select an opaque project hash,
+- every other non-empty string is a project path; relative paths remain relative to the caller's current directory,
+- existing project-path symlinks resolve through their real target before hashing,
+- empty or NUL-containing inputs are invalid,
+- storage-directory or database-file symlinks are invalid and are not followed,
+- a missing directory or `events.sqlite` file is `missing`, while permission and SQLite-integrity failures are classified as `unreadable` or `corrupt`.
+
+Resolution is filesystem-only and read-only. It does not create directories, migrate schemas, update registries, initialize vector/embedder resources, or cache a service.

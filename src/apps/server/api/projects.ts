@@ -8,11 +8,9 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import {
-  DISABLED_SHARED_STORE_CONFIG,
-  loadSessionRegistry,
-  MemoryService
+  loadSessionRegistry
 } from '../../../services/memory-service.js';
-import { resolveProjectStoragePath } from '../../../core/registry/project-path.js';
+import { createReadOnlyDiagnosticsService } from '../../../services/read-only-diagnostics-service.js';
 
 export const projectsRouter = new Hono();
 
@@ -42,16 +40,7 @@ projectsRouter.get('/:hash/detail', async (c) => {
   const { hash } = c.req.param();
   const registry = loadSessionRegistry();
   const projectPath = getRegisteredProjectPath(registry, hash);
-  const storagePath = resolveProjectStoragePath(hash);
-  const memoryService = new MemoryService({
-    storagePath,
-    projectHash: hash,
-    ...(projectPath ? { projectPath } : {}),
-    readOnly: true,
-    lightweightMode: true,
-    analyticsEnabled: false,
-    sharedStoreConfig: DISABLED_SHARED_STORE_CONFIG
-  });
+  const memoryService = createReadOnlyDiagnosticsService(hash);
 
   try {
     await memoryService.initialize();
@@ -70,6 +59,7 @@ projectsRouter.get('/:hash/detail', async (c) => {
         registered: Boolean(projectPath)
       },
       storage: {
+        status: memoryService.storeStatus,
         eventCount: stats.totalEvents,
         vectorCount: stats.vectorCount,
         levels: stats.levelStats || []

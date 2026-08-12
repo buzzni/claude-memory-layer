@@ -34,6 +34,7 @@ vi.mock('fs', async (importOriginal) => {
 
 vi.mock('../../src/apps/server/api/utils.js', () => ({
   getServiceFromQuery: mocks.getServiceFromQuery,
+  getDiagnosticsServiceFromQuery: mocks.getLightweightServiceFromQuery,
   getLightweightServiceFromQuery: mocks.getLightweightServiceFromQuery,
   getWritableServiceFromQuery: mocks.getWritableServiceFromQuery,
 }));
@@ -155,14 +156,21 @@ describe('productivity health API', () => {
     expect(body.nextBestAction).toBe('Run claude-memory-layer process --dry-run-recovery, then process pending embeddings.');
   });
 
-  it('returns a zero aggregate report for missing project storage without constructing a service', async () => {
-    // The route's only existsSync consumer is the storage probe
-    // (health.ts explicitProjectStoreExists), so a flat false is both the
-    // simplest stub and the truthful answer for a directory that was never
-    // created. The marker walk in project-path uses statSync against the real
-    // filesystem, so it is unaffected by this mock and resolution takes the
-    // genuine no-marker/no-git branch.
+  it('returns a zero aggregate report from the non-creating missing-store reader', async () => {
+    // Stub by value rather than call order: a flat false is the truthful
+    // answer for a directory that was never created, and stays correct if
+    // resolution grows more fs probes. The marker walk in project-path uses
+    // statSync against the real filesystem, so it is unaffected by this mock.
     mocks.existsSync.mockReturnValue(false);
+    mocks.service.getStats.mockResolvedValueOnce({ totalEvents: 0, vectorCount: 0, levelStats: [] });
+    mocks.service.getOutboxStats.mockResolvedValueOnce({
+      embedding: { pending: 0, processing: 0, failed: 0, retryableFailed: 0, quarantinedFailed: 0, total: 0, stuckProcessing: 0, oldestProcessingAgeMs: null },
+      vector: { pending: 0, processing: 0, failed: 0, retryableFailed: 0, quarantinedFailed: 0, total: 0, stuckProcessing: 0, oldestProcessingAgeMs: null }
+    });
+    mocks.service.getDerivationLiveness.mockResolvedValueOnce({
+      graduation: { attempts: 0, lastAttemptAt: null, lastSuccessAt: null, lastStatus: null, lastErrorCategory: null },
+      sources: { graduatedEvents: 0, curatedLessons: 0 }
+    });
     const missingProject = join(mkdtempSync(join(tmpdir(), 'cml-health-missing-project-')), 'project with spaces');
 
     const res = await createApp().request(`/api/health/productivity?project=${encodeURIComponent(missingProject)}`);
@@ -176,9 +184,9 @@ describe('productivity health API', () => {
     expect(body.signals.outbox.totals).toMatchObject({ pending: 0, processing: 0, failed: 0, total: 0, stuckProcessing: 0, oldestProcessingAgeMs: null });
     expect(body.summary.warningReasons).toEqual(['memory_density_low']);
     expect(body.nextBestAction).toBe('Import or capture project context before relying on productivity memory guidance.');
-    expect(mocks.getLightweightServiceFromQuery).not.toHaveBeenCalled();
-    expect(mocks.service.initialize).not.toHaveBeenCalled();
-    expect(mocks.service.shutdown).not.toHaveBeenCalled();
+    expect(mocks.getLightweightServiceFromQuery).toHaveBeenCalledTimes(1);
+    expect(mocks.service.initialize).toHaveBeenCalledTimes(1);
+    expect(mocks.service.shutdown).toHaveBeenCalledTimes(1);
     expect(JSON.stringify(body)).not.toContain(missingProject);
   });
 
