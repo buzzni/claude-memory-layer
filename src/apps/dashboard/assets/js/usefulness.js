@@ -14,9 +14,10 @@ async function loadUsefulnessView() {
   state.usefulnessHistoryOffset = 0;
   state.usefulnessHistory = [];
 
-  const [memoryUsefulness, helpfulness, retrievalTraces, retrievalReviewQueue, mostAccessed, adherenceSummary] = await Promise.all([
+  const [memoryUsefulness, helpfulness, retrievalTelemetry, retrievalTraces, retrievalReviewQueue, mostAccessed, adherenceSummary] = await Promise.all([
     fetch(apiUrl(`${API_BASE}/stats/usefulness`, { window: state.usefulnessWindow || '7d' })).then(r => r.json()).catch(() => null),
     fetch(apiUrl(`${API_BASE}/stats/helpfulness`, { limit: 5 })).then(r => r.json()).catch(() => null),
+    fetch(apiUrl(`${API_BASE}/stats/retrieval-telemetry`)).then(r => r.json()).catch(() => null),
     fetch(apiUrl(`${API_BASE}/stats/retrieval-traces`, { limit: 20 })).then(r => r.json()).catch(() => null),
     fetch(apiUrl(`${API_BASE}/stats/retrieval-review-queue`, { limit: 10 })).then(r => r.json()).catch(() => null),
     fetch(apiUrl(`${API_BASE}/stats/most-accessed`, { limit: 10 })).then(r => r.json()).catch(() => null),
@@ -25,6 +26,7 @@ async function loadUsefulnessView() {
 
   state.memoryUsefulness = memoryUsefulness;
   state.helpfulness = helpfulness;
+  state.retrievalTelemetry = retrievalTelemetry;
   state.retrievalTraces = retrievalTraces;
   state.retrievalReviewQueue = retrievalReviewQueue;
   state.mostAccessed = mostAccessed;
@@ -32,12 +34,33 @@ async function loadUsefulnessView() {
 
   updateMemoryUsefulnessUI();
   updateHelpfulnessUI();
+  updateRetrievalTelemetryUI();
   updateMostHelpfulList();
   updateTopAccessedEventsUI();
   updateAdherenceSummaryUI();
   updateRetrievalTraceUI();
 
   await loadUsefulnessHistory({ reset: true });
+}
+
+function updateRetrievalTelemetryUI() {
+  const container = document.getElementById('retrieval-telemetry-summary');
+  if (!container) return;
+  const telemetry = state.retrievalTelemetry;
+  if (!telemetry || telemetry.error) {
+    container.textContent = 'No presentation-aware telemetry yet.';
+    return;
+  }
+  const grounding = telemetry.evidenceGrounding || {};
+  const navigation = telemetry.referenceNavigation || {};
+  const presentations = new Map((telemetry.deliveries?.byPresentation || [])
+    .map(row => [row.presentationMode, row.deliveredItemCount || 0]));
+  const pct = value => `${(Number(value || 0) * 100).toFixed(1)}%`;
+  container.innerHTML = `
+    <div><strong>${formatNumber(presentations.get('evidence') || 0)}</strong> evidence items · <strong>${pct(grounding.groundingRate)}</strong> grounded (${formatNumber(grounding.groundedDeliveries || 0)}/${formatNumber(grounding.evaluatedDeliveries || 0)})</div>
+    <div style="margin-top:6px;"><strong>${formatNumber(presentations.get('reference') || 0)}</strong> reference items · <strong>${pct(navigation.navigationRate)}</strong> navigated (${formatNumber(navigation.navigatedTraces || 0)}/${formatNumber(navigation.eligibleTraces || 0)} traces)</div>
+    <div style="margin-top:6px;"><strong>${formatNumber(presentations.get('core') || 0)}</strong> core items · ${formatNumber(navigation.ambiguousOpenCount || 0)} ambiguous opens</div>
+  `;
 }
 
 async function loadUsefulnessHistory(options = {}) {
@@ -109,13 +132,17 @@ function renderUsefulnessHistory() {
     const isSessionStart = entry.kind === 'session_start';
     const icon = isSessionStart ? 'ri-restart-line' : 'ri-question-line';
     const memories = entry.memories || [];
+    const presentationMode = entry.presentationMode || 'unknown';
+    const isReference = presentationMode === 'reference';
     const measured = memories.filter(m => m.helpfulnessScore !== null && m.helpfulnessScore !== undefined);
     const grounded = memories.filter(m => (m.contentOverlapScore || 0) >= 0.3);
     const bestScore = measured.length > 0 ? Math.max(...measured.map(m => m.helpfulnessScore)) : null;
 
     const statusChips = [
       `<span class="evidence-chip">${memories.length} injected</span>`,
-      grounded.length > 0
+      isReference
+        ? '<span class="evidence-chip">reference navigation measured separately</span>'
+        : grounded.length > 0
         ? `<span class="evidence-chip chip-grounded"><i class="ri-double-quotes-l"></i> ${grounded.length} used in answer</span>`
         : (measured.length > 0 ? '<span class="evidence-chip chip-unused">not reused in answer</span>' : '<span class="evidence-chip">awaiting evaluation</span>'),
       entry.confidence ? `<span class="evidence-chip">${escapeHtml(entry.confidence)}</span>` : ''
@@ -151,8 +178,10 @@ function renderUsefulnessHistory() {
                 ${escapeHtml(m.summary || '(no summary)')}
               </span>
               <span class="evidence-memory-scores">
-                ${groundingBadge(m.contentOverlapScore)}
-                ${usefulnessScoreBadge(m.helpfulnessScore)}
+                ${m.presentationMode === 'reference' ? '' : groundingBadge(m.contentOverlapScore)}
+                ${m.presentationMode === 'reference'
+                  ? '<span class="evidence-score score-pending">reference</span>'
+                  : usefulnessScoreBadge(m.helpfulnessScore)}
               </span>
             </div>
             ${evidenceHtml}

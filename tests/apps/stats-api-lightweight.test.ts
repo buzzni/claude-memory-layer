@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => {
     getMostAccessedMemories: vi.fn(),
     getHelpfulnessStats: vi.fn(),
     getHelpfulnessStatsByDay: vi.fn(),
+    getRetrievalTelemetryStats: vi.fn(),
     getHelpfulMemories: vi.fn(),
     getRecentRetrievalTraces: vi.fn(),
     getEndlessModeStatus: vi.fn()
@@ -77,6 +78,11 @@ describe('stats API lightweight read paths', () => {
     mocks.service.getMostAccessedMemories.mockReset().mockResolvedValue([]);
     mocks.service.getHelpfulnessStats.mockReset().mockResolvedValue({ avgScore: 0, totalEvaluated: 0, totalRetrievals: 0, helpful: 0, neutral: 0, unhelpful: 0 });
     mocks.service.getHelpfulnessStatsByDay.mockReset().mockResolvedValue([]);
+    mocks.service.getRetrievalTelemetryStats.mockReset().mockResolvedValue({
+      deliveries: { totalTraces: 0, totalItems: 0, byPresentation: [], byTrigger: [], legacyUnknownRows: 0 },
+      evidenceGrounding: { evaluatedDeliveries: 0, groundedDeliveries: 0, groundingRate: 0, averageContentOverlap: 0 },
+      referenceNavigation: { eligibleTraces: 0, navigatedTraces: 0, navigationRate: 0, attributedOpenCount: 0, ambiguousOpenCount: 0, unattributedOpenCount: 0 }
+    });
     mocks.service.getHelpfulMemories.mockReset().mockResolvedValue([]);
     mocks.service.getRecentRetrievalTraces.mockReset().mockResolvedValue([]);
     mocks.service.getEndlessModeStatus.mockReset().mockResolvedValue({ mode: 'session', continuityScore: 0, workingSetSize: 0, consolidatedCount: 0 });
@@ -167,6 +173,7 @@ describe('stats API lightweight read paths', () => {
       '/api/stats/levels/L0?project=abc12345',
       '/api/stats/most-accessed?project=abc12345&limit=10',
       '/api/stats/helpfulness?project=abc12345&limit=5',
+      '/api/stats/retrieval-telemetry?project=abc12345',
       '/api/stats/timeline?project=abc12345&days=14',
       '/api/stats/kpi?project=abc12345&window=7d',
       '/api/stats/retrieval-traces?project=abc12345&limit=20',
@@ -180,6 +187,32 @@ describe('stats API lightweight read paths', () => {
     }
     expect(mocks.getServiceFromQuery).not.toHaveBeenCalled();
     expect(mocks.getLightweightServiceFromQuery).toHaveBeenCalledTimes(paths.length);
+  });
+
+  it('GET /api/stats/retrieval-telemetry preserves source-specific denominators', async () => {
+    const telemetry = {
+      deliveries: {
+        totalTraces: 4,
+        totalItems: 7,
+        byPresentation: [
+          { presentationMode: 'evidence', traceCount: 2, deliveredItemCount: 4 },
+          { presentationMode: 'reference', traceCount: 1, deliveredItemCount: 2 },
+          { presentationMode: 'core', traceCount: 1, deliveredItemCount: 1 }
+        ],
+        byTrigger: [],
+        legacyUnknownRows: 3
+      },
+      evidenceGrounding: { evaluatedDeliveries: 4, groundedDeliveries: 3, groundingRate: 0.75, averageContentOverlap: 0.42 },
+      referenceNavigation: { eligibleTraces: 1, navigatedTraces: 1, navigationRate: 1, attributedOpenCount: 2, ambiguousOpenCount: 1, unattributedOpenCount: 0 }
+    };
+    mocks.service.getRetrievalTelemetryStats.mockResolvedValue(telemetry);
+
+    const res = await createApp().request('/api/stats/retrieval-telemetry?project=abc12345');
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual(telemetry);
+    expect(mocks.service.getRetrievalTelemetryStats).toHaveBeenCalledTimes(1);
+    expect(mocks.getServiceFromQuery).not.toHaveBeenCalled();
   });
 
   it('GET /api/stats/kpi window-scopes its event fetch instead of a 20k scan', async () => {

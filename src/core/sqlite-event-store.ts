@@ -39,6 +39,17 @@ import { MarkdownMirror } from './markdown-mirror.js';
 import { VectorOutbox, type OutboxConfig } from './vector-outbox.js';
 import { normalizeRetrievalDebugLanes, type RetrievalDebugLane } from './retrieval-debug-lanes.js';
 import { computeMemoryUsageEvidence, type EvidenceMatch } from './usefulness-evidence.js';
+import {
+  normalizeRetrievalPresentationMode,
+  normalizeRetrievalTriggerType,
+  normalizeTelemetryClient,
+  type RecordReferenceNavigationInput,
+  type RecordReferenceNavigationResult,
+  type RetrievalPresentationMode,
+  type RetrievalTelemetryContext,
+  type RetrievalTelemetryStats,
+  type RetrievalTriggerType
+} from './retrieval-telemetry.js';
 
 export interface SQLiteEventStoreOptions extends SQLiteOptions {
   markdownMirrorRoot?: string;
@@ -100,6 +111,7 @@ function normalizeQueryRewriteKind(value?: string | null): QueryRewriteKind {
 const REWRITTEN_QUERY_REWRITE_KIND_SQL = `LOWER(TRIM(COALESCE(query_rewrite_kind, 'none'))) IN ('follow-up-context', 'intent-rewrite')`;
 const DEFAULT_OUTBOX_STUCK_THRESHOLD_MS = 5 * 60 * 1000;
 const DEFAULT_OUTBOX_MAX_RETRIES = 3;
+export const REFERENCE_ATTRIBUTION_WINDOW_MS = 15 * 60 * 1000;
 // Bump when introducing an ordered migration that must run exactly once; gate
 // such migrations on the persisted PRAGMA user_version.
 const SQLITE_SCHEMA_VERSION = 1;
@@ -586,6 +598,9 @@ export class SQLiteEventStore {
         tool_total_count INTEGER DEFAULT 0,
         was_reasked INTEGER DEFAULT 0,
         helpfulness_score REAL DEFAULT 0.5,
+        presentation_mode TEXT NOT NULL DEFAULT 'unknown',
+        trigger_type TEXT NOT NULL DEFAULT 'unknown',
+        delivery_client TEXT NOT NULL DEFAULT 'unknown',
         created_at TEXT DEFAULT (datetime('now')),
         measured_at TEXT
       );
@@ -607,7 +622,28 @@ export class SQLiteEventStore {
         selected_count INTEGER DEFAULT 0,
         confidence TEXT,
         fallback_trace TEXT,
+        presentation_mode TEXT NOT NULL DEFAULT 'unknown',
+        trigger_type TEXT NOT NULL DEFAULT 'unknown',
+        delivery_client TEXT NOT NULL DEFAULT 'unknown',
         created_at TEXT DEFAULT (datetime('now'))
+      );
+
+      -- Privacy-safe reference navigation. Target and trace identifiers are
+      -- stored without copying source or transcript content.
+      CREATE TABLE IF NOT EXISTS retrieval_navigation_events (
+        navigation_id TEXT PRIMARY KEY,
+        target_event_id TEXT NOT NULL,
+        trace_id TEXT,
+        delivery_session_id TEXT,
+        presentation_mode TEXT NOT NULL DEFAULT 'reference',
+        trigger_type TEXT NOT NULL DEFAULT 'unknown',
+        navigation_action TEXT NOT NULL,
+        navigation_client TEXT NOT NULL DEFAULT 'unknown',
+        attribution_outcome TEXT NOT NULL,
+        attribution_reason TEXT NOT NULL,
+        open_count INTEGER NOT NULL DEFAULT 1,
+        first_opened_at TEXT NOT NULL,
+        last_opened_at TEXT NOT NULL
       );
 
       -- Sync position tracking (for SQLite -> DuckDB sync)
@@ -930,6 +966,8 @@ export class SQLiteEventStore {
       CREATE INDEX IF NOT EXISTS idx_retrieval_traces_created_at ON retrieval_traces(created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_retrieval_traces_project_hash ON retrieval_traces(project_hash);
       CREATE INDEX IF NOT EXISTS idx_retrieval_traces_session_id ON retrieval_traces(session_id);
+      CREATE INDEX IF NOT EXISTS idx_retrieval_navigation_trace ON retrieval_navigation_events(trace_id);
+      CREATE INDEX IF NOT EXISTS idx_retrieval_navigation_target_time ON retrieval_navigation_events(target_event_id, last_opened_at DESC);
       CREATE INDEX IF NOT EXISTS idx_memory_facets_project_dimension_value ON memory_facets(project_hash, dimension, value);
       CREATE INDEX IF NOT EXISTS idx_memory_facets_target ON memory_facets(target_type, target_id);
       CREATE INDEX IF NOT EXISTS idx_memory_facets_dimension_value_confidence ON memory_facets(dimension, value, confidence DESC);
@@ -1049,6 +1087,9 @@ export class SQLiteEventStore {
     this.addColumnIfMissing('memory_helpfulness', 'content_overlap_score', 'REAL');
     this.addColumnIfMissing('memory_helpfulness', 'evidence_json', 'TEXT');
     this.addColumnIfMissing('memory_helpfulness', 'injected_content', 'TEXT');
+    this.addColumnIfMissing('memory_helpfulness', 'presentation_mode', `TEXT NOT NULL DEFAULT 'unknown'`);
+    this.addColumnIfMissing('memory_helpfulness', 'trigger_type', `TEXT NOT NULL DEFAULT 'unknown'`);
+    this.addColumnIfMissing('memory_helpfulness', 'delivery_client', `TEXT NOT NULL DEFAULT 'unknown'`);
     try {
       sqliteExec(this.db, `CREATE INDEX IF NOT EXISTS idx_helpfulness_trace ON memory_helpfulness(trace_id);`);
     } catch {
@@ -1060,6 +1101,9 @@ export class SQLiteEventStore {
     this.addColumnIfMissing('retrieval_traces', 'candidate_details_json', 'TEXT');
     this.addColumnIfMissing('retrieval_traces', 'raw_query_text', 'TEXT');
     this.addColumnIfMissing('retrieval_traces', 'query_rewrite_kind', 'TEXT');
+    this.addColumnIfMissing('retrieval_traces', 'presentation_mode', `TEXT NOT NULL DEFAULT 'unknown'`);
+    this.addColumnIfMissing('retrieval_traces', 'trigger_type', `TEXT NOT NULL DEFAULT 'unknown'`);
+    this.addColumnIfMissing('retrieval_traces', 'delivery_client', `TEXT NOT NULL DEFAULT 'unknown'`);
 
     // Explicit curation reuses the existing lesson artifact while preserving
     // whether the item came from a reviewed/manual capture or a derivation.
@@ -2597,7 +2641,7 @@ export class SQLiteEventStore {
     sessionId: string,
     score: number,
     query: string,
-    options?: { traceId?: string; source?: string; injectedContent?: string }
+    options?: { traceId?: string; source?: string; injectedContent?: string } & RetrievalTelemetryContext
   ): Promise<void> {
     if (this.readOnly) return;
     await this.initialize();
@@ -2608,13 +2652,18 @@ export class SQLiteEventStore {
     // timestamp in the same second) would count as "after" the retrieval.
     sqliteRun(
       this.db,
-      `INSERT INTO memory_helpfulness (id, event_id, session_id, retrieval_score, query_preview, trace_id, source, injected_content, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO memory_helpfulness (
+         id, event_id, session_id, retrieval_score, query_preview, trace_id, source,
+         injected_content, presentation_mode, trigger_type, delivery_client, created_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id, eventId, sessionId, score, query.slice(0, 200),
         options?.traceId || null,
         options?.source || 'user_prompt',
         options?.injectedContent ? options.injectedContent.slice(0, 2000) : null,
+        normalizeRetrievalPresentationMode(options?.presentationMode),
+        normalizeRetrievalTriggerType(options?.triggerType),
+        normalizeTelemetryClient(options?.deliveryClient),
         new Date().toISOString()
       ]
     );
@@ -2741,13 +2790,25 @@ export class SQLiteEventStore {
       const memoryContent = (retrieval.injected_content as string)
         || memoryContentById.get(retrieval.event_id as string)
         || '';
+      const presentationMode = normalizeRetrievalPresentationMode(retrieval.presentation_mode);
       let contentOverlapScore: number | null = null;
       let evidenceMatches: EvidenceMatch[] = [];
-      if (responsesAfter.length > 0 && memoryContent) {
+      if (presentationMode !== 'reference' && responsesAfter.length > 0 && memoryContent) {
         const evidence = computeMemoryUsageEvidence(memoryContent, responsesAfter);
         contentOverlapScore = evidence.contentOverlapScore;
         evidenceMatches = evidence.matches;
       }
+
+      const referenceOpened = presentationMode === 'reference' && Boolean(retrieval.trace_id) && Boolean(
+        sqliteGet<{ opened: number }>(
+          this.db,
+          `SELECT 1 AS opened
+           FROM retrieval_navigation_events
+           WHERE trace_id = ? AND target_event_id = ? AND attribution_outcome = 'attributed'
+           LIMIT 1`,
+          [retrieval.trace_id, retrieval.event_id]
+        )
+      );
 
       // Calculate helpfulness score
       // Weights tuned for shopping-assistant-like corpora where sessions
@@ -2758,7 +2819,12 @@ export class SQLiteEventStore {
       // When content grounding is measurable it dominates the score; the
       // legacy behavioral-only formula remains the fallback (e.g. session
       // ended right after retrieval, so no responses followed).
-      const helpfulnessScore = contentOverlapScore !== null
+      // A reference index is navigation, not evidence. Absence of copied text
+      // must not make it unhelpful: a deterministic open is positive and an
+      // unopened reference remains neutral. Citation use is not inferred.
+      const helpfulnessScore = presentationMode === 'reference'
+        ? (referenceOpened ? 1 : 0.5)
+        : contentOverlapScore !== null
         ? (
           0.45 * contentOverlapScore +
           0.20 * Math.min(retrievalScore, 1.0) +
@@ -2985,7 +3051,9 @@ export class SQLiteEventStore {
       evidence: EvidenceMatch[];
       measuredAt: string | null;
       source: string;
+      presentationMode: RetrievalPresentationMode;
     }>;
+    presentationMode: RetrievalPresentationMode;
   }>> {
     await this.initialize();
 
@@ -2995,6 +3063,11 @@ export class SQLiteEventStore {
     // Read-only dashboards can open legacy DBs where the trace-link migration
     // (trace_id/source columns) never ran; fall back to trace-only history.
     const hasTraceLink = this.hasTableColumn('memory_helpfulness', 'trace_id');
+    const hasTraceTrigger = this.hasTableColumn('retrieval_traces', 'trigger_type');
+    const hasTracePresentation = this.hasTableColumn('retrieval_traces', 'presentation_mode');
+    const traceKindSql = hasTraceTrigger
+      ? `CASE WHEN trigger_type = 'session_start' THEN 'session_start' ELSE 'query' END`
+      : `'query'`;
 
     const sessionFilterTrace = options.sessionId ? `AND session_id = ?` : '';
     const selectionFilter = options.withSelectionsOnly ? `AND selected_count > 0` : '';
@@ -3012,13 +3085,16 @@ export class SQLiteEventStore {
                 session_id,
                 MIN(created_at) AS created_at
          FROM memory_helpfulness
-         WHERE source = 'session_start' ${sessionFilterTrace}
+         WHERE source = 'session_start'
+           AND (trace_id IS NULL OR NOT EXISTS (
+             SELECT 1 FROM retrieval_traces rt WHERE rt.trace_id = memory_helpfulness.trace_id
+           )) ${sessionFilterTrace}
          GROUP BY COALESCE(trace_id, 'ss-' || session_id), session_id`
       : '';
     const heads = sqliteAll<Record<string, unknown>>(
       this.db,
       `SELECT * FROM (
-         SELECT 'query' AS kind, trace_id AS id, session_id, created_at
+         SELECT ${traceKindSql} AS kind, trace_id AS id, session_id, created_at
          FROM retrieval_traces
          WHERE 1=1 ${sessionFilterTrace} ${selectionFilter}
          ${sessionStartBranch}
@@ -3049,7 +3125,9 @@ export class SQLiteEventStore {
         evidence: EvidenceMatch[];
         measuredAt: string | null;
         source: string;
+        presentationMode: RetrievalPresentationMode;
       }>;
+      presentationMode: RetrievalPresentationMode;
     }> = [];
 
     for (const head of heads) {
@@ -3057,13 +3135,13 @@ export class SQLiteEventStore {
       const headId = head.id as string;
 
       let trace: Record<string, unknown> | undefined;
-      if (kind === 'query') {
+      if (!headId.startsWith('ss-')) {
         trace = sqliteGet<Record<string, unknown>>(
           this.db,
           `SELECT * FROM retrieval_traces WHERE trace_id = ?`,
           [headId]
         );
-        if (!trace) continue;
+        if (!trace && kind === 'query') continue;
       }
 
       // Helpfulness rows for this head: primary link via trace_id; legacy
@@ -3075,7 +3153,7 @@ export class SQLiteEventStore {
           [headId]
         )
         : [];
-      if (kind === 'query' && helpRows.length === 0 && trace) {
+      if (helpRows.length === 0 && trace) {
         const selectedIds: string[] = (() => {
           try { return JSON.parse((trace.selected_event_ids as string) || '[]'); } catch { return []; }
         })();
@@ -3092,7 +3170,7 @@ export class SQLiteEventStore {
           );
         }
       }
-      if (kind === 'session_start' && helpRows.length === 0 && headId.startsWith('ss-')) {
+      if (kind === 'session_start' && helpRows.length === 0 && !trace) {
         helpRows = sqliteAll<Record<string, unknown>>(
           this.db,
           `SELECT * FROM memory_helpfulness
@@ -3133,22 +3211,30 @@ export class SQLiteEventStore {
           contentOverlapScore: (row.content_overlap_score as number) ?? null,
           evidence,
           measuredAt: (row.measured_at as string) ?? null,
-          source: (row.source as string) || 'user_prompt'
+          source: (row.source as string) || 'user_prompt',
+          presentationMode: normalizeRetrievalPresentationMode(row.presentation_mode)
         };
       });
 
-      if (kind === 'query' && trace) {
+      if (trace) {
         entries.push({
           traceId: headId,
           kind,
           sessionId: (trace.session_id as string) ?? null,
-          question: (trace.raw_query_text as string) || (trace.query_text as string) || '',
+          question: kind === 'session_start'
+            ? (normalizeRetrievalPresentationMode(trace.presentation_mode) === 'core'
+              ? 'Session start — core memory injected'
+              : 'Session start — recent project context injected')
+            : (trace.raw_query_text as string) || (trace.query_text as string) || '',
           queryText: (trace.query_text as string) ?? null,
           strategy: (trace.strategy as string) ?? null,
           confidence: (trace.confidence as string) ?? null,
           candidateCount: (trace.candidate_count as number) ?? 0,
           selectedCount: (trace.selected_count as number) ?? 0,
           createdAt: toDateFromSQLite(trace.created_at as string),
+          presentationMode: hasTracePresentation
+            ? normalizeRetrievalPresentationMode(trace.presentation_mode)
+            : 'unknown',
           memories
         });
       } else {
@@ -3163,6 +3249,7 @@ export class SQLiteEventStore {
           candidateCount: memories.length,
           selectedCount: memories.length,
           createdAt: toDateFromSQLite(head.created_at as string),
+          presentationMode: 'unknown',
           memories
         });
       }
@@ -3418,7 +3505,11 @@ export class SQLiteEventStore {
     }>;
     confidence?: string;
     fallbackTrace?: string[];
+    presentationMode?: RetrievalPresentationMode;
+    triggerType?: RetrievalTriggerType;
+    deliveryClient?: string;
   }): Promise<void> {
+    if (this.readOnly) return;
     await this.initialize();
 
     const traceId = input.traceId || randomUUID();
@@ -3430,8 +3521,9 @@ export class SQLiteEventStore {
       `INSERT INTO retrieval_traces (
         trace_id, session_id, project_hash, query_text, raw_query_text, query_rewrite_kind, strategy,
         candidate_event_ids, selected_event_ids, candidate_details_json, selected_details_json,
-        candidate_count, selected_count, confidence, fallback_trace
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        candidate_count, selected_count, confidence, fallback_trace,
+        presentation_mode, trigger_type, delivery_client
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         traceId,
         input.sessionId || null,
@@ -3447,9 +3539,232 @@ export class SQLiteEventStore {
         (input.candidateEventIds || []).length,
         (input.selectedEventIds || []).length,
         input.confidence || null,
-        JSON.stringify(input.fallbackTrace || [])
+        JSON.stringify(input.fallbackTrace || []),
+        normalizeRetrievalPresentationMode(input.presentationMode),
+        normalizeRetrievalTriggerType(input.triggerType),
+        normalizeTelemetryClient(input.deliveryClient)
       ]
     );
+  }
+
+  /**
+   * Attribute a reference open to a recent reference delivery only when one
+   * trace is the unique candidate. The 15-minute window is deliberately
+   * bounded; an optional current session makes the boundary stricter. Client
+   * labels are recorded for diagnostics but never used to guess attribution.
+   * Repeated opens collapse into one row with an incremented count.
+   */
+  async recordReferenceNavigation(
+    input: RecordReferenceNavigationInput
+  ): Promise<RecordReferenceNavigationResult> {
+    if (this.readOnly) {
+      return { outcome: 'unattributed', traceId: null, repeated: false };
+    }
+    await this.initialize();
+
+    const openedAt = input.openedAt ?? new Date();
+    const windowStart = new Date(openedAt.getTime() - REFERENCE_ATTRIBUTION_WINDOW_MS).toISOString();
+    const openedAtIso = openedAt.toISOString();
+    const traceRows = sqliteAll<Record<string, unknown>>(
+      this.db,
+      `SELECT trace_id, session_id, trigger_type, selected_event_ids
+       FROM retrieval_traces
+       WHERE presentation_mode = 'reference'
+         AND datetime(created_at) >= datetime(?)
+         AND datetime(created_at) <= datetime(?)
+       ORDER BY created_at DESC
+       LIMIT 500`,
+      [windowStart, openedAtIso]
+    ).filter((row) => {
+      if (input.attributionSessionId && row.session_id !== input.attributionSessionId) return false;
+      try {
+        const selected = JSON.parse(String(row.selected_event_ids || '[]'));
+        return Array.isArray(selected) && selected.includes(input.targetEventId);
+      } catch {
+        return false;
+      }
+    });
+
+    const byTrace = new Map<string, Record<string, unknown>>();
+    for (const row of traceRows) {
+      const traceId = String(row.trace_id || '');
+      if (traceId) byTrace.set(traceId, row);
+    }
+    const candidates = Array.from(byTrace.values());
+    const attributed = candidates.length === 1 ? candidates[0] : undefined;
+    const traceId = attributed ? String(attributed.trace_id) : null;
+    const outcome = candidates.length === 1
+      ? 'attributed'
+      : candidates.length > 1
+        ? 'ambiguous'
+        : 'unattributed';
+    const reason = candidates.length === 1
+      ? 'unique_recent_reference_delivery'
+      : candidates.length > 1
+        ? 'multiple_recent_reference_deliveries'
+        : 'no_recent_reference_delivery';
+    const navigationClient = normalizeTelemetryClient(input.navigationClient);
+
+    const repeated = sqliteGet<{ navigation_id: string }>(
+      this.db,
+      `SELECT navigation_id
+       FROM retrieval_navigation_events
+       WHERE target_event_id = ?
+         AND trace_id IS ?
+         AND navigation_action = ?
+         AND navigation_client = ?
+         AND attribution_outcome = ?
+         AND datetime(last_opened_at) >= datetime(?)
+       ORDER BY last_opened_at DESC
+       LIMIT 1`,
+      [input.targetEventId, traceId, input.action, navigationClient, outcome, windowStart]
+    );
+
+    if (repeated) {
+      sqliteRun(
+        this.db,
+        `UPDATE retrieval_navigation_events
+         SET open_count = open_count + 1, last_opened_at = ?
+         WHERE navigation_id = ?`,
+        [openedAtIso, repeated.navigation_id]
+      );
+      return { outcome, traceId, repeated: true };
+    }
+
+    sqliteRun(
+      this.db,
+      `INSERT INTO retrieval_navigation_events (
+         navigation_id, target_event_id, trace_id, delivery_session_id,
+         presentation_mode, trigger_type, navigation_action, navigation_client,
+         attribution_outcome, attribution_reason, open_count, first_opened_at, last_opened_at
+       ) VALUES (?, ?, ?, ?, 'reference', ?, ?, ?, ?, ?, 1, ?, ?)`,
+      [
+        randomUUID(),
+        input.targetEventId,
+        traceId,
+        attributed?.session_id || input.attributionSessionId || null,
+        normalizeRetrievalTriggerType(attributed?.trigger_type),
+        input.action,
+        navigationClient,
+        outcome,
+        reason,
+        openedAtIso,
+        openedAtIso
+      ]
+    );
+    return { outcome, traceId, repeated: false };
+  }
+
+  async getRetrievalTelemetryStats(): Promise<RetrievalTelemetryStats> {
+    await this.initialize();
+
+    const hasTracePresentation = this.hasTableColumn('retrieval_traces', 'presentation_mode');
+    const hasTraceTrigger = this.hasTableColumn('retrieval_traces', 'trigger_type');
+    const hasHelpfulnessTable = Boolean(sqliteGet<{ name: string }>(
+      this.db,
+      `SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'memory_helpfulness'`
+    ));
+    const hasHelpfulnessPresentation = hasHelpfulnessTable
+      && this.hasTableColumn('memory_helpfulness', 'presentation_mode');
+    const hasNavigationTable = Boolean(sqliteGet<{ name: string }>(
+      this.db,
+      `SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'retrieval_navigation_events'`
+    ));
+    const presentationSql = hasTracePresentation
+      ? "COALESCE(NULLIF(TRIM(presentation_mode), ''), 'unknown')"
+      : "'unknown'";
+    const triggerSql = hasTraceTrigger
+      ? "COALESCE(NULLIF(TRIM(trigger_type), ''), 'unknown')"
+      : "'unknown'";
+
+    const presentationRows = sqliteAll<Record<string, unknown>>(
+      this.db,
+      `SELECT ${presentationSql} AS label, COUNT(*) AS trace_count,
+              COALESCE(SUM(selected_count), 0) AS item_count
+       FROM retrieval_traces GROUP BY ${presentationSql} ORDER BY label ASC`
+    );
+    const triggerRows = sqliteAll<Record<string, unknown>>(
+      this.db,
+      `SELECT ${triggerSql} AS label, COUNT(*) AS trace_count,
+              COALESCE(SUM(selected_count), 0) AS item_count
+       FROM retrieval_traces GROUP BY ${triggerSql} ORDER BY label ASC`
+    );
+    const deliveryTotals = sqliteGet<Record<string, unknown>>(
+      this.db,
+      `SELECT COUNT(*) AS trace_count, COALESCE(SUM(selected_count), 0) AS item_count FROM retrieval_traces`
+    );
+    const legacyUnknownRows = hasHelpfulnessTable
+      ? sqliteGet<{ count: number }>(
+          this.db,
+          hasHelpfulnessPresentation
+            ? `SELECT COUNT(*) AS count FROM memory_helpfulness WHERE presentation_mode = 'unknown' OR presentation_mode IS NULL`
+            : `SELECT COUNT(*) AS count FROM memory_helpfulness`
+        )?.count ?? 0
+      : 0;
+
+    const evidence = hasHelpfulnessPresentation
+      ? sqliteGet<Record<string, unknown>>(
+          this.db,
+          `SELECT COUNT(content_overlap_score) AS evaluated,
+                  SUM(CASE WHEN content_overlap_score >= 0.3 THEN 1 ELSE 0 END) AS grounded,
+                  AVG(content_overlap_score) AS average_overlap
+           FROM memory_helpfulness
+           WHERE presentation_mode = 'evidence'`
+        )
+      : undefined;
+    const referenceEligible = hasTracePresentation
+      ? Number(sqliteGet<{ count: number }>(
+          this.db,
+          `SELECT COUNT(*) AS count FROM retrieval_traces
+           WHERE presentation_mode = 'reference' AND selected_count > 0`
+        )?.count ?? 0)
+      : 0;
+    const navigation = hasNavigationTable
+      ? sqliteGet<Record<string, unknown>>(
+          this.db,
+          `SELECT
+             COUNT(DISTINCT CASE WHEN attribution_outcome = 'attributed' THEN trace_id END) AS navigated_traces,
+             SUM(CASE WHEN attribution_outcome = 'attributed' THEN open_count ELSE 0 END) AS attributed_opens,
+             SUM(CASE WHEN attribution_outcome = 'ambiguous' THEN open_count ELSE 0 END) AS ambiguous_opens,
+             SUM(CASE WHEN attribution_outcome = 'unattributed' THEN open_count ELSE 0 END) AS unattributed_opens
+           FROM retrieval_navigation_events`
+        )
+      : undefined;
+    const evidenceEvaluated = Number(evidence?.evaluated || 0);
+    const evidenceGrounded = Number(evidence?.grounded || 0);
+    const navigatedTraces = Number(navigation?.navigated_traces || 0);
+
+    return {
+      deliveries: {
+        totalTraces: Number(deliveryTotals?.trace_count || 0),
+        totalItems: Number(deliveryTotals?.item_count || 0),
+        byPresentation: presentationRows.map((row) => ({
+          presentationMode: normalizeRetrievalPresentationMode(row.label),
+          traceCount: Number(row.trace_count || 0),
+          deliveredItemCount: Number(row.item_count || 0)
+        })),
+        byTrigger: triggerRows.map((row) => ({
+          triggerType: normalizeRetrievalTriggerType(row.label),
+          traceCount: Number(row.trace_count || 0),
+          deliveredItemCount: Number(row.item_count || 0)
+        })),
+        legacyUnknownRows: Number(legacyUnknownRows)
+      },
+      evidenceGrounding: {
+        evaluatedDeliveries: evidenceEvaluated,
+        groundedDeliveries: evidenceGrounded,
+        groundingRate: evidenceEvaluated > 0 ? evidenceGrounded / evidenceEvaluated : 0,
+        averageContentOverlap: Number(evidence?.average_overlap || 0)
+      },
+      referenceNavigation: {
+        eligibleTraces: referenceEligible,
+        navigatedTraces,
+        navigationRate: referenceEligible > 0 ? navigatedTraces / referenceEligible : 0,
+        attributedOpenCount: Number(navigation?.attributed_opens || 0),
+        ambiguousOpenCount: Number(navigation?.ambiguous_opens || 0),
+        unattributedOpenCount: Number(navigation?.unattributed_opens || 0)
+      }
+    };
   }
 
   async getRecentRetrievalTraces(limit: number = 50): Promise<Array<{
@@ -3482,14 +3797,20 @@ export class SQLiteEventStore {
     selectedCount: number;
     confidence?: string;
     fallbackTrace: string[];
+    presentationMode: RetrievalPresentationMode;
+    triggerType: RetrievalTriggerType;
+    deliveryClient: string;
     createdAt: Date;
   }>> {
     await this.initialize();
 
     try {
+      const userQueryWhere = this.hasTableColumn('retrieval_traces', 'trigger_type')
+        ? `WHERE COALESCE(trigger_type, 'unknown') != 'session_start'`
+        : '';
       const rows = sqliteAll<Record<string, unknown>>(
         this.db,
-        `SELECT * FROM retrieval_traces ORDER BY created_at DESC LIMIT ?`,
+        `SELECT * FROM retrieval_traces ${userQueryWhere} ORDER BY created_at DESC LIMIT ?`,
         [limit]
       );
 
@@ -3509,6 +3830,9 @@ export class SQLiteEventStore {
         selectedCount: Number(row.selected_count || 0),
         confidence: (row.confidence as string) || undefined,
         fallbackTrace: row.fallback_trace ? JSON.parse(row.fallback_trace as string) : [],
+        presentationMode: normalizeRetrievalPresentationMode(row.presentation_mode),
+        triggerType: normalizeRetrievalTriggerType(row.trigger_type),
+        deliveryClient: normalizeTelemetryClient(row.delivery_client),
         createdAt: toDateFromSQLite(row.created_at),
       }));
     } catch (err: any) {
@@ -3550,6 +3874,9 @@ export class SQLiteEventStore {
       const rewrittenQueryRewriteKindSql = this.hasTableColumn('retrieval_traces', 'query_rewrite_kind')
         ? REWRITTEN_QUERY_REWRITE_KIND_SQL
         : '0';
+      const userQueryWhere = this.hasTableColumn('retrieval_traces', 'trigger_type')
+        ? `WHERE COALESCE(trigger_type, 'unknown') != 'session_start'`
+        : '';
       const row = sqliteGet<Record<string, unknown>>(
         this.db,
         `SELECT
@@ -3565,7 +3892,8 @@ export class SQLiteEventStore {
             WHEN SUM(candidate_count) > 0 THEN (SUM(selected_count) * 1.0 / SUM(candidate_count))
             ELSE 0
           END as selection_rate
-         FROM retrieval_traces`,
+         FROM retrieval_traces
+         ${userQueryWhere}`,
         []
       );
 
@@ -3588,6 +3916,7 @@ export class SQLiteEventStore {
             ELSE 0
           END as selection_rate
          FROM retrieval_traces
+         ${userQueryWhere}
          GROUP BY ${strategyColumnSql}
          ORDER BY total_queries DESC, strategy ASC`,
         []

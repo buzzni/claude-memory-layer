@@ -4,7 +4,7 @@
  */
 
 import { Hono } from 'hono';
-import { getLightweightServiceFromQuery, getServiceFromQuery, jsonError } from './utils.js';
+import { getLightweightServiceFromQuery, getServiceFromQuery, getWritableServiceFromQuery, jsonError } from './utils.js';
 
 export const searchRouter = new Hono();
 
@@ -137,14 +137,19 @@ searchRouter.post('/disclosure', async (c) => {
 
 // GET /api/search/disclosure/:resultId/expand - Expand a disclosure search result
 searchRouter.get('/disclosure/:resultId/expand', async (c) => {
-  const memoryService = getLightweightServiceFromQuery(c);
+  // Explicit disclosure navigation records privacy-safe telemetry.
+  const memoryService = getWritableServiceFromQuery(c);
   try {
     const resultId = c.req.param('resultId');
     const rawWindowSize = c.req.query('windowSize');
     const windowSize = rawWindowSize ? parseInt(rawWindowSize, 10) : undefined;
     const result = await memoryService.expandDisclosure(
       resultId,
-      Number.isFinite(windowSize) ? { windowSize } : undefined
+      {
+        ...(Number.isFinite(windowSize) ? { windowSize } : {}),
+        recordNavigation: true,
+        navigationClient: 'dashboard'
+      }
     );
 
     if (!result) {
@@ -161,10 +166,14 @@ searchRouter.get('/disclosure/:resultId/expand', async (c) => {
 
 // GET /api/search/disclosure/:resultId/source - Resolve source for a disclosure search result
 searchRouter.get('/disclosure/:resultId/source', async (c) => {
-  const memoryService = getLightweightServiceFromQuery(c);
+  // Explicit disclosure navigation records privacy-safe telemetry.
+  const memoryService = getWritableServiceFromQuery(c);
   try {
     const resultId = c.req.param('resultId');
-    const result = await memoryService.sourceDisclosure(resultId);
+    const result = await memoryService.sourceDisclosure(resultId, {
+      recordNavigation: true,
+      navigationClient: 'dashboard'
+    });
 
     if (!result) {
       return c.json({ error: 'Source not found' }, 404);

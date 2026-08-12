@@ -63,6 +63,12 @@ function service(
     initialize?: () => Promise<void>;
     getEvent?: (id: string) => Promise<MemoryEvent | null>;
     getSessionEvents?: (sessionId: string) => Promise<MemoryEvent[]>;
+    recordReferenceNavigation?: (input: {
+      targetEventId: string;
+      action: 'source_ref' | 'details' | 'expand' | 'source';
+      navigationClient: string;
+      attributionSessionId?: string;
+    }) => Promise<unknown>;
     sharedStore?: { get(entryId: string): Promise<SharedTroubleshootingEntry | null> };
   } = {}
 ) {
@@ -73,7 +79,8 @@ function service(
     },
     eventStore: {
       getEvent: overrides.getEvent ?? (async (id: string) => timeline.find((item) => item.id === id) ?? null),
-      getSessionEvents: overrides.getSessionEvents ?? (async (sessionId: string) => timeline.filter((item) => item.sessionId === sessionId))
+      getSessionEvents: overrides.getSessionEvents ?? (async (sessionId: string) => timeline.filter((item) => item.sessionId === sessionId)),
+      recordReferenceNavigation: overrides.recordReferenceNavigation
     },
     sharedStore: overrides.sharedStore
   });
@@ -86,6 +93,36 @@ describe('RetrievalDisclosureService', () => {
     expect(parseDisclosureResultId('shared:shared-1')).toBe('shared:shared-1');
     expect(parseDisclosureResultRef('event:e2')).toEqual({ kind: 'event', eventId: 'e2' });
     expect(parseDisclosureResultRef('shared:shared-1')).toEqual({ kind: 'shared', entryId: 'shared-1' });
+  });
+
+  it('records successful public expand/source navigation but leaves internal expansion read-only', async () => {
+    const opens: Array<Record<string, unknown>> = [];
+    const disclosure = service(retrievalResult(), {
+      recordReferenceNavigation: async (input) => { opens.push(input); }
+    });
+
+    await disclosure.expand('event:e2');
+    expect(opens).toEqual([]);
+
+    await disclosure.expand('event:e2', {
+      recordNavigation: true,
+      navigationClient: 'dashboard',
+      attributionSessionId: 'delivery-session'
+    });
+    await disclosure.source('event:e2', {
+      recordNavigation: true,
+      navigationClient: 'cli'
+    });
+
+    expect(opens).toEqual([
+      {
+        targetEventId: 'e2',
+        action: 'expand',
+        navigationClient: 'dashboard',
+        attributionSessionId: 'delivery-session'
+      },
+      { targetEventId: 'e2', action: 'source', navigationClient: 'cli', attributionSessionId: undefined }
+    ]);
   });
 
   it('search returns spec-aligned compact envelopes with reasons and source refs', async () => {

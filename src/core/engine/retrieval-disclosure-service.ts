@@ -12,6 +12,7 @@ import { sanitizeGovernanceAuditValue } from '../operations/governance-audit.js'
 import type { UnifiedRetrievalResult, MemoryWithContext, RetrievalDebugDetail } from '../retriever.js';
 import type { MemoryEvent, SharedTroubleshootingEntry } from '../types.js';
 import type { RetrieveMemoriesOptions } from './retrieval-orchestrator.js';
+import type { RecordReferenceNavigationInput } from '../retrieval-telemetry.js';
 
 export type RetrievalDisclosureResultType = RetrievalResultType;
 export type RetrievalDisclosureReason = RetrievalReason;
@@ -60,6 +61,15 @@ export type RetrievalDisclosureSearchOptions = RetrieveMemoriesOptions;
 
 export interface RetrievalDisclosureExpandOptions {
   windowSize?: number;
+  recordNavigation?: boolean;
+  navigationClient?: string;
+  attributionSessionId?: string;
+}
+
+export interface RetrievalDisclosureSourceOptions {
+  recordNavigation?: boolean;
+  navigationClient?: string;
+  attributionSessionId?: string;
 }
 
 export interface RetrievalDisclosureOrchestrator {
@@ -72,6 +82,7 @@ export interface RetrievalDisclosureOrchestrator {
 export interface RetrievalDisclosureEventStore {
   getEvent(id: string): Promise<MemoryEvent | null>;
   getSessionEvents(sessionId: string): Promise<MemoryEvent[]>;
+  recordReferenceNavigation?(input: RecordReferenceNavigationInput): Promise<unknown>;
 }
 
 export interface RetrievalDisclosureSharedStore {
@@ -92,7 +103,15 @@ export class RetrievalDisclosureService {
     query: string,
     options?: RetrievalDisclosureSearchOptions
   ): Promise<RetrievalDisclosureSearchResponse> {
-    const result = await this.deps.retrievalOrchestrator.retrieveMemories(query, options);
+    const result = await this.deps.retrievalOrchestrator.retrieveMemories(query, {
+      ...options,
+      telemetry: {
+        ...options?.telemetry,
+        presentationMode: 'reference',
+        triggerType: options?.telemetry?.triggerType ?? 'explicit_search',
+        deliveryClient: options?.telemetry?.deliveryClient ?? 'disclosure'
+      }
+    });
     const debugByEventId = this.buildDebugIndex(result);
     const projectResults = result.memories.map((memory) => this.memoryToEnvelope(
       memory,
@@ -142,7 +161,7 @@ export class RetrievalDisclosureService {
     const nearbyEvents = surroundingEvents.length > 0 ? surroundingEvents : [targetEvent];
     const nonTargetEvents = nearbyEvents.filter((event) => event.id !== targetEvent.id);
 
-    return {
+    const expansion = {
       target: this.eventToEnvelope(targetEvent, 1, ['continuity_link']),
       surroundingFacts: nonTargetEvents.map((event) => this.eventToEnvelope(event, 1, this.reasonsForContextEvent(event))),
       summaries: nonTargetEvents
@@ -151,9 +170,14 @@ export class RetrievalDisclosureService {
       relatedSources: nearbyEvents.map((event) => this.sourceReferenceForEvent(event)),
       expandedContext: this.formatTimelineContext(nearbyEvents)
     };
+    await this.recordNavigation(targetEvent.id, 'expand', options);
+    return expansion;
   }
 
-  async source(resultId: string): Promise<RetrievalDisclosureSource | null> {
+  async source(
+    resultId: string,
+    options?: RetrievalDisclosureSourceOptions
+  ): Promise<RetrievalDisclosureSource | null> {
     const parsedId = parseDisclosureResultRef(resultId);
     if (parsedId.kind === 'shared') {
       return this.sourceShared(parsedId.entryId);
@@ -162,11 +186,31 @@ export class RetrievalDisclosureService {
     const rawEvent = await this.deps.eventStore.getEvent(parsedId.eventId);
     if (!rawEvent) return null;
 
-    return {
+    const source = {
       ...this.sourceReferenceForEvent(rawEvent),
       rawEvents: [rawEvent],
       primaryEvent: rawEvent
     };
+    await this.recordNavigation(rawEvent.id, 'source', options);
+    return source;
+  }
+
+  private async recordNavigation(
+    targetEventId: string,
+    action: 'expand' | 'source',
+    options?: RetrievalDisclosureSourceOptions
+  ): Promise<void> {
+    if (options?.recordNavigation !== true || !this.deps.eventStore.recordReferenceNavigation) return;
+    try {
+      await this.deps.eventStore.recordReferenceNavigation({
+        targetEventId,
+        action,
+        navigationClient: options.navigationClient ?? 'disclosure',
+        attributionSessionId: options.attributionSessionId
+      });
+    } catch {
+      // Navigation telemetry must never make disclosure fail.
+    }
   }
 
   private async expandShared(entryId: string): Promise<RetrievalDisclosureExpansion | null> {

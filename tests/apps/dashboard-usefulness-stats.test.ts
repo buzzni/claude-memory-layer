@@ -83,7 +83,7 @@ function loadOverviewWithElements(elements: Record<string, TestElement>, files =
   };
 
   const usefulnessHooks = files.includes('usefulness.js')
-    ? ', renderUsefulnessHistory, updateOverviewUsefulnessStrip'
+    ? ', renderUsefulnessHistory, updateOverviewUsefulnessStrip, updateRetrievalTelemetryUI'
     : '';
   vm.runInNewContext(
     `${source}\n;globalThis.__dashboardTestHooks = { state, updateMemoryUsefulnessUI, updateRetrievalTraceUI, updateKpiCardsUI, updateOverviewActivityUI${usefulnessHooks} };`,
@@ -97,6 +97,7 @@ function loadOverviewWithElements(elements: Record<string, TestElement>, files =
     updateOverviewActivityUI: () => void;
     renderUsefulnessHistory: () => void;
     updateOverviewUsefulnessStrip: () => void;
+    updateRetrievalTelemetryUI: () => void;
   }}).__dashboardTestHooks;
 }
 
@@ -832,6 +833,62 @@ describe('dashboard memory usefulness stats', () => {
     expect(html).toContain('&lt;script&gt;');
     // Selected-but-untracked traces explain themselves instead of claiming nothing was injected.
     expect(html).toContain('2 memories were selected, but per-memory tracking is unavailable');
+  });
+
+  it('renders evidence grounding and reference navigation with separate denominators', () => {
+    const elements = { 'retrieval-telemetry-summary': new TestElement() };
+    const hooks = loadOverviewWithElements(elements, ['state.js', 'views.js', 'overview.js', 'usefulness.js']);
+    hooks.state.retrievalTelemetry = {
+      deliveries: {
+        byPresentation: [
+          { presentationMode: 'evidence', deliveredItemCount: 8 },
+          { presentationMode: 'reference', deliveredItemCount: 5 },
+          { presentationMode: 'core', deliveredItemCount: 2 }
+        ]
+      },
+      evidenceGrounding: { evaluatedDeliveries: 8, groundedDeliveries: 4, groundingRate: 0.5 },
+      referenceNavigation: { eligibleTraces: 4, navigatedTraces: 3, navigationRate: 0.75, ambiguousOpenCount: 1 }
+    };
+
+    hooks.updateRetrievalTelemetryUI();
+
+    const html = elements['retrieval-telemetry-summary'].innerHTML;
+    expect(html).toContain('8</strong> evidence items');
+    expect(html).toContain('50.0%</strong> grounded (4/8)');
+    expect(html).toContain('5</strong> reference items');
+    expect(html).toContain('75.0%</strong> navigated (3/4 traces)');
+    expect(html).toContain('2</strong> core items');
+    expect(html).toContain('1 ambiguous opens');
+  });
+
+  it('does not label reference delivery unhelpful from missing content overlap', () => {
+    const elements = { 'usefulness-history-list': new TestElement() };
+    const hooks = loadOverviewWithElements(elements, ['state.js', 'views.js', 'overview.js', 'usefulness.js']);
+    hooks.state.usefulnessHistory = [{
+      traceId: 'reference-trace',
+      kind: 'session_start',
+      sessionId: 'session-reference',
+      question: 'Session start',
+      presentationMode: 'reference',
+      selectedCount: 1,
+      createdAt: '2026-05-08T10:10:00.000Z',
+      memories: [{
+        eventId: 'memory-reference',
+        summary: 'A navigation hint',
+        helpfulnessScore: 0.5,
+        contentOverlapScore: null,
+        presentationMode: 'reference',
+        evidence: []
+      }]
+    }];
+
+    hooks.renderUsefulnessHistory();
+
+    const html = elements['usefulness-history-list'].innerHTML;
+    expect(html).toContain('reference navigation measured separately');
+    expect(html).toContain('>reference</span>');
+    expect(html).not.toContain('not reused in answer');
+    expect(html).not.toContain('grounding 0%');
   });
 
   it('renders the overview usefulness strip from the usefulness payload', () => {

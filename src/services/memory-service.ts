@@ -43,6 +43,12 @@ import type { IngestInterceptor } from '../core/ingest-interceptor.js';
 import type { MemoryIngestService } from '../core/engine/memory-ingest-service.js';
 import type { MemoryQueryService } from '../core/engine/memory-query-service.js';
 import type { CanonicalMemoryInjection } from '../core/operations/canonical-memory-injection-service.js';
+import type {
+  RecordReferenceNavigationInput,
+  RecordReferenceNavigationResult,
+  RetrievalTelemetryContext,
+  RetrievalTelemetryStats
+} from '../core/retrieval-telemetry.js';
 import { createMemoryServiceComposition } from '../core/engine/memory-service-composition.js';
 import {
   getProjectStoragePath as defaultGetProjectStoragePath,
@@ -70,6 +76,7 @@ import {
   type RetrievalDisclosureSearchResponse,
   type RetrievalDisclosureService,
   type RetrievalDisclosureSource,
+  type RetrievalDisclosureSourceOptions,
   type RetrievalOrchestrator,
   type RetrievalTrace,
   type RetrievalTraceStats,
@@ -319,8 +326,11 @@ export class MemoryService {
   /**
    * Layer 3 retrieval disclosure: resolve a search result to its raw source event.
    */
-  async sourceDisclosure(resultId: string): Promise<RetrievalDisclosureSource | null> {
-    return this.retrievalDisclosureService.source(resultId);
+  async sourceDisclosure(
+    resultId: string,
+    options?: RetrievalDisclosureSourceOptions
+  ): Promise<RetrievalDisclosureSource | null> {
+    return this.retrievalDisclosureService.source(resultId, options);
   }
 
   /**
@@ -607,7 +617,7 @@ export class MemoryService {
     sessionId: string,
     score: number,
     query: string,
-    options?: { traceId?: string; source?: string; injectedContent?: string }
+    options?: { traceId?: string; source?: string; injectedContent?: string } & RetrievalTelemetryContext
   ): Promise<void> {
     return this.retrievalOrchestrator.recordRetrieval(eventId, sessionId, score, query, options);
   }
@@ -661,6 +671,16 @@ export class MemoryService {
    */
   async getUsefulnessHistory(options: UsefulnessHistoryOptions = {}): Promise<UsefulnessHistoryEntry[]> {
     return this.retrievalAnalyticsService.getUsefulnessHistory(options);
+  }
+
+  async getRetrievalTelemetryStats(): Promise<RetrievalTelemetryStats> {
+    return this.retrievalAnalyticsService.getRetrievalTelemetryStats();
+  }
+
+  async recordReferenceNavigation(
+    input: RecordReferenceNavigationInput
+  ): Promise<RecordReferenceNavigationResult> {
+    return this.retrievalAnalyticsService.recordReferenceNavigation(input);
   }
 
   /**

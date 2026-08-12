@@ -75,6 +75,48 @@ describe('SQLiteEventStore legacy retrieval trace schema', () => {
           avgSelectedCountForRewrittenQueries: 0,
           avgSelectedCountForRawQueries: 1,
         });
+        await expect(store.getRetrievalTelemetryStats()).resolves.toMatchObject({
+          deliveries: {
+            totalTraces: 1,
+            totalItems: 1,
+            byPresentation: [
+              { presentationMode: 'unknown', traceCount: 1, deliveredItemCount: 1 }
+            ],
+            byTrigger: [
+              { triggerType: 'unknown', traceCount: 1, deliveredItemCount: 1 }
+            ]
+          },
+          evidenceGrounding: { evaluatedDeliveries: 0 },
+          referenceNavigation: { eligibleTraces: 0, navigatedTraces: 0 }
+        });
+      } finally {
+        await store.close();
+      }
+    });
+  });
+
+  it('additively migrates presentation fields and navigation telemetry without rewriting legacy rows', async () => {
+    await withLegacyRetrievalTraceDb(async (dbPath) => {
+      const store = new SQLiteEventStore(dbPath);
+      try {
+        await store.initialize();
+        await expect(store.getRecentRetrievalTraces(5)).resolves.toEqual([
+          expect.objectContaining({
+            traceId: 'trace-old-1',
+            queryText: 'old dashboard query',
+            presentationMode: 'unknown',
+            triggerType: 'unknown',
+            deliveryClient: 'unknown'
+          })
+        ]);
+        const db = new Database(dbPath, { readonly: true });
+        try {
+          expect(db.prepare(`SELECT COUNT(*) AS count FROM retrieval_navigation_events`).get()).toEqual({ count: 0 });
+          expect(db.prepare(`SELECT query_text FROM retrieval_traces WHERE trace_id = ?`).get('trace-old-1'))
+            .toEqual({ query_text: 'old dashboard query' });
+        } finally {
+          db.close();
+        }
       } finally {
         await store.close();
       }
