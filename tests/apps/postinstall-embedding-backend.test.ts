@@ -242,7 +242,7 @@ describe('embedding backend postinstall repair', () => {
 
   it('does not mistake the checkout dependency for an installed managed backend', () => {
     const postinstall = loadPostinstallModule();
-    const rootDir = mkdtempSync(join(process.cwd(), 'node_modules', '.cml-healthcheck-test-'));
+    const rootDir = mkdtempSync(join(process.cwd(), '.cml-healthcheck-test-'));
 
     try {
       expect(postinstall.isEmbeddingBackendAvailable(rootDir)).toBe(false);
