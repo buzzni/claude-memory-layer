@@ -96,7 +96,7 @@ import {
 import { runCodexImportOnce } from './codex-import-runner.js';
 import { readCodexAutoImportStatus } from '../../services/codex-session-auto-import.js';
 import { runHermesImportOnce } from './hermes-import-runner.js';
-import { resolveDashboardCommandOptions } from './dashboard-command.js';
+import { formatDashboardStatus, resolveDashboardCommandOptions } from './dashboard-command.js';
 import {
   formatLegacyProjectScopeRepairResult,
   resolveLegacyProjectScopeRepairOptions
@@ -140,6 +140,8 @@ import {
 import {
   formatMaintenanceLastRunStatus,
   formatMaintenanceRunReport,
+  maintenanceRunRequiresAttention,
+  parseMaintenanceMinFreeBytes,
   readMaintenanceLastRunStatus,
   runMaintenanceCycle,
   writeMaintenanceLastRunStatus
@@ -155,6 +157,11 @@ import {
   formatImportLockBusy,
   resolveImportCommandLockOptions
 } from './import-command.js';
+import {
+  auditProjectScope,
+  formatProjectScopeAudit,
+  parseProjectScopeAuditDays
+} from './project-scope-audit.js';
 import {
   formatVectorStatusJsonReport,
   formatVectorStatusReport,
@@ -1011,7 +1018,7 @@ program
 
       // Check dashboard
       const dashboardRunning = await isServerRunning(37777);
-      console.log(`\nDashboard: ${dashboardRunning ? '✅ Running at http://localhost:37777' : '⏹️  Not running'}`);
+      console.log(`\n${formatDashboardStatus(dashboardRunning, 37777)}`);
 
       if (!hasSessionStartHook || !hasUserPromptHook || !hasPostToolHook || !hasStopHook || !hasSessionEndHook) {
         console.log('\n💡 Run "claude-memory-layer install" to set up hooks.\n');
@@ -1354,6 +1361,7 @@ maintenanceCommand
   .option('-p, --project <path>', 'Process only one project instead of scanning all stores')
   .option('--max-projects <count>', 'Maximum most-recent stores to scan')
   .option('--max-batches <count>', 'Maximum processing rounds per store (one batch per vector schema)', '4')
+  .option('--min-free-gb <gb>', 'Block maintenance writes below this free disk space', '5')
   .option('--json', 'Print a structured aggregate-only report')
   .option('--quiet', 'Print only failures (used by periodic schedulers)')
   .action(async (options) => {
@@ -1362,18 +1370,21 @@ maintenanceCommand
         ? undefined
         : Number(options.maxProjects);
       const maxBatches = Number(options.maxBatches);
+      const minFreeBytes = parseMaintenanceMinFreeBytes(options.minFreeGb);
       const report = await runMaintenanceCycle({
         projectPath: options.project,
         maxProjects,
-        maxBatches
+        maxBatches,
+        minFreeBytes
       });
       writeMaintenanceLastRunStatus(report);
+      const requiresAttention = maintenanceRunRequiresAttention(report);
       if (options.quiet !== true) {
         console.log(options.json ? JSON.stringify(report) : formatMaintenanceRunReport(report));
-      } else if (report.errors > 0) {
+      } else if (requiresAttention) {
         console.error(formatMaintenanceRunReport(report));
       }
-      if (report.errors > 0) process.exitCode = 1;
+      if (requiresAttention) process.exitCode = 1;
     } catch (error) {
       console.error('Maintenance run failed:', error instanceof Error ? error.message : String(error));
       process.exitCode = 1;
@@ -3344,6 +3355,24 @@ projectCmd
     } catch {
       console.error('Project identity scan failed');
       process.exit(1);
+    }
+  });
+
+projectCmd
+  .command('scope-audit')
+  .description('Read-only aggregate audit for recent cross-store session routing')
+  .option('--days <days>', 'Recent time window in days', '7')
+  .option('--json', 'Print a machine-readable aggregate report')
+  .action((options: { days?: string; json?: boolean }) => {
+    try {
+      const report = auditProjectScope({ days: parseProjectScopeAuditDays(options.days) });
+      console.log(options.json ? JSON.stringify(report, null, 2) : formatProjectScopeAudit(report));
+    } catch (error) {
+      const message = error instanceof Error && error.message.startsWith('--')
+        ? error.message
+        : 'Project scope audit failed';
+      console.error(message);
+      process.exitCode = 1;
     }
   });
 

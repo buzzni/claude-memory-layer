@@ -42,7 +42,8 @@ const mocks = vi.hoisted(() => {
 
 vi.mock('../../src/services/memory-service.js', () => ({
   getDefaultMemoryService: mocks.getDefaultMemoryService,
-  getMemoryServiceForProject: mocks.getMemoryServiceForProject
+  getMemoryServiceForProject: mocks.getMemoryServiceForProject,
+  shutdownMemoryServices: vi.fn(async () => undefined)
 }));
 
 vi.mock('../../src/services/session-history-importer.js', () => ({

@@ -41,3 +41,9 @@ export function resolveDashboardCommandOptions(options: DashboardCommandInput): 
     dashboardUrl: `http://localhost:${port}`
   };
 }
+
+export function formatDashboardStatus(running: boolean, port = 37777): string {
+  return running
+    ? `Dashboard (port ${port}): ✅ Running at http://localhost:${port}`
+    : `Dashboard (port ${port}): ⏹️  Not detected (custom-port instances are not checked)`;
+}

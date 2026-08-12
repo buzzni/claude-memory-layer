@@ -9,6 +9,8 @@ import { loadSessionRegistry } from '../../core/registry/session-registry.js';
 import { getProjectStoragePath } from '../../core/registry/project-path.js';
 import { DISABLED_SHARED_STORE_CONFIG, MemoryService } from '../../services/memory-service.js';
 
+export const DEFAULT_MAINTENANCE_MIN_FREE_BYTES = 5 * 1024 * 1024 * 1024;
+
 export interface MaintenanceTarget {
   key: string;
   storagePath: string;
@@ -19,7 +21,7 @@ export interface MaintenanceTarget {
 
 export interface MaintenanceTargetResult {
   key: string;
-  status: 'healthy' | 'processed' | 'busy' | 'needs-attention' | 'error';
+  status: 'healthy' | 'processed' | 'busy' | 'blocked' | 'needs-attention' | 'error';
   processed: number;
   recovered: number;
   pendingBefore: number;
@@ -30,6 +32,13 @@ export interface MaintenanceTargetResult {
   error?: string;
 }
 
+export interface MaintenanceDiskStatus {
+  availableBytes: number;
+  totalBytes: number;
+  minRequiredBytes: number;
+  healthy: boolean;
+}
+
 export interface MaintenanceRunReport {
   startedAt: string;
   finishedAt: string;
@@ -37,31 +46,69 @@ export interface MaintenanceRunReport {
   processed: number;
   recovered: number;
   busy: number;
+  blocked: number;
   errors: number;
   pendingRemaining: number;
   retryableRemaining: number;
   quarantined: number;
+  disk: MaintenanceDiskStatus;
   results: MaintenanceTargetResult[];
 }
 
-export type MaintenanceLastRunStatus = Omit<MaintenanceRunReport, 'results'> & { version: 1 };
+export type MaintenanceLastRunStatus = Omit<MaintenanceRunReport, 'results' | 'disk'> & {
+  version: 1;
+  disk: MaintenanceDiskStatus | null;
+};
 
 export interface MaintenanceRunOptions {
   homeDir?: string;
   projectPath?: string;
   maxProjects?: number;
   maxBatches?: number;
+  minFreeBytes?: number;
 }
 
 export interface MaintenanceRunnerDeps {
   discoverTargets?: (options: MaintenanceRunOptions) => MaintenanceTarget[];
-  inspectTarget?: (target: MaintenanceTarget) => Promise<OutboxStats>;
+  inspectTarget?: (
+    target: MaintenanceTarget,
+    options: { allowMigration: boolean }
+  ) => Promise<OutboxStats>;
   processTarget?: (target: MaintenanceTarget) => Promise<{
     processed: number;
     recovery: OutboxRecoveryResult;
     stats: OutboxStats;
   }>;
+  getDiskStatus?: (options: MaintenanceRunOptions) => MaintenanceDiskStatus;
   now?: () => Date;
+}
+
+export function parseMaintenanceMinFreeBytes(value: string | number | undefined): number {
+  if (value === undefined) return DEFAULT_MAINTENANCE_MIN_FREE_BYTES;
+  if (typeof value === 'string' && value.trim() === '') {
+    throw new Error('--min-free-gb must be a number between 0 and 1024');
+  }
+  const gigabytes = typeof value === 'number' ? value : Number(value.trim());
+  if (!Number.isFinite(gigabytes) || gigabytes < 0 || gigabytes > 1024) {
+    throw new Error('--min-free-gb must be a number between 0 and 1024');
+  }
+  return Math.floor(gigabytes * 1024 * 1024 * 1024);
+}
+
+export function getMaintenanceDiskStatus(options: MaintenanceRunOptions = {}): MaintenanceDiskStatus {
+  const homeDir = options.homeDir ?? os.homedir();
+  const memoryRoot = path.join(homeDir, '.claude-code', 'memory');
+  const probePath = findExistingAncestor(memoryRoot);
+  const stats = fs.statfsSync(probePath);
+  const availableBytes = Number(stats.bavail) * Number(stats.bsize);
+  const totalBytes = Number(stats.blocks) * Number(stats.bsize);
+  const minRequiredBytes = normalizeMinFreeBytes(options.minFreeBytes);
+  return {
+    availableBytes,
+    totalBytes,
+    minRequiredBytes,
+    healthy: availableBytes >= minRequiredBytes
+  };
 }
 
 export function discoverMaintenanceTargets(options: MaintenanceRunOptions = {}): MaintenanceTarget[] {
@@ -132,15 +179,21 @@ export async function runMaintenanceCycle(
   const targets = (deps.discoverTargets ?? discoverMaintenanceTargets)(options);
   const inspect = deps.inspectTarget ?? inspectMaintenanceTarget;
   const maxBatches = normalizeMaxBatches(options.maxBatches);
+  const readDiskStatus = deps.getDiskStatus ?? getMaintenanceDiskStatus;
+  let disk: MaintenanceDiskStatus | undefined;
   const processTarget = deps.processTarget ?? ((target) => processMaintenanceTarget(target, maxBatches));
   const results: MaintenanceTargetResult[] = [];
 
   for (const target of targets) {
+    // A cycle can process many stores and consume meaningful disk space. Check
+    // again before every target so a run that crosses the threshold stops
+    // before the next schema migration/vector write.
+    disk = readDiskStatus(options);
     let pendingBefore = 0;
     let retryableBefore = 0;
     let quarantined = 0;
     try {
-      const stats = await inspect(target);
+      const stats = await inspect(target, { allowMigration: disk.healthy });
       pendingBefore = pendingCount(stats);
       retryableBefore = retryableCount(stats);
       quarantined = quarantinedCount(stats);
@@ -149,6 +202,21 @@ export async function runMaintenanceCycle(
         results.push({
           key: target.key,
           status: quarantined > 0 ? 'needs-attention' : 'healthy',
+          processed: 0,
+          recovered: 0,
+          pendingBefore,
+          retryableBefore,
+          pendingAfter: pendingBefore,
+          retryableAfter: retryableBefore,
+          quarantined
+        });
+        continue;
+      }
+
+      if (!disk.healthy) {
+        results.push({
+          key: target.key,
+          status: 'blocked',
           processed: 0,
           recovered: 0,
           pendingBefore,
@@ -178,7 +246,19 @@ export async function runMaintenanceCycle(
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      if (message.startsWith('worker busy:')) {
+      if (error instanceof MaintenanceInspectionNeedsWriteError) {
+        results.push({
+          key: target.key,
+          status: 'blocked',
+          processed: 0,
+          recovered: 0,
+          pendingBefore,
+          retryableBefore,
+          pendingAfter: pendingBefore,
+          retryableAfter: retryableBefore,
+          quarantined
+        });
+      } else if (message.startsWith('worker busy:')) {
         results.push({
           key: target.key,
           status: 'busy',
@@ -207,6 +287,9 @@ export async function runMaintenanceCycle(
     }
   }
 
+  // Record the post-cycle value, including cycles that discovered no stores.
+  disk = readDiskStatus(options);
+
   return {
     startedAt,
     finishedAt: now().toISOString(),
@@ -214,10 +297,12 @@ export async function runMaintenanceCycle(
     processed: results.reduce((sum, item) => sum + item.processed, 0),
     recovered: results.reduce((sum, item) => sum + item.recovered, 0),
     busy: results.filter((item) => item.status === 'busy').length,
+    blocked: results.filter((item) => item.status === 'blocked').length,
     errors: results.filter((item) => item.status === 'error').length,
     pendingRemaining: results.reduce((sum, item) => sum + item.pendingAfter, 0),
     retryableRemaining: results.reduce((sum, item) => sum + item.retryableAfter, 0),
     quarantined: results.reduce((sum, item) => sum + item.quarantined, 0),
+    disk,
     results
   };
 }
@@ -230,12 +315,18 @@ export function formatMaintenanceRunReport(report: MaintenanceRunReport): string
     `Processed embeddings: ${report.processed}`,
     `Recovered outbox jobs: ${report.recovered}`,
     `Busy stores skipped: ${report.busy}`,
+    `Disk-pressure stores blocked: ${report.blocked}`,
+    `Disk available: ${formatBytes(report.disk.availableBytes)} (minimum ${formatBytes(report.disk.minRequiredBytes)})`,
     `Pending jobs remaining: ${report.pendingRemaining}`,
     `Retryable failures remaining: ${report.retryableRemaining}`,
     `Stores needing attention: ${attention}`,
     `Quarantined jobs: ${report.quarantined}`,
     `Errors: ${report.errors}`
   ].join('\n');
+}
+
+export function maintenanceRunRequiresAttention(report: MaintenanceRunReport): boolean {
+  return report.errors > 0 || report.blocked > 0 || !report.disk.healthy;
 }
 
 export function writeMaintenanceLastRunStatus(
@@ -251,10 +342,12 @@ export function writeMaintenanceLastRunStatus(
     processed: report.processed,
     recovered: report.recovered,
     busy: report.busy,
+    blocked: report.blocked,
     errors: report.errors,
     pendingRemaining: report.pendingRemaining,
     retryableRemaining: report.retryableRemaining,
-    quarantined: report.quarantined
+    quarantined: report.quarantined,
+    disk: report.disk
   };
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   const tempPath = `${filePath}.tmp-${process.pid}`;
@@ -274,12 +367,19 @@ export function readMaintenanceLastRunStatus(
       'processed',
       'recovered',
       'busy',
+      'blocked',
       'errors',
       'pendingRemaining',
       'retryableRemaining',
       'quarantined'
     ] as const;
-    if (numericKeys.some((key) => !Number.isFinite(value[key]))) return null;
+    // Version 1 status files written by 2.2.9 predate disk-pressure fields.
+    // Preserve their useful aggregate state and supply neutral defaults.
+    if (numericKeys.some((key) => key !== 'blocked' && !Number.isFinite(value[key]))) return null;
+    if (value.blocked !== undefined && !Number.isFinite(value.blocked)) return null;
+    if (value.disk !== undefined && value.disk !== null && !isMaintenanceDiskStatus(value.disk)) return null;
+    value.blocked ??= 0;
+    value.disk ??= null;
     return value as MaintenanceLastRunStatus;
   } catch {
     return null;
@@ -288,18 +388,27 @@ export function readMaintenanceLastRunStatus(
 
 export function formatMaintenanceLastRunStatus(status: MaintenanceLastRunStatus | null): string {
   if (!status) return 'Last maintenance run: none';
-  return [
+  const lines = [
     `Last maintenance run: ${status.finishedAt}`,
     `  scanned=${status.scanned} processed=${status.processed} recovered=${status.recovered}`,
-    `  busy=${status.busy} errors=${status.errors} pending=${status.pendingRemaining} retryable=${status.retryableRemaining} quarantined=${status.quarantined}`
-  ].join('\n');
+    `  busy=${status.busy} blocked=${status.blocked} errors=${status.errors} pending=${status.pendingRemaining} retryable=${status.retryableRemaining} quarantined=${status.quarantined}`
+  ];
+  lines.push(status.disk
+    ? `  disk=${formatBytes(status.disk.availableBytes)} free minimum=${formatBytes(status.disk.minRequiredBytes)} healthy=${status.disk.healthy ? 'yes' : 'no'}`
+    : '  disk=not recorded (run maintenance once with the current version)');
+  return lines.join('\n');
 }
 
 function getMaintenanceLastRunStatusPath(homeDir: string): string {
   return path.join(homeDir, '.claude-code', 'memory', 'maintenance-status.json');
 }
 
-async function inspectMaintenanceTarget(target: MaintenanceTarget): Promise<OutboxStats> {
+class MaintenanceInspectionNeedsWriteError extends Error {}
+
+async function inspectMaintenanceTarget(
+  target: MaintenanceTarget,
+  options: { allowMigration: boolean }
+): Promise<OutboxStats> {
   const store = new SQLiteEventStore(path.join(target.storagePath, 'events.sqlite'), { readonly: true });
   try {
     await store.initialize();
@@ -312,7 +421,9 @@ async function inspectMaintenanceTarget(target: MaintenanceTarget): Promise<Outb
 
   // A pre-outbox store cannot be inspected read-only until current tables are
   // present. Maintenance is already an explicit writable operation, so run the
-  // normal idempotent schema initializer once and then continue.
+  // normal idempotent schema initializer once and then continue. Under disk
+  // pressure, report the store as blocked instead of performing that migration.
+  if (!options.allowMigration) throw new MaintenanceInspectionNeedsWriteError();
   const migratingStore = new SQLiteEventStore(path.join(target.storagePath, 'events.sqlite'));
   try {
     await migratingStore.initialize();
@@ -388,6 +499,39 @@ function normalizeMaxBatches(value: number | undefined): number {
     throw new Error('--max-batches must be an integer between 1 and 100');
   }
   return value;
+}
+
+function normalizeMinFreeBytes(value: number | undefined): number {
+  if (value === undefined) return DEFAULT_MAINTENANCE_MIN_FREE_BYTES;
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error('minimum free bytes must be a non-negative safe integer');
+  }
+  return value;
+}
+
+function findExistingAncestor(input: string): string {
+  let current = path.resolve(input);
+  while (!fs.existsSync(current)) {
+    const parent = path.dirname(current);
+    if (parent === current) return parent;
+    current = parent;
+  }
+  return current;
+}
+
+function isMaintenanceDiskStatus(value: unknown): value is MaintenanceDiskStatus {
+  if (!value || typeof value !== 'object') return false;
+  const disk = value as Partial<MaintenanceDiskStatus>;
+  return Number.isFinite(disk.availableBytes)
+    && Number.isFinite(disk.totalBytes)
+    && Number.isFinite(disk.minRequiredBytes)
+    && typeof disk.healthy === 'boolean';
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes <= 0) return '0 B';
+  const gibibytes = bytes / (1024 * 1024 * 1024);
+  return `${gibibytes.toFixed(gibibytes >= 10 ? 1 : 2)} GiB`;
 }
 
 function getStoreModifiedAtMs(storagePath: string): number {

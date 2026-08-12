@@ -9,6 +9,7 @@ import * as path from 'node:path';
 import {
   getDefaultMemoryService,
   getMemoryServiceForProject,
+  shutdownMemoryServices,
   type MemoryService
 } from '../../services/memory-service.js';
 import { SQLiteEventStore } from '../../core/sqlite-event-store.js';
@@ -100,6 +101,9 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 type ToolResult = CallToolResult;
 
 type MemoryToolArgs = Record<string, unknown>;
+
+/** Release process-scoped services owned by MCP handlers. */
+export const shutdownMcpMemoryServices = shutdownMemoryServices;
 
 /**
  * Cached because the MCP server's cwd is fixed for the life of the process —

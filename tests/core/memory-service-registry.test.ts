@@ -6,6 +6,7 @@ import type { SharedStoreConfig } from '../../src/core/types.js';
 
 interface FakeService {
   config: Record<string, unknown>;
+  disposed?: boolean;
 }
 
 const disabledSharedStoreConfig: SharedStoreConfig = {
@@ -18,10 +19,15 @@ const disabledSharedStoreConfig: SharedStoreConfig = {
 
 function createRegistry(sessionProject?: { projectHash: string; projectPath: string }) {
   const createdConfigs: Array<Record<string, unknown>> = [];
+  const disposedServices: FakeService[] = [];
   const registry = createMemoryServiceRegistry<FakeService>({
     createService: (config) => {
       createdConfigs.push(config as unknown as Record<string, unknown>);
       return { config: config as unknown as Record<string, unknown> };
+    },
+    disposeService: async (service) => {
+      service.disposed = true;
+      disposedServices.push(service);
     },
     hashProjectPath: (projectPath) => `hash:${projectPath}`,
     getProjectStoragePath: (projectPath) => `/storage/${projectPath}`,
@@ -30,7 +36,7 @@ function createRegistry(sessionProject?: { projectHash: string; projectPath: str
     disabledSharedStoreConfig
   });
 
-  return { registry, createdConfigs };
+  return { registry, createdConfigs, disposedServices };
 }
 
 describe('createMemoryServiceRegistry', () => {
@@ -214,5 +220,23 @@ describe('createMemoryServiceRegistry', () => {
 
     expect(first).not.toBe(second);
     expect(first.config).toMatchObject({ storagePath: '/tmp/a' });
+  });
+
+  it('shuts down cached services once without retaining caller-owned one-shot services', async () => {
+    const { registry, createdConfigs, disposedServices } = createRegistry();
+    const cached = registry.getMemoryServiceForProject('/workspace/app');
+    const lightweight = registry.getLightweightMemoryServiceForProject('/workspace/app');
+    const uncached = registry.createMemoryService({ storagePath: '/tmp/one-shot' });
+
+    await registry.shutdownAll();
+    await registry.shutdownAll();
+
+    expect(disposedServices).toHaveLength(2);
+    expect(new Set(disposedServices)).toEqual(new Set([cached, lightweight]));
+    expect(disposedServices).not.toContain(uncached);
+    expect(disposedServices.every((service) => service.disposed)).toBe(true);
+
+    expect(registry.getMemoryServiceForProject('/workspace/app')).not.toBe(cached);
+    expect(createdConfigs).toHaveLength(4);
   });
 });
