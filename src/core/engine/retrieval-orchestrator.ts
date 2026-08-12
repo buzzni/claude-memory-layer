@@ -16,6 +16,7 @@ import {
   type UnifiedRetrievalResult
 } from '../retriever.js';
 import type { RetrievalDebugLane } from '../retrieval-debug-lanes.js';
+import type { RetrievalTelemetryContext } from '../retrieval-telemetry.js';
 import type { MemoryOperationsConfig } from '../types.js';
 
 export interface RetrieveMemoriesOptions {
@@ -40,9 +41,11 @@ export interface RetrieveMemoriesOptions {
    * that may receive secret-bearing ad-hoc queries.
    */
   recordTrace?: boolean;
+  /** Presentation-aware telemetry. These values never affect ranking. */
+  telemetry?: RetrievalTelemetryContext;
 }
 
-export interface RecordQueryTraceInput {
+export interface RecordQueryTraceInput extends RetrievalTelemetryContext {
   /** Caller-provided trace id so helpfulness rows can link back to this trace */
   traceId?: string;
   sessionId?: string;
@@ -95,6 +98,9 @@ export interface RetrievalTraceStore {
     selectedDetails?: RetrievalTraceDetail[];
     confidence?: string;
     fallbackTrace?: string[];
+    presentationMode?: RetrievalTelemetryContext['presentationMode'];
+    triggerType?: RetrievalTelemetryContext['triggerType'];
+    deliveryClient?: string;
   }): Promise<void>;
 }
 
@@ -105,7 +111,7 @@ export interface RetrievalAccessStore {
     sessionId: string,
     score: number,
     query: string,
-    options?: { traceId?: string; source?: string; injectedContent?: string }
+    options?: { traceId?: string; source?: string; injectedContent?: string } & RetrievalTelemetryContext
   ): Promise<void>;
 }
 
@@ -131,7 +137,7 @@ export class RetrievalOrchestrator {
     query: string,
     options?: RetrieveMemoriesOptions
   ): Promise<UnifiedRetrievalResult> {
-    const { recordTrace = true, ...retrieverOptions } = options ?? {};
+    const { recordTrace = true, telemetry, ...retrieverOptions } = options ?? {};
     const lightweightFastRead = this.isLightweightFastRead(options);
     if (!lightweightFastRead) {
       await this.deps.initialize();
@@ -173,7 +179,7 @@ export class RetrievalOrchestrator {
 
     if (recordTrace) {
       try {
-        await this.recordAutomaticTrace(query, result, options, projectHash);
+        await this.recordAutomaticTrace(query, result, options, projectHash, telemetry);
       } catch {
         // Non-blocking telemetry.
       }
@@ -237,7 +243,7 @@ export class RetrievalOrchestrator {
     sessionId: string,
     score: number,
     query: string,
-    options?: { traceId?: string; source?: string; injectedContent?: string }
+    options?: { traceId?: string; source?: string; injectedContent?: string } & RetrievalTelemetryContext
   ): Promise<void> {
     await this.deps.initialize();
     await this.deps.accessStore.recordRetrieval(eventId, sessionId, score, query, options);
@@ -275,7 +281,8 @@ export class RetrievalOrchestrator {
     query: string,
     result: UnifiedRetrievalResult,
     options: RetrieveMemoriesOptions | undefined,
-    projectHash: string | null
+    projectHash: string | null,
+    telemetry: RetrievalTelemetryContext | undefined
   ): Promise<void> {
     const selectedEventIds = result.memories.map((memory) => memory.event.id);
     const selectedDetails = (result.selectedDebug || []).map((detail) => ({
@@ -310,7 +317,10 @@ export class RetrievalOrchestrator {
       candidateDetails,
       selectedDetails,
       confidence: result.matchResult.confidence,
-      fallbackTrace: result.fallbackTrace || []
+      fallbackTrace: result.fallbackTrace || [],
+      presentationMode: telemetry?.presentationMode,
+      triggerType: telemetry?.triggerType,
+      deliveryClient: telemetry?.deliveryClient
     });
   }
 

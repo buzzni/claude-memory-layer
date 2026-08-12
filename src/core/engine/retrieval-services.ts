@@ -175,6 +175,7 @@ export type {
   RetrievalDisclosureServiceDeps,
   RetrievalDisclosureSharedStore,
   RetrievalDisclosureSource,
+  RetrievalDisclosureSourceOptions,
   RetrievalDisclosureSourceReference,
   RetrievalDisclosureSourceType
 } from './retrieval-disclosure-service.js';

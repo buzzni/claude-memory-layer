@@ -6,6 +6,13 @@
  */
 
 import type { RetrievalDebugLane } from '../retrieval-debug-lanes.js';
+import type {
+  RecordReferenceNavigationInput,
+  RecordReferenceNavigationResult,
+  RetrievalPresentationMode,
+  RetrievalTelemetryStats,
+  RetrievalTriggerType
+} from '../retrieval-telemetry.js';
 import type { MemoryEvent } from '../types.js';
 
 export interface RetrievalTraceStrategyStats {
@@ -81,6 +88,7 @@ export interface UsefulnessHistoryMemory {
   evidence: UsefulnessEvidenceMatch[];
   measuredAt: string | null;
   source: string;
+  presentationMode: RetrievalPresentationMode;
 }
 
 export interface UsefulnessHistoryEntry {
@@ -94,6 +102,7 @@ export interface UsefulnessHistoryEntry {
   candidateCount: number;
   selectedCount: number;
   createdAt: Date;
+  presentationMode: RetrievalPresentationMode;
   memories: UsefulnessHistoryMemory[];
 }
 
@@ -137,6 +146,9 @@ export interface RetrievalTrace {
   selectedCount: number;
   confidence?: string;
   fallbackTrace: string[];
+  presentationMode?: RetrievalPresentationMode;
+  triggerType?: RetrievalTriggerType;
+  deliveryClient?: string;
   createdAt: Date;
 }
 
@@ -165,6 +177,8 @@ export interface RetrievalAnalyticsStore {
   getHelpfulnessStats(since?: Date, until?: Date): Promise<HelpfulnessStats>;
   getHelpfulnessStatsByDay?(since: Date, until: Date): Promise<DailyHelpfulnessStats[]>;
   getUsefulnessHistory?(options?: UsefulnessHistoryOptions): Promise<UsefulnessHistoryEntry[]>;
+  getRetrievalTelemetryStats?(): Promise<RetrievalTelemetryStats>;
+  recordReferenceNavigation?(input: RecordReferenceNavigationInput): Promise<RecordReferenceNavigationResult>;
 }
 
 export interface RetrievalAnalyticsServiceDeps {
@@ -243,6 +257,41 @@ export class RetrievalAnalyticsService {
     await this.deps.initialize();
     if (!this.deps.retrievalStore.getUsefulnessHistory) return [];
     return this.deps.retrievalStore.getUsefulnessHistory(options);
+  }
+
+  async getRetrievalTelemetryStats(): Promise<RetrievalTelemetryStats> {
+    await this.deps.initialize();
+    return this.deps.retrievalStore.getRetrievalTelemetryStats?.() || {
+      deliveries: {
+        totalTraces: 0,
+        totalItems: 0,
+        byPresentation: [],
+        byTrigger: [],
+        legacyUnknownRows: 0
+      },
+      evidenceGrounding: {
+        evaluatedDeliveries: 0,
+        groundedDeliveries: 0,
+        groundingRate: 0,
+        averageContentOverlap: 0
+      },
+      referenceNavigation: {
+        eligibleTraces: 0,
+        navigatedTraces: 0,
+        navigationRate: 0,
+        attributedOpenCount: 0,
+        ambiguousOpenCount: 0,
+        unattributedOpenCount: 0
+      }
+    };
+  }
+
+  async recordReferenceNavigation(
+    input: RecordReferenceNavigationInput
+  ): Promise<RecordReferenceNavigationResult> {
+    await this.deps.initialize();
+    return this.deps.retrievalStore.recordReferenceNavigation?.(input)
+      || { outcome: 'unattributed', traceId: null, repeated: false };
   }
 
   /**

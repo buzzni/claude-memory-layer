@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => {
       getSessionHistory: vi.fn(),
       getStats: vi.fn(),
       recordQueryTrace: vi.fn(),
+      recordReferenceNavigation: vi.fn(),
       processPendingEmbeddings: vi.fn()
     };
   }
@@ -74,6 +75,7 @@ function resetService(service: typeof mocks.defaultService) {
   service.getSessionHistory.mockReset().mockResolvedValue([]);
   service.getStats.mockReset().mockResolvedValue({ totalEvents: 0, vectorCount: 0, levelStats: [] });
   service.recordQueryTrace.mockReset().mockResolvedValue(undefined);
+  service.recordReferenceNavigation.mockReset().mockResolvedValue({ outcome: 'attributed', traceId: 'trace-1', repeated: false });
   service.processPendingEmbeddings.mockReset().mockResolvedValue(0);
 }
 
@@ -1867,6 +1869,11 @@ describe('MCP project context tools', () => {
     expect(text).not.toContain('password=pw');
     expect(text).not.toContain('transcriptPath');
     expect(text).not.toContain('secret:');
+    expect(mocks.projectService.recordReferenceNavigation).toHaveBeenCalledWith({
+      targetEventId: sensitive.id,
+      action: 'source_ref',
+      navigationClient: 'mcp'
+    });
   });
 
   it('resolves source references by short citation id', async () => {

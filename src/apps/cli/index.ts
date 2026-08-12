@@ -1087,7 +1087,7 @@ program
  */
 program
   .command('expand <resultId>')
-  .description('Expand a progressive retrieval result with surrounding context')
+  .description('Expand a progressive retrieval result with surrounding context (records navigation telemetry)')
   .option('-w, --window-size <number>', 'Number of surrounding events on each side', '3')
   .option('-p, --project <path>', 'Project path (defaults to cwd)')
   .action(async (resultId: string, options) => {
@@ -1096,7 +1096,9 @@ program
 
     try {
       const expansion = await service.expandDisclosure(resultId, {
-        windowSize: parseInt(options.windowSize)
+        windowSize: parseInt(options.windowSize),
+        recordNavigation: true,
+        navigationClient: 'cli'
       });
 
       if (!expansion) {
@@ -1119,14 +1121,17 @@ program
  */
 program
   .command('source <resultId>')
-  .description('Show raw source details for a progressive retrieval result')
+  .description('Show raw source details for a progressive retrieval result (records navigation telemetry)')
   .option('-p, --project <path>', 'Project path (defaults to cwd)')
   .action(async (resultId: string, options) => {
     const projectPath = options.project || process.cwd();
     const service = getMemoryServiceForProject(projectPath);
 
     try {
-      const source = await service.sourceDisclosure(resultId);
+      const source = await service.sourceDisclosure(resultId, {
+        recordNavigation: true,
+        navigationClient: 'cli'
+      });
 
       if (!source) {
         console.error(`Source not found: ${resultId}`);

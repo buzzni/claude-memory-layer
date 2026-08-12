@@ -23,13 +23,15 @@ const mocks = vi.hoisted(() => {
     service,
     lightweightService,
     getServiceFromQuery: vi.fn(() => service),
-    getLightweightServiceFromQuery: vi.fn(() => lightweightService)
+    getLightweightServiceFromQuery: vi.fn(() => lightweightService),
+    getWritableServiceFromQuery: vi.fn(() => service)
   };
 });
 
 vi.mock('../../src/apps/server/api/utils.js', () => ({
   getServiceFromQuery: mocks.getServiceFromQuery,
-  getLightweightServiceFromQuery: mocks.getLightweightServiceFromQuery
+  getLightweightServiceFromQuery: mocks.getLightweightServiceFromQuery,
+  getWritableServiceFromQuery: mocks.getWritableServiceFromQuery
 }));
 
 const { searchRouter } = await import('../../src/server/api/search.js');
@@ -55,6 +57,7 @@ describe('search disclosure API', () => {
     mocks.lightweightService.sourceDisclosure.mockReset();
     mocks.getServiceFromQuery.mockClear();
     mocks.getLightweightServiceFromQuery.mockClear();
+    mocks.getWritableServiceFromQuery.mockClear();
   });
 
   it('POST /api/search/disclosure delegates to MemoryService.searchDisclosure', async () => {
@@ -193,18 +196,21 @@ describe('search disclosure API', () => {
       surroundingFacts: [],
       relatedSources: [{ sourceRef: 'event:e1', sourceType: 'raw_event', eventIds: ['e1'] }]
     };
-    mocks.lightweightService.expandDisclosure.mockResolvedValue(responseBody);
+    mocks.service.expandDisclosure.mockResolvedValue(responseBody);
 
     const res = await createApp().request('/api/search/disclosure/event:e1/expand?windowSize=2');
 
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual(responseBody);
-    expect(mocks.getLightweightServiceFromQuery).toHaveBeenCalledTimes(1);
+    expect(mocks.getWritableServiceFromQuery).toHaveBeenCalledTimes(1);
     expect(mocks.getServiceFromQuery).not.toHaveBeenCalled();
-    expect(mocks.lightweightService.initialize).not.toHaveBeenCalled();
-    expect(mocks.lightweightService.expandDisclosure).toHaveBeenCalledWith('event:e1', { windowSize: 2 });
-    expect(mocks.lightweightService.shutdown).toHaveBeenCalledTimes(1);
-    expect(mocks.service.expandDisclosure).not.toHaveBeenCalled();
+    expect(mocks.service.initialize).not.toHaveBeenCalled();
+    expect(mocks.service.expandDisclosure).toHaveBeenCalledWith('event:e1', {
+      windowSize: 2,
+      recordNavigation: true,
+      navigationClient: 'dashboard'
+    });
+    expect(mocks.service.shutdown).toHaveBeenCalledTimes(1);
   });
 
   it('GET /api/search/disclosure/:resultId/source resolves a disclosure result source', async () => {
@@ -214,31 +220,32 @@ describe('search disclosure API', () => {
       eventIds: ['e1'],
       rawEvents: [{ id: 'e1', content: 'checkout fix' }]
     };
-    mocks.lightweightService.sourceDisclosure.mockResolvedValue(responseBody);
+    mocks.service.sourceDisclosure.mockResolvedValue(responseBody);
 
     const res = await createApp().request('/api/search/disclosure/event:e1/source');
 
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual(responseBody);
-    expect(mocks.getLightweightServiceFromQuery).toHaveBeenCalledTimes(1);
+    expect(mocks.getWritableServiceFromQuery).toHaveBeenCalledTimes(1);
     expect(mocks.getServiceFromQuery).not.toHaveBeenCalled();
-    expect(mocks.lightweightService.initialize).not.toHaveBeenCalled();
-    expect(mocks.lightweightService.sourceDisclosure).toHaveBeenCalledWith('event:e1');
-    expect(mocks.lightweightService.shutdown).toHaveBeenCalledTimes(1);
-    expect(mocks.service.sourceDisclosure).not.toHaveBeenCalled();
+    expect(mocks.service.initialize).not.toHaveBeenCalled();
+    expect(mocks.service.sourceDisclosure).toHaveBeenCalledWith('event:e1', {
+      recordNavigation: true,
+      navigationClient: 'dashboard'
+    });
+    expect(mocks.service.shutdown).toHaveBeenCalledTimes(1);
   });
 
   it('GET /api/search/disclosure/:resultId/source returns 404 when source is missing', async () => {
-    mocks.lightweightService.sourceDisclosure.mockResolvedValue(null);
+    mocks.service.sourceDisclosure.mockResolvedValue(null);
 
     const res = await createApp().request('/api/search/disclosure/event:missing/source');
 
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ error: 'Source not found' });
-    expect(mocks.getLightweightServiceFromQuery).toHaveBeenCalledTimes(1);
+    expect(mocks.getWritableServiceFromQuery).toHaveBeenCalledTimes(1);
     expect(mocks.getServiceFromQuery).not.toHaveBeenCalled();
-    expect(mocks.lightweightService.initialize).not.toHaveBeenCalled();
-    expect(mocks.lightweightService.shutdown).toHaveBeenCalledTimes(1);
-    expect(mocks.service.sourceDisclosure).not.toHaveBeenCalled();
+    expect(mocks.service.initialize).not.toHaveBeenCalled();
+    expect(mocks.service.shutdown).toHaveBeenCalledTimes(1);
   });
 });

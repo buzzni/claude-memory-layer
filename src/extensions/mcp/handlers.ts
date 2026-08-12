@@ -2166,6 +2166,15 @@ async function handleMemDetails(memoryService: MemoryService, args: Record<strin
     lines.push('');
     lines.push('---');
     lines.push('');
+    try {
+      await memoryService.recordReferenceNavigation({
+        targetEventId: event.id,
+        action: 'details',
+        navigationClient: 'mcp'
+      });
+    } catch {
+      // Source disclosure remains available if telemetry cannot be written.
+    }
   }
 
   return {
@@ -2597,6 +2606,15 @@ async function handleMemSourceRef(memoryService: MemoryService, args: Record<str
       }
     }
     lines.push('');
+    try {
+      await memoryService.recordReferenceNavigation({
+        targetEventId: event.id,
+        action: 'source_ref',
+        navigationClient: 'mcp'
+      });
+    } catch {
+      // Source disclosure remains available if telemetry cannot be written.
+    }
   }
 
   return textResult(lines.join('\n'));

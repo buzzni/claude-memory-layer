@@ -1811,6 +1811,32 @@ statsRouter.get('/helpfulness', async (c) => {
     await memoryService.shutdown();
   }
 });
+
+// GET /api/stats/retrieval-telemetry - Presentation-aware aggregate metrics.
+// This is read-only: source/navigation rows are written only by explicit
+// source-ref/details/expand/source actions.
+statsRouter.get('/retrieval-telemetry', async (c) => {
+  const memoryService = getLightweightServiceFromQuery(c);
+  try {
+    await memoryService.initialize();
+    return c.json(await memoryService.getRetrievalTelemetryStats());
+  } catch {
+    return c.json({
+      deliveries: { totalTraces: 0, totalItems: 0, byPresentation: [], byTrigger: [], legacyUnknownRows: 0 },
+      evidenceGrounding: { evaluatedDeliveries: 0, groundedDeliveries: 0, groundingRate: 0, averageContentOverlap: 0 },
+      referenceNavigation: {
+        eligibleTraces: 0,
+        navigatedTraces: 0,
+        navigationRate: 0,
+        attributedOpenCount: 0,
+        ambiguousOpenCount: 0,
+        unattributedOpenCount: 0
+      }
+    });
+  } finally {
+    await memoryService.shutdown();
+  }
+});
 // GET /api/stats/usefulness - Get a dashboard-ready memory usefulness score
 statsRouter.get('/usefulness', async (c) => {
   const rawWindow = (c.req.query('window') || '7d') as KpiWindow;
@@ -1873,6 +1899,7 @@ statsRouter.get('/usefulness-history', async (c) => {
         // intentionally omitted (matches /api/stats/retrieval-traces).
         question: entry.question,
         strategy: entry.strategy,
+        presentationMode: entry.presentationMode,
         confidence: entry.confidence,
         candidateCount: entry.candidateCount,
         selectedCount: entry.selectedCount,
@@ -1911,6 +1938,9 @@ statsRouter.get('/retrieval-traces', async (c) => {
           queryRewriteKind,
           rewritten: queryRewriteKind !== 'none',
           strategy: normalizeRetrievalTraceStrategy(t.strategy ?? 'unknown'),
+          presentationMode: t.presentationMode ?? 'unknown',
+          triggerType: t.triggerType ?? 'unknown',
+          deliveryClient: t.deliveryClient ?? 'unknown',
           candidateEventIds: t.candidateEventIds,
           selectedEventIds: t.selectedEventIds,
           candidateDetails: t.candidateDetails || [],

@@ -276,6 +276,22 @@ export async function main(options: SessionStartMainOptions = {}): Promise<strin
           resolveCanonicalMemoryActorId(input.actor_id)
         );
         context = formatCoreMemoryBlockContext(coreBlocks);
+        const deliveredCoreBlockIds = coreBlocks
+          .filter((item) => ('value' in item ? item.value : item).content.trim().length > 0)
+          .map((item) => `core:${('value' in item ? item.value : item).blockKey}`);
+        if (!isHookEvaluationMode() && deliveredCoreBlockIds.length > 0) {
+          await memoryService.recordQueryTrace({
+            sessionId: input.session_id,
+            queryText: '[session-start] core memory',
+            strategy: 'core-memory',
+            candidateEventIds: deliveredCoreBlockIds,
+            selectedEventIds: deliveredCoreBlockIds,
+            confidence: 'core',
+            presentationMode: 'core',
+            triggerType: 'session_start',
+            deliveryClient: 'claude-hook'
+          });
+        }
       } catch {
         // Core memory injection is supplementary; never fail session start over it.
       }
@@ -325,6 +341,23 @@ export async function main(options: SessionStartMainOptions = {}): Promise<strin
       // the evidence history cover this injection path too. One shared batch
       // id groups the injected memories into a single history entry.
       const batchTraceId = randomUUID();
+      const presentationMode = options.contextPresentation ?? 'evidence';
+      if (!isHookEvaluationMode()) {
+        try {
+          await memoryService.recordQueryTrace({
+            traceId: batchTraceId,
+            sessionId: input.session_id,
+            queryText: '[session-start] recent project context',
+            strategy: 'session-start-hook',
+            candidateEventIds: injectedEvents.map((event) => event.id),
+            selectedEventIds: injectedEvents.map((event) => event.id),
+            confidence: 'session-start',
+            presentationMode,
+            triggerType: 'session_start',
+            deliveryClient: 'claude-hook'
+          });
+        } catch { /* non-critical telemetry */ }
+      }
       for (const event of injectedEvents) {
         try {
           await memoryService.recordRetrieval(
@@ -335,6 +368,9 @@ export async function main(options: SessionStartMainOptions = {}): Promise<strin
             {
               traceId: batchTraceId,
               source: 'session_start',
+              presentationMode,
+              triggerType: 'session_start',
+              deliveryClient: 'claude-hook',
               // Grounding is measured against the exact text injected above,
               // not the full event.
               injectedContent: excerpts.get(event.id) ?? sessionStartExcerpt(event)

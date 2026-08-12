@@ -691,6 +691,9 @@ export async function main(options: UserPromptSubmitMainOptions = {}): Promise<s
               {
                 traceId: retrievalTraceId,
                 source: 'user_prompt',
+                presentationMode: options.contextPresentation ?? 'evidence',
+                triggerType: 'user_prompt',
+                deliveryClient: 'claude-hook',
                 injectedContent: options.contextPresentation === 'reference'
                   ? memoryReferenceSummary(m.content, retrievalQuery)
                   : selectEvidencePreview(m.content, retrievalQuery)
@@ -721,7 +724,10 @@ export async function main(options: UserPromptSubmitMainOptions = {}): Promise<s
             strategy: RETRIEVAL_MODE,
             candidateEventIds: allCandidateIds,
             selectedEventIds: selectedIds,
-            confidence: summarizeHookInjectionConfidence(injectableMemories)
+            confidence: summarizeHookInjectionConfidence(injectableMemories),
+            presentationMode: options.contextPresentation ?? 'evidence',
+            triggerType: 'user_prompt',
+            deliveryClient: 'claude-hook'
           });
         } catch { /* non-critical */ }
 

@@ -137,7 +137,7 @@ export const tools: Tool[] = [
   },
   {
     name: 'mem-details',
-    description: 'Get full content of specific memories. Use after mem-search to get complete information.',
+    description: 'Get full content of specific memories. Use after mem-search to get complete information. Conditional mutation: each successfully resolved reference records privacy-safe navigation telemetry.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -342,7 +342,7 @@ export const tools: Tool[] = [
   },
   {
     name: 'mem-source-ref',
-    description: 'Resolve memory IDs, mem citation IDs, or event: IDs into privacy-safe source references with redacted previews and safe metadata only. Prefer this before mem-details when raw transcript exposure is unnecessary.',
+    description: 'Resolve memory IDs, mem citation IDs, or event: IDs into privacy-safe source references with redacted previews and safe metadata only. Prefer this before mem-details when raw transcript exposure is unnecessary. Conditional mutation: each successfully resolved reference records privacy-safe navigation telemetry.',
     inputSchema: {
       type: 'object',
       properties: {

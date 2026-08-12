@@ -11,6 +11,7 @@ const state = {
   sharedStats: null,
   mostAccessed: null,
   helpfulness: null,
+  retrievalTelemetry: null,
   overviewRecentPrompts: [],
   overviewUsefulnessEntries: [],
   memoryUsefulness: null,
