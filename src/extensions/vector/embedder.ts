@@ -24,7 +24,9 @@ export const DEFAULT_EMBEDDING_FALLBACK_MODEL = 'intfloat/multilingual-e5-small'
 const MANAGED_EMBEDDING_BACKEND_DIR = '.claude-memory-layer-embedding-backend';
 
 export class Embedder {
-  private pipeline: ((input: string, options?: Record<string, unknown>) => Promise<{ data: Float32Array }>) | null = null;
+  private pipeline: (((input: string, options?: Record<string, unknown>) => Promise<{ data: Float32Array }>) & {
+    dispose?: () => void | Promise<void>;
+  }) | null = null;
   private readonly modelName: string;
   private activeModelName: string;
   private initialized = false;
@@ -193,6 +195,15 @@ export class Embedder {
   getModelName(): string {
     return this.activeModelName;
   }
+
+  /** Release the native ONNX model so a long-lived but idle MCP process does not retain it. */
+  async dispose(): Promise<void> {
+    const pipeline = this.pipeline;
+    this.pipeline = null;
+    this.initialized = false;
+    this.activeModelName = this.modelName;
+    await pipeline?.dispose?.();
+  }
 }
 
 // Singleton instance for reuse
@@ -204,6 +215,12 @@ export function getDefaultEmbedder(): Embedder {
     defaultEmbedder = new Embedder(envModel || undefined);
   }
   return defaultEmbedder;
+}
+
+export async function disposeDefaultEmbedder(): Promise<void> {
+  const embedder = defaultEmbedder;
+  defaultEmbedder = null;
+  await embedder?.dispose();
 }
 
 let transformersWarningSuppressionDepth = 0;

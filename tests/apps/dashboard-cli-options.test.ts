@@ -1,8 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
-import { resolveDashboardCommandOptions } from '../../src/apps/cli/dashboard-command.js';
+import { formatDashboardStatus, resolveDashboardCommandOptions } from '../../src/apps/cli/dashboard-command.js';
 
 describe('dashboard CLI option resolution', () => {
+  it('scopes status output to the checked port instead of claiming every dashboard is stopped', () => {
+    expect(formatDashboardStatus(true)).toContain('port 37777');
+    expect(formatDashboardStatus(false)).toContain('custom-port instances are not checked');
+    expect(formatDashboardStatus(false)).not.toContain('Dashboard: ⏹️  Not running');
+  });
+
   it('defaults to localhost bind without a dashboard password', () => {
     expect(resolveDashboardCommandOptions({ port: '37777' })).toEqual({
       port: 37777,

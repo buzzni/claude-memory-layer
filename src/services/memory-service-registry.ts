@@ -19,6 +19,7 @@ export type MemoryServiceRegistryConfig = MemoryServiceConfig & {
 
 export interface MemoryServiceRegistryDeps<TService> {
   createService: (config: MemoryServiceRegistryConfig) => TService;
+  disposeService?: (service: TService) => void | Promise<void>;
   hashProjectPath: (projectPath: string) => string;
   getProjectStoragePath: (projectPath: string) => string;
   getSessionProject: (sessionId: string) => { projectHash: string; projectPath: string } | null;
@@ -35,6 +36,7 @@ export interface MemoryServiceRegistry<TService> {
   getLightweightMemoryService(sessionId: string): TService;
   getLightweightMemoryServiceForProject(projectPath: string): TService;
   createMemoryService(config: MemoryServiceConfig): TService;
+  shutdownAll(): Promise<void>;
 }
 
 const GLOBAL_KEY = '__global__';
@@ -43,10 +45,16 @@ export function createMemoryServiceRegistry<TService>(
   deps: MemoryServiceRegistryDeps<TService>
 ): MemoryServiceRegistry<TService> {
   const serviceCache = deps.serviceCache ?? new Map<string, TService>();
+  const ownedServices = new Set<TService>();
+  const createOwnedService = (config: MemoryServiceRegistryConfig): TService => {
+    const service = deps.createService(config);
+    ownedServices.add(service);
+    return service;
+  };
 
   const getDefaultMemoryService = (): TService => {
     if (!serviceCache.has(GLOBAL_KEY)) {
-      serviceCache.set(GLOBAL_KEY, deps.createService({
+      serviceCache.set(GLOBAL_KEY, createOwnedService({
         storagePath: '~/.claude-code/memory',
         analyticsEnabled: false,
         sharedStoreConfig: deps.disabledSharedStoreConfig
@@ -55,6 +63,9 @@ export function createMemoryServiceRegistry<TService>(
     return serviceCache.get(GLOBAL_KEY)!;
   };
 
+  // Read-only and explicit factory services are intentionally uncached. Their
+  // callers own their lifetime; retaining every dashboard/API request here
+  // would turn shutdown bookkeeping into a process-lifetime memory leak.
   const getReadOnlyMemoryService = (): TService => deps.createService({
     storagePath: '~/.claude-code/memory',
     readOnly: true,
@@ -69,7 +80,7 @@ export function createMemoryServiceRegistry<TService>(
     const hash = deps.hashProjectPath(projectPath);
 
     if (!serviceCache.has(hash)) {
-      serviceCache.set(hash, deps.createService({
+      serviceCache.set(hash, createOwnedService({
         storagePath: deps.getProjectStoragePath(projectPath),
         projectHash: hash,
         projectPath,
@@ -101,7 +112,7 @@ export function createMemoryServiceRegistry<TService>(
   ): TService => {
     const key = `lightweight_${projectHash}`;
     if (!serviceCache.has(key)) {
-      serviceCache.set(key, deps.createService({
+      serviceCache.set(key, createOwnedService({
         storagePath: deps.getProjectStoragePath(projectPath),
         projectHash,
         projectPath,
@@ -122,7 +133,7 @@ export function createMemoryServiceRegistry<TService>(
 
     const key = 'lightweight_global';
     if (!serviceCache.has(key)) {
-      serviceCache.set(key, deps.createService({
+      serviceCache.set(key, createOwnedService({
         storagePath: path.join(deps.homedir(), '.claude-code', 'memory'),
         lightweightMode: true,
         analyticsEnabled: false,
@@ -138,6 +149,23 @@ export function createMemoryServiceRegistry<TService>(
     return getOrCreateLightweightProjectService(projectHash, projectPath);
   };
 
+  const shutdownAll = async (): Promise<void> => {
+    const services = Array.from(ownedServices);
+    // Clear first so repeated close signals cannot dispose the same native or
+    // vector resources twice.
+    ownedServices.clear();
+    serviceCache.clear();
+    if (!deps.disposeService || services.length === 0) return;
+
+    const settled = await Promise.allSettled(services.map((service) => deps.disposeService!(service)));
+    const failures = settled
+      .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+      .map((result) => result.reason);
+    if (failures.length > 0) {
+      throw new AggregateError(failures, `Failed to shut down ${failures.length} memory service(s)`);
+    }
+  };
+
   return {
     getDefaultMemoryService,
     getReadOnlyMemoryService,
@@ -145,6 +173,7 @@ export function createMemoryServiceRegistry<TService>(
     getMemoryServiceForSession,
     getLightweightMemoryService,
     getLightweightMemoryServiceForProject,
-    createMemoryService: (config: MemoryServiceConfig): TService => deps.createService(config)
+    createMemoryService: (config: MemoryServiceConfig): TService => deps.createService(config),
+    shutdownAll
   };
 }

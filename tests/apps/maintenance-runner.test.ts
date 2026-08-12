@@ -7,6 +7,8 @@ import {
   discoverMaintenanceTargets,
   formatMaintenanceLastRunStatus,
   formatMaintenanceRunReport,
+  maintenanceRunRequiresAttention,
+  parseMaintenanceMinFreeBytes,
   readMaintenanceLastRunStatus,
   runMaintenanceCycle,
   writeMaintenanceLastRunStatus,
@@ -75,6 +77,7 @@ describe('maintenance runner', () => {
           stats: stats({})
         };
       },
+      getDiskStatus: () => healthyDisk(),
       now: () => new Date('2026-08-11T00:00:00Z')
     });
 
@@ -83,6 +86,7 @@ describe('maintenance runner', () => {
       processed: 5,
       recovered: 1,
       busy: 1,
+      blocked: 0,
       errors: 1,
       pendingRemaining: 2,
       retryableRemaining: 0,
@@ -108,6 +112,107 @@ describe('maintenance runner', () => {
     expect(() => discoverMaintenanceTargets({ homeDir: '/tmp', maxProjects: 0 })).toThrow('--max-projects');
     await expect(runMaintenanceCycle({ maxBatches: 0 }, { discoverTargets: () => [] }))
       .rejects.toThrow('--max-batches');
+  });
+
+  it('validates the configurable free-space threshold', () => {
+    expect(parseMaintenanceMinFreeBytes(undefined)).toBe(5 * 1024 * 1024 * 1024);
+    expect(parseMaintenanceMinFreeBytes('0')).toBe(0);
+    expect(parseMaintenanceMinFreeBytes('1.5')).toBe(Math.floor(1.5 * 1024 * 1024 * 1024));
+    expect(() => parseMaintenanceMinFreeBytes('   ')).toThrow('--min-free-gb');
+    expect(() => parseMaintenanceMinFreeBytes('-1')).toThrow('--min-free-gb');
+    expect(() => parseMaintenanceMinFreeBytes('invalid')).toThrow('--min-free-gb');
+  });
+
+  it('reports actionable queues but blocks writes under disk pressure', async () => {
+    let processCalls = 0;
+    const report = await runMaintenanceCycle({}, {
+      discoverTargets: () => [{ key: 'pending', storagePath: '/private/pending', modifiedAtMs: 1 }],
+      inspectTarget: async (_target, options) => {
+        expect(options.allowMigration).toBe(false);
+        return stats({ embeddingPending: 7 });
+      },
+      processTarget: async () => {
+        processCalls += 1;
+        throw new Error('must not run');
+      },
+      getDiskStatus: () => ({
+        availableBytes: 1024,
+        totalBytes: 10_000,
+        minRequiredBytes: 2048,
+        healthy: false
+      }),
+      now: () => new Date('2026-08-11T00:00:00Z')
+    });
+
+    expect(processCalls).toBe(0);
+    expect(report).toMatchObject({
+      blocked: 1,
+      errors: 0,
+      pendingRemaining: 7,
+      disk: { healthy: false }
+    });
+    expect(report.results[0]).toMatchObject({ status: 'blocked', pendingAfter: 7 });
+    expect(formatMaintenanceRunReport(report)).toContain('Disk-pressure stores blocked: 1');
+  });
+
+  it('rechecks free space between stores and stops new writes mid-cycle', async () => {
+    const processed: string[] = [];
+    let diskChecks = 0;
+    const report = await runMaintenanceCycle({}, {
+      discoverTargets: () => ['first', 'second'].map((key) => ({
+        key,
+        storagePath: `/private/${key}`,
+        modifiedAtMs: 1
+      })),
+      inspectTarget: async () => stats({ embeddingPending: 1 }),
+      processTarget: async (target) => {
+        processed.push(target.key);
+        return {
+          processed: 1,
+          recovery: {
+            embedding: { recoveredProcessing: 0, retriedFailed: 0 },
+            vector: { recoveredProcessing: 0, retriedFailed: 0 }
+          },
+          stats: stats({})
+        };
+      },
+      getDiskStatus: () => {
+        diskChecks += 1;
+        const healthy = diskChecks === 1;
+        return {
+          availableBytes: healthy ? 10_000 : 1_000,
+          totalBytes: 20_000,
+          minRequiredBytes: 5_000,
+          healthy
+        };
+      },
+      now: () => new Date('2026-08-11T00:00:00Z')
+    });
+
+    expect(processed).toEqual(['first']);
+    expect(report).toMatchObject({ processed: 1, blocked: 1, disk: { healthy: false } });
+    expect(maintenanceRunRequiresAttention(report)).toBe(true);
+    expect(diskChecks).toBe(3);
+  });
+
+  it('requires attention when the final disk check crosses the threshold', async () => {
+    let diskChecks = 0;
+    const report = await runMaintenanceCycle({}, {
+      discoverTargets: () => [],
+      getDiskStatus: () => {
+        diskChecks += 1;
+        return {
+          availableBytes: 1_000,
+          totalBytes: 20_000,
+          minRequiredBytes: 5_000,
+          healthy: false
+        };
+      }
+    });
+
+    expect(report).toMatchObject({ scanned: 0, blocked: 0, disk: { healthy: false } });
+    expect(maintenanceRunRequiresAttention(report)).toBe(true);
+    expect(diskChecks).toBe(1);
   });
 
   it('uses WAL activity when limiting scans to the most recently written stores', () => {
@@ -141,10 +246,12 @@ describe('maintenance runner', () => {
       processed: 5,
       recovered: 1,
       busy: 0,
+      blocked: 0,
       errors: 0,
       pendingRemaining: 2,
       retryableRemaining: 1,
       quarantined: 3,
+      disk: healthyDisk(),
       results: [{
         key: 'PRIVATE_PROJECT_HASH',
         status: 'needs-attention' as const,
@@ -166,6 +273,30 @@ describe('maintenance runner', () => {
     const raw = requireStatusFile(statusPath);
     expect(raw).not.toContain('PRIVATE_PROJECT_HASH');
     expect(raw).not.toContain('PRIVATE_PAYLOAD');
+  });
+
+  it('reads pre-disk-pressure version 1 status without inventing free-space data', () => {
+    const homeDir = mkdtempSync(path.join(tmpdir(), 'cml-maintenance-legacy-status-'));
+    tempDirs.push(homeDir);
+    const statusPath = path.join(homeDir, '.claude-code', 'memory', 'maintenance-status.json');
+    mkdirSync(path.dirname(statusPath), { recursive: true });
+    writeFileSync(statusPath, JSON.stringify({
+      version: 1,
+      startedAt: '2026-08-11T00:00:00.000Z',
+      finishedAt: '2026-08-11T00:01:00.000Z',
+      scanned: 2,
+      processed: 0,
+      recovered: 0,
+      busy: 0,
+      errors: 0,
+      pendingRemaining: 0,
+      retryableRemaining: 0,
+      quarantined: 3
+    }));
+
+    const status = readMaintenanceLastRunStatus(homeDir);
+    expect(status).toMatchObject({ blocked: 0, disk: null });
+    expect(formatMaintenanceLastRunStatus(status)).toContain('disk=not recorded');
   });
 });
 
@@ -201,4 +332,13 @@ function stats(input: {
 
 function requireStatusFile(filePath: string): string {
   return readFileSync(filePath, 'utf8');
+}
+
+function healthyDisk() {
+  return {
+    availableBytes: 10 * 1024 * 1024 * 1024,
+    totalBytes: 100 * 1024 * 1024 * 1024,
+    minRequiredBytes: 5 * 1024 * 1024 * 1024,
+    healthy: true
+  };
 }

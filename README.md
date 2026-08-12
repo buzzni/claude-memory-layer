@@ -86,11 +86,16 @@ claude-memory-layer maintenance install --interval 900
 claude-memory-layer maintenance status
 claude-memory-layer maintenance run --json
 
+# 기본 5 GiB보다 넉넉한 여유 공간을 요구할 때
+claude-memory-layer maintenance run --min-free-gb 10
+
 # 스케줄러 정의만 제거하며 메모리 데이터는 보존
 claude-memory-layer maintenance uninstall
 ```
 
 각 실행은 최근 저장소부터 순차적으로 확인하고 프로젝트별 worker lock을 사용합니다. 기본적으로 저장소당 최대 4 processing round(각 vector schema당 최대 한 batch)를 처리해 장시간 자원 독점을 피합니다. pending, retry 가능한 failed, 5분 이상 멈춘 processing 작업만 자동 복구하며 재시도 한도를 넘은 quarantined 작업은 무한 반복하지 않고 상태에 남깁니다.
+
+maintenance는 메모리 루트가 있는 파일시스템의 여유 공간이 기본 5 GiB 미만이면 쓰기 작업을 `blocked`로 기록하고 큐 현황만 보고합니다. 기준은 `maintenance run --min-free-gb <GiB>`로 조정할 수 있으며, `0`은 이 보호 장치를 명시적으로 끕니다. 예약 실행도 같은 기본값을 사용합니다.
 
 systemd user session이 없는 최소 Linux, 컨테이너, 일부 WSL 환경에서는 스케줄러 설치 대신 `claude-memory-layer maintenance run`을 기존 cron/작업 스케줄러에서 호출할 수 있습니다.
 
@@ -315,6 +320,9 @@ claude-memory-layer stats --project "$VERIFY_PROJECT"
 claude-memory-layer search "최근에 하던 작업" --project "$VERIFY_PROJECT" --top-k 5
 claude-memory-layer dashboard --no-open --port 37777
 # 다른 터미널에서: curl http://localhost:37777/api/health
+
+# 프로젝트 저장소 분리 상태를 aggregate-only 리포트로 점검
+claude-memory-layer project scope-audit --days 7
 ```
 
 ### 5) MCP/다른 agent에 연결
@@ -337,6 +345,8 @@ hermes mcp add claude-memory-layer --command claude-memory-layer-mcp
 ```
 
 MCP client가 환경에 따라 PATH를 못 찾으면 `command -v claude-memory-layer-mcp`로 절대 경로를 확인해서 command에 넣으세요.
+
+MCP 서버는 client의 stdio가 닫히거나 부모 프로세스가 사라지면 자원을 정리하고 종료합니다. 연결은 유지됐지만 호출이 없을 때는 기본 10분 후 embedding 모델/native 자원을 해제하며, 다음 호출에서 자동으로 다시 준비합니다. 필요하면 `CLAUDE_MEMORY_MCP_IDLE_RELEASE_MS`를 60000~86400000ms 범위에서 지정할 수 있습니다.
 
 ---
 
@@ -551,9 +561,14 @@ claude-memory-layer vector-status --project /path/to/project
 
 # 머신 전체 프로젝트 저장소의 bounded maintenance
 claude-memory-layer maintenance run
+claude-memory-layer maintenance run --min-free-gb 10
 claude-memory-layer maintenance install --interval 300
 claude-memory-layer maintenance status
 claude-memory-layer maintenance uninstall
+
+# registry/canonical store 분리 상태의 aggregate-only 감사
+claude-memory-layer project scope-audit --days 7
+claude-memory-layer project scope-audit --days 7 --json
 
 # Perspective Memory actor/session membership backfill
 claude-memory-layer actors repair --project /path/to/project --dry-run
@@ -755,6 +770,8 @@ hermes mcp add claude-memory-layer --command node --args /path/to/claude-memory-
 ```bash
 node dist/mcp/index.js
 ```
+
+MCP 서버는 stdio 종료·부모 프로세스 소실 시 함께 종료됩니다. 유휴 상태에서는 기본 10분 후 embedding 모델/native 자원을 반납하고 다음 도구 호출에서 다시 적재합니다. 유휴 해제 시간은 `CLAUDE_MEMORY_MCP_IDLE_RELEASE_MS`(60000~86400000ms)로 조정할 수 있습니다.
 
 ### 제공되는 MCP 도구
 

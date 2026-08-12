@@ -30,7 +30,8 @@ const mocks = vi.hoisted(() => {
 
 vi.mock('../../src/services/memory-service.js', () => ({
   getDefaultMemoryService: mocks.getDefaultMemoryService,
-  getMemoryServiceForProject: mocks.getMemoryServiceForProject
+  getMemoryServiceForProject: mocks.getMemoryServiceForProject,
+  shutdownMemoryServices: vi.fn(async () => undefined)
 }));
 
 const { handleToolCall } = await import('../../src/extensions/mcp/handlers.js');

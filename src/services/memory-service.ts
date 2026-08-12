@@ -6,6 +6,7 @@
 import * as os from 'os';
 
 import type { RetrievalResult, UnifiedRetrievalResult } from '../core/retriever.js';
+import { disposeDefaultEmbedder } from '../core/embedder.js';
 import type { PromotionResult } from '../core/shared-promoter.js';
 import type { SharedMemoryServices } from '../extensions/shared-memory/index.js';
 import type {
@@ -802,6 +803,7 @@ const defaultRegistry = createMemoryServiceRegistry<MemoryService>({
   // caller passes them explicitly; without this, no production surface (hooks,
   // MCP server, daemon) could ever enable codifyLite/graphExpansion/etc.
   createService: (config) => new MemoryService({ operations: loadMemoryOperationsConfig(), ...config }),
+  disposeService: (service) => service.shutdown(),
   hashProjectPath: defaultHashProjectPath,
   getProjectStoragePath: defaultGetProjectStoragePath,
   getSessionProject: defaultGetSessionProject,
@@ -816,3 +818,21 @@ export const getMemoryServiceForSession = defaultRegistry.getMemoryServiceForSes
 export const getLightweightMemoryService = defaultRegistry.getLightweightMemoryService;
 export const getLightweightMemoryServiceForProject = defaultRegistry.getLightweightMemoryServiceForProject;
 export const createMemoryService = defaultRegistry.createMemoryService;
+export async function shutdownMemoryServices(): Promise<void> {
+  const failures: unknown[] = [];
+  // Services own background workers that can still be executing the shared
+  // embedder. Stop and drain those workers before disposing the native model.
+  try {
+    await defaultRegistry.shutdownAll();
+  } catch (error) {
+    failures.push(error);
+  }
+  try {
+    await disposeDefaultEmbedder();
+  } catch (error) {
+    failures.push(error);
+  }
+  if (failures.length > 0) {
+    throw new AggregateError(failures, 'Failed to release memory runtime resources');
+  }
+}
