@@ -100,6 +100,7 @@ import type {
   PerspectiveObservation,
   PerspectiveObservationLevel
 } from '../../core/types.js';
+import { extractLessonWithLlm } from '../../adapters/llm/lesson-extraction-llm.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 
 type ToolResult = CallToolResult;
@@ -917,7 +918,9 @@ async function handleLessonList(context: MemoryOperationContext, args: Record<st
 }
 
 async function handleLessonCandidates(context: MemoryOperationContext, args: Record<string, unknown>): Promise<Record<string, unknown>> {
-  const result = await new LessonCandidateService(context.db).findCandidates({
+  const result = await new LessonCandidateService(context.db, {
+    lessonExtractor: (source) => extractLessonWithLlm(source)
+  }).findCandidates({
     projectHash: context.projectHash,
     minSessions: typeof args.minSessions === 'number' ? args.minSessions : undefined,
     limit: numberArg(args.limit, 25, 1, 100)

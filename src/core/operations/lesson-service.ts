@@ -3,7 +3,11 @@ import { z } from 'zod';
 import { sqliteAll, type SQLiteDatabase } from '../sqlite-wrapper.js';
 import { applyPrivacyFilter } from '../privacy/filter.js';
 import type { Config, MemoryLesson } from '../types.js';
-import { LessonCandidateService, type LessonCandidate } from './lesson-candidate-service.js';
+import {
+  LessonCandidateService,
+  type LessonCandidate,
+  type LessonExtractor
+} from './lesson-candidate-service.js';
 import { LessonRepository } from './lesson-repository.js';
 
 const NonEmptyStringSchema = z.string()
@@ -204,12 +208,19 @@ function assertCuratedPayloadIsShareSafe(input: z.output<typeof SaveCuratedLesso
   }
 }
 
+export interface LessonServiceOptions {
+  /** Forwarded to the candidate service; see `LessonExtractor`. */
+  lessonExtractor?: LessonExtractor;
+}
+
 export class LessonService {
   private readonly candidateService: LessonCandidateService;
   private readonly lessonRepository: LessonRepository;
 
-  constructor(private readonly db: SQLiteDatabase) {
-    this.candidateService = new LessonCandidateService(db);
+  constructor(private readonly db: SQLiteDatabase, options: LessonServiceOptions = {}) {
+    this.candidateService = new LessonCandidateService(db, {
+      lessonExtractor: options.lessonExtractor
+    });
     this.lessonRepository = new LessonRepository(db);
   }
 

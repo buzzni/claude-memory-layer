@@ -4,19 +4,61 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { LessonCandidateService } from '../../src/core/operations/lesson-candidate-service.js';
+import {
+  LessonCandidateService,
+  type ExtractedLesson,
+  type LessonExtractionSource
+} from '../../src/core/operations/lesson-candidate-service.js';
 import { SQLiteEventStore } from '../../src/core/sqlite-event-store.js';
 import type { MemoryEvent } from '../../src/core/types.js';
 
 const tempDirs: string[] = [];
 const baseTime = Date.parse('2026-05-20T00:00:00.000Z');
 
-async function createFixture(): Promise<{ store: SQLiteEventStore; service: LessonCandidateService; cleanup: () => Promise<void> }> {
+interface StubExtractor {
+  (source: LessonExtractionSource): Promise<ExtractedLesson | null>;
+  calls: LessonExtractionSource[];
+}
+
+/**
+ * Stands in for the CLI-backed extractor. Deterministic so assertions can be
+ * exact, and it records what it was handed so privacy checks can inspect the
+ * transcript that would have left the process.
+ */
+function stubExtractor(
+  result: ExtractedLesson | null = {
+    name: '검증 루프를 갖춘 코드 변경 절차',
+    trigger: '소스와 테스트를 함께 수정한 뒤 커밋해야 할 때',
+    steps: ['변경한 파일에 해당하는 테스트를 먼저 실행한다', '타입체크와 빌드를 통과시킨다'],
+    failureModes: ['검증이 통과하기 전에 커밋하지 마라']
+  }
+): StubExtractor {
+  const calls: LessonExtractionSource[] = [];
+  const extractor = async (source: LessonExtractionSource) => {
+    calls.push(source);
+    return result;
+  };
+  return Object.assign(extractor, { calls });
+}
+
+async function createFixture(
+  extractor: StubExtractor = stubExtractor()
+): Promise<{
+  store: SQLiteEventStore;
+  service: LessonCandidateService;
+  extractor: StubExtractor;
+  cleanup: () => Promise<void>;
+}> {
   const dir = mkdtempSync(join(tmpdir(), 'cml-lesson-candidates-'));
   tempDirs.push(dir);
   const store = new SQLiteEventStore(join(dir, 'events.sqlite'));
   await store.initialize();
-  return { store, service: new LessonCandidateService(store.getDatabase()), cleanup: async () => store.close() };
+  return {
+    store,
+    service: new LessonCandidateService(store.getDatabase(), { lessonExtractor: extractor }),
+    extractor,
+    cleanup: async () => store.close()
+  };
 }
 
 function projectMetadata(projectHash: string, extra: Record<string, unknown> = {}): Record<string, unknown> {
@@ -140,19 +182,145 @@ describe('LessonCandidateService', () => {
     });
     expect(result.candidates[0].confidence).toBeGreaterThanOrEqual(0.7);
     expect(result.candidates[0].sourceEventIds.length).toBeGreaterThanOrEqual(4);
-    expect(result.candidates[0].steps).toEqual(expect.arrayContaining([
-      'Run focused tests for the changed files',
-      'Run typecheck',
-      'Run build',
-      'Run the full test suite',
-      'Run the static/privacy scan',
-      'Commit verified changes'
-    ]));
+    // The lesson text now comes from the extractor rather than a tool-name template.
+    expect(result.candidates[0].name).toBe('검증 루프를 갖춘 코드 변경 절차');
+    expect(result.candidates[0].steps).toEqual([
+      '변경한 파일에 해당하는 테스트를 먼저 실행한다',
+      '타입체크와 빌드를 통과시킨다'
+    ]);
+    expect(result.candidates[0].failureModes).toEqual(['검증이 통과하기 전에 커밋하지 마라']);
+    // The deterministic mining half is unchanged.
     expect(result.candidates[0].reasons.join(' ')).toContain('2 successful sessions');
+    expect(result.candidates[0].pattern.tools).toEqual(expect.arrayContaining(['typecheck', 'build']));
     const serialized = JSON.stringify(result.candidates[0]);
     expect(serialized).not.toContain('fixture-value');
     expect(serialized).not.toContain('customer');
     expect(serialized).not.toContain('session-other-project');
+  });
+
+  it('redacts credentials and absolute paths before the transcript leaves the process', async () => {
+    const { store, service, extractor, cleanup } = await createFixture();
+    const projectHash = 'project-transcript-privacy';
+    await store.importEvents([
+      ...implementationSession('session-alpha', projectHash, 0, {}, 'Task 6 implementation.'),
+      ...implementationSession('session-beta', projectHash, 20, {}, 'Task 7 implementation.')
+    ]);
+
+    await service.findCandidates({ projectHash });
+    await cleanup();
+
+    expect(extractor.calls).toHaveLength(1);
+    const { transcript } = extractor.calls[0];
+    expect(transcript.length).toBeGreaterThan(0);
+    expect(transcript).not.toContain('fixture-value');
+    expect(transcript).not.toContain('customer');
+    // Sessions are labelled positionally rather than by id. (The fixture names
+    // its source files after the session, so the id still legitimately appears
+    // inside relative paths — what must not appear is a session-id heading.)
+    expect(transcript).toContain('## 세션 1');
+    expect(transcript).toContain('## 세션 2');
+    expect(transcript).not.toMatch(/^##\s+session-/m);
+  });
+
+  it('sanitizes lesson text the extractor returns', async () => {
+    const leaky = stubExtractor({
+      name: 'Leaky lesson',
+      trigger: 'When configuring the client with token=super-secret-value',
+      steps: ['Read the config from /Users/someone/private/config.json'],
+      failureModes: []
+    });
+    const { store, service, cleanup } = await createFixture(leaky);
+    const projectHash = 'project-output-sanitize';
+    await store.importEvents([
+      ...implementationSession('session-alpha', projectHash, 0),
+      ...implementationSession('session-beta', projectHash, 20)
+    ]);
+
+    const result = await service.findCandidates({ projectHash });
+    await cleanup();
+
+    expect(result.candidates).toHaveLength(1);
+    const serialized = JSON.stringify(result.candidates[0]);
+    expect(serialized).not.toContain('super-secret-value');
+    expect(serialized).not.toContain('/Users/someone');
+    expect(serialized).toContain('[REDACTED]');
+  });
+
+  it('omits the candidate when no lesson text can be produced', async () => {
+    const { store, service, cleanup } = await createFixture(stubExtractor(null));
+    const projectHash = 'project-no-extraction';
+    await store.importEvents([
+      ...implementationSession('session-alpha', projectHash, 0),
+      ...implementationSession('session-beta', projectHash, 20)
+    ]);
+
+    const result = await service.findCandidates({ projectHash });
+    await cleanup();
+
+    // The grouping still succeeded; only the text is missing, and templated
+    // filler is exactly what this path must not fall back to.
+    expect(result.eligibleSessions).toBe(2);
+    expect(result.groupedPatterns).toBe(1);
+    expect(result.candidates).toEqual([]);
+  });
+
+  it('omits the candidate when the extractor throws', async () => {
+    const failing = Object.assign(
+      async (source: LessonExtractionSource) => {
+        failing.calls.push(source);
+        throw new Error('provider CLI was not found');
+      },
+      { calls: [] as LessonExtractionSource[] }
+    );
+    const { store, service, cleanup } = await createFixture(failing);
+    const projectHash = 'project-extractor-throws';
+    await store.importEvents([
+      ...implementationSession('session-alpha', projectHash, 0),
+      ...implementationSession('session-beta', projectHash, 20)
+    ]);
+
+    const result = await service.findCandidates({ projectHash });
+    await cleanup();
+
+    expect(failing.calls).toHaveLength(1);
+    expect(result.candidates).toEqual([]);
+  });
+
+  it('reuses the cached extraction so review and promotion see the same text', async () => {
+    const { store, service, extractor, cleanup } = await createFixture();
+    const projectHash = 'project-extraction-cache';
+    await store.importEvents([
+      ...implementationSession('session-alpha', projectHash, 0),
+      ...implementationSession('session-beta', projectHash, 20)
+    ]);
+
+    const first = await service.findCandidates({ projectHash });
+    const second = await service.findCandidates({ projectHash });
+    await cleanup();
+
+    expect(extractor.calls).toHaveLength(1);
+    expect(second.candidates).toEqual(first.candidates);
+  });
+
+  it('re-extracts once a new session joins the group', async () => {
+    const { store, service, extractor, cleanup } = await createFixture();
+    const projectHash = 'project-extraction-refresh';
+    await store.importEvents([
+      ...implementationSession('session-alpha', projectHash, 0),
+      ...implementationSession('session-beta', projectHash, 20)
+    ]);
+    await service.findCandidates({ projectHash });
+
+    await store.importEvents([...implementationSession('session-gamma', projectHash, 40)]);
+    const refreshed = await service.findCandidates({ projectHash });
+    await cleanup();
+
+    expect(extractor.calls).toHaveLength(2);
+    expect(refreshed.candidates[0].sourceSessionIds).toEqual([
+      'session-alpha',
+      'session-beta',
+      'session-gamma'
+    ]);
   });
 
   it('requires at least two successful sessions with source refs', async () => {

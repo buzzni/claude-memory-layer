@@ -3,6 +3,7 @@ import { z } from 'zod';
 
 import { sqliteAll, type SQLiteDatabase } from '../sqlite-wrapper.js';
 import { sanitizeGovernanceAuditValue } from './governance-audit.js';
+import { LessonExtractionCache, lessonExtractionFingerprint } from './lesson-extraction-cache.js';
 
 const NonEmptyStringSchema = z.string()
   .transform((value) => value.trim())
@@ -46,6 +47,39 @@ export interface LessonCandidateResult {
   candidates: LessonCandidate[];
 }
 
+/**
+ * Redacted material handed to the extractor. The transcript has already been
+ * through `sanitizeGovernanceAuditValue`, so absolute paths and credential
+ * assignments are replaced before anything leaves the process.
+ */
+export interface LessonExtractionSource {
+  projectHash: string;
+  candidateId: string;
+  sessionCount: number;
+  tools: string[];
+  fileCategories: string[];
+  taskPatterns: string[];
+  transcript: string;
+}
+
+export interface ExtractedLesson {
+  name: string;
+  trigger: string;
+  steps: string[];
+  failureModes: string[];
+}
+
+/**
+ * Injected so core stays free of child-process/CLI concerns. Returns null when
+ * the session group holds no reusable procedure, which must emit no candidate
+ * rather than fall back to templated text.
+ */
+export type LessonExtractor = (source: LessonExtractionSource) => Promise<ExtractedLesson | null>;
+
+export interface LessonCandidateServiceOptions {
+  lessonExtractor?: LessonExtractor;
+}
+
 interface EventRow {
   id: string;
   event_type: string;
@@ -55,12 +89,21 @@ interface EventRow {
   metadata: string | null;
 }
 
+interface TranscriptEntry {
+  eventType: string;
+  content: string;
+}
+
 interface SessionProfile {
   sessionId: string;
   firstTimestamp: string;
   eventIds: string[];
   sourceEventIds: string[];
   successEventIds: string[];
+  /** Intent-bearing events (prompts and answers) in chronological order. */
+  narrative: TranscriptEntry[];
+  /** Tool output that carried a success or failure signal — the procedure itself. */
+  signals: TranscriptEntry[];
   tools: Set<ToolPattern>;
   fileCategories: Set<string>;
   taskPatterns: Set<string>;
@@ -83,16 +126,6 @@ const TOOL_ORDER = [
   'verified-commit',
   'diff-check'
 ] as const;
-
-const TOOL_STEPS: Record<ToolPattern, string> = {
-  'focused-test': 'Run focused tests for the changed files',
-  typecheck: 'Run typecheck',
-  build: 'Run build',
-  'full-suite': 'Run the full test suite',
-  'static-privacy-scan': 'Run the static/privacy scan',
-  'verified-commit': 'Commit verified changes',
-  'diff-check': 'Run git diff checks'
-};
 
 const TOOL_LABELS: Record<ToolPattern, string> = {
   'focused-test': 'focused tests',
@@ -325,53 +358,129 @@ function sanitizeArray(values: string[]): string[] {
   return values.map(sanitizeString).filter((value) => value.length > 0);
 }
 
-function createCandidate(
+/** Per-session caps that keep one long session from crowding out the others. */
+const MAX_NARRATIVE_PER_SESSION = 12;
+const MAX_SIGNALS_PER_SESSION = 10;
+const MAX_ENTRY_CHARS = 800;
+const MAX_TRANSCRIPT_CHARS = 14_000;
+
+function transcriptLabel(eventType: string): string {
+  if (eventType === 'user_prompt') return '사용자';
+  if (eventType === 'agent_response') return '어시스턴트';
+  return '도구';
+}
+
+/**
+ * Builds the redacted transcript the extractor reads.
+ *
+ * Sessions are labelled positionally rather than by id: the id is an
+ * identifier the lesson text must never carry, and it tells the model nothing.
+ * Every line goes through the audit sanitizer first, so absolute paths and
+ * credential assignments are gone before the text reaches a subprocess.
+ */
+function buildGroupTranscript(group: SessionProfile[]): string {
+  const blocks: string[] = [];
+
+  group.forEach((profile, index) => {
+    const lines = [
+      ...profile.narrative.slice(-MAX_NARRATIVE_PER_SESSION),
+      ...profile.signals.slice(-MAX_SIGNALS_PER_SESSION)
+    ]
+      .map((entry) => {
+        const content = sanitizeString(entry.content).replace(/\r?\n/g, ' ').trim();
+        if (content.length === 0) return null;
+        const clipped = content.length > MAX_ENTRY_CHARS
+          ? `${content.slice(0, MAX_ENTRY_CHARS)}…`
+          : content;
+        return `[${transcriptLabel(entry.eventType)}] ${clipped}`;
+      })
+      .filter((line): line is string => line !== null);
+
+    if (lines.length === 0) return;
+    blocks.push([`## 세션 ${index + 1}`, ...lines].join('\n'));
+  });
+
+  const transcript = blocks.join('\n\n');
+  return transcript.length > MAX_TRANSCRIPT_CHARS
+    ? transcript.slice(0, MAX_TRANSCRIPT_CHARS)
+    : transcript;
+}
+
+interface CandidateFacts {
+  candidateId: string;
+  tools: ToolPattern[];
+  fileCategories: string[];
+  taskPatterns: string[];
+  sourceSessionIds: string[];
+  sourceEventIds: string[];
+  confidence: number;
+  reasons: string[];
+  transcript: string;
+}
+
+/**
+ * The deterministic half of a candidate: which sessions grouped, what they have
+ * in common, and how confident the grouping is. Only the human-readable lesson
+ * text is left for the extractor.
+ */
+function deriveCandidateFacts(
   projectHash: string,
   signature: string,
   group: SessionProfile[],
   maxSourceEventIds: number
-): LessonCandidate {
-  const toolSets = group.map((profile) => profile.tools);
-  const fileSets = group.map((profile) => profile.fileCategories);
-  const taskSets = group.map((profile) => profile.taskPatterns);
-  const tools = orderedTools(intersectionSets(toolSets)).filter((tool) => tool !== 'diff-check');
-  const fileCategories = sortedStrings(intersectionSets(fileSets));
-  const taskPatterns = sortedStrings(intersectionSets(taskSets));
+): CandidateFacts {
+  const tools = orderedTools(intersectionSets(group.map((profile) => profile.tools)))
+    .filter((tool) => tool !== 'diff-check');
+  const fileCategories = sortedStrings(intersectionSets(group.map((profile) => profile.fileCategories)));
+  const taskPatterns = sortedStrings(intersectionSets(group.map((profile) => profile.taskPatterns)));
   const sourceSessionIds = group.map((profile) => profile.sessionId).sort((a, b) => a.localeCompare(b));
   const sourceEventIds = uniqueStrings(
     group.flatMap((profile) => profile.successEventIds.length > 0 ? profile.successEventIds : profile.sourceEventIds),
     maxSourceEventIds
   );
   const labels = tools.map((tool) => TOOL_LABELS[tool]);
-  const steps = tools.map((tool) => TOOL_STEPS[tool]);
-  const name = `Workflow pattern: ${labels.slice(0, 4).join(' + ')}`;
-  const trigger = `When ${taskPatterns.includes('code-change') ? 'code changes' : 'a project task'} repeat across ${group.length} successful sessions with ${labels.join(', ')}`;
-  const reasons = [
-    `${group.length} successful sessions share the same tool pattern`,
-    fileCategories.length > 0 ? `Shared file categories: ${fileCategories.join(', ')}` : 'Shared task pattern without exposing source paths',
-    `Successful signals include: ${labels.join(', ')}`
-  ];
 
   return {
     candidateId: candidateIdFor(projectHash, signature),
-    projectHash: sanitizeString(projectHash),
-    name: sanitizeString(name),
-    trigger: sanitizeString(trigger),
-    steps: sanitizeArray(steps),
+    tools,
+    fileCategories,
+    taskPatterns,
+    sourceSessionIds,
+    sourceEventIds,
     confidence: confidenceForGroup(group, tools, fileCategories, taskPatterns),
-    sourceSessionIds: sanitizeArray(sourceSessionIds),
-    sourceEventIds: sanitizeArray(sourceEventIds),
-    failureModes: sanitizeArray([
-      'Do not promote if any source session is quarantined or privacy-tagged',
-      'Resolve failed validation signals before treating the workflow as successful'
-    ]),
+    reasons: [
+      `${group.length} successful sessions share the same tool pattern`,
+      fileCategories.length > 0
+        ? `Shared file categories: ${fileCategories.join(', ')}`
+        : 'Shared task pattern without exposing source paths',
+      `Successful signals include: ${labels.join(', ')}`
+    ],
+    transcript: buildGroupTranscript(group)
+  };
+}
+
+function assembleCandidate(
+  projectHash: string,
+  facts: CandidateFacts,
+  extraction: ExtractedLesson
+): LessonCandidate {
+  return {
+    candidateId: facts.candidateId,
+    projectHash: sanitizeString(projectHash),
+    name: sanitizeString(extraction.name),
+    trigger: sanitizeString(extraction.trigger),
+    steps: sanitizeArray(extraction.steps),
+    confidence: facts.confidence,
+    sourceSessionIds: sanitizeArray(facts.sourceSessionIds),
+    sourceEventIds: sanitizeArray(facts.sourceEventIds),
+    failureModes: sanitizeArray(extraction.failureModes),
     skillCandidate: true,
     pattern: {
-      tools: sanitizeArray(tools),
-      fileCategories: sanitizeArray(fileCategories),
-      taskPatterns: sanitizeArray(taskPatterns)
+      tools: sanitizeArray(facts.tools),
+      fileCategories: sanitizeArray(facts.fileCategories),
+      taskPatterns: sanitizeArray(facts.taskPatterns)
     },
-    reasons: sanitizeArray(reasons)
+    reasons: sanitizeArray(facts.reasons)
   };
 }
 
@@ -386,7 +495,13 @@ function intersectionSets<T>(sets: Array<Set<T>>): Set<T> {
 }
 
 export class LessonCandidateService {
-  constructor(private readonly db: SQLiteDatabase) {}
+  private readonly lessonExtractor?: LessonExtractor;
+  private readonly extractionCache: LessonExtractionCache;
+
+  constructor(private readonly db: SQLiteDatabase, options: LessonCandidateServiceOptions = {}) {
+    this.lessonExtractor = options.lessonExtractor;
+    this.extractionCache = new LessonExtractionCache(db);
+  }
 
   async findCandidates(input: unknown): Promise<LessonCandidateResult> {
     const parsed = LessonCandidateInputSchema.parse(input);
@@ -404,12 +519,26 @@ export class LessonCandidateService {
     }
 
     const groups = this.groupProfiles(eligibleProfiles, parsed.minSessions);
-    const candidates = groups
-      .map(([signature, group]) => createCandidate(parsed.projectHash, signature, group, parsed.maxSourceEventIds))
+    // Rank on the deterministic facts before extracting, so a slow extractor
+    // runs only for the groups that can still make the caller's limit.
+    const ranked = groups
+      .map(([signature, group]) => deriveCandidateFacts(
+        parsed.projectHash,
+        signature,
+        group,
+        parsed.maxSourceEventIds
+      ))
       .sort((a, b) => b.confidence - a.confidence
         || b.sourceSessionIds.length - a.sourceSessionIds.length
         || a.candidateId.localeCompare(b.candidateId))
       .slice(0, parsed.limit);
+
+    const candidates: LessonCandidate[] = [];
+    for (const facts of ranked) {
+      const extraction = await this.resolveExtraction(parsed.projectHash, facts);
+      if (!extraction) continue;
+      candidates.push(assembleCandidate(parsed.projectHash, facts, extraction));
+    }
 
     return {
       scannedSessions,
@@ -418,6 +547,60 @@ export class LessonCandidateService {
       groupedPatterns: groups.length,
       candidates
     };
+  }
+
+  /**
+   * Cache first, extractor second. Serving repeat calls from the cache is what
+   * lets promotion re-derive a candidate and get back the same text a reviewer
+   * approved; a fresh extraction each time would let the two diverge.
+   *
+   * Returns null whenever no lesson text can be produced — no extractor wired,
+   * the provider failed, or the group held nothing reusable. The candidate is
+   * then omitted rather than falling back to templated text.
+   */
+  private async resolveExtraction(
+    projectHash: string,
+    facts: CandidateFacts
+  ): Promise<ExtractedLesson | null> {
+    if (facts.transcript.trim().length === 0) return null;
+
+    const fingerprint = lessonExtractionFingerprint({
+      sourceSessionIds: facts.sourceSessionIds,
+      sourceEventIds: facts.sourceEventIds,
+      transcript: facts.transcript
+    });
+
+    const cached = this.extractionCache.read(facts.candidateId, fingerprint);
+    if (cached) return cached;
+
+    if (!this.lessonExtractor) return null;
+
+    let extraction: ExtractedLesson | null;
+    try {
+      extraction = await this.lessonExtractor({
+        projectHash,
+        candidateId: facts.candidateId,
+        sessionCount: facts.sourceSessionIds.length,
+        tools: facts.tools.map((tool) => TOOL_LABELS[tool]),
+        fileCategories: facts.fileCategories,
+        taskPatterns: facts.taskPatterns,
+        transcript: facts.transcript
+      });
+    } catch {
+      // A provider outage must not fail the whole listing: other groups may
+      // still be served from cache.
+      return null;
+    }
+
+    if (!extraction) return null;
+
+    this.extractionCache.write({
+      candidateId: facts.candidateId,
+      projectHash,
+      fingerprint,
+      extraction
+    });
+    return extraction;
   }
 
   private buildSessionProfiles(input: ParsedLessonCandidateInput): SessionProfile[] {
@@ -455,7 +638,19 @@ export class LessonCandidateService {
 
       const tools = extractToolPatterns(row.content);
       const success = isSuccessSignal(row.content);
-      if (isFailureSignal(row.content)) {
+      const failure = isFailureSignal(row.content);
+
+      // Prompts and answers carry intent and decisions; tool output only earns
+      // a place when it actually resolved to a signal, which is what makes the
+      // procedure legible. Unsignalled tool output is the bulk of stored volume
+      // and would crowd the extractor's context with noise.
+      if (row.event_type === 'user_prompt' || row.event_type === 'agent_response') {
+        profile.narrative.push({ eventType: row.event_type, content: row.content });
+      } else if (success || failure) {
+        profile.signals.push({ eventType: row.event_type, content: row.content });
+      }
+
+      if (failure) {
         profile.lastFailureTimestamp = maxTimestamp(profile.lastFailureTimestamp, row.timestamp);
       }
       if (success) {
@@ -482,6 +677,8 @@ export class LessonCandidateService {
         eventIds: [],
         sourceEventIds: [],
         successEventIds: [],
+        narrative: [],
+        signals: [],
         tools: new Set<ToolPattern>(),
         fileCategories: new Set<string>(),
         taskPatterns: new Set<string>(),
