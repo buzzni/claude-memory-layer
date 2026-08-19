@@ -1,6 +1,6 @@
 {
   "name": "claude-memory-layer",
-  "version": "2.2.14",
+  "version": "2.2.15",
   "description": "Project-scoped memory layer for Claude Code, Codex, Hermes, MCP, and dashboards",
   "main": "dist/index.js",
   "bin": {
