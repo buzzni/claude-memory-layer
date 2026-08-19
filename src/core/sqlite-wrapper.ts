@@ -13,6 +13,15 @@ export type SQLiteDatabase = Database.Database;
 export interface SQLiteOptions {
   readonly?: boolean;
   walMode?: boolean;
+  /**
+   * Open an ephemeral copy instead of the live file. Only for diagnostics
+   * that must guarantee zero writes inside the canonical memory root — the
+   * copy costs O(database size) per open and the view is frozen at open time.
+   * Long-lived readers (semantic daemon), per-hook readers, and machine-wide
+   * scanners (maintenance) must NOT set this: a frozen view serves stale
+   * memories and the copies dominate their runtime.
+   */
+  snapshot?: boolean;
 }
 
 /**
@@ -26,7 +35,7 @@ export function createSQLiteDatabase(path: string, options?: SQLiteOptions): SQL
     fs.mkdirSync(dir, { recursive: true });
   }
 
-  const snapshot = options?.readonly ? createSQLiteReadSnapshot(path) : null;
+  const snapshot = options?.readonly && options?.snapshot ? createSQLiteReadSnapshot(path) : null;
   let db: SQLiteDatabase;
   try {
     db = new Database(snapshot?.databasePath ?? path, {

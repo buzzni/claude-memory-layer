@@ -1,5 +1,6 @@
 import { mkdtempSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { createRequire } from 'node:module';
 import * as path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
@@ -9,8 +10,14 @@ import { hashProjectPath } from '../../src/core/registry/project-path.js';
 import { SQLiteEventStore } from '../../src/core/sqlite-event-store.js';
 import { diffMemoryRootSnapshots, snapshotMemoryRoot } from '../helpers/memory-root-snapshot.js';
 
+// Resolve tsx through module resolution instead of a hardcoded
+// node_modules/.bin path: a git worktree without its own install inherits
+// node_modules from an ancestor, where the .bin path does not exist.
+const require = createRequire(import.meta.url);
+const tsxCli = path.join(path.dirname(require.resolve('tsx/package.json')), 'dist', 'cli.mjs');
+
 function runCli(homeDir: string, args: string[]) {
-  return spawnSync(path.join(process.cwd(), 'node_modules', '.bin', 'tsx'), ['src/apps/cli/index.ts', ...args], {
+  return spawnSync(process.execPath, [tsxCli, 'src/apps/cli/index.ts', ...args], {
     cwd: process.cwd(),
     encoding: 'utf8',
     env: {

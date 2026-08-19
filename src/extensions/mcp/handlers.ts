@@ -3,7 +3,7 @@
  * Implementation of tool calls
  */
 
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync } from 'node:fs';
 import * as path from 'node:path';
 
 import {
@@ -2904,15 +2904,35 @@ function mentionsDifferentWorkspaceProject(content: string, projectPath?: string
 
   // Inside a marker-converged workspace, content routinely names sibling
   // instance directories — that cross-instance reach is what the marker
-  // exists for, so the basename heuristic must not undo it.
-  if (projectPath && resolveMemoryRootMarkerPath(projectPath) !== null) return false;
+  // exists for, so the basename heuristic must not flag names that are
+  // actual children of the marker root. Names outside the marker workspace
+  // still go through the comparison below: the marker converges its own
+  // subtree, not the rest of the machine.
+  const markerRoot = projectPath ? resolveMemoryRootMarkerPath(projectPath) : null;
 
   const workspaceProjectNames = Array.from(content.matchAll(/[\\/](?:workspace|workspaces|projects)[\\/]([^\\/\s'"`<>]+)/gi))
     .map((match) => normalizeProjectName(match[1]))
     .filter((name) => name.length > 0);
 
   if (workspaceProjectNames.length === 0) return false;
-  return !workspaceProjectNames.includes(currentProject);
+  const markerSiblings = markerRoot ? markerSiblingProjectNames(markerRoot) : null;
+  return !workspaceProjectNames.some(
+    (name) => name === currentProject || (markerSiblings?.has(name) ?? false)
+  );
+}
+
+/** Directory names under the marker root — the instances the marker converges. */
+function markerSiblingProjectNames(markerRoot: string): Set<string> {
+  try {
+    return new Set(
+      readdirSync(markerRoot, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => normalizeProjectName(entry.name))
+        .filter((name) => name.length > 0)
+    );
+  } catch {
+    return new Set();
+  }
 }
 
 function basenameOfPath(value: string | undefined): string | undefined {

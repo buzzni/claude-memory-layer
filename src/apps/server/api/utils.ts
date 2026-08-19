@@ -4,6 +4,7 @@
  */
 
 import type { Context } from 'hono';
+import { HTTPException } from 'hono/http-exception';
 import {
   DISABLED_SHARED_STORE_CONFIG,
   getReadOnlyMemoryService,
@@ -12,6 +13,7 @@ import {
 import { hashProjectPath, resolveProjectStoragePath } from '../../../core/registry/project-path.js';
 import {
   createReadOnlyDiagnosticsService,
+  MemoryStoreResolutionError,
   type ReadOnlyDiagnosticsService
 } from '../../../services/read-only-diagnostics-service.js';
 
@@ -126,5 +128,24 @@ export function getLightweightServiceFromQuery(c: Context): MemoryService {
  */
 export function getDiagnosticsServiceFromQuery(c: Context): ReadOnlyDiagnosticsService {
   const project = c.req.query('project') || c.req.query('projectId');
-  return createReadOnlyDiagnosticsService(project || undefined);
+  try {
+    return createReadOnlyDiagnosticsService(project || undefined);
+  } catch (error) {
+    // Routes call this factory before their try/catch, so an invalid,
+    // unreadable, or corrupt store must become a structured HTTP response
+    // here rather than an unhandled Hono 500 with a raw stack.
+    if (error instanceof MemoryStoreResolutionError) {
+      throw new HTTPException(422, {
+        res: new Response(
+          JSON.stringify({
+            status: 'error',
+            timestamp: new Date().toISOString(),
+            error: `Memory store is ${error.storeStatus}`
+          }),
+          { status: 422, headers: { 'content-type': 'application/json' } }
+        )
+      });
+    }
+    throw error;
+  }
 }

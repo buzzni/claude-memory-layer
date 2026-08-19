@@ -76,6 +76,15 @@ describe('existing memory store resolver', () => {
     writeFileSync(path.join(corruptStorage, 'events.sqlite'), 'not a sqlite database');
     expect(resolveExistingStore(corruptHash, { homeDir }).status).toBe('corrupt');
 
+    // A zero-length file is a valid empty database to SQLite (the header is
+    // written lazily on first write), so it reads as a store that does not
+    // exist yet — never as corruption.
+    const emptyHash = 'eee55555';
+    const emptyStorage = path.join(homeDir, '.claude-code', 'memory', 'projects', emptyHash);
+    mkdirSync(emptyStorage, { recursive: true });
+    writeFileSync(path.join(emptyStorage, 'events.sqlite'), '');
+    expect(resolveExistingStore(emptyHash, { homeDir }).status).toBe('missing');
+
     const targetHash = 'ccc33333';
     const targetStorage = await createStore(homeDir, targetHash);
     const symlinkHash = 'ddd44444';
