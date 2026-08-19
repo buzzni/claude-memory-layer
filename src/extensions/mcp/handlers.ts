@@ -26,7 +26,7 @@ import {
   type ExternalMarketProvider
 } from '../../core/external-market-context.js';
 import { generateCitationId } from '../../core/citation-generator.js';
-import { getProjectStoragePath, hashProjectPath } from '../../core/registry/project-path.js';
+import { getProjectStoragePath, hashProjectPath, resolveMemoryRootMarkerPath } from '../../core/registry/project-path.js';
 import { applyPrivacyFilter, maskSensitiveInput } from '../../core/privacy/filter.js';
 import {
   ActionRepository,
@@ -2789,8 +2789,14 @@ function eventBelongsToDifferentProject(event: MemoryEvent, projectPath?: string
 
   if (metadataProjectRefs.length > 0 || metadataProjectHash) {
     const pathMatches = metadataProjectRefs.some((value) => projectReferenceMatches(value, projectPath));
-    const hashMatches = metadataProjectHash === hashProjectPath(projectPath);
-    return !pathMatches && !hashMatches;
+    const currentProjectHash = hashProjectPath(projectPath);
+    const hashMatches = metadataProjectHash === currentProjectHash;
+    // A recorded path that no longer string-matches can still resolve onto the
+    // same store: a sibling instance under a .claude-memory-root marker, or a
+    // worktree of this repository. Same store means same project.
+    const convergesOntoSameStore = !pathMatches && !hashMatches
+      && metadataProjectRefs.some((value) => safeHashProjectPath(value) === currentProjectHash);
+    return !pathMatches && !hashMatches && !convergesOntoSameStore;
   }
 
   if (isUnscopedImportedHistory(metadata)) return true;
@@ -2856,9 +2862,22 @@ function normalizeProjectReference(value: string): string {
   return value.trim().replace(/\\/g, '/').replace(/\/+$/g, '').toLowerCase();
 }
 
+function safeHashProjectPath(value: string): string | undefined {
+  try {
+    return hashProjectPath(value);
+  } catch {
+    return undefined;
+  }
+}
+
 function mentionsDifferentWorkspaceProject(content: string, projectPath?: string): boolean {
   const currentProject = basenameOfPath(projectPath);
   if (!currentProject) return false;
+
+  // Inside a marker-converged workspace, content routinely names sibling
+  // instance directories — that cross-instance reach is what the marker
+  // exists for, so the basename heuristic must not undo it.
+  if (projectPath && resolveMemoryRootMarkerPath(projectPath) !== null) return false;
 
   const workspaceProjectNames = Array.from(content.matchAll(/[\\/](?:workspace|workspaces|projects)[\\/]([^\\/\s'"`<>]+)/gi))
     .map((match) => normalizeProjectName(match[1]))

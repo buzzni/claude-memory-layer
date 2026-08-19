@@ -1273,6 +1273,77 @@ describe('MCP project context tools', () => {
     expect(text).not.toContain('session-other');
   });
 
+  it('keeps sibling-instance memories in a marker-converged workspace', async () => {
+    // Two instance directories converged onto one store by a
+    // .claude-memory-root marker. Rows recorded from instance A (legacy paths,
+    // or content that mentions the sibling's path) must stay visible when the
+    // pack is built from instance B — cross-instance recall is the point of
+    // the convergence. Real directories: marker resolution reads the fs.
+    const fs = await import('node:fs');
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const { MEMORY_ROOT_MARKER } = await import('../../src/core/registry/project-path.js');
+    const sandbox = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cml-marker-pack-')));
+    const workspaceRoot = path.join(sandbox, 'converged-ws');
+    const instanceA = path.join(workspaceRoot, 'instance-a');
+    const instanceB = path.join(workspaceRoot, 'instance-b');
+    fs.mkdirSync(instanceA, { recursive: true });
+    fs.mkdirSync(instanceB, { recursive: true });
+    fs.writeFileSync(path.join(workspaceRoot, MEMORY_ROOT_MARKER), '');
+
+    try {
+      const siblingPathMemory = event({
+        id: '99990000-0000-4000-8000-000000000021',
+        sessionId: 'session-sibling-path',
+        eventType: 'agent_response',
+        timestamp: new Date('2026-05-05T04:00:00.000Z'),
+        content: 'Sibling instance memory recorded before convergence must stay recallable.',
+        metadata: { source: 'hermes', projectPath: instanceA }
+      });
+      const siblingMentionMemory = event({
+        id: '99990000-0000-4000-8000-000000000022',
+        sessionId: 'session-sibling-mention',
+        eventType: 'agent_response',
+        timestamp: new Date('2026-05-05T04:01:00.000Z'),
+        content: 'Deploy fix lives at /workspace/instance-a/scripts/deploy.sh in the sibling instance.',
+        metadata: {}
+      });
+      const foreignMemory = event({
+        id: '99990000-0000-4000-8000-000000000023',
+        sessionId: 'session-still-foreign',
+        eventType: 'agent_response',
+        timestamp: new Date('2026-05-05T04:02:00.000Z'),
+        content: 'Foreign project row outside the marker must still be filtered.',
+        metadata: { source: 'hermes', projectPath: path.join(sandbox, 'unrelated-project') }
+      });
+
+      mocks.projectService.retrieveMemories.mockResolvedValue({
+        memories: [
+          { event: siblingPathMemory, score: 0.95 },
+          { event: siblingMentionMemory, score: 0.9 },
+          { event: foreignMemory, score: 0.88 }
+        ]
+      });
+      mocks.projectService.getRecentEvents.mockResolvedValue([]);
+
+      const result = await handleToolCall('mem-context-pack', {
+        projectPath: instanceB,
+        query: 'sibling instance recall',
+        topK: 3,
+        recentLimit: 5,
+        sessionLimit: 3
+      });
+
+      const text = textOf(result);
+      expect(result.isError).not.toBe(true);
+      expect(text).toContain('Sibling instance memory recorded before convergence');
+      expect(text).toContain('Deploy fix lives at /workspace/instance-a');
+      expect(text).not.toContain('Foreign project row outside the marker');
+    } finally {
+      fs.rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
   it('keeps project-scoped Codex imports whose scope is nested under metadata.scope.project', async () => {
     const currentProjectHash = hashProjectPath('/repo/app');
     const currentProjectMemory = event({

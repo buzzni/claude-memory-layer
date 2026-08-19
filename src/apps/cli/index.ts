@@ -3342,6 +3342,8 @@ projectCmd
         canonicalId: identity.canonicalId,
         kind: identity.kind,
         isWorktree: identity.isWorktree,
+        memoryRootMarkerPath: identity.memoryRootMarkerPath,
+        candidateLegacyProjectHashes: identity.candidateLegacyProjectHashes,
         scannedStoreCount: stores.scannedStoreCount,
         candidateLegacyStoreCount: stores.matchingStoreCount,
         unreadableStoreCount: stores.unreadableStoreCount,
@@ -3355,6 +3357,8 @@ projectCmd
       console.log(`Canonical identity: ${report.canonicalId}`);
       console.log(`Resolver: ${report.kind}`);
       console.log(`Worktree: ${report.isWorktree ? 'yes' : 'no'}`);
+      console.log(`Memory root marker: ${report.memoryRootMarkerPath ?? 'no'}`);
+      console.log(`Legacy hash candidates: ${report.candidateLegacyProjectHashes.join(', ')}`);
       console.log(`Legacy store candidates: ${report.candidateLegacyStoreCount} (scanned ${report.scannedStoreCount})`);
       console.log('Dry run only. No project stores were moved, merged, deleted, or re-routed.');
     } catch {
