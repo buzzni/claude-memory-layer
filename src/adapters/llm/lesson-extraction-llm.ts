@@ -286,13 +286,16 @@ function runProvider(
     child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
     child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
     child.on('error', (error: NodeJS.ErrnoException) => {
-      settle(classifyLessonFailure(error.code === 'ENOENT' ? 'ENOENT not found' : String(error)));
+      settle(classifyLessonFailure(error.message));
     });
     child.on('close', (code) => {
       if (code === 0) settle(undefined, stdout);
       else settle(classifyLessonFailure(stderr || `exit code ${code}`));
     });
 
+    child.stdin.on('error', (error) => {
+      settle(classifyLessonFailure(`stdin: ${error.message}`));
+    });
     child.stdin.write(prompt);
     child.stdin.end();
   });
