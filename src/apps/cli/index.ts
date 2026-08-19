@@ -9,6 +9,7 @@ import { exec } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { pathToFileURL } from 'url';
 import {
   MemoryService,
   getDefaultMemoryService,
@@ -66,6 +67,17 @@ import {
   formatPlainSearchResults
 } from './retrieval-disclosure-output.js';
 import { installMcpServer } from './mcp-install.js';
+import {
+  checkEmbeddingBackend,
+  checkHooksInstalled,
+  checkNodeVersion,
+  checkPathConsistency,
+  checkPluginFiles,
+  checkProjectStoreAccess,
+  doctorExitCode,
+  formatDoctorReport,
+  type DoctorCheckResult
+} from './doctor.js';
 import {
   hasHook,
   mergePluginHooksIntoSettings,
@@ -209,6 +221,28 @@ function getPluginPath(): string {
 
   // Fallback to npm global installation path
   return path.join(os.homedir(), '.npm-global', 'lib', 'node_modules', 'claude-memory-layer', 'dist');
+}
+
+/**
+ * The embedding backend healthcheck lives in scripts/postinstall-embedding-backend.cjs
+ * (published as-is, listed in package.json `files`) rather than under src/, so
+ * postinstall can run it standalone before any TypeScript is built. Loading it
+ * by absolute path from packageRoot works in both dev and dist layouts, since
+ * getPluginPath() already resolves packageRoot consistently across both.
+ */
+async function loadEmbeddingBackendAvailabilityCheck(packageRoot: string): Promise<((rootDir: string) => boolean) | null> {
+  try {
+    const scriptPath = path.join(packageRoot, 'scripts', 'postinstall-embedding-backend.cjs');
+    if (!fs.existsSync(scriptPath)) return null;
+    // Node's ESM loader imports a CJS module's `module.exports` object as
+    // named exports here since it's a static object literal.
+    const mod = await import(pathToFileURL(scriptPath).href) as {
+      isEmbeddingBackendAvailable?: (rootDir: string) => boolean;
+    };
+    return typeof mod.isEmbeddingBackendAvailable === 'function' ? mod.isEmbeddingBackendAvailable : null;
+  } catch {
+    return null;
+  }
 }
 
 function getMaintenanceCliPath(): string {
@@ -997,6 +1031,32 @@ program
       console.error('Runtime status failed');
       process.exitCode = 1;
     }
+  });
+
+/**
+ * Doctor command - diagnose the runtime environment, not just plugin state.
+ */
+program
+  .command('doctor')
+  .description('Diagnose the environment: Node version, embedding backend, PATH conflicts, hooks, store access')
+  .action(async () => {
+    const pluginPath = getPluginPath();
+    const packageRoot = path.dirname(pluginPath);
+    const settings = loadClaudeSettings();
+    const projectStorePath = getProjectStoragePath(process.cwd());
+
+    const checks: DoctorCheckResult[] = [
+      checkNodeVersion(),
+      checkPluginFiles(pluginPath),
+      checkHooksInstalled(settings),
+      checkEmbeddingBackend(packageRoot, await loadEmbeddingBackendAvailabilityCheck(packageRoot)),
+      checkPathConsistency('claude-memory-layer', process.env.PATH ?? ''),
+      checkPathConsistency('claude-memory-layer-mcp', process.env.PATH ?? ''),
+      checkProjectStoreAccess(projectStorePath)
+    ];
+
+    console.log(formatDoctorReport(checks));
+    process.exitCode = doctorExitCode(checks);
   });
 
 /**

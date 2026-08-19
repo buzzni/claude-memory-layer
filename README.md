@@ -48,6 +48,9 @@ claude-memory-layer install --with-maintenance
 
 claude-memory-layer status
 
+# 설치 후 뭔가 이상하면 환경 진단 (Node 버전, embedding backend, PATH 중복 설치, 훅, 스토어 쓰기 권한)
+claude-memory-layer doctor
+
 # Codex에서도 자동 컨텍스트 적재/불러오기를 사용할 때
 claude-memory-layer codex hooks install
 claude-memory-layer codex hooks status
@@ -62,6 +65,7 @@ npm install
 npm run build
 npx claude-memory-layer install
 npx claude-memory-layer status
+npx claude-memory-layer doctor
 ```
 
 - `install`은 **한 번만** 하면 됩니다(Claude Code hooks 등록).
