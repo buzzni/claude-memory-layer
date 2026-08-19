@@ -19,11 +19,11 @@
  */
 
 import {
+  CliProviderError,
   classifyCliProviderFailure,
   resolveCliModel,
   resolveCliTimeoutMs,
   runCliProvider,
-  type CliProviderError,
   type CliProviderName
 } from './cli-provider.js';
 import type {
@@ -247,11 +247,13 @@ export function resolveLessonVerdict(raw: string): ExtractedLesson | null {
 }
 
 /**
- * Returns null when the session group holds no reusable procedure; throws when
- * the provider output could not be interpreted (so the caller retries instead
- * of caching a false negative). Callers must treat null as "emit no candidate"
- * rather than falling back to the template text, which is the content this
- * module exists to stop producing.
+ * Returns null only when the model's verdict is that the session group holds
+ * no reusable procedure — callers cache that as deterministic. Anything that
+ * prevented a verdict (extraction disabled, empty transcript, unparseable
+ * output) throws instead: returning null for those would let a config toggle
+ * or one bad response be cached as a permanent false "no lesson" for the
+ * group. Callers must treat null as "emit no candidate" rather than falling
+ * back to the template text this module exists to stop producing.
  */
 export async function extractLessonWithLlm(
   source: LessonExtractionSource,
@@ -263,8 +265,12 @@ export async function extractLessonWithLlm(
   } = {}
 ): Promise<ExtractedLesson | null> {
   const env = options.env ?? process.env;
-  if (!isLlmLessonExtractionEnabled(env)) return null;
-  if (source.transcript.trim().length === 0) return null;
+  if (!isLlmLessonExtractionEnabled(env)) {
+    throw new CliProviderError('lesson extraction is disabled', 'provider-disabled');
+  }
+  if (source.transcript.trim().length === 0) {
+    throw new CliProviderError('lesson extraction needs a non-empty transcript', 'empty-transcript');
+  }
 
   const provider = options.provider ?? getLessonProviderName(env);
   const model = options.model ?? getLessonModel(env, provider);

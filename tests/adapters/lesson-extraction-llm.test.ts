@@ -4,6 +4,7 @@ import {
   NO_DURABLE_LESSON,
   buildLessonPrompt,
   classifyLessonFailure,
+  extractLessonWithLlm,
   getLessonModel,
   getLessonProviderName,
   isLlmLessonExtractionEnabled,
@@ -186,6 +187,23 @@ describe('resolveLessonVerdict', () => {
       name: 'n', trigger: 't', steps: ['s'], failureModes: []
     }));
     expect(verdict?.name).toBe('n');
+  });
+});
+
+describe('extractLessonWithLlm guard paths', () => {
+  // Null from this function is cached by the candidate service as a permanent
+  // "no lesson" verdict, so anything that merely *prevented* a verdict must
+  // throw instead. Both guards fire before any subprocess is spawned.
+  it('throws (not null) when extraction is disabled, so a config toggle cannot poison the cache', async () => {
+    await expect(
+      extractLessonWithLlm(source(), { env: { CLAUDE_MEMORY_LESSON_MODE: 'off' } })
+    ).rejects.toThrow('lesson extraction is disabled');
+  });
+
+  it('throws (not null) on an empty transcript', async () => {
+    await expect(
+      extractLessonWithLlm(source({ transcript: '   ' }), { env: {} })
+    ).rejects.toThrow('non-empty transcript');
   });
 });
 
