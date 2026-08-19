@@ -347,4 +347,54 @@ describe('SQLiteEventStore legacy project-scope repair/quarantine', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it('restamps rows whose scope hash is the pre-marker alias of their own recorded path', async () => {
+    // Rows merged from a fragment store into the converged store carry the
+    // fragment's hash in scope.project.hash. The recorded path proves the row
+    // belongs here (it re-hashes to this store), and the stale stamp is
+    // exactly the pre-marker hash of that same path — a basis shift, not
+    // contamination. Repair must restamp, not quarantine, or the strict
+    // retrieval scope gate keeps dropping the merged history forever.
+    const { dir, dbPath } = tempDb();
+    const workspaceRoot = path.join(dir, 'workspace');
+    const instancePath = path.join(workspaceRoot, 'instance-a');
+    mkdirSync(instancePath, { recursive: true });
+    writeFileSync(path.join(workspaceRoot, MEMORY_ROOT_MARKER), '');
+    const preMarkerHash = hashProjectPathIgnoringMarker(instancePath);
+    const convergedHash = hashProjectPath(workspaceRoot);
+
+    const store = new SQLiteEventStore(dbPath);
+    try {
+      await store.importEvents([
+        event('merged-row', 'merged fragment history must become searchable in the converged store', {
+          source: 'hermes',
+          importedFrom: '/tmp/hermes-state.sqlite',
+          projectPath: instancePath,
+          scope: { project: { hash: preMarkerHash, path: instancePath } }
+        }, 'session-merged'),
+        event('contaminated-row', 'row stamped for another project with no path evidence stays quarantined', {
+          source: 'hermes',
+          importedFrom: '/tmp/hermes-state.sqlite',
+          scope: { project: { hash: 'feedc0de' } }
+        }, 'session-contaminated')
+      ]);
+
+      const result = await store.repairLegacyProjectScope({ projectPath: workspaceRoot });
+      expect(result).toMatchObject({ scanned: 2, repaired: 1, quarantined: 1 });
+
+      const merged = await store.getSessionEvents('session-merged');
+      expect(merged[0].metadata).toMatchObject({
+        scope: { project: { hash: convergedHash } },
+        repair: { legacyProjectScope: { action: 'repaired' } }
+      });
+
+      const contaminated = await store.getSessionEvents('session-contaminated', { includeQuarantined: true });
+      expect(contaminated[0].metadata).toMatchObject({
+        quarantine: { status: 'active', category: 'project-scope', reason: 'scope-hash-mismatch' }
+      });
+    } finally {
+      await store.close().catch(() => undefined);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
