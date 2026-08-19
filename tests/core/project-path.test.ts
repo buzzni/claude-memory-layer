@@ -6,7 +6,7 @@ import * as path from 'node:path';
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { hashProjectPath, resolveProjectAnchorPath } from '../../src/core/registry/project-path.js';
+import { hashProjectPath, MEMORY_ROOT_MARKER, resolveProjectAnchorPath } from '../../src/core/registry/project-path.js';
 
 function git(cwd: string, args: string[]): void {
   execFileSync('git', args, { cwd, stdio: 'ignore' });
@@ -110,7 +110,7 @@ describe('hashProjectPath worktree convergence', () => {
     const gitInstance = path.join(workspaceRoot, 'instance-git');
     fs.mkdirSync(plainInstance, { recursive: true });
     fs.mkdirSync(gitInstance, { recursive: true });
-    fs.writeFileSync(path.join(workspaceRoot, '.claude-memory-root'), '');
+    fs.writeFileSync(path.join(workspaceRoot, MEMORY_ROOT_MARKER), '');
 
     git(gitInstance, ['init', '-q']);
     git(gitInstance, ['config', 'user.email', 'test@example.com']);
@@ -130,13 +130,72 @@ describe('hashProjectPath worktree convergence', () => {
     expect(resolveProjectAnchorPath(gitInstance)).toBe(workspaceRoot);
   });
 
+  it('converges a worktree located outside the marker tree onto the marker root', () => {
+    // git worktrees habitually live outside the workspace (git worktree add
+    // ../wt). Resolution must reach the marker through the main checkout, or
+    // the worktree splits from the very store its repository converged onto.
+    const markerWs = path.join(tmpRoot, 'marker-ws');
+    const innerRepo = path.join(markerWs, 'repo');
+    const outsideWorktree = path.join(tmpRoot, 'outside-worktree');
+    fs.mkdirSync(innerRepo, { recursive: true });
+    fs.writeFileSync(path.join(markerWs, MEMORY_ROOT_MARKER), '');
+    git(innerRepo, ['init', '-q']);
+    git(innerRepo, ['config', 'user.email', 'test@example.com']);
+    git(innerRepo, ['config', 'user.name', 'Test']);
+    git(innerRepo, ['commit', '-q', '--allow-empty', '-m', 'init']);
+    git(innerRepo, ['worktree', 'add', '-q', outsideWorktree, '-b', 'wt']);
+
+    expect(hashProjectPath(outsideWorktree)).toBe(hashProjectPath(markerWs));
+  });
+
+  it('keeps a worktree on its main checkout when the marker is committed into the repository', () => {
+    // A committed marker materializes at the root of every worktree checkout.
+    // Marker resolution starts from the git-resolved basis (the main
+    // checkout), so the worktree keeps converging instead of regressing to a
+    // cold per-worktree store.
+    const committedRepo = path.join(tmpRoot, 'committed-marker-repo');
+    const committedWorktree = path.join(tmpRoot, 'committed-marker-worktree');
+    fs.mkdirSync(committedRepo, { recursive: true });
+    git(committedRepo, ['init', '-q']);
+    git(committedRepo, ['config', 'user.email', 'test@example.com']);
+    git(committedRepo, ['config', 'user.name', 'Test']);
+    fs.writeFileSync(path.join(committedRepo, MEMORY_ROOT_MARKER), '');
+    git(committedRepo, ['add', MEMORY_ROOT_MARKER]);
+    git(committedRepo, ['commit', '-q', '-m', 'marker']);
+    git(committedRepo, ['worktree', 'add', '-q', committedWorktree, '-b', 'wt2']);
+
+    expect(hashProjectPath(committedWorktree)).toBe(hashProjectPath(committedRepo));
+    expect(hashProjectPath(committedRepo)).toBe(legacyPathHash(committedRepo));
+  });
+
+  it('ignores a marker inside a repository subdirectory', () => {
+    // A marker below the checkout root must not detach that subtree from the
+    // repository store it has been accumulating into.
+    const subdirMarker = path.join(mainRoot, 'instances');
+    const subdirChild = path.join(subdirMarker, 'child');
+    fs.mkdirSync(subdirChild, { recursive: true });
+    fs.writeFileSync(path.join(subdirMarker, MEMORY_ROOT_MARKER), '');
+
+    expect(hashProjectPath(subdirChild)).toBe(hashProjectPath(mainRoot));
+    expect(hashProjectPath(subdirMarker)).toBe(hashProjectPath(mainRoot));
+  });
+
+  it('ignores a directory named like the marker', () => {
+    const dirMarkerWs = path.join(tmpRoot, 'dir-marker-ws');
+    const child = path.join(dirMarkerWs, 'child');
+    fs.mkdirSync(path.join(dirMarkerWs, MEMORY_ROOT_MARKER), { recursive: true });
+    fs.mkdirSync(child, { recursive: true });
+
+    expect(hashProjectPath(child)).toBe(legacyPathHash(child));
+  });
+
   it('lets the nearest marker win when markers nest', () => {
     const outer = path.join(tmpRoot, 'marker-outer');
     const inner = path.join(outer, 'marker-inner');
     const leaf = path.join(inner, 'leaf');
     fs.mkdirSync(leaf, { recursive: true });
-    fs.writeFileSync(path.join(outer, '.claude-memory-root'), '');
-    fs.writeFileSync(path.join(inner, '.claude-memory-root'), '');
+    fs.writeFileSync(path.join(outer, MEMORY_ROOT_MARKER), '');
+    fs.writeFileSync(path.join(inner, MEMORY_ROOT_MARKER), '');
 
     expect(hashProjectPath(leaf)).toBe(hashProjectPath(inner));
     expect(hashProjectPath(inner)).not.toBe(hashProjectPath(outer));
