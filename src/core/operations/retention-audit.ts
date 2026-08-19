@@ -19,9 +19,13 @@ import {
 const DEFAULT_AUDIT_LIMIT = 100;
 const DEFAULT_SAMPLE_LIMIT = 20;
 const PREVIEW_LIMIT = 180;
-const POSIX_ABSOLUTE_PATH_PATTERN = /(^|[^A-Za-z0-9._\/\\-])\/(?!\/)[^\n\r"'<>|`]*/g;
-const WINDOWS_DRIVE_PATH_PATTERN = /(^|[^A-Za-z0-9._\/\\-])(?:[A-Za-z]:[\\/][^\n\r"'<>|`]*)/g;
-const WINDOWS_UNC_PATH_PATTERN = /(^|[^A-Za-z0-9._\/\\-])(?:\\\\[^\\/\s"'<>|`]+[\\/][^\n\r"'<>|`]*)/g;
+// See the matching comment in governance-audit.ts: an unbounded tail here
+// would let one stray "/" in a long tool_observation redact the entire
+// preview rather than just the path around it. 300 chars comfortably covers
+// any real path.
+const POSIX_ABSOLUTE_PATH_PATTERN = /(^|[^A-Za-z0-9._\/\\-])\/(?!\/)[^\n\r"'<>|`]{0,300}/g;
+const WINDOWS_DRIVE_PATH_PATTERN = /(^|[^A-Za-z0-9._\/\\-])(?:[A-Za-z]:[\\/][^\n\r"'<>|`]{0,300})/g;
+const WINDOWS_UNC_PATH_PATTERN = /(^|[^A-Za-z0-9._\/\\-])(?:\\\\[^\\/\s"'<>|`]+[\\/][^\n\r"'<>|`]{0,300})/g;
 const PRIVACY_CONFIG = ConfigSchema.parse({}).privacy;
 const MEMORY_LEVELS = new Set<RetentionMemoryLevel>(['L0', 'L1', 'L2', 'L3', 'L4']);
 const RETENTION_AUDIT_TARGET_TYPES = new Set(['event', 'entity', 'edge', 'consolidated_memory', 'lesson', 'action']);

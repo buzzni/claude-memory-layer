@@ -67,9 +67,20 @@ function normalizeOptionalString(value: string | undefined): string | undefined 
 
 const REDACTED = '[REDACTED]';
 const sensitiveKeyPattern = /(?:api[_-]?key|secret|password|passwd|token|access[_-]?token|client[_-]?secret|crtfc[_-]?key|hashkey|serviceKey)/i;
-const POSIX_ABSOLUTE_PATH_PATTERN = /(^|[^A-Za-z0-9._\/\\-])\/(?!\/)[^\n\r"'<>|`]*/g;
-const WINDOWS_DRIVE_PATH_PATTERN = /(^|[^A-Za-z0-9._\/\\-])(?:[A-Za-z]:[\\/][^\n\r"'<>|`]*)/g;
-const WINDOWS_UNC_PATH_PATTERN = /(^|[^A-Za-z0-9._\/\\-])(?:\\\\[^\\\n\r"'<>|`]+\\[^\n\r"'<>|`]*)/g;
+/**
+ * The tail after the path's leading separator is bounded at 300 chars rather
+ * than unbounded (`*`). Real filesystem paths can legitimately contain spaces
+ * (e.g. "Application Support"), so the tail can't stop at whitespace without
+ * under-redacting — but an unbounded tail runs to the end of the string, so
+ * one incidental "/" inside unrelated prose (a fraction, a "그리고/또는"
+ * aside, LLM-generated lesson text) silently deleted everything after it on
+ * that line. 300 chars is far longer than any real path, so legitimate paths
+ * still redact in full; it only stops the pattern from eating an entire
+ * trailing paragraph.
+ */
+const POSIX_ABSOLUTE_PATH_PATTERN = /(^|[^A-Za-z0-9._\/\\-])\/(?!\/)[^\n\r"'<>|`]{0,300}/g;
+const WINDOWS_DRIVE_PATH_PATTERN = /(^|[^A-Za-z0-9._\/\\-])(?:[A-Za-z]:[\\/][^\n\r"'<>|`]{0,300})/g;
+const WINDOWS_UNC_PATH_PATTERN = /(^|[^A-Za-z0-9._\/\\-])(?:\\\\[^\\\n\r"'<>|`]+\\[^\n\r"'<>|`]{0,300})/g;
 const credentialQueryPattern = /\b((?:api[_-]?key|token|access[_-]?token|client[_-]?secret|crtfc[_-]?key|hashkey|serviceKey)=)[^&\s`"'<>]+/gi;
 const credentialAssignmentPattern = /\b((?:api[_-]?key|secret|password|passwd|token|access[_-]?token|client[_-]?secret|crtfc[_-]?key|hashkey|serviceKey)\s*[:=]\s*)[^\s`"'<>},]+/gi;
 

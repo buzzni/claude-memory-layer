@@ -4,7 +4,10 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 
 import { SQLiteEventStore } from '../../src/core/sqlite-event-store.js';
-import { writeGovernanceAuditEntry } from '../../src/core/operations/governance-audit.js';
+import {
+  sanitizeGovernanceAuditValue,
+  writeGovernanceAuditEntry
+} from '../../src/core/operations/governance-audit.js';
 import { sqliteGet } from '../../src/core/sqlite-wrapper.js';
 
 const tempDirs: string[] = [];
@@ -140,5 +143,50 @@ describe('writeGovernanceAuditEntry', () => {
     expect(sourceEventIds.join(' ')).not.toContain(windowsDrivePath);
     expect(sourceEventIds.join(' ')).not.toContain(windowsUncPath);
     expect(sourceEventIds.join(' ')).not.toContain(tokenParam);
+  });
+});
+
+describe('path redaction blast radius', () => {
+  it('still fully redacts a real path even when it contains spaces', () => {
+    // Regression guard for the fix itself: a bounded tail must not
+    // under-redact legitimate multi-segment paths like "Application Support".
+    const input = 'hash-only paths [/Users/alice/Library/Application Support/key.txt], '
+      + String.raw`[C:\Users\alice\secret.txt], [\\fileserver\share\team secret.txt]`;
+
+    const sanitized = String(sanitizeGovernanceAuditValue(input));
+
+    expect(sanitized).toContain('[REDACTED]');
+    expect(sanitized).not.toContain('/Users/alice');
+    expect(sanitized).not.toContain('Application Support');
+    expect(sanitized).not.toContain('C:\\Users');
+    expect(sanitized).not.toContain('secret.txt');
+  });
+
+  it('does not delete the rest of a long sentence after one incidental slash', () => {
+    // This is the bug this fix addresses: a single "/" used inline (a path,
+    // a fraction, a "A/B" aside) used to redact from that character to the
+    // end of the string because the path pattern's tail was unbounded.
+    const tail = '이하 아주 긴 나머지 문장이 살아남아야 한다. '.repeat(20);
+    const input = `관찰된 문제: 경로 표기 /apps/desktop/src/foo/bar/baz/qux 이후. ${tail}`;
+
+    const sanitized = String(sanitizeGovernanceAuditValue(input));
+
+    expect(sanitized).toContain('[REDACTED]');
+    expect(sanitized).not.toContain('/apps/desktop');
+    expect(sanitized).toContain('나머지 문장이 살아남아야 한다');
+  });
+
+  it('caps the match at a fixed length instead of consuming to the end of the string', () => {
+    // 320 path-legal filler chars after the leading "/": the match can only
+    // take the first 300, so the last 20 plus a marker beyond them must
+    // survive verbatim as literal (unredacted) text.
+    const filler = 'x'.repeat(320);
+    const marker = 'MARKER_BEYOND_CAP_MUST_SURVIVE';
+    const input = `설명: /${filler} ${marker}`;
+
+    const sanitized = String(sanitizeGovernanceAuditValue(input));
+
+    expect(sanitized).toContain('[REDACTED]');
+    expect(sanitized).toContain(marker);
   });
 });
