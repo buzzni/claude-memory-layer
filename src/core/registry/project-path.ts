@@ -29,7 +29,38 @@ export function normalizeProjectPath(projectPath: string): string {
 /** Cache of hash basis per normalized path; git layout does not change within a process run. */
 const hashBasisCache = new Map<string, string>();
 
+/**
+ * Explicit convergence marker. A workspace product that creates one directory
+ * per chat/instance (each often its own git repository) can drop this file at
+ * the workspace root so every path beneath it shares one store. Without it,
+ * each instance hashes to its own cold store and memory never accumulates
+ * across instances.
+ */
+const MEMORY_ROOT_MARKER = '.claude-memory-root';
+
+/**
+ * Find the nearest ancestor (including the path itself) that carries the
+ * convergence marker. Nearest wins so a nested workspace stays separate from
+ * an outer one. Returns null when no marker exists anywhere up to the
+ * filesystem root — the common case, which keeps default behavior untouched.
+ */
+function findMemoryRootMarker(normalizedPath: string): string | null {
+  let current = normalizedPath;
+  for (;;) {
+    if (fs.existsSync(path.join(current, MEMORY_ROOT_MARKER))) return current;
+    const parent = path.dirname(current);
+    if (parent === current) return null;
+    current = parent;
+  }
+}
+
 function computeHashBasisPath(normalizedPath: string): string {
+  // The marker is explicit user intent, so it outranks git resolution: the
+  // directories it exists to converge are precisely instances that own their
+  // own .git and would otherwise stay separate.
+  const markerRoot = findMemoryRootMarker(normalizedPath);
+  if (markerRoot !== null) return normalizeProjectPath(markerRoot);
+
   const commonDir = runGit(normalizedPath, ['rev-parse', '--git-common-dir']);
   if (!commonDir) return normalizedPath;
 
