@@ -217,7 +217,8 @@ function validateMemContextPackPerspectiveArgs(args: Record<string, unknown>): v
   requiredOperationString(args.targetActorId ?? args.observedActorId, 'targetActorId');
 }
 
-export async function handleToolCall(
+export async function handleToolCallInDomain(
+  _domain: 'compatibility' | 'context-search' | 'source-import' | 'operations' | 'graph-lessons' | 'governance-assets' | 'perspective-shared',
   name: string,
   rawArgs: Record<string, unknown>
 ): Promise<ToolResult> {
@@ -299,6 +300,18 @@ export async function handleToolCall(
       isError: true
     };
   }
+}
+
+/**
+ * Compatibility dispatcher retained for callers importing the historical
+ * handleToolCall path. The MCP server itself dispatches through the bounded
+ * registry domains and calls handleToolCallInDomain instead.
+ */
+export async function handleToolCall(
+  name: string,
+  rawArgs: Record<string, unknown>
+): Promise<ToolResult> {
+  return handleToolCallInDomain('compatibility', name, rawArgs);
 }
 
 const MEMORY_OPERATION_TOOL_NAMES = new Set([
