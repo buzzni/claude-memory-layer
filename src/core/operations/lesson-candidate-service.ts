@@ -3,6 +3,7 @@ import { z } from 'zod';
 
 import { sqliteAll, type SQLiteDatabase } from '../sqlite-wrapper.js';
 import { sanitizeGovernanceAuditValue } from './governance-audit.js';
+import { LessonExtractionCache, lessonExtractionFingerprint } from './lesson-extraction-cache.js';
 
 const NonEmptyStringSchema = z.string()
   .transform((value) => value.trim())
@@ -13,7 +14,15 @@ export const LessonCandidateInputSchema = z.object({
   minSessions: z.number().int().min(2).max(10).default(2),
   limit: z.number().int().positive().max(100).default(25),
   eventLimit: z.number().int().positive().max(10_000).default(2_000),
-  maxSourceEventIds: z.number().int().positive().max(100).default(20)
+  maxSourceEventIds: z.number().int().positive().max(100).default(20),
+  /**
+   * Cap on fresh (uncached) extractor runs per call. Each one spawns a CLI
+   * subprocess with a long timeout, and this service is called from
+   * interactive tool handlers — an unbounded cold cache turned one listing
+   * into `limit` sequential spawns. Groups past the budget are reported in
+   * the extraction stats instead of silently dropped.
+   */
+  maxFreshExtractions: z.number().int().min(0).max(100).default(3)
 });
 export type LessonCandidateInput = z.input<typeof LessonCandidateInputSchema>;
 
@@ -38,12 +47,67 @@ export interface LessonCandidate {
   reasons: string[];
 }
 
+/**
+ * Why a listing returned the candidates it did. Without this, "candidates: []"
+ * is indistinguishable between "no patterns exist", "the provider is broken",
+ * and "the budget ran out" — and the first silent-empty regression shipped
+ * exactly that way.
+ */
+export interface LessonExtractionStats {
+  /** Groups answered from the extraction cache (including cached no-lesson verdicts). */
+  cacheHits: number;
+  /** Fresh extractor runs performed during this call. */
+  freshAttempts: number;
+  /** Extractor runs that threw (transient provider failures; not cached). */
+  failures: number;
+  /** Groups whose verdict — cached or fresh — was "no reusable procedure". */
+  noLesson: number;
+  /** Cache misses that could not run because no extractor is wired. */
+  skippedNoExtractor: number;
+  /** Cache misses left unextracted by maxFreshExtractions; retry to continue. */
+  skippedByBudget: number;
+}
+
 export interface LessonCandidateResult {
   scannedSessions: number;
   eligibleSessions: number;
   skippedSessions: number;
   groupedPatterns: number;
   candidates: LessonCandidate[];
+  extraction: LessonExtractionStats;
+}
+
+/**
+ * Redacted material handed to the extractor. The transcript has already been
+ * through `sanitizeGovernanceAuditValue`, so absolute paths and credential
+ * assignments are replaced before anything leaves the process. Deliberately
+ * carries no identifiers (candidate id, project hash): nothing the extractor
+ * does not need may cross the subprocess boundary.
+ */
+export interface LessonExtractionSource {
+  sessionCount: number;
+  tools: string[];
+  fileCategories: string[];
+  taskPatterns: string[];
+  transcript: string;
+}
+
+export interface ExtractedLesson {
+  name: string;
+  trigger: string;
+  steps: string[];
+  failureModes: string[];
+}
+
+/**
+ * Injected so core stays free of child-process/CLI concerns. Returns null when
+ * the session group holds no reusable procedure, which must emit no candidate
+ * rather than fall back to templated text.
+ */
+export type LessonExtractor = (source: LessonExtractionSource) => Promise<ExtractedLesson | null>;
+
+export interface LessonCandidateServiceOptions {
+  lessonExtractor?: LessonExtractor;
 }
 
 interface EventRow {
@@ -55,12 +119,21 @@ interface EventRow {
   metadata: string | null;
 }
 
+interface TranscriptEntry {
+  eventType: string;
+  content: string;
+}
+
 interface SessionProfile {
   sessionId: string;
   firstTimestamp: string;
   eventIds: string[];
   sourceEventIds: string[];
   successEventIds: string[];
+  /** Intent-bearing events (prompts and answers) in chronological order. */
+  narrative: TranscriptEntry[];
+  /** Tool output that carried a success or failure signal — the procedure itself. */
+  signals: TranscriptEntry[];
   tools: Set<ToolPattern>;
   fileCategories: Set<string>;
   taskPatterns: Set<string>;
@@ -83,16 +156,6 @@ const TOOL_ORDER = [
   'verified-commit',
   'diff-check'
 ] as const;
-
-const TOOL_STEPS: Record<ToolPattern, string> = {
-  'focused-test': 'Run focused tests for the changed files',
-  typecheck: 'Run typecheck',
-  build: 'Run build',
-  'full-suite': 'Run the full test suite',
-  'static-privacy-scan': 'Run the static/privacy scan',
-  'verified-commit': 'Commit verified changes',
-  'diff-check': 'Run git diff checks'
-};
 
 const TOOL_LABELS: Record<ToolPattern, string> = {
   'focused-test': 'focused tests',
@@ -325,53 +388,149 @@ function sanitizeArray(values: string[]): string[] {
   return values.map(sanitizeString).filter((value) => value.length > 0);
 }
 
-function createCandidate(
+/** Per-session caps that keep one long session from crowding out the others. */
+const MAX_NARRATIVE_PER_SESSION = 12;
+const MAX_SIGNALS_PER_SESSION = 10;
+const MAX_ENTRY_CHARS = 800;
+const MAX_TRANSCRIPT_CHARS = 14_000;
+
+function transcriptLabel(eventType: string): string {
+  if (eventType === 'user_prompt') return '사용자';
+  if (eventType === 'agent_response') return '어시스턴트';
+  return '도구';
+}
+
+/**
+ * The opening prompt states the session's intent; a plain tail slice dropped
+ * it on long sessions, leaving the extractor to derive the lesson's trigger
+ * from wrap-up chatter. Keep the first entry plus the most recent tail.
+ */
+function capNarrative(narrative: TranscriptEntry[]): TranscriptEntry[] {
+  if (narrative.length <= MAX_NARRATIVE_PER_SESSION) return narrative;
+  return [narrative[0], ...narrative.slice(-(MAX_NARRATIVE_PER_SESSION - 1))];
+}
+
+function renderTranscriptLines(entries: TranscriptEntry[]): string[] {
+  return entries
+    .map((entry) => {
+      const content = sanitizeString(entry.content).replace(/\r?\n/g, ' ').trim();
+      if (content.length === 0) return null;
+      const clipped = content.length > MAX_ENTRY_CHARS
+        ? `${content.slice(0, MAX_ENTRY_CHARS)}…`
+        : content;
+      return `[${transcriptLabel(entry.eventType)}] ${clipped}`;
+    })
+    .filter((line): line is string => line !== null);
+}
+
+/**
+ * Builds the redacted transcript the extractor reads.
+ *
+ * Sessions are labelled positionally rather than by id: the id is an
+ * identifier the lesson text must never carry, and it tells the model nothing.
+ * Every line goes through the audit sanitizer first, so absolute paths and
+ * credential assignments are gone before the text reaches a subprocess.
+ *
+ * Signals are collected separately from the narrative, so they are rendered
+ * under their own heading — appending them unlabelled read as "validation
+ * happened after the final answer" and let the model encode the wrong order.
+ */
+function buildGroupTranscript(group: SessionProfile[]): string {
+  const blocks: string[] = [];
+
+  group.forEach((profile, index) => {
+    const narrativeLines = renderTranscriptLines(capNarrative(profile.narrative));
+    const signalLines = renderTranscriptLines(profile.signals.slice(-MAX_SIGNALS_PER_SESSION));
+    if (narrativeLines.length === 0 && signalLines.length === 0) return;
+
+    const block = [`## 세션 ${index + 1}`, ...narrativeLines];
+    if (signalLines.length > 0) {
+      block.push('### 검증 신호 (세션 중 발생, 시간순 아님)', ...signalLines);
+    }
+    blocks.push(block.join('\n'));
+  });
+
+  const transcript = blocks.join('\n\n');
+  return transcript.length > MAX_TRANSCRIPT_CHARS
+    ? transcript.slice(0, MAX_TRANSCRIPT_CHARS)
+    : transcript;
+}
+
+interface CandidateFacts {
+  candidateId: string;
+  tools: ToolPattern[];
+  fileCategories: string[];
+  taskPatterns: string[];
+  sourceSessionIds: string[];
+  sourceEventIds: string[];
+  confidence: number;
+  reasons: string[];
+}
+
+/**
+ * The deterministic half of a candidate: which sessions grouped, what they have
+ * in common, and how confident the grouping is. Only the human-readable lesson
+ * text is left for the extractor. The transcript is deliberately not part of
+ * the facts: ranking never reads it, so it is built lazily for only the groups
+ * that actually reach extraction.
+ */
+function deriveCandidateFacts(
   projectHash: string,
   signature: string,
   group: SessionProfile[],
   maxSourceEventIds: number
-): LessonCandidate {
-  const toolSets = group.map((profile) => profile.tools);
-  const fileSets = group.map((profile) => profile.fileCategories);
-  const taskSets = group.map((profile) => profile.taskPatterns);
-  const tools = orderedTools(intersectionSets(toolSets)).filter((tool) => tool !== 'diff-check');
-  const fileCategories = sortedStrings(intersectionSets(fileSets));
-  const taskPatterns = sortedStrings(intersectionSets(taskSets));
+): CandidateFacts {
+  const tools = orderedTools(intersectionSets(group.map((profile) => profile.tools)))
+    .filter((tool) => tool !== 'diff-check');
+  const fileCategories = sortedStrings(intersectionSets(group.map((profile) => profile.fileCategories)));
+  const taskPatterns = sortedStrings(intersectionSets(group.map((profile) => profile.taskPatterns)));
   const sourceSessionIds = group.map((profile) => profile.sessionId).sort((a, b) => a.localeCompare(b));
   const sourceEventIds = uniqueStrings(
     group.flatMap((profile) => profile.successEventIds.length > 0 ? profile.successEventIds : profile.sourceEventIds),
     maxSourceEventIds
   );
   const labels = tools.map((tool) => TOOL_LABELS[tool]);
-  const steps = tools.map((tool) => TOOL_STEPS[tool]);
-  const name = `Workflow pattern: ${labels.slice(0, 4).join(' + ')}`;
-  const trigger = `When ${taskPatterns.includes('code-change') ? 'code changes' : 'a project task'} repeat across ${group.length} successful sessions with ${labels.join(', ')}`;
-  const reasons = [
-    `${group.length} successful sessions share the same tool pattern`,
-    fileCategories.length > 0 ? `Shared file categories: ${fileCategories.join(', ')}` : 'Shared task pattern without exposing source paths',
-    `Successful signals include: ${labels.join(', ')}`
-  ];
 
   return {
     candidateId: candidateIdFor(projectHash, signature),
-    projectHash: sanitizeString(projectHash),
-    name: sanitizeString(name),
-    trigger: sanitizeString(trigger),
-    steps: sanitizeArray(steps),
+    tools,
+    fileCategories,
+    taskPatterns,
+    sourceSessionIds,
+    sourceEventIds,
     confidence: confidenceForGroup(group, tools, fileCategories, taskPatterns),
-    sourceSessionIds: sanitizeArray(sourceSessionIds),
-    sourceEventIds: sanitizeArray(sourceEventIds),
-    failureModes: sanitizeArray([
-      'Do not promote if any source session is quarantined or privacy-tagged',
-      'Resolve failed validation signals before treating the workflow as successful'
-    ]),
+    reasons: [
+      `${group.length} successful sessions share the same tool pattern`,
+      fileCategories.length > 0
+        ? `Shared file categories: ${fileCategories.join(', ')}`
+        : 'Shared task pattern without exposing source paths',
+      `Successful signals include: ${labels.join(', ')}`
+    ]
+  };
+}
+
+function assembleCandidate(
+  projectHash: string,
+  facts: CandidateFacts,
+  extraction: ExtractedLesson
+): LessonCandidate {
+  return {
+    candidateId: facts.candidateId,
+    projectHash: sanitizeString(projectHash),
+    name: sanitizeString(extraction.name),
+    trigger: sanitizeString(extraction.trigger),
+    steps: sanitizeArray(extraction.steps),
+    confidence: facts.confidence,
+    sourceSessionIds: sanitizeArray(facts.sourceSessionIds),
+    sourceEventIds: sanitizeArray(facts.sourceEventIds),
+    failureModes: sanitizeArray(extraction.failureModes),
     skillCandidate: true,
     pattern: {
-      tools: sanitizeArray(tools),
-      fileCategories: sanitizeArray(fileCategories),
-      taskPatterns: sanitizeArray(taskPatterns)
+      tools: sanitizeArray(facts.tools),
+      fileCategories: sanitizeArray(facts.fileCategories),
+      taskPatterns: sanitizeArray(facts.taskPatterns)
     },
-    reasons: sanitizeArray(reasons)
+    reasons: sanitizeArray(facts.reasons)
   };
 }
 
@@ -386,7 +545,13 @@ function intersectionSets<T>(sets: Array<Set<T>>): Set<T> {
 }
 
 export class LessonCandidateService {
-  constructor(private readonly db: SQLiteDatabase) {}
+  private readonly lessonExtractor?: LessonExtractor;
+  private readonly extractionCache: LessonExtractionCache;
+
+  constructor(private readonly db: SQLiteDatabase, options: LessonCandidateServiceOptions = {}) {
+    this.lessonExtractor = options.lessonExtractor;
+    this.extractionCache = new LessonExtractionCache(db);
+  }
 
   async findCandidates(input: unknown): Promise<LessonCandidateResult> {
     const parsed = LessonCandidateInputSchema.parse(input);
@@ -404,19 +569,108 @@ export class LessonCandidateService {
     }
 
     const groups = this.groupProfiles(eligibleProfiles, parsed.minSessions);
-    const candidates = groups
-      .map(([signature, group]) => createCandidate(parsed.projectHash, signature, group, parsed.maxSourceEventIds))
-      .sort((a, b) => b.confidence - a.confidence
-        || b.sourceSessionIds.length - a.sourceSessionIds.length
-        || a.candidateId.localeCompare(b.candidateId))
-      .slice(0, parsed.limit);
+    // Rank on the deterministic facts before extracting, so a slow extractor
+    // runs only for groups that can still make the caller's limit. The limit
+    // is applied to *produced candidates*, not to ranked groups: slicing the
+    // groups first meant a top group with no reusable procedure consumed a
+    // slot and a valid lower-ranked group was never tried.
+    const ranked = groups
+      .map(([signature, group]) => ({
+        group,
+        facts: deriveCandidateFacts(parsed.projectHash, signature, group, parsed.maxSourceEventIds)
+      }))
+      .sort((a, b) => b.facts.confidence - a.facts.confidence
+        || b.facts.sourceSessionIds.length - a.facts.sourceSessionIds.length
+        || a.facts.candidateId.localeCompare(b.facts.candidateId));
+
+    const stats: LessonExtractionStats = {
+      cacheHits: 0,
+      freshAttempts: 0,
+      failures: 0,
+      noLesson: 0,
+      skippedNoExtractor: 0,
+      skippedByBudget: 0
+    };
+    let freshRemaining = parsed.maxFreshExtractions;
+    const candidates: LessonCandidate[] = [];
+
+    for (const { group, facts } of ranked) {
+      if (candidates.length >= parsed.limit) break;
+
+      const transcript = buildGroupTranscript(group);
+      if (transcript.trim().length === 0) continue;
+
+      const fingerprint = lessonExtractionFingerprint({
+        sourceSessionIds: facts.sourceSessionIds,
+        sourceEventIds: facts.sourceEventIds,
+        transcript
+      });
+
+      // Cache first, extractor second. Serving repeat calls from the cache is
+      // what lets promotion re-derive a candidate and get back the same text a
+      // reviewer approved; a fresh extraction each time would let the two
+      // diverge.
+      const cached = this.extractionCache.read(facts.candidateId, fingerprint);
+      if (cached) {
+        stats.cacheHits += 1;
+        if (cached.extraction) {
+          candidates.push(assembleCandidate(parsed.projectHash, facts, cached.extraction));
+        } else {
+          stats.noLesson += 1;
+        }
+        continue;
+      }
+
+      if (!this.lessonExtractor) {
+        stats.skippedNoExtractor += 1;
+        continue;
+      }
+      if (freshRemaining <= 0) {
+        stats.skippedByBudget += 1;
+        continue;
+      }
+
+      freshRemaining -= 1;
+      stats.freshAttempts += 1;
+      let extraction: ExtractedLesson | null;
+      try {
+        extraction = await this.lessonExtractor({
+          sessionCount: facts.sourceSessionIds.length,
+          tools: facts.tools.map((tool) => TOOL_LABELS[tool]),
+          fileCategories: facts.fileCategories,
+          taskPatterns: facts.taskPatterns,
+          transcript
+        });
+      } catch {
+        // A transient provider outage must not fail the whole listing (other
+        // groups may still be served from cache) and must not be cached as a
+        // verdict — the next call retries.
+        stats.failures += 1;
+        continue;
+      }
+
+      // Cache the verdict either way. A negative ("no reusable procedure") is
+      // as deterministic as a positive for the same fingerprint; leaving it
+      // uncached re-paid the full subprocess cost on every listing forever.
+      this.extractionCache.write({
+        candidateId: facts.candidateId,
+        fingerprint,
+        extraction
+      });
+      if (extraction) {
+        candidates.push(assembleCandidate(parsed.projectHash, facts, extraction));
+      } else {
+        stats.noLesson += 1;
+      }
+    }
 
     return {
       scannedSessions,
       eligibleSessions: eligibleProfiles.length,
       skippedSessions,
       groupedPatterns: groups.length,
-      candidates
+      candidates,
+      extraction: stats
     };
   }
 
@@ -455,7 +709,19 @@ export class LessonCandidateService {
 
       const tools = extractToolPatterns(row.content);
       const success = isSuccessSignal(row.content);
-      if (isFailureSignal(row.content)) {
+      const failure = isFailureSignal(row.content);
+
+      // Prompts and answers carry intent and decisions; tool output only earns
+      // a place when it actually resolved to a signal, which is what makes the
+      // procedure legible. Unsignalled tool output is the bulk of stored volume
+      // and would crowd the extractor's context with noise.
+      if (row.event_type === 'user_prompt' || row.event_type === 'agent_response') {
+        profile.narrative.push({ eventType: row.event_type, content: row.content });
+      } else if (success || failure) {
+        profile.signals.push({ eventType: row.event_type, content: row.content });
+      }
+
+      if (failure) {
         profile.lastFailureTimestamp = maxTimestamp(profile.lastFailureTimestamp, row.timestamp);
       }
       if (success) {
@@ -482,6 +748,8 @@ export class LessonCandidateService {
         eventIds: [],
         sourceEventIds: [],
         successEventIds: [],
+        narrative: [],
+        signals: [],
         tools: new Set<ToolPattern>(),
         fileCategories: new Set<string>(),
         taskPatterns: new Set<string>(),

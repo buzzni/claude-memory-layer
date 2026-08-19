@@ -137,6 +137,12 @@ async function build() {
   console.log('📋 Copying plugin files...');
   fs.cpSync('.claude-plugin', path.join(outdir, '.claude-plugin'), { recursive: true });
 
+  // Copy skills (must be a sibling of .claude-plugin/ for Claude Code to discover them)
+  console.log('📋 Copying skills...');
+  if (fs.existsSync('skills')) {
+    fs.cpSync('skills', path.join(outdir, 'skills'), { recursive: true });
+  }
+
   // Copy dashboard static files
   console.log('📋 Copying dashboard files...');
   const dashboardPath = 'src/apps/dashboard';
@@ -155,6 +161,7 @@ async function build() {
   console.log('  - server/index.js');
   console.log('  - ui/index.html');
   console.log('  - .claude-plugin/');
+  console.log('  - skills/');
 }
 
 build().catch((err) => {

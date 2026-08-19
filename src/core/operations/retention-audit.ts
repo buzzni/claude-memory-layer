@@ -6,6 +6,7 @@ import {
   type SQLiteDatabase
 } from '../sqlite-wrapper.js';
 import { ConfigSchema } from '../types.js';
+import { redactAbsolutePaths } from './governance-audit.js';
 import {
   evaluateRetentionPolicy,
   RETENTION_POLICY_VERSION,
@@ -19,9 +20,6 @@ import {
 const DEFAULT_AUDIT_LIMIT = 100;
 const DEFAULT_SAMPLE_LIMIT = 20;
 const PREVIEW_LIMIT = 180;
-const POSIX_ABSOLUTE_PATH_PATTERN = /(^|[^A-Za-z0-9._\/\\-])\/(?!\/)[^\n\r"'<>|`]*/g;
-const WINDOWS_DRIVE_PATH_PATTERN = /(^|[^A-Za-z0-9._\/\\-])(?:[A-Za-z]:[\\/][^\n\r"'<>|`]*)/g;
-const WINDOWS_UNC_PATH_PATTERN = /(^|[^A-Za-z0-9._\/\\-])(?:\\\\[^\\/\s"'<>|`]+[\\/][^\n\r"'<>|`]*)/g;
 const PRIVACY_CONFIG = ConfigSchema.parse({}).privacy;
 const MEMORY_LEVELS = new Set<RetentionMemoryLevel>(['L0', 'L1', 'L2', 'L3', 'L4']);
 const RETENTION_AUDIT_TARGET_TYPES = new Set(['event', 'entity', 'edge', 'consolidated_memory', 'lesson', 'action']);
@@ -311,10 +309,7 @@ function redactLocalPaths(content: string, projectPath?: string): string {
   if (projectPath) {
     filtered = filtered.split(projectPath).join('[REDACTED]');
   }
-  return [WINDOWS_UNC_PATH_PATTERN, WINDOWS_DRIVE_PATH_PATTERN, POSIX_ABSOLUTE_PATH_PATTERN].reduce(
-    (current, pattern) => current.replace(pattern, (_match, prefix: string) => `${prefix}[REDACTED]`),
-    filtered
-  );
+  return redactAbsolutePaths(filtered);
 }
 
 function tableExists(db: SQLiteDatabase, tableName: string): boolean {

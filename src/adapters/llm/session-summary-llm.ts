@@ -6,25 +6,21 @@
  * no outcome inside it for a later answer to reuse. This module asks a local
  * Claude/Codex CLI for the durable outcomes instead.
  *
- * Two hazards drive the implementation shape:
- *
- * 1. Hook recursion. A child `claude` run re-executes the user-level hooks in
- *    ~/.claude/settings.json, whose Stop hook would request another summary,
- *    which would spawn another child. `--setting-sources project` keeps the
- *    user source (where the memory hooks live) out of the child, and running in
- *    an empty scratch cwd keeps any *project* hooks and CLAUDE.md out too.
- *    Verified empirically: without the flag a child run creates a new memory
- *    project store, with it the store count is unchanged.
- * 2. Blocking. The call is slow, so callers must run it off the hook response
- *    path (the daemon schedules it).
+ * Subprocess mechanics (hook-recursion guards, timeouts, failure
+ * classification) live in the shared cli-provider module; callers must still
+ * run this off the hook response path (the daemon schedules it).
  */
 
-import { spawn } from 'child_process';
-import * as fs from 'fs';
-import * as os from 'os';
-import * as path from 'path';
+import {
+  classifyCliProviderFailure,
+  resolveCliModel,
+  resolveCliTimeoutMs,
+  runCliProvider,
+  type CliProviderError,
+  type CliProviderName
+} from './cli-provider.js';
 
-export type SummaryProviderName = 'claude' | 'codex';
+export type SummaryProviderName = CliProviderName;
 
 export interface SummarySourceEvent {
   eventType: string;
@@ -44,26 +40,23 @@ export interface LlmSummaryResult {
 /** The model is told to emit this when a session holds nothing worth keeping. */
 export const NO_DURABLE_CONTENT = 'NO_DURABLE_CONTENT';
 
-const DEFAULT_TIMEOUT_MS = 120_000;
-const DEFAULT_MODEL = 'claude-haiku-4-5-20251001';
 const MAX_EVENT_CHARS = 2_000;
 const MAX_EVENTS = 40;
 const MAX_OUTPUT_CHARS = 2_000;
-
-export class SummaryProviderError extends Error {
-  constructor(message: string, readonly code: string) {
-    super(message);
-    this.name = 'SummaryProviderError';
-  }
-}
 
 export function getSummaryProviderName(env: NodeJS.ProcessEnv = process.env): SummaryProviderName {
   return env.CLAUDE_MEMORY_SUMMARY_PROVIDER === 'codex' ? 'codex' : 'claude';
 }
 
-export function getSummaryModel(env: NodeJS.ProcessEnv = process.env): string {
-  const configured = env.CLAUDE_MEMORY_SUMMARY_MODEL?.trim();
-  return configured && configured.length > 0 ? configured : DEFAULT_MODEL;
+/**
+ * Returns null when no model should be passed to the CLI (codex with no
+ * explicit override runs on its own configured default).
+ */
+export function getSummaryModel(
+  env: NodeJS.ProcessEnv = process.env,
+  provider: SummaryProviderName = getSummaryProviderName(env)
+): string | null {
+  return resolveCliModel(env.CLAUDE_MEMORY_SUMMARY_MODEL, provider);
 }
 
 export function isLlmSummaryEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -113,26 +106,8 @@ export function buildSummaryPrompt(events: SummarySourceEvent[]): string | null 
   ].join('\n');
 }
 
-function buildArgs(provider: SummaryProviderName, model: string): string[] {
-  if (provider === 'codex') {
-    return ['exec', '--skip-git-repo-check', '--model', model];
-  }
-  // --setting-sources project: never load the user-level memory hooks.
-  return ['-p', '--setting-sources', 'project', '--model', model];
-}
-
-export function classifySummaryFailure(detail: string): SummaryProviderError {
-  const lowered = detail.toLowerCase();
-  if (lowered.includes('enoent') || lowered.includes('not found')) {
-    return new SummaryProviderError('summary provider CLI was not found', 'provider-not-found');
-  }
-  if (lowered.includes('timed out') || lowered.includes('etimedout')) {
-    return new SummaryProviderError('summary provider timed out', 'provider-timeout');
-  }
-  if (lowered.includes('auth') || lowered.includes('credential') || lowered.includes('login')) {
-    return new SummaryProviderError('summary provider authentication failed', 'provider-auth');
-  }
-  return new SummaryProviderError('summary provider failed', 'provider-error');
+export function classifySummaryFailure(detail: string): CliProviderError {
+  return classifyCliProviderFailure(detail, 'summary provider');
 }
 
 /**
@@ -158,74 +133,6 @@ export function normalizeSummaryOutput(raw: string): string | null {
 }
 
 /**
- * A scratch cwd keeps project-level hooks and CLAUDE.md out of the child run.
- * `--setting-sources project` alone would still load them when the child
- * inherits a real project directory.
- */
-function createScratchCwd(): string {
-  const dir = path.join(os.tmpdir(), 'cml-summary');
-  fs.mkdirSync(dir, { recursive: true });
-  return dir;
-}
-
-function runProvider(
-  provider: SummaryProviderName,
-  model: string,
-  prompt: string,
-  timeoutMs: number
-): Promise<string> {
-  return new Promise((resolve, reject) => {
-    let child;
-    try {
-      child = spawn(provider, buildArgs(provider, model), {
-        stdio: ['pipe', 'pipe', 'pipe'],
-        cwd: createScratchCwd(),
-        env: {
-          ...process.env,
-          // Defence in depth: if a child hook ever does run, these keep it from
-          // recursing back into summary generation.
-          CLAUDE_MEMORY_SUMMARY_MODE: 'off',
-          CLAUDE_MEMORY_DISABLE_HOOKS: 'true'
-        }
-      });
-    } catch (error) {
-      reject(classifySummaryFailure(String(error)));
-      return;
-    }
-
-    let stdout = '';
-    let stderr = '';
-    let settled = false;
-
-    const settle = (error?: Error, value?: string) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      if (error) reject(error);
-      else resolve(value ?? '');
-    };
-
-    const timer = setTimeout(() => {
-      child.kill('SIGTERM');
-      settle(classifySummaryFailure('timed out'));
-    }, timeoutMs);
-
-    child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
-    child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
-    child.on('error', (error: NodeJS.ErrnoException) => {
-      settle(classifySummaryFailure(error.code === 'ENOENT' ? 'ENOENT not found' : String(error)));
-    });
-    child.on('close', (code) => {
-      if (code === 0) settle(undefined, stdout);
-      else settle(classifySummaryFailure(stderr || `exit code ${code}`));
-    });
-
-    child.stdin.write(prompt);
-    child.stdin.end();
-  });
-}
-
-/**
  * Returns null when the session holds nothing durable. Callers must treat that
  * as "store nothing" rather than falling back to the rule-based text, which is
  * the content this module exists to stop producing.
@@ -244,14 +151,17 @@ export async function generateLlmSessionSummary(
   if (!prompt) return null;
 
   const provider = options.provider ?? getSummaryProviderName(env);
-  const model = options.model ?? getSummaryModel(env);
-  const configuredTimeout = Number(env.CLAUDE_MEMORY_SUMMARY_TIMEOUT_MS);
-  const timeoutMs = options.timeoutMs
-    ?? (Number.isFinite(configuredTimeout) && configuredTimeout > 0
-      ? configuredTimeout
-      : DEFAULT_TIMEOUT_MS);
+  const model = options.model ?? getSummaryModel(env, provider);
+  const timeoutMs = options.timeoutMs ?? resolveCliTimeoutMs(env.CLAUDE_MEMORY_SUMMARY_TIMEOUT_MS);
 
-  const raw = await runProvider(provider, model, prompt, timeoutMs);
+  const raw = await runCliProvider({
+    provider,
+    model,
+    prompt,
+    timeoutMs,
+    scratchDirName: 'cml-summary',
+    label: 'summary provider'
+  });
   const text = normalizeSummaryOutput(raw);
   if (!text) return null;
 
@@ -260,7 +170,7 @@ export async function generateLlmSessionSummary(
     metadata: {
       generated: 'llm',
       provider,
-      model,
+      model: model ?? `${provider}-default`,
       eventCount: events.length
     }
   };

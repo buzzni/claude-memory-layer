@@ -3,7 +3,11 @@ import { z } from 'zod';
 import { sqliteAll, type SQLiteDatabase } from '../sqlite-wrapper.js';
 import { applyPrivacyFilter } from '../privacy/filter.js';
 import type { Config, MemoryLesson } from '../types.js';
-import { LessonCandidateService, type LessonCandidate } from './lesson-candidate-service.js';
+import {
+  LessonCandidateService,
+  type LessonCandidate,
+  type LessonExtractor
+} from './lesson-candidate-service.js';
 import { LessonRepository } from './lesson-repository.js';
 
 const NonEmptyStringSchema = z.string()
@@ -204,12 +208,19 @@ function assertCuratedPayloadIsShareSafe(input: z.output<typeof SaveCuratedLesso
   }
 }
 
+export interface LessonServiceOptions {
+  /** Forwarded to the candidate service; see `LessonExtractor`. */
+  lessonExtractor?: LessonExtractor;
+}
+
 export class LessonService {
   private readonly candidateService: LessonCandidateService;
   private readonly lessonRepository: LessonRepository;
 
-  constructor(private readonly db: SQLiteDatabase) {
-    this.candidateService = new LessonCandidateService(db);
+  constructor(private readonly db: SQLiteDatabase, options: LessonServiceOptions = {}) {
+    this.candidateService = new LessonCandidateService(db, {
+      lessonExtractor: options.lessonExtractor
+    });
     this.lessonRepository = new LessonRepository(db);
   }
 
@@ -259,7 +270,19 @@ export class LessonService {
     });
     const candidate = result.candidates.find((item) => item.candidateId === candidateId);
     if (!candidate) {
-      throw new Error('lesson candidate not found for projectHash');
+      // Re-derivation can miss for reasons the caller can act on; a bare
+      // "not found" hid whether extraction failed, ran out of budget, or the
+      // group's verdict is genuinely "no lesson".
+      const { failures, skippedByBudget, skippedNoExtractor, noLesson } = result.extraction;
+      const details = [
+        failures > 0 ? `${failures} extraction failure(s)` : null,
+        skippedByBudget > 0 ? `${skippedByBudget} group(s) skipped by the extraction budget` : null,
+        skippedNoExtractor > 0 ? `${skippedNoExtractor} group(s) had no extractor wired` : null,
+        noLesson > 0 ? `${noLesson} group(s) held no reusable procedure` : null
+      ].filter((part): part is string => part !== null);
+      throw new Error(details.length > 0
+        ? `lesson candidate not found for projectHash (re-derivation: ${details.join(', ')})`
+        : 'lesson candidate not found for projectHash');
     }
     return normalizeGeneratedCandidate(candidate);
   }

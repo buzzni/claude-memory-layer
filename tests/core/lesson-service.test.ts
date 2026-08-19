@@ -4,7 +4,13 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { LessonCandidateService, LessonRepository, LessonService, type LessonCandidate } from '../../src/core/operations/index.js';
+import {
+  LessonCandidateService,
+  LessonRepository,
+  LessonService,
+  type ExtractedLesson,
+  type LessonCandidate
+} from '../../src/core/operations/index.js';
 import { SQLiteEventStore } from '../../src/core/sqlite-event-store.js';
 import { sqliteAll, sqliteGet } from '../../src/core/sqlite-wrapper.js';
 import type { MemoryEvent } from '../../src/core/types.js';
@@ -24,9 +30,27 @@ async function createFixture(): Promise<{
   await store.initialize();
   return {
     store,
-    candidateService: new LessonCandidateService(store.getDatabase()),
-    lessonService: new LessonService(store.getDatabase()),
+    candidateService: new LessonCandidateService(store.getDatabase(), {
+      lessonExtractor: stubLessonExtractor
+    }),
+    lessonService: new LessonService(store.getDatabase(), {
+      lessonExtractor: stubLessonExtractor
+    }),
     cleanup: async () => store.close()
+  };
+}
+
+/**
+ * Stands in for the CLI-backed extractor. Promotion re-derives the candidate,
+ * so both services share this one deterministic stub — the extraction cache is
+ * what keeps the reviewed and promoted text identical in production.
+ */
+async function stubLessonExtractor(): Promise<ExtractedLesson> {
+  return {
+    name: '검증 루프를 갖춘 코드 변경 절차',
+    trigger: '소스와 테스트를 함께 수정한 뒤 커밋해야 할 때',
+    steps: ['변경한 파일에 해당하는 테스트를 먼저 실행한다', '타입체크와 빌드를 통과시킨다'],
+    failureModes: ['검증이 통과하기 전에 커밋하지 마라']
   };
 }
 

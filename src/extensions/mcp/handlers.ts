@@ -100,6 +100,7 @@ import type {
   PerspectiveObservation,
   PerspectiveObservationLevel
 } from '../../core/types.js';
+import { extractLessonWithLlm, isLlmLessonExtractionEnabled } from '../../adapters/llm/lesson-extraction-llm.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 
 type ToolResult = CallToolResult;
@@ -917,17 +918,35 @@ async function handleLessonList(context: MemoryOperationContext, args: Record<st
 }
 
 async function handleLessonCandidates(context: MemoryOperationContext, args: Record<string, unknown>): Promise<Record<string, unknown>> {
-  const result = await new LessonCandidateService(context.db).findCandidates({
+  // With extraction disabled, no extractor is wired at all: an always-null
+  // extractor would have its nulls cached as permanent "no lesson" verdicts
+  // that keep suppressing the groups after extraction is re-enabled.
+  const extractionEnabled = isLlmLessonExtractionEnabled();
+  const result = await new LessonCandidateService(context.db, {
+    lessonExtractor: extractionEnabled ? (source) => extractLessonWithLlm(source) : undefined
+  }).findCandidates({
     projectHash: context.projectHash,
     minSessions: typeof args.minSessions === 'number' ? args.minSessions : undefined,
     limit: numberArg(args.limit, 25, 1, 100)
   });
+  // Distinguish "no patterns exist" from "extraction could not run": an empty
+  // candidate list with failures or budget skips means retry (or fix the
+  // provider), not that the project holds nothing reusable.
+  const stats = result.extraction;
+  const note = result.candidates.length === 0 && stats.failures > 0
+    ? 'Extraction failed for every uncached group (provider unavailable?). This is not evidence that no patterns exist — retry once the lesson provider CLI is reachable.'
+    : stats.skippedNoExtractor > 0
+      ? `LLM lesson extraction is disabled (CLAUDE_MEMORY_LESSON_MODE=off); ${stats.skippedNoExtractor} mined group(s) cannot produce lesson text until it is re-enabled.`
+      : stats.skippedByBudget > 0
+        ? `Read-only detection. ${stats.skippedByBudget} group(s) still await extraction (per-call budget); call again to continue. Review a candidate and call mem-lesson-save to promote it.`
+        : 'Read-only detection. Review a candidate and call mem-lesson-save to promote it into a curated lesson.';
   return {
     operation: 'mem-lesson-candidates',
     projectHash: context.projectHash,
     scannedSessions: result.scannedSessions,
     eligibleSessions: result.eligibleSessions,
     count: result.candidates.length,
+    extraction: result.extraction,
     candidates: result.candidates.map((candidate) => ({
       candidateId: sanitizeOperationString(candidate.candidateId, 120),
       name: sanitizeOperationString(candidate.name, 240),
@@ -938,7 +957,7 @@ async function handleLessonCandidates(context: MemoryOperationContext, args: Rec
       sourceSessionIds: candidate.sourceSessionIds.slice(0, 10).map((id) => sanitizeOperationString(id, 120)),
       sourceEventIds: candidate.sourceEventIds.slice(0, 10).map((id) => sanitizeOperationString(id, 120))
     })),
-    note: 'Read-only detection. Review a candidate and call mem-lesson-save to promote it into a curated lesson.'
+    note
   };
 }
 

@@ -36,6 +36,10 @@ describe('package build entrypoints', () => {
     expect(pkg.files).toEqual([
       'dist/',
       '.claude-plugin/',
+      // Skills must ship as a sibling of .claude-plugin/ at the package root
+      // (mirroring the dist/ copy in build.ts) for plugin-root installs to
+      // discover SKILL.md.
+      'skills/',
       'scripts/postinstall-embedding-backend.cjs',
       'README.md',
       '.env.example'
