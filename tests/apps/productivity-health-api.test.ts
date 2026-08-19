@@ -156,10 +156,13 @@ describe('productivity health API', () => {
   });
 
   it('returns a zero aggregate report for missing project storage without constructing a service', async () => {
-    // Stub by path rather than call order: project-path resolution may probe
-    // the filesystem (e.g. the .claude-memory-root marker walk) before the
-    // route reaches its own storage-existence check.
-    mocks.existsSync.mockImplementation((target) => !String(target).endsWith('events.sqlite'));
+    // The route's only existsSync consumer is the storage probe
+    // (health.ts explicitProjectStoreExists), so a flat false is both the
+    // simplest stub and the truthful answer for a directory that was never
+    // created. The marker walk in project-path uses statSync against the real
+    // filesystem, so it is unaffected by this mock and resolution takes the
+    // genuine no-marker/no-git branch.
+    mocks.existsSync.mockReturnValue(false);
     const missingProject = join(mkdtempSync(join(tmpdir(), 'cml-health-missing-project-')), 'project with spaces');
 
     const res = await createApp().request(`/api/health/productivity?project=${encodeURIComponent(missingProject)}`);

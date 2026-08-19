@@ -26,7 +26,12 @@ export function normalizeProjectPath(projectPath: string): string {
   }
 }
 
-/** Cache of hash basis per normalized path; git layout does not change within a process run. */
+/**
+ * Cache of hash basis per normalized path. Git layout does not change within a
+ * process run; a marker file can (the README tells users to `touch` it), so a
+ * long-lived process (MCP server, dashboard) picks a new marker up only after
+ * restart. Hooks are fresh processes and see it immediately.
+ */
 const hashBasisCache = new Map<string, string>();
 
 /**
@@ -36,43 +41,82 @@ const hashBasisCache = new Map<string, string>();
  * each instance hashes to its own cold store and memory never accumulates
  * across instances.
  */
-const MEMORY_ROOT_MARKER = '.claude-memory-root';
+export const MEMORY_ROOT_MARKER = '.claude-memory-root';
 
 /**
- * Find the nearest ancestor (including the path itself) that carries the
- * convergence marker. Nearest wins so a nested workspace stays separate from
- * an outer one. Returns null when no marker exists anywhere up to the
- * filesystem root — the common case, which keeps default behavior untouched.
+ * The marker must be a regular file. A directory of the same name is ignored,
+ * and an unreadable path (EACCES on a TCC-protected ancestor, a flaky mount)
+ * degrades to "no marker" rather than failing resolution.
  */
-function findMemoryRootMarker(normalizedPath: string): string | null {
-  let current = normalizedPath;
+function markerFileExists(markerPath: string): boolean {
+  try {
+    return fs.statSync(markerPath, { throwIfNoEntry: false })?.isFile() ?? false;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Find the nearest ancestor (including the directory itself) that carries the
+ * convergence marker. Nearest wins so a nested workspace stays separate from
+ * an outer one. Returns null when no marker exists — the common case, which
+ * keeps default behavior untouched.
+ *
+ * The walk never accepts a marker at the home directory, the system temp
+ * directory, or the filesystem root: a stray marker there would silently
+ * collapse every project on the machine (or, for the world-writable temp
+ * root, let any local process converge other users' temp projects) into one
+ * store. Markers strictly below those ceilings are honored.
+ */
+function findMemoryRootMarker(startDir: string): string | null {
+  const ceilings = new Set([
+    normalizeProjectPath(os.homedir()),
+    normalizeProjectPath(os.tmpdir())
+  ]);
+
+  let current = startDir;
   for (;;) {
-    if (fs.existsSync(path.join(current, MEMORY_ROOT_MARKER))) return current;
-    const parent = path.dirname(current);
-    if (parent === current) return null;
-    current = parent;
+    if (ceilings.has(current) || path.dirname(current) === current) return null;
+    if (markerFileExists(path.join(current, MEMORY_ROOT_MARKER))) return current;
+    current = path.dirname(current);
   }
 }
 
 function computeHashBasisPath(normalizedPath: string): string {
-  // The marker is explicit user intent, so it outranks git resolution: the
-  // directories it exists to converge are precisely instances that own their
-  // own .git and would otherwise stay separate.
-  const markerRoot = findMemoryRootMarker(normalizedPath);
-  if (markerRoot !== null) return normalizeProjectPath(markerRoot);
+  // Git convergence runs first, then the marker walk starts from the
+  // git-resolved basis. This ordering is load-bearing three ways: a worktree
+  // checked out outside the marker tree still reaches the marker through its
+  // main checkout; a marker committed into a repository (and therefore
+  // materialized in every worktree checkout) resolves to the main checkout
+  // root instead of splitting each worktree onto a cold store; and a marker
+  // in a repository subdirectory cannot detach that subtree from the store
+  // the repository has been accumulating. The marker still outranks an
+  // instance's *own* .git — the git basis of such an instance is its checkout
+  // root, and the walk climbs from there to the workspace marker above it.
+  const gitBasis = computeGitBasisPath(normalizedPath);
+  const markerRoot = findMemoryRootMarker(gitBasis);
+  // Re-normalized because the basis may come from the plain path.resolve
+  // fallback when the directory does not exist yet, so an existing ancestor
+  // carrying the marker can still contain unresolved symlinks.
+  return markerRoot !== null ? normalizeProjectPath(markerRoot) : gitBasis;
+}
 
-  const commonDir = runGit(normalizedPath, ['rev-parse', '--git-common-dir']);
-  if (!commonDir) return normalizedPath;
+function computeGitBasisPath(normalizedPath: string): string {
+  // One spawn for both values: resolution runs in every short-lived hook
+  // process and the git spawn dominates its cost. rev-parse prints results in
+  // flag order. A bare repo (a common dir but no work tree) fails
+  // --show-toplevel and with it the whole command — same outcome as the
+  // previous separate guard: such a path keeps hashing to itself.
+  const output = runGit(normalizedPath, ['rev-parse', '--git-common-dir', '--show-toplevel']);
+  if (!output) return normalizedPath;
+  const [commonDir, toplevel] = output.split('\n').map((line) => line.trim());
+  if (!commonDir || !toplevel) return normalizedPath;
 
   const absoluteCommonDir = path.isAbsolute(commonDir)
     ? commonDir
     : path.resolve(normalizedPath, commonDir);
   if (path.basename(absoluteCommonDir) !== '.git') return normalizedPath;
   const mainCheckoutRoot = normalizeProjectPath(path.dirname(absoluteCommonDir));
-
-  // Guard against a git layout that reports a common dir but no work tree
-  // (a bare repo); such a path keeps hashing to itself.
-  if (!runGit(normalizedPath, ['rev-parse', '--show-toplevel'])) return normalizedPath;
 
   // Every path inside one repository resolves onto the checkout that owns the
   // shared .git — a worktree, the checkout root, or any subdirectory of it.
