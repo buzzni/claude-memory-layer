@@ -176,6 +176,20 @@ describe('path redaction blast radius', () => {
     expect(sanitized).toContain('나머지 문장이 살아남아야 한다');
   });
 
+  it('redacts UNC paths that use forward slashes after the host', () => {
+    // Windows accepts `\\host/share/file`; retention-audit's (deleted) copy of
+    // the UNC pattern matched it and the consolidation must not lose that.
+    // The redaction window runs to the end of the line, so the survival
+    // marker sits on the next line.
+    const input = `preview: \\\\fileserver/share/customer-4711.txt\n다음 줄은 살아남는다`;
+
+    const sanitized = String(sanitizeGovernanceAuditValue(input));
+
+    expect(sanitized).toContain('[REDACTED]');
+    expect(sanitized).not.toContain('customer-4711');
+    expect(sanitized).toContain('다음 줄은 살아남는다');
+  });
+
   it('fully redacts a spaceless path longer than the 300-char window', () => {
     // A deep node_modules/pnpm-style path exceeds 300 chars with no spaces.
     // The bounded window alone leaked its tail — the most identifying part —

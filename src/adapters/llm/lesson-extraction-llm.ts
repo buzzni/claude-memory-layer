@@ -231,9 +231,27 @@ export function parseLessonOutput(raw: string): ExtractedLesson | null {
 }
 
 /**
- * Returns null when the session group holds no reusable procedure. Callers must
- * treat that as "emit no candidate" rather than falling back to the template
- * text, which is the content this module exists to stop producing.
+ * Maps provider output onto the caller's caching contract: null only for the
+ * model's *explicit* no-lesson verdict (which the candidate service caches as
+ * deterministic), a lesson when one parses, and a thrown error for anything
+ * else. Folding unparseable output into null let one truncated or chatty
+ * response be cached as a permanent "no lesson" for the group.
+ */
+export function resolveLessonVerdict(raw: string): ExtractedLesson | null {
+  if (raw.includes(NO_DURABLE_LESSON)) return null;
+  const lesson = parseLessonOutput(raw);
+  if (!lesson) {
+    throw classifyLessonFailure('unparseable lesson output');
+  }
+  return lesson;
+}
+
+/**
+ * Returns null when the session group holds no reusable procedure; throws when
+ * the provider output could not be interpreted (so the caller retries instead
+ * of caching a false negative). Callers must treat null as "emit no candidate"
+ * rather than falling back to the template text, which is the content this
+ * module exists to stop producing.
  */
 export async function extractLessonWithLlm(
   source: LessonExtractionSource,
@@ -260,5 +278,5 @@ export async function extractLessonWithLlm(
     scratchDirName: 'cml-lesson',
     label: 'lesson provider'
   });
-  return parseLessonOutput(raw);
+  return resolveLessonVerdict(raw);
 }

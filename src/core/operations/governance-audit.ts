@@ -83,7 +83,11 @@ const sensitiveKeyPattern = /(?:api[_-]?key|secret|password|passwd|token|access[
  */
 const POSIX_ABSOLUTE_PATH_PATTERN = /(^|[^A-Za-z0-9._\/\\-])\/(?!\/)[^\n\r"'<>|`]{0,300}[^\s"'<>|`]*/g;
 const WINDOWS_DRIVE_PATH_PATTERN = /(^|[^A-Za-z0-9._\/\\-])(?:[A-Za-z]:[\\/][^\n\r"'<>|`]{0,300}[^\s"'<>|`]*)/g;
-const WINDOWS_UNC_PATH_PATTERN = /(^|[^A-Za-z0-9._\/\\-])(?:\\\\[^\\\n\r"'<>|`]+\\[^\n\r"'<>|`]{0,300}[^\s"'<>|`]*)/g;
+// The host segment stops at either separator so `\\host/share/...` (forward
+// slashes after the host, which Windows accepts) is caught too — retention's
+// deleted copy matched it, and consolidating on a backslash-only separator
+// would have silently un-redacted those paths in retention previews.
+const WINDOWS_UNC_PATH_PATTERN = /(^|[^A-Za-z0-9._\/\\-])(?:\\\\[^\\/\s"'<>|`]+[\\/][^\n\r"'<>|`]{0,300}[^\s"'<>|`]*)/g;
 const credentialQueryPattern = /\b((?:api[_-]?key|token|access[_-]?token|client[_-]?secret|crtfc[_-]?key|hashkey|serviceKey)=)[^&\s`"'<>]+/gi;
 const credentialAssignmentPattern = /\b((?:api[_-]?key|secret|password|passwd|token|access[_-]?token|client[_-]?secret|crtfc[_-]?key|hashkey|serviceKey)\s*[:=]\s*)[^\s`"'<>},]+/gi;
 

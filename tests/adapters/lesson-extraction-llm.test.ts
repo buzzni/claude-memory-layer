@@ -7,7 +7,8 @@ import {
   getLessonModel,
   getLessonProviderName,
   isLlmLessonExtractionEnabled,
-  parseLessonOutput
+  parseLessonOutput,
+  resolveLessonVerdict
 } from '../../src/adapters/llm/lesson-extraction-llm.js';
 import type { LessonExtractionSource } from '../../src/core/operations/lesson-candidate-service.js';
 
@@ -163,6 +164,28 @@ describe('parseLessonOutput', () => {
     }));
 
     expect(parsed?.failureModes).toEqual([]);
+  });
+});
+
+describe('resolveLessonVerdict', () => {
+  it('returns null only for the explicit no-lesson sentinel', () => {
+    expect(resolveLessonVerdict(NO_DURABLE_LESSON)).toBeNull();
+    expect(resolveLessonVerdict(`정리하면: ${NO_DURABLE_LESSON}`)).toBeNull();
+  });
+
+  it('throws on unparseable output instead of reporting a false negative', () => {
+    // A thrown error is counted as a transient failure and retried; a null
+    // would be cached as a permanent "no lesson" verdict for the group.
+    expect(() => resolveLessonVerdict('')).toThrow('lesson provider failed');
+    expect(() => resolveLessonVerdict('잘린 응답 {"name": "n", ')).toThrow('lesson provider failed');
+    expect(() => resolveLessonVerdict('{"note":"메타데이터만"}')).toThrow('lesson provider failed');
+  });
+
+  it('passes a parseable lesson through', () => {
+    const verdict = resolveLessonVerdict(JSON.stringify({
+      name: 'n', trigger: 't', steps: ['s'], failureModes: []
+    }));
+    expect(verdict?.name).toBe('n');
   });
 });
 

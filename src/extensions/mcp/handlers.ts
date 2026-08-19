@@ -978,12 +978,7 @@ async function handleLessonSave(context: MemoryOperationContext, args: Record<st
       access.requireUnregisteredWrite(requesterActorId);
     }
   }
-  // The extractor is wired here for consistency with handleLessonCandidates:
-  // promotion re-derives candidates, and an extractor-less service turns any
-  // cache miss into "candidate not found".
-  const lesson = await new LessonService(context.db, {
-    lessonExtractor: (source) => extractLessonWithLlm(source)
-  }).saveCurated({
+  const lesson = await new LessonService(context.db).saveCurated({
     projectHash: context.projectHash,
     actor,
     name,

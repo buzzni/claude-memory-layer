@@ -734,10 +734,7 @@ describe('MCP memory operation handlers', () => {
 
     const payload = jsonOf(result);
     expect(result.isError).not.toBe(true);
-    expect(mocks.LessonService).toHaveBeenCalledWith(
-      mocks.fakeDb,
-      expect.objectContaining({ lessonExtractor: expect.any(Function) })
-    );
+    expect(mocks.LessonService).toHaveBeenCalledWith(mocks.fakeDb);
     expect(mocks.lessonService.saveCurated).toHaveBeenCalledWith(expect.objectContaining({
       projectHash: 'deadbeef',
       actor: 'operator',

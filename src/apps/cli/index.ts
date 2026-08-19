@@ -67,7 +67,6 @@ import {
   formatPlainSearchResults
 } from './retrieval-disclosure-output.js';
 import { installMcpServer } from './mcp-install.js';
-import { extractLessonWithLlm } from '../../adapters/llm/lesson-extraction-llm.js';
 import {
   checkEmbeddingBackend,
   checkHooksInstalled,
@@ -2110,11 +2109,7 @@ lessonCommand
       writeOperationOutput({ operation: 'mem-lesson-save', projectHash: context.projectHash, dryRun: true, wouldSave: input }, options);
       return;
     }
-    // Extractor wired for consistency: promotion re-derives candidates, and
-    // an extractor-less service turns any cache miss into "not found".
-    const lesson = await withOperationWriteDatabase(context, async (db) => new LessonService(db, {
-      lessonExtractor: (source) => extractLessonWithLlm(source)
-    }).saveCurated(input));
+    const lesson = await withOperationWriteDatabase(context, async (db) => new LessonService(db).saveCurated(input));
     writeOperationOutput({
       operation: 'mem-lesson-save',
       projectHash: context.projectHash,
