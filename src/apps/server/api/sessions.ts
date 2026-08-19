@@ -4,7 +4,7 @@
  */
 
 import { Hono } from 'hono';
-import { getLightweightServiceFromQuery, jsonError } from './utils.js';
+import { getDiagnosticsServiceFromQuery, jsonError } from './utils.js';
 
 export const sessionsRouter = new Hono();
 
@@ -12,7 +12,7 @@ export const sessionsRouter = new Hono();
 sessionsRouter.get('/', async (c) => {
   const page = parseInt(c.req.query('page') || '1', 10);
   const pageSize = parseInt(c.req.query('pageSize') || '20', 10);
-  const memoryService = getLightweightServiceFromQuery(c);
+  const memoryService = getDiagnosticsServiceFromQuery(c);
 
   try {
     await memoryService.initialize();
@@ -94,7 +94,7 @@ sessionsRouter.get('/', async (c) => {
 // GET /api/sessions/:id - Get session details
 sessionsRouter.get('/:id', async (c) => {
   const { id } = c.req.param();
-  const memoryService = getLightweightServiceFromQuery(c);
+  const memoryService = getDiagnosticsServiceFromQuery(c);
 
   try {
     await memoryService.initialize();

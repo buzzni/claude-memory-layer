@@ -12,6 +12,10 @@ import {
   shutdownMemoryServices,
   type MemoryService
 } from '../../services/memory-service.js';
+import {
+  createReadOnlyDiagnosticsService,
+  type ReadOnlyDiagnosticsService
+} from '../../services/read-only-diagnostics-service.js';
 import { SQLiteEventStore } from '../../core/sqlite-event-store.js';
 import { createSharedEventStore } from '../../core/shared-event-store.js';
 import { createSharedStore, type SharedActorIdentity } from '../../core/shared-store.js';
@@ -244,6 +248,10 @@ export async function handleToolCall(
       }
     }
 
+    if (name === 'mem-stats') {
+      return await handleReadOnlyMemStats(args);
+    }
+
     const memoryService = resolveMemoryService(args);
     await memoryService.initialize();
 
@@ -256,9 +264,6 @@ export async function handleToolCall(
 
       case 'mem-details':
         return await handleMemDetails(memoryService, args);
-
-      case 'mem-stats':
-        return await handleMemStats(memoryService, args);
 
       case 'mem-context-pack':
         return await handleMemContextPack(memoryService, args);
@@ -3426,7 +3431,23 @@ function formatMcpOutboxQueueStats(stats: McpOutboxStats['embedding']): string {
   return `pending=${stats.pending}, processing=${stats.processing}, failed=${stats.failed}, retryableFailed=${stats.retryableFailed ?? 0}, quarantinedFailed=${stats.quarantinedFailed ?? 0}, stuck=${stats.stuckProcessing}, oldestProcessingAge=${formatMcpProcessingAge(stats.oldestProcessingAgeMs)}, total=${stats.total}`;
 }
 
-async function handleMemStats(memoryService: MemoryService, args: Record<string, unknown>): Promise<ToolResult> {
+type McpStatsReader = Pick<
+  ReadOnlyDiagnosticsService,
+  'storeStatus' | 'getStats' | 'getOutboxStats' | 'getDistinctSessionCount' | 'getEventTypeCounts'
+>;
+
+async function handleReadOnlyMemStats(args: Record<string, unknown>): Promise<ToolResult> {
+  const projectPath = optionalString(args.projectPath);
+  const memoryService = createReadOnlyDiagnosticsService(projectPath);
+  try {
+    await memoryService.initialize();
+    return await handleMemStats(memoryService, args);
+  } finally {
+    await memoryService.shutdown().catch(() => undefined);
+  }
+}
+
+async function handleMemStats(memoryService: McpStatsReader, args: Record<string, unknown>): Promise<ToolResult> {
   const stats = await memoryService.getStats();
   const outboxStats = await readMcpOutboxStats(memoryService);
   const storageView = buildMcpStatsStorageView(optionalString(args.projectPath));
@@ -3448,6 +3469,7 @@ async function handleMemStats(memoryService: MemoryService, args: Record<string,
     '',
     '### Storage View / Freshness',
     '',
+    `- Store Status: ${memoryService.storeStatus}`,
     `- Storage View: ${storageView.storageView}`,
     `- Storage Path Label: ${storageView.storagePathLabel}`,
     `- Embedder Model: ${storageView.embedderModel}`,
@@ -3472,7 +3494,7 @@ async function handleMemStats(memoryService: MemoryService, args: Record<string,
   };
 }
 
-async function readMcpOutboxStats(memoryService: MemoryService): Promise<McpOutboxStats> {
+async function readMcpOutboxStats(memoryService: Pick<McpStatsReader, 'getOutboxStats'>): Promise<McpOutboxStats> {
   try {
     return await memoryService.getOutboxStats();
   } catch {

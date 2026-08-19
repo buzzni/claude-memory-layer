@@ -10,12 +10,12 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import {
-  DISABLED_SHARED_STORE_CONFIG,
   MemoryService,
   getDefaultMemoryService,
   getMemoryServiceForProject,
   getLightweightMemoryServiceForProject
 } from '../../services/memory-service.js';
+import { createReadOnlyDiagnosticsService } from '../../services/read-only-diagnostics-service.js';
 import { getProjectStoragePath, resolveProjectStoragePath, hashProjectPath } from '../../core/registry/project-path.js';
 import { resolveCanonicalRepoIdentity } from '../../core/registry/repo-identity.js';
 import { createSessionHistoryImporter, type ProgressEvent } from '../../services/session-history-importer.js';
@@ -30,12 +30,10 @@ import {
 import { bootstrapKnowledgeBase } from '../../services/bootstrap-organizer.js';
 import { startServer, stopServer, isServerRunning } from '../server/index.js';
 import { SQLiteEventStore } from '../../core/sqlite-event-store.js';
-import type { DerivationLiveness } from '../../core/sqlite-event-store.js';
 import { createSQLiteDatabase, sqliteAll, sqliteClose, sqliteGet, type SQLiteDatabase } from '../../core/sqlite-wrapper.js';
 import { MongoSyncWorker, type MongoSyncDirection } from '../../core/mongo-sync-worker.js';
 import { applyPrivacyFilter, maskSensitiveInput } from '../../core/privacy/filter.js';
-import type { Config, OutboxStats, OutboxQueueStats } from '../../core/types.js';
-import type { MemoryStats } from '../../core/engine/memory-query-service.js';
+import type { Config } from '../../core/types.js';
 import {
   ActionRepository,
   CheckpointRepository,
@@ -308,61 +306,6 @@ function resolveHealthProjectIdentity(projectPath: string | undefined): { scope:
   if (!projectPath || projectPath.trim().length === 0) return { scope: 'global', id: 'global' };
   const normalized = projectPath.trim();
   return { scope: 'project', id: /^[a-f0-9]{8}$/.test(normalized) ? normalized : hashProjectPath(normalized) };
-}
-
-function resolveHealthStoragePath(projectPathOrHash: string | undefined): string {
-  const normalized = projectPathOrHash?.trim();
-  return normalized && normalized.length > 0 ? resolveProjectStoragePath(normalized) : path.join(os.homedir(), '.claude-code', 'memory');
-}
-
-function createHealthMemoryService(projectPathOrHash: string | undefined): MemoryService {
-  const project = resolveHealthProjectIdentity(projectPathOrHash);
-  return new MemoryService({
-    storagePath: resolveHealthStoragePath(projectPathOrHash),
-    ...(project.scope === 'project' ? { projectHash: project.id } : {}),
-    readOnly: true,
-    lightweightMode: true,
-    analyticsEnabled: false,
-    sharedStoreConfig: DISABLED_SHARED_STORE_CONFIG
-  });
-}
-
-function healthStoreExists(projectPathOrHash: string | undefined): boolean {
-  return fs.existsSync(path.join(resolveHealthStoragePath(projectPathOrHash), 'events.sqlite'));
-}
-
-function emptyHealthStats(): Pick<MemoryStats, 'totalEvents' | 'vectorCount' | 'levelStats'> {
-  return { totalEvents: 0, vectorCount: 0, levelStats: [] };
-}
-
-function emptyHealthQueue(): OutboxQueueStats {
-  return {
-    pending: 0,
-    processing: 0,
-    failed: 0,
-    retryableFailed: 0,
-    quarantinedFailed: 0,
-    total: 0,
-    stuckProcessing: 0,
-    oldestProcessingAgeMs: null
-  };
-}
-
-function emptyHealthOutbox(): OutboxStats {
-  return { embedding: emptyHealthQueue(), vector: emptyHealthQueue() };
-}
-
-function emptyHealthDerivationLiveness(): DerivationLiveness {
-  return {
-    graduation: {
-      attempts: 0,
-      lastAttemptAt: null,
-      lastSuccessAt: null,
-      lastStatus: null,
-      lastErrorCategory: null
-    },
-    sources: { graduatedEvents: 0, curatedLessons: 0 }
-  };
 }
 
 function scanCanonicalProjectStores(canonicalId: string): { scannedStoreCount: number; matchingStoreCount: number; unreadableStoreCount: number } {
@@ -1201,11 +1144,11 @@ program
  */
 program
   .command('stats')
-  .description('View memory statistics')
+  .description('Read-only: view statistics without creating or migrating a store')
   .option('-p, --project <path>', 'Project path (defaults to cwd)')
   .action(async (options) => {
     const projectPath = options.project || process.cwd();
-    const service = getLightweightMemoryServiceForProject(projectPath);
+    const service = createReadOnlyDiagnosticsService(projectPath);
 
     try {
       const stats = await service.getStats();
@@ -1213,6 +1156,7 @@ program
       console.log('\n📊 Memory Statistics\n');
       console.log(`Total Events: ${stats.totalEvents}`);
       console.log(`Vector Count: ${stats.vectorCount}`);
+      if (service.storeStatus === 'missing') console.log('Store Status: missing (no store initialized)');
       console.log('\nMemory Levels:');
 
       for (const level of stats.levelStats) {
@@ -1232,14 +1176,14 @@ program
  */
 program
   .command('health')
-  .description('Show aggregate health reports for agent productivity workflows')
+  .description('Read-only: show aggregate health reports for agent productivity workflows')
   .option('--productivity', 'Print Project Health Report for agent productivity workflows')
   .option('--json', 'Print health report as JSON')
   .option('-p, --project <path>', 'Project path or 8-character project hash')
   .option('--profile <profile>', 'Agent profile: coder, reviewer, pm, support, researcher, team', 'coder')
   .option('--mode <mode>', 'Report mode: observe, preview, enforce', 'preview')
   .action(async (options: HealthCommandOptions) => {
-    let service: MemoryService | undefined;
+    let service: ReturnType<typeof createReadOnlyDiagnosticsService> | undefined;
 
     try {
       if (options.productivity !== true) {
@@ -1254,22 +1198,16 @@ program
       const projectPath = options.project ?? process.cwd();
       const project = resolveHealthProjectIdentity(projectPath);
 
-      let stats: Pick<MemoryStats, 'totalEvents' | 'vectorCount' | 'levelStats'>;
-      let outbox: OutboxStats;
-      let derivation: DerivationLiveness;
-      if (healthStoreExists(projectPath)) {
-        service = createHealthMemoryService(projectPath);
-        [stats, outbox, derivation] = await Promise.all([
-          service.getStats(),
-          service.getOutboxStats(),
-          service.getDerivationLiveness()
-        ]);
-      } else {
-        stats = emptyHealthStats();
-        outbox = emptyHealthOutbox();
-        derivation = emptyHealthDerivationLiveness();
-      }
-      console.log(JSON.stringify(buildProductivityHealthReport({ stats, outbox, derivation, project, profile, mode }), null, 2));
+      service = createReadOnlyDiagnosticsService(projectPath);
+      const [stats, outbox, derivation] = await Promise.all([
+        service.getStats(),
+        service.getOutboxStats(),
+        service.getDerivationLiveness()
+      ]);
+      console.log(JSON.stringify({
+        ...buildProductivityHealthReport({ stats, outbox, derivation, project, profile, mode }),
+        store: { status: service.storeStatus }
+      }, null, 2));
     } catch (error) {
       const message = error instanceof Error
         ? error.message
@@ -1288,22 +1226,22 @@ program
  */
 program
   .command('vector-status')
-  .description('Show aggregate vector outbox status')
+  .description('Read-only: show aggregate vector outbox status')
   .option('-p, --project <path>', 'Project path (defaults to cwd)')
   .option('--json', 'Print aggregate vector outbox status as JSON for automation')
   .action(async (options) => {
-    let service: ReturnType<typeof getLightweightMemoryServiceForProject> | undefined;
+    let service: ReturnType<typeof createReadOnlyDiagnosticsService> | undefined;
 
     try {
       const vectorOptions = resolveVectorStatusCommandOptions(options);
-      service = getLightweightMemoryServiceForProject(vectorOptions.projectPath);
+      service = createReadOnlyDiagnosticsService(vectorOptions.projectPath);
       const [stats, outbox] = await Promise.all([
         service.getStats(),
         service.getOutboxStats()
       ]);
       const rendered = vectorOptions.json
-        ? formatVectorStatusJsonReport({ stats, outbox })
-        : formatVectorStatusReport({ stats, outbox });
+        ? formatVectorStatusJsonReport({ stats, outbox, storeStatus: service.storeStatus })
+        : formatVectorStatusReport({ stats, outbox, storeStatus: service.storeStatus });
       console.log(rendered);
     } catch (error) {
       const message = error instanceof Error && error.message.startsWith('--')
@@ -1456,35 +1394,38 @@ program
     try {
       const processOptions = resolveProcessCommandOptions(options);
 
-      if (!processOptions.dryRunRecovery) {
-        workerLock = new WorkerLock(processOptions.lockPath);
-        const lockResult = workerLock.acquire();
-        if (!lockResult.acquired) {
-          console.log(formatProcessLockBusy({
+      if (processOptions.dryRunRecovery) {
+        const diagnostics = createReadOnlyDiagnosticsService(processOptions.projectPath);
+        try {
+          const now = new Date();
+          const [stats, recovery] = await Promise.all([
+            diagnostics.getOutboxStats({ now }),
+            diagnostics.previewOutboxRecovery({ now })
+          ]);
+          console.log(formatProcessRecoveryPreview({
             projectPath: processOptions.projectPath,
-            lockPath: processOptions.lockPath,
-            holderPid: 'holderPid' in lockResult ? lockResult.holderPid : null
+            stats,
+            recovery
           }));
-          return;
+        } finally {
+          await diagnostics.shutdown().catch(() => undefined);
         }
+        return;
+      }
+
+      workerLock = new WorkerLock(processOptions.lockPath);
+      const lockResult = workerLock.acquire();
+      if (!lockResult.acquired) {
+        console.log(formatProcessLockBusy({
+          projectPath: processOptions.projectPath,
+          lockPath: processOptions.lockPath,
+          holderPid: 'holderPid' in lockResult ? lockResult.holderPid : null
+        }));
+        return;
       }
 
       service = getMemoryServiceForProject(processOptions.projectPath);
       await service.initialize();
-
-      if (processOptions.dryRunRecovery) {
-        const now = new Date();
-        const [stats, recovery] = await Promise.all([
-          service.getOutboxStats({ now }),
-          service.recoverStuckOutboxItems({ dryRun: true, now })
-        ]);
-        console.log(formatProcessRecoveryPreview({
-          projectPath: processOptions.projectPath,
-          stats,
-          recovery
-        }));
-        return;
-      }
 
       if (processOptions.recoverStuck) {
         const recovered = await service.recoverStuckOutboxItems();
@@ -3076,11 +3017,11 @@ endlessCmd
  */
 endlessCmd
   .command('status')
-  .description('Show Endless Mode status')
+  .description('Read-only: show Endless Mode status without starting its workers')
   .option('-p, --project <path>', 'Project path (defaults to cwd)')
   .action(async (options) => {
     const projectPath = options.project || process.cwd();
-    const service = getMemoryServiceForProject(projectPath);
+    const service = createReadOnlyDiagnosticsService(projectPath);
 
     try {
       await service.initialize();
@@ -3090,6 +3031,7 @@ endlessCmd
       const modeName = status.mode === 'endless' ? 'Endless Mode' : 'Session Mode';
 
       console.log(`\n${modeIcon} ${modeName}\n`);
+      if (service.storeStatus === 'missing') console.log('Store Status: missing (no store initialized)\n');
 
       if (status.mode === 'endless') {
         // Continuity score bar

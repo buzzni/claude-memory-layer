@@ -5,7 +5,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => {
   function createService() {
     return {
+      storeStatus: 'existing',
       initialize: vi.fn(async () => undefined),
+      shutdown: vi.fn(async () => undefined),
       retrieveMemories: vi.fn(),
       keywordSearch: vi.fn(),
       getRecentEvents: vi.fn(),
@@ -24,7 +26,8 @@ const mocks = vi.hoisted(() => {
     defaultService,
     projectService,
     getDefaultMemoryService: vi.fn(() => defaultService),
-    getMemoryServiceForProject: vi.fn(() => projectService)
+    getMemoryServiceForProject: vi.fn(() => projectService),
+    createReadOnlyDiagnosticsService: vi.fn((projectPath?: string) => projectPath ? projectService : defaultService)
   };
 });
 
@@ -34,11 +37,16 @@ vi.mock('../../src/services/memory-service.js', () => ({
   shutdownMemoryServices: vi.fn(async () => undefined)
 }));
 
+vi.mock('../../src/services/read-only-diagnostics-service.js', () => ({
+  createReadOnlyDiagnosticsService: mocks.createReadOnlyDiagnosticsService
+}));
+
 const { handleToolCall } = await import('../../src/extensions/mcp/handlers.js');
 const { tools } = await import('../../src/extensions/mcp/tools.js');
 
 function resetService(service: typeof mocks.defaultService) {
   service.initialize.mockReset().mockResolvedValue(undefined);
+  service.shutdown.mockReset().mockResolvedValue(undefined);
   service.retrieveMemories.mockReset().mockResolvedValue({ memories: [] });
   service.keywordSearch.mockReset().mockResolvedValue([]);
   service.getRecentEvents.mockReset().mockResolvedValue([]);
@@ -58,6 +66,7 @@ describe('MCP project-aware memory tools', () => {
     resetService(mocks.projectService);
     mocks.getDefaultMemoryService.mockClear();
     mocks.getMemoryServiceForProject.mockClear();
+    mocks.createReadOnlyDiagnosticsService.mockClear();
   });
 
   it('advertises optional projectPath on all memory tools', () => {
@@ -97,6 +106,7 @@ describe('MCP project-aware memory tools', () => {
 
     expect(result.isError).not.toBe(true);
     expect(mocks.getMemoryServiceForProject).toHaveBeenCalledWith('/repo/app');
+    expect(mocks.createReadOnlyDiagnosticsService).not.toHaveBeenCalled();
     expect(mocks.getDefaultMemoryService).not.toHaveBeenCalled();
     expect(mocks.projectService.initialize).toHaveBeenCalledTimes(1);
     expect(mocks.projectService.retrieveMemories).toHaveBeenCalledWith('project scoped memory', {
@@ -483,7 +493,8 @@ describe('MCP project-aware memory tools', () => {
 
     const text = String(result.content[0]?.text ?? '');
     expect(result.isError).not.toBe(true);
-    expect(mocks.getMemoryServiceForProject).toHaveBeenCalledWith('/repo/app');
+    expect(mocks.createReadOnlyDiagnosticsService).toHaveBeenCalledWith('/repo/app');
+    expect(mocks.getMemoryServiceForProject).not.toHaveBeenCalled();
     expect(mocks.projectService.getOutboxStats).toHaveBeenCalledTimes(1);
     expect(text).toContain('Storage View: project:');
     expect(text).toContain('Storage Path Label: ~/.claude-code/memory/projects/');
@@ -517,8 +528,9 @@ describe('MCP project-aware memory tools', () => {
       cwdSpy.mockRestore();
     }
 
-    expect(mocks.getDefaultMemoryService).toHaveBeenCalledTimes(1);
+    expect(mocks.getDefaultMemoryService).not.toHaveBeenCalled();
     expect(mocks.getMemoryServiceForProject).not.toHaveBeenCalled();
+    expect(mocks.createReadOnlyDiagnosticsService).toHaveBeenCalledWith(undefined);
     expect(mocks.defaultService.initialize).toHaveBeenCalledTimes(1);
     expect(mocks.defaultService.getStats).toHaveBeenCalledTimes(1);
   });

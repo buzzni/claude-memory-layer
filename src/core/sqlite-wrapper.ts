@@ -6,6 +6,7 @@
 import Database from 'better-sqlite3';
 import * as fs from 'fs';
 import * as nodePath from 'path';
+import { createSQLiteReadSnapshot } from './sqlite-read-snapshot.js';
 
 export type SQLiteDatabase = Database.Database;
 
@@ -18,15 +19,37 @@ export interface SQLiteOptions {
  * Creates a new SQLite database with WAL mode
  */
 export function createSQLiteDatabase(path: string, options?: SQLiteOptions): SQLiteDatabase {
-  // Ensure parent directory exists
+  // Writable callers may create a new store. Read-only callers must never turn
+  // a missing diagnostic target into an empty directory tree.
   const dir = nodePath.dirname(path);
-  if (!fs.existsSync(dir)) {
+  if (!options?.readonly && !fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
 
-  const db = new Database(path, {
-    readonly: options?.readonly ?? false,
-  });
+  const snapshot = options?.readonly ? createSQLiteReadSnapshot(path) : null;
+  let db: SQLiteDatabase;
+  try {
+    db = new Database(snapshot?.databasePath ?? path, {
+      readonly: options?.readonly ?? false,
+      fileMustExist: options?.readonly ?? false,
+    });
+  } catch (error) {
+    snapshot?.cleanup();
+    throw error;
+  }
+  if (snapshot) {
+    const closeSnapshotDatabase = db.close.bind(db);
+    Object.defineProperty(db, 'close', {
+      configurable: true,
+      value: () => {
+        try {
+          return closeSnapshotDatabase();
+        } finally {
+          snapshot.cleanup();
+        }
+      }
+    });
+  }
 
   // Enable WAL mode for concurrent access (unless read-only)
   if (!options?.readonly && (options?.walMode ?? true)) {

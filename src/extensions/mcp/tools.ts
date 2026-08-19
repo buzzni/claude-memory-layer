@@ -153,7 +153,8 @@ export const tools: Tool[] = [
   },
   {
     name: 'mem-stats',
-    description: 'Get statistics about the memory storage (total events, sessions, etc.)',
+    description: 'Read-only: get statistics about an existing memory store without creating or migrating it.',
+    _meta: { 'claude-memory-layer/mutation': 'read_only' },
     inputSchema: {
       type: 'object',
       properties: {

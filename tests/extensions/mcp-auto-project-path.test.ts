@@ -17,7 +17,9 @@ import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => {
   function createService() {
     return {
+      storeStatus: 'existing',
       initialize: vi.fn(async () => undefined),
+      shutdown: vi.fn(async () => undefined),
       getStats: vi.fn(async () => ({ totalEvents: 0, vectorCount: 0 })),
       getDistinctSessionCount: vi.fn(async () => 0),
       getEventTypeCounts: vi.fn(async () => []),
@@ -33,6 +35,7 @@ const mocks = vi.hoisted(() => {
     projectService: createService(),
     getDefaultMemoryService: vi.fn(),
     getMemoryServiceForProject: vi.fn(),
+    createReadOnlyDiagnosticsService: vi.fn(),
     // Counts store-location lookups so the caching test can assert the
     // resolver runs once per cwd rather than once per tool call.
     getProjectStoragePath: vi.fn(),
@@ -45,6 +48,10 @@ vi.mock('../../src/services/memory-service.js', () => ({
   getDefaultMemoryService: mocks.getDefaultMemoryService,
   getMemoryServiceForProject: mocks.getMemoryServiceForProject,
   shutdownMemoryServices: vi.fn(async () => undefined)
+}));
+
+vi.mock('../../src/services/read-only-diagnostics-service.js', () => ({
+  createReadOnlyDiagnosticsService: mocks.createReadOnlyDiagnosticsService
 }));
 
 vi.mock('../../src/core/registry/project-path.js', () => ({
@@ -90,6 +97,9 @@ describe('MCP projectPath auto-resolution from cwd', () => {
     vi.restoreAllMocks();
     mocks.getDefaultMemoryService.mockReset().mockReturnValue(mocks.defaultService);
     mocks.getMemoryServiceForProject.mockReset().mockReturnValue(mocks.projectService);
+    mocks.createReadOnlyDiagnosticsService.mockReset().mockImplementation((projectPath?: string) => (
+      projectPath ? mocks.projectService : mocks.defaultService
+    ));
     mocks.getProjectStoragePath.mockReset().mockImplementation(storageDirFor);
   });
 
@@ -98,7 +108,8 @@ describe('MCP projectPath auto-resolution from cwd', () => {
 
     await handleToolCall('mem-stats', {});
 
-    expect(mocks.getMemoryServiceForProject).toHaveBeenCalledWith(cwd);
+    expect(mocks.createReadOnlyDiagnosticsService).toHaveBeenCalledWith(cwd);
+    expect(mocks.getMemoryServiceForProject).not.toHaveBeenCalled();
     expect(mocks.getDefaultMemoryService).not.toHaveBeenCalled();
   });
 
@@ -111,7 +122,8 @@ describe('MCP projectPath auto-resolution from cwd', () => {
     // never reaching it is the point: a server started outside a project must
     // not litter projects/ with empty stores.
     expect(mocks.getMemoryServiceForProject).not.toHaveBeenCalled();
-    expect(mocks.getDefaultMemoryService).toHaveBeenCalledTimes(1);
+    expect(mocks.getDefaultMemoryService).not.toHaveBeenCalled();
+    expect(mocks.createReadOnlyDiagnosticsService).toHaveBeenCalledWith(undefined);
   });
 
   it('never overrides an explicitly supplied projectPath', async () => {
@@ -119,7 +131,7 @@ describe('MCP projectPath auto-resolution from cwd', () => {
 
     await handleToolCall('mem-stats', { projectPath: '/explicit/project' });
 
-    expect(mocks.getMemoryServiceForProject).toHaveBeenCalledWith('/explicit/project');
+    expect(mocks.createReadOnlyDiagnosticsService).toHaveBeenCalledWith('/explicit/project');
   });
 
   it('resolves once per cwd instead of on every tool call', async () => {
@@ -133,7 +145,7 @@ describe('MCP projectPath auto-resolution from cwd', () => {
     await handleToolCall('mem-stats', {});
 
     expect(mocks.getProjectStoragePath).toHaveBeenCalledTimes(1);
-    expect(mocks.getMemoryServiceForProject).toHaveBeenCalledTimes(3);
-    expect(mocks.getMemoryServiceForProject).toHaveBeenNthCalledWith(3, cwd);
+    expect(mocks.createReadOnlyDiagnosticsService).toHaveBeenCalledTimes(3);
+    expect(mocks.createReadOnlyDiagnosticsService).toHaveBeenNthCalledWith(3, cwd);
   });
 });

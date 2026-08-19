@@ -7,7 +7,7 @@ import { Hono } from 'hono';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { getLightweightServiceFromQuery, getServiceFromQuery, jsonError } from './utils.js';
+import { getDiagnosticsServiceFromQuery, getServiceFromQuery, jsonError } from './utils.js';
 import {
   loadKpiThresholds,
   windowToMs,
@@ -1371,7 +1371,7 @@ function computeKpiMetrics(events: MemoryEvent[], usefulRecallRate: number): Kpi
 
 // GET /api/stats/shared - Get shared store statistics
 statsRouter.get('/shared', async (c) => {
-  const memoryService = getLightweightServiceFromQuery(c);
+  const memoryService = getDiagnosticsServiceFromQuery(c);
   try {
     await memoryService.initialize();
     const sharedStats = await memoryService.getSharedStoreStats();
@@ -1397,7 +1397,7 @@ statsRouter.get('/shared', async (c) => {
 
 // GET /api/stats/endless - Get endless mode status
 statsRouter.get('/endless', async (c) => {
-  const memoryService = getLightweightServiceFromQuery(c);
+  const memoryService = getDiagnosticsServiceFromQuery(c);
   try {
     await memoryService.initialize();
     const status = await memoryService.getEndlessModeStatus();
@@ -1434,7 +1434,7 @@ statsRouter.get('/levels/:level', async (c) => {
     return c.json({ error: `Invalid level. Must be one of: ${validLevels.join(', ')}` }, 400);
   }
 
-  const memoryService = getLightweightServiceFromQuery(c);
+  const memoryService = getDiagnosticsServiceFromQuery(c);
   try {
     await memoryService.initialize();
     let events = await memoryService.getEventsByLevel(level, { limit: limit * 2, offset });
@@ -1668,7 +1668,7 @@ statsRouter.get('/perspective', async (c) => {
 
 // GET /api/stats - Get overall statistics
 statsRouter.get('/', async (c) => {
-  const memoryService = getLightweightServiceFromQuery(c);
+  const memoryService = getDiagnosticsServiceFromQuery(c);
   try {
     await memoryService.initialize();
 
@@ -1688,6 +1688,7 @@ statsRouter.get('/', async (c) => {
     const retrievalTrace = sanitizeRetrievalTraceStats(rawTrace);
 
     return c.json({
+      store: { status: memoryService.storeStatus },
       storage: {
         eventCount: stats.totalEvents,
         vectorCount: stats.vectorCount
@@ -1718,7 +1719,7 @@ statsRouter.get('/', async (c) => {
 statsRouter.get('/most-accessed', async (c) => {
   const limit = parseInt(c.req.query('limit') || '10', 10);
   // Use the same read-only service that other stats endpoints use
-  const memoryService = getLightweightServiceFromQuery(c);
+  const memoryService = getDiagnosticsServiceFromQuery(c);
 
   try {
     await memoryService.initialize();
@@ -1754,7 +1755,7 @@ statsRouter.get('/most-accessed', async (c) => {
 statsRouter.get('/timeline', async (c) => {
   const parsedDays = parseInt(c.req.query('days') || '7', 10);
   const days = Number.isFinite(parsedDays) && parsedDays > 0 ? parsedDays : 7;
-  const memoryService = getLightweightServiceFromQuery(c);
+  const memoryService = getDiagnosticsServiceFromQuery(c);
 
   try {
     await memoryService.initialize();
@@ -1780,7 +1781,7 @@ statsRouter.get('/timeline', async (c) => {
 // GET /api/stats/helpfulness - Get helpfulness statistics and top helpful memories
 statsRouter.get('/helpfulness', async (c) => {
   const limit = parseInt(c.req.query('limit') || '10', 10);
-  const memoryService = getLightweightServiceFromQuery(c);
+  const memoryService = getDiagnosticsServiceFromQuery(c);
 
   try {
     await memoryService.initialize();
@@ -1816,7 +1817,7 @@ statsRouter.get('/helpfulness', async (c) => {
 // This is read-only: source/navigation rows are written only by explicit
 // source-ref/details/expand/source actions.
 statsRouter.get('/retrieval-telemetry', async (c) => {
-  const memoryService = getLightweightServiceFromQuery(c);
+  const memoryService = getDiagnosticsServiceFromQuery(c);
   try {
     await memoryService.initialize();
     return c.json(await memoryService.getRetrievalTelemetryStats());
@@ -1841,7 +1842,7 @@ statsRouter.get('/retrieval-telemetry', async (c) => {
 statsRouter.get('/usefulness', async (c) => {
   const rawWindow = (c.req.query('window') || '7d') as KpiWindow;
   const window: KpiWindow = rawWindow === '24h' || rawWindow === '30d' ? rawWindow : '7d';
-  const memoryService = getLightweightServiceFromQuery(c);
+  const memoryService = getDiagnosticsServiceFromQuery(c);
 
   try {
     await memoryService.initialize();
@@ -1875,7 +1876,7 @@ statsRouter.get('/usefulness-history', async (c) => {
   const offset = Math.max(parseInt(c.req.query('offset') || '0', 10) || 0, 0);
   const sessionId = c.req.query('sessionId') || undefined;
   const withSelectionsOnly = c.req.query('withSelectionsOnly') === 'true';
-  const memoryService = getLightweightServiceFromQuery(c);
+  const memoryService = getDiagnosticsServiceFromQuery(c);
 
   try {
     await memoryService.initialize();
@@ -1920,7 +1921,7 @@ statsRouter.get('/usefulness-history', async (c) => {
 // GET /api/stats/retrieval-traces - Get recent retrieval traces (query -> selected context)
 statsRouter.get('/retrieval-traces', async (c) => {
   const limit = parseInt(c.req.query('limit') || '50', 10);
-  const memoryService = getLightweightServiceFromQuery(c);
+  const memoryService = getDiagnosticsServiceFromQuery(c);
 
   try {
     await memoryService.initialize();
@@ -1982,7 +1983,7 @@ statsRouter.get('/retrieval-traces', async (c) => {
 statsRouter.get('/retrieval-review-queue', async (c) => {
   const limit = parseStatsLimit(c.req.query('limit'), 10, 50);
   const scanLimit = parseStatsLimit(c.req.query('scanLimit'), 500, 5000);
-  const memoryService = getLightweightServiceFromQuery(c);
+  const memoryService = getDiagnosticsServiceFromQuery(c);
 
   try {
     await memoryService.initialize();
@@ -2019,7 +2020,7 @@ statsRouter.get('/retrieval-review-queue', async (c) => {
 statsRouter.get('/kpi', async (c) => {
   const rawWindow = (c.req.query('window') || '7d') as KpiWindow;
   const window: KpiWindow = rawWindow === '24h' || rawWindow === '30d' ? rawWindow : '7d';
-  const memoryService = getLightweightServiceFromQuery(c);
+  const memoryService = getDiagnosticsServiceFromQuery(c);
 
   try {
     await memoryService.initialize();

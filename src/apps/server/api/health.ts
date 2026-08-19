@@ -5,13 +5,8 @@
 
 import { Hono } from 'hono';
 import { spawnSync } from 'child_process';
-import * as fs from 'fs';
-import * as path from 'path';
-import { getLightweightServiceFromQuery, getWritableServiceFromQuery } from './utils.js';
-import { hashProjectPath, resolveProjectStoragePath } from '../../../core/registry/project-path.js';
-import type { MemoryStats } from '../../../core/engine/memory-query-service.js';
-import type { OutboxQueueStats, OutboxStats } from '../../../core/types.js';
-import type { DerivationLiveness } from '../../../core/sqlite-event-store.js';
+import { getDiagnosticsServiceFromQuery, getWritableServiceFromQuery } from './utils.js';
+import { hashProjectPath } from '../../../core/registry/project-path.js';
 import {
   buildProductivityHealthReport,
   parseProductivityHealthMode,
@@ -60,7 +55,7 @@ function detectEmbeddingBackend(): { status: 'enabled' | 'disabled'; backend: '@
   };
 }
 
-function aggregateOutbox(outbox: Awaited<ReturnType<Awaited<ReturnType<typeof getLightweightServiceFromQuery>>['getOutboxStats']>>) {
+function aggregateOutbox(outbox: Awaited<ReturnType<Awaited<ReturnType<typeof getDiagnosticsServiceFromQuery>>['getOutboxStats']>>) {
   const pending = (outbox.embedding?.pending || 0) + (outbox.vector?.pending || 0);
   const processing = (outbox.embedding?.processing || 0) + (outbox.vector?.processing || 0);
   const failed = (outbox.embedding?.failed || 0) + (outbox.vector?.failed || 0);
@@ -76,49 +71,10 @@ function resolveProductivityProjectIdentity(project: string | undefined): Produc
   return { scope: 'project', id: /^[a-f0-9]{8}$/.test(normalized) ? normalized : hashProjectPath(normalized) };
 }
 
-function explicitProjectStoreExists(project: string | undefined): boolean {
-  if (!project || project.trim().length === 0) return true;
-  return fs.existsSync(path.join(resolveProjectStoragePath(project.trim()), 'events.sqlite'));
-}
-
-function emptyProductivityStats(): Pick<MemoryStats, 'totalEvents' | 'vectorCount' | 'levelStats'> {
-  return { totalEvents: 0, vectorCount: 0, levelStats: [] };
-}
-
-function emptyProductivityQueue(): OutboxQueueStats {
-  return {
-    pending: 0,
-    processing: 0,
-    failed: 0,
-    retryableFailed: 0,
-    quarantinedFailed: 0,
-    total: 0,
-    stuckProcessing: 0,
-    oldestProcessingAgeMs: null
-  };
-}
-
-function emptyProductivityOutbox(): OutboxStats {
-  return { embedding: emptyProductivityQueue(), vector: emptyProductivityQueue() };
-}
-
-function emptyProductivityDerivationLiveness(): DerivationLiveness {
-  return {
-    graduation: {
-      attempts: 0,
-      lastAttemptAt: null,
-      lastSuccessAt: null,
-      lastStatus: null,
-      lastErrorCategory: null
-    },
-    sources: { graduatedEvents: 0, curatedLessons: 0 }
-  };
-}
-
 // GET /api/health/setup
 // Aggregate-only install/provider readiness for dashboard setup guidance.
 healthRouter.get('/setup', async (c) => {
-  const memoryService = getLightweightServiceFromQuery(c);
+  const memoryService = getDiagnosticsServiceFromQuery(c);
   try {
     await memoryService.initialize();
     const [stats, outbox] = await Promise.all([
@@ -155,7 +111,8 @@ healthRouter.get('/setup', async (c) => {
       setup: {
         scope: scoped ? 'project' : 'global',
         storage: {
-          status: 'ok',
+          status: memoryService.storeStatus === 'missing' ? 'missing' : 'ok',
+          storeStatus: memoryService.storeStatus,
           totalEvents: stats.totalEvents,
           vectorCount: stats.vectorCount,
         },
@@ -181,25 +138,14 @@ healthRouter.get('/setup', async (c) => {
 // GET /api/health/productivity
 // Aggregate-only Project Health Report for agent productivity workflows.
 healthRouter.get('/productivity', async (c) => {
-  let memoryService: ReturnType<typeof getLightweightServiceFromQuery> | undefined;
+  let memoryService: ReturnType<typeof getDiagnosticsServiceFromQuery> | undefined;
   try {
     const profile = parseProductivityHealthProfile(c.req.query('profile'));
     const mode = parseProductivityHealthMode(c.req.query('mode'));
     const projectQuery = c.req.query('project') || c.req.query('projectId');
     const project = resolveProductivityProjectIdentity(projectQuery);
 
-    if (!explicitProjectStoreExists(projectQuery)) {
-      return c.json(buildProductivityHealthReport({
-        stats: emptyProductivityStats(),
-        outbox: emptyProductivityOutbox(),
-        derivation: emptyProductivityDerivationLiveness(),
-        project,
-        profile,
-        mode
-      }));
-    }
-
-    memoryService = getLightweightServiceFromQuery(c);
+    memoryService = getDiagnosticsServiceFromQuery(c);
     await memoryService.initialize();
     const [stats, outbox, derivation] = await Promise.all([
       memoryService.getStats(),
@@ -207,7 +153,10 @@ healthRouter.get('/productivity', async (c) => {
       memoryService.getDerivationLiveness()
     ]);
 
-    return c.json(buildProductivityHealthReport({ stats, outbox, derivation, project, profile, mode }));
+    return c.json({
+      ...buildProductivityHealthReport({ stats, outbox, derivation, project, profile, mode }),
+      store: { status: memoryService.storeStatus }
+    });
   } catch (error) {
     const status = error instanceof Error && error.message.startsWith('Invalid --') ? 400 : 500;
     return c.json({
@@ -222,7 +171,7 @@ healthRouter.get('/productivity', async (c) => {
 
 // GET /api/health
 healthRouter.get('/', async (c) => {
-  const memoryService = getLightweightServiceFromQuery(c);
+  const memoryService = getDiagnosticsServiceFromQuery(c);
   try {
     await memoryService.initialize();
 
@@ -248,6 +197,7 @@ healthRouter.get('/', async (c) => {
       status,
       timestamp: new Date().toISOString(),
       storage: {
+        status: memoryService.storeStatus,
         totalEvents: stats.totalEvents,
         vectorCount: stats.vectorCount
       },
