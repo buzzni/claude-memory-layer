@@ -825,7 +825,9 @@ MCP 도구 surface는 `CLAUDE_MEMORY_MCP_PROFILE`로 `core`, `operations`, `gove
 | Operations | `mem-checkpoint-create` / `mem-checkpoint-list` | resumable action/session checkpoint 관리 |
 | Operations | `mem-retention-audit` | dry-run retention governance audit |
 | Operations | `mem-graph-query` | bounded graph expansion/query diagnostics |
-| Operations | `mem-lesson-list` | procedural lesson/skill 후보 조회 |
+| Operations | `mem-lesson-list` | 저장된 procedural lesson 조회 |
+| Operations | `mem-lesson-candidates` | 반복 성공 워크플로우에서 아직 저장 안 된 lesson 후보 탐지 (LLM 추출, 그룹별 캐시) |
+| Operations | `mem-lesson-save` | 검토한 lesson을 curated lesson으로 저장 |
 | Perspective | `mem-actor-list` | project-scoped actor 목록 |
 | Perspective | `mem-actor-card-get` / `mem-actor-card-upsert` | observer→observed actor card 조회/갱신 |
 | Perspective | `mem-perspective-query` | observer→observed perspective observation 검색 |
@@ -834,6 +836,19 @@ MCP 도구 surface는 `CLAUDE_MEMORY_MCP_PROFILE`로 `core`, `operations`, `gove
 | External | `external-market-context` | DART/FRED/Finnhub read-only MarketContextSnapshot |
 
 대부분의 project-scoped 도구는 `projectPath`를 지원하거나 요구합니다. mutating 도구는 audit용 `actor`와 evidence/source refs를 요구하고, raw transcript/path/secret 출력은 피합니다.
+
+### LLM lesson 추출 설정
+
+`mem-lesson-candidates`는 반복 성공 패턴 그룹을 결정적으로 채굴한 뒤, 로컬에 로그인된 `claude`(또는 `codex`) CLI 서브프로세스로 lesson 텍스트(name/trigger/steps/failureModes)를 추출합니다. 별도 API 키가 필요 없고, 추출 결과는 후보 그룹별로 캐시되어 재조회·승격 시 동일 텍스트를 반환합니다. 트랜스크립트는 서브프로세스에 넘기기 전에 경로/자격증명 redaction을 거칩니다.
+
+| 환경변수 | 기본값 | 설명 |
+|------|------|------|
+| `CLAUDE_MEMORY_LESSON_MODE` | (켜짐) | `off`면 추출 비활성. 후보 그룹은 계속 채굴되지만 lesson 텍스트 없이 `extraction.skippedNoExtractor`로 보고됨 |
+| `CLAUDE_MEMORY_LESSON_PROVIDER` | `claude` | `codex` 선택 가능 |
+| `CLAUDE_MEMORY_LESSON_MODEL` | claude는 `claude-haiku-4-5-20251001`, codex는 CLI 자체 기본값 | 명시 설정 시 그대로 `--model`로 전달 |
+| `CLAUDE_MEMORY_LESSON_TIMEOUT_MS` | `120000` | 그룹당 추출 타임아웃 |
+
+호출당 신규(미캐시) 추출은 3그룹으로 제한됩니다. 남은 그룹은 응답의 `extraction` 통계와 `note`에 보고되며, 다시 호출하면 캐시된 그룹은 건너뛰고 이어서 추출합니다.
 
 예시 workflow:
 
