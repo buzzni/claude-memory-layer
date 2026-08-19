@@ -68,7 +68,7 @@ export class ReadOnlyDiagnosticsService {
     this.resolution = resolution;
     this.storeStatus = resolution.status;
     this.sqliteStore = resolution.status === 'existing' && resolution.databasePath
-      ? new SQLiteEventStore(resolution.databasePath, { readonly: true, vectorOutbox: false })
+      ? new SQLiteEventStore(resolution.databasePath, { readonly: true, snapshot: true, vectorOutbox: false })
       : null;
   }
 
@@ -282,8 +282,25 @@ export class ReadOnlyDiagnosticsService {
     if (!storagePath) return 0;
     const vectorsPath = path.join(storagePath, 'vectors');
     if (!isLocalDirectory(vectorsPath)) return 0;
-    return new VectorStore(vectorsPath).count();
+    return vectorStoreFor(vectorsPath).count();
   }
+}
+
+/**
+ * LanceDB connections have no close/disconnect, so a per-request VectorStore
+ * would leak native handles on every dashboard poll. One store per vectors
+ * path for the process lifetime — bounded by the number of projects on the
+ * machine — keeps the count query cheap and leak-free.
+ */
+const vectorStoreCache = new Map<string, VectorStore>();
+
+function vectorStoreFor(vectorsPath: string): VectorStore {
+  let store = vectorStoreCache.get(vectorsPath);
+  if (!store) {
+    store = new VectorStore(vectorsPath);
+    vectorStoreCache.set(vectorsPath, store);
+  }
+  return store;
 }
 
 export function createReadOnlyDiagnosticsService(

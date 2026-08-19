@@ -172,7 +172,7 @@ function discoverProjectStoreSessions(options: Required<ProjectScopeAuditOptions
     let unreadable = false;
     const storeRows: ProjectScopeStoreSession[] = [];
     try {
-      db = createSQLiteDatabase(store.dbPath, { readonly: true });
+      db = createSQLiteDatabase(store.dbPath, { readonly: true, snapshot: true });
       const recent = sqliteAll<{ sessionId: string; eventCount: number }>(
         db,
         `SELECT session_id AS sessionId, COUNT(*) AS eventCount

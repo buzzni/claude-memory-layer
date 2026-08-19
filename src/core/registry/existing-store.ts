@@ -68,15 +68,32 @@ export function resolveExistingStore(
     return { ...base, status: 'invalid' };
   }
   if ((databaseEntry.stat.mode & 0o444) === 0) return { ...base, status: 'unreadable' };
+  // A zero-length file is a valid, empty SQLite database — the header is
+  // written lazily on first write. Treat it like a store that does not exist
+  // yet so callers get the graceful empty reader, not a corruption error.
+  if (databaseEntry.stat.size === 0) return { ...base, status: 'missing' };
   const headerStatus = inspectSQLiteHeader(databasePath);
   if (headerStatus === 'unreadable') return { ...base, status: 'unreadable' };
   if (databaseEntry.stat.size < SQLITE_HEADER.length || headerStatus === 'invalid') {
     return { ...base, status: 'corrupt' };
   }
 
+  // The integrity probe reads an unlocked point-in-time copy (snapshot), and a
+  // writer checkpointing mid-copy can produce a torn copy that fails
+  // quick_check even though the live store is intact. One retry with a fresh
+  // copy separates that race from real corruption.
+  let probe = probeDatabase(base, databasePath);
+  if (probe.status === 'corrupt') probe = probeDatabase(base, databasePath);
+  return probe;
+}
+
+function probeDatabase(
+  base: Omit<ExistingStoreResolution, 'status'>,
+  databasePath: string
+): ExistingStoreResolution {
   let db;
   try {
-    db = createSQLiteDatabase(databasePath, { readonly: true, walMode: false });
+    db = createSQLiteDatabase(databasePath, { readonly: true, snapshot: true, walMode: false });
     const integrity = sqliteGet<Record<string, string>>(db, 'PRAGMA quick_check(1)');
     if (Object.values(integrity ?? {})[0] !== 'ok') return { ...base, status: 'corrupt' };
     const eventsTable = sqliteGet<{ name: string }>(

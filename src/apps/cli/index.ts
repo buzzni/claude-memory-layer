@@ -332,7 +332,7 @@ function scanCanonicalProjectStores(canonicalId: string): { scannedStoreCount: n
     scannedStoreCount++;
     let db: SQLiteDatabase | undefined;
     try {
-      db = createSQLiteDatabase(dbPath, { readonly: true, walMode: false });
+      db = createSQLiteDatabase(dbPath, { readonly: true, snapshot: true, walMode: false });
       const sessionsTable = sqliteGet<{ name: string }>(
         db,
         `SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`,
@@ -507,7 +507,7 @@ function resolveOperationProject(project: string | undefined): OperationProjectC
 
 function openOperationReadDatabase(context: OperationProjectContext): SQLiteDatabase | null {
   if (!fs.existsSync(context.dbPath)) return null;
-  return createSQLiteDatabase(context.dbPath, { readonly: true, walMode: false });
+  return createSQLiteDatabase(context.dbPath, { readonly: true, snapshot: true, walMode: false });
 }
 
 async function withOperationWriteDatabase<T>(
@@ -1173,9 +1173,12 @@ program
   .option('-p, --project <path>', 'Project path (defaults to cwd)')
   .action(async (options) => {
     const projectPath = options.project || process.cwd();
-    const service = createReadOnlyDiagnosticsService(projectPath);
 
     try {
+      // Inside the try: resolution throws for invalid/unreadable/corrupt
+      // stores, and that must reach the 'Stats failed:' handler rather than
+      // rejecting the action with a raw stack trace.
+      const service = createReadOnlyDiagnosticsService(projectPath);
       const stats = await service.getStats();
 
       console.log('\n📊 Memory Statistics\n');
@@ -2104,7 +2107,7 @@ retentionCommand
         return;
       }
 
-      const db = createSQLiteDatabase(dbPath, { readonly: true, walMode: false });
+      const db = createSQLiteDatabase(dbPath, { readonly: true, snapshot: true, walMode: false });
       try {
         const report = runRetentionAudit(db, {
           projectHash,

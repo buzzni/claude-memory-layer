@@ -290,6 +290,7 @@ export class SQLiteEventStore {
     this.readOnly = options?.readonly ?? false;
     this.db = createSQLiteDatabase(dbPath, {
       readonly: this.readOnly,
+      snapshot: options?.snapshot,
       walMode: !this.readOnly
     });
     this.markdownMirror = this.readOnly || !options?.markdownMirrorRoot

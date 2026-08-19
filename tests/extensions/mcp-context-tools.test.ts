@@ -1316,12 +1316,23 @@ describe('MCP project context tools', () => {
         content: 'Foreign project row outside the marker must still be filtered.',
         metadata: { source: 'hermes', projectPath: path.join(sandbox, 'unrelated-project') }
       });
+      const foreignMentionMemory = event({
+        id: '99990000-0000-4000-8000-000000000024',
+        sessionId: 'session-foreign-mention',
+        eventType: 'agent_response',
+        timestamp: new Date('2026-05-05T04:03:00.000Z'),
+        // The marker converges its own subtree only: content naming a project
+        // outside the workspace must still trip the contamination filter.
+        content: 'CRM dashboard note lives in /projects/other-crm/src/board.tsx from another workspace.',
+        metadata: {}
+      });
 
       mocks.projectService.retrieveMemories.mockResolvedValue({
         memories: [
           { event: siblingPathMemory, score: 0.95 },
           { event: siblingMentionMemory, score: 0.9 },
-          { event: foreignMemory, score: 0.88 }
+          { event: foreignMemory, score: 0.88 },
+          { event: foreignMentionMemory, score: 0.87 }
         ]
       });
       mocks.projectService.getRecentEvents.mockResolvedValue([]);
@@ -1339,6 +1350,7 @@ describe('MCP project context tools', () => {
       expect(text).toContain('Sibling instance memory recorded before convergence');
       expect(text).toContain('Deploy fix lives at /workspace/instance-a');
       expect(text).not.toContain('Foreign project row outside the marker');
+      expect(text).not.toContain('other-crm');
     } finally {
       fs.rmSync(sandbox, { recursive: true, force: true });
     }
