@@ -52,6 +52,59 @@ describe('canonical repository identity', () => {
     expect(identity.candidateLegacyProjectHashes).toEqual(['hash-mpstandalone']);
   });
 
+  it('folds every instance under a memory-root marker into one identity and keeps pre-marker hashes nameable', () => {
+    // Two sibling instances, each its own repository, converged by a marker at
+    // /w. Their canonical identities must agree (a scan from either finds the
+    // other's fragment store), and the pre-marker hashes — what those fragment
+    // stores are actually keyed by — must stay in the legacy candidates.
+    const preMarkerHash = (value: string) => `pre-${value.replace(/[^a-z0-9]/gi, '').slice(-12)}`;
+    const responses: Record<string, Record<string, string>> = {
+      '/w/instance-a': {
+        'rev-parse --show-toplevel': '/w/instance-a',
+        'rev-parse --git-common-dir': '/w/instance-a/.git'
+      },
+      '/w/instance-b': {
+        'rev-parse --show-toplevel': '/w/instance-b',
+        'rev-parse --git-common-dir': '/w/instance-b/.git'
+      }
+    };
+    const git = (projectPath: string, args: string[]) => responses[projectPath]?.[args.join(' ')] ?? null;
+    const deps = {
+      normalizeProjectPath: normalize,
+      hashProjectPath: () => 'hash-marker-root',
+      hashProjectPathIgnoringMarker: preMarkerHash,
+      resolveMemoryRootMarkerPath: () => '/w',
+      git
+    };
+
+    const a = resolveCanonicalRepoIdentity('/w/instance-a', deps);
+    const b = resolveCanonicalRepoIdentity('/w/instance-b', deps);
+
+    expect(a.kind).toBe('memory-root-marker');
+    expect(a.memoryRootMarkerPath).toBe('/w');
+    expect(a.canonicalId).toBe(b.canonicalId);
+    expect(a.candidateLegacyProjectHashes).toContain('hash-marker-root');
+    expect(a.candidateLegacyProjectHashes).toContain(preMarkerHash('/w/instance-a'));
+    expect(b.candidateLegacyProjectHashes).toContain(preMarkerHash('/w/instance-b'));
+    expect(a.writeRouting).toBe('requires-explicit-apply');
+  });
+
+  it('folds a non-git instance under a marker into the same marker identity', () => {
+    const deps = {
+      normalizeProjectPath: normalize,
+      hashProjectPath: () => 'hash-marker-root',
+      hashProjectPathIgnoringMarker: (value: string) => `pre-${value.replace(/[^a-z0-9]/gi, '').slice(-12)}`,
+      resolveMemoryRootMarkerPath: () => '/w',
+      git: () => null
+    };
+
+    const plain = resolveCanonicalRepoIdentity('/w/instance-plain', deps);
+
+    expect(plain.kind).toBe('memory-root-marker');
+    expect(plain.writeRouting).toBe('requires-explicit-apply');
+    expect(plain.candidateLegacyProjectHashes).toEqual(['hash-marker-root', 'pre-nstanceplain']);
+  });
+
   it('normalizes remotes without credentials', () => {
     expect(sanitizeGitRemote('https://alice:secret@github.com/Acme/Memory.git?token=nope')).toBe('github.com/acme/memory');
     expect(sanitizeGitRemote('git@github.com:Acme/Memory.git')).toBe('github.com/acme/memory');
