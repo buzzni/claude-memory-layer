@@ -2081,7 +2081,15 @@ export class SQLiteEventStore {
       } else if (currentHash === projectHash) {
         result.alreadyScoped++;
         continue;
-      } else if (currentHash && currentHash !== projectHash) {
+      } else if (
+        currentHash && currentHash !== projectHash
+        // The stamp disagrees, but it is exactly the pre-marker hash of a
+        // recorded path that provably belongs to this store: the hash basis
+        // moved under the row (a .claude-memory-root marker was adopted), the
+        // row did not move projects. Restamp instead of quarantining, or the
+        // strict retrieval scope gate drops the row forever.
+        && !(matchingPath && matchingPath.preMarkerHash === currentHash)
+      ) {
         action = 'quarantined';
         reason = 'scope-hash-mismatch';
         observedProjectHash = currentHash;
