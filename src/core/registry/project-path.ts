@@ -109,7 +109,7 @@ function resolveGitBasisPath(normalizedPath: string): string {
   if (cached !== undefined) return cached;
 
   const basis = computeGitBasisPath(normalizedPath);
-  gitBasisCache.set(normalizedPath, basis);
+  boundedCacheSet(gitBasisCache, normalizedPath, basis);
   return basis;
 }
 
@@ -154,8 +154,21 @@ function resolveHashBasisPath(normalizedPath: string): string {
   if (cached !== undefined) return cached;
 
   const basis = computeHashBasisPath(normalizedPath);
-  hashBasisCache.set(normalizedPath, basis);
+  boundedCacheSet(hashBasisCache, normalizedPath, basis);
   return basis;
+}
+
+/**
+ * Long-lived servers hash caller-supplied project strings, so the caches are
+ * capped: past the cap they reset rather than grow for the process lifetime.
+ * The working set is a handful of project roots, so a reset is a few extra
+ * git spawns, not a correctness event.
+ */
+const MAX_PATH_CACHE_ENTRIES = 1_024;
+
+function boundedCacheSet(cache: Map<string, string>, key: string, value: string): void {
+  if (cache.size >= MAX_PATH_CACHE_ENTRIES) cache.clear();
+  cache.set(key, value);
 }
 
 /**

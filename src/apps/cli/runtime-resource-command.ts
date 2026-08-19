@@ -1,15 +1,7 @@
 import {
-  collectRuntimeResourceReport,
-  type CollectRuntimeResourceReportOptions,
   type RuntimeLatencyAggregate,
   type RuntimeResourceReport
 } from '../../core/runtime-resource-telemetry.js';
-
-export function getRuntimeResourceReport(
-  options: CollectRuntimeResourceReportOptions = {}
-): RuntimeResourceReport {
-  return collectRuntimeResourceReport(options);
-}
 
 export function formatRuntimeResourceJsonReport(report: RuntimeResourceReport): string {
   return JSON.stringify(report, null, 2);
