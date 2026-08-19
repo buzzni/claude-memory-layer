@@ -176,17 +176,18 @@ describe('path redaction blast radius', () => {
     expect(sanitized).toContain('나머지 문장이 살아남아야 한다');
   });
 
-  it('caps the match at a fixed length instead of consuming to the end of the string', () => {
-    // 320 path-legal filler chars after the leading "/": the match can only
-    // take the first 300, so the last 20 plus a marker beyond them must
-    // survive verbatim as literal (unredacted) text.
-    const filler = 'x'.repeat(320);
-    const marker = 'MARKER_BEYOND_CAP_MUST_SURVIVE';
-    const input = `설명: /${filler} ${marker}`;
+  it('fully redacts a spaceless path longer than the 300-char window', () => {
+    // A deep node_modules/pnpm-style path exceeds 300 chars with no spaces.
+    // The bounded window alone leaked its tail — the most identifying part —
+    // so the pattern finishes the current whitespace-free token: the whole
+    // path is redacted while prose beyond the next space still survives.
+    const longPath = `/deep/${'x'.repeat(320)}/customer-4711-report.txt`;
+    const input = `설명: ${longPath} 이후 문장은 살아남아야 한다`;
 
     const sanitized = String(sanitizeGovernanceAuditValue(input));
 
     expect(sanitized).toContain('[REDACTED]');
-    expect(sanitized).toContain(marker);
+    expect(sanitized).not.toContain('customer-4711');
+    expect(sanitized).toContain('이후 문장은 살아남아야 한다');
   });
 });

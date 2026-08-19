@@ -13,8 +13,6 @@ import type { LessonExtractionSource } from '../../src/core/operations/lesson-ca
 
 function source(overrides: Partial<LessonExtractionSource> = {}): LessonExtractionSource {
   return {
-    projectHash: 'project-abc',
-    candidateId: 'lesson-candidate:deadbeef',
     sessionCount: 3,
     tools: ['typecheck', 'build'],
     fileCategories: ['source:ts', 'test:ts'],
@@ -96,6 +94,26 @@ describe('parseLessonOutput', () => {
     expect(parsed?.steps).toEqual(['s']);
   });
 
+  it('scans past a brace inside prose instead of anchoring on the first "{"', () => {
+    // Anchoring on the first "{" made "{핵심}" the only parse candidate and
+    // discarded the valid JSON that followed.
+    const parsed = parseLessonOutput([
+      '분석 결과 {핵심}은 다음과 같습니다:',
+      '{"name":"n","trigger":"t","steps":["s"],"failureModes":[]}'
+    ].join('\n'));
+
+    expect(parsed?.name).toBe('n');
+  });
+
+  it('skips a parseable object that is not a lesson and keeps scanning', () => {
+    const parsed = parseLessonOutput([
+      '{"note":"메타데이터"}',
+      '{"name":"n","trigger":"t","steps":["s"],"failureModes":[]}'
+    ].join('\n'));
+
+    expect(parsed?.name).toBe('n');
+  });
+
   it('returns null for the no-lesson sentinel', () => {
     expect(parseLessonOutput(NO_DURABLE_LESSON)).toBeNull();
   });
@@ -157,6 +175,16 @@ describe('provider configuration', () => {
   it('honours a configured model', () => {
     expect(getLessonModel({})).toContain('claude');
     expect(getLessonModel({ CLAUDE_MEMORY_LESSON_MODEL: 'custom-model' })).toBe('custom-model');
+  });
+
+  it('passes no model to codex unless one is configured', () => {
+    // The claude default model id is unknown to the codex CLI; passing it made
+    // every codex extraction fail on an invalid-model error.
+    expect(getLessonModel({ CLAUDE_MEMORY_LESSON_PROVIDER: 'codex' })).toBeNull();
+    expect(getLessonModel({
+      CLAUDE_MEMORY_LESSON_PROVIDER: 'codex',
+      CLAUDE_MEMORY_LESSON_MODEL: 'codex-custom'
+    })).toBe('codex-custom');
   });
 
   it('is enabled unless explicitly turned off', () => {

@@ -14,54 +14,49 @@
  * loops trimmed, mandatory abstraction away from specific identifiers, and one
  * user intent per lesson with a hard bullet cap.
  *
- * The same two hazards as session-summary-llm.ts shape the implementation:
- *
- * 1. Hook recursion. A child `claude` run re-executes the user-level hooks in
- *    ~/.claude/settings.json, which would spawn further children.
- *    `--setting-sources project` plus an empty scratch cwd keeps user- and
- *    project-level hooks out of the child.
- * 2. Blocking. The call is slow, so the candidate service caches every result
- *    and callers must keep it off any latency-sensitive path.
+ * Subprocess mechanics (hook-recursion guards, timeouts, failure
+ * classification) live in the shared cli-provider module.
  */
 
-import { spawn } from 'child_process';
-import * as fs from 'fs';
-import * as os from 'os';
-import * as path from 'path';
-
+import {
+  classifyCliProviderFailure,
+  resolveCliModel,
+  resolveCliTimeoutMs,
+  runCliProvider,
+  type CliProviderError,
+  type CliProviderName
+} from './cli-provider.js';
 import type {
   ExtractedLesson,
   LessonExtractionSource
 } from '../../core/operations/lesson-candidate-service.js';
 
-export type LessonProviderName = 'claude' | 'codex';
+export type LessonProviderName = CliProviderName;
 
 /** The model emits this when a session group holds no reusable procedure. */
 export const NO_DURABLE_LESSON = 'NO_DURABLE_LESSON';
-
-const DEFAULT_TIMEOUT_MS = 120_000;
-const DEFAULT_MODEL = 'claude-haiku-4-5-20251001';
 
 const MAX_NAME_CHARS = 120;
 const MAX_TRIGGER_CHARS = 400;
 const MAX_STEP_CHARS = 240;
 const MAX_STEPS = 8;
 const MAX_FAILURE_MODES = 6;
-
-export class LessonProviderError extends Error {
-  constructor(message: string, readonly code: string) {
-    super(message);
-    this.name = 'LessonProviderError';
-  }
-}
+/** Bail out of JSON-candidate scanning on pathological brace-heavy output. */
+const MAX_JSON_SCAN_ATTEMPTS = 10;
 
 export function getLessonProviderName(env: NodeJS.ProcessEnv = process.env): LessonProviderName {
   return env.CLAUDE_MEMORY_LESSON_PROVIDER === 'codex' ? 'codex' : 'claude';
 }
 
-export function getLessonModel(env: NodeJS.ProcessEnv = process.env): string {
-  const configured = env.CLAUDE_MEMORY_LESSON_MODEL?.trim();
-  return configured && configured.length > 0 ? configured : DEFAULT_MODEL;
+/**
+ * Returns null when no model should be passed to the CLI (codex with no
+ * explicit override runs on its own configured default).
+ */
+export function getLessonModel(
+  env: NodeJS.ProcessEnv = process.env,
+  provider: LessonProviderName = getLessonProviderName(env)
+): string | null {
+  return resolveCliModel(env.CLAUDE_MEMORY_LESSON_MODEL, provider);
 }
 
 /**
@@ -76,9 +71,8 @@ export function isLlmLessonExtractionEnabled(env: NodeJS.ProcessEnv = process.en
 /**
  * The no-slash rule below isn't cosmetic: `sanitizeString` (applied to the
  * assembled candidate in lesson-candidate-service.ts) runs the audit path
- * redactor, whose absolute-path pattern matches from any "/" to the end of
- * the line rather than to the next whitespace. One path or "A/B" aside in the
- * model's output silently truncates the rest of that sentence into
+ * redactor, which eats a bounded but large window after any "/". One path or
+ * "A/B" aside in the model's output silently truncates that sentence into
  * "...[REDACTED]" — observed in production output before this rule existed.
  */
 export function buildLessonPrompt(source: LessonExtractionSource): string {
@@ -112,7 +106,7 @@ export function buildLessonPrompt(source: LessonExtractionSource): string {
     `  나쁜 예: "/src/core/auth.ts 의 토큰 검증 로직을 고쳐라"`,
     `  좋은 예: "인증 관련 검증 로직을 고쳐라"`,
     `- 슬래시(/) 금지: 파일 경로, "A/B" 같은 병기 표기를 포함해 "/" 문자를 절대 쓰지 마라.`,
-    `  후처리 필터가 "/"부터 그 줄 끝까지를 통째로 지우므로, 슬래시 하나가 문장 나머지를 삼킨다.`,
+    `  후처리 필터가 "/" 뒤의 긴 구간을 통째로 지우므로, 슬래시 하나가 문장 나머지를 삼킨다.`,
     `  경로 대신 "인증 모듈", "테스트 설정 파일"처럼 역할로 지칭해라.`,
     `- 실행 우선: steps는 실제 도구 호출/명령만 담는다. "이제 X를 하겠습니다", "X를 완료했습니다" 같은 진행 보고는 빼라.`,
     `- 조건 분기 보존: 분기가 있었다면 "A이면 B, 아니면 C" 형태로 남겨라. 서로 다른 분기를 하나로 뭉개지 마라.`,
@@ -128,31 +122,15 @@ export function buildLessonPrompt(source: LessonExtractionSource): string {
   ].join('\n');
 }
 
-function buildArgs(provider: LessonProviderName, model: string): string[] {
-  if (provider === 'codex') {
-    return ['exec', '--skip-git-repo-check', '--model', model];
-  }
-  // --setting-sources project: never load the user-level memory hooks.
-  return ['-p', '--setting-sources', 'project', '--model', model];
+export function classifyLessonFailure(detail: string): CliProviderError {
+  return classifyCliProviderFailure(detail, 'lesson provider');
 }
 
-export function classifyLessonFailure(detail: string): LessonProviderError {
-  const lowered = detail.toLowerCase();
-  if (lowered.includes('enoent') || lowered.includes('not found')) {
-    return new LessonProviderError('lesson provider CLI was not found', 'provider-not-found');
-  }
-  if (lowered.includes('timed out') || lowered.includes('etimedout')) {
-    return new LessonProviderError('lesson provider timed out', 'provider-timeout');
-  }
-  if (lowered.includes('auth') || lowered.includes('credential') || lowered.includes('login')) {
-    return new LessonProviderError('lesson provider authentication failed', 'provider-auth');
-  }
-  return new LessonProviderError('lesson provider failed', 'provider-error');
-}
-
-function firstJsonObject(raw: string): string | null {
-  const start = raw.indexOf('{');
-  if (start === -1) return null;
+/**
+ * Matches one balanced brace span starting at `start`, string-aware. Returns
+ * the end index (inclusive) or null when the braces never balance.
+ */
+function matchBraceSpan(raw: string, start: number): number | null {
   let depth = 0;
   let inString = false;
   let escaped = false;
@@ -168,10 +146,34 @@ function firstJsonObject(raw: string): string | null {
     else if (char === '{') depth += 1;
     else if (char === '}') {
       depth -= 1;
-      if (depth === 0) return raw.slice(start, index + 1);
+      if (depth === 0) return index;
     }
   }
   return null;
+}
+
+/**
+ * Yields parseable JSON objects found in the output, scanning past braces that
+ * belong to prose. Anchoring on only the first '{' meant a preamble like
+ * "분석 결과 {핵심}은..." discarded the valid JSON that followed it.
+ */
+function* parseableJsonObjects(raw: string): Generator<unknown> {
+  let searchFrom = 0;
+  for (let attempt = 0; attempt < MAX_JSON_SCAN_ATTEMPTS; attempt += 1) {
+    const start = raw.indexOf('{', searchFrom);
+    if (start === -1) return;
+    const end = matchBraceSpan(raw, start);
+    if (end === null) {
+      searchFrom = start + 1;
+      continue;
+    }
+    try {
+      yield JSON.parse(raw.slice(start, end + 1));
+      searchFrom = end + 1;
+    } catch {
+      searchFrom = start + 1;
+    }
+  }
 }
 
 function cleanLine(value: unknown, maxChars: number): string | null {
@@ -197,25 +199,7 @@ function cleanLines(value: unknown, maxChars: number, maxItems: number): string[
   return lines;
 }
 
-/**
- * Returns null for anything that is not a usable lesson so a chatty preamble or
- * a half-filled object cannot become stored guidance. A lesson without a name,
- * a trigger, or at least one step has nothing for a later session to execute.
- */
-export function parseLessonOutput(raw: string): ExtractedLesson | null {
-  const trimmed = raw.trim();
-  if (trimmed.length === 0) return null;
-  if (trimmed.includes(NO_DURABLE_LESSON)) return null;
-
-  const jsonText = firstJsonObject(trimmed);
-  if (!jsonText) return null;
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(jsonText);
-  } catch {
-    return null;
-  }
+function toLesson(parsed: unknown): ExtractedLesson | null {
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null;
 
   const record = parsed as Record<string, unknown>;
@@ -230,75 +214,20 @@ export function parseLessonOutput(raw: string): ExtractedLesson | null {
 }
 
 /**
- * A scratch cwd keeps project-level hooks and CLAUDE.md out of the child run.
- * `--setting-sources project` alone would still load them when the child
- * inherits a real project directory.
+ * Returns null for anything that is not a usable lesson so a chatty preamble or
+ * a half-filled object cannot become stored guidance. A lesson without a name,
+ * a trigger, or at least one step has nothing for a later session to execute.
  */
-function createScratchCwd(): string {
-  const dir = path.join(os.tmpdir(), 'cml-lesson');
-  fs.mkdirSync(dir, { recursive: true });
-  return dir;
-}
+export function parseLessonOutput(raw: string): ExtractedLesson | null {
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) return null;
+  if (trimmed.includes(NO_DURABLE_LESSON)) return null;
 
-function runProvider(
-  provider: LessonProviderName,
-  model: string,
-  prompt: string,
-  timeoutMs: number
-): Promise<string> {
-  return new Promise((resolve, reject) => {
-    let child;
-    try {
-      child = spawn(provider, buildArgs(provider, model), {
-        stdio: ['pipe', 'pipe', 'pipe'],
-        cwd: createScratchCwd(),
-        env: {
-          ...process.env,
-          // Defence in depth: if a child hook ever does run, these keep it from
-          // recursing back into memory generation.
-          CLAUDE_MEMORY_LESSON_MODE: 'off',
-          CLAUDE_MEMORY_SUMMARY_MODE: 'off',
-          CLAUDE_MEMORY_DISABLE_HOOKS: 'true'
-        }
-      });
-    } catch (error) {
-      reject(classifyLessonFailure(String(error)));
-      return;
-    }
-
-    let stdout = '';
-    let stderr = '';
-    let settled = false;
-
-    const settle = (error?: Error, value?: string) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      if (error) reject(error);
-      else resolve(value ?? '');
-    };
-
-    const timer = setTimeout(() => {
-      child.kill('SIGTERM');
-      settle(classifyLessonFailure('timed out'));
-    }, timeoutMs);
-
-    child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
-    child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
-    child.on('error', (error: NodeJS.ErrnoException) => {
-      settle(classifyLessonFailure(error.message));
-    });
-    child.on('close', (code) => {
-      if (code === 0) settle(undefined, stdout);
-      else settle(classifyLessonFailure(stderr || `exit code ${code}`));
-    });
-
-    child.stdin.on('error', (error) => {
-      settle(classifyLessonFailure(`stdin: ${error.message}`));
-    });
-    child.stdin.write(prompt);
-    child.stdin.end();
-  });
+  for (const parsed of parseableJsonObjects(trimmed)) {
+    const lesson = toLesson(parsed);
+    if (lesson) return lesson;
+  }
+  return null;
 }
 
 /**
@@ -320,13 +249,16 @@ export async function extractLessonWithLlm(
   if (source.transcript.trim().length === 0) return null;
 
   const provider = options.provider ?? getLessonProviderName(env);
-  const model = options.model ?? getLessonModel(env);
-  const configuredTimeout = Number(env.CLAUDE_MEMORY_LESSON_TIMEOUT_MS);
-  const timeoutMs = options.timeoutMs
-    ?? (Number.isFinite(configuredTimeout) && configuredTimeout > 0
-      ? configuredTimeout
-      : DEFAULT_TIMEOUT_MS);
+  const model = options.model ?? getLessonModel(env, provider);
+  const timeoutMs = options.timeoutMs ?? resolveCliTimeoutMs(env.CLAUDE_MEMORY_LESSON_TIMEOUT_MS);
 
-  const raw = await runProvider(provider, model, buildLessonPrompt(source), timeoutMs);
+  const raw = await runCliProvider({
+    provider,
+    model,
+    prompt: buildLessonPrompt(source),
+    timeoutMs,
+    scratchDirName: 'cml-lesson',
+    label: 'lesson provider'
+  });
   return parseLessonOutput(raw);
 }

@@ -286,6 +286,133 @@ describe('LessonCandidateService', () => {
     expect(result.candidates).toEqual([]);
   });
 
+  it('caches the no-lesson verdict so listings stop re-running the extractor for the same group', async () => {
+    const { store, service, extractor, cleanup } = await createFixture(stubExtractor(null));
+    const projectHash = 'project-negative-cache';
+    await store.importEvents([
+      ...implementationSession('session-alpha', projectHash, 0),
+      ...implementationSession('session-beta', projectHash, 20)
+    ]);
+
+    const first = await service.findCandidates({ projectHash });
+    const second = await service.findCandidates({ projectHash });
+    await cleanup();
+
+    // One subprocess-equivalent run total: the verdict is as deterministic as
+    // a positive extraction for the same fingerprint.
+    expect(extractor.calls).toHaveLength(1);
+    expect(first.extraction).toMatchObject({ freshAttempts: 1, noLesson: 1 });
+    expect(second.extraction).toMatchObject({ freshAttempts: 0, cacheHits: 1, noLesson: 1 });
+    expect(second.candidates).toEqual([]);
+  });
+
+  it('does not cache a thrown provider failure, so the next listing retries', async () => {
+    const failing = Object.assign(
+      async (source: LessonExtractionSource) => {
+        failing.calls.push(source);
+        throw new Error('provider CLI was not found');
+      },
+      { calls: [] as LessonExtractionSource[] }
+    );
+    const { store, service, cleanup } = await createFixture(failing);
+    const projectHash = 'project-transient-failure';
+    await store.importEvents([
+      ...implementationSession('session-alpha', projectHash, 0),
+      ...implementationSession('session-beta', projectHash, 20)
+    ]);
+
+    const first = await service.findCandidates({ projectHash });
+    const second = await service.findCandidates({ projectHash });
+    await cleanup();
+
+    expect(failing.calls).toHaveLength(2);
+    expect(first.extraction.failures).toBe(1);
+    expect(second.extraction.failures).toBe(1);
+  });
+
+  it('backfills from lower-ranked groups when a higher-ranked group yields no lesson', async () => {
+    // Two distinct groups: the full workflow ranks first (more shared tools);
+    // the extractor rejects it and accepts the reduced workflow. With the old
+    // slice-before-extract order, limit=1 returned nothing at all.
+    const selective = Object.assign(
+      async (source: LessonExtractionSource) => {
+        selective.calls.push(source);
+        if (source.tools.includes('build')) return null;
+        return {
+          name: '백필 절차',
+          trigger: '하위 그룹',
+          steps: ['검증한다'],
+          failureModes: []
+        };
+      },
+      { calls: [] as LessonExtractionSource[] }
+    );
+    const { store, service, cleanup } = await createFixture(selective);
+    const projectHash = 'project-backfill';
+    const withoutBuild = (sessionId: string, offset: number): MemoryEvent[] =>
+      implementationSession(sessionId, projectHash, offset)
+        .filter((event) => !event.content.includes('npm run build'));
+    await store.importEvents([
+      ...implementationSession('session-full-a', projectHash, 0),
+      ...implementationSession('session-full-b', projectHash, 20),
+      ...withoutBuild('session-lite-a', 40),
+      ...withoutBuild('session-lite-b', 60)
+    ]);
+
+    const result = await service.findCandidates({ projectHash, limit: 1 });
+    await cleanup();
+
+    expect(result.groupedPatterns).toBe(2);
+    expect(result.candidates).toHaveLength(1);
+    expect(result.candidates[0].name).toBe('백필 절차');
+    expect(result.extraction).toMatchObject({ freshAttempts: 2, noLesson: 1 });
+  });
+
+  it('caps fresh extractions per call and reports the skipped groups', async () => {
+    const { store, service, extractor, cleanup } = await createFixture();
+    const projectHash = 'project-budget';
+    const withoutBuild = (sessionId: string, offset: number): MemoryEvent[] =>
+      implementationSession(sessionId, projectHash, offset)
+        .filter((event) => !event.content.includes('npm run build'));
+    await store.importEvents([
+      ...implementationSession('session-full-a', projectHash, 0),
+      ...implementationSession('session-full-b', projectHash, 20),
+      ...withoutBuild('session-lite-a', 40),
+      ...withoutBuild('session-lite-b', 60)
+    ]);
+
+    const first = await service.findCandidates({ projectHash, maxFreshExtractions: 1 });
+    // The second call serves the first group from cache and spends its budget
+    // on the group the first call skipped.
+    const second = await service.findCandidates({ projectHash, maxFreshExtractions: 1 });
+    await cleanup();
+
+    expect(first.candidates).toHaveLength(1);
+    expect(first.extraction).toMatchObject({ freshAttempts: 1, skippedByBudget: 1 });
+    expect(extractor.calls).toHaveLength(2);
+    expect(second.candidates).toHaveLength(2);
+    expect(second.extraction).toMatchObject({ cacheHits: 1, freshAttempts: 1, skippedByBudget: 0 });
+  });
+
+  it('reports cache misses that could not run because no extractor is wired', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cml-lesson-candidates-'));
+    tempDirs.push(dir);
+    const store = new SQLiteEventStore(join(dir, 'events.sqlite'));
+    await store.initialize();
+    const service = new LessonCandidateService(store.getDatabase());
+    const projectHash = 'project-no-extractor';
+    await store.importEvents([
+      ...implementationSession('session-alpha', projectHash, 0),
+      ...implementationSession('session-beta', projectHash, 20)
+    ]);
+
+    const result = await service.findCandidates({ projectHash });
+    await store.close();
+
+    expect(result.candidates).toEqual([]);
+    expect(result.extraction.skippedNoExtractor).toBe(1);
+  });
+
   it('reuses the cached extraction so review and promotion see the same text', async () => {
     const { store, service, extractor, cleanup } = await createFixture();
     const projectHash = 'project-extraction-cache';

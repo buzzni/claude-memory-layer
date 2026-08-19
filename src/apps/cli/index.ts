@@ -67,6 +67,7 @@ import {
   formatPlainSearchResults
 } from './retrieval-disclosure-output.js';
 import { installMcpServer } from './mcp-install.js';
+import { extractLessonWithLlm } from '../../adapters/llm/lesson-extraction-llm.js';
 import {
   checkEmbeddingBackend,
   checkHooksInstalled,
@@ -230,6 +231,22 @@ function getPluginPath(): string {
  * by absolute path from packageRoot works in both dev and dist layouts, since
  * getPluginPath() already resolves packageRoot consistently across both.
  */
+/**
+ * Reads the live `engines.node` range from the shipped package.json so doctor
+ * enforces the same floor npm does — a hardcoded copy would keep passing on a
+ * Node version the next release refuses to install on.
+ */
+function readEnginesNodeRange(packageRoot: string): string | undefined {
+  try {
+    const manifest = JSON.parse(fs.readFileSync(path.join(packageRoot, 'package.json'), 'utf-8')) as {
+      engines?: { node?: string };
+    };
+    return manifest.engines?.node;
+  } catch {
+    return undefined;
+  }
+}
+
 async function loadEmbeddingBackendAvailabilityCheck(packageRoot: string): Promise<((rootDir: string) => boolean) | null> {
   try {
     const scriptPath = path.join(packageRoot, 'scripts', 'postinstall-embedding-backend.cjs');
@@ -1046,7 +1063,7 @@ program
     const projectStorePath = getProjectStoragePath(process.cwd());
 
     const checks: DoctorCheckResult[] = [
-      checkNodeVersion(),
+      checkNodeVersion(process.version, readEnginesNodeRange(packageRoot)),
       checkPluginFiles(pluginPath),
       checkHooksInstalled(settings),
       checkEmbeddingBackend(packageRoot, await loadEmbeddingBackendAvailabilityCheck(packageRoot)),
@@ -2093,7 +2110,11 @@ lessonCommand
       writeOperationOutput({ operation: 'mem-lesson-save', projectHash: context.projectHash, dryRun: true, wouldSave: input }, options);
       return;
     }
-    const lesson = await withOperationWriteDatabase(context, async (db) => new LessonService(db).saveCurated(input));
+    // Extractor wired for consistency: promotion re-derives candidates, and
+    // an extractor-less service turns any cache miss into "not found".
+    const lesson = await withOperationWriteDatabase(context, async (db) => new LessonService(db, {
+      lessonExtractor: (source) => extractLessonWithLlm(source)
+    }).saveCurated(input));
     writeOperationOutput({
       operation: 'mem-lesson-save',
       projectHash: context.projectHash,

@@ -11,6 +11,11 @@
  * 2. Cost. Extraction spawns a CLI per candidate group; listing candidates is a
  *    read-shaped operation that callers repeat freely.
  *
+ * Negative verdicts are cached too: when the model explicitly answers that a
+ * group holds no reusable procedure, re-asking on every listing would re-pay
+ * the full subprocess cost forever for the same answer. Only thrown provider
+ * errors (transient outages) stay uncached.
+ *
  * Entries are keyed by candidate id and validated against a fingerprint of the
  * source material, so new sessions joining a group re-extract instead of
  * serving stale guidance.
@@ -29,7 +34,6 @@ interface CacheRow {
 const CREATE_TABLE_SQL = `
   CREATE TABLE IF NOT EXISTS lesson_extraction_cache (
     candidate_id TEXT PRIMARY KEY,
-    project_hash TEXT NOT NULL DEFAULT '',
     fingerprint TEXT NOT NULL,
     extraction_json TEXT NOT NULL,
     created_at TEXT NOT NULL
@@ -66,6 +70,11 @@ function isExtractedLesson(value: unknown): value is ExtractedLesson {
     && record.failureModes.every((mode) => typeof mode === 'string');
 }
 
+/** A hit whose extraction is null is the cached "no reusable procedure" verdict. */
+export interface CachedExtraction {
+  extraction: ExtractedLesson | null;
+}
+
 export class LessonExtractionCache {
   private ensured = false;
 
@@ -77,8 +86,11 @@ export class LessonExtractionCache {
     this.ensured = true;
   }
 
-  /** Returns the cached extraction only when it matches the current source material. */
-  read(candidateId: string, fingerprint: string): ExtractedLesson | null {
+  /**
+   * Returns the cached entry only when it matches the current source material;
+   * null means a cache miss (never stored, or the group's sessions changed).
+   */
+  read(candidateId: string, fingerprint: string): CachedExtraction | null {
     this.ensureTable();
     const row = sqliteGet<CacheRow>(
       this.db,
@@ -89,7 +101,8 @@ export class LessonExtractionCache {
 
     try {
       const parsed = JSON.parse(row.extraction_json);
-      return isExtractedLesson(parsed) ? parsed : null;
+      if (parsed === null) return { extraction: null };
+      return isExtractedLesson(parsed) ? { extraction: parsed } : null;
     } catch {
       return null;
     }
@@ -97,24 +110,21 @@ export class LessonExtractionCache {
 
   write(input: {
     candidateId: string;
-    projectHash: string;
     fingerprint: string;
-    extraction: ExtractedLesson;
+    extraction: ExtractedLesson | null;
   }): void {
     this.ensureTable();
     sqliteRun(
       this.db,
       `INSERT INTO lesson_extraction_cache
-         (candidate_id, project_hash, fingerprint, extraction_json, created_at)
-       VALUES (?, ?, ?, ?, ?)
+         (candidate_id, fingerprint, extraction_json, created_at)
+       VALUES (?, ?, ?, ?)
        ON CONFLICT(candidate_id) DO UPDATE SET
-         project_hash = excluded.project_hash,
          fingerprint = excluded.fingerprint,
          extraction_json = excluded.extraction_json,
          created_at = excluded.created_at`,
       [
         input.candidateId,
-        input.projectHash,
         input.fingerprint,
         JSON.stringify(input.extraction),
         new Date().toISOString()

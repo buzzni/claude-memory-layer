@@ -14,7 +14,15 @@ export const LessonCandidateInputSchema = z.object({
   minSessions: z.number().int().min(2).max(10).default(2),
   limit: z.number().int().positive().max(100).default(25),
   eventLimit: z.number().int().positive().max(10_000).default(2_000),
-  maxSourceEventIds: z.number().int().positive().max(100).default(20)
+  maxSourceEventIds: z.number().int().positive().max(100).default(20),
+  /**
+   * Cap on fresh (uncached) extractor runs per call. Each one spawns a CLI
+   * subprocess with a long timeout, and this service is called from
+   * interactive tool handlers — an unbounded cold cache turned one listing
+   * into `limit` sequential spawns. Groups past the budget are reported in
+   * the extraction stats instead of silently dropped.
+   */
+  maxFreshExtractions: z.number().int().min(0).max(100).default(3)
 });
 export type LessonCandidateInput = z.input<typeof LessonCandidateInputSchema>;
 
@@ -39,22 +47,44 @@ export interface LessonCandidate {
   reasons: string[];
 }
 
+/**
+ * Why a listing returned the candidates it did. Without this, "candidates: []"
+ * is indistinguishable between "no patterns exist", "the provider is broken",
+ * and "the budget ran out" — and the first silent-empty regression shipped
+ * exactly that way.
+ */
+export interface LessonExtractionStats {
+  /** Groups answered from the extraction cache (including cached no-lesson verdicts). */
+  cacheHits: number;
+  /** Fresh extractor runs performed during this call. */
+  freshAttempts: number;
+  /** Extractor runs that threw (transient provider failures; not cached). */
+  failures: number;
+  /** Groups whose verdict — cached or fresh — was "no reusable procedure". */
+  noLesson: number;
+  /** Cache misses that could not run because no extractor is wired. */
+  skippedNoExtractor: number;
+  /** Cache misses left unextracted by maxFreshExtractions; retry to continue. */
+  skippedByBudget: number;
+}
+
 export interface LessonCandidateResult {
   scannedSessions: number;
   eligibleSessions: number;
   skippedSessions: number;
   groupedPatterns: number;
   candidates: LessonCandidate[];
+  extraction: LessonExtractionStats;
 }
 
 /**
  * Redacted material handed to the extractor. The transcript has already been
  * through `sanitizeGovernanceAuditValue`, so absolute paths and credential
- * assignments are replaced before anything leaves the process.
+ * assignments are replaced before anything leaves the process. Deliberately
+ * carries no identifiers (candidate id, project hash): nothing the extractor
+ * does not need may cross the subprocess boundary.
  */
 export interface LessonExtractionSource {
-  projectHash: string;
-  candidateId: string;
   sessionCount: number;
   tools: string[];
   fileCategories: string[];
@@ -371,33 +401,53 @@ function transcriptLabel(eventType: string): string {
 }
 
 /**
+ * The opening prompt states the session's intent; a plain tail slice dropped
+ * it on long sessions, leaving the extractor to derive the lesson's trigger
+ * from wrap-up chatter. Keep the first entry plus the most recent tail.
+ */
+function capNarrative(narrative: TranscriptEntry[]): TranscriptEntry[] {
+  if (narrative.length <= MAX_NARRATIVE_PER_SESSION) return narrative;
+  return [narrative[0], ...narrative.slice(-(MAX_NARRATIVE_PER_SESSION - 1))];
+}
+
+function renderTranscriptLines(entries: TranscriptEntry[]): string[] {
+  return entries
+    .map((entry) => {
+      const content = sanitizeString(entry.content).replace(/\r?\n/g, ' ').trim();
+      if (content.length === 0) return null;
+      const clipped = content.length > MAX_ENTRY_CHARS
+        ? `${content.slice(0, MAX_ENTRY_CHARS)}…`
+        : content;
+      return `[${transcriptLabel(entry.eventType)}] ${clipped}`;
+    })
+    .filter((line): line is string => line !== null);
+}
+
+/**
  * Builds the redacted transcript the extractor reads.
  *
  * Sessions are labelled positionally rather than by id: the id is an
  * identifier the lesson text must never carry, and it tells the model nothing.
  * Every line goes through the audit sanitizer first, so absolute paths and
  * credential assignments are gone before the text reaches a subprocess.
+ *
+ * Signals are collected separately from the narrative, so they are rendered
+ * under their own heading — appending them unlabelled read as "validation
+ * happened after the final answer" and let the model encode the wrong order.
  */
 function buildGroupTranscript(group: SessionProfile[]): string {
   const blocks: string[] = [];
 
   group.forEach((profile, index) => {
-    const lines = [
-      ...profile.narrative.slice(-MAX_NARRATIVE_PER_SESSION),
-      ...profile.signals.slice(-MAX_SIGNALS_PER_SESSION)
-    ]
-      .map((entry) => {
-        const content = sanitizeString(entry.content).replace(/\r?\n/g, ' ').trim();
-        if (content.length === 0) return null;
-        const clipped = content.length > MAX_ENTRY_CHARS
-          ? `${content.slice(0, MAX_ENTRY_CHARS)}…`
-          : content;
-        return `[${transcriptLabel(entry.eventType)}] ${clipped}`;
-      })
-      .filter((line): line is string => line !== null);
+    const narrativeLines = renderTranscriptLines(capNarrative(profile.narrative));
+    const signalLines = renderTranscriptLines(profile.signals.slice(-MAX_SIGNALS_PER_SESSION));
+    if (narrativeLines.length === 0 && signalLines.length === 0) return;
 
-    if (lines.length === 0) return;
-    blocks.push([`## 세션 ${index + 1}`, ...lines].join('\n'));
+    const block = [`## 세션 ${index + 1}`, ...narrativeLines];
+    if (signalLines.length > 0) {
+      block.push('### 검증 신호 (세션 중 발생, 시간순 아님)', ...signalLines);
+    }
+    blocks.push(block.join('\n'));
   });
 
   const transcript = blocks.join('\n\n');
@@ -415,13 +465,14 @@ interface CandidateFacts {
   sourceEventIds: string[];
   confidence: number;
   reasons: string[];
-  transcript: string;
 }
 
 /**
  * The deterministic half of a candidate: which sessions grouped, what they have
  * in common, and how confident the grouping is. Only the human-readable lesson
- * text is left for the extractor.
+ * text is left for the extractor. The transcript is deliberately not part of
+ * the facts: ranking never reads it, so it is built lazily for only the groups
+ * that actually reach extraction.
  */
 function deriveCandidateFacts(
   projectHash: string,
@@ -454,8 +505,7 @@ function deriveCandidateFacts(
         ? `Shared file categories: ${fileCategories.join(', ')}`
         : 'Shared task pattern without exposing source paths',
       `Successful signals include: ${labels.join(', ')}`
-    ],
-    transcript: buildGroupTranscript(group)
+    ]
   };
 }
 
@@ -520,24 +570,98 @@ export class LessonCandidateService {
 
     const groups = this.groupProfiles(eligibleProfiles, parsed.minSessions);
     // Rank on the deterministic facts before extracting, so a slow extractor
-    // runs only for the groups that can still make the caller's limit.
+    // runs only for groups that can still make the caller's limit. The limit
+    // is applied to *produced candidates*, not to ranked groups: slicing the
+    // groups first meant a top group with no reusable procedure consumed a
+    // slot and a valid lower-ranked group was never tried.
     const ranked = groups
-      .map(([signature, group]) => deriveCandidateFacts(
-        parsed.projectHash,
-        signature,
+      .map(([signature, group]) => ({
         group,
-        parsed.maxSourceEventIds
-      ))
-      .sort((a, b) => b.confidence - a.confidence
-        || b.sourceSessionIds.length - a.sourceSessionIds.length
-        || a.candidateId.localeCompare(b.candidateId))
-      .slice(0, parsed.limit);
+        facts: deriveCandidateFacts(parsed.projectHash, signature, group, parsed.maxSourceEventIds)
+      }))
+      .sort((a, b) => b.facts.confidence - a.facts.confidence
+        || b.facts.sourceSessionIds.length - a.facts.sourceSessionIds.length
+        || a.facts.candidateId.localeCompare(b.facts.candidateId));
 
+    const stats: LessonExtractionStats = {
+      cacheHits: 0,
+      freshAttempts: 0,
+      failures: 0,
+      noLesson: 0,
+      skippedNoExtractor: 0,
+      skippedByBudget: 0
+    };
+    let freshRemaining = parsed.maxFreshExtractions;
     const candidates: LessonCandidate[] = [];
-    for (const facts of ranked) {
-      const extraction = await this.resolveExtraction(parsed.projectHash, facts);
-      if (!extraction) continue;
-      candidates.push(assembleCandidate(parsed.projectHash, facts, extraction));
+
+    for (const { group, facts } of ranked) {
+      if (candidates.length >= parsed.limit) break;
+
+      const transcript = buildGroupTranscript(group);
+      if (transcript.trim().length === 0) continue;
+
+      const fingerprint = lessonExtractionFingerprint({
+        sourceSessionIds: facts.sourceSessionIds,
+        sourceEventIds: facts.sourceEventIds,
+        transcript
+      });
+
+      // Cache first, extractor second. Serving repeat calls from the cache is
+      // what lets promotion re-derive a candidate and get back the same text a
+      // reviewer approved; a fresh extraction each time would let the two
+      // diverge.
+      const cached = this.extractionCache.read(facts.candidateId, fingerprint);
+      if (cached) {
+        stats.cacheHits += 1;
+        if (cached.extraction) {
+          candidates.push(assembleCandidate(parsed.projectHash, facts, cached.extraction));
+        } else {
+          stats.noLesson += 1;
+        }
+        continue;
+      }
+
+      if (!this.lessonExtractor) {
+        stats.skippedNoExtractor += 1;
+        continue;
+      }
+      if (freshRemaining <= 0) {
+        stats.skippedByBudget += 1;
+        continue;
+      }
+
+      freshRemaining -= 1;
+      stats.freshAttempts += 1;
+      let extraction: ExtractedLesson | null;
+      try {
+        extraction = await this.lessonExtractor({
+          sessionCount: facts.sourceSessionIds.length,
+          tools: facts.tools.map((tool) => TOOL_LABELS[tool]),
+          fileCategories: facts.fileCategories,
+          taskPatterns: facts.taskPatterns,
+          transcript
+        });
+      } catch {
+        // A transient provider outage must not fail the whole listing (other
+        // groups may still be served from cache) and must not be cached as a
+        // verdict — the next call retries.
+        stats.failures += 1;
+        continue;
+      }
+
+      // Cache the verdict either way. A negative ("no reusable procedure") is
+      // as deterministic as a positive for the same fingerprint; leaving it
+      // uncached re-paid the full subprocess cost on every listing forever.
+      this.extractionCache.write({
+        candidateId: facts.candidateId,
+        fingerprint,
+        extraction
+      });
+      if (extraction) {
+        candidates.push(assembleCandidate(parsed.projectHash, facts, extraction));
+      } else {
+        stats.noLesson += 1;
+      }
     }
 
     return {
@@ -545,62 +669,9 @@ export class LessonCandidateService {
       eligibleSessions: eligibleProfiles.length,
       skippedSessions,
       groupedPatterns: groups.length,
-      candidates
+      candidates,
+      extraction: stats
     };
-  }
-
-  /**
-   * Cache first, extractor second. Serving repeat calls from the cache is what
-   * lets promotion re-derive a candidate and get back the same text a reviewer
-   * approved; a fresh extraction each time would let the two diverge.
-   *
-   * Returns null whenever no lesson text can be produced — no extractor wired,
-   * the provider failed, or the group held nothing reusable. The candidate is
-   * then omitted rather than falling back to templated text.
-   */
-  private async resolveExtraction(
-    projectHash: string,
-    facts: CandidateFacts
-  ): Promise<ExtractedLesson | null> {
-    if (facts.transcript.trim().length === 0) return null;
-
-    const fingerprint = lessonExtractionFingerprint({
-      sourceSessionIds: facts.sourceSessionIds,
-      sourceEventIds: facts.sourceEventIds,
-      transcript: facts.transcript
-    });
-
-    const cached = this.extractionCache.read(facts.candidateId, fingerprint);
-    if (cached) return cached;
-
-    if (!this.lessonExtractor) return null;
-
-    let extraction: ExtractedLesson | null;
-    try {
-      extraction = await this.lessonExtractor({
-        projectHash,
-        candidateId: facts.candidateId,
-        sessionCount: facts.sourceSessionIds.length,
-        tools: facts.tools.map((tool) => TOOL_LABELS[tool]),
-        fileCategories: facts.fileCategories,
-        taskPatterns: facts.taskPatterns,
-        transcript: facts.transcript
-      });
-    } catch {
-      // A provider outage must not fail the whole listing: other groups may
-      // still be served from cache.
-      return null;
-    }
-
-    if (!extraction) return null;
-
-    this.extractionCache.write({
-      candidateId: facts.candidateId,
-      projectHash,
-      fingerprint,
-      extraction
-    });
-    return extraction;
   }
 
   private buildSessionProfiles(input: ParsedLessonCandidateInput): SessionProfile[] {

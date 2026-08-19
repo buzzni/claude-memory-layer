@@ -34,6 +34,18 @@ describe('checkNodeVersion', () => {
   it('fails on an unparseable version string', () => {
     expect(checkNodeVersion('not-a-version').status).toBe('fail');
   });
+
+  it('enforces the engines.node range passed by the caller, not a baked-in constant', () => {
+    // doctor reads engines.node from the shipped package.json so a bumped
+    // floor is enforced without touching this module.
+    expect(checkNodeVersion('v20.19.0', '>=22.0.0').status).toBe('fail');
+    expect(checkNodeVersion('v20.18.0', '>=18.0.0').status).toBe('pass');
+  });
+
+  it('falls back to the built-in floor when the range is unreadable', () => {
+    expect(checkNodeVersion('v20.19.0', 'gibberish').status).toBe('pass');
+    expect(checkNodeVersion('v20.18.0', 'gibberish').status).toBe('fail');
+  });
 });
 
 describe('checkPluginFiles', () => {

@@ -11,6 +11,7 @@
   "files": [
     "dist/",
     ".claude-plugin/",
+    "skills/",
     "scripts/postinstall-embedding-backend.cjs",
     "README.md",
     ".env.example"

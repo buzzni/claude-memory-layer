@@ -925,12 +925,22 @@ async function handleLessonCandidates(context: MemoryOperationContext, args: Rec
     minSessions: typeof args.minSessions === 'number' ? args.minSessions : undefined,
     limit: numberArg(args.limit, 25, 1, 100)
   });
+  // Distinguish "no patterns exist" from "extraction could not run": an empty
+  // candidate list with failures or budget skips means retry (or fix the
+  // provider), not that the project holds nothing reusable.
+  const pending = result.extraction.skippedByBudget + result.extraction.skippedNoExtractor;
+  const note = result.candidates.length === 0 && result.extraction.failures > 0
+    ? 'Extraction failed for every uncached group (provider unavailable?). This is not evidence that no patterns exist — retry once the lesson provider CLI is reachable.'
+    : pending > 0
+      ? `Read-only detection. ${pending} group(s) still await extraction (per-call budget); call again to continue. Review a candidate and call mem-lesson-save to promote it.`
+      : 'Read-only detection. Review a candidate and call mem-lesson-save to promote it into a curated lesson.';
   return {
     operation: 'mem-lesson-candidates',
     projectHash: context.projectHash,
     scannedSessions: result.scannedSessions,
     eligibleSessions: result.eligibleSessions,
     count: result.candidates.length,
+    extraction: result.extraction,
     candidates: result.candidates.map((candidate) => ({
       candidateId: sanitizeOperationString(candidate.candidateId, 120),
       name: sanitizeOperationString(candidate.name, 240),
@@ -941,7 +951,7 @@ async function handleLessonCandidates(context: MemoryOperationContext, args: Rec
       sourceSessionIds: candidate.sourceSessionIds.slice(0, 10).map((id) => sanitizeOperationString(id, 120)),
       sourceEventIds: candidate.sourceEventIds.slice(0, 10).map((id) => sanitizeOperationString(id, 120))
     })),
-    note: 'Read-only detection. Review a candidate and call mem-lesson-save to promote it into a curated lesson.'
+    note
   };
 }
 
@@ -968,7 +978,12 @@ async function handleLessonSave(context: MemoryOperationContext, args: Record<st
       access.requireUnregisteredWrite(requesterActorId);
     }
   }
-  const lesson = await new LessonService(context.db).saveCurated({
+  // The extractor is wired here for consistency with handleLessonCandidates:
+  // promotion re-derives candidates, and an extractor-less service turns any
+  // cache miss into "candidate not found".
+  const lesson = await new LessonService(context.db, {
+    lessonExtractor: (source) => extractLessonWithLlm(source)
+  }).saveCurated({
     projectHash: context.projectHash,
     actor,
     name,

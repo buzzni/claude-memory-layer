@@ -17,6 +17,7 @@ import * as path from 'path';
 
 import {
   hasHook,
+  PLUGIN_HOOKS,
   REQUIRED_HOOK_FILES,
   type ClaudeSettingsWithHooks,
   type PluginHookName
@@ -31,9 +32,12 @@ export interface DoctorCheckResult {
   fix?: string;
 }
 
-/** Must track package.json's `engines.node`. */
-const MIN_NODE_MAJOR = 20;
-const MIN_NODE_MINOR = 19;
+/**
+ * Fallback only — the caller passes the live `engines.node` range read from
+ * the shipped package.json, so a bumped engine floor is enforced without
+ * anyone remembering to update a constant here.
+ */
+const FALLBACK_NODE_RANGE = '>=20.19.0';
 
 function parseNodeVersion(version: string): { major: number; minor: number } | null {
   const match = /^v?(\d+)\.(\d+)/.exec(version.trim());
@@ -41,9 +45,19 @@ function parseNodeVersion(version: string): { major: number; minor: number } | n
   return { major: Number(match[1]), minor: Number(match[2]) };
 }
 
-export function checkNodeVersion(nodeVersion: string = process.version): DoctorCheckResult {
+function parseMinimumFromRange(range: string): { major: number; minor: number } | null {
+  const match = />=\s*v?(\d+)\.(\d+)/.exec(range);
+  if (!match) return null;
+  return { major: Number(match[1]), minor: Number(match[2]) };
+}
+
+export function checkNodeVersion(
+  nodeVersion: string = process.version,
+  requiredRange: string = FALLBACK_NODE_RANGE
+): DoctorCheckResult {
+  const minimum = parseMinimumFromRange(requiredRange) ?? parseMinimumFromRange(FALLBACK_NODE_RANGE)!;
   const parsed = parseNodeVersion(nodeVersion);
-  const required = `${MIN_NODE_MAJOR}.${MIN_NODE_MINOR}.0`;
+  const required = `${minimum.major}.${minimum.minor}.0`;
   if (!parsed) {
     return {
       name: 'node',
@@ -52,14 +66,14 @@ export function checkNodeVersion(nodeVersion: string = process.version): DoctorC
       fix: `Install Node ${required} or newer.`
     };
   }
-  const meetsMinimum = parsed.major > MIN_NODE_MAJOR
-    || (parsed.major === MIN_NODE_MAJOR && parsed.minor >= MIN_NODE_MINOR);
+  const meetsMinimum = parsed.major > minimum.major
+    || (parsed.major === minimum.major && parsed.minor >= minimum.minor);
   if (!meetsMinimum) {
     return {
       name: 'node',
       status: 'fail',
       detail: `${nodeVersion} is below the required ${required}`,
-      fix: `Upgrade Node: nvm install ${MIN_NODE_MAJOR} && nvm use ${MIN_NODE_MAJOR}`
+      fix: `Upgrade Node: nvm install ${minimum.major} && nvm use ${minimum.major}`
     };
   }
   return { name: 'node', status: 'pass', detail: nodeVersion };
@@ -82,15 +96,12 @@ export function checkPluginFiles(
 }
 
 export function checkHooksInstalled(settings: ClaudeSettingsWithHooks): DoctorCheckResult {
-  const required: Array<[PluginHookName, string]> = [
-    ['SessionStart', 'session-start'],
-    ['UserPromptSubmit', 'user-prompt-submit'],
-    ['PostToolUse', 'post-tool-use'],
-    ['Stop', 'stop'],
-    ['SessionEnd', 'session-end']
-  ];
-  const missing = required
-    .filter(([hookName, fragment]) => !hasHook(settings, hookName, fragment))
+  // Derived from PLUGIN_HOOKS — the map `install` writes from — so a hook
+  // added there is automatically checked here instead of doctor reporting
+  // "all hooks installed" while the new one is missing. The file name is a
+  // valid hasHook fragment (commands embed it).
+  const missing = (Object.entries(PLUGIN_HOOKS) as Array<[PluginHookName, string]>)
+    .filter(([hookName, fileName]) => !hasHook(settings, hookName, fileName))
     .map(([hookName]) => hookName);
 
   if (missing.length > 0) {
