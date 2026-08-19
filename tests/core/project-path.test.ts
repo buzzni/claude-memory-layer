@@ -98,6 +98,50 @@ describe('hashProjectPath worktree convergence', () => {
     expect(hashProjectPath(nestedSubdir)).toBe(hashProjectPath(nested));
   });
 
+  it('converges paths under a .claude-memory-root marker onto the marker directory', () => {
+    // A workspace product creates one directory per chat/instance (some of them
+    // their own git repositories). Without a marker each instance hashes to its
+    // own cold store, so memory never accumulates across instances. Field data
+    // (2026-08-19): one workspace had accumulated 9 sibling stores whose
+    // grounding was the lowest measured (0.059-0.073) because every instance
+    // started from zero.
+    const workspaceRoot = path.join(tmpRoot, 'workspace');
+    const plainInstance = path.join(workspaceRoot, 'instance-plain');
+    const gitInstance = path.join(workspaceRoot, 'instance-git');
+    fs.mkdirSync(plainInstance, { recursive: true });
+    fs.mkdirSync(gitInstance, { recursive: true });
+    fs.writeFileSync(path.join(workspaceRoot, '.claude-memory-root'), '');
+
+    git(gitInstance, ['init', '-q']);
+    git(gitInstance, ['config', 'user.email', 'test@example.com']);
+    git(gitInstance, ['config', 'user.name', 'Test']);
+    git(gitInstance, ['commit', '-q', '--allow-empty', '-m', 'init']);
+
+    // The marker directory itself keeps its pre-existing hash, so adopting the
+    // marker never orphans a store that already lives at the workspace root.
+    expect(hashProjectPath(workspaceRoot)).toBe(legacyPathHash(workspaceRoot));
+    // Non-git instances converge onto the workspace root.
+    expect(hashProjectPath(plainInstance)).toBe(hashProjectPath(workspaceRoot));
+    // The marker outranks the instance's own .git — converging self-owned
+    // repositories is exactly what the explicit opt-in is for.
+    expect(hashProjectPath(gitInstance)).toBe(hashProjectPath(workspaceRoot));
+    // Durable artifacts (markdown mirror) follow the same anchor.
+    expect(resolveProjectAnchorPath(plainInstance)).toBe(workspaceRoot);
+    expect(resolveProjectAnchorPath(gitInstance)).toBe(workspaceRoot);
+  });
+
+  it('lets the nearest marker win when markers nest', () => {
+    const outer = path.join(tmpRoot, 'marker-outer');
+    const inner = path.join(outer, 'marker-inner');
+    const leaf = path.join(inner, 'leaf');
+    fs.mkdirSync(leaf, { recursive: true });
+    fs.writeFileSync(path.join(outer, '.claude-memory-root'), '');
+    fs.writeFileSync(path.join(inner, '.claude-memory-root'), '');
+
+    expect(hashProjectPath(leaf)).toBe(hashProjectPath(inner));
+    expect(hashProjectPath(inner)).not.toBe(hashProjectPath(outer));
+  });
+
   it('ignores inherited git env vars that would resolve another repository', () => {
     // A path not hashed above, so the per-process cache cannot mask the env handling.
     const uncachedDir = path.join(tmpRoot, 'standalone-env');
