@@ -47,4 +47,25 @@ describe('MarkdownMirror', () => {
     const index = fs.readFileSync(path.join(tmp, 'memory', '_index.md'), 'utf8');
     expect(index).toContain('memory/briefing/preferences/morning/2026-02-24.md');
   });
+
+  it('publishes the index atomically, leaving no staging file behind', async () => {
+    // Multiple sessions converged onto one anchor (worktrees, or a
+    // .claude-memory-root marker) write this index concurrently; the rename
+    // publish means a reader can never observe a torn file.
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'cl-md-mirror-atomic-'));
+    const mirror = new MarkdownMirror(tmp);
+
+    await Promise.all([
+      mirror.append(makeEvent(), 'a1'),
+      mirror.append({ ...makeEvent(), content: '동시 기록' }, 'a2')
+    ]);
+
+    const memoryRoot = path.join(tmp, 'memory');
+    const leftovers = fs.readdirSync(memoryRoot).filter((name) => name.endsWith('.tmp'));
+    expect(leftovers).toEqual([]);
+    const index = fs.readFileSync(path.join(memoryRoot, '_index.md'), 'utf8');
+    expect(index).toContain('# Memory Index');
+    // The staging file must never be listed as content.
+    expect(index).not.toContain('.tmp');
+  });
 });

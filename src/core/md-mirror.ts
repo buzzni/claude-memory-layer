@@ -34,6 +34,8 @@ export function buildMirrorPath(rootDir: string, event: MemoryEventInput): strin
   return path.join(rootDir, 'memory', namespace, ...categoryPath, `${yyyy}-${mm}-${dd}.md`);
 }
 
+let indexStagingSequence = 0;
+
 export class MarkdownMirror {
   constructor(private readonly rootDir: string) {}
 
@@ -75,7 +77,20 @@ export class MarkdownMirror {
       '',
     ].join('\n');
 
-    await fs.promises.writeFile(path.join(memoryRoot, '_index.md'), index, 'utf8');
+    // Write-then-rename so concurrent writers (multiple sessions converged
+    // onto one anchor by a worktree or a .claude-memory-root marker) can never
+    // leave a torn index: last writer wins whole, and the next append rebuilds
+    // from the full tree anyway. The staging name is unique per process *and*
+    // per invocation so overlapping writers never clobber each other's file.
+    const indexPath = path.join(memoryRoot, '_index.md');
+    const stagingPath = `${indexPath}.${process.pid}.${++indexStagingSequence}.tmp`;
+    await fs.promises.writeFile(stagingPath, index, 'utf8');
+    try {
+      await fs.promises.rename(stagingPath, indexPath);
+    } catch (error) {
+      await fs.promises.rm(stagingPath, { force: true }).catch(() => undefined);
+      throw error;
+    }
   }
 
   private async walk(dir: string, out: string[]): Promise<void> {
