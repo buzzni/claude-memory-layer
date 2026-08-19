@@ -7,6 +7,7 @@ import * as os from 'os';
 
 import type { RetrievalResult, UnifiedRetrievalResult } from '../core/retriever.js';
 import { disposeDefaultEmbedder } from '../core/embedder.js';
+import type { RuntimeModelReleaseReason } from '../core/runtime-resource-telemetry.js';
 import type { PromotionResult } from '../core/shared-promoter.js';
 import type { SharedMemoryServices } from '../extensions/shared-memory/index.js';
 import type {
@@ -838,7 +839,9 @@ export const getMemoryServiceForSession = defaultRegistry.getMemoryServiceForSes
 export const getLightweightMemoryService = defaultRegistry.getLightweightMemoryService;
 export const getLightweightMemoryServiceForProject = defaultRegistry.getLightweightMemoryServiceForProject;
 export const createMemoryService = defaultRegistry.createMemoryService;
-export async function shutdownMemoryServices(): Promise<void> {
+export async function shutdownMemoryServices(
+  reason: RuntimeModelReleaseReason = 'process-shutdown'
+): Promise<void> {
   const failures: unknown[] = [];
   // Services own background workers that can still be executing the shared
   // embedder. Stop and drain those workers before disposing the native model.
@@ -848,7 +851,7 @@ export async function shutdownMemoryServices(): Promise<void> {
     failures.push(error);
   }
   try {
-    await disposeDefaultEmbedder();
+    await disposeDefaultEmbedder(reason);
   } catch (error) {
     failures.push(error);
   }

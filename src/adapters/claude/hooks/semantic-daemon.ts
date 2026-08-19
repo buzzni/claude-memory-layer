@@ -9,6 +9,12 @@ import { WorkerLock } from '../../../core/worker-lock.js';
 import { readNumberEnv } from './hook-runtime.js';
 import { AutoGraduationScheduler, isAutoGraduationEnabled } from './semantic-daemon-graduation.js';
 import { generateLlmSessionSummary, isLlmSummaryEnabled } from '../../llm/session-summary-llm.js';
+import { disposeDefaultEmbedder } from '../../../core/embedder.js';
+import {
+  markRuntimeProcessStopped,
+  registerRuntimeProcess,
+  type RuntimeModelReleaseReason
+} from '../../../core/runtime-resource-telemetry.js';
 
 export interface SemanticDaemonRequest {
   type?: 'retrieve' | 'graduate' | 'summarize';
@@ -91,7 +97,7 @@ function scheduleIdleShutdown(): void {
   }
 
   idleTimer = setTimeout(() => {
-    shutdown(0).catch(() => {
+    shutdown(0, 'daemon-idle-shutdown').catch(() => {
       process.exit(0);
     });
   }, IDLE_TIMEOUT_MS);
@@ -306,7 +312,7 @@ function createServer(): net.Server {
       // makes the retry land on a daemon running the new build. Answering with
       // an error object would instead surface as a normal failed request.
       socket.destroy();
-      void shutdown(0).catch(() => process.exit(0));
+      void shutdown(0, 'process-shutdown').catch(() => process.exit(0));
       return;
     }
 
@@ -385,7 +391,10 @@ async function listenServer(): Promise<void> {
   });
 }
 
-async function shutdown(code: number): Promise<void> {
+async function shutdown(
+  code: number,
+  reason: RuntimeModelReleaseReason = 'process-shutdown'
+): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
 
@@ -402,6 +411,7 @@ async function shutdown(code: number): Promise<void> {
   }
   await Promise.all(closePromises);
   serviceCache.clear();
+  await disposeDefaultEmbedder(reason).catch(() => undefined);
 
   if (server) {
     await new Promise<void>((resolve) => {
@@ -418,6 +428,7 @@ async function shutdown(code: number): Promise<void> {
     }
   }
 
+  markRuntimeProcessStopped();
   process.exit(code);
 }
 
@@ -425,14 +436,15 @@ function installProcessHandlers(): void {
   if (processHandlersInstalled) return;
   processHandlersInstalled = true;
 
-  process.on('SIGINT', () => { shutdown(0).catch(() => process.exit(0)); });
-  process.on('SIGTERM', () => { shutdown(0).catch(() => process.exit(0)); });
-  process.on('uncaughtException', () => { shutdown(1).catch(() => process.exit(1)); });
-  process.on('unhandledRejection', () => { shutdown(1).catch(() => process.exit(1)); });
+  process.on('SIGINT', () => { shutdown(0, 'process-shutdown').catch(() => process.exit(0)); });
+  process.on('SIGTERM', () => { shutdown(0, 'process-shutdown').catch(() => process.exit(0)); });
+  process.on('uncaughtException', () => { shutdown(1, 'process-shutdown').catch(() => process.exit(1)); });
+  process.on('unhandledRejection', () => { shutdown(1, 'process-shutdown').catch(() => process.exit(1)); });
 }
 
 export async function main(): Promise<void> {
   installProcessHandlers();
   await listenServer();
+  registerRuntimeProcess('semantic-daemon');
   scheduleIdleShutdown();
 }

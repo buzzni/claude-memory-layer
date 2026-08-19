@@ -178,6 +178,14 @@ function resolveMemoryService(args: MemoryToolArgs): MemoryService {
   return getDefaultMemoryService();
 }
 
+const LIGHTWEIGHT_READ_TOOL_NAMES = new Set([
+  'mem-timeline',
+  'mem-details',
+  'mem-stats',
+  'mem-project-timeline',
+  'mem-source-ref'
+]);
+
 function hasSuppliedArg(args: Record<string, unknown>, name: string): boolean {
   return Object.prototype.hasOwnProperty.call(args, name) && args[name] !== undefined;
 }
@@ -253,7 +261,9 @@ export async function handleToolCall(
     }
 
     const memoryService = resolveMemoryService(args);
-    await memoryService.initialize();
+    if (!LIGHTWEIGHT_READ_TOOL_NAMES.has(name)) {
+      await memoryService.initialize();
+    }
 
     switch (name) {
       case 'mem-search':

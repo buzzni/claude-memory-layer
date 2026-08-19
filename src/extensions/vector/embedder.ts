@@ -7,6 +7,11 @@ import { existsSync, readFileSync } from 'node:fs';
 import { createRequire as createNodeRequire } from 'node:module';
 import { dirname as pathDirname, join, parse } from 'node:path';
 import { fileURLToPath as urlToFilePath, pathToFileURL } from 'node:url';
+import {
+  getRuntimeResourceTelemetry,
+  opaqueBackendId,
+  type RuntimeModelReleaseReason
+} from '../../core/runtime-resource-telemetry.js';
 
 export interface EmbeddingResult {
   vector: number[];
@@ -19,9 +24,24 @@ type FeatureExtractionPipelineFactory = (
   model: string
 ) => Promise<NonNullable<Embedder['pipeline']>>;
 
+export interface EmbeddingLifecycleTelemetry {
+  recordModelLoad(resourceId: string, backendId: string, durationMs: number): void;
+  recordModelLoadFailure(durationMs: number): void;
+  recordModelActivity(): void;
+  recordModelRelease(resourceId: string, reason: RuntimeModelReleaseReason): void;
+  recordModelReleaseFailure(): void;
+}
+
+export interface EmbedderOptions {
+  telemetry?: EmbeddingLifecycleTelemetry;
+  now?: () => number;
+  loadPipeline?: () => Promise<FeatureExtractionPipelineFactory>;
+}
+
 export const DEFAULT_EMBEDDING_MODEL = 'Xenova/multilingual-e5-small';
 export const DEFAULT_EMBEDDING_FALLBACK_MODEL = 'intfloat/multilingual-e5-small';
 const MANAGED_EMBEDDING_BACKEND_DIR = '.claude-memory-layer-embedding-backend';
+let embedderResourceSequence = 0;
 
 export class Embedder {
   private pipeline: (((input: string, options?: Record<string, unknown>) => Promise<{ data: Float32Array }>) & {
@@ -30,10 +50,19 @@ export class Embedder {
   private readonly modelName: string;
   private activeModelName: string;
   private initialized = false;
+  private initializationPromise: Promise<void> | null = null;
+  private readonly telemetry: EmbeddingLifecycleTelemetry;
+  private readonly now: () => number;
+  private readonly loadPipeline: () => Promise<FeatureExtractionPipelineFactory>;
+  private readonly resourceId: string;
 
-  constructor(modelName: string = DEFAULT_EMBEDDING_MODEL) {
+  constructor(modelName: string = DEFAULT_EMBEDDING_MODEL, options: EmbedderOptions = {}) {
     this.modelName = modelName;
     this.activeModelName = modelName;
+    this.telemetry = options.telemetry ?? getRuntimeResourceTelemetry();
+    this.now = options.now ?? Date.now;
+    this.loadPipeline = options.loadPipeline ?? loadTransformersPipeline;
+    this.resourceId = `embedder-${++embedderResourceSequence}`;
   }
 
   /**
@@ -41,33 +70,66 @@ export class Embedder {
    */
   async initialize(): Promise<void> {
     if (this.initialized) return;
+    if (this.initializationPromise) return this.initializationPromise;
 
-    const pipeline = await withSuppressedKnownTransformersWarnings(async () => {
-      try {
-        return await loadTransformersPipeline();
-      } catch (error) {
-        if (isMissingTransformersDependencyError(error)) {
-          throw createEmbeddingBackendUnavailableError(error);
+    const startedAt = this.now();
+    this.initializationPromise = this.initializeOnce(startedAt);
+    try {
+      await this.initializationPromise;
+    } finally {
+      this.initializationPromise = null;
+    }
+  }
+
+  private async initializeOnce(startedAt: number): Promise<void> {
+    let pipeline: FeatureExtractionPipelineFactory;
+    try {
+      pipeline = await withSuppressedKnownTransformersWarnings(async () => {
+        try {
+          return await this.loadPipeline();
+        } catch (error) {
+          if (isMissingTransformersDependencyError(error)) {
+            throw createEmbeddingBackendUnavailableError(error);
+          }
+          throw error;
         }
-        throw error;
-      }
-    });
+      });
+    } catch (error) {
+      this.telemetry.recordModelLoadFailure(this.now() - startedAt);
+      throw error;
+    }
 
     try {
       this.pipeline = await this.loadPipelineWithCorruptionRecovery(pipeline, this.modelName);
       this.activeModelName = this.modelName;
       this.initialized = true;
+      this.telemetry.recordModelLoad(
+        this.resourceId,
+        opaqueBackendId(this.activeModelName),
+        this.now() - startedAt
+      );
       return;
     } catch (primaryError) {
       const fallbackModel = process.env.CLAUDE_MEMORY_EMBEDDING_FALLBACK_MODEL || DEFAULT_EMBEDDING_FALLBACK_MODEL;
       if (fallbackModel === this.modelName) {
+        this.telemetry.recordModelLoadFailure(this.now() - startedAt);
         throw primaryError;
       }
 
       console.warn(`[Embedder] Primary model failed (${this.modelName}). Falling back to ${fallbackModel}`);
-      this.pipeline = await this.loadPipelineWithCorruptionRecovery(pipeline, fallbackModel);
-      this.activeModelName = fallbackModel;
-      this.initialized = true;
+      try {
+        this.pipeline = await this.loadPipelineWithCorruptionRecovery(pipeline, fallbackModel);
+        this.activeModelName = fallbackModel;
+        this.initialized = true;
+        this.telemetry.recordModelLoad(
+          this.resourceId,
+          opaqueBackendId(this.activeModelName),
+          this.now() - startedAt
+        );
+      } catch (fallbackError) {
+        this.telemetry.recordModelLoadFailure(this.now() - startedAt);
+        throw fallbackError;
+      }
     }
   }
 
@@ -126,6 +188,7 @@ export class Embedder {
       truncation: true,
       max_length: 512
     });
+    this.telemetry.recordModelActivity();
 
     const vector = Array.from(output.data);
 
@@ -160,6 +223,7 @@ export class Embedder {
           truncation: true,
           max_length: 512
         });
+        this.telemetry.recordModelActivity();
 
         const vector = Array.from(output.data);
 
@@ -197,12 +261,19 @@ export class Embedder {
   }
 
   /** Release the native ONNX model so a long-lived but idle MCP process does not retain it. */
-  async dispose(): Promise<void> {
+  async dispose(reason: RuntimeModelReleaseReason = 'manual'): Promise<void> {
     const pipeline = this.pipeline;
     this.pipeline = null;
     this.initialized = false;
     this.activeModelName = this.modelName;
-    await pipeline?.dispose?.();
+    if (!pipeline) return;
+    try {
+      await pipeline.dispose?.();
+      this.telemetry.recordModelRelease(this.resourceId, reason);
+    } catch (error) {
+      this.telemetry.recordModelReleaseFailure();
+      throw error;
+    }
   }
 }
 
@@ -217,10 +288,10 @@ export function getDefaultEmbedder(): Embedder {
   return defaultEmbedder;
 }
 
-export async function disposeDefaultEmbedder(): Promise<void> {
+export async function disposeDefaultEmbedder(reason: RuntimeModelReleaseReason = 'process-shutdown'): Promise<void> {
   const embedder = defaultEmbedder;
   defaultEmbedder = null;
-  await embedder?.dispose();
+  await embedder?.dispose(reason);
 }
 
 let transformersWarningSuppressionDepth = 0;

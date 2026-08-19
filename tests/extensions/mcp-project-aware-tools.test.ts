@@ -530,6 +530,9 @@ describe('MCP project-aware memory tools', () => {
 
     expect(mocks.getDefaultMemoryService).not.toHaveBeenCalled();
     expect(mocks.getMemoryServiceForProject).not.toHaveBeenCalled();
+    // Aggregate stats go through the read-only diagnostics service — the
+    // non-creating, model-free reader — never the full runtime service, so
+    // the vector/embedder runtime is not started for a stats read.
     expect(mocks.createReadOnlyDiagnosticsService).toHaveBeenCalledWith(undefined);
     expect(mocks.defaultService.initialize).toHaveBeenCalledTimes(1);
     expect(mocks.defaultService.getStats).toHaveBeenCalledTimes(1);

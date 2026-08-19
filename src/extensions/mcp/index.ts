@@ -16,11 +16,15 @@ import { tools } from './tools.js';
 import { handleToolCall, shutdownMcpMemoryServices } from './handlers.js';
 import { createMcpIdleResourceController, parseMcpIdleReleaseMs } from './idle-resources.js';
 import { createMcpProcessLifecycle } from './process-lifecycle.js';
+import {
+  markRuntimeProcessStopped,
+  registerRuntimeProcess
+} from '../../core/runtime-resource-telemetry.js';
 
 const server = new Server(
   {
     name: 'claude-memory-layer-mcp',
-    version: '1.0.0'
+    version: process.env.CLAUDE_MEMORY_LAYER_VERSION || 'development'
   },
   {
     capabilities: {
@@ -30,7 +34,7 @@ const server = new Server(
 );
 
 const idleResources = createMcpIdleResourceController({
-  release: shutdownMcpMemoryServices,
+  release: () => shutdownMcpMemoryServices('idle-timeout'),
   idleMs: parseMcpIdleReleaseMs(process.env.CLAUDE_MEMORY_MCP_IDLE_RELEASE_MS)
 });
 
@@ -47,6 +51,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToo
 
 // Start server
 async function main() {
+  registerRuntimeProcess('mcp');
   const transport = new StdioServerTransport();
   let lifecycleCheck: NodeJS.Timeout | null = null;
   const lifecycle = createMcpProcessLifecycle({
@@ -55,10 +60,14 @@ async function main() {
       idleResources.stopAccepting();
       await idleResources.waitForIdle();
       await idleResources.waitForRelease();
-      await Promise.allSettled([
-        server.close(),
-        shutdownMcpMemoryServices()
-      ]);
+      try {
+        await Promise.allSettled([
+          server.close(),
+          shutdownMcpMemoryServices('process-shutdown')
+        ]);
+      } finally {
+        markRuntimeProcessStopped();
+      }
     },
     exit: (code) => process.exit(code),
     getParentPid: () => process.ppid
@@ -89,5 +98,6 @@ main().catch((error) => {
   console.error('claude-memory-layer MCP server failed:', error instanceof Error ? error.message : 'unknown error');
   // stdin listeners are already attached at this point. Merely assigning
   // exitCode would keep a failed stdio server alive until its client closes.
+  markRuntimeProcessStopped();
   process.exit(1);
 });

@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { RetrievalOrchestrator, type RetrievalAccessStore } from '../../src/core/engine/retrieval-orchestrator.js';
 import type { Retriever, UnifiedRetrievalResult } from '../../src/core/retriever.js';
 import type { MemoryEvent } from '../../src/core/types.js';
@@ -300,6 +300,78 @@ describe('RetrievalOrchestrator', () => {
       candidateEventIds: ['fast-e1'],
       selectedEventIds: ['fast-e1']
     });
+  });
+
+  it('records semantic retrieval latency as cold before load and hot while loaded', async () => {
+    let now = 100;
+    let loaded = false;
+    const samples: Array<{ tier: 'cold' | 'hot'; durationMs: number; succeeded: boolean }> = [];
+    const fakeRetriever = {
+      setQueryRewriter() {},
+      async retrieve() {
+        now += 20;
+        return retrievalResult('telemetry-e1');
+      }
+    } as unknown as Retriever;
+    const orchestrator = new RetrievalOrchestrator({
+      initialize: async () => {
+        now += 30;
+        loaded = true;
+      },
+      retriever: fakeRetriever,
+      traceStore: {
+        getHelpfulnessStats: async () => stats(),
+        recordRetrievalTrace: async () => {}
+      },
+      accessStore: noopAccessStore(),
+      getProjectHash: () => 'project-runtime',
+      hasSharedStore: () => false,
+      runtimeTelemetry: {
+        isModelLoaded: () => loaded,
+        now: () => now,
+        recordRetrieval: (tier, durationMs, succeeded) => {
+          samples.push({ tier, durationMs, succeeded });
+        }
+      }
+    });
+
+    await orchestrator.retrieveMemories('cold query', { strategy: 'deep', recordTrace: false });
+    await orchestrator.retrieveMemories('hot query', { strategy: 'deep', recordTrace: false });
+
+    expect(samples).toEqual([
+      { tier: 'cold', durationMs: 50, succeeded: true },
+      { tier: 'hot', durationMs: 50, succeeded: true }
+    ]);
+  });
+
+  it('does not write model telemetry for lexical fast retrieval', async () => {
+    const recordRetrieval = vi.fn();
+    const fakeRetriever = {
+      setQueryRewriter() {},
+      async retrieve() {
+        return retrievalResult('fast-no-telemetry');
+      }
+    } as unknown as Retriever;
+    const orchestrator = new RetrievalOrchestrator({
+      initialize: async () => { throw new Error('must stay model-free'); },
+      retriever: fakeRetriever,
+      traceStore: {
+        getHelpfulnessStats: async () => stats(),
+        recordRetrievalTrace: async () => {}
+      },
+      accessStore: noopAccessStore(),
+      getProjectHash: () => 'project-fast',
+      hasSharedStore: () => false,
+      runtimeTelemetry: {
+        isModelLoaded: () => false,
+        now: () => 0,
+        recordRetrieval
+      }
+    });
+
+    await orchestrator.retrieveMemories('keyword only', { strategy: 'fast' });
+
+    expect(recordRetrieval).not.toHaveBeenCalled();
   });
 
   it('keeps fast retrieval lightweight when shared search is requested but unavailable', async () => {

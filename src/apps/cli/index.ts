@@ -177,6 +177,11 @@ import {
   resolveMongoSyncProcessOptions
 } from './mongo-sync-command.js';
 import { WorkerLock } from '../../core/worker-lock.js';
+import {
+  formatRuntimeResourceJsonReport,
+  formatRuntimeResourceReport,
+  getRuntimeResourceReport
+} from './runtime-resource-command.js';
 
 // ============================================================
 // Hook Installation Utilities
@@ -971,6 +976,26 @@ program
     } catch (error) {
       console.error('Status check failed:', error);
       process.exit(1);
+    }
+  });
+
+/**
+ * Runtime resource status command. This is read-only: it does not register the
+ * CLI process or create telemetry/storage directories.
+ */
+program
+  .command('runtime-status')
+  .description('Show aggregate MCP/semantic runtime resource and model lifecycle status')
+  .option('--json', 'Print aggregate runtime status as JSON for automation')
+  .action((options) => {
+    try {
+      const report = getRuntimeResourceReport();
+      console.log(options.json
+        ? formatRuntimeResourceJsonReport(report)
+        : formatRuntimeResourceReport(report));
+    } catch {
+      console.error('Runtime status failed');
+      process.exitCode = 1;
     }
   });
 

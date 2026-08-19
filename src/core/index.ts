@@ -67,3 +67,6 @@ export * from './shared-promoter.js';
 
 // External read-only market context
 export * from './external-market-context.js';
+
+// Aggregate, privacy-safe model/process lifecycle telemetry
+export * from './runtime-resource-telemetry.js';

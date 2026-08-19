@@ -584,6 +584,10 @@ claude-memory-layer process --project /path/to/project
 claude-memory-layer process --project /path/to/project --dry-run-recovery
 claude-memory-layer vector-status --project /path/to/project
 
+# MCP/semantic daemon의 aggregate-only 런타임 리소스 상태
+claude-memory-layer runtime-status
+claude-memory-layer runtime-status --json
+
 # 머신 전체 프로젝트 저장소의 bounded maintenance
 claude-memory-layer maintenance run
 claude-memory-layer maintenance run --min-free-gb 10
