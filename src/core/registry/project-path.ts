@@ -93,12 +93,24 @@ function computeHashBasisPath(normalizedPath: string): string {
   // the repository has been accumulating. The marker still outranks an
   // instance's *own* .git — the git basis of such an instance is its checkout
   // root, and the walk climbs from there to the workspace marker above it.
-  const gitBasis = computeGitBasisPath(normalizedPath);
+  const gitBasis = resolveGitBasisPath(normalizedPath);
   const markerRoot = findMemoryRootMarker(gitBasis);
   // Re-normalized because the basis may come from the plain path.resolve
   // fallback when the directory does not exist yet, so an existing ancestor
   // carrying the marker can still contain unresolved symlinks.
   return markerRoot !== null ? normalizeProjectPath(markerRoot) : gitBasis;
+}
+
+/** Cache of git-only basis per normalized path, shared by the marker-aware and marker-ignoring resolvers so the git spawn happens once. */
+const gitBasisCache = new Map<string, string>();
+
+function resolveGitBasisPath(normalizedPath: string): string {
+  const cached = gitBasisCache.get(normalizedPath);
+  if (cached !== undefined) return cached;
+
+  const basis = computeGitBasisPath(normalizedPath);
+  gitBasisCache.set(normalizedPath, basis);
+  return basis;
 }
 
 function computeGitBasisPath(normalizedPath: string): string {
@@ -157,16 +169,40 @@ export function resolveProjectAnchorPath(projectPath: string): string {
   return resolveHashBasisPath(normalizeProjectPath(projectPath));
 }
 
+function hashBasis(basis: string): string {
+  return crypto.createHash('sha256')
+    .update(basis)
+    .digest('hex')
+    .slice(0, 8);
+}
+
 /**
  * Generate a stable 8-character hash from a normalized project path.
  */
 export function hashProjectPath(projectPath: string): string {
-  const normalizedPath = normalizeProjectPath(projectPath);
-  const hashBasis = resolveHashBasisPath(normalizedPath);
-  return crypto.createHash('sha256')
-    .update(hashBasis)
-    .digest('hex')
-    .slice(0, 8);
+  return hashBasis(resolveHashBasisPath(normalizeProjectPath(projectPath)));
+}
+
+/**
+ * The hash this path had before any .claude-memory-root marker applied: git
+ * convergence only. A store created before a marker was adopted is keyed by
+ * exactly this value, so repair and identity tooling use it to tell "the hash
+ * basis changed when the marker arrived" apart from genuine cross-project
+ * contamination.
+ */
+export function hashProjectPathIgnoringMarker(projectPath: string): string {
+  return hashBasis(resolveGitBasisPath(normalizeProjectPath(projectPath)));
+}
+
+/**
+ * The marker directory governing this path (via its git-resolved basis), or
+ * null when no marker applies. Diagnostics use it to show *why* a path
+ * converged where it did.
+ */
+export function resolveMemoryRootMarkerPath(projectPath: string): string | null {
+  const gitBasis = resolveGitBasisPath(normalizeProjectPath(projectPath));
+  const markerRoot = findMemoryRootMarker(gitBasis);
+  return markerRoot !== null ? normalizeProjectPath(markerRoot) : null;
 }
 
 /**

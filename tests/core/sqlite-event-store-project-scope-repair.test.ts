@@ -1,11 +1,15 @@
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import * as path from 'path';
 import { describe, expect, it } from 'vitest';
 import { SQLiteEventStore } from '../../src/core/sqlite-event-store.js';
 import { createSQLiteDatabase, sqliteClose, sqliteRun } from '../../src/core/sqlite-wrapper.js';
 import type { MemoryEvent } from '../../src/core/types.js';
-import { hashProjectPath } from '../../src/core/registry/project-path.js';
+import {
+  hashProjectPath,
+  hashProjectPathIgnoringMarker,
+  MEMORY_ROOT_MARKER
+} from '../../src/core/registry/project-path.js';
 
 function tempDb(): { dir: string; dbPath: string } {
   const dir = mkdtempSync(path.join(tmpdir(), 'cml-project-scope-repair-'));
@@ -278,6 +282,65 @@ describe('SQLiteEventStore legacy project-scope repair/quarantine', () => {
       expect(quarantined[0].metadata).toMatchObject({
         quarantine: { status: 'active', category: 'project-scope', reason: 'project-path-mismatch' },
         repair: { legacyProjectScope: { action: 'quarantined' } }
+      });
+    } finally {
+      await store.close().catch(() => undefined);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not quarantine a pre-marker store whose paths now converge onto a .claude-memory-root marker', async () => {
+    // Adopting a marker changes what every path under it hashes to. A store
+    // created before that is keyed by the pre-marker hash, so a live re-hash
+    // of its rows' recorded paths must be read as "the basis moved", not as
+    // cross-project contamination — otherwise repair quarantines the store's
+    // entire history.
+    const { dir, dbPath } = tempDb();
+    const workspaceRoot = path.join(dir, 'workspace');
+    const instancePath = path.join(workspaceRoot, 'instance-a');
+    const foreignPath = path.join(dir, 'unrelated-project');
+    mkdirSync(instancePath, { recursive: true });
+    mkdirSync(foreignPath, { recursive: true });
+    writeFileSync(path.join(workspaceRoot, MEMORY_ROOT_MARKER), '');
+
+    // The hash the store was keyed by before the marker was adopted. Computed
+    // via the marker-ignoring resolver because the per-process basis cache
+    // would otherwise pin whichever answer was computed first.
+    const preMarkerHash = hashProjectPathIgnoringMarker(instancePath);
+    expect(hashProjectPath(instancePath)).not.toBe(preMarkerHash);
+
+    const store = new SQLiteEventStore(dbPath);
+    try {
+      await store.importEvents([
+        event('pre-marker-row', 'workspace instance history must survive marker adoption', {
+          source: 'hermes',
+          importedFrom: '/tmp/hermes-state.sqlite',
+          projectPath: instancePath
+        }, 'session-pre-marker'),
+        event('foreign-row', 'unrelated project row must still be quarantined', {
+          source: 'hermes',
+          importedFrom: '/tmp/hermes-state.sqlite',
+          projectPath: foreignPath
+        }, 'session-foreign')
+      ]);
+
+      // Addressing the old store by projectPath + its pre-marker hash must not
+      // throw: the pair disagrees only because the basis moved.
+      const result = await store.repairLegacyProjectScope({
+        projectPath: instancePath,
+        projectHash: preMarkerHash
+      });
+      expect(result).toMatchObject({ scanned: 2, repaired: 1, quarantined: 1 });
+
+      const preserved = await store.getSessionEvents('session-pre-marker');
+      expect(preserved[0].metadata).toMatchObject({
+        repair: { legacyProjectScope: { action: 'repaired' } }
+      });
+
+      expect(await store.getSessionEvents('session-foreign')).toEqual([]);
+      const foreign = await store.getSessionEvents('session-foreign', { includeQuarantined: true });
+      expect(foreign[0].metadata).toMatchObject({
+        quarantine: { status: 'active', category: 'project-scope', reason: 'project-path-mismatch' }
       });
     } finally {
       await store.close().catch(() => undefined);

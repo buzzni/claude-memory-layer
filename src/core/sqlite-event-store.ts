@@ -22,7 +22,7 @@ import {
 import { makeCanonicalKey, makeDedupeKey } from './canonical-key.js';
 import { generateCitationId } from './citation-generator.js';
 import * as nodePath from 'path';
-import { hashProjectPath } from './registry/project-path.js';
+import { hashProjectPath, hashProjectPathIgnoringMarker } from './registry/project-path.js';
 import {
   createSQLiteDatabase,
   sqliteRun,
@@ -1985,7 +1985,14 @@ export class SQLiteEventStore {
     if (!projectHash) {
       throw new Error('repairLegacyProjectScope requires projectPath or projectHash');
     }
-    if (options.projectPath && options.projectHash && hashProjectPath(options.projectPath) !== options.projectHash) {
+    if (
+      options.projectPath && options.projectHash
+      && hashProjectPath(options.projectPath) !== options.projectHash
+      // A store created before a .claude-memory-root marker was adopted is
+      // keyed by the pre-marker (git-only) hash; addressing it by path + that
+      // hash is consistent, not a different store.
+      && hashProjectPathIgnoringMarker(options.projectPath) !== options.projectHash
+    ) {
       throw new Error('repairLegacyProjectScope projectPath and projectHash refer to different project stores');
     }
 
@@ -2042,13 +2049,23 @@ export class SQLiteEventStore {
       const importedOrLegacy = metadataParseInvalid || isImportedOrLegacyScopedMetadata(metadata) || Boolean(sessionProjectPath);
       const pathHashes = candidatePaths.map((candidate) => {
         try {
-          return { path: candidate, hash: hashProjectPath(candidate) };
+          return {
+            path: candidate,
+            hash: hashProjectPath(candidate),
+            // The hash the candidate had before any marker applied. A row
+            // whose recorded path re-hashes elsewhere only because a
+            // .claude-memory-root marker was adopted after the store filled
+            // up is a basis shift, not cross-project contamination.
+            preMarkerHash: hashProjectPathIgnoringMarker(candidate)
+          };
         } catch {
-          return { path: candidate, hash: undefined };
+          return { path: candidate, hash: undefined, preMarkerHash: undefined };
         }
       });
-      const matchingPath = pathHashes.find((candidate) => candidate.hash === projectHash);
-      const foreignPath = pathHashes.find((candidate) => candidate.hash && candidate.hash !== projectHash);
+      const belongsToThisStore = (candidate: { hash?: string; preMarkerHash?: string }) =>
+        candidate.hash === projectHash || candidate.preMarkerHash === projectHash;
+      const matchingPath = pathHashes.find(belongsToThisStore);
+      const foreignPath = pathHashes.find((candidate) => candidate.hash && !belongsToThisStore(candidate));
 
       let action: 'repaired' | 'quarantined' | 'skipped' = 'skipped';
       let reason: ProjectScopeRepairSample['reason'] | undefined;

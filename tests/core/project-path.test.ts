@@ -6,7 +6,13 @@ import * as path from 'node:path';
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { hashProjectPath, MEMORY_ROOT_MARKER, resolveProjectAnchorPath } from '../../src/core/registry/project-path.js';
+import {
+  hashProjectPath,
+  hashProjectPathIgnoringMarker,
+  MEMORY_ROOT_MARKER,
+  resolveMemoryRootMarkerPath,
+  resolveProjectAnchorPath
+} from '../../src/core/registry/project-path.js';
 
 function git(cwd: string, args: string[]): void {
   execFileSync('git', args, { cwd, stdio: 'ignore' });
