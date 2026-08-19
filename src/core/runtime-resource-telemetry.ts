@@ -6,6 +6,7 @@ import {
   readFileSync,
   readdirSync,
   renameSync,
+  rmSync,
   writeFileSync
 } from 'node:fs';
 import * as os from 'node:os';
@@ -114,6 +115,9 @@ export class RuntimeResourceTelemetry implements RuntimeRetrievalTelemetry {
   private readonly loadedResources = new Set<string>();
   private registered = false;
   private snapshot: RuntimeResourceSnapshot;
+  private lastPersistMs = Number.NEGATIVE_INFINITY;
+  private persistDirty = false;
+  private flushTimer: NodeJS.Timeout | null = null;
 
   constructor(options: RuntimeResourceTelemetryOptions = {}) {
     this.nowFn = options.now ?? Date.now;
@@ -165,20 +169,28 @@ export class RuntimeResourceTelemetry implements RuntimeRetrievalTelemetry {
     this.snapshot.client = client;
     this.snapshot.processState = 'running';
     this.snapshot.stoppedAt = null;
-    this.touchAndPersist();
+    this.touchAndPersist({ flush: true });
   }
 
   markProcessStopped(): void {
     this.snapshot.processState = 'stopped';
     this.snapshot.stoppedAt = this.isoNow();
-    this.touchAndPersist();
+    this.touchAndPersist({ flush: true });
+    // The snapshot only matters while the process lives; leaving it behind
+    // accretes one file per session forever and slows every runtime-status
+    // read. A crash before this line is covered by age-based pruning on read.
+    if (this.registered && this.persistEnabled) {
+      try {
+        rmSync(path.join(this.telemetryDir, `process-${this.snapshot.pid}.json`), { force: true });
+      } catch {
+        // Never let telemetry cleanup interfere with shutdown.
+      }
+    }
   }
 
   recordModelLoad(resourceId: string, backendId: string, durationMs: number): void {
     this.loadedResources.add(resourceId);
     const model = this.snapshot.model;
-    model.loaded = true;
-    model.loadedInstances = this.loadedResources.size;
     model.backendId = backendId;
     model.loadCount += 1;
     model.totalLoadDurationMs += boundedDuration(durationMs);
@@ -205,8 +217,6 @@ export class RuntimeResourceTelemetry implements RuntimeRetrievalTelemetry {
   recordModelRelease(resourceId: string, reason: RuntimeModelReleaseReason): void {
     this.loadedResources.delete(resourceId);
     const model = this.snapshot.model;
-    model.loadedInstances = this.loadedResources.size;
-    model.loaded = model.loadedInstances > 0;
     model.releaseCount += 1;
     model.lastReleasedAt = this.isoNow();
     model.lastReleaseReason = reason;
@@ -221,7 +231,7 @@ export class RuntimeResourceTelemetry implements RuntimeRetrievalTelemetry {
   }
 
   isModelLoaded(): boolean {
-    return this.snapshot.model.loaded;
+    return this.loadedResources.size > 0;
   }
 
   recordRetrieval(tier: 'cold' | 'hot', durationMs: number, succeeded: boolean): void {
@@ -243,9 +253,36 @@ export class RuntimeResourceTelemetry implements RuntimeRetrievalTelemetry {
     return new Date(this.nowFn()).toISOString();
   }
 
-  private touchAndPersist(): void {
+  private touchAndPersist(options?: { flush?: boolean }): void {
     this.snapshot.updatedAt = this.isoNow();
+    // The redundant snapshot fields are derived here so no mutation path can
+    // persist a self-contradictory model state (loaded=true, instances=0).
+    this.snapshot.model.loadedInstances = this.loadedResources.size;
+    this.snapshot.model.loaded = this.loadedResources.size > 0;
     if (!this.registered || !this.persistEnabled) return;
+
+    // recordModelActivity/recordRetrieval fire once per embedded text and per
+    // retrieval; a synchronous mkdir+write+rename per event stalls the
+    // embedding loop. Leading-edge write plus a trailing unref'd flush keeps
+    // the file at most PERSIST_INTERVAL_MS stale, and lifecycle transitions
+    // (register/stop) flush immediately.
+    const nowMs = this.nowFn();
+    if (options?.flush || nowMs - this.lastPersistMs >= PERSIST_INTERVAL_MS) {
+      this.persistNow(nowMs);
+      return;
+    }
+    this.persistDirty = true;
+    if (this.flushTimer) return;
+    this.flushTimer = setTimeout(() => {
+      this.flushTimer = null;
+      if (this.persistDirty) this.persistNow(this.nowFn());
+    }, PERSIST_INTERVAL_MS);
+    this.flushTimer.unref?.();
+  }
+
+  private persistNow(nowMs: number): void {
+    this.persistDirty = false;
+    this.lastPersistMs = nowMs;
     try {
       mkdirSync(this.telemetryDir, { recursive: true, mode: 0o700 });
       const target = path.join(this.telemetryDir, `process-${this.snapshot.pid}.json`);
@@ -257,6 +294,8 @@ export class RuntimeResourceTelemetry implements RuntimeRetrievalTelemetry {
     }
   }
 }
+
+const PERSIST_INTERVAL_MS = 1_000;
 
 let processTelemetry = new RuntimeResourceTelemetry();
 
@@ -374,7 +413,7 @@ export function collectRuntimeResourceReport(
     };
   }
 
-  const snapshots = readRuntimeResourceSnapshots(options.telemetryDir ?? defaultRuntimeTelemetryDir());
+  const snapshots = readRuntimeResourceSnapshots(options.telemetryDir ?? defaultRuntimeTelemetryDir(), now());
   const snapshotsByPid = new Map(
     snapshots
       .filter((snapshot) => snapshot.processState === 'running')
@@ -398,14 +437,31 @@ export function collectRuntimeResourceReport(
   };
 }
 
-export function readRuntimeResourceSnapshots(directory: string): RuntimeResourceSnapshot[] {
+/** Snapshots older than this are crash leftovers — markProcessStopped never ran. */
+const STALE_SNAPSHOT_MS = 7 * 24 * 60 * 60 * 1_000;
+
+export function readRuntimeResourceSnapshots(directory: string, nowMs: number = Date.now()): RuntimeResourceSnapshot[] {
   if (!existsSync(directory)) return [];
   const snapshots: RuntimeResourceSnapshot[] = [];
   for (const entry of readdirSync(directory)) {
     if (!/^process-\d+\.json$/.test(entry)) continue;
     try {
       const parsed = JSON.parse(readFileSync(path.join(directory, entry), 'utf8')) as RuntimeResourceSnapshot;
-      if (isRuntimeResourceSnapshot(parsed)) snapshots.push(parsed);
+      if (!isRuntimeResourceSnapshot(parsed)) continue;
+      // A process SIGKILLed before markProcessStopped leaves a 'running' file
+      // behind forever. Age it out (and best-effort delete it) so the
+      // directory stays bounded and a reused PID months later cannot inherit
+      // the dead process's counters.
+      const updatedAtMs = Date.parse(parsed.updatedAt);
+      if (Number.isFinite(updatedAtMs) && nowMs - updatedAtMs > STALE_SNAPSHOT_MS) {
+        try {
+          rmSync(path.join(directory, entry), { force: true });
+        } catch {
+          // Pruning is opportunistic; reading must not fail on it.
+        }
+        continue;
+      }
+      snapshots.push(parsed);
     } catch {
       // Ignore partial, corrupt, or incompatible telemetry snapshots.
     }
@@ -452,8 +508,16 @@ function aggregateRuntimeResourceGroups(
   const groups = new Map<string, RuntimeResourceGroup & { coldTotalMs: number; hotTotalMs: number }>();
 
   for (const row of rows) {
-    const snapshot = snapshotsByPid.get(row.pid);
-    const client = snapshot?.client ?? classifyRuntimeCommand(row.command) ?? 'unknown';
+    const commandKind = classifyRuntimeCommand(row.command);
+    const candidateSnapshot = snapshotsByPid.get(row.pid);
+    // PID reuse: a stale 'running' snapshot from a dead process must not lend
+    // its counters to an unrelated product process that inherited the PID. If
+    // the live command classifies as a different kind than the snapshot
+    // recorded, trust the command and treat the process as uninstrumented.
+    const snapshot = candidateSnapshot && commandKind !== null && candidateSnapshot.client !== commandKind
+      ? undefined
+      : candidateSnapshot;
+    const client = snapshot?.client ?? commandKind ?? 'unknown';
     const version = snapshot?.version || LEGACY_RUNTIME_VERSION;
     const key = `${version}\u0000${client}`;
     const group = groups.get(key) ?? {

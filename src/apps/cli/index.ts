@@ -179,9 +179,9 @@ import {
 import { WorkerLock } from '../../core/worker-lock.js';
 import {
   formatRuntimeResourceJsonReport,
-  formatRuntimeResourceReport,
-  getRuntimeResourceReport
+  formatRuntimeResourceReport
 } from './runtime-resource-command.js';
+import { collectRuntimeResourceReport } from '../../core/runtime-resource-telemetry.js';
 
 // ============================================================
 // Hook Installation Utilities
@@ -989,7 +989,7 @@ program
   .option('--json', 'Print aggregate runtime status as JSON for automation')
   .action((options) => {
     try {
-      const report = getRuntimeResourceReport();
+      const report = collectRuntimeResourceReport();
       console.log(options.json
         ? formatRuntimeResourceJsonReport(report)
         : formatRuntimeResourceReport(report));

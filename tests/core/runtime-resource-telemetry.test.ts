@@ -72,14 +72,21 @@ describe('runtime resource telemetry', () => {
 
   it('groups instrumented and legacy processes without returning commands or paths', () => {
     const directory = temporaryDir();
+    // Persistence is throttled: events inside the flush interval defer to a
+    // trailing write. Step the injected clock past the interval per event so
+    // each one lands in the file this test reads back.
+    let now = Date.parse('2026-08-12T00:00:00.000Z');
     const telemetry = new RuntimeResourceTelemetry({
       telemetryDir: directory,
+      now: () => now,
       pid: 101,
       ppid: 50,
       version: '2.3.0'
     });
     telemetry.registerProcess('mcp');
+    now += 1_001;
     telemetry.recordModelLoad('embedder-1', opaqueBackendId('model'), 40);
+    now += 1_001;
     telemetry.recordRetrieval('cold', 100, true);
 
     const report = collectRuntimeResourceReport({
