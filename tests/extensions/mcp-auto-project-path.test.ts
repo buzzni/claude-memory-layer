@@ -49,7 +49,8 @@ vi.mock('../../src/services/memory-service.js', () => ({
 
 vi.mock('../../src/core/registry/project-path.js', () => ({
   getProjectStoragePath: mocks.getProjectStoragePath,
-  hashProjectPath: (projectPath: string) => encodeURIComponent(projectPath).slice(0, 8)
+  hashProjectPath: (projectPath: string) => encodeURIComponent(projectPath).slice(0, 8),
+  resolveMemoryRootMarkerPath: () => null
 }));
 
 function storageDirFor(projectPath: string): string {

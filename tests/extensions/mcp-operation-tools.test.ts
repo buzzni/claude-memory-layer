@@ -130,7 +130,8 @@ vi.mock('../../src/services/memory-service.js', () => ({
 
 vi.mock('../../src/core/registry/project-path.js', () => ({
   hashProjectPath: mocks.hashProjectPath,
-  getProjectStoragePath: mocks.getProjectStoragePath
+  getProjectStoragePath: mocks.getProjectStoragePath,
+  resolveMemoryRootMarkerPath: () => null
 }));
 
 vi.mock('../../src/core/sqlite-event-store.js', () => ({

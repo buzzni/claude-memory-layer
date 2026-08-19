@@ -5,7 +5,8 @@ import { join } from 'node:path';
 
 vi.mock('../../src/core/registry/project-path.js', () => ({
   hashProjectPath: (projectPath: string) => projectPath.endsWith('/source') ? 'source-project' : 'destination-project',
-  getProjectStoragePath: (projectPath: string) => `${projectPath}/.cml-memory`
+  getProjectStoragePath: (projectPath: string) => `${projectPath}/.cml-memory`,
+  resolveMemoryRootMarkerPath: () => null
 }));
 
 import { LessonRepository } from '../../src/core/operations/lesson-repository.js';
