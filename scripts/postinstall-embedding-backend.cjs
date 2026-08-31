@@ -182,7 +182,13 @@ function runPostinstall({
   }
 
   log('[claude-memory-layer] Embedding backend is missing or needs CUDA 11 CPU-only repair. Repairing with CPU-only ONNX Runtime...');
-  ensureManagedBackendManifest(rootDir);
+  try {
+    ensureManagedBackendManifest(rootDir);
+  } catch (error) {
+    warn('[claude-memory-layer] Required embedding backend repair failed before install.');
+    warn(`  ${error instanceof Error ? error.message : String(error)}`);
+    return { attempted: true, success: false, cudaMajor, transformersAvailable, skipRequested };
+  }
 
   const npmCommand = platform === 'win32' ? 'npm.cmd' : 'npm';
   const result = spawnSyncImpl(npmCommand, createNpmInstallArgs(rootDir), {

@@ -5,15 +5,43 @@
 
 import { getLightweightMemoryService } from '../../../services/memory-service.js';
 import type { SessionEndInput } from '../../../core/types.js';
+import {
+  getSessionProject,
+  markSessionTerminalIfCurrent
+} from '../../../core/registry/session-registry.js';
 import { readStdin } from './hook-runtime.js';
+
+type SessionEndMemoryService = ReturnType<typeof getLightweightMemoryService>;
+
+export interface ClaudeSessionEndDeps {
+  getMemoryService?: (sessionId: string) => SessionEndMemoryService;
+  getRegistrationId?: (sessionId: string) => string | null;
+  markTerminal?: (sessionId: string, registrationId: string | null) => void;
+}
 
 export async function main(): Promise<string> {
   try {
     // Read input from stdin (parse inside try so malformed JSON still emits a safe envelope)
     const input: SessionEndInput = JSON.parse(await readStdin());
+    await handleClaudeSessionEnd(input);
+    return JSON.stringify({});
+  } catch (error) {
+    if (process.env.CLAUDE_MEMORY_DEBUG) {
+      console.error('Memory hook error:', error);
+    }
+    return JSON.stringify({});
+  }
+}
 
+export async function handleClaudeSessionEnd(
+  input: SessionEndInput,
+  deps: ClaudeSessionEndDeps = {}
+): Promise<void> {
+  const registrationId = (deps.getRegistrationId
+    ?? ((sessionId: string) => getSessionProject(sessionId)?.registrationId ?? null))(input.session_id);
+  try {
     // Use lightweight service (SQLite only, no embedder/vector - FAST!)
-    const memoryService = getLightweightMemoryService(input.session_id);
+    const memoryService = (deps.getMemoryService ?? getLightweightMemoryService)(input.session_id);
 
     // Get session history
     const sessionEvents = await memoryService.getSessionHistory(input.session_id);
@@ -37,12 +65,13 @@ export async function main(): Promise<string> {
       // Process any pending embeddings
       await memoryService.processPendingEmbeddings();
     }
-
-    return JSON.stringify({});
-  } catch (error) {
-    if (process.env.CLAUDE_MEMORY_DEBUG) {
-      console.error('Memory hook error:', error);
+  } finally {
+    try {
+      (deps.markTerminal ?? markSessionTerminalIfCurrent)(input.session_id, registrationId);
+    } catch (error) {
+      if (process.env.CLAUDE_MEMORY_DEBUG) {
+        console.error('Memory session terminal marker failed:', error);
+      }
     }
-    return JSON.stringify({});
   }
 }

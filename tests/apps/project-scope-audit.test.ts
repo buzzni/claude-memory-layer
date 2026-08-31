@@ -1,10 +1,11 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   auditProjectScope,
+  auditProjectScopeWindows,
   formatProjectScopeAudit,
   parseProjectScopeAuditDays
 } from '../../src/apps/cli/project-scope-audit.js';
@@ -79,6 +80,60 @@ describe('project scope audit', () => {
     expect(output).not.toContain('good');
   });
 
+  it('groups discrepancies by sanitized project identity without session ids or paths', () => {
+    const registry: SessionRegistry = {
+      version: 2,
+      sessions: {
+        affected: {
+          projectPath: '/private/repo',
+          projectHash: 'aaaaaaaa',
+          registeredAt: '2026-08-12T00:00:00Z',
+          lastSeenAt: '2026-08-12T00:00:00Z',
+          identityKind: 'git-common-dir'
+        }
+      }
+    };
+    const report = auditProjectScope({ days: 7, groupByProject: true }, {
+      discoverStoreSessions: () => ({
+        scannedStoreCount: 1,
+        unreadableStoreCount: 0,
+        rows: [{ storeHash: 'bbbbbbbb', sessionId: 'affected', eventCount: 9 }]
+      }),
+      loadRegistry: () => registry,
+      canonicalHash: () => 'aaaaaaaa'
+    });
+
+    expect(report.groups).toEqual([expect.objectContaining({
+      canonicalProjectHash: 'aaaaaaaa',
+      projectLabel: 'project-aaaaaaaa',
+      mismatchedSessions: 1,
+      mismatchedEvents: 9,
+      candidateStoreHashes: ['bbbbbbbb'],
+      recommendedAction: 'preview-consolidation'
+    })]);
+    expect(JSON.stringify(report)).not.toContain('affected');
+    expect(JSON.stringify(report)).not.toContain('/private/repo');
+    const output = formatProjectScopeAudit(report);
+    expect(output).toContain('project-aaaaaaaa');
+    expect(output).toContain('candidates=bbbbbbbb');
+    expect(output).toContain('action=preview-consolidation');
+    expect(output).not.toContain('affected');
+    expect(output).not.toContain('/private/repo');
+  });
+
+  it('exposes the standard 1, 7, 14, and 30 day windows', () => {
+    const windows = auditProjectScopeWindows({}, {
+      discoverStoreSessions: ({ days }) => ({
+        scannedStoreCount: days,
+        unreadableStoreCount: 0,
+        rows: []
+      }),
+      loadRegistry: () => ({ version: 2, sessions: {} })
+    });
+    expect(windows.windows.map((window) => window.days)).toEqual([1, 7, 14, 30]);
+    expect(windows.windows.map((window) => window.scannedStoreCount)).toEqual([1, 7, 14, 30]);
+  });
+
   it('includes sessions incorrectly routed to the global store', () => {
     const homeDir = mkdtempSync(path.join(tmpdir(), 'cml-scope-audit-global-'));
     tempDirs.push(homeDir);
@@ -113,6 +168,22 @@ describe('project scope audit', () => {
       recentSessionCount: 1,
       mismatchedSessionCount: 1,
       mismatchedEventCount: 1
+    });
+  });
+
+  it('does not scan through a symlinked projects root', () => {
+    const homeDir = mkdtempSync(path.join(tmpdir(), 'cml-scope-audit-symlink-'));
+    tempDirs.push(homeDir);
+    const memoryRoot = path.join(homeDir, '.claude-code', 'memory');
+    const outside = path.join(homeDir, 'outside-projects');
+    mkdirSync(memoryRoot, { recursive: true });
+    mkdirSync(outside);
+    symlinkSync(outside, path.join(memoryRoot, 'projects'));
+
+    expect(auditProjectScope({ homeDir })).toMatchObject({
+      scannedStoreCount: 0,
+      unreadableStoreCount: 1,
+      recentSessionCount: 0
     });
   });
 });

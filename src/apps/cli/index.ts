@@ -19,6 +19,7 @@ import {
 import { createReadOnlyDiagnosticsService } from '../../services/read-only-diagnostics-service.js';
 import { getProjectStoragePath, resolveProjectStoragePath, hashProjectPath } from '../../core/registry/project-path.js';
 import { resolveCanonicalRepoIdentity } from '../../core/registry/repo-identity.js';
+import { resolveExistingStore } from '../../core/registry/existing-store.js';
 import { createSessionHistoryImporter, type ProgressEvent } from '../../services/session-history-importer.js';
 import {
   createCodexSessionHistoryImporter,
@@ -53,6 +54,7 @@ import {
   planSqliteRedaction,
   requeueEmbeddings
 } from '../../core/operations/index.js';
+import { applyRetentionLifecycle } from '../../core/operations/retention-lifecycle.js';
 import {
   CreateCheckpointInputSchema,
   ListActionsInputSchema,
@@ -150,6 +152,7 @@ import {
 import {
   formatMaintenanceLastRunStatus,
   formatMaintenanceRunReport,
+  maintenanceAggregateReport,
   maintenanceRunRequiresAttention,
   parseMaintenanceMinFreeBytes,
   readMaintenanceLastRunStatus,
@@ -169,12 +172,18 @@ import {
 } from './import-command.js';
 import {
   auditProjectScope,
+  auditProjectScopeWindows,
   formatProjectScopeAudit,
   parseProjectScopeAuditDays
 } from './project-scope-audit.js';
 import {
+  formatProjectBootstrapHealth,
+  inspectProjectBootstrapHealth
+} from './project-bootstrap-health.js';
+import {
   formatVectorStatusJsonReport,
   formatVectorStatusReport,
+  runVectorCompaction,
   resolveVectorStatusCommandOptions
 } from './vector-command.js';
 import {
@@ -194,6 +203,12 @@ import {
   formatRuntimeResourceReport
 } from './runtime-resource-command.js';
 import { collectRuntimeResourceReport } from '../../core/runtime-resource-telemetry.js';
+import {
+  formatEphemeralCleanupReport,
+  formatStoreCleanupPreviewReport,
+  runEphemeralCleanupCommand,
+  runStoreCleanupPreviewCommand
+} from './cleanup-command.js';
 
 // ============================================================
 // Hook Installation Utilities
@@ -364,25 +379,40 @@ function resolveHealthProjectIdentity(projectPath: string | undefined): { scope:
 }
 
 function scanCanonicalProjectStores(canonicalId: string): { scannedStoreCount: number; matchingStoreCount: number; unreadableStoreCount: number } {
-  const projectsRoot = path.join(os.homedir(), '.claude-code', 'memory', 'projects');
+  const memoryRoot = path.join(os.homedir(), '.claude-code', 'memory');
+  const projectsRoot = path.join(memoryRoot, 'projects');
   let scannedStoreCount = 0;
   let matchingStoreCount = 0;
   let unreadableStoreCount = 0;
   let entries: fs.Dirent[];
   try {
+    const projectsStat = fs.lstatSync(projectsRoot);
+    if (!projectsStat.isDirectory() || projectsStat.isSymbolicLink()) {
+      return { scannedStoreCount, matchingStoreCount, unreadableStoreCount: 1 };
+    }
     entries = fs.readdirSync(projectsRoot, { withFileTypes: true });
   } catch {
     return { scannedStoreCount, matchingStoreCount, unreadableStoreCount };
   }
 
   for (const entry of entries) {
-    if (!entry.isDirectory() || !/^[a-f0-9]{8}$/.test(entry.name)) continue;
+    if (!entry.isDirectory() || entry.isSymbolicLink() || !/^[a-f0-9]{8}$/.test(entry.name)) continue;
+    const storagePath = path.join(projectsRoot, entry.name);
     const dbPath = path.join(projectsRoot, entry.name, 'events.sqlite');
     if (!fs.existsSync(dbPath)) continue;
     scannedStoreCount++;
+    if (!isOwnedStorePath(memoryRoot, storagePath, dbPath)) {
+      unreadableStoreCount++;
+      continue;
+    }
     let db: SQLiteDatabase | undefined;
     try {
-      db = createSQLiteDatabase(dbPath, { readonly: true, snapshot: true, walMode: false });
+      db = createSQLiteDatabase(dbPath, {
+        readonly: true,
+        snapshot: true,
+        canonicalMemoryRoot: memoryRoot,
+        walMode: false
+      });
       const sessionsTable = sqliteGet<{ name: string }>(
         db,
         `SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`,
@@ -411,6 +441,26 @@ function scanCanonicalProjectStores(canonicalId: string): { scannedStoreCount: n
     }
   }
   return { scannedStoreCount, matchingStoreCount, unreadableStoreCount };
+}
+
+function isOwnedStorePath(memoryRoot: string, storagePath: string, dbPath: string): boolean {
+  try {
+    const storage = fs.lstatSync(storagePath);
+    const database = fs.lstatSync(dbPath);
+    const rootReal = fs.realpathSync(memoryRoot);
+    const storageRelative = path.relative(rootReal, fs.realpathSync(storagePath));
+    const databaseRelative = path.relative(rootReal, fs.realpathSync(dbPath));
+    const inside = (relative: string) => relative === ''
+      || (!relative.startsWith('..') && !path.isAbsolute(relative));
+    return storage.isDirectory()
+      && !storage.isSymbolicLink()
+      && database.isFile()
+      && !database.isSymbolicLink()
+      && inside(storageRelative)
+      && inside(databaseRelative);
+  } catch {
+    return false;
+  }
 }
 
 function parseCommaList(value: string | undefined): string[] | undefined {
@@ -557,7 +607,12 @@ function resolveOperationProject(project: string | undefined): OperationProjectC
 
 function openOperationReadDatabase(context: OperationProjectContext): SQLiteDatabase | null {
   if (!fs.existsSync(context.dbPath)) return null;
-  return createSQLiteDatabase(context.dbPath, { readonly: true, snapshot: true, walMode: false });
+  return createSQLiteDatabase(context.dbPath, {
+    readonly: true,
+    snapshot: true,
+    canonicalMemoryRoot: path.dirname(path.dirname(context.storagePath)),
+    walMode: false
+  });
 }
 
 async function withOperationWriteDatabase<T>(
@@ -1343,9 +1398,10 @@ program
         service.getStats(),
         service.getOutboxStats()
       ]);
+      const physicalHealth = await service.getVectorPhysicalHealth(stats.vectorCount);
       const rendered = vectorOptions.json
-        ? formatVectorStatusJsonReport({ stats, outbox, storeStatus: service.storeStatus })
-        : formatVectorStatusReport({ stats, outbox, storeStatus: service.storeStatus });
+        ? formatVectorStatusJsonReport({ stats, outbox, physicalHealth, storeStatus: service.storeStatus })
+        : formatVectorStatusReport({ stats, outbox, physicalHealth, storeStatus: service.storeStatus });
       console.log(rendered);
     } catch (error) {
       const message = error instanceof Error && error.message.startsWith('--')
@@ -1355,6 +1411,45 @@ program
       process.exit(1);
     } finally {
       await service?.shutdown().catch(() => undefined);
+    }
+  });
+
+const vectorMaintenanceCmd = program
+  .command('vector')
+  .description('Vector index inspection and bounded maintenance');
+
+vectorMaintenanceCmd
+  .command('compact')
+  .description('Preview vector compaction; requires --apply and an explicit --project to mutate')
+  .option('-p, --project <path>', 'Exact project path (defaults to cwd for preview)')
+  .option('--apply', 'Run bounded Lance optimization')
+  .option('--json', 'Print machine-readable aggregate result')
+  .action(async (options: { project?: string; apply?: boolean; json?: boolean }) => {
+    try {
+      if (options.apply && !options.project) throw new Error('--apply requires an explicit --project');
+      const report = await runVectorCompaction({
+        projectPath: options.project ?? process.cwd(),
+        apply: options.apply === true
+      });
+      if (options.json) {
+        console.log(JSON.stringify(report, null, 2));
+      } else {
+        console.log([
+          `Vector compaction ${report.mode} (${report.projectHash})`,
+          `Eligible: ${report.eligible ? 'yes' : 'no'} (${report.reasons.join(', ') || 'no policy reason'})`,
+          `Logical vectors: ${report.logicalCountBefore} -> ${report.logicalCountAfter}`,
+          `Physical bytes: ${report.physicalHealth.physicalBytes ?? 'unsupported'}`,
+          `Optimize failures: ${report.optimize?.failures ?? 0}`,
+          `Smoke check: ${report.smokeCheck}`
+        ].join('\n'));
+      }
+      if (report.smokeCheck === 'failed' || report.smokeCheck === 'unsupported') process.exitCode = 1;
+    } catch (error) {
+      const message = error instanceof Error && error.message.startsWith('--')
+        ? error.message
+        : 'Vector compaction failed';
+      console.error(message);
+      process.exitCode = 1;
     }
   });
 
@@ -1406,9 +1501,10 @@ maintenanceCommand
   .command('run')
   .description('Run one bounded, lock-safe maintenance cycle')
   .option('-p, --project <path>', 'Process only one project instead of scanning all stores')
-  .option('--max-projects <count>', 'Maximum most-recent stores to scan')
+  .option('--max-projects <count>', 'Maximum stores to scan per round-robin cycle')
   .option('--max-batches <count>', 'Maximum processing rounds per store (one batch per vector schema)', '4')
   .option('--min-free-gb <gb>', 'Block maintenance writes below this free disk space', '5')
+  .option('--no-compaction', 'Process outbox work without vector compaction')
   .option('--json', 'Print a structured aggregate-only report')
   .option('--quiet', 'Print only failures (used by periodic schedulers)')
   .action(async (options) => {
@@ -1418,16 +1514,21 @@ maintenanceCommand
         : Number(options.maxProjects);
       const maxBatches = Number(options.maxBatches);
       const minFreeBytes = parseMaintenanceMinFreeBytes(options.minFreeGb);
+      const selectionOffset = readMaintenanceLastRunStatus()?.nextSelectionOffset ?? 0;
       const report = await runMaintenanceCycle({
         projectPath: options.project,
         maxProjects,
         maxBatches,
-        minFreeBytes
+        minFreeBytes,
+        compactionEnabled: options.compaction !== false,
+        selectionOffset
       });
       writeMaintenanceLastRunStatus(report);
       const requiresAttention = maintenanceRunRequiresAttention(report);
       if (options.quiet !== true) {
-        console.log(options.json ? JSON.stringify(report) : formatMaintenanceRunReport(report));
+        console.log(options.json
+          ? JSON.stringify(maintenanceAggregateReport(report))
+          : formatMaintenanceRunReport(report));
       } else if (requiresAttention) {
         console.error(formatMaintenanceRunReport(report));
       }
@@ -2183,7 +2284,12 @@ retentionCommand
         return;
       }
 
-      const db = createSQLiteDatabase(dbPath, { readonly: true, snapshot: true, walMode: false });
+      const db = createSQLiteDatabase(dbPath, {
+        readonly: true,
+        snapshot: true,
+        canonicalMemoryRoot: path.dirname(path.dirname(storagePath)),
+        walMode: false
+      });
       try {
         const report = runRetentionAudit(db, {
           projectHash,
@@ -2199,6 +2305,102 @@ retentionCommand
       const message = error instanceof Error ? error.message : String(error);
       console.error(`Retention audit failed: ${message}`);
       process.exit(1);
+    }
+  });
+
+retentionCommand
+  .command('apply-lifecycle')
+  .description('Apply audited retention lifecycle marks without deleting canonical events')
+  .requiredOption('-p, --project <path>', 'Exact project path')
+  .requiredOption('--policy <version>', 'Retention policy version (v1)')
+  .requiredOption('--actor <id>', 'Actor recorded in governance audit')
+  .requiredOption('--expected-version <number>', 'Expected current lifecycle version')
+  .option('--limit <count>', 'Maximum event rows to evaluate', '100')
+  .option('--json', 'Print machine-readable JSON')
+  .action(async (options) => {
+    let workerLock: WorkerLock | undefined;
+    try {
+      const context = resolveOperationProject(options.project);
+      const storeResolution = resolveExistingStore(context.projectPath);
+      if (storeResolution.status !== 'existing' || storeResolution.databasePath !== context.dbPath) {
+        throw new Error('--project must resolve to an existing valid memory store');
+      }
+      const expectedVersion = Number(options.expectedVersion);
+      if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 0) {
+        throw new Error('--expected-version must be a non-negative integer');
+      }
+      const actor = String(options.actor ?? '').trim();
+      if (!actor) throw new Error('--actor is required');
+      workerLock = new WorkerLock(path.join(context.storagePath, 'retention-lifecycle.lock'));
+      const acquired = workerLock.acquire();
+      if (!acquired.acquired) throw new Error('retention lifecycle is busy for this project');
+      const memoryRoot = path.dirname(path.dirname(context.storagePath));
+      if (!isOwnedStorePath(memoryRoot, context.storagePath, context.dbPath)) {
+        throw new Error('retention lifecycle store changed or left canonical memory storage');
+      }
+      const result = await withOperationWriteDatabase(context, async (db) => applyRetentionLifecycle(db, {
+        projectHash: context.projectHash,
+        actor,
+        policyVersion: String(options.policy),
+        expectedLifecycleVersion: expectedVersion,
+        limit: parseOperationLimit(options.limit, 100, 1, 10_000)
+      }));
+      if (options.json) console.log(JSON.stringify(result, null, 2));
+      else console.log([
+        `Retention lifecycle applied: ${result.projectHash}`,
+        `Version: ${result.previousLifecycleVersion} -> ${result.lifecycleVersion}`,
+        `Evaluated: ${result.evaluated}`,
+        `Written: ${result.written}`,
+        `Unchanged: ${result.unchanged}`,
+        'Canonical events deleted: 0'
+      ].join('\n'));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Retention lifecycle apply failed: ${message}`);
+      process.exitCode = 1;
+    } finally {
+      workerLock?.release();
+    }
+  });
+
+const cleanupCommand = program
+  .command('cleanup')
+  .description('Preview or apply bounded cleanup policies for CML-owned state');
+
+cleanupCommand
+  .command('ephemeral')
+  .description('Preview stale ephemeral runtime/adherence files; apply only when explicit')
+  .option('--dry-run', 'Preview only (default)')
+  .option('--apply', 'Remove confirmed stale ephemeral files')
+  .option('--class <class>', 'runtime, adherence, or all', 'all')
+  .option('--json', 'Print machine-readable JSON')
+  .action((options) => {
+    try {
+      if (options.apply && options.dryRun) throw new Error('--apply and --dry-run cannot be combined');
+      const report = runEphemeralCleanupCommand(options);
+      console.log(formatEphemeralCleanupReport(report, options.json));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Ephemeral cleanup failed: ${message}`);
+      process.exitCode = 1;
+    }
+  });
+
+cleanupCommand
+  .command('stores')
+  .description('Preview temporary or unattributed project stores; never deletes stores')
+  .requiredOption('--classification <class>', 'temp or unattributed')
+  .option('--dry-run', 'Preview only (always enabled)')
+  .option('--apply', 'Rejected: store deletion is not available')
+  .option('--json', 'Print machine-readable JSON')
+  .action((options) => {
+    try {
+      const report = runStoreCleanupPreviewCommand(options);
+      console.log(formatStoreCleanupPreviewReport(report, options.json));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Store cleanup preview failed: ${message}`);
+      process.exitCode = 1;
     }
   });
 
@@ -3417,16 +3619,44 @@ projectCmd
   .command('scope-audit')
   .description('Read-only aggregate audit for recent cross-store session routing')
   .option('--days <days>', 'Recent time window in days', '7')
+  .option('--windows', 'Report the standard 1, 7, 14, and 30 day windows')
+  .option('--group-by <mode>', 'Optional aggregate grouping: project')
   .option('--json', 'Print a machine-readable aggregate report')
-  .action((options: { days?: string; json?: boolean }) => {
+  .action((options: { days?: string; windows?: boolean; groupBy?: string; json?: boolean }) => {
     try {
-      const report = auditProjectScope({ days: parseProjectScopeAuditDays(options.days) });
+      if (options.groupBy && options.groupBy !== 'project') {
+        throw new Error('--group-by must be project');
+      }
+      const groupByProject = options.groupBy === 'project';
+      if (options.windows) {
+        const report = auditProjectScopeWindows({ groupByProject });
+        console.log(options.json
+          ? JSON.stringify(report, null, 2)
+          : report.windows.map(formatProjectScopeAudit).join('\n\n'));
+        return;
+      }
+      const report = auditProjectScope({ days: parseProjectScopeAuditDays(options.days), groupByProject });
       console.log(options.json ? JSON.stringify(report, null, 2) : formatProjectScopeAudit(report));
     } catch (error) {
       const message = error instanceof Error && error.message.startsWith('--')
         ? error.message
         : 'Project scope audit failed';
       console.error(message);
+      process.exitCode = 1;
+    }
+  });
+
+projectCmd
+  .command('bootstrap-health')
+  .description('Read-only project identity, store, hook, MCP, and bootstrap instruction checks')
+  .option('--project <path>', 'Absolute or relative project path', process.cwd())
+  .option('--json', 'Print machine-readable checks with stable IDs')
+  .action((options: { project: string; json?: boolean }) => {
+    try {
+      const report = inspectProjectBootstrapHealth({ projectPath: options.project });
+      console.log(options.json ? JSON.stringify(report, null, 2) : formatProjectBootstrapHealth(report));
+    } catch {
+      console.error('Project bootstrap health check failed');
       process.exitCode = 1;
     }
   });

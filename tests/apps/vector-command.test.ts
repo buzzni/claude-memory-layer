@@ -3,8 +3,13 @@ import { describe, expect, it } from 'vitest';
 import {
   formatVectorStatusJsonReport,
   formatVectorStatusReport,
+  isOwnedVectorDirectory,
+  runVectorCompaction,
   resolveVectorStatusCommandOptions
 } from '../../src/apps/cli/vector-command.js';
+import { existsSync, mkdirSync, mkdtempSync, symlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import * as path from 'node:path';
 
 describe('vector-status CLI helpers', () => {
   it('defaults to the current project path but rejects empty --project', () => {
@@ -89,6 +94,269 @@ describe('vector-status CLI helpers', () => {
     expect(output).toContain('Status: ok');
     expect(output).toContain('Oldest processing age: none');
     expect(output).not.toContain('dry-run-recovery');
+  });
+
+  it('shows unsupported physical metrics as unknown rather than zero', () => {
+    const output = formatVectorStatusReport({
+      stats: { totalEvents: 10, vectorCount: 9, levelStats: [] },
+      outbox: {
+        embedding: { pending: 0, processing: 0, failed: 0, stuckProcessing: 0, oldestProcessingAgeMs: null, total: 0 },
+        vector: { pending: 0, processing: 0, failed: 0, stuckProcessing: 0, oldestProcessingAgeMs: null, total: 0 }
+      },
+      physicalHealth: {
+        physicalBytes: null,
+        tableCount: null,
+        fragmentCount: null,
+        versionCount: null,
+        bytesPerLogicalVector: null,
+        lastOptimizedAt: null,
+        lastOptimizeOutcome: 'unsupported',
+        amplificationState: 'unknown'
+      }
+    });
+    expect(output).toContain('Physical bytes: unsupported');
+    expect(output).toContain('Tables/fragments/versions: unsupported/unsupported/unsupported');
+    expect(output).not.toContain('Physical bytes: 0');
+  });
+
+  it('keeps compaction preview read-only and applies only inside the project lock', async () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'cml-vector-compact-'));
+    const storagePath = path.join(root, 'projects', 'abc12345');
+    mkdirSync(storagePath, { recursive: true });
+    let optimizeCalls = 0;
+    const lockStatesDuringCount: boolean[] = [];
+    const fakeStore = {
+      count: async () => {
+        lockStatesDuringCount.push(existsSync(path.join(storagePath, 'vector-worker.lock')));
+        return 12;
+      },
+      countAll: async () => {
+        lockStatesDuringCount.push(existsSync(path.join(storagePath, 'vector-worker.lock')));
+        return 20;
+      },
+      getPhysicalHealth: async () => ({
+        physicalBytes: 300 * 1024 * 1024,
+        tableCount: 1,
+        fragmentCount: 4,
+        versionCount: 9,
+        bytesPerLogicalVector: 1024,
+        lastOptimizedAt: null,
+        lastOptimizeOutcome: 'never' as const,
+        amplificationState: 'unknown' as const
+      }),
+      optimizeAll: async () => {
+        optimizeCalls += 1;
+        return {
+          startedAt: '2026-08-31T00:00:00Z',
+          finishedAt: '2026-08-31T00:00:01Z',
+          supported: true,
+          tablesScanned: 1,
+          tablesOptimized: 1,
+          failures: 0,
+          beforeBytes: 300,
+          afterBytes: 200,
+          reclaimedBytes: 100,
+          tableResults: [{ tableKind: 'conversations', outcome: 'optimized' as const }]
+        };
+      }
+    };
+    const deps = {
+      storagePathForProject: () => storagePath,
+      createVectorStore: () => fakeStore as never
+    };
+
+    const preview = await runVectorCompaction({ projectPath: '/repo/app' }, deps);
+    expect(preview).toMatchObject({ mode: 'preview', eligible: true, smokeCheck: 'not_run' });
+    expect(optimizeCalls).toBe(0);
+
+    const applied = await runVectorCompaction({ projectPath: '/repo/app', apply: true }, deps);
+    expect(applied).toMatchObject({ mode: 'apply', logicalCountBefore: 20, logicalCountAfter: 20, smokeCheck: 'passed' });
+    expect(optimizeCalls).toBe(1);
+    expect(lockStatesDuringCount).toEqual([false, true, true]);
+  });
+
+  it('does not compact an empty never-optimized store without a qualifying signal', async () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'cml-vector-compact-empty-'));
+    const storagePath = path.join(root, 'projects', 'abc12345');
+    mkdirSync(storagePath, { recursive: true });
+    let optimizeCalls = 0;
+    const report = await runVectorCompaction({ projectPath: '/repo/app', apply: true }, {
+      storagePathForProject: () => storagePath,
+      createVectorStore: () => ({
+        count: async () => 0,
+        getPhysicalHealth: async () => ({
+          physicalBytes: 0,
+          tableCount: 0,
+          fragmentCount: 0,
+          versionCount: 0,
+          bytesPerLogicalVector: null,
+          lastOptimizedAt: null,
+          lastOptimizeOutcome: 'never' as const,
+          amplificationState: 'unknown' as const
+        }),
+        optimizeAll: async () => {
+          optimizeCalls += 1;
+          throw new Error('must not optimize');
+        }
+      }) as never
+    });
+    expect(report).toMatchObject({ eligible: false, reasons: [], smokeCheck: 'not_run' });
+    expect(optimizeCalls).toBe(0);
+  });
+
+  it('does not create a missing vector directory during preview or apply', async () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'cml-vector-compact-missing-'));
+    const storagePath = path.join(root, 'projects', 'abc12345');
+    mkdirSync(storagePath, { recursive: true });
+    const vectorsPath = path.join(storagePath, 'vectors');
+    const deps = { storagePathForProject: () => storagePath };
+
+    expect(await runVectorCompaction({ projectPath: '/repo/app' }, deps))
+      .toMatchObject({ mode: 'preview', eligible: false, logicalCountBefore: 0 });
+    expect(await runVectorCompaction({ projectPath: '/repo/app', apply: true }, deps))
+      .toMatchObject({ mode: 'apply', eligible: false, logicalCountBefore: 0 });
+    expect(existsSync(vectorsPath)).toBe(false);
+  });
+
+  it('rejects a vector directory that leaves project storage through a symlink', () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'cml-vector-compact-link-'));
+    const storagePath = path.join(root, 'projects', 'abc12345');
+    const externalVectors = path.join(root, 'external-vectors');
+    mkdirSync(storagePath, { recursive: true });
+    mkdirSync(externalVectors);
+    const vectorsPath = path.join(storagePath, 'vectors');
+    symlinkSync(externalVectors, vectorsPath);
+
+    expect(isOwnedVectorDirectory(storagePath, vectorsPath)).toBe(false);
+  });
+
+  it('reports an eligible but unsupported compaction as unsupported', async () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'cml-vector-compact-unsupported-'));
+    const storagePath = path.join(root, 'projects', 'abc12345');
+    mkdirSync(storagePath, { recursive: true });
+    const report = await runVectorCompaction({ projectPath: '/repo/app', apply: true }, {
+      storagePathForProject: () => storagePath,
+      createVectorStore: () => ({
+        count: async () => 4,
+        getPhysicalHealth: async () => ({
+          physicalBytes: 300 * 1024 * 1024,
+          tableCount: 1,
+          fragmentCount: 1,
+          versionCount: 1,
+          bytesPerLogicalVector: 1024,
+          lastOptimizedAt: null,
+          lastOptimizeOutcome: 'never' as const,
+          amplificationState: 'unknown' as const
+        }),
+        optimizeAll: async () => ({
+          startedAt: '2026-08-31T00:00:00Z',
+          finishedAt: '2026-08-31T00:00:01Z',
+          supported: false,
+          tablesScanned: 1,
+          tablesOptimized: 0,
+          failures: 0,
+          beforeBytes: 300,
+          afterBytes: 300,
+          reclaimedBytes: 0,
+          tableResults: [{ tableKind: 'conversations', outcome: 'unsupported' as const }]
+        })
+      }) as never
+    });
+    expect(report).toMatchObject({ eligible: true, smokeCheck: 'unsupported' });
+  });
+
+  it('reports an intact bounded partial compaction as budget exhausted', async () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'cml-vector-compact-budget-'));
+    const storagePath = path.join(root, 'projects', 'abc12345');
+    mkdirSync(storagePath, { recursive: true });
+    const report = await runVectorCompaction({ projectPath: '/repo/app', apply: true }, {
+      storagePathForProject: () => storagePath,
+      createVectorStore: () => ({
+        count: async () => 4,
+        countAll: async () => 4,
+        createReadSmokeVerifier: async () => async () => true,
+        getPhysicalHealth: async () => ({
+          physicalBytes: 300 * 1024 * 1024,
+          tableCount: 2,
+          fragmentCount: 2,
+          versionCount: 4,
+          bytesPerLogicalVector: 1024,
+          lastOptimizedAt: null,
+          lastOptimizeOutcome: 'never' as const,
+          amplificationState: 'unknown' as const
+        }),
+        optimizeAll: async () => ({
+          startedAt: '2026-08-31T00:00:00Z',
+          finishedAt: '2026-08-31T00:00:01Z',
+          supported: true,
+          tablesScanned: 2,
+          tablesOptimized: 1,
+          failures: 0,
+          beforeBytes: 300,
+          afterBytes: 250,
+          reclaimedBytes: 50,
+          budgetExhausted: true,
+          tableResults: [
+            { tableKind: 'events', outcome: 'optimized' as const },
+            { tableKind: 'lessons', outcome: 'skipped' as const, safeErrorCode: 'budget_exhausted' }
+          ]
+        })
+      }) as never
+    });
+
+    expect(report).toMatchObject({ eligible: true, smokeCheck: 'budget_exhausted' });
+  });
+
+  it('fails the compaction smoke check when a captured vector is no longer readable', async () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'cml-vector-compact-smoke-'));
+    const storagePath = path.join(root, 'projects', 'abc12345');
+    mkdirSync(storagePath, { recursive: true });
+    let persistedFailures = 0;
+    const report = await runVectorCompaction({ projectPath: '/repo/app', apply: true }, {
+      storagePathForProject: () => storagePath,
+      createVectorStore: () => ({
+        count: async () => 4,
+        countAll: async () => 4,
+        createReadSmokeVerifier: async () => async () => false,
+        getPhysicalHealth: async () => ({
+          physicalBytes: 300 * 1024 * 1024,
+          tableCount: 1,
+          fragmentCount: 1,
+          versionCount: 2,
+          bytesPerLogicalVector: 1024,
+          lastOptimizedAt: null,
+          lastOptimizeOutcome: 'never' as const,
+          amplificationState: 'unknown' as const
+        }),
+        optimizeAll: async () => ({
+          startedAt: '2026-08-31T00:00:00Z',
+          finishedAt: '2026-08-31T00:00:01Z',
+          supported: true,
+          tablesScanned: 1,
+          tablesOptimized: 1,
+          failures: 0,
+          beforeBytes: 300,
+          afterBytes: 200,
+          reclaimedBytes: 100,
+          tableResults: [{ tableKind: 'conversations', outcome: 'optimized' as const }]
+        }),
+        persistOptimizeResult: (result: { failures: number }) => {
+          persistedFailures = result.failures;
+        }
+      }) as never
+    });
+    expect(report).toMatchObject({
+      logicalCountBefore: 4,
+      logicalCountAfter: 4,
+      smokeCheck: 'failed',
+      optimize: {
+        failures: 1,
+        tableResults: expect.arrayContaining([
+          expect.objectContaining({ safeErrorCode: 'read_smoke_failed' })
+        ])
+      }
+    });
+    expect(persistedFailures).toBe(1);
   });
 
   it('recommends investigation instead of recovery when failed work is fully quarantined', () => {

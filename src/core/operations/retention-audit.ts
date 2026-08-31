@@ -14,7 +14,8 @@ import {
   type RetentionDryRunAction,
   type RetentionFacet,
   type RetentionMemoryLevel,
-  type RetentionPolicyInput
+  type RetentionPolicyInput,
+  type RetentionPolicyResult
 } from './retention-policy.js';
 
 const DEFAULT_AUDIT_LIMIT = 100;
@@ -98,6 +99,12 @@ interface EvaluatedSample {
   wouldChange: boolean;
 }
 
+export interface RetentionEvaluatedCandidate {
+  eventType: string;
+  content: string;
+  result: RetentionPolicyResult;
+}
+
 export function runRetentionAudit(db: SQLiteDatabase, options: RetentionAuditOptions): RetentionAuditReport {
   const projectHash = normalizeProjectHash(options.projectHash);
   if (options.dryRun === false) {
@@ -107,10 +114,61 @@ export function runRetentionAudit(db: SQLiteDatabase, options: RetentionAuditOpt
   const limit = normalizePositiveInteger(options.limit, DEFAULT_AUDIT_LIMIT, 'retention audit limit');
   const sampleLimit = normalizePositiveInteger(options.sampleLimit, DEFAULT_SAMPLE_LIMIT, 'retention audit sample limit');
   const targetType = normalizeOptionalRetentionTargetType(options.targetType);
-  const targetId = normalizeOptionalTargetId(options.targetId);
   if (targetType && targetType !== 'event') {
     return emptyRetentionAuditReport(projectHash, limit);
   }
+  const evaluated = evaluateRetentionCandidates(db, { ...options, projectHash, limit });
+
+  const decisions = emptyDecisionCounts();
+  const evaluatedSamples: EvaluatedSample[] = [];
+  let wouldChange = 0;
+
+  for (const candidate of evaluated) {
+    const result = candidate.result;
+    decisions[result.decision]++;
+    if (result.dryRunDiff.wouldChange) wouldChange++;
+    evaluatedSamples.push({
+      wouldChange: result.dryRunDiff.wouldChange,
+      sample: {
+        targetType: 'event',
+        targetId: result.targetId,
+        eventType: candidate.eventType,
+        decision: result.decision,
+        lifecycleScore: result.lifecycleScore,
+        policyVersion: result.policyVersion,
+        dryRunAction: result.dryRunDiff.action,
+        reasonCodes: result.reasons.map((reason) => reason.code),
+        redactedPreview: redactedPreview(candidate.content, options.projectPath)
+      }
+    });
+  }
+
+  evaluatedSamples.sort((left, right) => {
+    if (left.wouldChange !== right.wouldChange) return left.wouldChange ? -1 : 1;
+    return left.sample.lifecycleScore - right.sample.lifecycleScore;
+  });
+
+  return {
+    dryRun: true,
+    projectHash,
+    policyVersion: RETENTION_POLICY_VERSION,
+    scanned: evaluated.length,
+    limit,
+    decisions,
+    wouldChange,
+    samples: evaluatedSamples.slice(0, sampleLimit).map((entry) => entry.sample)
+  };
+}
+
+export function evaluateRetentionCandidates(
+  db: SQLiteDatabase,
+  options: RetentionAuditOptions
+): RetentionEvaluatedCandidate[] {
+  const projectHash = normalizeProjectHash(options.projectHash);
+  const limit = normalizePositiveInteger(options.limit, DEFAULT_AUDIT_LIMIT, 'retention audit limit');
+  const targetType = normalizeOptionalRetentionTargetType(options.targetType);
+  const targetId = normalizeOptionalTargetId(options.targetId);
+  if (targetType && targetType !== 'event') return [];
   const facetsByTarget = loadFacetsByTarget(db, projectHash);
   const helpfulnessByEvent = loadHelpfulnessByEvent(db);
   const retrievalCounts = loadRetrievalCounts(db, projectHash);
@@ -132,16 +190,12 @@ export function runRetentionAudit(db: SQLiteDatabase, options: RetentionAuditOpt
     eventQueryParams
   );
 
-  const decisions = emptyDecisionCounts();
-  const evaluatedSamples: EvaluatedSample[] = [];
-  let scanned = 0;
-  let wouldChange = 0;
+  const evaluated: RetentionEvaluatedCandidate[] = [];
 
   for (const row of eventRows) {
     const metadata = safeParseObject(row.metadata) ?? {};
     if (!belongsToProject(metadata, projectHash)) continue;
 
-    scanned++;
     const facets = facetsByTarget.get(row.id) ?? [];
     const helpfulness = helpfulnessByEvent.get(row.id);
     const retrievalCount = Math.max(0, Number(row.access_count ?? 0)) + (retrievalCounts.get(row.id) ?? 0);
@@ -161,40 +215,9 @@ export function runRetentionAudit(db: SQLiteDatabase, options: RetentionAuditOpt
       facets
     } satisfies RetentionPolicyInput, { now: options.now });
 
-    decisions[result.decision]++;
-    if (result.dryRunDiff.wouldChange) wouldChange++;
-
-    evaluatedSamples.push({
-      wouldChange: result.dryRunDiff.wouldChange,
-      sample: {
-        targetType: 'event',
-        targetId: row.id,
-        eventType: row.event_type,
-        decision: result.decision,
-        lifecycleScore: result.lifecycleScore,
-        policyVersion: result.policyVersion,
-        dryRunAction: result.dryRunDiff.action,
-        reasonCodes: result.reasons.map((reason) => reason.code),
-        redactedPreview: redactedPreview(row.content, options.projectPath)
-      }
-    });
+    evaluated.push({ eventType: row.event_type, content: row.content, result });
   }
-
-  evaluatedSamples.sort((left, right) => {
-    if (left.wouldChange !== right.wouldChange) return left.wouldChange ? -1 : 1;
-    return left.sample.lifecycleScore - right.sample.lifecycleScore;
-  });
-
-  return {
-    dryRun: true,
-    projectHash,
-    policyVersion: RETENTION_POLICY_VERSION,
-    scanned,
-    limit,
-    decisions,
-    wouldChange,
-    samples: evaluatedSamples.slice(0, sampleLimit).map((entry) => entry.sample)
-  };
+  return evaluated;
 }
 
 export function emptyRetentionAuditReport(projectHash: string, limit = DEFAULT_AUDIT_LIMIT): RetentionAuditReport {

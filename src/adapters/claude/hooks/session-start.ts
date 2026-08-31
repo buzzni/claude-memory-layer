@@ -4,7 +4,7 @@
  */
 
 import { randomUUID } from 'crypto';
-import { getLightweightMemoryService } from '../../../services/memory-service.js';
+import { getLightweightMemoryServiceForProject } from '../../../services/memory-service.js';
 import { registerSession } from '../../../core/registry/session-registry.js';
 import { ensureDaemonRunning, scheduleSessionSummary } from './semantic-daemon-client.js';
 import { isLlmSummaryEnabled } from '../../llm/session-summary-llm.js';
@@ -211,6 +211,25 @@ export interface SessionStartMainOptions {
   contextPresentation?: 'evidence' | 'reference';
 }
 
+export function registerSessionBestEffort(
+  sessionId: string,
+  projectPath: string,
+  register: typeof registerSession = registerSession
+): boolean {
+  try {
+    register(sessionId, projectPath);
+    return true;
+  } catch (error) {
+    // The explicit cwd remains authoritative for this hook. Registry failure
+    // may reduce routing quality for later cwd-less hooks, but must not suppress
+    // project-scoped session startup or context delivery now.
+    if (process.env.CLAUDE_MEMORY_DEBUG) {
+      console.error('Memory session registration failed:', error);
+    }
+    return false;
+  }
+}
+
 export async function main(options: SessionStartMainOptions = {}): Promise<string> {
   // Read input from stdin. Guard the parse so a malformed/empty body still emits
   // a valid envelope instead of throwing past the hook into an unhandled rejection.
@@ -222,7 +241,7 @@ export async function main(options: SessionStartMainOptions = {}): Promise<strin
   }
 
   // Register session with project path for other hooks to find
-  registerSession(input.session_id, input.cwd);
+  registerSessionBestEffort(input.session_id, input.cwd);
 
   // Start semantic daemon in the background (non-blocking) so VectorWorker
   // can process any pending embedding_outbox items immediately.
@@ -238,7 +257,10 @@ export async function main(options: SessionStartMainOptions = {}): Promise<strin
   });
 
   // Use lightweight service to avoid starting background workers in hook process
-  const memoryService = getLightweightMemoryService(input.session_id);
+  // SessionStart already carries the authoritative cwd. Resolve from it
+  // directly so a missing/stale auxiliary registry can never route this hook
+  // into another project's store.
+  const memoryService = getLightweightMemoryServiceForProject(input.cwd);
 
   try {
     // Start session in memory service

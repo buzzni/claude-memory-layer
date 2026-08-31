@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => {
     getRecentRetrievalTraces: vi.fn(),
     getRetrievalTraceStats: vi.fn(),
     getUsefulnessHistory: vi.fn(),
+    getUsefulnessAggregateV2: vi.fn(),
   };
 
   return {
@@ -84,7 +85,7 @@ function loadOverviewWithElements(elements: Record<string, TestElement>, files =
   };
 
   const usefulnessHooks = files.includes('usefulness.js')
-    ? ', renderUsefulnessHistory, updateOverviewUsefulnessStrip, updateRetrievalTelemetryUI'
+    ? ', renderUsefulnessHistory, updateOverviewUsefulnessStrip, updateRetrievalTelemetryUI, applyUsefulnessWindowResponse'
     : '';
   vm.runInNewContext(
     `${source}\n;globalThis.__dashboardTestHooks = { state, updateMemoryUsefulnessUI, updateRetrievalTraceUI, updateKpiCardsUI, updateOverviewActivityUI${usefulnessHooks} };`,
@@ -99,6 +100,7 @@ function loadOverviewWithElements(elements: Record<string, TestElement>, files =
     renderUsefulnessHistory: () => void;
     updateOverviewUsefulnessStrip: () => void;
     updateRetrievalTelemetryUI: () => void;
+    applyUsefulnessWindowResponse: (payload: Record<string, unknown> | null) => void;
   }}).__dashboardTestHooks;
 }
 
@@ -172,6 +174,34 @@ describe('dashboard memory usefulness stats', () => {
       avgSelectedCountForRewrittenQueries: 2,
       avgSelectedCountForRawQueries: 0,
     });
+    mocks.service.getUsefulnessAggregateV2.mockReset().mockResolvedValue({
+      eligible: 4,
+      selected: 4,
+      delivered: 3,
+      evidenceEvaluated: 2,
+      evidenceGrounded: 1,
+      referencesEligible: 1,
+      referencesNavigated: 1,
+      taskOutcomesEvaluated: 1,
+      taskOutcomesSuccessful: 1,
+      explicitPositive: 0,
+      explicitNegative: 0,
+      unknown: 8,
+      unknownByDimension: { delivery: 1, adoption: 1, taskOutcome: 3, reaskOutcome: 0, explicitFeedback: 4 },
+      rates: {
+        selectionYield: { numerator: 4, denominator: 4, unknown: 0, value: 1 },
+        deliveryRate: { numerator: 3, denominator: 3, unknown: 1, value: 1 },
+        evidenceGrounding: { numerator: 1, denominator: 2, unknown: 0, value: 0.5 },
+        referenceNavigation: { numerator: 1, denominator: 1, unknown: 0, value: 1 },
+        taskSuccess: { numerator: 1, denominator: 1, unknown: 3, value: 1 },
+        explicitPositive: { numerator: 0, denominator: 0, unknown: 4, value: null }
+      },
+      sampleState: 'insufficient_sample',
+      minimumSample: 20,
+      evaluatorVersion: 'v2',
+      excludesSessionStart: true,
+      window: { since: '2026-05-01T12:00:00.000Z', until: null }
+    });
     mocks.getServiceFromQuery.mockClear();
     mocks.getLightweightServiceFromQuery.mockClear();
   });
@@ -187,6 +217,7 @@ describe('dashboard memory usefulness stats', () => {
     const body = await res.json();
 
     expect(body.window).toBe('7d');
+    expect(body.usefulnessV2).toMatchObject({ evaluatorVersion: 'v2', sampleState: 'insufficient_sample' });
     expect(body.score).toEqual({ value: 64, label: 'good', confidence: 1 });
     expect(body.generatedAt).toBe('2026-05-08T12:00:00.000Z');
     expect(body.metrics).toMatchObject({
@@ -346,6 +377,24 @@ describe('dashboard memory usefulness stats', () => {
       sessionId: undefined,
       withSelectionsOnly: false,
     });
+  });
+
+  it('keeps the v1 usefulness response available when additive v2 aggregation fails', async () => {
+    mocks.service.getUsefulnessAggregateV2.mockRejectedValueOnce(new Error('v2 table unavailable'));
+
+    const res = await createApp().request('/api/stats/usefulness?window=7d&project=abc12345');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+
+    expect(body.score).toEqual({ value: 64, label: 'good', confidence: 1 });
+    expect(body.usefulnessV2).toMatchObject({
+      eligible: 0,
+      selected: 0,
+      sampleState: 'insufficient_sample',
+      minimumSample: 20,
+      evaluatorVersion: 'v2'
+    });
+    expect(body.usefulnessV2.window.since).toBe('2026-05-01T12:00:00.000Z');
   });
 
   it('returns a generic error when usefulness calculation fails', async () => {
@@ -890,6 +939,71 @@ describe('dashboard memory usefulness stats', () => {
     expect(html).toContain('>reference</span>');
     expect(html).not.toContain('not reused in answer');
     expect(html).not.toContain('grounding 0%');
+  });
+
+  it('renders v2 funnel denominators and n/a for unmeasured outcomes', () => {
+    const elements = { 'retrieval-telemetry-summary': new TestElement() };
+    const hooks = loadOverviewWithElements(elements, ['state.js', 'views.js', 'overview.js', 'usefulness.js']);
+    hooks.state.retrievalTelemetry = null;
+    hooks.state.memoryUsefulness = {
+      usefulnessV2: {
+        evaluatorVersion: 'v2',
+        sampleState: 'insufficient_sample',
+        rates: {
+          selectionYield: { numerator: 3, denominator: 4, unknown: 0, value: 0.75 },
+          deliveryRate: { numerator: 2, denominator: 3, unknown: 1, value: 0.6667 },
+          evidenceGrounding: { numerator: 1, denominator: 2, unknown: 1, value: 0.5 },
+          referenceNavigation: { numerator: 0, denominator: 0, unknown: 2, value: null },
+          taskSuccess: { numerator: 0, denominator: 0, unknown: 4, value: null },
+          explicitPositive: { numerator: 0, denominator: 0, unknown: 4, value: null }
+        }
+      }
+    };
+
+    hooks.updateRetrievalTelemetryUI();
+    const html = elements['retrieval-telemetry-summary'].innerHTML;
+    expect(html).toContain('75.0% (3/4, 0 unknown)');
+    expect(html).toContain('Evidence grounding');
+    expect(html).toContain('n/a (0 measured, 2 unknown)');
+    expect(html).toContain('Task success</strong> n/a');
+    expect(html).toContain('Evaluator v2 · insufficient sample');
+    expect(html).not.toContain('Task success</strong> 0.0%');
+  });
+
+  it('refreshes the v2 funnel when the usefulness window response changes', () => {
+    const elements = {
+      'retrieval-telemetry-summary': new TestElement(),
+      'memory-usefulness-score': new TestElement(),
+      'memory-usefulness-label': new TestElement(),
+      'memory-usefulness-confidence': new TestElement(),
+      'memory-usefulness-components': new TestElement(),
+      'memory-usefulness-diagnostics': new TestElement()
+    };
+    const hooks = loadOverviewWithElements(elements, ['state.js', 'views.js', 'overview.js', 'usefulness.js']);
+    hooks.state.retrievalTelemetry = null;
+
+    hooks.applyUsefulnessWindowResponse({
+      window: '30d',
+      score: { value: null, label: 'unknown', confidence: 0, status: 'insufficient-data' },
+      components: [],
+      diagnostics: [],
+      usefulnessV2: {
+        evaluatorVersion: 'v2',
+        sampleState: 'sufficient',
+        rates: {
+          selectionYield: { numerator: 9, denominator: 10, unknown: 0, value: 0.9 },
+          deliveryRate: { numerator: 8, denominator: 9, unknown: 1, value: 0.8889 },
+          evidenceGrounding: { numerator: 6, denominator: 8, unknown: 1, value: 0.75 },
+          referenceNavigation: { numerator: 0, denominator: 0, unknown: 0, value: null },
+          taskSuccess: { numerator: 0, denominator: 0, unknown: 0, value: null },
+          explicitPositive: { numerator: 0, denominator: 0, unknown: 0, value: null }
+        }
+      }
+    });
+
+    const html = elements['retrieval-telemetry-summary'].innerHTML;
+    expect(html).toContain('90.0% (9/10, 0 unknown)');
+    expect(html).toContain('Evaluator v2 · sufficient sample');
   });
 
   it('renders the overview usefulness strip from the usefulness payload', () => {

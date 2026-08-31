@@ -15,6 +15,21 @@ export interface ProjectScopeStoreSession {
 export interface ProjectScopeAuditOptions {
   homeDir?: string;
   days?: number;
+  groupByProject?: boolean;
+}
+
+export interface ProjectScopeAuditGroup {
+  canonicalProjectHash: string;
+  projectLabel: string;
+  identityKind: 'memory-root-marker' | 'git-common-dir' | 'path-fallback' | 'unknown';
+  correctlyScopedSessions: number;
+  staleRegistrySessions: number;
+  unregisteredSessions: number;
+  mismatchedSessions: number;
+  duplicateSessions: number;
+  mismatchedEvents: number;
+  candidateStoreHashes: string[];
+  recommendedAction: 'none' | 'inspect-registry' | 'preview-consolidation';
 }
 
 export interface ProjectScopeAuditReport {
@@ -30,10 +45,17 @@ export interface ProjectScopeAuditReport {
   mismatchedSessionCount: number;
   duplicateSessionCount: number;
   mismatchedEventCount: number;
+  groups?: ProjectScopeAuditGroup[];
+}
+
+export interface ProjectScopeAuditWindowsReport {
+  schemaVersion: 'project-scope-audit-windows-v1';
+  mode: 'read-only';
+  windows: ProjectScopeAuditReport[];
 }
 
 export interface ProjectScopeAuditDeps {
-  discoverStoreSessions?: (options: Required<ProjectScopeAuditOptions>) => {
+  discoverStoreSessions?: (options: { homeDir: string; days: number }) => {
     rows: ProjectScopeStoreSession[];
     scannedStoreCount: number;
     unreadableStoreCount: number;
@@ -57,7 +79,8 @@ export function auditProjectScope(
 ): ProjectScopeAuditReport {
   const resolved = {
     homeDir: options.homeDir ?? os.homedir(),
-    days: parseProjectScopeAuditDays(options.days)
+    days: parseProjectScopeAuditDays(options.days),
+    groupByProject: options.groupByProject === true
   };
   const discovered = (deps.discoverStoreSessions ?? discoverProjectStoreSessions)(resolved);
   const registry = (deps.loadRegistry ?? ((homeDir) => loadSessionRegistry({ homeDir })))(resolved.homeDir);
@@ -76,12 +99,20 @@ export function auditProjectScope(
   let mismatchedSessionCount = 0;
   let duplicateSessionCount = 0;
   let mismatchedEventCount = 0;
+  const groups = new Map<string, ProjectScopeAuditGroup>();
 
   for (const [sessionId, rows] of bySession) {
     const entry = registry.sessions[sessionId];
     if (rows.length > 1) duplicateSessionCount += 1;
     if (!entry) {
       unregisteredSessionCount += 1;
+      if (resolved.groupByProject) {
+        const unknown = groupFor(groups, '__unregistered__', 'unknown');
+        unknown.unregisteredSessions += 1;
+        if (rows.length > 1) unknown.duplicateSessions += 1;
+        addCandidateStores(unknown, rows);
+        unknown.recommendedAction = 'inspect-registry';
+      }
       continue;
     }
 
@@ -92,14 +123,28 @@ export function auditProjectScope(
     }
     const staleRegistry = canonical !== entry.projectHash;
     if (staleRegistry) staleRegistrySessionCount += 1;
+    const group = resolved.groupByProject
+      ? groupFor(groups, canonical, entry.identityKind ?? 'unknown')
+      : undefined;
+    if (group && staleRegistry) group.staleRegistrySessions += 1;
+    if (group && rows.length > 1) group.duplicateSessions += 1;
 
     const mismatchedRows = rows.filter((row) => row.storeHash !== canonical);
     if (mismatchedRows.length > 0) {
       mismatchedSessionCount += 1;
       mismatchedEventCount += mismatchedRows.reduce((sum, row) => sum + row.eventCount, 0);
+      if (group) {
+        group.mismatchedSessions += 1;
+        group.mismatchedEvents += mismatchedRows.reduce((sum, row) => sum + row.eventCount, 0);
+        addCandidateStores(group, mismatchedRows);
+        group.recommendedAction = 'preview-consolidation';
+      }
     }
     if (!staleRegistry && rows.length === 1 && mismatchedRows.length === 0) {
       correctlyScopedSessionCount += 1;
+      if (group) group.correctlyScopedSessions += 1;
+    } else if (group && group.recommendedAction === 'none') {
+      group.recommendedAction = 'inspect-registry';
     }
   }
 
@@ -115,12 +160,26 @@ export function auditProjectScope(
     unregisteredSessionCount,
     mismatchedSessionCount,
     duplicateSessionCount,
-    mismatchedEventCount
+    mismatchedEventCount,
+    ...(resolved.groupByProject
+      ? { groups: Array.from(groups.values()).sort((a, b) => a.canonicalProjectHash.localeCompare(b.canonicalProjectHash)) }
+      : {})
+  };
+}
+
+export function auditProjectScopeWindows(
+  options: Omit<ProjectScopeAuditOptions, 'days'> = {},
+  deps: ProjectScopeAuditDeps = {}
+): ProjectScopeAuditWindowsReport {
+  return {
+    schemaVersion: 'project-scope-audit-windows-v1',
+    mode: 'read-only',
+    windows: [1, 7, 14, 30].map((days) => auditProjectScope({ ...options, days }, deps))
   };
 }
 
 export function formatProjectScopeAudit(report: ProjectScopeAuditReport): string {
-  return [
+  const lines = [
     `Project scope audit (${report.days} days, read-only)`,
     `Stores scanned: ${report.scannedStoreCount}`,
     `Unreadable stores: ${report.unreadableStoreCount}`,
@@ -130,12 +189,25 @@ export function formatProjectScopeAudit(report: ProjectScopeAuditReport): string
     `Unregistered sessions: ${report.unregisteredSessionCount}`,
     `Mismatched sessions: ${report.mismatchedSessionCount}`,
     `Duplicate sessions: ${report.duplicateSessionCount}`,
-    `Events in non-canonical stores: ${report.mismatchedEventCount}`,
-    'No project stores or registry entries were changed.'
-  ].join('\n');
+    `Events in non-canonical stores: ${report.mismatchedEventCount}`
+  ];
+  if (report.groups) {
+    lines.push('Project groups:');
+    for (const group of report.groups) {
+      lines.push(
+        `- ${group.projectLabel} identity=${group.identityKind} correct=${group.correctlyScopedSessions}`
+        + ` stale=${group.staleRegistrySessions} unregistered=${group.unregisteredSessions}`
+        + ` mismatched=${group.mismatchedSessions}/${group.mismatchedEvents}`
+        + ` duplicate=${group.duplicateSessions} candidates=${group.candidateStoreHashes.join(',') || 'none'}`
+        + ` action=${group.recommendedAction}`
+      );
+    }
+  }
+  lines.push('No project stores or registry entries were changed.');
+  return lines.join('\n');
 }
 
-function discoverProjectStoreSessions(options: Required<ProjectScopeAuditOptions>): {
+function discoverProjectStoreSessions(options: { homeDir: string; days: number }): {
   rows: ProjectScopeStoreSession[];
   scannedStoreCount: number;
   unreadableStoreCount: number;
@@ -147,16 +219,28 @@ function discoverProjectStoreSessions(options: Required<ProjectScopeAuditOptions
   let scannedStoreCount = 0;
   let unreadableStoreCount = 0;
 
+  if (!isLocalDirectory(memoryRoot)) {
+    return {
+      rows,
+      scannedStoreCount,
+      unreadableStoreCount: fs.existsSync(memoryRoot) ? 1 : 0
+    };
+  }
+
   const globalDbPath = path.join(memoryRoot, 'events.sqlite');
   if (isLocalFile(globalDbPath)) {
     stores.push({ storeHash: '__global__', dbPath: globalDbPath });
   }
 
   let entries: fs.Dirent[] = [];
-  try {
-    entries = fs.readdirSync(projectsRoot, { withFileTypes: true });
-  } catch {
-    entries = [];
+  if (fs.existsSync(projectsRoot) && !isLocalDirectory(projectsRoot)) {
+    unreadableStoreCount += 1;
+  } else {
+    try {
+      entries = fs.readdirSync(projectsRoot, { withFileTypes: true });
+    } catch {
+      entries = [];
+    }
   }
 
   for (const entry of entries) {
@@ -172,7 +256,11 @@ function discoverProjectStoreSessions(options: Required<ProjectScopeAuditOptions
     let unreadable = false;
     const storeRows: ProjectScopeStoreSession[] = [];
     try {
-      db = createSQLiteDatabase(store.dbPath, { readonly: true, snapshot: true });
+      db = createSQLiteDatabase(store.dbPath, {
+        readonly: true,
+        snapshot: true,
+        canonicalMemoryRoot: memoryRoot
+      });
       const recent = sqliteAll<{ sessionId: string; eventCount: number }>(
         db,
         `SELECT session_id AS sessionId, COUNT(*) AS eventCount
@@ -204,9 +292,50 @@ function discoverProjectStoreSessions(options: Required<ProjectScopeAuditOptions
   return { rows, scannedStoreCount, unreadableStoreCount };
 }
 
+function groupFor(
+  groups: Map<string, ProjectScopeAuditGroup>,
+  canonicalProjectHash: string,
+  identityKind: ProjectScopeAuditGroup['identityKind']
+): ProjectScopeAuditGroup {
+  let group = groups.get(canonicalProjectHash);
+  if (!group) {
+    group = {
+      canonicalProjectHash,
+      projectLabel: canonicalProjectHash === '__unregistered__' ? 'unregistered' : `project-${canonicalProjectHash}`,
+      identityKind,
+      correctlyScopedSessions: 0,
+      staleRegistrySessions: 0,
+      unregisteredSessions: 0,
+      mismatchedSessions: 0,
+      duplicateSessions: 0,
+      mismatchedEvents: 0,
+      candidateStoreHashes: [],
+      recommendedAction: 'none'
+    };
+    groups.set(canonicalProjectHash, group);
+  }
+  return group;
+}
+
+function addCandidateStores(group: ProjectScopeAuditGroup, rows: ProjectScopeStoreSession[]): void {
+  group.candidateStoreHashes = Array.from(new Set([
+    ...group.candidateStoreHashes,
+    ...rows.map((row) => row.storeHash)
+  ])).sort();
+}
+
 function isLocalFile(file: string): boolean {
   try {
     return fs.lstatSync(file).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function isLocalDirectory(directory: string): boolean {
+  try {
+    const stat = fs.lstatSync(directory);
+    return stat.isDirectory() && !stat.isSymbolicLink();
   } catch {
     return false;
   }

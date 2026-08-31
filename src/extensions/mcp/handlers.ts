@@ -8,12 +8,15 @@ import * as path from 'node:path';
 
 import {
   getDefaultMemoryService,
+  getReadOnlyMemoryService,
+  getReadOnlyMemoryServiceForProject,
   getMemoryServiceForProject,
   shutdownMemoryServices,
   type MemoryService
 } from '../../services/memory-service.js';
 import {
   createReadOnlyDiagnosticsService,
+  MemoryStoreResolutionError,
   type ReadOnlyDiagnosticsService
 } from '../../services/read-only-diagnostics-service.js';
 import { SQLiteEventStore } from '../../core/sqlite-event-store.js';
@@ -80,6 +83,7 @@ import {
   isLowSignalContextContent
 } from '../../core/retrieval-quality.js';
 import type { RetrievalMode } from '../../core/retriever.js';
+import type { RetrievalOutcomeDiagnostics, RetrievalOutcomeReason } from '../../core/retrieval-telemetry.js';
 import {
   ContextCompressor,
   summarizeCompressionTelemetry,
@@ -179,6 +183,13 @@ function resolveMemoryService(args: MemoryToolArgs): MemoryService {
   return getDefaultMemoryService();
 }
 
+function resolveReadOnlyMemoryService(args: MemoryToolArgs): MemoryService {
+  const projectPath = typeof args.projectPath === 'string' ? args.projectPath.trim() : '';
+  return projectPath.length > 0
+    ? getReadOnlyMemoryServiceForProject(projectPath)
+    : getReadOnlyMemoryService();
+}
+
 const LIGHTWEIGHT_READ_TOOL_NAMES = new Set([
   'mem-timeline',
   'mem-details',
@@ -262,12 +273,16 @@ export async function handleToolCallInDomain(
       return await handleReadOnlyMemStats(args);
     }
 
-    const memoryService = resolveMemoryService(args);
-    if (!LIGHTWEIGHT_READ_TOOL_NAMES.has(name)) {
-      await memoryService.initialize();
-    }
+    const ownsReadOnlyService = name === 'mem-context-pack' && args.refreshLatest === false;
+    const memoryService = ownsReadOnlyService
+      ? resolveReadOnlyMemoryService(args)
+      : resolveMemoryService(args);
+    try {
+      if (!LIGHTWEIGHT_READ_TOOL_NAMES.has(name)) {
+        await memoryService.initialize();
+      }
 
-    switch (name) {
+      switch (name) {
       case 'mem-search':
         return await handleMemSearch(memoryService, args);
 
@@ -289,17 +304,27 @@ export async function handleToolCallInDomain(
       case 'mem-source-ref':
         return await handleMemSourceRef(memoryService, args);
 
-      default:
-        return {
-          content: [{ type: 'text', text: `Unknown tool: ${name}` }],
-          isError: true
-        };
+        default:
+          return {
+            content: [{ type: 'text', text: `Unknown tool: ${name}` }],
+            isError: true
+          };
+      }
+    } finally {
+      if (ownsReadOnlyService) {
+        try {
+          await memoryService.shutdown();
+        } catch (error) {
+          // Snapshot/service cleanup is best effort. Do not replace a completed
+          // read response (or its original failure) with a secondary close error.
+          if (process.env.CLAUDE_MEMORY_DEBUG) {
+            console.error('Read-only memory service cleanup failed:', safeErrorSummary(error));
+          }
+        }
+      }
     }
   } catch (error) {
-    return {
-      content: [{ type: 'text', text: `Error: ${safeErrorSummary(error)}` }],
-      isError: true
-    };
+    return safeMcpErrorResult(error);
   }
 }
 
@@ -2002,6 +2027,7 @@ interface McpMemoryRetrievalOptions {
 interface McpMemoryRetrievalResult {
   memories: ContextPackMemory[];
   warning?: string;
+  diagnostics?: RetrievalOutcomeDiagnostics;
 }
 
 const SEMANTIC_VECTOR_FALLBACK_WARNING = 'Warning: semantic/vector retrieval unavailable; used keyword fallback.';
@@ -2021,7 +2047,11 @@ async function retrieveMcpMemories(
     const candidates = options.sessionId
       ? rankSessionKeywordMatches(query, await memoryService.getSessionHistory(options.sessionId), fetchTopK)
       : await memoryService.keywordSearch(query, { topK: fetchTopK, includeToolObservations: true });
-    return { memories: selectMcpMemoryResults(candidates, options.topK, options.eventType) };
+    const memories = selectMcpMemoryResults(candidates, options.topK, options.eventType);
+    return {
+      memories,
+      diagnostics: basicMcpRetrievalDiagnostics(memories.length > 0 ? 'selected' : 'no_keyword_candidates', memories, 0)
+    };
   }
 
   try {
@@ -2032,7 +2062,10 @@ async function retrieveMcpMemories(
       ...(options.retrievalMode ? { retrievalMode: options.retrievalMode } : {})
     };
     const result = await memoryService.retrieveMemories(query, retrieveOptions);
-    return { memories: selectMcpMemoryResults(result.memories, options.topK, options.eventType) };
+    return {
+      memories: selectMcpMemoryResults(result.memories, options.topK, options.eventType),
+      diagnostics: result.outcomeDiagnostics
+    };
   } catch (error) {
     if (!isVectorSchemaMismatchError(error)) {
       throw error;
@@ -2046,9 +2079,18 @@ async function retrieveMcpMemories(
           fetchTopK
         )
         : await memoryService.keywordSearch(query, { topK: fetchTopK });
-      return { memories: selectMcpMemoryResults(candidates, options.topK, options.eventType), warning: SEMANTIC_VECTOR_FALLBACK_WARNING };
+      const memories = selectMcpMemoryResults(candidates, options.topK, options.eventType);
+      return {
+        memories,
+        warning: SEMANTIC_VECTOR_FALLBACK_WARNING,
+        diagnostics: basicMcpRetrievalDiagnostics('stale_vector_schema', memories, 0)
+      };
     } catch {
-      return { memories: [], warning: SEMANTIC_VECTOR_FALLBACK_FAILED_WARNING };
+      return {
+        memories: [],
+        warning: SEMANTIC_VECTOR_FALLBACK_FAILED_WARNING,
+        diagnostics: basicMcpRetrievalDiagnostics('stale_vector_schema', [], 0)
+      };
     }
   }
 }
@@ -2058,6 +2100,43 @@ function selectMcpMemoryResults(memories: ContextPackMemory[], topK: number, eve
     .filter((memory) => !isLowSignalContextContent(memory.event.content || ''))
     .filter((memory) => eventType === undefined || memory.event.eventType === eventType)
     .slice(0, topK);
+}
+
+function basicMcpRetrievalDiagnostics(
+  outcomeReason: RetrievalOutcomeReason,
+  memories: ContextPackMemory[],
+  threshold: number
+): RetrievalOutcomeDiagnostics {
+  return {
+    outcomeReason,
+    laneCandidateCounts: {},
+    filteredCounts: {},
+    topScore: memories[0]?.score ?? null,
+    threshold,
+    freshnessState: 'unknown'
+  };
+}
+
+function contextPackOutcomeDiagnostics(
+  base: RetrievalOutcomeDiagnostics | undefined,
+  candidates: ContextPackMemory[],
+  selected: ContextPackMemory[]
+): RetrievalOutcomeDiagnostics {
+  if (selected.length > 0) {
+    return { ...(base ?? basicMcpRetrievalDiagnostics('selected', candidates, 0)), outcomeReason: 'selected' };
+  }
+  if (candidates.length > 0) {
+    const fallback = base ?? basicMcpRetrievalDiagnostics('context_pack_policy_filtered', candidates, 0);
+    return {
+      ...fallback,
+      outcomeReason: 'context_pack_policy_filtered',
+      filteredCounts: {
+        ...fallback.filteredCounts,
+        context_pack_policy: candidates.length
+      }
+    };
+  }
+  return base ?? basicMcpRetrievalDiagnostics('no_keyword_candidates', [], 0);
 }
 
 function eventTypeArg(value: unknown): EventType | undefined {
@@ -2297,7 +2376,8 @@ async function handleMemContextPack(memoryService: MemoryService, args: Record<s
     query,
     sessionId,
     candidates: search.memories,
-    selected: relevantMemories
+    selected: relevantMemories,
+    diagnostics: contextPackOutcomeDiagnostics(search.diagnostics, search.memories, relevantMemories)
   });
   const hasPerspectiveContext = optionalString(args.observerActorId) !== undefined
     || optionalString(args.targetActorId) !== undefined
@@ -2411,8 +2491,13 @@ async function recordMcpContextPackTrace(
     sessionId?: string;
     candidates: ContextPackMemory[];
     selected: ContextPackMemory[];
+    diagnostics?: RetrievalOutcomeDiagnostics;
   }
 ): Promise<void> {
+  // Structural service doubles and older compatible facades may not expose
+  // capabilities yet. Only an explicit read-only capability disables writes;
+  // the write itself remains best-effort below.
+  if (memoryService.capabilities?.telemetryWrites === false) return;
   try {
     await memoryService.recordQueryTrace({
       sessionId: input.sessionId,
@@ -2421,7 +2506,8 @@ async function recordMcpContextPackTrace(
       strategy: 'mcp-context-pack',
       candidateEventIds: uniqueContextPackEventIds(input.candidates),
       selectedEventIds: uniqueContextPackEventIds(input.selected),
-      confidence: input.selected.length > 0 ? 'suggested' : 'none'
+      confidence: input.selected.length > 0 ? 'suggested' : 'none',
+      outcomeDiagnostics: input.diagnostics
     });
   } catch {
     // Best-effort usage telemetry must not break read-only MCP context retrieval.
@@ -2677,11 +2763,17 @@ async function loadCuratedLessons(
   requesterActorId: string | undefined
 ): Promise<CanonicalMemoryInjection<MemoryLesson>[]> {
   if (!projectPath || !path.isAbsolute(projectPath)) return [];
-  const dbPath = path.join(getProjectStoragePath(projectPath), 'events.sqlite');
+  const storagePath = getProjectStoragePath(projectPath);
+  const dbPath = path.join(storagePath, 'events.sqlite');
   if (!existsSync(dbPath)) return [];
   let db: SQLiteDatabase | undefined;
   try {
-    db = createSQLiteDatabase(dbPath, { readonly: true, walMode: false });
+    db = createSQLiteDatabase(dbPath, {
+      readonly: true,
+      snapshot: true,
+      canonicalMemoryRoot: path.dirname(path.dirname(storagePath)),
+      walMode: false
+    });
     const table = sqliteGet<{ name: string }>(
       db,
       `SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`,
@@ -3447,6 +3539,35 @@ function safeErrorSummary(error: unknown): string {
     .replace(/(^|[\s([{=,:;])\/(?!\/)[^\s'"`<>)]*/g, '$1[path]')
     .replace(/(^|[\s([{=,:;])(?:\.{1,2}[\\/])?[^\s'"`<>)]*\.(?:db|sqlite|jsonl|log|txt)\b[^\s'"`<>)]*/g, '$1[path]');
   return safeInline(scrubbedPaths, 180) || 'details suppressed';
+}
+
+function safeMcpErrorResult(error: unknown): ToolResult {
+  const raw = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+  const resolution = error instanceof MemoryStoreResolutionError ? error : undefined;
+  const code = resolution?.reason
+    ?? (raw.includes('readonly database') || raw.includes('read-only database')
+      ? 'readonly_runtime'
+      : 'runtime_error');
+  const remediation = code === 'readonly_runtime'
+    ? 'runtime_configuration'
+    : code === 'snapshot_unavailable' || code === 'snapshot_inconsistent'
+      ? 'snapshot_runtime'
+      : resolution
+        ? 'store_validation'
+        : 'retry_or_inspect_runtime';
+  const message = resolution
+    ? `Memory store is ${resolution.storeStatus}; canonical storage was not modified.`
+    : safeErrorSummary(error);
+  return {
+    content: [{ type: 'text', text: `Error [${code}]: ${message}` }],
+    structuredContent: {
+      code,
+      ...(resolution ? { storeStatus: resolution.storeStatus } : {}),
+      retryable: code === 'snapshot_inconsistent',
+      remediation
+    },
+    isError: true
+  };
 }
 
 function numberArg(value: unknown, fallback: number, min: number, max: number): number {

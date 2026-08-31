@@ -241,4 +241,33 @@ describe('retrieval presentation and navigation telemetry', () => {
       deliveries: { legacyUnknownRows: 1 }
     });
   });
+
+  it('persists bounded outcome diagnostics and drops unapproved cardinality keys', async () => {
+    await store.recordRetrievalTrace({
+      traceId: 'diagnostic-trace',
+      queryText: 'bounded diagnostics',
+      candidateEventIds: [],
+      selectedEventIds: [],
+      triggerType: 'user_prompt',
+      outcomeDiagnostics: {
+        outcomeReason: 'scope_filtered',
+        laneCandidateCounts: { keyword: 4, '/private/path': 999 } as Record<string, number>,
+        filteredCounts: { scope: 4, arbitrary: 10 } as Record<string, number>,
+        topScore: 0.77,
+        threshold: 0.7,
+        freshnessState: 'fresh'
+      }
+    });
+
+    const trace = (await store.getRecentRetrievalTraces(5)).find((item) => item.traceId === 'diagnostic-trace');
+    expect(trace?.outcomeDiagnostics).toEqual({
+      outcomeReason: 'scope_filtered',
+      laneCandidateCounts: { keyword: 4 },
+      filteredCounts: { scope: 4 },
+      topScore: 0.77,
+      threshold: 0.7,
+      freshnessState: 'fresh'
+    });
+    expect(JSON.stringify(trace)).not.toContain('/private/path');
+  });
 });

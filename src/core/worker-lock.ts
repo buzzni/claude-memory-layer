@@ -1,4 +1,4 @@
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, linkSync, lstatSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -32,6 +32,8 @@ interface WorkerLockPayload {
   ownerId: string;
   acquiredAt: string;
 }
+
+const UNPARSEABLE_LOCK_GRACE_MS = 5_000;
 
 export class WorkerLock {
   private readonly lockPath: string;
@@ -74,6 +76,14 @@ export class WorkerLock {
       }
 
       const existing = this.readPayload();
+      if (!existing && this.unparseableLockMayBeInFlight()) {
+        return {
+          acquired: false,
+          lockPath: this.lockPath,
+          reason: 'busy',
+          holderPid: null
+        };
+      }
       if (existing?.pid && this.isProcessRunning(existing.pid)) {
         return {
           acquired: false,
@@ -83,7 +93,7 @@ export class WorkerLock {
         };
       }
 
-      if (!this.removeExistingLock()) {
+      if (!this.removeExistingLock(existing)) {
         const reread = this.readPayload();
         return {
           acquired: false,
@@ -112,21 +122,25 @@ export class WorkerLock {
   }
 
   private tryCreateLockFile(): 'created' | 'exists' {
-    let fd: number | null = null;
+    const temporaryPath = `${this.lockPath}.${this.ownerId}.tmp`;
     try {
-      fd = openSync(this.lockPath, 'wx');
-      writeFileSync(fd, JSON.stringify({
+      writeFileSync(temporaryPath, JSON.stringify({
         pid: this.pid,
         ownerId: this.ownerId,
         acquiredAt: this.now().toISOString()
-      }));
+      }), { flag: 'wx', mode: 0o600 });
+      linkSync(temporaryPath, this.lockPath);
       return 'created';
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code === 'EEXIST') return 'exists';
       throw error;
     } finally {
-      if (fd !== null) closeSync(fd);
+      try {
+        unlinkSync(temporaryPath);
+      } catch {
+        // The complete payload has already been linked or creation failed.
+      }
     }
   }
 
@@ -161,7 +175,18 @@ export class WorkerLock {
     return payload.pid === this.pid && payload.ownerId === this.ownerId;
   }
 
-  private removeExistingLock(): boolean {
+  private unparseableLockMayBeInFlight(): boolean {
+    try {
+      const stat = lstatSync(this.lockPath);
+      return this.now().getTime() - stat.mtimeMs < UNPARSEABLE_LOCK_GRACE_MS;
+    } catch {
+      return false;
+    }
+  }
+
+  private removeExistingLock(expected: WorkerLockPayload | null): boolean {
+    const current = this.readPayload();
+    if (!sameLockPayload(current, expected)) return false;
     try {
       unlinkSync(this.lockPath);
       return true;
@@ -170,6 +195,13 @@ export class WorkerLock {
       return code === 'ENOENT';
     }
   }
+}
+
+function sameLockPayload(left: WorkerLockPayload | null, right: WorkerLockPayload | null): boolean {
+  if (left === null || right === null) return left === right;
+  return left.pid === right.pid
+    && left.ownerId === right.ownerId
+    && left.acquiredAt === right.acquiredAt;
 }
 
 function defaultIsProcessRunning(pid: number): boolean {

@@ -218,6 +218,7 @@ describe('createMemoryEngineServices', () => {
       createMemoryEngineServices({
         storagePath,
         readOnly: true,
+        snapshotReads: true,
         cwd: '/workspace/project',
         initialize: async () => {},
         getProjectHash: () => null,
@@ -232,7 +233,16 @@ describe('createMemoryEngineServices', () => {
       await expect(stat(storagePath)).rejects.toMatchObject({ code: 'ENOENT' });
       expect(factories.createSQLiteEventStore).toHaveBeenCalledWith(
         path.join(storagePath, 'events.sqlite'),
-        { readonly: true, markdownMirrorRoot: storagePath }
+        {
+          readonly: true,
+          snapshot: true,
+          canonicalMemoryRoot: storagePath,
+          markdownMirrorRoot: storagePath
+        }
+      );
+      expect(factories.createVectorStore).toHaveBeenCalledWith(
+        path.join(storagePath, 'vectors'),
+        { readOnly: true, canonicalRoot: storagePath }
       );
     } finally {
       await rm(root, { recursive: true, force: true });

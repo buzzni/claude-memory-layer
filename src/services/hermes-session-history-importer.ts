@@ -12,7 +12,7 @@ import * as path from 'path';
 import { createHash, randomUUID } from 'crypto';
 import { createDatabase, type Database } from '../core/db-wrapper.js';
 import { applyPrivacyFilter, truncateOutput } from '../core/privacy/index.js';
-import { registerSession } from '../core/registry/session-registry.js';
+import { registerTerminalSession } from '../core/registry/session-registry.js';
 import type { Config } from '../core/types.js';
 import { MemoryService } from './memory-service.js';
 import { isWorthStoringPrompt, type ImportOptions, type ImportResult } from './session-history-importer.js';
@@ -713,7 +713,12 @@ export class HermesSessionHistoryImporter {
     await this.memoryService.endSession(memorySessionId);
 
     if (effectiveProjectPath) {
-      registerSession(memorySessionId, effectiveProjectPath);
+      try {
+        registerTerminalSession(memorySessionId, effectiveProjectPath);
+      } catch {
+        // Keep completed imports successful when the auxiliary machine-wide
+        // session registry is temporarily read-only or locked.
+      }
     }
 
     if (options.verbose) {

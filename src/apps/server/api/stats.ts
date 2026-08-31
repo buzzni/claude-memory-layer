@@ -21,6 +21,7 @@ import {
   type KpiWindow
 } from './stats-metrics.js';
 import { hashProjectPath } from '../../../core/registry/project-path.js';
+import { emptyUsefulnessAggregateV2 } from '../../../core/retrieval-telemetry.js';
 import { sanitizeGovernanceAuditValue } from '../../../core/operations/governance-audit.js';
 import {
   createSQLiteDatabase,
@@ -1851,15 +1852,19 @@ statsRouter.get('/usefulness', async (c) => {
     const windowStart = new Date(now - windowToMs(window));
     // Fetch exactly the window's events (uncapped) rather than a 20k slice, so
     // the result can't be silently truncated for an active window.
-    const [events, helpfulness, traces] = await Promise.all([
+    const [events, helpfulness, traces, usefulnessV2] = await Promise.all([
       memoryService.getEventsAfter(windowStart.toISOString()),
       memoryService.getHelpfulnessStats(windowStart),
-      memoryService.getRecentRetrievalTraces(traceLimit)
+      memoryService.getRecentRetrievalTraces(traceLimit),
+      memoryService.getUsefulnessAggregateV2({ since: windowStart, minimumSample: 20 })
+        .catch(() => emptyUsefulnessAggregateV2({ since: windowStart, minimumSample: 20 }))
     ]);
-
-    return c.json(computeMemoryUsefulnessSummary(events, helpfulness, traces, now, window, {
-      tracesLimit: traceLimit
-    }));
+    return c.json({
+      ...computeMemoryUsefulnessSummary(events, helpfulness, traces, now, window, {
+        tracesLimit: traceLimit
+      }),
+      usefulnessV2
+    });
   } catch (error) {
     console.error('[stats/usefulness] failed to calculate dashboard metrics', error);
     return c.json({ error: 'Unable to calculate memory usefulness statistics' }, 500);

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
@@ -93,6 +93,80 @@ describe('WorkerLock', () => {
       staleRecovered: true
     });
     expect(readPayload(lockPath)).toMatchObject({ pid: 333, ownerId: 'owner-new' });
+  });
+
+  it('does not remove a recent unparseable lock that may still be initializing', () => {
+    const dir = makeTempDir('cml-worker-lock-initializing-');
+    const lockPath = path.join(dir, 'vector-worker.lock');
+    const now = new Date('2026-05-25T00:00:00.000Z');
+    writeFileSync(lockPath, '');
+    utimesSync(lockPath, now, now);
+
+    const contender = new WorkerLock(lockPath, {
+      pid: 333,
+      ownerId: 'contender',
+      now: () => now,
+      isProcessRunning: () => false
+    });
+
+    expect(contender.acquire()).toEqual({
+      acquired: false,
+      lockPath,
+      holderPid: null,
+      reason: 'busy'
+    });
+    expect(readFileSync(lockPath, 'utf8')).toBe('');
+  });
+
+  it('recovers an unparseable lock after the initialization grace expires', () => {
+    const dir = makeTempDir('cml-worker-lock-malformed-stale-');
+    const lockPath = path.join(dir, 'vector-worker.lock');
+    const staleTime = new Date('2026-05-24T00:00:00.000Z');
+    writeFileSync(lockPath, '{broken');
+    utimesSync(lockPath, staleTime, staleTime);
+
+    const contender = new WorkerLock(lockPath, {
+      pid: 333,
+      ownerId: 'contender',
+      now: () => new Date('2026-05-25T00:00:00.000Z'),
+      isProcessRunning: () => false
+    });
+
+    expect(contender.acquire()).toMatchObject({ acquired: true, staleRecovered: true });
+    expect(readPayload(lockPath)).toMatchObject({ pid: 333, ownerId: 'contender' });
+  });
+
+  it('does not remove a new owner that replaces a stale lock during recovery', () => {
+    const dir = makeTempDir('cml-worker-lock-replaced-');
+    const lockPath = path.join(dir, 'vector-worker.lock');
+    writeFileSync(lockPath, JSON.stringify({
+      pid: 777,
+      ownerId: 'dead-owner',
+      acquiredAt: '2026-05-24T00:00:00.000Z'
+    }));
+    const contender = new WorkerLock(lockPath, {
+      pid: 888,
+      ownerId: 'contender',
+      isProcessRunning: (pid) => {
+        if (pid === 777) {
+          writeFileSync(lockPath, JSON.stringify({
+            pid: 999,
+            ownerId: 'replacement-owner',
+            acquiredAt: '2026-05-25T00:00:00.000Z'
+          }));
+          return false;
+        }
+        return pid === 999;
+      }
+    });
+
+    expect(contender.acquire()).toEqual({
+      acquired: false,
+      lockPath,
+      holderPid: 999,
+      reason: 'busy'
+    });
+    expect(readPayload(lockPath)).toMatchObject({ pid: 999, ownerId: 'replacement-owner' });
   });
 
   it('only releases the lock owned by this instance', () => {

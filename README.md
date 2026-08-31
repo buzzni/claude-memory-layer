@@ -89,6 +89,7 @@ claude-memory-layer maintenance install --interval 900
 
 claude-memory-layer maintenance status
 claude-memory-layer maintenance run --json
+claude-memory-layer maintenance run --no-compaction
 
 # 기본 5 GiB보다 넉넉한 여유 공간을 요구할 때
 claude-memory-layer maintenance run --min-free-gb 10
@@ -1180,6 +1181,7 @@ npm run dev
 
 | 문서 | 설명 |
 |------|------|
+| [memory-utilization-improvements/2026-08-31-audit](specs/memory-utilization-improvements/2026-08-31-audit/README.md) | 현재 컴퓨터 감사 기반 MCP read-only, scope, retrieval, vector, retention, telemetry 상세 spec |
 | [agentmemory-inspired-memory-operations](specs/agentmemory-inspired-memory-operations/spec.md) | facets/actions/frontier/checkpoints/retention/lessons 운영형 메모리 |
 | [honcho-inspired-peer-context-memory](specs/honcho-inspired-peer-context-memory/spec.md) | actor card / perspective observation / multi-agent 관점 메모리 |
 | [vector-outbox-v2](specs/vector-outbox-v2/spec.md) | Transactional Outbox, versioned vector upsert, worker recovery |

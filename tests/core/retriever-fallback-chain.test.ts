@@ -51,6 +51,35 @@ describe('Retriever fallback chain', () => {
     expect(out.memories.length).toBeGreaterThan(0);
     expect(vectorCalls).toBeGreaterThan(0);
     expect(out.fallbackTrace).toContain('fallback:deep');
+    expect(out.outcomeDiagnostics).toMatchObject({
+      outcomeReason: 'selected',
+      freshnessState: 'unknown'
+    });
+  });
+
+  it('classifies a fully exhausted zero-hit chain without forcing a result', async () => {
+    const fakeEventStore = {
+      async keywordSearch() { return []; },
+      async getRecentEvents() { return []; },
+      async getEvent() { return null; },
+      async getEvents() { return []; },
+      async getSessionEvents() { return []; }
+    };
+    const fakeVectorStore = { async search() { return []; } };
+    const fakeEmbedder = { async embed() { return { vector: [0.1, 0.2] }; } };
+    const retriever = new Retriever(fakeEventStore as any, fakeVectorStore as any, fakeEmbedder as any, new Matcher());
+
+    const out = await retriever.retrieve('missing exact identifier', {
+      strategy: 'auto',
+      topK: 3,
+      includeSessionContext: false
+    });
+
+    expect(out.memories).toEqual([]);
+    expect(out.outcomeDiagnostics).toMatchObject({
+      outcomeReason: 'no_vector_candidates',
+      topScore: null
+    });
   });
 
   it('applies custom rerank weights when provided', async () => {
