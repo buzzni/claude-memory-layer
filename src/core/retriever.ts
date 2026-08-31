@@ -33,6 +33,7 @@ import {
   normalizeRetrievalDebugLanes,
   type RetrievalDebugLane
 } from './retrieval-debug-lanes.js';
+import type { RetrievalOutcomeDiagnostics, RetrievalOutcomeReason } from './retrieval-telemetry.js';
 import type { MemoryEvent, MatchResult, NodeType, SharedTroubleshootingEntry } from './types.js';
 
 export type { RetrievalDebugLane, RetrievalDebugLaneName } from './retrieval-debug-lanes.js';
@@ -86,6 +87,12 @@ type DebuggableSearchResult = SearchResult & {
   lanes?: RetrievalDebugLane[];
 };
 
+interface StageOutcomeDiagnostics {
+  laneCandidateCounts: Record<string, number>;
+  filteredCounts: Record<string, number>;
+  topScore: number | null;
+}
+
 export interface RetrievalOptions {
   topK: number;
   minScore: number;
@@ -135,6 +142,7 @@ export interface RetrievalResult {
   rawQueryText?: string;
   effectiveQueryText?: string;
   queryRewriteKind?: string;
+  outcomeDiagnostics?: RetrievalOutcomeDiagnostics;
 }
 
 export interface MemoryWithContext {
@@ -247,7 +255,8 @@ export class Retriever {
         context: '',
         fallbackTrace,
         selectedDebug: [],
-        candidateDebug: []
+        candidateDebug: [],
+        outcomeDiagnostics: emptyOutcomeDiagnostics('quality_filtered', opts.minScore)
       };
     }
 
@@ -358,7 +367,12 @@ export class Retriever {
       current = {
         results: finalSummary,
         candidateResults: finalSummary,
-        matchResult: this.matcher.matchSearchResults(finalSummary, () => 0)
+        matchResult: this.matcher.matchSearchResults(finalSummary, () => 0),
+        diagnostics: {
+          laneCandidateCounts: { summary: finalSummary.length },
+          filteredCounts: {},
+          topScore: finalSummary[0]?.score ?? null
+        }
       };
       fallbackTrace.push('fallback:summary');
     }
@@ -372,6 +386,12 @@ export class Retriever {
     });
     const memories = await this.enrichResults(selectedResults, opts as RetrievalOptions, query);
     const context = this.buildContext(memories, opts.maxTokens);
+    const outcomeDiagnostics = finalizeOutcomeDiagnostics(
+      current.diagnostics,
+      selectedResults,
+      opts.minScore,
+      fallbackTrace
+    );
 
     return {
       memories,
@@ -383,7 +403,8 @@ export class Retriever {
       candidateDebug: (current.candidateResults || []).slice(0, Math.max(opts.topK * 3, 20)).map((r: DebuggableSearchResult) => this.debugDetailForResult(r)),
       rawQueryText: current.queryRewriteKind ? query : undefined,
       effectiveQueryText: current.effectiveQueryText,
-      queryRewriteKind: current.queryRewriteKind
+      queryRewriteKind: current.queryRewriteKind,
+      outcomeDiagnostics
     };
   }
 
@@ -458,6 +479,7 @@ export class Retriever {
     matchResult: MatchResult;
     effectiveQueryText?: string;
     queryRewriteKind?: string;
+    diagnostics: StageOutcomeDiagnostics;
   }> {
     const searchQuery = input.qualityQuery ?? query;
     let rerankQuery = searchQuery;
@@ -524,8 +546,21 @@ export class Retriever {
     });
     const top = qualityFiltered.slice(0, input.topK);
     const matchResult = this.matcher.matchSearchResults(top, () => 0);
+    const diagnostics: StageOutcomeDiagnostics = {
+      laneCandidateCounts: {
+        [input.strategy === 'deep' ? 'vector' : 'keyword']: initialResults.length,
+        graph: countResultsWithLane(graphExpandedResults, 'graph_path'),
+        session_rescue: countResultsWithLane(expandedResults, 'session_event'),
+        summary: countResultsWithLane(expandedResults, 'session_summary')
+      },
+      filteredCounts: {
+        scope: Math.max(0, rerankedResults.length - filtered.length),
+        quality: Math.max(0, filtered.length - qualityFiltered.length)
+      },
+      topScore: qualityFiltered[0]?.score ?? rerankedResults[0]?.score ?? null
+    };
 
-    return { results: top, candidateResults: qualityFiltered, matchResult, effectiveQueryText, queryRewriteKind };
+    return { results: top, candidateResults: qualityFiltered, matchResult, effectiveQueryText, queryRewriteKind, diagnostics };
   }
 
   private applyQualityFilters(
@@ -1308,6 +1343,56 @@ function withRetrievalLane(result: DebuggableSearchResult, lane: RetrievalDebugL
   return {
     ...result,
     lanes: mergeRetrievalLanes(existing, [lane])
+  };
+}
+
+function countResultsWithLane(
+  results: DebuggableSearchResult[],
+  lane: RetrievalDebugLane['lane']
+): number {
+  return results.filter((result) => result.lanes?.some((item) => item.lane === lane)).length;
+}
+
+function emptyOutcomeDiagnostics(
+  outcomeReason: RetrievalOutcomeReason,
+  threshold: number
+): RetrievalOutcomeDiagnostics {
+  return {
+    outcomeReason,
+    laneCandidateCounts: {},
+    filteredCounts: {},
+    topScore: null,
+    threshold,
+    freshnessState: 'unknown'
+  };
+}
+
+function finalizeOutcomeDiagnostics(
+  stage: StageOutcomeDiagnostics,
+  selected: DebuggableSearchResult[],
+  threshold: number,
+  fallbackTrace: string[]
+): RetrievalOutcomeDiagnostics {
+  let outcomeReason: RetrievalOutcomeReason;
+  if (selected.length > 0) outcomeReason = 'selected';
+  else if ((stage.filteredCounts.scope ?? 0) > 0) outcomeReason = 'scope_filtered';
+  else if ((stage.filteredCounts.quality ?? 0) > 0) outcomeReason = 'quality_filtered';
+  else if (stage.topScore !== null) outcomeReason = 'below_score_threshold';
+  else if ((stage.laneCandidateCounts.session_rescue ?? 0) === 0
+    && fallbackTrace.some((entry) => entry.includes('session'))) outcomeReason = 'session_rescue_empty';
+  else if (fallbackTrace.some((entry) => entry.includes('deep'))) outcomeReason = 'no_vector_candidates';
+  else outcomeReason = 'no_keyword_candidates';
+
+  return {
+    outcomeReason,
+    laneCandidateCounts: stage.laneCandidateCounts,
+    filteredCounts: {
+      ...stage.filteredCounts,
+      threshold: stage.topScore !== null && selected.length === 0 ? 1 : 0
+    },
+    topScore: stage.topScore,
+    threshold,
+    freshnessState: 'unknown'
   };
 }
 

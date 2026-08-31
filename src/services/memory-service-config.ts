@@ -8,6 +8,8 @@ export interface MemoryServiceConfig {
   storagePath: string;
   embeddingModel?: string;
   readOnly?: boolean;
+  /** Open SQLite through an ephemeral WAL-consistent snapshot for one-shot reads. */
+  snapshotReads?: boolean;
   /** Enable DuckDB analytics store (default: true for server, false for hooks) */
   analyticsEnabled?: boolean;
   /** Lightweight mode for hooks - skip heavy initialization (default: false) */

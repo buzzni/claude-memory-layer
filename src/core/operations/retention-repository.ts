@@ -20,7 +20,7 @@ import {
   type RetentionScoreFactors,
   type RetentionTargetType
 } from './retention-policy.js';
-import { writeGovernanceAuditEntry } from './governance-audit.js';
+import { writeGovernanceAuditEntrySync } from './governance-audit.js';
 
 const RequiredTrimmedStringSchema = z.string().trim().min(1);
 
@@ -237,6 +237,10 @@ export class RetentionRepository {
   constructor(private readonly db: SQLiteDatabase) {}
 
   async upsert(input: unknown): Promise<MemoryRetentionScore> {
+    return this.upsertSync(input);
+  }
+
+  upsertSync(input: unknown): MemoryRetentionScore {
     const parsed = normalizeUpsertInput(input);
     const existing = this.getLatestForTarget({
       targetType: parsed.result.targetType,
@@ -295,7 +299,7 @@ export class RetentionRepository {
     }
 
     const saved = this.require(scoreId, parsed.projectHash);
-    await writeGovernanceAuditEntry(this.db, {
+    writeGovernanceAuditEntrySync(this.db, {
       operation: 'retention_score',
       actor: parsed.actor ?? 'cml-core',
       projectHash: parsed.projectHash,

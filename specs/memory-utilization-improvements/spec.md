@@ -5,6 +5,19 @@
 f4d5c120 프로젝트 분석을 통해 확인된 메모리 시스템의 cascade failure를 해소하고,
 저장된 메모리가 실제로 Claude 응답에 기여하는 비율을 높인다.
 
+### 2026-08-31 감사 기반 상세 spec
+
+현재 2.3.2 운영 데이터와 로컬 저장소 감사에서 확인된 후속 개선은
+[`2026-08-31-audit/README.md`](2026-08-31-audit/README.md)를 상위 인덱스로 사용한다.
+기존 IMP 항목을 대체하지 않고, 다음 운영 계약을 구체화한다.
+
+- MCP read-only 신뢰성
+- project scope와 bootstrap 수렴
+- 약한 프로젝트의 retrieval 품질 회복
+- LanceDB 물리 저장소 maintenance
+- retention 및 ephemeral state 정리
+- usefulness telemetry v2 보정
+
 **성공 기준**:
 - Retrieval trace 기록률 > 95% (현재 ~0%)
 - 메모리 Graduation L1+ 비율 > 10% (현재 0%)

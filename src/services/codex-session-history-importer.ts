@@ -12,7 +12,7 @@ import * as os from 'os';
 import * as readline from 'readline';
 import { createHash, randomUUID } from 'crypto';
 import { MemoryService } from './memory-service.js';
-import { registerSession } from '../core/registry/session-registry.js';
+import { registerTerminalSession } from '../core/registry/session-registry.js';
 import type { ImportOptions, ImportResult } from './session-history-importer.js';
 import { mergeAgentResponseBlocks, truncateAgentResponse } from './turn-buffering.js';
 
@@ -873,7 +873,13 @@ export class CodexSessionHistoryImporter {
     await this.memoryService.endSession(sessionId);
 
     if (effectiveProjectPath) {
-      registerSession(sessionId, effectiveProjectPath);
+      try {
+        registerTerminalSession(sessionId, effectiveProjectPath);
+      } catch {
+        // Import data is already durable. A machine-wide registry permission
+        // problem must not retroactively turn a successful project import into
+        // a failed session; bootstrap health reports the registry separately.
+      }
     }
 
     if (options.verbose) {

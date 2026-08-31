@@ -47,20 +47,42 @@ function updateRetrievalTelemetryUI() {
   const container = document.getElementById('retrieval-telemetry-summary');
   if (!container) return;
   const telemetry = state.retrievalTelemetry;
-  if (!telemetry || telemetry.error) {
+  const usefulnessV2 = state.memoryUsefulness?.usefulnessV2;
+  if ((!telemetry || telemetry.error) && !usefulnessV2) {
     container.textContent = 'No presentation-aware telemetry yet.';
     return;
   }
-  const grounding = telemetry.evidenceGrounding || {};
-  const navigation = telemetry.referenceNavigation || {};
-  const presentations = new Map((telemetry.deliveries?.byPresentation || [])
+  const grounding = telemetry?.evidenceGrounding || {};
+  const navigation = telemetry?.referenceNavigation || {};
+  const presentations = new Map((telemetry?.deliveries?.byPresentation || [])
     .map(row => [row.presentationMode, row.deliveredItemCount || 0]));
   const pct = value => `${(Number(value || 0) * 100).toFixed(1)}%`;
-  container.innerHTML = `
+  const legacyTelemetry = telemetry && !telemetry.error ? `
     <div><strong>${formatNumber(presentations.get('evidence') || 0)}</strong> evidence items · <strong>${pct(grounding.groundingRate)}</strong> grounded (${formatNumber(grounding.groundedDeliveries || 0)}/${formatNumber(grounding.evaluatedDeliveries || 0)})</div>
     <div style="margin-top:6px;"><strong>${formatNumber(presentations.get('reference') || 0)}</strong> reference items · <strong>${pct(navigation.navigationRate)}</strong> navigated (${formatNumber(navigation.navigatedTraces || 0)}/${formatNumber(navigation.eligibleTraces || 0)} traces)</div>
     <div style="margin-top:6px;"><strong>${formatNumber(presentations.get('core') || 0)}</strong> core items · ${formatNumber(navigation.ambiguousOpenCount || 0)} ambiguous opens</div>
-  `;
+  ` : '';
+  const v2Rate = rate => rate && rate.value !== null && rate.value !== undefined
+    ? `${(Number(rate.value) * 100).toFixed(1)}% (${formatNumber(rate.numerator)}/${formatNumber(rate.denominator)}, ${formatNumber(rate.unknown)} unknown)`
+    : `n/a (${formatNumber(rate?.denominator || 0)} measured, ${formatNumber(rate?.unknown || 0)} unknown)`;
+  const v2Telemetry = usefulnessV2 ? `
+    <div class="usefulness-v2-funnel" style="margin-top:10px;">
+      <div><strong>Selection</strong> ${v2Rate(usefulnessV2.rates?.selectionYield)}</div>
+      <div><strong>Delivery</strong> ${v2Rate(usefulnessV2.rates?.deliveryRate)}</div>
+      <div><strong>Evidence grounding</strong> ${v2Rate(usefulnessV2.rates?.evidenceGrounding)}</div>
+      <div><strong>Reference navigation</strong> ${v2Rate(usefulnessV2.rates?.referenceNavigation)}</div>
+      <div><strong>Task success</strong> ${v2Rate(usefulnessV2.rates?.taskSuccess)}</div>
+      <div><strong>Explicit feedback</strong> ${v2Rate(usefulnessV2.rates?.explicitPositive)}</div>
+      <div style="margin-top:6px;">Evaluator ${escapeHtml(usefulnessV2.evaluatorVersion || 'v2')} · ${usefulnessV2.sampleState === 'sufficient' ? 'sufficient sample' : 'insufficient sample'} · session-start excluded</div>
+    </div>
+  ` : '';
+  container.innerHTML = legacyTelemetry + v2Telemetry;
+}
+
+function applyUsefulnessWindowResponse(memoryUsefulness) {
+  state.memoryUsefulness = memoryUsefulness;
+  updateMemoryUsefulnessUI();
+  updateRetrievalTelemetryUI();
 }
 
 async function loadUsefulnessHistory(options = {}) {
@@ -326,8 +348,7 @@ function setupUsefulnessViewListeners() {
       state.usefulnessWindow = windowValue;
       const memoryUsefulness = await fetch(apiUrl(`${API_BASE}/stats/usefulness`, { window: windowValue }))
         .then(r => r.json()).catch(() => null);
-      state.memoryUsefulness = memoryUsefulness;
-      updateMemoryUsefulnessUI();
+      applyUsefulnessWindowResponse(memoryUsefulness);
     });
   });
 }

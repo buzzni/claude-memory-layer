@@ -43,6 +43,7 @@ import {
 export interface MemoryEngineServicesOptions {
   storagePath: string;
   readOnly: boolean;
+  snapshotReads?: boolean;
   embeddingModel?: string;
   cwd?: string;
   initialize: () => Promise<void>;
@@ -59,9 +60,17 @@ export interface MemoryEngineServicesOptions {
 export interface MemoryEngineServicesFactories {
   createSQLiteEventStore?: (
     dbPath: string,
-    options: { readonly: boolean; markdownMirrorRoot: string }
+    options: {
+      readonly: boolean;
+      snapshot?: boolean;
+      canonicalMemoryRoot?: string;
+      markdownMirrorRoot: string;
+    }
   ) => SQLiteEventStore;
-  createVectorStore?: (vectorsPath: string) => VectorStore;
+  createVectorStore?: (
+    vectorsPath: string,
+    options?: { readOnly?: boolean; canonicalRoot?: string }
+  ) => VectorStore;
   createEmbedder?: (model: string) => Embedder;
   getDefaultEmbedder?: () => Embedder;
   getDefaultMatcher?: () => Matcher;
@@ -98,12 +107,17 @@ export function createMemoryEngineServices(options: MemoryEngineServicesOptions)
     path.join(storagePath, 'events.sqlite'),
     {
       readonly: options.readOnly,
+      ...(options.snapshotReads
+        ? { snapshot: true, canonicalMemoryRoot: canonicalMemoryRootForStorage(storagePath) }
+        : {}),
       markdownMirrorRoot: storagePath
     }
   );
-  const vectorStore = (factories.createVectorStore ?? defaultCreateVectorStore)(
-    path.join(storagePath, 'vectors')
-  );
+  const createVectorStore = factories.createVectorStore ?? defaultCreateVectorStore;
+  const vectorsPath = path.join(storagePath, 'vectors');
+  const vectorStore = options.readOnly
+    ? createVectorStore(vectorsPath, { readOnly: true, canonicalRoot: storagePath })
+    : createVectorStore(vectorsPath);
   const embeddingModel = options.embeddingModel || process.env.CLAUDE_MEMORY_EMBEDDING_MODEL;
   const embedder = embeddingModel
     ? (factories.createEmbedder ?? defaultCreateEmbedder)(embeddingModel)
@@ -189,13 +203,26 @@ function shouldEnableSourceFileDeriver(options: MemoryEngineServicesOptions): bo
 
 function defaultCreateSQLiteEventStore(
   dbPath: string,
-  options: { readonly: boolean; markdownMirrorRoot: string }
+  options: {
+    readonly: boolean;
+    snapshot?: boolean;
+    canonicalMemoryRoot?: string;
+    markdownMirrorRoot: string;
+  }
 ): SQLiteEventStore {
   return new SQLiteEventStore(dbPath, options);
 }
 
-function defaultCreateVectorStore(vectorsPath: string): VectorStore {
-  return new VectorStore(vectorsPath);
+function canonicalMemoryRootForStorage(storagePath: string): string {
+  const parent = path.dirname(storagePath);
+  return path.basename(parent) === 'projects' ? path.dirname(parent) : storagePath;
+}
+
+function defaultCreateVectorStore(
+  vectorsPath: string,
+  options?: { readOnly?: boolean; canonicalRoot?: string }
+): VectorStore {
+  return new VectorStore(vectorsPath, options);
 }
 
 function defaultCreateEmbedder(model: string): Embedder {

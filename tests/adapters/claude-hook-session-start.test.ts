@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   formatCoreMemoryBlockContext,
+  registerSessionBestEffort,
   selectSessionStartMemories,
   sessionStartExcerpt
 } from '../../src/adapters/claude/hooks/session-start.js';
@@ -59,6 +60,23 @@ describe('formatCoreMemoryBlockContext', () => {
     expect(context).not.toContain(content);
     expect(context).toContain('[reference: use mem-core-block-get for user block]');
     expect(context).not.toContain('Private user preference');
+  });
+});
+
+describe('registerSessionBestEffort', () => {
+  it('keeps SessionStart available when the auxiliary registry cannot be written', () => {
+    expect(registerSessionBestEffort('session-1', '/repo/project', () => {
+      throw new Error('registry lock unavailable');
+    })).toBe(false);
+  });
+
+  it('reports a successful auxiliary registration', () => {
+    let registered: [string, string] | null = null;
+    expect(registerSessionBestEffort('session-2', '/repo/project', (sessionId, projectPath) => {
+      registered = [sessionId, projectPath];
+      return 'registration-id';
+    })).toBe(true);
+    expect(registered).toEqual(['session-2', '/repo/project']);
   });
 });
 

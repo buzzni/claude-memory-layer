@@ -58,6 +58,7 @@ export interface MemoryServiceCompositionConfig {
   storagePath: string;
   embeddingModel?: string;
   readOnly?: boolean;
+  snapshotReads?: boolean;
   lightweightMode?: boolean;
   embeddingOnly?: boolean;
   projectHash?: string;
@@ -124,6 +125,7 @@ export function createMemoryServiceComposition(
   const storagePath = expandPath(options.config.storagePath);
   const projectPathForMirror = options.getProjectPath?.() ?? options.config.projectPath ?? process.cwd();
   const readOnly = options.config.readOnly ?? false;
+  const snapshotReads = options.config.snapshotReads ?? false;
   const lightweightMode = options.config.lightweightMode ?? false;
   const embeddingOnly = options.config.embeddingOnly ?? false;
   const sharedStoreConfig = options.config.sharedStoreConfig ?? options.defaultSharedStoreConfig ?? {
@@ -139,6 +141,7 @@ export function createMemoryServiceComposition(
   const engineServices = (factories.createMemoryEngineServices ?? defaultCreateMemoryEngineServices)({
     storagePath,
     readOnly,
+    snapshotReads,
     embeddingModel: options.config.embeddingModel,
     cwd: projectPathForMirror,
     initialize: options.initialize,

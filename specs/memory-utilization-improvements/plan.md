@@ -5,6 +5,23 @@
 f4d5c120 실데이터 분석을 기반으로, 메모리 검색 → Trace 기록 → Graduation → Helpfulness의
 cascade failure를 단계적으로 수정한다.
 
+## 2026-08-31 감사 후속 실행 계획
+
+최신 운영 감사에 대한 단계별 요구사항, 테스트, 롤아웃 및 롤백 계약은
+[`2026-08-31-audit/README.md`](2026-08-31-audit/README.md)에 정의한다.
+
+실행 순서는 아래와 같다.
+
+1. MU-01 MCP read-only 신뢰성 복구
+2. MU-02 project scope 및 bootstrap 표준화
+3. MU-03 retrieval 품질 회복
+4. MU-04 vector storage maintenance
+5. MU-05 retention 및 ephemeral cleanup
+6. MU-06 usefulness telemetry 보정
+
+MU-01이 이후 측정의 신뢰 기반이므로 나머지 변경보다 먼저 배포한다. 역사적 store 병합,
+vector 삭제, retention mutation, 상태 파일 삭제는 각 spec의 dry-run/apply 계약과 별도 승인을 따른다.
+
 ---
 
 ## Phase 1: Critical Fix (1주차)

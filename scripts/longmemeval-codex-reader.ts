@@ -1,6 +1,6 @@
 #!/usr/bin/env tsx
 import { spawn } from 'node:child_process';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 
@@ -490,7 +490,8 @@ function isCountQuestion(question: string): boolean {
 async function runCodexReader(prompt: string, timeoutMs: number): Promise<string> {
   const bin = readEnv('LONGMEMEVAL_CODEX_BIN') ?? 'codex';
   const sandbox = parseSandbox(readEnv('LONGMEMEVAL_CODEX_SANDBOX') ?? DEFAULT_SANDBOX);
-  const tmpDir = await mkdtemp(path.join(tmpdir(), 'cml-longmemeval-codex-reader-'));
+  const createdTmpDir = await mkdtemp(path.join(tmpdir(), 'cml-longmemeval-codex-reader-'));
+  const tmpDir = await realpath(createdTmpDir);
   const outputPath = path.join(tmpDir, 'last-message.txt');
   const args = buildCodexArgs(sandbox, tmpDir, outputPath);
 
@@ -501,7 +502,7 @@ async function runCodexReader(prompt: string, timeoutMs: number): Promise<string
     if (error instanceof ReaderError) throw error;
     throw new ReaderError(`Codex reader output could not be read: ${error instanceof Error ? error.message : String(error)}`);
   } finally {
-    await rm(tmpDir, { recursive: true, force: true }).catch(() => undefined);
+    await rm(createdTmpDir, { recursive: true, force: true }).catch(() => undefined);
   }
 }
 

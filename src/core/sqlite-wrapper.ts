@@ -22,6 +22,10 @@ export interface SQLiteOptions {
    * memories and the copies dominate their runtime.
    */
   snapshot?: boolean;
+  /** Internal-only snapshot parent; see createSQLiteReadSnapshot. */
+  snapshotDirectory?: string;
+  /** Used to reject unsafe snapshot placement inside canonical storage. */
+  canonicalMemoryRoot?: string;
 }
 
 /**
@@ -35,7 +39,12 @@ export function createSQLiteDatabase(path: string, options?: SQLiteOptions): SQL
     fs.mkdirSync(dir, { recursive: true });
   }
 
-  const snapshot = options?.readonly && options?.snapshot ? createSQLiteReadSnapshot(path) : null;
+  const snapshot = options?.readonly && options?.snapshot
+    ? createSQLiteReadSnapshot(path, {
+      snapshotDirectory: options.snapshotDirectory,
+      canonicalMemoryRoot: options.canonicalMemoryRoot
+    })
+    : null;
   let db: SQLiteDatabase;
   try {
     db = new Database(snapshot?.databasePath ?? path, {

@@ -61,20 +61,20 @@ describe('existing memory store resolver', () => {
 
   it('classifies invalid, unreadable, corrupt, and symlinked storage safely', async () => {
     const homeDir = mkdtempSync(path.join(tmpdir(), 'cml-resolver-errors-'));
-    expect(resolveExistingStore('   ', { homeDir }).status).toBe('invalid');
-    expect(resolveExistingStore('bad\0path', { homeDir }).status).toBe('invalid');
+    expect(resolveExistingStore('   ', { homeDir })).toMatchObject({ status: 'invalid', reason: 'invalid_input' });
+    expect(resolveExistingStore('bad\0path', { homeDir })).toMatchObject({ status: 'invalid', reason: 'invalid_input' });
 
     const unreadableHash = 'aaa11111';
     const unreadableStorage = await createStore(homeDir, unreadableHash);
     chmodSync(path.join(unreadableStorage, 'events.sqlite'), 0o000);
-    expect(resolveExistingStore(unreadableHash, { homeDir }).status).toBe('unreadable');
+    expect(resolveExistingStore(unreadableHash, { homeDir })).toMatchObject({ status: 'unreadable', reason: 'source_unreadable' });
     chmodSync(path.join(unreadableStorage, 'events.sqlite'), 0o600);
 
     const corruptHash = 'bbb22222';
     const corruptStorage = path.join(homeDir, '.claude-code', 'memory', 'projects', corruptHash);
     mkdirSync(corruptStorage, { recursive: true });
     writeFileSync(path.join(corruptStorage, 'events.sqlite'), 'not a sqlite database');
-    expect(resolveExistingStore(corruptHash, { homeDir }).status).toBe('corrupt');
+    expect(resolveExistingStore(corruptHash, { homeDir })).toMatchObject({ status: 'corrupt', reason: 'integrity_check_failed' });
 
     // A zero-length file is a valid empty database to SQLite (the header is
     // written lazily on first write), so it reads as a store that does not
@@ -89,6 +89,18 @@ describe('existing memory store resolver', () => {
     const targetStorage = await createStore(homeDir, targetHash);
     const symlinkHash = 'ddd44444';
     symlinkSync(targetStorage, path.join(homeDir, '.claude-code', 'memory', 'projects', symlinkHash));
-    expect(resolveExistingStore(symlinkHash, { homeDir }).status).toBe('invalid');
+    expect(resolveExistingStore(symlinkHash, { homeDir })).toMatchObject({ status: 'invalid', reason: 'invalid_store_shape' });
+
+    const escapedHome = mkdtempSync(path.join(tmpdir(), 'cml-resolver-escaped-'));
+    const escapedRoot = path.join(escapedHome, '.claude-code', 'memory');
+    const outsideProjects = path.join(escapedHome, 'outside-projects');
+    mkdirSync(escapedRoot, { recursive: true });
+    mkdirSync(outsideProjects);
+    symlinkSync(outsideProjects, path.join(escapedRoot, 'projects'));
+    await createStore(escapedHome, 'fff66666');
+    expect(resolveExistingStore('fff66666', { homeDir: escapedHome })).toMatchObject({
+      status: 'invalid',
+      reason: 'invalid_store_shape'
+    });
   });
 });

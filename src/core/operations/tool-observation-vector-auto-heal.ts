@@ -25,7 +25,7 @@ export interface ToolObservationVectorAutoHealStore
   extends ToolObservationVectorPruneStore, ToolObservationVectorAutoHealFlagStore {}
 
 export interface ToolObservationVectorAutoHealVectorStore extends ToolObservationVectorPruneVectorStore {
-  optimizeAll(): Promise<void>;
+  optimizeAll(): Promise<unknown>;
 }
 
 export interface ToolObservationVectorAutoHealRecord {

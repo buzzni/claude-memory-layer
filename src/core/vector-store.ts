@@ -4,7 +4,66 @@
  */
 
 import * as lancedb from '@lancedb/lancedb';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import type { VectorRecord } from './types.js';
+
+export interface VectorPhysicalHealth {
+  physicalBytes: number | null;
+  tableCount: number | null;
+  fragmentCount: number | null;
+  versionCount: number | null;
+  bytesPerLogicalVector: number | null;
+  lastOptimizedAt: string | null;
+  lastOptimizeOutcome: 'success' | 'failed' | 'unsupported' | 'never';
+  amplificationState: 'normal' | 'elevated' | 'critical' | 'unknown';
+}
+
+export interface VectorOptimizeTableResult {
+  tableKind: string;
+  outcome: 'optimized' | 'skipped' | 'failed' | 'unsupported';
+  safeErrorCode?: string;
+}
+
+export interface VectorOptimizeResult {
+  startedAt: string;
+  finishedAt: string;
+  supported: boolean;
+  tablesScanned: number;
+  tablesOptimized: number;
+  failures: number;
+  beforeBytes: number | null;
+  afterBytes: number | null;
+  reclaimedBytes: number | null;
+  tableResults: VectorOptimizeTableResult[];
+  budgetExhausted?: boolean;
+}
+
+export interface VectorOptimizeOptions {
+  maxTables?: number;
+  maxDurationMs?: number;
+  now?: () => number;
+}
+
+export interface VectorStoreOptions {
+  readOnly?: boolean;
+  /** Canonical project/global storage root that owns the vectors directory. */
+  canonicalRoot?: string;
+}
+
+export function withVectorOptimizeIntegrityFailure(
+  result: VectorOptimizeResult,
+  safeErrorCode: 'logical_count_mismatch' | 'read_smoke_failed'
+): VectorOptimizeResult {
+  return {
+    ...result,
+    failures: result.failures + 1,
+    tableResults: [
+      ...result.tableResults,
+      { tableKind: 'integrity_check', outcome: 'failed', safeErrorCode }
+    ]
+  };
+}
 
 export interface SearchResult {
   id: string;
@@ -29,6 +88,8 @@ const LANCE_COMMIT_RETRY_BASE_DELAY_MS = 20;
  */
 const DEFAULT_OPTIMIZE_EVERY_N_COMMITS = 50;
 const DEFAULT_VERSION_RETENTION_MS = 60 * 60 * 1000;
+const DEFAULT_MAX_OPTIMIZE_TABLES = 32;
+const DEFAULT_OPTIMIZE_BUDGET_MS = 10 * 60 * 1000;
 
 /** Lance parses the whole predicate string, so chunk oversized `id IN (...)` deletes. */
 const MAX_DELETE_PREDICATE_IDS = 200;
@@ -48,9 +109,16 @@ export class VectorStore {
   private db: lancedb.Connection | null = null;
   private readonly tableCache = new Map<string, LanceTable>();
   private readonly commitsSinceOptimize = new Map<string, number>();
+  private writeOptimizeFailures = 0;
   private readonly defaultTableName = 'conversations';
 
-  constructor(private dbPath: string) {}
+  private readonly readOnly: boolean;
+  private readonly canonicalRoot?: string;
+
+  constructor(private dbPath: string, options: VectorStoreOptions = {}) {
+    this.readOnly = options.readOnly === true;
+    this.canonicalRoot = options.canonicalRoot;
+  }
 
   /**
    * Initialize LanceDB connection.
@@ -61,6 +129,10 @@ export class VectorStore {
    */
   async initialize(): Promise<void> {
     if (this.db) return;
+    // LanceDB creates its target directory during connect(). A read-only
+    // service must therefore treat a missing or escaped vector index as empty
+    // instead of connecting and mutating canonical storage.
+    if (this.readOnly && !isOwnedExistingVectorDirectory(this.dbPath, this.canonicalRoot)) return;
     this.db = await lancedb.connect(this.dbPath);
   }
 
@@ -77,6 +149,7 @@ export class VectorStore {
    */
   async upsertBatch(records: VectorRecord[]): Promise<void> {
     if (records.length === 0) return;
+    this.assertWritable();
 
     await this.initialize();
 
@@ -109,6 +182,7 @@ export class VectorStore {
     } = {}
   ): Promise<SearchResult[]> {
     await this.initialize();
+    if (!this.db) return [];
 
     const table = await this.getExistingTable(this.defaultTableName);
     if (!table) {
@@ -159,6 +233,7 @@ export class VectorStore {
    * Delete vector by event ID from the legacy conversations table.
    */
   async delete(eventId: string): Promise<void> {
+    this.assertWritable();
     await this.initialize();
     const table = await this.getExistingTable(this.defaultTableName);
     if (!table) return;
@@ -171,6 +246,7 @@ export class VectorStore {
    * table (there can be more than one after an embedding model migration).
    */
   async deleteEventEverywhere(eventId: string): Promise<void> {
+    this.assertWritable();
     await this.initialize();
     if (!this.db) return;
 
@@ -191,16 +267,65 @@ export class VectorStore {
    */
   async count(): Promise<number> {
     await this.initialize();
+    if (!this.db) return 0;
     const table = await this.getExistingTable(this.defaultTableName);
     if (!table) return 0;
     const result = await table.countRows();
     return result;
   }
 
+  /** Count logical rows across every CML vector table. */
+  async countAll(): Promise<number> {
+    await this.initialize();
+    if (!this.db) return 0;
+    let total = 0;
+    for (const tableName of await this.db.tableNames()) {
+      const table = await this.getExistingTable(tableName);
+      if (table) total += await table.countRows();
+    }
+    return total;
+  }
+
+  /** Capture bounded private row identities for a post-maintenance read smoke check. */
+  async createReadSmokeVerifier(maxTables = DEFAULT_MAX_OPTIMIZE_TABLES): Promise<() => Promise<boolean>> {
+    await this.initialize();
+    if (!this.db) return async () => true;
+    const boundedTables = normalizeOptimizeBound(maxTables, DEFAULT_MAX_OPTIMIZE_TABLES, 1, 1_000);
+    const samples: Array<{ tableName: string; id: string }> = [];
+    for (const tableName of (await this.db.tableNames()).slice(0, boundedTables)) {
+      const table = await this.getExistingTable(tableName);
+      if (!table || await table.countRows() === 0) continue;
+      // `search([])` is a zero-dimensional vector query and fails for every
+      // real non-empty embedding table. Use a scalar table query for the
+      // identity sample so this verifier is independent of vector dimension.
+      const rows = await table.query().limit(1).toArray();
+      const id = rows[0]?.id;
+      if (typeof id !== 'string' || id.length === 0) return async () => false;
+      samples.push({ tableName, id });
+    }
+    return async () => {
+      try {
+        for (const sample of samples) {
+          const table = await this.getExistingTable(sample.tableName);
+          if (!table) return false;
+          const rows = await table.query()
+            .where(toLanceColumnEquals('id', sample.id))
+            .limit(1)
+            .toArray();
+          if (rows.length !== 1) return false;
+        }
+        return true;
+      } catch {
+        return false;
+      }
+    };
+  }
+
   /**
    * Clear all legacy vectors (used for embedding model migration).
    */
   async clearAll(): Promise<void> {
+    this.assertWritable();
     await this.initialize();
     if (!this.db) return;
 
@@ -222,6 +347,7 @@ export class VectorStore {
    */
   async exists(eventId: string): Promise<boolean> {
     await this.initialize();
+    if (!this.db) return false;
     const table = await this.getExistingTable(this.defaultTableName);
     if (!table) return false;
 
@@ -291,16 +417,103 @@ export class VectorStore {
    * Writers call this automatically via the commit counter; expose it so
    * maintenance paths can reclaim space accumulated before that existed.
    */
-  async optimizeAll(): Promise<void> {
+  async optimizeAll(options: VectorOptimizeOptions = {}): Promise<VectorOptimizeResult> {
+    this.assertWritable();
+    const now = options.now ?? Date.now;
+    const maxTables = normalizeOptimizeBound(options.maxTables, DEFAULT_MAX_OPTIMIZE_TABLES, 1, 1_000);
+    const maxDurationMs = normalizeOptimizeBound(options.maxDurationMs, DEFAULT_OPTIMIZE_BUDGET_MS, 0, 60 * 60 * 1000);
+    const deadline = now() + maxDurationMs;
+    const startedAt = new Date().toISOString();
+    const beforeBytes = measureVectorDirectory(this.dbPath).physicalBytes;
     await this.initialize();
-    if (!this.db) return;
-
-    for (const tableName of await this.db.tableNames()) {
-      const table = await this.getExistingTable(tableName);
-      if (!table) continue;
-      this.commitsSinceOptimize.set(tableName, 0);
-      await optimizeTable(table);
+    if (!this.db) {
+      return emptyOptimizeResult(startedAt, beforeBytes);
     }
+
+    const tableResults: VectorOptimizeTableResult[] = [];
+    const tableNames = await this.db.tableNames();
+    let budgetExhausted = false;
+    for (let index = 0; index < tableNames.length; index += 1) {
+      const tableName = tableNames[index];
+      if (index >= maxTables || now() >= deadline) {
+        budgetExhausted = true;
+        for (const skippedName of tableNames.slice(index)) {
+          tableResults.push({
+            tableKind: normalizeTableKind(skippedName),
+            outcome: 'skipped',
+            safeErrorCode: 'budget_exhausted'
+          });
+        }
+        break;
+      }
+      const table = await this.getExistingTable(tableName);
+      if (!table) {
+        tableResults.push({ tableKind: normalizeTableKind(tableName), outcome: 'skipped' });
+        continue;
+      }
+      this.commitsSinceOptimize.set(tableName, 0);
+      tableResults.push({
+        tableKind: normalizeTableKind(tableName),
+        ...await optimizeTable(table, false)
+      });
+    }
+    const afterBytes = measureVectorDirectory(this.dbPath).physicalBytes;
+    const result: VectorOptimizeResult = {
+      startedAt,
+      finishedAt: new Date().toISOString(),
+      supported: tableResults.some((item) => item.outcome === 'optimized' || item.outcome === 'failed'),
+      tablesScanned: tableNames.length,
+      tablesOptimized: tableResults.filter((item) => item.outcome === 'optimized').length,
+      failures: tableResults.filter((item) => item.outcome === 'failed').length,
+      beforeBytes,
+      afterBytes,
+      reclaimedBytes: beforeBytes === null || afterBytes === null ? null : Math.max(0, beforeBytes - afterBytes),
+      tableResults,
+      budgetExhausted
+    };
+    writeOptimizeState(this.dbPath, result);
+    return result;
+  }
+
+  async getPhysicalHealth(logicalVectorCount?: number): Promise<VectorPhysicalHealth> {
+    await this.initialize();
+    const metrics = measureVectorDirectory(this.dbPath);
+    const tableCount = this.db ? (await this.db.tableNames()).length : null;
+    const state = readOptimizeState(this.dbPath);
+    const bytesPerLogicalVector = metrics.physicalBytes !== null
+      && typeof logicalVectorCount === 'number'
+      && logicalVectorCount > 0
+      ? Math.round(metrics.physicalBytes / logicalVectorCount)
+      : null;
+    return {
+      physicalBytes: metrics.physicalBytes,
+      tableCount,
+      fragmentCount: metrics.fragmentCount,
+      versionCount: metrics.versionCount,
+      bytesPerLogicalVector,
+      lastOptimizedAt: state && !state.budgetExhausted ? state.finishedAt : null,
+      lastOptimizeOutcome: state
+        ? state.failures > 0
+          ? 'failed'
+          : state.budgetExhausted && !state.supported
+            ? 'never'
+            : state.supported ? 'success' : 'unsupported'
+        : 'never',
+      amplificationState: amplificationState(bytesPerLogicalVector)
+    };
+  }
+
+  persistOptimizeResult(result: VectorOptimizeResult): void {
+    this.assertWritable();
+    writeOptimizeState(this.dbPath, result);
+  }
+
+  getWriteOptimizeFailureCount(): number {
+    return this.writeOptimizeFailures;
+  }
+
+  private assertWritable(): void {
+    if (this.readOnly) throw new Error('VectorStore is read-only');
   }
 
   private async maybeOptimize(tableName: string, table: LanceTable, commits: number): Promise<void> {
@@ -314,7 +527,8 @@ export class VectorStore {
     }
 
     this.commitsSinceOptimize.set(tableName, 0);
-    await optimizeTable(table);
+    const result = await optimizeTable(table, true);
+    if (result.outcome === 'failed') this.writeOptimizeFailures += 1;
   }
 
   private async getExistingTable(tableName: string): Promise<LanceTable | null> {
@@ -403,15 +617,156 @@ function resolveVersionRetentionMs(): number {
  * Best-effort maintenance: a failed compaction must never fail the write that
  * triggered it, and older lancedb builds have no `optimize` at all.
  */
-async function optimizeTable(table: LanceTable): Promise<void> {
+async function optimizeTable(
+  table: LanceTable,
+  swallowFailure: boolean
+): Promise<Omit<VectorOptimizeTableResult, 'tableKind'>> {
   const optimize = (table as { optimize?: (options?: { cleanupOlderThan?: Date }) => Promise<unknown> }).optimize;
-  if (typeof optimize !== 'function') return;
+  if (typeof optimize !== 'function') return { outcome: 'unsupported' };
 
   try {
     await optimize.call(table, { cleanupOlderThan: new Date(Date.now() - resolveVersionRetentionMs()) });
-  } catch {
-    // Compaction is opportunistic; retry on the next threshold crossing.
+    return { outcome: 'optimized' };
+  } catch (error) {
+    const result = { outcome: 'failed' as const, safeErrorCode: classifyOptimizeError(error) };
+    if (!swallowFailure) return result;
+    // Write-triggered compaction is opportunistic; retry on the next threshold crossing.
+    return result;
   }
+}
+
+function classifyOptimizeError(error: unknown): string {
+  const message = String(error instanceof Error ? error.message : error).toLowerCase();
+  if (message.includes('lock') || message.includes('busy')) return 'busy';
+  if (message.includes('space') || message.includes('disk')) return 'disk_pressure';
+  if (message.includes('unsupported') || message.includes('not implemented')) return 'unsupported_api';
+  return 'optimize_failed';
+}
+
+function normalizeTableKind(tableName: string): string {
+  if (tableName === 'conversations') return 'conversations';
+  if (/^event_vectors_/i.test(tableName)) return 'event_vectors';
+  if (/^tool_observation_vectors_/i.test(tableName)) return 'tool_observation_vectors';
+  return 'other';
+}
+
+function measureVectorDirectory(dbPath: string): {
+  physicalBytes: number | null;
+  fragmentCount: number | null;
+  versionCount: number | null;
+} {
+  if (!fs.existsSync(dbPath)) return { physicalBytes: 0, fragmentCount: 0, versionCount: 0 };
+  let physicalBytes = 0;
+  let fragmentCount = 0;
+  let versionCount = 0;
+  try {
+    const pending = [dbPath];
+    while (pending.length > 0) {
+      const current = pending.pop()!;
+      const stat = fs.lstatSync(current);
+      if (stat.isSymbolicLink()) continue;
+      if (stat.isDirectory()) {
+        for (const entry of fs.readdirSync(current)) pending.push(path.join(current, entry));
+      } else if (stat.isFile()) {
+        physicalBytes += stat.size;
+        if (/\.lance$/i.test(current) || /[/\\]data[/\\]/.test(current)) fragmentCount += 1;
+        if (/\.manifest$/i.test(current) || /[/\\]_versions[/\\]/.test(current)) versionCount += 1;
+      }
+    }
+    return { physicalBytes, fragmentCount, versionCount };
+  } catch {
+    return { physicalBytes: null, fragmentCount: null, versionCount: null };
+  }
+}
+
+function isOwnedExistingVectorDirectory(dbPath: string, canonicalRoot?: string): boolean {
+  try {
+    const vectorStat = fs.lstatSync(dbPath);
+    if (!vectorStat.isDirectory() || vectorStat.isSymbolicLink()) return false;
+    if (!canonicalRoot) return true;
+    const rootStat = fs.lstatSync(canonicalRoot);
+    if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) return false;
+    const relative = path.relative(fs.realpathSync(canonicalRoot), fs.realpathSync(dbPath));
+    return relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative);
+  } catch {
+    return false;
+  }
+}
+
+function amplificationState(bytesPerLogicalVector: number | null): VectorPhysicalHealth['amplificationState'] {
+  const elevated = Number(process.env.CLAUDE_MEMORY_VECTOR_ELEVATED_BYTES_PER_ROW);
+  const critical = Number(process.env.CLAUDE_MEMORY_VECTOR_CRITICAL_BYTES_PER_ROW);
+  if (bytesPerLogicalVector === null || !Number.isFinite(elevated) || !Number.isFinite(critical)
+    || elevated <= 0 || critical < elevated) return 'unknown';
+  if (bytesPerLogicalVector >= critical) return 'critical';
+  if (bytesPerLogicalVector >= elevated) return 'elevated';
+  return 'normal';
+}
+
+function optimizeStatePath(dbPath: string): string {
+  return path.join(dbPath, '.cml-optimize-state.json');
+}
+
+function writeOptimizeState(dbPath: string, result: VectorOptimizeResult): void {
+  try {
+    fs.mkdirSync(dbPath, { recursive: true });
+    const target = optimizeStatePath(dbPath);
+    const temp = `${target}.${process.pid}.tmp`;
+    fs.writeFileSync(temp, JSON.stringify({
+      finishedAt: result.finishedAt,
+      supported: result.supported,
+      failures: result.failures,
+      reclaimedBytes: result.reclaimedBytes,
+      budgetExhausted: result.budgetExhausted === true
+    }), { mode: 0o600 });
+    fs.renameSync(temp, target);
+  } catch {
+    // Maintenance result remains returned even if optional bounded state cannot be persisted.
+  }
+}
+
+function readOptimizeState(dbPath: string): {
+  finishedAt: string;
+  supported: boolean;
+  failures: number;
+  budgetExhausted: boolean;
+} | null {
+  try {
+    const value = JSON.parse(fs.readFileSync(optimizeStatePath(dbPath), 'utf8')) as Record<string, unknown>;
+    if (typeof value.finishedAt !== 'string' || !Number.isFinite(Date.parse(value.finishedAt))) return null;
+    return {
+      finishedAt: value.finishedAt,
+      supported: value.supported === true,
+      failures: Number.isFinite(value.failures) ? Number(value.failures) : 0,
+      budgetExhausted: value.budgetExhausted === true
+    };
+  } catch {
+    return null;
+  }
+}
+
+function emptyOptimizeResult(startedAt: string, beforeBytes: number | null): VectorOptimizeResult {
+  return {
+    startedAt,
+    finishedAt: new Date().toISOString(),
+    supported: false,
+    tablesScanned: 0,
+    tablesOptimized: 0,
+    failures: 0,
+    beforeBytes,
+    afterBytes: beforeBytes,
+    reclaimedBytes: beforeBytes === null ? null : 0,
+    tableResults: [],
+    budgetExhausted: false
+  };
+}
+
+function normalizeOptimizeBound(value: number | undefined, fallback: number, min: number, max: number): number {
+  if (value === undefined) return fallback;
+  if (!Number.isSafeInteger(value) || value < min || value > max) {
+    throw new Error(`vector optimize bound must be an integer between ${min} and ${max}`);
+  }
+  return value;
 }
 
 function slugifyTablePart(value: string): string {

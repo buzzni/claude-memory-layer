@@ -7,6 +7,18 @@
 - **분석 일자**: 2026-03-04
 - **데이터 기간**: 2026-02-25 ~ 2026-03-04
 
+## 2026-08-31 운영 감사 갱신
+
+기존 shopping-assistant 분석 이후 현재 컴퓨터의 147개 project SQLite store와 최근 agent
+session을 read-only로 다시 점검했다. 모든 project DB는 SQLite quick check를 통과했으나,
+활성 MCP runtime에서는 정상 store를 `corrupt`로 오인하고 read-only context-pack에서 쓰기를
+시도하는 문제가 재현됐다. 주요 Aplus project의 retrieval 선택률은 89~92%로 양호했지만,
+`knoi-desktop`은 31.1%였고 context-pack 5회가 모두 무결과였다. memory root는 약 5.9 GiB,
+project vector directory는 약 3.76 GiB였다.
+
+감사 baseline과 후속 상세 spec은
+[`2026-08-31-audit/README.md`](2026-08-31-audit/README.md)에 기록한다.
+
 ---
 
 ## 실제 측정 데이터

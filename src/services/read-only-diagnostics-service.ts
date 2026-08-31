@@ -12,6 +12,7 @@ import * as path from 'node:path';
 
 import {
   resolveExistingStore,
+  type ExistingStoreFailureReason,
   type ExistingStoreResolution,
   type ExistingStoreResolverOptions,
   type ExistingStoreStatus
@@ -21,7 +22,7 @@ import {
   type DerivationLiveness,
   type RecentEventsReadOptions
 } from '../core/sqlite-event-store.js';
-import { VectorStore } from '../core/vector-store.js';
+import { VectorStore, type VectorPhysicalHealth } from '../core/vector-store.js';
 import { sqliteGet, toDateFromSQLite } from '../core/sqlite-wrapper.js';
 import type { RetrievalTelemetryStats } from '../core/retrieval-telemetry.js';
 import type {
@@ -51,7 +52,10 @@ export interface DiagnosticsStats {
 }
 
 export class MemoryStoreResolutionError extends Error {
-  constructor(readonly storeStatus: Exclude<ExistingStoreStatus, 'existing' | 'missing'>) {
+  constructor(
+    readonly storeStatus: Exclude<ExistingStoreStatus, 'existing' | 'missing'>,
+    readonly reason?: ExistingStoreFailureReason
+  ) {
     super(`Memory store is ${storeStatus}`);
     this.name = 'MemoryStoreResolutionError';
   }
@@ -68,7 +72,12 @@ export class ReadOnlyDiagnosticsService {
     this.resolution = resolution;
     this.storeStatus = resolution.status;
     this.sqliteStore = resolution.status === 'existing' && resolution.databasePath
-      ? new SQLiteEventStore(resolution.databasePath, { readonly: true, snapshot: true, vectorOutbox: false })
+      ? new SQLiteEventStore(resolution.databasePath, {
+        readonly: true,
+        snapshot: true,
+        canonicalMemoryRoot: canonicalMemoryRootForStorage(resolution.storagePath),
+        vectorOutbox: false
+      })
       : null;
   }
 
@@ -93,6 +102,14 @@ export class ReadOnlyDiagnosticsService {
       tolerateMissingTable(() => store.getLevelStats(), [])
     ]);
     return { totalEvents, vectorCount, levelStats };
+  }
+
+  async getVectorPhysicalHealth(logicalVectorCount?: number): Promise<VectorPhysicalHealth> {
+    const storagePath = this.resolution.storagePath;
+    if (!storagePath) return emptyVectorPhysicalHealth();
+    const vectorsPath = path.join(storagePath, 'vectors');
+    if (!isLocalDirectory(vectorsPath)) return emptyVectorPhysicalHealth();
+    return vectorStoreFor(vectorsPath).getPhysicalHealth(logicalVectorCount);
   }
 
   async getOutboxStats(options?: OutboxStatsOptions): Promise<OutboxStats> {
@@ -184,6 +201,20 @@ export class ReadOnlyDiagnosticsService {
       () => store.getRetrievalTelemetryStats(),
       emptyRetrievalTelemetryStats()
     );
+  }
+
+  async getUsefulnessAggregateV2(options: import('../core/engine/retrieval-analytics-service.js').UsefulnessAggregateV2Options = {}) {
+    const { emptyUsefulnessAggregateV2 } = await import('../core/retrieval-telemetry.js');
+    const store = await this.store();
+    const empty = emptyUsefulnessAggregateV2({
+      minimumSample: options.minimumSample,
+      evaluatorVersion: options.evaluatorVersion,
+      includeSessionStart: options.includeSessionStart,
+      since: options.since,
+      until: options.until
+    });
+    if (!store) return empty;
+    return tolerateMissingTable(() => store.getUsefulnessAggregateV2(options), empty);
   }
 
   async getRecentRetrievalTraces(limit: number = 50): Promise<RetrievalTrace[]> {
@@ -286,6 +317,12 @@ export class ReadOnlyDiagnosticsService {
   }
 }
 
+function canonicalMemoryRootForStorage(storagePath: string | undefined): string | undefined {
+  if (!storagePath) return undefined;
+  const parent = path.dirname(storagePath);
+  return path.basename(parent) === 'projects' ? path.dirname(parent) : storagePath;
+}
+
 /**
  * LanceDB connections have no close/disconnect, so a per-request VectorStore
  * would leak native handles on every dashboard poll. One store per vectors
@@ -297,7 +334,10 @@ const vectorStoreCache = new Map<string, VectorStore>();
 function vectorStoreFor(vectorsPath: string): VectorStore {
   let store = vectorStoreCache.get(vectorsPath);
   if (!store) {
-    store = new VectorStore(vectorsPath);
+    store = new VectorStore(vectorsPath, {
+      readOnly: true,
+      canonicalRoot: path.dirname(vectorsPath)
+    });
     vectorStoreCache.set(vectorsPath, store);
   }
   return store;
@@ -309,13 +349,26 @@ export function createReadOnlyDiagnosticsService(
 ): ReadOnlyDiagnosticsService {
   const resolution = resolveExistingStore(projectOrHash, options);
   if (resolution.status !== 'existing' && resolution.status !== 'missing') {
-    throw new MemoryStoreResolutionError(resolution.status);
+    throw new MemoryStoreResolutionError(resolution.status, resolution.reason);
   }
   return new ReadOnlyDiagnosticsService(resolution);
 }
 
 export function emptyDiagnosticsStats(): DiagnosticsStats {
   return { totalEvents: 0, vectorCount: 0, levelStats: [] };
+}
+
+function emptyVectorPhysicalHealth(): VectorPhysicalHealth {
+  return {
+    physicalBytes: 0,
+    tableCount: 0,
+    fragmentCount: 0,
+    versionCount: 0,
+    bytesPerLogicalVector: null,
+    lastOptimizedAt: null,
+    lastOptimizeOutcome: 'never',
+    amplificationState: 'unknown'
+  };
 }
 
 export function emptyOutboxStats(): OutboxStats {

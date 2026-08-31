@@ -73,6 +73,26 @@ describe('createMemoryServiceRegistry', () => {
     expect(first.config).toMatchObject({
       storagePath: '~/.claude-code/memory',
       readOnly: true,
+      snapshotReads: true,
+      analyticsEnabled: false,
+      sharedStoreConfig: disabledSharedStoreConfig
+    });
+  });
+
+  it('creates fresh project-scoped snapshot readers owned by the caller', () => {
+    const { registry, createdConfigs } = createRegistry();
+
+    const first = registry.getReadOnlyMemoryServiceForProject('/workspace/app');
+    const second = registry.getReadOnlyMemoryServiceForProject('/workspace/app');
+
+    expect(first).not.toBe(second);
+    expect(createdConfigs).toHaveLength(2);
+    expect(first.config).toMatchObject({
+      storagePath: '/storage//workspace/app',
+      projectHash: 'hash:/workspace/app',
+      projectPath: '/workspace/app',
+      readOnly: true,
+      snapshotReads: true,
       analyticsEnabled: false,
       sharedStoreConfig: disabledSharedStoreConfig
     });

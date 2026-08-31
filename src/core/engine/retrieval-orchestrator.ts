@@ -16,7 +16,7 @@ import {
   type UnifiedRetrievalResult
 } from '../retriever.js';
 import type { RetrievalDebugLane } from '../retrieval-debug-lanes.js';
-import type { RetrievalTelemetryContext } from '../retrieval-telemetry.js';
+import type { RetrievalOutcomeDiagnostics, RetrievalTelemetryContext } from '../retrieval-telemetry.js';
 import {
   getRuntimeResourceTelemetry,
   type RuntimeRetrievalTelemetry
@@ -60,6 +60,7 @@ export interface RecordQueryTraceInput extends RetrievalTelemetryContext {
   candidateEventIds: string[];
   selectedEventIds: string[];
   confidence: string;
+  outcomeDiagnostics?: RetrievalOutcomeDiagnostics;
 }
 
 interface HelpfulnessStats {
@@ -105,6 +106,7 @@ export interface RetrievalTraceStore {
     presentationMode?: RetrievalTelemetryContext['presentationMode'];
     triggerType?: RetrievalTelemetryContext['triggerType'];
     deliveryClient?: string;
+    outcomeDiagnostics?: RetrievalOutcomeDiagnostics;
   }): Promise<void>;
 }
 
@@ -237,6 +239,7 @@ export class RetrievalOrchestrator {
       candidateDetails: [],
       selectedDetails: [],
       fallbackTrace: [],
+      outcomeDiagnostics: input.outcomeDiagnostics,
     });
   }
 
@@ -336,6 +339,7 @@ export class RetrievalOrchestrator {
       selectedDetails,
       confidence: result.matchResult.confidence,
       fallbackTrace: result.fallbackTrace || [],
+      outcomeDiagnostics: result.outcomeDiagnostics,
       presentationMode: telemetry?.presentationMode,
       triggerType: telemetry?.triggerType,
       deliveryClient: telemetry?.deliveryClient

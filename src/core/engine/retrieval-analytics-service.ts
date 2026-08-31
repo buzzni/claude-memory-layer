@@ -9,9 +9,11 @@ import type { RetrievalDebugLane } from '../retrieval-debug-lanes.js';
 import type {
   RecordReferenceNavigationInput,
   RecordReferenceNavigationResult,
+  RetrievalOutcomeDiagnostics,
   RetrievalPresentationMode,
   RetrievalTelemetryStats,
-  RetrievalTriggerType
+  RetrievalTriggerType,
+  UsefulnessAggregateV2
 } from '../retrieval-telemetry.js';
 import type { MemoryEvent } from '../types.js';
 
@@ -149,6 +151,7 @@ export interface RetrievalTrace {
   presentationMode?: RetrievalPresentationMode;
   triggerType?: RetrievalTriggerType;
   deliveryClient?: string;
+  outcomeDiagnostics?: RetrievalOutcomeDiagnostics;
   createdAt: Date;
 }
 
@@ -178,7 +181,16 @@ export interface RetrievalAnalyticsStore {
   getHelpfulnessStatsByDay?(since: Date, until: Date): Promise<DailyHelpfulnessStats[]>;
   getUsefulnessHistory?(options?: UsefulnessHistoryOptions): Promise<UsefulnessHistoryEntry[]>;
   getRetrievalTelemetryStats?(): Promise<RetrievalTelemetryStats>;
+  getUsefulnessAggregateV2?(options?: UsefulnessAggregateV2Options): Promise<UsefulnessAggregateV2>;
   recordReferenceNavigation?(input: RecordReferenceNavigationInput): Promise<RecordReferenceNavigationResult>;
+}
+
+export interface UsefulnessAggregateV2Options {
+  since?: Date;
+  until?: Date;
+  minimumSample?: number;
+  evaluatorVersion?: string;
+  includeSessionStart?: boolean;
 }
 
 export interface RetrievalAnalyticsServiceDeps {
@@ -284,6 +296,20 @@ export class RetrievalAnalyticsService {
         unattributedOpenCount: 0
       }
     };
+  }
+
+  async getUsefulnessAggregateV2(options: UsefulnessAggregateV2Options = {}): Promise<UsefulnessAggregateV2> {
+    await this.deps.initialize();
+    const aggregate = await this.deps.retrievalStore.getUsefulnessAggregateV2?.(options);
+    if (aggregate) return aggregate;
+    const { emptyUsefulnessAggregateV2 } = await import('../retrieval-telemetry.js');
+    return emptyUsefulnessAggregateV2({
+      minimumSample: options.minimumSample,
+      evaluatorVersion: options.evaluatorVersion,
+      includeSessionStart: options.includeSessionStart,
+      since: options.since,
+      until: options.until
+    });
   }
 
   async recordReferenceNavigation(

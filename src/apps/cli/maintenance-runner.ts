@@ -8,8 +8,15 @@ import { WorkerLock } from '../../core/worker-lock.js';
 import { loadSessionRegistry } from '../../core/registry/session-registry.js';
 import { getProjectStoragePath } from '../../core/registry/project-path.js';
 import { DISABLED_SHARED_STORE_CONFIG, MemoryService } from '../../services/memory-service.js';
+import {
+  VectorStore,
+  withVectorOptimizeIntegrityFailure,
+  type VectorOptimizeResult
+} from '../../core/vector-store.js';
 
 export const DEFAULT_MAINTENANCE_MIN_FREE_BYTES = 5 * 1024 * 1024 * 1024;
+export const DEFAULT_MAINTENANCE_MAX_PROJECTS = 25;
+export const DEFAULT_MAINTENANCE_COMPACTION_BUDGET_MS = 10 * 60 * 1000;
 
 export interface MaintenanceTarget {
   key: string;
@@ -29,6 +36,9 @@ export interface MaintenanceTargetResult {
   pendingAfter: number;
   retryableAfter: number;
   quarantined: number;
+  compacted: boolean;
+  reclaimedBytes: number;
+  compactionFailures: number;
   error?: string;
 }
 
@@ -51,12 +61,17 @@ export interface MaintenanceRunReport {
   pendingRemaining: number;
   retryableRemaining: number;
   quarantined: number;
+  compacted: number;
+  reclaimedBytes: number;
+  compactionFailures: number;
+  skippedBusyCompaction: number;
+  nextSelectionOffset: number;
   disk: MaintenanceDiskStatus;
   results: MaintenanceTargetResult[];
 }
 
 export type MaintenanceLastRunStatus = Omit<MaintenanceRunReport, 'results' | 'disk'> & {
-  version: 1;
+  version: 1 | 2 | 3;
   disk: MaintenanceDiskStatus | null;
 };
 
@@ -66,6 +81,11 @@ export interface MaintenanceRunOptions {
   maxProjects?: number;
   maxBatches?: number;
   minFreeBytes?: number;
+  compactionEnabled?: boolean;
+  minCompactionBytes?: number;
+  maxCompactionDurationMs?: number;
+  /** Aggregate-only round-robin cursor for bounded machine-wide scans. */
+  selectionOffset?: number;
 }
 
 export interface MaintenanceRunnerDeps {
@@ -78,9 +98,12 @@ export interface MaintenanceRunnerDeps {
     processed: number;
     recovery: OutboxRecoveryResult;
     stats: OutboxStats;
+    optimize?: VectorOptimizeResult;
   }>;
+  inspectCompaction?: (target: MaintenanceTarget, options: MaintenanceRunOptions) => Promise<boolean>;
   getDiskStatus?: (options: MaintenanceRunOptions) => MaintenanceDiskStatus;
   now?: () => Date;
+  nowMs?: () => number;
 }
 
 export function parseMaintenanceMinFreeBytes(value: string | number | undefined): number {
@@ -115,7 +138,9 @@ export function discoverMaintenanceTargets(options: MaintenanceRunOptions = {}):
   if (options.projectPath) {
     const projectPath = path.resolve(options.projectPath);
     const storagePath = getProjectStoragePath(projectPath);
-    return fs.existsSync(path.join(storagePath, 'events.sqlite'))
+    const memoryRoot = path.dirname(path.dirname(storagePath));
+    const dbPath = path.join(storagePath, 'events.sqlite');
+    return isLocalProjectStore(storagePath, dbPath, memoryRoot)
       ? [{
         key: path.basename(storagePath),
         storagePath,
@@ -139,7 +164,7 @@ export function discoverMaintenanceTargets(options: MaintenanceRunOptions = {}):
 
   const targets: MaintenanceTarget[] = [];
   const globalDb = path.join(memoryRoot, 'events.sqlite');
-  if (fs.existsSync(globalDb)) {
+  if (isLocalProjectStore(memoryRoot, globalDb, memoryRoot)) {
     targets.push({
       key: '__global__',
       storagePath: memoryRoot,
@@ -148,12 +173,12 @@ export function discoverMaintenanceTargets(options: MaintenanceRunOptions = {}):
   }
 
   const projectsRoot = path.join(memoryRoot, 'projects');
-  if (fs.existsSync(projectsRoot)) {
+  if (isOwnedDirectory(projectsRoot, memoryRoot)) {
     for (const projectHash of fs.readdirSync(projectsRoot)) {
       if (!/^[a-f0-9]{8}$/.test(projectHash)) continue;
       const storagePath = path.join(projectsRoot, projectHash);
       const dbPath = path.join(storagePath, 'events.sqlite');
-      if (!isLocalProjectStore(storagePath, dbPath)) continue;
+      if (!isLocalProjectStore(storagePath, dbPath, memoryRoot)) continue;
       targets.push({
         key: projectHash,
         storagePath,
@@ -165,9 +190,26 @@ export function discoverMaintenanceTargets(options: MaintenanceRunOptions = {}):
   }
 
   const maxProjects = normalizeMaxProjects(options.maxProjects);
-  return targets
-    .sort((a, b) => b.modifiedAtMs - a.modifiedAtMs || a.key.localeCompare(b.key))
-    .slice(0, maxProjects);
+  return selectMaintenanceTargets(
+    targets,
+    maxProjects,
+    normalizeSelectionOffset(options.selectionOffset)
+  );
+}
+
+export function selectMaintenanceTargets(
+  targets: MaintenanceTarget[],
+  maxProjects: number,
+  selectionOffset: number
+): MaintenanceTarget[] {
+  const sorted = [...targets]
+    .sort((a, b) => b.modifiedAtMs - a.modifiedAtMs || a.key.localeCompare(b.key));
+  if (sorted.length <= maxProjects) return sorted;
+  const start = selectionOffset % sorted.length;
+  return Array.from(
+    { length: maxProjects },
+    (_, index) => sorted[(start + index) % sorted.length]
+  );
 }
 
 export async function runMaintenanceCycle(
@@ -175,13 +217,16 @@ export async function runMaintenanceCycle(
   deps: MaintenanceRunnerDeps = {}
 ): Promise<MaintenanceRunReport> {
   const now = deps.now ?? (() => new Date());
+  const nowMs = deps.nowMs ?? Date.now;
+  const selectionOffset = normalizeSelectionOffset(options.selectionOffset);
   const startedAt = now().toISOString();
   const targets = (deps.discoverTargets ?? discoverMaintenanceTargets)(options);
   const inspect = deps.inspectTarget ?? inspectMaintenanceTarget;
   const maxBatches = normalizeMaxBatches(options.maxBatches);
   const readDiskStatus = deps.getDiskStatus ?? getMaintenanceDiskStatus;
   let disk: MaintenanceDiskStatus | undefined;
-  const processTarget = deps.processTarget ?? ((target) => processMaintenanceTarget(target, maxBatches));
+  const inspectCompaction = deps.inspectCompaction ?? inspectVectorCompactionEligibility;
+  const compactionDeadlineMs = nowMs() + normalizeCompactionDuration(options.maxCompactionDurationMs);
   const results: MaintenanceTargetResult[] = [];
 
   for (const target of targets) {
@@ -192,23 +237,37 @@ export async function runMaintenanceCycle(
     let pendingBefore = 0;
     let retryableBefore = 0;
     let quarantined = 0;
+    let compactionInspectionFailures = 0;
     try {
       const stats = await inspect(target, { allowMigration: disk.healthy });
+      let compactionEligible = false;
+      if (options.compactionEnabled !== false && disk.healthy) {
+        try {
+          compactionEligible = await inspectCompaction(target, options);
+        } catch {
+          // Compaction is optional. Preserve the failure as an attention signal,
+          // but do not let its health probe suppress outbox recovery/processing.
+          compactionInspectionFailures = 1;
+        }
+      }
       pendingBefore = pendingCount(stats);
       retryableBefore = retryableCount(stats);
       quarantined = quarantinedCount(stats);
       const stuck = stuckCount(stats);
-      if (pendingBefore === 0 && retryableBefore === 0 && stuck === 0) {
+      if (pendingBefore === 0 && retryableBefore === 0 && stuck === 0 && !compactionEligible) {
         results.push({
           key: target.key,
-          status: quarantined > 0 ? 'needs-attention' : 'healthy',
+          status: quarantined > 0 || compactionInspectionFailures > 0 ? 'needs-attention' : 'healthy',
           processed: 0,
           recovered: 0,
           pendingBefore,
           retryableBefore,
           pendingAfter: pendingBefore,
           retryableAfter: retryableBefore,
-          quarantined
+          quarantined,
+          compacted: false,
+          reclaimedBytes: 0,
+          compactionFailures: compactionInspectionFailures
         });
         continue;
       }
@@ -223,26 +282,46 @@ export async function runMaintenanceCycle(
           retryableBefore,
           pendingAfter: pendingBefore,
           retryableAfter: retryableBefore,
-          quarantined
+          quarantined,
+          compacted: false,
+          reclaimedBytes: 0,
+          compactionFailures: compactionInspectionFailures
         });
         continue;
       }
 
-      const result = await processTarget(target);
+      const result = deps.processTarget
+        ? await deps.processTarget(target)
+        : await processMaintenanceTarget(
+          target,
+          maxBatches,
+          compactionEligible ? options : undefined,
+          compactionDeadlineMs,
+          nowMs
+        );
       const recovered = recoveryCount(result.recovery);
       const pendingAfter = pendingCount(result.stats);
       const retryableAfter = retryableCount(result.stats);
       const remainingQuarantined = quarantinedCount(result.stats);
+      const compactionUnsupported = result.optimize !== undefined
+        && !result.optimize.supported
+        && !result.optimize.budgetExhausted;
+      const compactionFailures = compactionInspectionFailures
+        + (result.optimize?.failures ?? 0)
+        + Number(compactionUnsupported);
       results.push({
         key: target.key,
-        status: remainingQuarantined > 0 ? 'needs-attention' : 'processed',
+        status: remainingQuarantined > 0 || compactionFailures > 0 ? 'needs-attention' : 'processed',
         processed: result.processed,
         recovered,
         pendingBefore,
         retryableBefore,
         pendingAfter,
         retryableAfter,
-        quarantined: remainingQuarantined
+        quarantined: remainingQuarantined,
+        compacted: result.optimize !== undefined && result.optimize.supported && result.optimize.failures === 0,
+        reclaimedBytes: result.optimize?.reclaimedBytes ?? 0,
+        compactionFailures
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -256,7 +335,10 @@ export async function runMaintenanceCycle(
           retryableBefore,
           pendingAfter: pendingBefore,
           retryableAfter: retryableBefore,
-          quarantined
+          quarantined,
+          compacted: false,
+          reclaimedBytes: 0,
+          compactionFailures: compactionInspectionFailures
         });
       } else if (message.startsWith('worker busy:')) {
         results.push({
@@ -268,7 +350,10 @@ export async function runMaintenanceCycle(
           retryableBefore,
           pendingAfter: pendingBefore,
           retryableAfter: retryableBefore,
-          quarantined
+          quarantined,
+          compacted: false,
+          reclaimedBytes: 0,
+          compactionFailures: compactionInspectionFailures
         });
       } else {
         results.push({
@@ -281,6 +366,9 @@ export async function runMaintenanceCycle(
           pendingAfter: pendingBefore,
           retryableAfter: retryableBefore,
           quarantined,
+          compacted: false,
+          reclaimedBytes: 0,
+          compactionFailures: compactionInspectionFailures,
           error: sanitizeMaintenanceError(message)
         });
       }
@@ -302,6 +390,13 @@ export async function runMaintenanceCycle(
     pendingRemaining: results.reduce((sum, item) => sum + item.pendingAfter, 0),
     retryableRemaining: results.reduce((sum, item) => sum + item.retryableAfter, 0),
     quarantined: results.reduce((sum, item) => sum + item.quarantined, 0),
+    compacted: results.filter((item) => item.compacted).length,
+    reclaimedBytes: results.reduce((sum, item) => sum + item.reclaimedBytes, 0),
+    compactionFailures: results.reduce((sum, item) => sum + item.compactionFailures, 0),
+    skippedBusyCompaction: results.filter((item) => item.status === 'busy').length,
+    nextSelectionOffset: options.projectPath
+      ? selectionOffset
+      : advanceSelectionOffset(selectionOffset, targets.length),
     disk,
     results
   };
@@ -321,12 +416,26 @@ export function formatMaintenanceRunReport(report: MaintenanceRunReport): string
     `Retryable failures remaining: ${report.retryableRemaining}`,
     `Stores needing attention: ${attention}`,
     `Quarantined jobs: ${report.quarantined}`,
+    `Vector stores compacted: ${report.compacted}`,
+    `Vector bytes reclaimed: ${formatBytes(report.reclaimedBytes)}`,
+    `Vector compaction failures: ${report.compactionFailures}`,
     `Errors: ${report.errors}`
   ].join('\n');
 }
 
+export function maintenanceAggregateReport(
+  report: MaintenanceRunReport
+): Omit<MaintenanceRunReport, 'results'> {
+  const { results: _privateTargetResults, ...aggregate } = report;
+  return aggregate;
+}
+
 export function maintenanceRunRequiresAttention(report: MaintenanceRunReport): boolean {
-  return report.errors > 0 || report.blocked > 0 || !report.disk.healthy;
+  return report.errors > 0
+    || report.blocked > 0
+    || report.quarantined > 0
+    || report.compactionFailures > 0
+    || !report.disk.healthy;
 }
 
 export function writeMaintenanceLastRunStatus(
@@ -335,7 +444,7 @@ export function writeMaintenanceLastRunStatus(
 ): string {
   const filePath = getMaintenanceLastRunStatusPath(homeDir);
   const status: MaintenanceLastRunStatus = {
-    version: 1,
+    version: 3,
     startedAt: report.startedAt,
     finishedAt: report.finishedAt,
     scanned: report.scanned,
@@ -347,6 +456,11 @@ export function writeMaintenanceLastRunStatus(
     pendingRemaining: report.pendingRemaining,
     retryableRemaining: report.retryableRemaining,
     quarantined: report.quarantined,
+    compacted: report.compacted,
+    reclaimedBytes: report.reclaimedBytes,
+    compactionFailures: report.compactionFailures,
+    skippedBusyCompaction: report.skippedBusyCompaction,
+    nextSelectionOffset: report.nextSelectionOffset,
     disk: report.disk
   };
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -361,7 +475,11 @@ export function readMaintenanceLastRunStatus(
 ): MaintenanceLastRunStatus | null {
   try {
     const value = JSON.parse(fs.readFileSync(getMaintenanceLastRunStatusPath(homeDir), 'utf8')) as Partial<MaintenanceLastRunStatus>;
-    if (value.version !== 1 || typeof value.startedAt !== 'string' || typeof value.finishedAt !== 'string') return null;
+    if ((value.version !== 1 && value.version !== 2 && value.version !== 3)
+      || typeof value.startedAt !== 'string'
+      || !Number.isFinite(Date.parse(value.startedAt))
+      || typeof value.finishedAt !== 'string'
+      || !Number.isFinite(Date.parse(value.finishedAt))) return null;
     const numericKeys = [
       'scanned',
       'processed',
@@ -380,6 +498,20 @@ export function readMaintenanceLastRunStatus(
     if (value.disk !== undefined && value.disk !== null && !isMaintenanceDiskStatus(value.disk)) return null;
     value.blocked ??= 0;
     value.disk ??= null;
+    value.compacted ??= 0;
+    value.reclaimedBytes ??= 0;
+    value.compactionFailures ??= 0;
+    value.skippedBusyCompaction ??= 0;
+    value.nextSelectionOffset ??= 0;
+    const nonNegativeIntegerKeys = [
+      ...numericKeys,
+      'compacted',
+      'reclaimedBytes',
+      'compactionFailures',
+      'skippedBusyCompaction',
+      'nextSelectionOffset'
+    ] as const;
+    if (nonNegativeIntegerKeys.some((key) => !Number.isSafeInteger(value[key]) || (value[key] ?? -1) < 0)) return null;
     return value as MaintenanceLastRunStatus;
   } catch {
     return null;
@@ -393,6 +525,7 @@ export function formatMaintenanceLastRunStatus(status: MaintenanceLastRunStatus 
     `  scanned=${status.scanned} processed=${status.processed} recovered=${status.recovered}`,
     `  busy=${status.busy} blocked=${status.blocked} errors=${status.errors} pending=${status.pendingRemaining} retryable=${status.retryableRemaining} quarantined=${status.quarantined}`
   ];
+  lines.push(`  compacted=${status.compacted} reclaimed=${formatBytes(status.reclaimedBytes)} compactionFailures=${status.compactionFailures} skippedBusy=${status.skippedBusyCompaction}`);
   lines.push(status.disk
     ? `  disk=${formatBytes(status.disk.availableBytes)} free minimum=${formatBytes(status.disk.minRequiredBytes)} healthy=${status.disk.healthy ? 'yes' : 'no'}`
     : '  disk=not recorded (run maintenance once with the current version)');
@@ -433,10 +566,17 @@ async function inspectMaintenanceTarget(
   }
 }
 
-async function processMaintenanceTarget(target: MaintenanceTarget, maxBatches: number): Promise<{
+async function processMaintenanceTarget(
+  target: MaintenanceTarget,
+  maxBatches: number,
+  compactionOptions?: MaintenanceRunOptions,
+  compactionDeadlineMs = Number.POSITIVE_INFINITY,
+  nowMs: () => number = Date.now
+): Promise<{
   processed: number;
   recovery: OutboxRecoveryResult;
   stats: OutboxStats;
+  optimize?: VectorOptimizeResult;
 }> {
   const workerLock = new WorkerLock(path.join(target.storagePath, 'vector-worker.lock'));
   const lockResult = workerLock.acquire();
@@ -457,11 +597,83 @@ async function processMaintenanceTarget(target: MaintenanceTarget, maxBatches: n
     const recovery = await service.recoverStuckOutboxItems();
     const processed = await service.processPendingEmbeddings(maxBatches);
     const stats = await service.getOutboxStats();
-    return { processed, recovery, stats };
+    let optimize: VectorOptimizeResult | undefined;
+    // Revalidate the mutable vectors path after acquiring the project lock.
+    // Discovery/eligibility may have raced with a directory-to-symlink swap;
+    // scheduled maintenance must never optimize a Lance store outside the
+    // project-owned storage directory.
+    if (compactionOptions && isOwnedVectorDirectory(target.storagePath)) {
+      const logicalCountBefore = await service.countAllVectors();
+      const health = await service.getVectorPhysicalHealth(logicalCountBefore);
+      if (isVectorCompactionEligible(health, compactionOptions)
+        && hasMaintenanceCompactionBudget(compactionDeadlineMs, nowMs)) {
+        const verifyReadableSample = await service.createVectorReadSmokeVerifier();
+        const remainingMs = Math.max(0, compactionDeadlineMs - nowMs());
+        if (remainingMs > 0) {
+          optimize = await service.optimizeVectors({ maxDurationMs: remainingMs });
+          const logicalCountAfter = await service.countAllVectors();
+          const readableSamplePreserved = await verifyReadableSample();
+          optimize = finalizeMaintenanceOptimizeResult(
+            optimize,
+            logicalCountBefore,
+            logicalCountAfter,
+            readableSamplePreserved
+          );
+          await service.persistVectorOptimizeResult(optimize);
+        }
+      }
+    }
+    return { processed, recovery, stats, optimize };
   } finally {
     await service.shutdown().catch(() => undefined);
     workerLock.release();
   }
+}
+
+export function hasMaintenanceCompactionBudget(
+  deadlineMs: number,
+  nowMs: () => number = Date.now
+): boolean {
+  return nowMs() < deadlineMs;
+}
+
+async function inspectVectorCompactionEligibility(
+  target: MaintenanceTarget,
+  options: MaintenanceRunOptions
+): Promise<boolean> {
+  const vectorsPath = path.join(target.storagePath, 'vectors');
+  if (!isOwnedVectorDirectory(target.storagePath)) return false;
+  const store = new VectorStore(vectorsPath);
+  const health = await store.getPhysicalHealth();
+  return isVectorCompactionEligible(health, options);
+}
+
+export function isOwnedVectorDirectory(storagePath: string): boolean {
+  return isOwnedDirectory(path.join(storagePath, 'vectors'), storagePath);
+}
+
+function isVectorCompactionEligible(
+  health: Awaited<ReturnType<VectorStore['getPhysicalHealth']>>,
+  options: MaintenanceRunOptions
+): boolean {
+  const minBytes = options.minCompactionBytes ?? 256 * 1024 * 1024;
+  if ((health.physicalBytes ?? 0) < minBytes) return false;
+  if (!health.lastOptimizedAt) return true;
+  const optimizedAt = Date.parse(health.lastOptimizedAt);
+  return !Number.isFinite(optimizedAt) || Date.now() - optimizedAt >= 24 * 60 * 60 * 1000;
+}
+
+export function finalizeMaintenanceOptimizeResult(
+  optimize: VectorOptimizeResult,
+  logicalCountBefore: number,
+  logicalCountAfter: number,
+  readableSamplePreserved: boolean
+): VectorOptimizeResult {
+  if (logicalCountBefore === logicalCountAfter && readableSamplePreserved) return optimize;
+  return withVectorOptimizeIntegrityFailure(
+    optimize,
+    logicalCountBefore !== logicalCountAfter ? 'logical_count_mismatch' : 'read_smoke_failed'
+  );
 }
 
 function pendingCount(stats: OutboxStats): number {
@@ -488,8 +700,28 @@ function recoveryCount(result: OutboxRecoveryResult): number {
 }
 
 function normalizeMaxProjects(value: number | undefined): number {
-  if (value === undefined) return Number.MAX_SAFE_INTEGER;
+  if (value === undefined) return DEFAULT_MAINTENANCE_MAX_PROJECTS;
   if (!Number.isSafeInteger(value) || value < 1) throw new Error('--max-projects must be a positive integer');
+  return value;
+}
+
+function normalizeSelectionOffset(value: number | undefined): number {
+  if (value === undefined) return 0;
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error('maintenance selection offset must be a non-negative safe integer');
+  }
+  return value;
+}
+
+function advanceSelectionOffset(current: number, scanned: number): number {
+  return current > Number.MAX_SAFE_INTEGER - scanned ? scanned : current + scanned;
+}
+
+function normalizeCompactionDuration(value: number | undefined): number {
+  if (value === undefined) return DEFAULT_MAINTENANCE_COMPACTION_BUDGET_MS;
+  if (!Number.isSafeInteger(value) || value < 0 || value > 60 * 60 * 1000) {
+    throw new Error('maximum compaction duration must be an integer between 0 and 3600000 milliseconds');
+  }
   return value;
 }
 
@@ -522,9 +754,15 @@ function findExistingAncestor(input: string): string {
 function isMaintenanceDiskStatus(value: unknown): value is MaintenanceDiskStatus {
   if (!value || typeof value !== 'object') return false;
   const disk = value as Partial<MaintenanceDiskStatus>;
-  return Number.isFinite(disk.availableBytes)
+  return typeof disk.availableBytes === 'number'
+    && Number.isFinite(disk.availableBytes)
+    && disk.availableBytes >= 0
+    && typeof disk.totalBytes === 'number'
     && Number.isFinite(disk.totalBytes)
+    && disk.totalBytes >= 0
+    && typeof disk.minRequiredBytes === 'number'
     && Number.isFinite(disk.minRequiredBytes)
+    && disk.minRequiredBytes >= 0
     && typeof disk.healthy === 'boolean';
 }
 
@@ -541,12 +779,37 @@ function getStoreModifiedAtMs(storagePath: string): number {
     .reduce((latest, file) => Math.max(latest, fs.statSync(file).mtimeMs), 0);
 }
 
-function isLocalProjectStore(storagePath: string, dbPath: string): boolean {
+function isLocalProjectStore(storagePath: string, dbPath: string, memoryRoot: string): boolean {
   try {
-    return fs.lstatSync(storagePath).isDirectory() && fs.lstatSync(dbPath).isFile();
+    const storage = fs.lstatSync(storagePath);
+    const database = fs.lstatSync(dbPath);
+    return storage.isDirectory()
+      && !storage.isSymbolicLink()
+      && database.isFile()
+      && !database.isSymbolicLink()
+      && isRealPathWithin(memoryRoot, storagePath)
+      && isRealPathWithin(memoryRoot, dbPath);
   } catch {
     return false;
   }
+}
+
+function isOwnedDirectory(directory: string, memoryRoot: string): boolean {
+  try {
+    const stat = fs.lstatSync(directory);
+    return stat.isDirectory()
+      && !stat.isSymbolicLink()
+      && isRealPathWithin(memoryRoot, directory);
+  } catch {
+    return false;
+  }
+}
+
+function isRealPathWithin(rootPath: string, candidatePath: string): boolean {
+  const root = fs.realpathSync(rootPath);
+  const candidate = fs.realpathSync(candidatePath);
+  const relative = path.relative(root, candidate);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
 function sanitizeMaintenanceError(message: string): string {

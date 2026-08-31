@@ -65,7 +65,8 @@ function createService() {
     countEvents: vi.fn(async () => 31)
   };
   const vectorStore = {
-    count: vi.fn(async () => 19)
+    count: vi.fn(async () => 19),
+    countAll: vi.fn(async () => 99)
   };
   const graduation = {
     getStats: vi.fn(async () => [{ level: 'working', count: 23 }])
@@ -129,7 +130,17 @@ describe('MemoryQueryService', () => {
     expect(queryStore.countEvents).toHaveBeenCalledOnce();
     expect(queryStore.getRecentEvents).not.toHaveBeenCalled();
     expect(vectorStore.count).toHaveBeenCalledOnce();
+    expect(vectorStore.countAll).not.toHaveBeenCalled();
     expect(graduation.getStats).toHaveBeenCalledOnce();
+  });
+
+  it('counts every vector table for maintenance integrity without changing public stats', async () => {
+    const { service, vectorStore } = createService();
+
+    await expect(service.countAllVectors()).resolves.toBe(99);
+
+    expect(vectorStore.countAll).toHaveBeenCalledOnce();
+    expect(vectorStore.count).not.toHaveBeenCalled();
   });
 
   it('falls back to scanning recent events for the total when the store cannot count', async () => {

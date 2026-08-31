@@ -1,6 +1,17 @@
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+
 import type { OutboxQueueStats, OutboxStats } from '../../core/types.js';
 import type { MemoryStats } from '../../core/engine/memory-query-service.js';
 import type { ExistingStoreStatus } from '../../core/registry/existing-store.js';
+import {
+  VectorStore,
+  withVectorOptimizeIntegrityFailure,
+  type VectorOptimizeResult,
+  type VectorPhysicalHealth
+} from '../../core/vector-store.js';
+import { WorkerLock } from '../../core/worker-lock.js';
+import { getProjectStoragePath } from '../../core/registry/project-path.js';
 
 export interface RawVectorStatusCommandOptions {
   project?: string;
@@ -16,6 +27,26 @@ export interface VectorStatusReportInput {
   stats: Pick<MemoryStats, 'totalEvents' | 'vectorCount' | 'levelStats'>;
   outbox: OutboxStats;
   storeStatus?: ExistingStoreStatus;
+  physicalHealth?: VectorPhysicalHealth;
+}
+
+export interface VectorCompactionOptions {
+  projectPath: string;
+  apply?: boolean;
+  minPhysicalBytes?: number;
+}
+
+export interface VectorCompactionReport {
+  schemaVersion: 'vector-compaction-v1';
+  mode: 'preview' | 'apply';
+  projectHash: string;
+  eligible: boolean;
+  reasons: string[];
+  physicalHealth: VectorPhysicalHealth;
+  optimize?: VectorOptimizeResult;
+  logicalCountBefore: number;
+  logicalCountAfter: number;
+  smokeCheck: 'not_run' | 'passed' | 'failed' | 'unsupported' | 'budget_exhausted';
 }
 
 type VectorStatus = 'ok' | 'needs-attention';
@@ -27,6 +58,7 @@ interface NormalizedVectorStatusReport {
     totalEvents: number;
     vectorCount: number;
   };
+  physicalHealth?: VectorPhysicalHealth;
   outbox: {
     embedding: OutboxQueueStats;
     vector: OutboxQueueStats;
@@ -58,6 +90,13 @@ export function formatVectorStatusReport(input: VectorStatusReportInput): string
       : []),
     `Vector count: ${input.stats.vectorCount}`,
     `Total events: ${input.stats.totalEvents}`,
+    ...(input.physicalHealth ? [
+      `Physical bytes: ${formatNullableNumber(input.physicalHealth.physicalBytes)}`,
+      `Tables/fragments/versions: ${formatNullableNumber(input.physicalHealth.tableCount)}/${formatNullableNumber(input.physicalHealth.fragmentCount)}/${formatNullableNumber(input.physicalHealth.versionCount)}`,
+      `Bytes per logical vector: ${formatNullableNumber(input.physicalHealth.bytesPerLogicalVector)}`,
+      `Last optimize: ${input.physicalHealth.lastOptimizeOutcome}${input.physicalHealth.lastOptimizedAt ? ` at ${input.physicalHealth.lastOptimizedAt}` : ''}`,
+      `Amplification: ${input.physicalHealth.amplificationState}`
+    ] : []),
     '',
     'Queue      pending  processing  failed  retryable  quarantined  stuck  total  oldest',
     formatQueueRow('Embedding', embedding),
@@ -94,11 +133,16 @@ function buildVectorStatusReport(input: VectorStatusReportInput): NormalizedVect
       totalEvents: numberOrZero(input.stats.totalEvents),
       vectorCount: numberOrZero(input.stats.vectorCount)
     },
+    ...(input.physicalHealth ? { physicalHealth: input.physicalHealth } : {}),
     outbox: { embedding, vector, totals },
     status,
     recommendedAction: selectRecommendedAction(totals),
     oldestProcessingAgeMs
   };
+}
+
+function formatNullableNumber(value: number | null): string {
+  return value === null ? 'unsupported' : String(value);
 }
 
 function selectRecommendedAction(totals: OutboxQueueStats): VectorStatusRecommendedAction {
@@ -173,4 +217,131 @@ function formatDuration(ms: number | null): string {
   const days = Math.floor(hours / 24);
   const remainingHours = hours % 24;
   return remainingHours === 0 ? `${days}d` : `${days}d ${remainingHours}h`;
+}
+
+export async function runVectorCompaction(
+  options: VectorCompactionOptions,
+  deps: {
+    storagePathForProject?: (projectPath: string) => string;
+    createVectorStore?: (vectorsPath: string) => VectorStore;
+  } = {}
+): Promise<VectorCompactionReport> {
+  if (!options.projectPath.trim()) throw new Error('--project must not be empty');
+  const storagePath = (deps.storagePathForProject ?? getProjectStoragePath)(path.resolve(options.projectPath));
+  const projectHash = path.basename(storagePath);
+  const vectorsPath = path.join(storagePath, 'vectors');
+  const usesDefaultStore = deps.createVectorStore === undefined;
+  if (usesDefaultStore && !isOwnedVectorDirectory(storagePath, vectorsPath)) {
+    return {
+      schemaVersion: 'vector-compaction-v1',
+      mode: options.apply ? 'apply' : 'preview',
+      projectHash,
+      eligible: false,
+      reasons: [],
+      physicalHealth: emptyVectorPhysicalHealth(),
+      logicalCountBefore: 0,
+      logicalCountAfter: 0,
+      smokeCheck: 'not_run'
+    };
+  }
+  const store = (deps.createVectorStore ?? ((target) => new VectorStore(target)))(vectorsPath);
+  const minPhysicalBytes = options.minPhysicalBytes ?? 256 * 1024 * 1024;
+  const inspect = async (): Promise<VectorCompactionReport> => {
+    const logicalCountBefore = await countAllVectors(store);
+    const physicalHealth = await store.getPhysicalHealth(logicalCountBefore);
+    const reasons: string[] = [];
+    const meetsPhysicalThreshold = (physicalHealth.physicalBytes ?? 0) >= minPhysicalBytes;
+    if (meetsPhysicalThreshold) reasons.push('physical_size');
+    if (physicalHealth.amplificationState === 'elevated' || physicalHealth.amplificationState === 'critical') {
+      reasons.push('amplification');
+    }
+    if (physicalHealth.lastOptimizeOutcome === 'failed') reasons.push('prior_failure');
+    if (physicalHealth.lastOptimizeOutcome === 'never' && meetsPhysicalThreshold) reasons.push('never_optimized');
+    return {
+      schemaVersion: 'vector-compaction-v1',
+      mode: options.apply ? 'apply' : 'preview',
+      projectHash,
+      eligible: reasons.length > 0,
+      reasons,
+      physicalHealth,
+      logicalCountBefore,
+      logicalCountAfter: logicalCountBefore,
+      smokeCheck: 'not_run'
+    };
+  };
+  if (!options.apply) return inspect();
+
+  const lock = new WorkerLock(path.join(storagePath, 'vector-worker.lock'));
+  const acquired = lock.acquire();
+  if (!acquired.acquired) throw new Error('vector compaction is busy');
+  try {
+    // The directory can be replaced after preview/initial validation. Recheck
+    // under the project vector lock before invoking destructive Lance optimize.
+    if (usesDefaultStore && !isOwnedVectorDirectory(storagePath, vectorsPath)) {
+      throw new Error('vector compaction target changed or left project storage');
+    }
+    const base = await inspect();
+    if (!base.eligible) return base;
+    const verifyReadableSample = typeof store.createReadSmokeVerifier === 'function'
+      ? await store.createReadSmokeVerifier()
+      : async () => true;
+    const optimize = await store.optimizeAll();
+    const logicalCountAfter = await countAllVectors(store);
+    const readableSamplePreserved = await verifyReadableSample();
+    const integrityError = logicalCountAfter !== base.logicalCountBefore
+      ? 'logical_count_mismatch'
+      : !readableSamplePreserved
+        ? 'read_smoke_failed'
+        : null;
+    const verifiedOptimize = integrityError
+      ? withVectorOptimizeIntegrityFailure(optimize, integrityError)
+      : optimize;
+    if (integrityError && typeof store.persistOptimizeResult === 'function') {
+      store.persistOptimizeResult(verifiedOptimize);
+    }
+    return {
+      ...base,
+      optimize: verifiedOptimize,
+      logicalCountAfter,
+      smokeCheck: verifiedOptimize.failures > 0
+        ? 'failed'
+        : verifiedOptimize.budgetExhausted
+          ? 'budget_exhausted'
+          : !verifiedOptimize.supported
+            ? 'unsupported'
+            : 'passed'
+    };
+  } finally {
+    lock.release();
+  }
+}
+
+async function countAllVectors(store: VectorStore): Promise<number> {
+  return typeof store.countAll === 'function' ? store.countAll() : store.count();
+}
+
+export function isOwnedVectorDirectory(storagePath: string, vectorsPath: string): boolean {
+  try {
+    const storageStat = fs.lstatSync(storagePath);
+    const vectorStat = fs.lstatSync(vectorsPath);
+    if (!storageStat.isDirectory() || storageStat.isSymbolicLink()
+      || !vectorStat.isDirectory() || vectorStat.isSymbolicLink()) return false;
+    const relative = path.relative(fs.realpathSync(storagePath), fs.realpathSync(vectorsPath));
+    return relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative);
+  } catch {
+    return false;
+  }
+}
+
+function emptyVectorPhysicalHealth(): VectorPhysicalHealth {
+  return {
+    physicalBytes: 0,
+    tableCount: 0,
+    fragmentCount: 0,
+    versionCount: 0,
+    bytesPerLogicalVector: null,
+    lastOptimizedAt: null,
+    lastOptimizeOutcome: 'never',
+    amplificationState: 'unknown'
+  };
 }

@@ -11,6 +11,7 @@ import type {
 } from '../types.js';
 import type { DerivationLiveness, RecentEventsReadOptions } from '../sqlite-event-store.js';
 import type { SQLiteDatabase } from '../sqlite-wrapper.js';
+import type { VectorOptimizeOptions, VectorOptimizeResult, VectorPhysicalHealth } from '../vector-store.js';
 import { LessonRepository } from '../operations/lesson-repository.js';
 import { CoreMemoryBlockRepository } from '../operations/core-memory-block-repository.js';
 import {
@@ -78,7 +79,14 @@ interface QueryMaintenanceStore extends QueryStore {
 }
 
 interface MemoryQueryServiceDeps {
-  vectorStore: { count(): Promise<number> };
+  vectorStore: {
+    count(): Promise<number>;
+    countAll?(): Promise<number>;
+    getPhysicalHealth(logicalVectorCount?: number): Promise<VectorPhysicalHealth>;
+    optimizeAll(options?: VectorOptimizeOptions): Promise<VectorOptimizeResult>;
+    createReadSmokeVerifier?(): Promise<() => Promise<boolean>>;
+    persistOptimizeResult?(result: VectorOptimizeResult): void;
+  };
   graduation: { getStats(): Promise<Array<{ level: string; count: number }>> };
 }
 
@@ -288,6 +296,9 @@ export class MemoryQueryService {
     const totalEvents = this.queryStore.countEvents
       ? await this.queryStore.countEvents()
       : (await this.queryStore.getRecentEvents(10000)).length;
+    // Public storage stats retain the historical logical-count contract.
+    // countAll() includes duplicate embedding versions and tool-observation
+    // tables and is reserved for compaction integrity checks.
     const vectorCount = await deps.vectorStore.count();
     const levelStats = await deps.graduation.getStats();
 
@@ -296,6 +307,33 @@ export class MemoryQueryService {
       vectorCount,
       levelStats
     };
+  }
+
+  async getVectorPhysicalHealth(logicalVectorCount?: number): Promise<VectorPhysicalHealth> {
+    await this.initialize();
+    return this.getStatsDeps().vectorStore.getPhysicalHealth(logicalVectorCount);
+  }
+
+  /** Count rows across every vector table for pre/post maintenance integrity checks. */
+  async countAllVectors(): Promise<number> {
+    await this.initialize();
+    const vectorStore = this.getStatsDeps().vectorStore;
+    return vectorStore.countAll ? vectorStore.countAll() : vectorStore.count();
+  }
+
+  async optimizeVectors(options?: VectorOptimizeOptions): Promise<VectorOptimizeResult> {
+    await this.initialize();
+    return this.getStatsDeps().vectorStore.optimizeAll(options);
+  }
+
+  async createVectorReadSmokeVerifier(): Promise<() => Promise<boolean>> {
+    await this.initialize();
+    return this.getStatsDeps().vectorStore.createReadSmokeVerifier?.() ?? (async () => true);
+  }
+
+  async persistVectorOptimizeResult(result: VectorOptimizeResult): Promise<void> {
+    await this.initialize();
+    this.getStatsDeps().vectorStore.persistOptimizeResult?.(result);
   }
 
   async getEventsByLevel(level: string, options?: { limit?: number; offset?: number }): Promise<MemoryEvent[]> {

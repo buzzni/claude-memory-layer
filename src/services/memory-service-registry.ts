@@ -31,6 +31,7 @@ export interface MemoryServiceRegistryDeps<TService> {
 export interface MemoryServiceRegistry<TService> {
   getDefaultMemoryService(): TService;
   getReadOnlyMemoryService(): TService;
+  getReadOnlyMemoryServiceForProject(projectPath: string): TService;
   getMemoryServiceForProject(projectPath: string, sharedStoreConfig?: SharedStoreConfig): TService;
   getMemoryServiceForSession(sessionId: string): TService;
   getLightweightMemoryService(sessionId: string): TService;
@@ -69,9 +70,23 @@ export function createMemoryServiceRegistry<TService>(
   const getReadOnlyMemoryService = (): TService => deps.createService({
     storagePath: '~/.claude-code/memory',
     readOnly: true,
+    snapshotReads: true,
     analyticsEnabled: false,
     sharedStoreConfig: deps.disabledSharedStoreConfig
   });
+
+  const getReadOnlyMemoryServiceForProject = (projectPath: string): TService => {
+    const projectHash = deps.hashProjectPath(projectPath);
+    return deps.createService({
+      storagePath: deps.getProjectStoragePath(projectPath),
+      projectHash,
+      projectPath,
+      readOnly: true,
+      snapshotReads: true,
+      analyticsEnabled: false,
+      sharedStoreConfig: deps.disabledSharedStoreConfig
+    });
+  };
 
   const getMemoryServiceForProject = (
     projectPath: string,
@@ -169,6 +184,7 @@ export function createMemoryServiceRegistry<TService>(
   return {
     getDefaultMemoryService,
     getReadOnlyMemoryService,
+    getReadOnlyMemoryServiceForProject,
     getMemoryServiceForProject,
     getMemoryServiceForSession,
     getLightweightMemoryService,

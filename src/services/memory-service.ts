@@ -8,6 +8,9 @@ import * as os from 'os';
 import type { RetrievalResult, UnifiedRetrievalResult } from '../core/retriever.js';
 import { disposeDefaultEmbedder } from '../core/embedder.js';
 import type { RuntimeModelReleaseReason } from '../core/runtime-resource-telemetry.js';
+import type { VectorOptimizeOptions, VectorOptimizeResult, VectorPhysicalHealth } from '../core/vector-store.js';
+import { resolveExistingStore } from '../core/registry/existing-store.js';
+import { MemoryStoreResolutionError } from './read-only-diagnostics-service.js';
 import type { PromotionResult } from '../core/shared-promoter.js';
 import type { SharedMemoryServices } from '../extensions/shared-memory/index.js';
 import type {
@@ -103,7 +106,14 @@ export {
   type MemoryServiceConfig
 } from './memory-service-config.js';
 
+export interface MemoryServiceCapabilities {
+  canonicalWrites: boolean;
+  telemetryWrites: boolean;
+  freshnessImports: boolean;
+}
+
 export class MemoryService {
+  readonly capabilities: MemoryServiceCapabilities;
   private readonly retrievalOrchestrator: RetrievalOrchestrator;
   private readonly retrievalDisclosureService: RetrievalDisclosureService;
   private readonly retrievalAnalyticsService: RetrievalAnalyticsService;
@@ -128,6 +138,11 @@ export class MemoryService {
     this.readOnly = config.readOnly ?? false;
     this.lightweightMode = config.lightweightMode ?? false;
     this.embeddingOnly = config.embeddingOnly ?? false;
+    this.capabilities = {
+      canonicalWrites: !this.readOnly,
+      telemetryWrites: !this.readOnly,
+      freshnessImports: !this.readOnly
+    };
 
     // Store project hash for shared store operations
     this.projectHash = config.projectHash || null;
@@ -678,6 +693,10 @@ export class MemoryService {
     return this.retrievalAnalyticsService.getRetrievalTelemetryStats();
   }
 
+  async getUsefulnessAggregateV2(options: import('../core/engine/retrieval-analytics-service.js').UsefulnessAggregateV2Options = {}) {
+    return this.retrievalAnalyticsService.getUsefulnessAggregateV2(options);
+  }
+
   async recordReferenceNavigation(
     input: RecordReferenceNavigationInput
   ): Promise<RecordReferenceNavigationResult> {
@@ -794,6 +813,30 @@ export class MemoryService {
     return this.embeddingMaintenanceService.getEmbeddingModelName();
   }
 
+  async getVectorPhysicalHealth(logicalVectorCount?: number): Promise<VectorPhysicalHealth> {
+    await this.initialize();
+    return this.queryService.getVectorPhysicalHealth(logicalVectorCount);
+  }
+
+  async countAllVectors(): Promise<number> {
+    return this.queryService.countAllVectors();
+  }
+
+  async optimizeVectors(options?: VectorOptimizeOptions): Promise<VectorOptimizeResult> {
+    await this.initialize();
+    return this.queryService.optimizeVectors(options);
+  }
+
+  async createVectorReadSmokeVerifier(): Promise<() => Promise<boolean>> {
+    await this.initialize();
+    return this.queryService.createVectorReadSmokeVerifier();
+  }
+
+  async persistVectorOptimizeResult(result: VectorOptimizeResult): Promise<void> {
+    await this.initialize();
+    await this.queryService.persistVectorOptimizeResult(result);
+  }
+
   /**
    * Ensure embedding model metadata is in sync and optionally migrate vectors.
    * Migration strategy: clear vector index + clear embedding outbox + re-enqueue all events.
@@ -833,7 +876,50 @@ const defaultRegistry = createMemoryServiceRegistry<MemoryService>({
 });
 
 export const getDefaultMemoryService = defaultRegistry.getDefaultMemoryService;
-export const getReadOnlyMemoryService = defaultRegistry.getReadOnlyMemoryService;
+const emptyReadOnlyMemoryService = {
+  capabilities: { canonicalWrites: false, telemetryWrites: false, freshnessImports: false },
+  initialize: async () => undefined,
+  shutdown: async () => undefined,
+  retrieveMemories: async () => ({
+    memories: [],
+    outcomeDiagnostics: {
+      outcomeReason: 'no_project_events',
+      laneCandidateCounts: {},
+      filteredCounts: {},
+      topScore: null,
+      threshold: 0,
+      freshnessState: 'unknown'
+    }
+  }),
+  keywordSearch: async () => [],
+  getSessionHistory: async () => [],
+  getRecentEvents: async () => [],
+  recordQueryTrace: async () => undefined
+} as unknown as MemoryService;
+
+export function getReadOnlyMemoryService(): MemoryService {
+  return resolveReadOnlyService(undefined, defaultRegistry.getReadOnlyMemoryService);
+}
+
+export function getReadOnlyMemoryServiceForProject(projectPath: string): MemoryService {
+  return resolveReadOnlyService(
+    projectPath,
+    () => defaultRegistry.getReadOnlyMemoryServiceForProject(projectPath)
+  );
+}
+
+function resolveReadOnlyService(
+  projectOrHash: string | undefined,
+  create: () => MemoryService
+): MemoryService {
+  const resolution = resolveExistingStore(projectOrHash);
+  if (resolution.status === 'missing') return emptyReadOnlyMemoryService;
+  if (resolution.status !== 'existing') {
+    throw new MemoryStoreResolutionError(resolution.status, resolution.reason);
+  }
+  return create();
+}
+
 export const getMemoryServiceForProject = defaultRegistry.getMemoryServiceForProject;
 export const getMemoryServiceForSession = defaultRegistry.getMemoryServiceForSession;
 export const getLightweightMemoryService = defaultRegistry.getLightweightMemoryService;

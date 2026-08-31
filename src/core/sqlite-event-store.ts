@@ -40,15 +40,29 @@ import { VectorOutbox, type OutboxConfig } from './vector-outbox.js';
 import { normalizeRetrievalDebugLanes, type RetrievalDebugLane } from './retrieval-debug-lanes.js';
 import { computeMemoryUsageEvidence, type EvidenceMatch } from './usefulness-evidence.js';
 import {
+  buildUsefulnessObservationV2,
+  classifyReaskOutcome,
+  parseToolOutcome,
+  USEFULNESS_V2_EVALUATION_WINDOW_MS
+} from './usefulness-outcome-v2.js';
+import {
+  emptyUsefulnessAggregateV2,
+  normalizeUsefulnessMinimumSample,
   normalizeRetrievalPresentationMode,
+  normalizeRetrievalOutcomeDiagnostics,
+  normalizeRetrievalOutcomeReason,
   normalizeRetrievalTriggerType,
   normalizeTelemetryClient,
   type RecordReferenceNavigationInput,
   type RecordReferenceNavigationResult,
   type RetrievalPresentationMode,
+  type RetrievalOutcomeDiagnostics,
   type RetrievalTelemetryContext,
   type RetrievalTelemetryStats,
-  type RetrievalTriggerType
+  type RetrievalTriggerType,
+  type MemoryUsefulnessObservationV2,
+  type UsefulnessAggregateV2,
+  type UsefulnessRateV2
 } from './retrieval-telemetry.js';
 
 export interface SQLiteEventStoreOptions extends SQLiteOptions {
@@ -100,6 +114,21 @@ function parseRetrievalTraceDetails(value: unknown): RetrievalTraceDetailRecord[
   if (typeof value !== 'string' || value.length === 0) return [];
   const parsed = JSON.parse(value);
   return Array.isArray(parsed) ? normalizeRetrievalTraceDetails(parsed as RetrievalTraceDetailRecord[]) : [];
+}
+
+function parseRetrievalOutcomeDiagnostics(row: Record<string, unknown>): RetrievalOutcomeDiagnostics {
+  let value: unknown;
+  try {
+    value = typeof row.retrieval_diagnostics_json === 'string'
+      ? JSON.parse(row.retrieval_diagnostics_json)
+      : undefined;
+  } catch {
+    value = undefined;
+  }
+  return normalizeRetrievalOutcomeDiagnostics(
+    value,
+    normalizeRetrievalOutcomeReason(row.outcome_reason)
+  );
 }
 
 function normalizeQueryRewriteKind(value?: string | null): QueryRewriteKind {
@@ -291,6 +320,8 @@ export class SQLiteEventStore {
     this.db = createSQLiteDatabase(dbPath, {
       readonly: this.readOnly,
       snapshot: options?.snapshot,
+      snapshotDirectory: options?.snapshotDirectory,
+      canonicalMemoryRoot: options?.canonicalMemoryRoot,
       walMode: !this.readOnly
     });
     this.markdownMirror = this.readOnly || !options?.markdownMirrorRoot
@@ -606,6 +637,29 @@ export class SQLiteEventStore {
         measured_at TEXT
       );
 
+      -- Additive, versioned usefulness funnel. Raw dimensions stay separate;
+      -- no unknown value is coerced to neutral or zero.
+      CREATE TABLE IF NOT EXISTS memory_usefulness_observations_v2 (
+        trace_id TEXT NOT NULL,
+        event_id TEXT NOT NULL,
+        observation_kind TEXT NOT NULL DEFAULT 'outcome',
+        evaluator_version TEXT NOT NULL,
+        presentation_mode TEXT NOT NULL,
+        trigger_type TEXT NOT NULL,
+        selected INTEGER NOT NULL,
+        delivered INTEGER,
+        adoption TEXT NOT NULL,
+        content_overlap_score REAL,
+        task_outcome TEXT NOT NULL,
+        reask_outcome TEXT NOT NULL,
+        explicit_feedback TEXT,
+        confidence REAL NOT NULL,
+        evaluated_at TEXT,
+        PRIMARY KEY(trace_id, event_id, observation_kind, evaluator_version)
+      );
+      CREATE INDEX IF NOT EXISTS idx_usefulness_v2_evaluator_trigger
+        ON memory_usefulness_observations_v2(evaluator_version, trigger_type, evaluated_at DESC);
+
       -- Retrieval trace log (query -> candidates -> selected for context)
       CREATE TABLE IF NOT EXISTS retrieval_traces (
         trace_id TEXT PRIMARY KEY,
@@ -626,6 +680,8 @@ export class SQLiteEventStore {
         presentation_mode TEXT NOT NULL DEFAULT 'unknown',
         trigger_type TEXT NOT NULL DEFAULT 'unknown',
         delivery_client TEXT NOT NULL DEFAULT 'unknown',
+        outcome_reason TEXT NOT NULL DEFAULT 'runtime_error',
+        retrieval_diagnostics_json TEXT,
         created_at TEXT DEFAULT (datetime('now'))
       );
 
@@ -1105,6 +1161,8 @@ export class SQLiteEventStore {
     this.addColumnIfMissing('retrieval_traces', 'presentation_mode', `TEXT NOT NULL DEFAULT 'unknown'`);
     this.addColumnIfMissing('retrieval_traces', 'trigger_type', `TEXT NOT NULL DEFAULT 'unknown'`);
     this.addColumnIfMissing('retrieval_traces', 'delivery_client', `TEXT NOT NULL DEFAULT 'unknown'`);
+    this.addColumnIfMissing('retrieval_traces', 'outcome_reason', `TEXT NOT NULL DEFAULT 'runtime_error'`);
+    this.addColumnIfMissing('retrieval_traces', 'retrieval_diagnostics_json', 'TEXT');
 
     // Explicit curation reuses the existing lesson artifact while preserving
     // whether the item came from a reviewed/manual capture or a derivation.
@@ -2753,19 +2811,6 @@ export class SQLiteEventStore {
       for (const row of rows) memoryContentById.set(row.id, row.content);
     }
 
-    // Count successful vs failed tools
-    let toolSuccessCount = 0;
-    const toolTotalCount = toolEvents.length;
-    for (const t of toolEvents) {
-      try {
-        const content = JSON.parse(t.content as string);
-        if (content.success !== false) toolSuccessCount++;
-      } catch {
-        toolSuccessCount++; // Assume success if can't parse
-      }
-    }
-    const toolSuccessRatio = toolTotalCount > 0 ? toolSuccessCount / toolTotalCount : 0.5;
-
     // Events store ISO timestamps while memory_helpfulness.created_at uses
     // SQLite datetime('now') ("YYYY-MM-DD HH:MM:SS", UTC). Comparing the raw
     // strings marks any same-day event as "after", so compare epoch millis.
@@ -2786,6 +2831,13 @@ export class SQLiteEventStore {
       // 2. How many prompts came after?
       const promptsAfter = promptEvents.filter((e: any) => toEpochMs(e.timestamp) > retrievalTimeMs);
       const promptCountAfter = promptsAfter.length;
+      const toolOutcomesAfter = toolEvents
+        .filter((e: any) => toEpochMs(e.timestamp) > retrievalTimeMs)
+        .map((event) => parseToolOutcome(event.content));
+      const measuredToolOutcomes = toolOutcomesAfter.filter((outcome) => outcome !== 'unknown');
+      const toolSuccessCount = measuredToolOutcomes.filter((outcome) => outcome === 'success').length;
+      const toolTotalCount = measuredToolOutcomes.length;
+      const toolSuccessRatio = toolTotalCount > 0 ? toolSuccessCount / toolTotalCount : 0.5;
 
       // 3. Was a similar query asked again? (simple word overlap check)
       const queryWords = new Set((retrieval.query_preview as string || '').toLowerCase().split(/\s+/).filter(w => w.length > 2));
@@ -2808,7 +2860,7 @@ export class SQLiteEventStore {
       //    only approximate it.
       const responsesAfter = responseEvents
         .filter((e: any) => toEpochMs(e.timestamp) > retrievalTimeMs)
-        .map((e: any) => ({ id: e.id as string, content: e.content as string }));
+        .map((e: any) => ({ id: e.id as string, content: e.content as string, timestamp: e.timestamp }));
       // Grounding must be checked against what was actually injected into the
       // prompt (hooks truncate memories), not the full stored event — otherwise
       // facts the model never saw would count as "used". Full content is the
@@ -2824,6 +2876,20 @@ export class SQLiteEventStore {
         contentOverlapScore = evidence.contentOverlapScore;
         evidenceMatches = evidence.matches;
       }
+
+      const v2WindowEndMs = retrievalTimeMs + USEFULNESS_V2_EVALUATION_WINDOW_MS;
+      const v2PromptsAfter = promptsAfter.filter((event) => toEpochMs(event.timestamp) <= v2WindowEndMs);
+      const v2ToolOutcomesAfter = toolEvents
+        .filter((event) => {
+          const eventTimeMs = toEpochMs(event.timestamp);
+          return eventTimeMs > retrievalTimeMs && eventTimeMs <= v2WindowEndMs;
+        })
+        .map((event) => parseToolOutcome(event.content));
+      const v2ResponsesAfter = responsesAfter.filter((event) => toEpochMs(event.timestamp) <= v2WindowEndMs);
+      const v2Evidence = presentationMode !== 'reference' && v2ResponsesAfter.length > 0 && memoryContent
+        ? computeMemoryUsageEvidence(memoryContent, v2ResponsesAfter)
+        : null;
+      const v2ContentOverlapScore = v2Evidence?.contentOverlapScore ?? null;
 
       const referenceOpened = presentationMode === 'reference' && Boolean(retrieval.trace_id) && Boolean(
         sqliteGet<{ opened: number }>(
@@ -2880,7 +2946,207 @@ export class SQLiteEventStore {
          evidenceMatches.length > 0 ? JSON.stringify(evidenceMatches) : null,
          retrieval.id]
       );
+
+      const triggerType = normalizeRetrievalTriggerType(retrieval.trigger_type ?? retrieval.source);
+      const adoption = presentationMode === 'reference'
+        ? (referenceOpened ? 'navigated' : 'not_observed')
+        : presentationMode === 'evidence'
+          ? (v2ContentOverlapScore === null ? 'unknown' : v2ContentOverlapScore >= 0.3 ? 'grounded' : 'not_observed')
+          : 'unknown';
+      await this.upsertUsefulnessObservationV2(buildUsefulnessObservationV2({
+        traceId: String(retrieval.trace_id || `legacy:${retrieval.id}`),
+        eventId: String(retrieval.event_id),
+        presentationMode,
+        triggerType,
+        delivered: true,
+        adoption,
+        contentOverlapScore: presentationMode === 'evidence' ? v2ContentOverlapScore : null,
+        toolOutcomes: v2ToolOutcomesAfter,
+        reaskOutcome: classifyReaskOutcome(
+          retrieval.query_preview,
+          v2PromptsAfter.map((event) => event.content)
+        ),
+        evaluatedAt: new Date().toISOString()
+      }));
     }
+  }
+
+  async upsertUsefulnessObservationV2(input: MemoryUsefulnessObservationV2): Promise<void> {
+    if (this.readOnly) return;
+    await this.initialize();
+    const delivered = input.delivered === null ? null : input.delivered ? 1 : 0;
+    const overlapValue = input.contentOverlapScore === null ? null : Number(input.contentOverlapScore);
+    const confidenceValue = Number(input.confidence);
+    if ((overlapValue !== null && !Number.isFinite(overlapValue)) || !Number.isFinite(confidenceValue)) {
+      throw new Error('v2 usefulness observation scores must be finite numbers');
+    }
+    const overlap = overlapValue === null ? null : Math.max(0, Math.min(1, overlapValue));
+    const confidence = Math.max(0, Math.min(1, confidenceValue));
+    if (!input.traceId.trim() || !input.eventId.trim() || !input.evaluatorVersion.trim()) {
+      throw new Error('v2 usefulness observation requires trace, event, and evaluator version');
+    }
+    sqliteRun(
+      this.db,
+      `INSERT INTO memory_usefulness_observations_v2 (
+         trace_id, event_id, observation_kind, evaluator_version,
+         presentation_mode, trigger_type, selected, delivered, adoption,
+         content_overlap_score, task_outcome, reask_outcome, explicit_feedback,
+         confidence, evaluated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(trace_id, event_id, observation_kind, evaluator_version) DO UPDATE SET
+         presentation_mode = excluded.presentation_mode,
+         trigger_type = excluded.trigger_type,
+         selected = excluded.selected,
+         delivered = excluded.delivered,
+         adoption = excluded.adoption,
+         content_overlap_score = excluded.content_overlap_score,
+         task_outcome = excluded.task_outcome,
+         reask_outcome = excluded.reask_outcome,
+         explicit_feedback = excluded.explicit_feedback,
+         confidence = excluded.confidence,
+         evaluated_at = excluded.evaluated_at`,
+      [
+        input.traceId.trim(), input.eventId.trim(), 'outcome', input.evaluatorVersion.trim(),
+        normalizeRetrievalPresentationMode(input.presentationMode),
+        normalizeRetrievalTriggerType(input.triggerType),
+        input.selected ? 1 : 0, delivered, input.adoption, overlap,
+        input.taskOutcome, input.reaskOutcome, input.explicitFeedback, confidence,
+        input.evaluatedAt
+      ]
+    );
+  }
+
+  async getUsefulnessAggregateV2(options: {
+    since?: Date;
+    until?: Date;
+    minimumSample?: number;
+    evaluatorVersion?: string;
+    includeSessionStart?: boolean;
+  } = {}): Promise<UsefulnessAggregateV2> {
+    await this.initialize();
+    const minimumSample = normalizeUsefulnessMinimumSample(options.minimumSample);
+    const evaluatorVersion = options.evaluatorVersion?.trim() || 'v2';
+    const base = emptyUsefulnessAggregateV2({
+      minimumSample,
+      evaluatorVersion,
+      includeSessionStart: options.includeSessionStart,
+      since: options.since,
+      until: options.until
+    });
+    if (!this.hasTable('memory_usefulness_observations_v2')) return base;
+    const clauses = ['o.evaluator_version = ?'];
+    const params: unknown[] = [evaluatorVersion];
+    if (!options.includeSessionStart) clauses.push(`o.trigger_type != 'session_start'`);
+    if (options.since) {
+      clauses.push('datetime(COALESCE(t.created_at, o.evaluated_at)) >= datetime(?)');
+      params.push(options.since.toISOString());
+    }
+    if (options.until) {
+      clauses.push('datetime(COALESCE(t.created_at, o.evaluated_at)) < datetime(?)');
+      params.push(options.until.toISOString());
+    }
+    const rows = sqliteAll<Record<string, unknown>>(
+      this.db,
+      `SELECT o.selected, o.delivered, o.presentation_mode, o.adoption, o.task_outcome,
+              o.reask_outcome, o.explicit_feedback
+       FROM memory_usefulness_observations_v2 o
+       LEFT JOIN retrieval_traces t ON t.trace_id = o.trace_id
+       WHERE ${clauses.join(' AND ')}`,
+      params
+    );
+    const traceClauses: string[] = [];
+    const traceParams: unknown[] = [];
+    if (!options.includeSessionStart) traceClauses.push(`trigger_type != 'session_start'`);
+    if (options.since) {
+      traceClauses.push('datetime(created_at) >= datetime(?)');
+      traceParams.push(options.since.toISOString());
+    }
+    if (options.until) {
+      traceClauses.push('datetime(created_at) < datetime(?)');
+      traceParams.push(options.until.toISOString());
+    }
+    const traceTotals = this.hasTable('retrieval_traces')
+      ? sqliteGet<{ eligible: number; selected: number }>(
+        this.db,
+        `SELECT COALESCE(SUM(candidate_count), 0) AS eligible,
+                COALESCE(SUM(selected_count), 0) AS selected
+         FROM retrieval_traces${traceClauses.length > 0 ? ` WHERE ${traceClauses.join(' AND ')}` : ''}`,
+        traceParams
+      )
+      : undefined;
+    const observedSelections = rows.filter((row) => Number(row.selected) === 1).length;
+    const eligible = Number(traceTotals?.eligible ?? 0) > 0 ? Number(traceTotals?.eligible) : rows.length;
+    const selected = Number(traceTotals?.eligible ?? 0) > 0 ? Number(traceTotals?.selected) : observedSelections;
+    if (rows.length === 0) {
+      return {
+        ...base,
+        eligible,
+        selected,
+        rates: {
+          ...base.rates,
+          selectionYield: {
+            numerator: selected,
+            denominator: eligible,
+            unknown: 0,
+            value: eligible > 0 ? Math.round((selected / eligible) * 10_000) / 10_000 : null
+          }
+        }
+      };
+    }
+
+    const observationCount = rows.length;
+    const delivered = rows.filter((row) => Number(row.delivered) === 1).length;
+    const deliveryUnknown = rows.filter((row) => row.delivered === null || row.delivered === undefined).length;
+    const evidenceRows = rows.filter((row) => row.presentation_mode === 'evidence');
+    const evidenceEvaluated = evidenceRows.filter((row) => row.adoption === 'grounded' || row.adoption === 'not_observed').length;
+    const evidenceGrounded = evidenceRows.filter((row) => row.adoption === 'grounded').length;
+    const references = rows.filter((row) => row.presentation_mode === 'reference');
+    const referencesNavigated = references.filter((row) => row.adoption === 'navigated').length;
+    const referenceUnknown = references.filter((row) => row.adoption === 'unknown').length;
+    const referencesEvaluated = references.length - referenceUnknown;
+    const taskEvaluated = rows.filter((row) => row.task_outcome !== 'unknown').length;
+    const taskSuccessful = rows.filter((row) => row.task_outcome === 'success').length;
+    const explicitPositive = rows.filter((row) => row.explicit_feedback === 'positive').length;
+    const explicitNegative = rows.filter((row) => row.explicit_feedback === 'negative').length;
+    const feedbackEvaluated = explicitPositive + explicitNegative;
+    const unknownByDimension = {
+      delivery: deliveryUnknown,
+      adoption: rows.filter((row) => row.adoption === 'unknown').length,
+      taskOutcome: rows.filter((row) => row.task_outcome === 'unknown').length,
+      reaskOutcome: rows.filter((row) => row.reask_outcome === 'unknown').length,
+      explicitFeedback: observationCount - feedbackEvaluated
+    };
+    const rate = (numerator: number, denominator: number, unknown: number): UsefulnessRateV2 => ({
+      numerator,
+      denominator,
+      unknown,
+      value: denominator > 0 ? Math.round((numerator / denominator) * 10_000) / 10_000 : null
+    });
+    return {
+      ...base,
+      eligible,
+      selected,
+      delivered,
+      evidenceEvaluated,
+      evidenceGrounded,
+      referencesEligible: references.length,
+      referencesNavigated,
+      taskOutcomesEvaluated: taskEvaluated,
+      taskOutcomesSuccessful: taskSuccessful,
+      explicitPositive,
+      explicitNegative,
+      unknown: Object.values(unknownByDimension).reduce((sum, count) => sum + count, 0),
+      unknownByDimension,
+      rates: {
+        selectionYield: rate(selected, eligible, 0),
+        deliveryRate: rate(delivered, observationCount - deliveryUnknown, deliveryUnknown),
+        evidenceGrounding: rate(evidenceGrounded, evidenceEvaluated, evidenceRows.length - evidenceEvaluated),
+        referenceNavigation: rate(referencesNavigated, referencesEvaluated, referenceUnknown),
+        taskSuccess: rate(taskSuccessful, taskEvaluated, unknownByDimension.taskOutcome),
+        explicitPositive: rate(explicitPositive, feedbackEvaluated, unknownByDimension.explicitFeedback)
+      },
+      sampleState: observationCount >= minimumSample ? 'sufficient' : 'insufficient_sample'
+    };
   }
 
   /**
@@ -3534,6 +3800,7 @@ export class SQLiteEventStore {
     presentationMode?: RetrievalPresentationMode;
     triggerType?: RetrievalTriggerType;
     deliveryClient?: string;
+    outcomeDiagnostics?: RetrievalOutcomeDiagnostics;
   }): Promise<void> {
     if (this.readOnly) return;
     await this.initialize();
@@ -3542,14 +3809,18 @@ export class SQLiteEventStore {
     const queryRewriteKind = normalizeQueryRewriteKind(input.queryRewriteKind);
     const candidateDetails = normalizeRetrievalTraceDetails(input.candidateDetails);
     const selectedDetails = normalizeRetrievalTraceDetails(input.selectedDetails);
+    const outcomeDiagnostics = normalizeRetrievalOutcomeDiagnostics(
+      input.outcomeDiagnostics,
+      input.selectedEventIds.length > 0 ? 'selected' : 'runtime_error'
+    );
     sqliteRun(
       this.db,
       `INSERT INTO retrieval_traces (
         trace_id, session_id, project_hash, query_text, raw_query_text, query_rewrite_kind, strategy,
         candidate_event_ids, selected_event_ids, candidate_details_json, selected_details_json,
         candidate_count, selected_count, confidence, fallback_trace,
-        presentation_mode, trigger_type, delivery_client
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        presentation_mode, trigger_type, delivery_client, outcome_reason, retrieval_diagnostics_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         traceId,
         input.sessionId || null,
@@ -3568,7 +3839,9 @@ export class SQLiteEventStore {
         JSON.stringify(input.fallbackTrace || []),
         normalizeRetrievalPresentationMode(input.presentationMode),
         normalizeRetrievalTriggerType(input.triggerType),
-        normalizeTelemetryClient(input.deliveryClient)
+        normalizeTelemetryClient(input.deliveryClient),
+        outcomeDiagnostics.outcomeReason,
+        JSON.stringify(outcomeDiagnostics)
       ]
     );
   }
@@ -3826,6 +4099,7 @@ export class SQLiteEventStore {
     presentationMode: RetrievalPresentationMode;
     triggerType: RetrievalTriggerType;
     deliveryClient: string;
+    outcomeDiagnostics: RetrievalOutcomeDiagnostics;
     createdAt: Date;
   }>> {
     await this.initialize();
@@ -3859,6 +4133,7 @@ export class SQLiteEventStore {
         presentationMode: normalizeRetrievalPresentationMode(row.presentation_mode),
         triggerType: normalizeRetrievalTriggerType(row.trigger_type),
         deliveryClient: normalizeTelemetryClient(row.delivery_client),
+        outcomeDiagnostics: parseRetrievalOutcomeDiagnostics(row),
         createdAt: toDateFromSQLite(row.created_at),
       }));
     } catch (err: any) {

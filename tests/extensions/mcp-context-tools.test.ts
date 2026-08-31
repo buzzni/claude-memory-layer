@@ -7,7 +7,9 @@ import type { MemoryEvent } from '../../src/core/types.js';
 const mocks = vi.hoisted(() => {
   function createService() {
     return {
+      capabilities: { canonicalWrites: true, telemetryWrites: true, freshnessImports: true },
       initialize: vi.fn(async () => undefined),
+      shutdown: vi.fn(async () => undefined),
       retrieveMemories: vi.fn(),
       keywordSearch: vi.fn(),
       getRecentEvents: vi.fn(),
@@ -24,6 +26,7 @@ const mocks = vi.hoisted(() => {
   const claudeImporter = { importProject: vi.fn() };
   const codexImporter = { importProject: vi.fn() };
   const hermesImporter = { importProject: vi.fn() };
+  const getMemoryServiceForProject = vi.fn(() => projectService);
 
   return {
     defaultService,
@@ -34,7 +37,12 @@ const mocks = vi.hoisted(() => {
     fetchExternalMarketContext: vi.fn(),
     renderExternalMarketContextReport: vi.fn(),
     getDefaultMemoryService: vi.fn(() => defaultService),
-    getMemoryServiceForProject: vi.fn(() => projectService),
+    getMemoryServiceForProject,
+    getReadOnlyMemoryService: vi.fn(() => defaultService),
+    getReadOnlyMemoryServiceForProject: vi.fn((projectPath: string) => {
+      getMemoryServiceForProject(projectPath);
+      return projectService;
+    }),
     createSessionHistoryImporter: vi.fn(() => claudeImporter),
     createCodexSessionHistoryImporter: vi.fn(() => codexImporter),
     createHermesSessionHistoryImporter: vi.fn(() => hermesImporter)
@@ -43,6 +51,8 @@ const mocks = vi.hoisted(() => {
 
 vi.mock('../../src/services/memory-service.js', () => ({
   getDefaultMemoryService: mocks.getDefaultMemoryService,
+  getReadOnlyMemoryService: mocks.getReadOnlyMemoryService,
+  getReadOnlyMemoryServiceForProject: mocks.getReadOnlyMemoryServiceForProject,
   getMemoryServiceForProject: mocks.getMemoryServiceForProject,
   shutdownMemoryServices: vi.fn(async () => undefined)
 }));
@@ -68,7 +78,11 @@ const { handleToolCall } = await import('../../src/extensions/mcp/handlers.js');
 const { tools } = await import('../../src/extensions/mcp/tools.js');
 
 function resetService(service: typeof mocks.defaultService) {
+  service.capabilities.canonicalWrites = true;
+  service.capabilities.telemetryWrites = true;
+  service.capabilities.freshnessImports = true;
   service.initialize.mockReset().mockResolvedValue(undefined);
+  service.shutdown.mockReset().mockResolvedValue(undefined);
   service.retrieveMemories.mockReset().mockResolvedValue({ memories: [] });
   service.keywordSearch.mockReset().mockResolvedValue([]);
   service.getRecentEvents.mockReset().mockResolvedValue([]);
@@ -116,6 +130,8 @@ describe('MCP project context tools', () => {
     resetImporter(mocks.codexImporter);
     resetImporter(mocks.hermesImporter);
     mocks.getDefaultMemoryService.mockClear();
+    mocks.getReadOnlyMemoryService.mockClear();
+    mocks.getReadOnlyMemoryServiceForProject.mockClear();
     mocks.getMemoryServiceForProject.mockClear();
     mocks.createSessionHistoryImporter.mockClear();
     mocks.createCodexSessionHistoryImporter.mockClear();
@@ -414,6 +430,9 @@ describe('MCP project context tools', () => {
   });
 
   it('honors refreshLatest false as an opt-out for generic continuation context packs', async () => {
+    mocks.projectService.capabilities.canonicalWrites = false;
+    mocks.projectService.capabilities.telemetryWrites = false;
+    mocks.projectService.capabilities.freshnessImports = false;
     const result = await handleToolCall('mem-context-pack', {
       projectPath: '/repo/app',
       query: 'continue',
@@ -427,7 +446,31 @@ describe('MCP project context tools', () => {
     expect(mocks.createHermesSessionHistoryImporter).not.toHaveBeenCalled();
     expect(mocks.createCodexSessionHistoryImporter).not.toHaveBeenCalled();
     expect(mocks.createSessionHistoryImporter).not.toHaveBeenCalled();
+    expect(mocks.getReadOnlyMemoryServiceForProject).toHaveBeenCalledWith('/repo/app');
+    expect(mocks.projectService.recordQueryTrace).not.toHaveBeenCalled();
+    expect(mocks.projectService.shutdown).toHaveBeenCalledOnce();
     expect(textOf(result)).not.toContain('Freshness refresh');
+  });
+
+  it('does not replace a successful read-only context pack with a cleanup failure', async () => {
+    mocks.projectService.capabilities.canonicalWrites = false;
+    mocks.projectService.capabilities.telemetryWrites = false;
+    mocks.projectService.capabilities.freshnessImports = false;
+    mocks.projectService.shutdown.mockRejectedValueOnce(new Error('/private/snapshot cleanup failed'));
+
+    const result = await handleToolCall('mem-context-pack', {
+      projectPath: '/repo/app',
+      query: 'read-only cleanup resilience',
+      refreshLatest: false,
+      topK: 2,
+      recentLimit: 5,
+      sessionLimit: 1
+    });
+
+    expect(result.isError).not.toBe(true);
+    expect(mocks.projectService.shutdown).toHaveBeenCalledOnce();
+    expect(textOf(result)).not.toContain('private');
+    expect(textOf(result)).not.toContain('cleanup failed');
   });
 
   it('does not auto-refresh when generic continuation lacks a safe project scope', async () => {
@@ -631,7 +674,8 @@ describe('MCP project context tools', () => {
       strategy: 'mcp-context-pack',
       candidateEventIds: [relevant.id],
       selectedEventIds: [relevant.id],
-      confidence: 'suggested'
+      confidence: 'suggested',
+      outcomeDiagnostics: expect.objectContaining({ outcomeReason: 'selected' })
     });
     expect(text).toContain('## Project Context Pack');
     expect(text).toContain('### Relevant Memories');

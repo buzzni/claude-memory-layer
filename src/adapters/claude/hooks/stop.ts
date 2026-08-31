@@ -12,7 +12,7 @@
  * We read them from the transcript JSONL file instead.
  */
 
-import { getLightweightMemoryService } from '../../../services/memory-service.js';
+import { getLightweightMemoryServiceForProject } from '../../../services/memory-service.js';
 import { applyPrivacyFilter } from '../../../core/privacy/index.js';
 import { readTurnState, clearTurnState, writeLastAssistantSnippet } from '../../../core/turn-state.js';
 import type { StopInput, Config } from '../../../core/types.js';
@@ -39,7 +39,9 @@ export async function main(): Promise<string> {
     const input: StopInput = JSON.parse(await readStdin());
 
     // Use lightweight service (SQLite only, no embedder/vector - FAST!)
-    const memoryService = getLightweightMemoryService(input.session_id);
+    // Stop has an explicit cwd; do not let a missing or stale session registry
+    // redirect canonical writes to the global or another project store.
+    const memoryService = getLightweightMemoryServiceForProject(input.cwd);
 
     // Read current turn_id from state file
     const turnId = readTurnState(input.session_id);
