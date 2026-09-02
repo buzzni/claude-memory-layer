@@ -1,6 +1,6 @@
 {
   "name": "claude-memory-layer",
-  "version": "2.3.4",
+  "version": "2.3.5",
   "description": "Project-scoped memory layer for Claude Code, Codex, Hermes, MCP, and dashboards",
   "main": "dist/index.js",
   "bin": {
@@ -115,4 +115,4 @@
     "typescript-eslint": "^8.62.0",
     "vitest": "^4.1.8"
   }
-}\n
+}
