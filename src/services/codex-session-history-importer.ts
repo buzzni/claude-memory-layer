@@ -871,6 +871,11 @@ export class CodexSessionHistoryImporter {
     }
 
     await this.memoryService.endSession(sessionId);
+    try {
+      await this.memoryService.evaluateSessionHelpfulness(sessionId);
+    } catch {
+      // Imported evidence is durable even when optional usefulness evaluation fails.
+    }
 
     if (effectiveProjectPath) {
       try {

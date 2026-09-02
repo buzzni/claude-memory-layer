@@ -20,6 +20,8 @@ describe('runtime resource command output', () => {
 
     expect(text).toContain('Runtime resource status');
     expect(text).toContain('Aggregate RSS: 100 MiB');
+    expect(text).toContain('Restart recommended: yes');
+    expect(text).toContain('Reasons: uninstrumented_runtime');
     expect(json).toContain('"processCount": 1');
     expect(json).not.toContain('"pid"');
     expect(json).not.toContain('"ppid"');

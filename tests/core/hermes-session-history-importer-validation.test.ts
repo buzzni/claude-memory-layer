@@ -198,6 +198,7 @@ describe('Hermes SessionDB validation/import', () => {
     const memoryService = {
       startSession: vi.fn(async (_sessionId: string, _projectPath?: string) => undefined),
       endSession: vi.fn(async (_sessionId: string) => undefined),
+      evaluateSessionHelpfulness: vi.fn(async (_sessionId: string) => undefined),
       deleteSessionEvents: vi.fn(async (_sessionId: string) => 0),
       storeUserPrompt: vi.fn(async (
         _sessionId: string,
@@ -217,6 +218,7 @@ describe('Hermes SessionDB validation/import', () => {
     expect(memoryService.deleteSessionEvents).toHaveBeenCalledWith('hermes:session-a');
     expect(memoryService.startSession).toHaveBeenCalledWith('hermes:session-a', projectA);
     expect(memoryService.endSession).toHaveBeenCalledWith('hermes:session-a');
+    expect(memoryService.evaluateSessionHelpfulness).toHaveBeenCalledWith('hermes:session-a');
     expect(memoryService.storeUserPrompt).toHaveBeenCalledTimes(1);
     expect(memoryService.storeAgentResponse).toHaveBeenCalledTimes(1);
 

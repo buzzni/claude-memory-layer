@@ -132,6 +132,7 @@ describe('Codex session validation replay', () => {
     const memoryService = {
       startSession: vi.fn(async (_sessionId: string, _projectPath?: string) => undefined),
       endSession: vi.fn(async (_sessionId: string) => undefined),
+      evaluateSessionHelpfulness: vi.fn(async (_sessionId: string) => undefined),
       deleteSessionEvents: vi.fn(async (_sessionId: string) => 0),
       storeUserPrompt: vi.fn(async () => ({ success: true, isDuplicate: false })),
       storeAgentResponse: vi.fn(async () => ({ success: true, isDuplicate: false }))
@@ -144,6 +145,7 @@ describe('Codex session validation replay', () => {
     expect(memoryService.startSession).toHaveBeenCalledTimes(1);
     expect(memoryService.startSession).toHaveBeenCalledWith('session-latest', projectA);
     expect(memoryService.storeUserPrompt).toHaveBeenCalledTimes(1);
+    expect(memoryService.evaluateSessionHelpfulness).toHaveBeenCalledWith('session-latest');
   });
 
   it('applies Codex import limit across selected matching sessions', async () => {

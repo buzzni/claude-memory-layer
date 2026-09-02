@@ -12,7 +12,7 @@ import * as os from 'os';
 import * as readline from 'readline';
 import { randomUUID } from 'crypto';
 import { MemoryService } from './memory-service.js';
-import { registerSession } from '../core/registry/session-registry.js';
+import { registerTerminalSession } from '../core/registry/session-registry.js';
 import { mergeAgentResponseBlocks, truncateAgentResponse } from './turn-buffering.js';
 
 export type ProgressEvent =
@@ -420,10 +420,15 @@ export class SessionHistoryImporter {
 
     // End session
     await this.memoryService.endSession(sessionId);
+    try {
+      await this.memoryService.evaluateSessionHelpfulness(sessionId);
+    } catch {
+      // Import durability must not depend on optional analytics backfill.
+    }
 
     // Register session in registry so projects API can map hash → path
     if (options.projectPath) {
-      registerSession(sessionId, options.projectPath);
+      registerTerminalSession(sessionId, options.projectPath);
     }
 
     if (options.verbose) {

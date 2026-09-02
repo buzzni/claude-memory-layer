@@ -353,6 +353,10 @@ export interface RuntimeResourceReport {
     reason?: 'unsupported-platform' | 'process-metrics-unavailable';
     processCount: number | null;
     rssMiB: number | null;
+    versionMismatchProcessCount: number;
+    uninstrumentedProcessCount: number;
+    restartRecommended: boolean;
+    recommendationReasons: Array<'mixed_runtime_versions' | 'uninstrumented_runtime' | 'orphan_mcp'>;
     groups: RuntimeResourceGroup[];
   };
 }
@@ -383,6 +387,10 @@ export function collectRuntimeResourceReport(
         reason: 'unsupported-platform',
         processCount: null,
         rssMiB: null,
+        versionMismatchProcessCount: 0,
+        uninstrumentedProcessCount: 0,
+        restartRecommended: false,
+        recommendationReasons: [],
         groups: []
       }
     };
@@ -408,6 +416,10 @@ export function collectRuntimeResourceReport(
         reason: 'process-metrics-unavailable',
         processCount: null,
         rssMiB: null,
+        versionMismatchProcessCount: 0,
+        uninstrumentedProcessCount: 0,
+        restartRecommended: false,
+        recommendationReasons: [],
         groups: []
       }
     };
@@ -423,6 +435,21 @@ export function collectRuntimeResourceReport(
   // stale files plus PID reuse must not turn unrelated processes into samples.
   const candidates = rows.filter((row) => classifyRuntimeCommand(row.command) !== null);
   const groups = aggregateRuntimeResourceGroups(candidates, snapshotsByPid);
+  const uninstrumentedProcessCount = groups
+    .filter((group) => group.version === LEGACY_RUNTIME_VERSION)
+    .reduce((sum, group) => sum + group.processCount, 0);
+  const currentVersion = processLocal.version;
+  const canCompareVersion = currentVersion !== 'development' && currentVersion !== 'unknown';
+  const versionMismatchProcessCount = canCompareVersion
+    ? groups
+      .filter((group) => group.version !== LEGACY_RUNTIME_VERSION && group.version !== currentVersion)
+      .reduce((sum, group) => sum + group.processCount, 0)
+    : 0;
+  const orphanCount = groups.reduce((sum, group) => sum + group.orphanCount, 0);
+  const recommendationReasons: RuntimeResourceReport['observation']['recommendationReasons'] = [];
+  if (versionMismatchProcessCount > 0) recommendationReasons.push('mixed_runtime_versions');
+  if (uninstrumentedProcessCount > 0) recommendationReasons.push('uninstrumented_runtime');
+  if (orphanCount > 0) recommendationReasons.push('orphan_mcp');
 
   return {
     generatedAt: new Date(now()).toISOString(),
@@ -432,6 +459,10 @@ export function collectRuntimeResourceReport(
       platform,
       processCount: candidates.length,
       rssMiB: roundMiB(candidates.reduce((sum, row) => sum + row.rssKiB, 0)),
+      versionMismatchProcessCount,
+      uninstrumentedProcessCount,
+      restartRecommended: recommendationReasons.length > 0,
+      recommendationReasons,
       groups
     }
   };
