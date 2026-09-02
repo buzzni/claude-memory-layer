@@ -32,8 +32,14 @@ export function formatRuntimeResourceReport(report: RuntimeResourceReport): stri
 
   lines.push(
     `Observed runtime processes: ${report.observation.processCount}`,
-    `Aggregate RSS: ${report.observation.rssMiB} MiB`
+    `Aggregate RSS: ${report.observation.rssMiB} MiB`,
+    `Version-mismatched processes: ${report.observation.versionMismatchProcessCount}`,
+    `Uninstrumented processes: ${report.observation.uninstrumentedProcessCount}`,
+    `Restart recommended: ${report.observation.restartRecommended ? 'yes' : 'no'}`
   );
+  if (report.observation.recommendationReasons.length > 0) {
+    lines.push(`Reasons: ${report.observation.recommendationReasons.join(', ')}`);
+  }
 
   if (report.observation.groups.length === 0) {
     lines.push('Groups: none');

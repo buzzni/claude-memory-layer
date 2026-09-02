@@ -156,6 +156,7 @@ export class EdgeHistoryRepo {
     const edgeKey = makeEdgeKey(input.srcType, input.srcId, input.relType, input.dstType, input.dstId);
     const current = this.getCurrentSync(edgeKey);
     const now = new Date();
+    const validFrom = input.validFrom ?? now;
     const weight = input.weight ?? DEFAULT_WEIGHT;
     const metaJson = JSON.stringify(input.metaJson ?? {});
 
@@ -174,7 +175,7 @@ export class EdgeHistoryRepo {
         sqliteRun(
           this.db,
           `UPDATE edge_history SET status = 'superseded', valid_to = COALESCE(valid_to, ?) WHERE history_id = ?`,
-          [now.toISOString(), current.historyId]
+          [validFrom.toISOString(), current.historyId]
         );
       }
 
@@ -195,7 +196,7 @@ export class EdgeHistoryRepo {
           input.dstType,
           input.dstId,
           weight,
-          (input.validFrom ?? now).toISOString(),
+          validFrom.toISOString(),
           input.validTo ? input.validTo.toISOString() : null,
           now.toISOString(),
           JSON.stringify(input.sourceEventIds ?? []),

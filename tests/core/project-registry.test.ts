@@ -269,6 +269,41 @@ describe('session registry utilities', () => {
     });
   });
 
+  it('expires stale non-terminal registrations without removing their project mapping', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'cml-registry-stale-active-'));
+    const homeDir = path.join(root, 'home');
+    const oldProject = path.join(root, 'old-project');
+    const currentProject = path.join(root, 'current-project');
+    const memoryRoot = path.join(homeDir, '.claude-code', 'memory');
+    await fs.mkdir(oldProject, { recursive: true });
+    await fs.mkdir(currentProject, { recursive: true });
+    await fs.mkdir(memoryRoot, { recursive: true });
+    await fs.writeFile(path.join(memoryRoot, 'session-registry.json'), JSON.stringify({
+      version: 2,
+      sessions: {
+        stale: {
+          projectPath: oldProject,
+          projectHash: hashProjectPath(oldProject),
+          registeredAt: '2026-08-01T00:00:00.000Z',
+          lastSeenAt: '2026-08-01T00:00:00.000Z',
+          terminal: false
+        }
+      }
+    }));
+    const registryModule = await import('../../src/core/registry/session-registry.js');
+
+    registryModule.registerSession('current', currentProject, {
+      homeDir,
+      now: () => new Date('2026-08-31T00:00:00.000Z')
+    });
+
+    expect(registryModule.getSessionProject('stale', { homeDir })).toMatchObject({
+      projectPath: oldProject,
+      terminal: true
+    });
+    expect(registryModule.getSessionProject('current', { homeDir })).toMatchObject({ terminal: false });
+  });
+
   it('recovers an orphaned registry lock left by a dead process', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'cml-registry-lock-'));
     const homeDir = path.join(root, 'home');

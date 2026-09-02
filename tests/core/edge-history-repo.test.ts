@@ -156,11 +156,15 @@ describe('EdgeHistoryRepo.selectAsOf', () => {
         edgeId: 'edge-1', srcType: 'entity', srcId: 'a', relType: 'evidence_of', dstType: 'entity', dstId: 'b',
         weight: 0.4, validFrom: new Date('2026-01-01T00:00:00.000Z')
       });
-      // Force a distinct committed_at ordering deterministically instead of relying on wall-clock spacing.
-      await repo.recordVersion({
+      const late = await repo.recordVersion({
         edgeId: 'edge-1', srcType: 'entity', srcId: 'a', relType: 'evidence_of', dstType: 'entity', dstId: 'b',
         weight: 0.9, validFrom: new Date('2026-06-01T00:00:00.000Z')
       });
+
+      const versions = await repo.listByEdgeKey(edgeKey);
+      expect(versions.find((version) => version.historyId === early.historyId)?.validTo?.toISOString())
+        .toBe('2026-06-01T00:00:00.000Z');
+      expect(late.validFrom?.toISOString()).toBe('2026-06-01T00:00:00.000Z');
 
       const asOfEarly = await repo.selectAsOf({ edgeKey, asOf: new Date('2026-03-01T00:00:00.000Z') });
       expect(asOfEarly?.historyId).toBe(early.historyId);

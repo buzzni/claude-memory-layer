@@ -104,7 +104,11 @@ describe('runtime resource telemetry', () => {
     expect(report.observation).toMatchObject({
       supported: true,
       processCount: 2,
-      rssMiB: 300
+      rssMiB: 300,
+      versionMismatchProcessCount: 0,
+      uninstrumentedProcessCount: 1,
+      restartRecommended: true,
+      recommendationReasons: ['uninstrumented_runtime']
     });
     expect(report.observation.groups).toEqual([
       expect.objectContaining({
@@ -145,6 +149,10 @@ describe('runtime resource telemetry', () => {
       reason: 'unsupported-platform',
       processCount: null,
       rssMiB: null,
+      versionMismatchProcessCount: 0,
+      uninstrumentedProcessCount: 0,
+      restartRecommended: false,
+      recommendationReasons: [],
       groups: []
     });
   });
@@ -164,5 +172,31 @@ describe('runtime resource telemetry', () => {
     expect(report.observation.supported).toBe(true);
     expect(report.observation.processCount).toBe(0);
     expect(existsSync(missingDirectory)).toBe(false);
+  });
+
+  it('recommends restart when an instrumented process runs a different release', () => {
+    const directory = temporaryDir();
+    const oldTelemetry = new RuntimeResourceTelemetry({
+      telemetryDir: directory,
+      pid: 101,
+      ppid: 50,
+      version: '2.3.2'
+    });
+    oldTelemetry.registerProcess('mcp');
+    const currentTelemetry = new RuntimeResourceTelemetry({ persist: false, version: '2.3.3' });
+
+    const report = collectRuntimeResourceReport({
+      platform: 'darwin',
+      telemetryDir: directory,
+      localSnapshot: currentTelemetry.getSnapshot(),
+      readProcessTable: () => '101 50 102400 node /safe/dist/mcp/index.js'
+    });
+
+    expect(report.observation).toMatchObject({
+      versionMismatchProcessCount: 1,
+      uninstrumentedProcessCount: 0,
+      restartRecommended: true,
+      recommendationReasons: ['mixed_runtime_versions']
+    });
   });
 });

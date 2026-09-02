@@ -711,6 +711,11 @@ export class HermesSessionHistoryImporter {
 
     await flushTextBuffer();
     await this.memoryService.endSession(memorySessionId);
+    try {
+      await this.memoryService.evaluateSessionHelpfulness(memorySessionId);
+    } catch {
+      // Imported evidence is durable even when optional usefulness evaluation fails.
+    }
 
     if (effectiveProjectPath) {
       try {

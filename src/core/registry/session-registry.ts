@@ -107,6 +107,7 @@ function registerSessionState(
       terminal,
       registrationId
     };
+    expireStaleNonTerminalEntries(registry.sessions, new Date(now));
     registry.sessions = pruneRegistryEntries(
       registry.sessions,
       new Date(now),
@@ -191,6 +192,7 @@ export function getSessionProject(
 const SOFT_MAX_ENTRIES = 1_000;
 const HARD_MAX_ENTRIES = 5_000;
 const ACTIVE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+export const STALE_NON_TERMINAL_SESSION_MS = 7 * 24 * 60 * 60 * 1000;
 
 function normalizeRegistry(value: unknown): SessionRegistry {
   if (!isRecord(value)) return { version: 2, sessions: {} };
@@ -273,6 +275,23 @@ function pruneRegistryEntries(
   ]
     .slice(0, HARD_MAX_ENTRIES);
   return Object.fromEntries(retained);
+}
+
+/**
+ * SessionEnd is best-effort and is unavailable for some import/MCP clients.
+ * Keep the project mapping for late writes, but stop treating a registration
+ * that has not been refreshed for a full week as a live cleanup protection.
+ * A resumed session receives a fresh SessionStart registration and becomes
+ * non-terminal again.
+ */
+function expireStaleNonTerminalEntries(
+  sessions: Record<string, SessionRegistryEntry>,
+  now: Date
+): void {
+  const cutoff = now.getTime() - STALE_NON_TERMINAL_SESSION_MS;
+  for (const entry of Object.values(sessions)) {
+    if (!entry.terminal && entryTime(entry) < cutoff) entry.terminal = true;
+  }
 }
 
 function recentProjectActivityHashes(
