@@ -4424,6 +4424,48 @@ export class SQLiteEventStore {
   }
 
   /**
+   * Delete a single event and everything keyed to it.
+   *
+   * Deliberately NOT sharing an implementation with `deleteSessionEvents`: that one deletes
+   * by `session_id` so it is independent of how many events the session holds, while this one
+   * keys on the id. Folding them into one id-list delete would expose the session path to the
+   * SQL variable limit and break large sessions.
+   *
+   * The trigger-drop -> delete -> FTS-rebuild sequence is the same as the session delete and
+   * for the same reason: the synthetic FTS delete can fail (`no such column: T.event_id`) on
+   * older migrated tables and risks SQLITE_CORRUPT_VTAB. Running it inside a transaction means
+   * a failure rolls back instead of leaving the index permanently desynced from its triggers.
+   *
+   * Returns whether a row was actually removed, so callers can answer 404 for unknown ids.
+   * Vectors live in LanceDB and are not touched here — callers that need them gone must also
+   * call `VectorStore.deleteEventEverywhere` (see the CLI redact path).
+   */
+  async deleteEventById(eventId: string): Promise<boolean> {
+    await this.initialize();
+
+    const relatedTables = ['event_dedup', 'memory_levels', 'embedding_queue', 'embedding_outbox', 'vector_outbox', 'event_citations']
+      .filter((table) => this.hasTable(table) && this.hasTableColumn(table, 'event_id'));
+
+    const runDelete = this.db.transaction((): number => {
+      for (const triggerName of ['events_fts_delete', 'events_fts_update', 'events_fts_insert']) {
+        sqliteRun(this.db, `DROP TRIGGER IF EXISTS ${triggerName}`);
+      }
+
+      for (const table of relatedTables) {
+        sqliteRun(this.db, `DELETE FROM ${table} WHERE event_id = ?`, [eventId]);
+      }
+
+      const result = sqliteRun(this.db, `DELETE FROM events WHERE id = ?`, [eventId]);
+
+      this.recreateEventsFtsTable();
+
+      return result.changes || 0;
+    });
+
+    return runDelete() > 0;
+  }
+
+  /**
    * Delete all events for a session (for force reimport)
    */
   async deleteSessionEvents(sessionId: string): Promise<number> {
