@@ -4,7 +4,9 @@
  */
 
 import { Hono } from 'hono';
-import { getDiagnosticsServiceFromQuery, jsonError } from './utils.js';
+import path from 'path';
+import { getDiagnosticsServiceFromQuery, getWritableEventStoreFromQuery, jsonError } from './utils.js';
+import { VectorStore } from '../../../core/vector-store.js';
 
 export const eventsRouter = new Hono();
 
@@ -134,5 +136,57 @@ eventsRouter.get('/:id', async (c) => {
     return jsonError(c, error);
   } finally {
     await memoryService.shutdown();
+  }
+});
+
+// DELETE /api/events/:id - Delete a single event
+//
+// 열람만 가능하던 대시보드에서 잘못 쌓인 기억을 실제로 지울 수 있게 한다. 기억은 이후
+// 세션에 다시 주입되므로, 사후 정리 수단이 없으면 한 번 잘못 들어간 내용이 영구히 인용된다.
+//
+// 되돌릴 수 없다. 그래서 지우기 전에 무엇을 지웠는지 응답에 담아 호출자가 최소한 무엇을
+// 잃었는지 알 수 있게 한다.
+eventsRouter.delete('/:id', async (c) => {
+  const { id } = c.req.param();
+  const resolved = getWritableEventStoreFromQuery(c);
+  // 저장소가 아직 없으면 지울 것도 없다 — delete 의 부수 효과로 DB 를 만들지 않는다.
+  if (!resolved) return c.json({ error: 'Event not found' }, 404);
+
+  const { store, storagePath } = resolved;
+  try {
+    await store.initialize();
+
+    const event = await store.getEvent(id);
+    if (!event) return c.json({ error: 'Event not found' }, 404);
+
+    const deleted = await store.deleteEventById(id);
+    if (!deleted) return c.json({ error: 'Event not found' }, 404);
+
+    // 벡터는 LanceDB 에 따로 있다. CLI redact 경로와 같은 규약으로 best-effort 로 지운다 —
+    // 벡터가 없거나 실패해도 SQLite 삭제는 이미 확정이므로 요청을 실패로 만들지 않는다.
+    let vectorDeleted = false;
+    if (storagePath) {
+      try {
+        const vectorStore = new VectorStore(path.join(storagePath, 'vectors'));
+        await vectorStore.deleteEventEverywhere(id);
+        vectorDeleted = true;
+      } catch { /* a missing vector is not an error here */ }
+    }
+
+    return c.json({
+      deleted: true,
+      vectorDeleted,
+      event: {
+        id: event.id,
+        eventType: event.eventType,
+        timestamp: event.timestamp,
+        sessionId: event.sessionId,
+        contentLength: event.content.length
+      }
+    });
+  } catch (error) {
+    return jsonError(c, error);
+  } finally {
+    await store.close().catch(() => undefined);
   }
 });

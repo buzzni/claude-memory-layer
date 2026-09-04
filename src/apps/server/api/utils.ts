@@ -11,6 +11,8 @@ import {
   MemoryService
 } from '../../../services/memory-service.js';
 import { hashProjectPath, resolveProjectStoragePath } from '../../../core/registry/project-path.js';
+import { resolveExistingStore } from '../../../core/registry/existing-store.js';
+import { SQLiteEventStore } from '../../../core/sqlite-event-store.js';
 import {
   createReadOnlyDiagnosticsService,
   MemoryStoreResolutionError,
@@ -118,6 +120,54 @@ export function getLightweightServiceFromQuery(c: Context): MemoryService {
     lightweightMode: true,
     analyticsEnabled: false,
     sharedStoreConfig: DISABLED_SHARED_STORE_CONFIG
+  });
+}
+
+/**
+ * Resolve a WRITABLE event store for the few routes that mutate (currently only
+ * `DELETE /api/events/:id`). Deliberately separate from the read-only diagnostics
+ * factory above: that one opens the database with `readonly: true, snapshot: true`,
+ * which is what every dashboard read wants and what a delete must not get.
+ *
+ * Returns null when the store does not exist yet — the caller answers 404 rather than
+ * creating a database as a side effect of a delete.
+ *
+ * The caller owns the returned store and must `close()` it.
+ */
+export function getWritableEventStoreFromQuery(
+  c: Context
+): { store: SQLiteEventStore; storagePath?: string } | null {
+  const project = c.req.query('project') || c.req.query('projectId');
+  let resolution;
+  try {
+    resolution = resolveExistingStore(project || undefined);
+  } catch (error) {
+    if (error instanceof MemoryStoreResolutionError) {
+      throw storeUnavailable(error.storeStatus);
+    }
+    throw error;
+  }
+  if (resolution.status === 'missing') return null;
+  if (resolution.status !== 'existing' || !resolution.databasePath) {
+    throw storeUnavailable(resolution.status);
+  }
+  return {
+    store: new SQLiteEventStore(resolution.databasePath, { readonly: false }),
+    storagePath: resolution.storagePath
+  };
+}
+
+/** Same 422 envelope both store factories use for an unusable target. */
+function storeUnavailable(storeStatus: string): HTTPException {
+  return new HTTPException(422, {
+    res: new Response(
+      JSON.stringify({
+        status: 'error',
+        timestamp: new Date().toISOString(),
+        error: `Memory store is ${storeStatus}`
+      }),
+      { status: 422, headers: { 'content-type': 'application/json' } }
+    )
   });
 }
 
