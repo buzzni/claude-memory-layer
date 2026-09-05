@@ -73,6 +73,31 @@ export function filterHookInjectableMemories(
   return query ? applyAnswerabilityGate(bounded, query) : bounded;
 }
 
+/**
+ * specs/lesson-recall-hooks R3 — keep one query-covering lesson alive.
+ *
+ * Lessons score 0.65-0.8 by design (lexical coverage only) while transcript
+ * evidence sits around 0.83, so the score cliff drops every lesson whenever a
+ * good answer exists. Real traces: 196 prompts had a lesson candidate, 5 kept
+ * it. A lesson is only reserved when it already passed scoreLessonEvidence's
+ * own gate and the injection minimum, and never displaces another lesson.
+ */
+export function reserveLessonSlot(
+  selected: HookMemoryCandidate[],
+  candidates: HookMemoryCandidate[],
+  policy: HookInjectionPolicy
+): HookMemoryCandidate[] {
+  if (selected.some((candidate) => candidate.source === 'lesson')) return selected;
+  const best = candidates
+    .filter((candidate) => candidate.source === 'lesson' && (candidate.score ?? 0) >= policy.minScore)
+    .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))[0];
+  if (!best) return selected;
+  if (selected.length < policy.maxMemories) return [...selected, best];
+  const weakest = selected.reduce((low, candidate, index) =>
+    (candidate.score ?? 0) < (selected[low].score ?? 0) ? index : low, 0);
+  return [...selected.slice(0, weakest), ...selected.slice(weakest + 1), best];
+}
+
 /** Select relevant seeds before episode expansion, without the final answerability gate. */
 export function selectHookRetrievalSeeds(
   candidates: HookMemoryCandidate[],

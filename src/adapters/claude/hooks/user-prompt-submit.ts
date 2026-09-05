@@ -37,7 +37,8 @@ import {
   scoreLessonEvidence,
   selectHookEpisodeSeeds,
   summarizeHookInjectionConfidence,
-  type HookMemoryCandidate
+  type HookMemoryCandidate,
+  reserveLessonSlot
 } from './prompt-injection-policy.js';
 import type { Config, UserPromptSubmitInput, UserPromptSubmitOutput } from '../../../core/types.js';
 
@@ -47,6 +48,14 @@ import type { Config, UserPromptSubmitInput, UserPromptSubmitOutput } from '../.
 const MAX_MEMORIES = readNumberEnv('CLAUDE_MEMORY_MAX_COUNT', 5, { integer: true, min: 0 });
 const MAX_CANDIDATES = Math.max(MAX_MEMORIES, MAX_MEMORIES * 3);
 const MAX_EPISODE_SEED_CANDIDATES = Math.max(MAX_CANDIDATES, MAX_MEMORIES * 10);
+/**
+ * specs/lesson-recall-hooks R2 — score every stored lesson, not the newest few.
+ * Lessons are a few hundred rows scored lexically in-process, so the full
+ * table costs milliseconds; capping at MAX_CANDIDATES (15) left 90% of this
+ * project's 151 lessons unscored and silently aged every lesson out within
+ * days. 500 is the repository's own list ceiling.
+ */
+const LESSON_SCAN_LIMIT = 500;
 // Tuned default for noise/recall balance on shopping_assistant-like corpus
 const BASE_MIN_SCORE = readNumberEnv('CLAUDE_MEMORY_MIN_SCORE', 0.4, { min: 0, max: 1 });
 const FALLBACK_MIN_SCORE = readNumberEnv('CLAUDE_MEMORY_FALLBACK_MIN_SCORE', 0.3, { min: 0, max: 1 });
@@ -538,7 +547,7 @@ export async function main(options: UserPromptSubmitMainOptions = {}): Promise<s
       try {
         const lessons = await memoryService.listProjectLessonInjections(
           resolveCanonicalMemoryActorId(input.actor_id),
-          MAX_CANDIDATES
+          LESSON_SCAN_LIMIT
         );
         for (const { value: lesson, injectionMode } of lessons) {
           const injectedLesson = lessonForInjection(lesson, injectionMode);
@@ -638,10 +647,14 @@ export async function main(options: UserPromptSubmitMainOptions = {}): Promise<s
       ).values());
       const episodeSeeds = selectHookEpisodeSeeds(episodeSeedPool, injectionPolicy, retrievalQuery);
       const episodeEvidence = await expandEpisodeEvidence(memoryService, episodeSeeds);
-      const injectableMemories = filterHookInjectableMemories(
-        [...mergedMemories, ...episodeEvidence],
-        injectionPolicy,
-        retrievalQuery
+      const injectableMemories = reserveLessonSlot(
+        filterHookInjectableMemories(
+          [...mergedMemories, ...episodeEvidence],
+          injectionPolicy,
+          retrievalQuery
+        ),
+        mergedMemories,
+        injectionPolicy
       );
 
       // One trace id shared by the query trace and every helpfulness row it
