@@ -647,6 +647,26 @@ export const toolDefinitions: Tool[] = [
     }
   },
   {
+    name: 'mem-lesson-get',
+    description: 'Fetch one curated project lesson by lessonId or project-unique name — the body behind an entry in the session-start lesson index. Registered assets are permission-filtered when server enforcement is enabled.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectPath: requiredProjectPathProperty,
+        requesterActorId: canonicalRequesterActorIdProperty,
+        lessonId: {
+          type: 'string',
+          description: 'Lesson id as returned by mem-lesson-list or mem-lesson-save.'
+        },
+        name: {
+          type: 'string',
+          description: 'Project-unique lesson name as shown in the session-start lesson index. Used when lessonId is omitted.'
+        }
+      },
+      required: ['projectPath']
+    }
+  },
+  {
     name: 'mem-lesson-candidates',
     description: 'Detect not-yet-saved reusable workflow patterns (rule-based, from repeated successful tool sequences across sessions) so they can be reviewed and promoted with mem-lesson-save. Read-only — does not write a lesson.',
     inputSchema: {

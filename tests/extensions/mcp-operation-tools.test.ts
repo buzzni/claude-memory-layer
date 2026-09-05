@@ -46,6 +46,7 @@ const mocks = vi.hoisted(() => {
   };
   const lessonRepository = {
     list: vi.fn(),
+    get: vi.fn(),
     getByProjectAndName: vi.fn()
   };
   const lessonService = {
@@ -249,6 +250,7 @@ function resetOperationMocks() {
   mocks.checkpointRepository.list.mockReset().mockResolvedValue([]);
   mocks.lessonRepository.list.mockReset().mockResolvedValue([]);
   mocks.lessonRepository.getByProjectAndName.mockReset().mockReturnValue(null);
+  mocks.lessonRepository.get.mockReset().mockReturnValue(null);
   mocks.lessonService.saveCurated.mockReset().mockResolvedValue({
     lessonId: '33333333-3333-4333-8333-333333333333',
     projectHash: 'deadbeef',
@@ -372,6 +374,7 @@ describe('MCP memory operation tool definitions', () => {
     'mem-retention-audit',
     'mem-graph-query',
     'mem-lesson-list',
+    'mem-lesson-get',
     'mem-lesson-save',
     'mem-asset-create',
     'mem-asset-get',
@@ -747,6 +750,40 @@ describe('MCP memory operation handlers', () => {
       lesson: { sourceClass: 'curated', name: 'Deploy GPU before API' }
     });
     expect(JSON.stringify(payload)).not.toContain('/repo/app');
+  });
+
+  // specs/lesson-recall-hooks R4 — the session-start index carries names only, so the model
+  // needs a single-lesson lookup instead of paging the whole catalog through mem-lesson-list.
+  it('returns one lesson by its project-unique name', async () => {
+    const stored = { lessonId: 'lesson-1', projectHash: 'deadbeef', name: 'Deploy GPU before API', trigger: 'rollout', confidence: 1, steps: ['Roll out GPU'], sourceEventIds: [], sourceSessionIds: [], failureModes: [], skillCandidate: false, sourceClass: 'curated', createdAt: new Date('2026-05-01T00:00:00.000Z'), updatedAt: new Date('2026-05-01T00:00:00.000Z') };
+    mocks.lessonRepository.getByProjectAndName.mockReturnValue(stored);
+
+    const payload = jsonOf(await handleToolCall('mem-lesson-get', { projectPath: '/repo/app', name: 'Deploy GPU before API' }));
+    expect(mocks.lessonRepository.getByProjectAndName).toHaveBeenCalledWith('deadbeef', 'Deploy GPU before API');
+    expect(payload).toMatchObject({ operation: 'mem-lesson-get', found: true, lesson: { name: 'Deploy GPU before API', steps: ['Roll out GPU'] } });
+    expect(JSON.stringify(payload)).not.toContain('/repo/app');
+  });
+
+  it('returns one lesson by id and reports found:false when nothing matches', async () => {
+    mocks.lessonRepository.get.mockReturnValue(null);
+    const missing = jsonOf(await handleToolCall('mem-lesson-get', { projectPath: '/repo/app', lessonId: 'nope' }));
+    expect(mocks.lessonRepository.get).toHaveBeenCalledWith('nope');
+    expect(missing).toMatchObject({ operation: 'mem-lesson-get', found: false });
+  });
+
+  it('rejects a lookup that names neither lessonId nor name', async () => {
+    const result = await handleToolCall('mem-lesson-get', { projectPath: '/repo/app' });
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toMatch(/lessonId|name/);
+  });
+
+  it('refuses a lesson the requester may not read once enforcement is on', async () => {
+    mocks.canonicalMemoryAccessService.mode = 'registered';
+    mocks.lessonRepository.get.mockReturnValue({ lessonId: 'lesson-private', projectHash: 'deadbeef', name: 'private', trigger: 't', confidence: 1, steps: ['s'], sourceEventIds: [], sourceSessionIds: [], failureModes: [], skillCandidate: false, sourceClass: 'curated', createdAt: new Date('2026-05-01T00:00:00.000Z'), updatedAt: new Date('2026-05-01T00:00:00.000Z') });
+    mocks.canonicalMemoryAccessService.check.mockReturnValue({ allowed: false, mode: 'registered', registered: true, source: 'none' });
+
+    const payload = jsonOf(await handleToolCall('mem-lesson-get', { projectPath: '/repo/app', requesterActorId: 'reader', lessonId: 'lesson-private' }));
+    expect(payload).toMatchObject({ operation: 'mem-lesson-get', found: false, permissionMode: 'registered' });
   });
 
   it('permission-filters registered lessons and reports the server-selected mode', async () => {
