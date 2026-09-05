@@ -106,7 +106,7 @@ function sourceFor(item: MemoryReferenceItem & { id: string }): { document: stri
     const lessonRef = `lesson:${item.id}`;
     return {
       document: `curated project lesson [${lessonRef}]`,
-      fetch: `\`mem-lesson-list\` with the current projectPath, then select lessonId \`${item.id}\``
+      fetch: `\`mem-lesson-get\` with the current projectPath and lessonId \`${item.id}\``
     };
   }
 

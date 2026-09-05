@@ -105,6 +105,7 @@ import type {
   PerspectiveObservationLevel
 } from '../../core/types.js';
 import { extractLessonWithLlm, isLlmLessonExtractionEnabled } from '../../adapters/llm/lesson-extraction-llm.js';
+import { rankCuratedLessons } from './lesson-ranking.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 
 type ToolResult = CallToolResult;
@@ -352,6 +353,7 @@ const MEMORY_OPERATION_TOOL_NAMES = new Set([
   'mem-graph-query',
   'mem-lesson-candidates',
   'mem-lesson-list',
+  'mem-lesson-get',
   'mem-lesson-save',
   'mem-asset-create',
   'mem-asset-get',
@@ -620,6 +622,8 @@ async function handleMemoryOperationTool(name: string, args: Record<string, unkn
         return jsonResult(await handleLessonCandidates(context, args));
       case 'mem-lesson-list':
         return jsonResult(await handleLessonList(context, args));
+      case 'mem-lesson-get':
+        return jsonResult(await handleLessonGet(context, args));
       case 'mem-lesson-save':
         return jsonResult(await handleLessonSave(context, args));
       case 'mem-asset-create':
@@ -880,6 +884,42 @@ function handleGraphQuery(context: MemoryOperationContext, args: Record<string, 
 
   const graph = new GraphPathService(context.db).expand({ startNodes, direction, maxHops, maxResults });
   return { ...base, graph: formatGraphResult(graph) };
+}
+
+/**
+ * specs/lesson-recall-hooks R4 — single-lesson lookup. The session-start index
+ * carries names only (ids would eat a fifth of its budget), so the model needs
+ * a direct fetch instead of paging the whole catalog through mem-lesson-list.
+ */
+async function handleLessonGet(context: MemoryOperationContext, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const repository = new LessonRepository(context.db);
+  const access = new CanonicalMemoryAccessService(context.db);
+  const requesterActorId = optionalRequesterActorIdArg(args);
+  access.requireRequester(requesterActorId);
+  const lessonId = optionalString(args.lessonId);
+  const name = optionalString(args.name);
+  if (!lessonId && !name) {
+    throw new Error('mem-lesson-get requires lessonId or name.');
+  }
+  const base = { operation: 'mem-lesson-get', projectHash: context.projectHash, permissionMode: access.mode };
+  const lesson = lessonId
+    ? repository.get(lessonId)
+    : repository.getByProjectAndName(context.projectHash, name as string);
+  // get() is keyed by id alone; never hand back a row from another project's scope.
+  if (!lesson || (lesson.projectHash && lesson.projectHash !== context.projectHash)) {
+    return { ...base, found: false };
+  }
+  if (access.mode !== 'legacy') {
+    const decision = access.check({
+      projectHash: context.projectHash,
+      canonicalType: 'lesson',
+      canonicalId: lesson.lessonId,
+      requesterActorId,
+      permission: 'read'
+    });
+    if (!decision.allowed) return { ...base, found: false };
+  }
+  return { ...base, found: true, lesson: formatLesson(lesson) };
 }
 
 async function handleLessonList(context: MemoryOperationContext, args: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -2357,7 +2397,7 @@ async function handleMemContextPack(memoryService: MemoryService, args: Record<s
 
   const search = await retrieveMcpMemories(memoryService, query, { topK: retrievalTopK, sessionId, retrievalMode });
   const recentEvents = await memoryService.getRecentEvents(recentLimit);
-  const curatedLessons = await loadCuratedLessons(projectPath, requesterActorId);
+  const curatedLessons = await loadCuratedLessons(projectPath, requesterActorId, query);
 
   const timelineEvents = selectContextPackTimelineEvents(
     recentEvents,
@@ -2760,7 +2800,8 @@ interface ContextPackMemory {
 
 async function loadCuratedLessons(
   projectPath: string | undefined,
-  requesterActorId: string | undefined
+  requesterActorId: string | undefined,
+  query?: string
 ): Promise<CanonicalMemoryInjection<MemoryLesson>[]> {
   if (!projectPath || !path.isAbsolute(projectPath)) return [];
   const storagePath = getProjectStoragePath(projectPath);
@@ -2781,15 +2822,22 @@ async function loadCuratedLessons(
     );
     if (!table) return [];
     const projectHash = hashProjectPath(projectPath);
-    const lessons = await new LessonRepository(db).list({ projectHash, limit: 20 });
-    return new CanonicalMemoryInjectionService(db).select({
+    // Scan the whole catalog (repository ceiling), not the newest 20: the pack
+    // used to show the same three lessons for every question.
+    const lessons = await new LessonRepository(db).list({ projectHash, limit: 500 });
+    const items = new CanonicalMemoryInjectionService(db).select({
       projectHash,
       actorId: requesterActorId,
       lane: 'context_pack',
       candidates: lessons
         .filter((lesson) => lesson.sourceClass === 'curated')
         .map((lesson) => ({ canonicalType: 'lesson', canonicalId: lesson.lessonId, value: lesson }))
-    }).items.slice(0, 3);
+    }).items;
+    const ranked = rankCuratedLessons(items.map((item) => item.value), query, 3);
+    return ranked.flatMap((lesson) => {
+      const item = items.find((candidate) => candidate.value.lessonId === lesson.lessonId);
+      return item ? [item] : [];
+    });
   } catch {
     return [];
   } finally {

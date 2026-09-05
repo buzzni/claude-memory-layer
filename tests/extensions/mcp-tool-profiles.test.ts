@@ -18,9 +18,9 @@ import { tools as compatibilityTools } from '../../src/extensions/mcp/tools.js';
 // drift into the registry: telemetry notes on mem-details/mem-source-ref
 // descriptions and the read_only mutation _meta on mem-stats (#71/#74).
 const ALL_BASELINE = {
-  count: 44,
-  bytes: 47_899,
-  sha256: 'cdcefc4b8e45bef413b48dfc9a5dce5524f0ab1bf7b9457e596bbf61ea5a001f',
+  count: 45,
+  bytes: 48_829,
+  sha256: '77da78c5f43116bea2c59b1795909b8e373aedf4a19c43f479213fcdb8083fd8',
   names: [
     'external-market-context',
     'mem-search',
@@ -41,6 +41,7 @@ const ALL_BASELINE = {
     'mem-retention-audit',
     'mem-graph-query',
     'mem-lesson-list',
+    'mem-lesson-get',
     'mem-lesson-candidates',
     'mem-lesson-save',
     'mem-asset-create',

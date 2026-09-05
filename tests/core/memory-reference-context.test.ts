@@ -52,7 +52,7 @@ describe('memory reference context', () => {
     }], { heading: 'Index' });
 
     expect(context).toContain('curated project lesson [lesson:lesson-safe-deploy]');
-    expect(context).toContain('`mem-lesson-list`');
+    expect(context).toContain('`mem-lesson-get`');
     expect(context).toContain('project curated lesson catalog');
     expect(context).not.toContain('project memory event [mem:');
   });

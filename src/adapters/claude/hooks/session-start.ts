@@ -207,6 +207,53 @@ function compactCoreMemorySummary(content: string): string {
   return normalized.length <= 320 ? normalized : `${normalized.slice(0, 317)}...`;
 }
 
+/**
+ * specs/lesson-recall-hooks R1 — curated lesson index for the session prompt.
+ *
+ * Mirrors hermes' MEMORY.md snapshot (whole bounded file at session start, no
+ * retrieval) crossed with its skills index (name + one-liner always, body on
+ * demand). Only name and trigger go in; the body is fetched with mem-lesson-get.
+ * Items keep repository order (confidence DESC, updated_at DESC) and fill until
+ * the character budget would be exceeded.
+ */
+const SESSION_START_LESSON_BUDGET_DEFAULT = 2400;
+const SESSION_START_LESSON_TRIGGER_CHARS = 90;
+
+export function sessionStartLessonBudget(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.CLAUDE_MEMORY_SESSION_START_LESSON_BUDGET;
+  if (raw === undefined || raw === '') return SESSION_START_LESSON_BUDGET_DEFAULT;
+  const parsed = Number(raw);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : SESSION_START_LESSON_BUDGET_DEFAULT;
+}
+
+function clipLessonTrigger(trigger: string): string {
+  const normalized = trigger.replace(/\s+/g, ' ').trim();
+  return normalized.length <= SESSION_START_LESSON_TRIGGER_CHARS
+    ? normalized
+    : `${normalized.slice(0, SESSION_START_LESSON_TRIGGER_CHARS - 1)}…`;
+}
+
+export function formatLessonIndexContext(
+  lessons: ReadonlyArray<{ name: string; trigger: string }>,
+  options: { budgetChars: number; totalCount: number }
+): string {
+  const header = '## Project Lessons\n\n'
+    + 'Curated lessons from earlier sessions in this project — the trigger says when each applies. '
+    + 'When one matches the task at hand, open it with `mem-lesson-get` (name) before acting; '
+    + '`mem-lesson-list` shows everything.\n\n';
+  const footer = (shown: number) =>
+    `\n(${shown} of ${options.totalCount} lessons shown; the rest are reachable with \`mem-lesson-list\`.)\n`;
+  const items: string[] = [];
+  for (const lesson of lessons) {
+    const line = `- ${lesson.name.trim()} — ${clipLessonTrigger(lesson.trigger)}\n`;
+    const candidate = header + items.join('') + line + footer(items.length + 1);
+    if (candidate.length > options.budgetChars) break;
+    items.push(line);
+  }
+  if (items.length === 0) return '';
+  return header + items.join('') + footer(items.length);
+}
+
 export interface SessionStartMainOptions {
   contextPresentation?: 'evidence' | 'reference';
 }
@@ -316,6 +363,63 @@ export async function main(options: SessionStartMainOptions = {}): Promise<strin
         }
       } catch {
         // Core memory injection is supplementary; never fail session start over it.
+      }
+    }
+
+    // specs/lesson-recall-hooks R1 — lesson index. Bounded like the core lane,
+    // never query-scored; the per-turn lane handles relevance for what is cut here.
+    const lessonBudget = sessionStartLessonBudget();
+    if (lessonBudget > 0 && process.env.CLAUDE_MEMORY_EVAL_DISABLE_SESSION_CONTEXT !== 'true') {
+      try {
+        const injections = await memoryService.listProjectLessonInjections(
+          resolveCanonicalMemoryActorId(input.actor_id),
+          500
+        );
+        const lessons = injections.map((item) => item.value);
+        const lessonContext = formatLessonIndexContext(lessons, { budgetChars: lessonBudget, totalCount: lessons.length });
+        if (lessonContext) {
+          if (context) context += '\n';
+          context += lessonContext;
+          // Recorded so lesson usage becomes measurable: before this, lesson
+          // injection left no row in retrieval_traces/memory_helpfulness.
+          const shownIds = lessons
+            .filter((lesson) => lessonContext.includes(`- ${lesson.name.trim()} — `))
+            .map((lesson) => lesson.lessonId);
+          if (!isHookEvaluationMode() && shownIds.length > 0) {
+            const lessonTraceId = randomUUID();
+            await memoryService.recordQueryTrace({
+              traceId: lessonTraceId,
+              sessionId: input.session_id,
+              queryText: '[session-start] lesson index',
+              strategy: 'session-start-lessons',
+              candidateEventIds: lessons.map((lesson) => lesson.lessonId),
+              selectedEventIds: shownIds,
+              confidence: 'session-start',
+              presentationMode: 'reference',
+              triggerType: 'session_start',
+              deliveryClient: 'claude-hook'
+            }).catch(() => undefined);
+            for (const lesson of lessons) {
+              if (!shownIds.includes(lesson.lessonId)) continue;
+              await memoryService.recordRetrieval(
+                lesson.lessonId,
+                input.session_id,
+                0.5,
+                '[session-start] lesson index',
+                {
+                  traceId: lessonTraceId,
+                  source: 'session_start',
+                  presentationMode: 'reference',
+                  triggerType: 'session_start',
+                  deliveryClient: 'claude-hook',
+                  injectedContent: `${lesson.name} — ${lesson.trigger}`
+                }
+              ).catch(() => undefined);
+            }
+          }
+        }
+      } catch {
+        // Lesson index is supplementary; never fail session start over it.
       }
     }
 

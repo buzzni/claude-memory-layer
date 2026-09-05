@@ -3,7 +3,9 @@ import {
   formatCoreMemoryBlockContext,
   registerSessionBestEffort,
   selectSessionStartMemories,
-  sessionStartExcerpt
+  sessionStartExcerpt,
+  formatLessonIndexContext,
+  sessionStartLessonBudget
 } from '../../src/adapters/claude/hooks/session-start.js';
 import type { CoreMemoryBlock, EventType, MemoryEvent } from '../../src/core/types.js';
 
@@ -294,5 +296,63 @@ describe('sessionStartExcerpt', () => {
   it('collapses newlines so one memory stays one bullet', () => {
     expect(sessionStartExcerpt(event('session_summary', '- 결정: A\n- 제약: B', '2026-08-06T10:00:00.000Z')))
       .toBe('- 결정: A / - 제약: B');
+  });
+});
+
+// specs/lesson-recall-hooks R1 — hermes MEMORY.md 처럼 예산 안에서 인덱스를 통째로, 본문은 요청 시.
+describe('formatLessonIndexContext', () => {
+  const lessons = [
+    { name: '자동 병합 성공은 양쪽 변경이 살아남았다는 증거가 아니다', trigger: '공유 브랜치에서 push 가 거부되어 원격을 병합할 때' },
+    { name: 'assertion-flake-is-interference-not-load', trigger: '전체 스위트에서만 깨지고 단독 실행하면 통과하는 테스트를 만났을 때' }
+  ];
+
+  it('lists name and trigger for each lesson under a Project Lessons heading', () => {
+    const out = formatLessonIndexContext(lessons, { budgetChars: 2400, totalCount: 2 });
+    expect(out).toContain('## Project Lessons');
+    expect(out).toContain('자동 병합 성공은 양쪽 변경이 살아남았다는 증거가 아니다 — 공유 브랜치에서');
+    expect(out).toContain('assertion-flake-is-interference-not-load — 전체 스위트에서만');
+  });
+
+  it('tells the model how to open a lesson body and how many were not shown', () => {
+    const out = formatLessonIndexContext(lessons, { budgetChars: 2400, totalCount: 151 });
+    expect(out).toContain('mem-lesson-get');
+    expect(out).toMatch(/151/);
+  });
+
+  it('stops adding items once the budget would be exceeded and reports the shown count', () => {
+    const many = Array.from({ length: 40 }, (_, i) => ({ name: `lesson-${i}`, trigger: 'x'.repeat(60) }));
+    const out = formatLessonIndexContext(many, { budgetChars: 600, totalCount: 40 });
+    expect(out.length).toBeLessThanOrEqual(600);
+    const shown = (out.match(/^- lesson-/gm) ?? []).length;
+    expect(shown).toBeGreaterThan(0);
+    expect(shown).toBeLessThan(40);
+    expect(out).toContain(`${shown}`);
+  });
+
+  it('clips a long trigger instead of letting one lesson eat the budget', () => {
+    const out = formatLessonIndexContext(
+      [{ name: 'n', trigger: 't'.repeat(400) }], { budgetChars: 2400, totalCount: 1 }
+    );
+    expect(out).not.toContain('t'.repeat(200));
+    expect(out).toContain('…');
+  });
+
+  it('returns nothing when the budget is zero or there are no lessons', () => {
+    expect(formatLessonIndexContext(lessons, { budgetChars: 0, totalCount: 2 })).toBe('');
+    expect(formatLessonIndexContext([], { budgetChars: 2400, totalCount: 0 })).toBe('');
+  });
+});
+
+describe('sessionStartLessonBudget', () => {
+  it('defaults to 2400 characters, close to hermes MEMORY.md 2200', () => {
+    expect(sessionStartLessonBudget({})).toBe(2400);
+  });
+  it('honours an explicit override and lets 0 switch the index off', () => {
+    expect(sessionStartLessonBudget({ CLAUDE_MEMORY_SESSION_START_LESSON_BUDGET: '900' })).toBe(900);
+    expect(sessionStartLessonBudget({ CLAUDE_MEMORY_SESSION_START_LESSON_BUDGET: '0' })).toBe(0);
+  });
+  it('falls back to the default on garbage', () => {
+    expect(sessionStartLessonBudget({ CLAUDE_MEMORY_SESSION_START_LESSON_BUDGET: 'lots' })).toBe(2400);
+    expect(sessionStartLessonBudget({ CLAUDE_MEMORY_SESSION_START_LESSON_BUDGET: '-5' })).toBe(2400);
   });
 });

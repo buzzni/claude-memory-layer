@@ -5,6 +5,7 @@ import type { MemoryEvent } from '../../src/core/types.js';
 import {
   filterHookInjectableMemories,
   getHookInjectionPolicy,
+  reserveLessonSlot,
   scoreGraduatedEvidence,
   scoreLessonEvidence,
   selectHookEpisodeSeeds,
@@ -483,5 +484,43 @@ describe('curated lesson injection lane', () => {
     };
     const result = filterHookInjectableMemories([answer, lessonCandidate], getHookInjectionPolicy(), query);
     expect(result[0].type).toBe('lesson');
+  });
+});
+
+// specs/lesson-recall-hooks R3 — 이벤트가 슬롯을 다 차지해도 질의를 덮는 교훈 1건은 살아남아야 한다.
+// 실측: 4,767 프롬프트 중 교훈이 후보에 든 196건 전부에서 다른 것이 선택되고 교훈은 5건만 살았다.
+describe('reserveLessonSlot', () => {
+  const policy = { ...getHookInjectionPolicy(), minScore: 0.65, maxMemories: 3 };
+  const ev = (id: string, score: number): HookMemoryCandidate =>
+    ({ id, type: 'agent_response', source: 'semantic', score, content: `answer ${id}` });
+  const lesson = (id: string, score: number): HookMemoryCandidate =>
+    ({ id, type: 'lesson', source: 'lesson', score, content: `lesson ${id}` });
+
+  it('appends the best qualifying lesson when none survived and there is room', () => {
+    const selected = [ev('a', 0.9)];
+    const out = reserveLessonSlot(selected, [ev('a', 0.9), lesson('l1', 0.7), lesson('l2', 0.8)], policy);
+    expect(out.map((c) => c.id)).toEqual(['a', 'l2']);
+  });
+
+  it('does not reserve a lesson below the injection minimum', () => {
+    const selected = [ev('a', 0.9)];
+    expect(reserveLessonSlot(selected, [ev('a', 0.9), lesson('l1', 0.6)], policy)).toEqual(selected);
+  });
+
+  it('leaves the selection alone when a lesson already survived ranking', () => {
+    const selected = [lesson('l1', 0.9), ev('a', 0.8)];
+    expect(reserveLessonSlot(selected, [...selected, lesson('l2', 0.95)], policy)).toEqual(selected);
+  });
+
+  it('drops the weakest event instead of exceeding maxMemories when the selection is full', () => {
+    const selected = [ev('a', 0.9), ev('b', 0.85), ev('c', 0.7)];
+    const out = reserveLessonSlot(selected, [...selected, lesson('l1', 0.75)], policy);
+    expect(out).toHaveLength(3);
+    expect(out.map((c) => c.id)).toEqual(['a', 'b', 'l1']);
+  });
+
+  it('reserves at most one lesson even when several qualify', () => {
+    const out = reserveLessonSlot([], [lesson('l1', 0.7), lesson('l2', 0.9)], policy);
+    expect(out.map((c) => c.id)).toEqual(['l2']);
   });
 });
