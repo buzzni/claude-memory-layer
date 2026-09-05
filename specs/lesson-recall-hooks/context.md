@@ -1,6 +1,6 @@
 # Lesson Recall Hooks Context
 
-> **Status**: 구현 완료 · PR 대기
+> **Status**: 완료 — PR #87 머지, v2.4.0 발행·전역 설치 반영 (2026-09-05)
 > **Created**: 2026-09-05
 > **Last Updated**: 2026-09-05
 
@@ -59,10 +59,16 @@ Memory evidence 에 `[lesson]` 로 등장.** 이전에는 같은 절차로 빈 �
 `formatLessonIndexContext` 의 `budgetChars <= 0 || lessons.length === 0` 조기 반환은 루프의 break 와
 `items.length === 0` 반환이 이미 보장하는 동작이라 제거했다(변이 M3 가 red 가 되지 않아 드러남).
 
-## 6. 다음 단계
+## 6. 배포 기록과 다음 단계
 
-1. PR 머지 → npm 발행 → 사용자 머신의 전역 설치(`~/.hermes/node/lib/node_modules/claude-memory-layer`,
-   현재 2.3.5) 업그레이드. **훅은 전역 설치본을 실행하므로 발행 전에는 효과가 없다.**
+- 2026-09-05 PR #87 머지 → `chore(release): v2.4.0` → 태그 푸시. 첫 발행은 `npm audit --omit=dev` 에서
+  실패(v2.3.5 이후 공개된 fast-uri·qs advisory, 의존성 변경은 없었음) → `npm audit fix` 로 lock 만 갱신
+  (`22c4955`) → 미발행 태그 재지정 → 발행 성공. 전역 설치 2.3.5 → 2.4.0, 설치본으로 실기 프로브 확인.
+- 함정: `npm audit fix --omit=dev` 는 node_modules 에서 devDependencies 를 지운다(tsc·vitest 사라짐).
+  audit fix 는 omit 없이 실행하고, 검사만 `npm audit --omit=dev` 로 할 것.
+- MCP 서버 프로세스는 세션 시작 시 로드되므로 이미 열려 있던 세션에는 `mem-lesson-get` 이 없다.
+
+1. ~~발행·업그레이드~~ 완료.
 2. 배포 뒤 init-project `session_start.sh` 의 안내 문구("mem-context-pack / mem-lesson-list 로 회수할 수
    있습니다")를 "인덱스는 위에 주입됨, 본문은 mem-lesson-get" 으로 갱신(별도 저장소, 서브모듈 bump 필요).
 3. 활용 측정: `retrieval_traces.strategy='session-start-lessons'` 와 `memory_helpfulness.event_id IN
