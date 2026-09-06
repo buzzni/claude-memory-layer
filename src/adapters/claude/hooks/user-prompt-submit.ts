@@ -22,7 +22,17 @@ import { getLightweightMemoryService } from '../../../services/memory-service.js
 import { writeTurnState, readLastAssistantSnippet } from '../../../core/turn-state.js';
 import { retrieveSemanticMemories, scheduleSemanticGraduation } from './semantic-daemon-client.js';
 import { readStdin, readNumberEnv } from './hook-runtime.js';
-import { formatClaudeContextHookOutput, isHookEvaluationMode } from './hook-output.js';
+import {
+  formatClaudeContextHookOutput,
+  isHookEvaluationMode,
+  registerHookDeliveryReporter
+} from './hook-output.js';
+import type { MemoryKind } from '../../../core/memory-ref.js';
+import { memoryContentHash } from '../../../core/retrieval-trace-ledger.js';
+import type {
+  RetrievalOutcomeDiagnostics,
+  RetrievalOutcomeReason
+} from '../../../core/retrieval-telemetry.js';
 import { applyPrivacyFilter } from '../../../core/privacy/index.js';
 import {
   formatMemoryReferenceContext,
@@ -187,6 +197,12 @@ export interface UserPromptSubmitMainOptions {
   contextPresentation?: 'evidence' | 'reference';
   /** Codex imports complete turns at SessionEnd, so prompt-time retrieval must not pre-store half a turn. */
   persistPrompt?: boolean;
+  /**
+   * Client label recorded on this hook's telemetry. Codex and Claude share this
+   * hook body, so without an explicit label every Codex request would be
+   * counted as a Claude request in per-client coverage (specs R2).
+   */
+  deliveryClient?: string;
 }
 
 async function expandEpisodeEvidence(
@@ -425,6 +441,69 @@ export function getRetrievalQueryRewriteKind(prompt: string, retrievalQuery: str
   return retrievalQuery === prompt.trim() ? 'none' : 'follow-up-context';
 }
 
+/**
+ * Typed reference for an injected candidate (specs R1).
+ *
+ * The lesson lane puts `memory_lessons.lesson_id` values in the same list as
+ * event ids. Without the kind, every downstream join treated them as events:
+ * lessons vanished from event-joined metrics and their access-count updates
+ * matched no row.
+ */
+export function hookMemoryRefKind(candidate: { source?: string; type?: string }): MemoryKind {
+  return candidate.source === 'lesson' || candidate.type === 'lesson' ? 'lesson' : 'event';
+}
+
+export interface HookRetrievalLaneCounts {
+  semantic: number;
+  keyword: number;
+  graduated: number;
+  lesson: number;
+  thresholdFiltered: number;
+  qualityFiltered: number;
+  selected: number;
+  minScore: number;
+  topScore: number | null;
+  projectHasEvents: boolean | null;
+}
+
+/**
+ * Classify why a prompt-time retrieval selected nothing (specs R2).
+ *
+ * An empty selection is not a runtime failure. `runtime_error` is reserved for
+ * a caught exception, so the 154 empty traces in the 2026-09-06 sample would
+ * now be recorded as the distinct reasons below instead of a false failure
+ * rate.
+ */
+export function classifyHookOutcomeReason(counts: HookRetrievalLaneCounts): RetrievalOutcomeReason {
+  if (counts.selected > 0) return 'selected';
+  const candidates = counts.semantic + counts.keyword + counts.graduated + counts.lesson;
+  if (counts.projectHasEvents === false) return 'no_project_events';
+  if (candidates === 0) {
+    if (counts.thresholdFiltered > 0) return 'below_score_threshold';
+    return 'no_keyword_candidates';
+  }
+  if (counts.qualityFiltered > 0) return 'quality_filtered';
+  return 'below_score_threshold';
+}
+
+export function buildHookOutcomeDiagnostics(counts: HookRetrievalLaneCounts): RetrievalOutcomeDiagnostics {
+  return {
+    outcomeReason: classifyHookOutcomeReason(counts),
+    laneCandidateCounts: {
+      vector: counts.semantic,
+      keyword: counts.keyword,
+      summary: counts.graduated
+    },
+    filteredCounts: {
+      threshold: counts.thresholdFiltered,
+      quality: counts.qualityFiltered
+    },
+    topScore: counts.topScore,
+    threshold: counts.minScore,
+    freshnessState: 'unknown'
+  };
+}
+
 export async function main(options: UserPromptSubmitMainOptions = {}): Promise<string> {
   try {
     // Read input from stdin (parse inside try so malformed JSON still emits a safe envelope)
@@ -461,6 +540,13 @@ export async function main(options: UserPromptSubmitMainOptions = {}): Promise<s
       const minScore = getDynamicMinScore(input.prompt);
       let mergedMemories: HookMemoryCandidate[] = [];
       const episodeSeedCandidates: HookMemoryCandidate[] = [];
+      // Lane counters feed the honest outcome reason for an empty selection
+      // instead of the old runtime_error default (specs R2).
+      let semanticCandidateCount = 0;
+      let keywordCandidateCount = 0;
+      let graduatedCandidateCount = 0;
+      let lessonCandidateCount = 0;
+      let thresholdFilteredCount = 0;
 
       // On turn 2+, enrich ambiguous follow-up retrieval with the previous user prompt
       // and assistant response so short prompts ("그거 고쳐줘") resolve correctly.
@@ -490,6 +576,7 @@ export async function main(options: UserPromptSubmitMainOptions = {}): Promise<s
             ...memory,
             source: 'semantic' as const
           })).filter((memory) => !isExcludedEvaluationSession(memory.sessionId));
+          semanticCandidateCount = mergedMemories.length;
         } catch {
           // Semantic retrieval is best-effort; fallback below handles the rest
         }
@@ -528,6 +615,7 @@ export async function main(options: UserPromptSubmitMainOptions = {}): Promise<s
         .filter((item): item is { candidate: HookMemoryCandidate; score: number } => item.score !== null)
         .sort((a, b) => b.score - a.score)
         .slice(0, MAX_CANDIDATES);
+      graduatedCandidateCount = scoredGraduated.length;
       for (const { candidate, score } of scoredGraduated) {
         const existingIndex = candidate.id ? existingGraduatedById.get(candidate.id) : undefined;
         if (existingIndex !== undefined) {
@@ -559,7 +647,10 @@ export async function main(options: UserPromptSubmitMainOptions = {}): Promise<s
             failureModes: Array.isArray(injectedLesson.failureModes) ? injectedLesson.failureModes.map(String) : [],
             confidence: Number(injectedLesson.confidence ?? 0)
           });
-          if (candidate) mergedMemories.push(candidate);
+          if (candidate) {
+            mergedMemories.push(candidate);
+            lessonCandidateCount += 1;
+          }
         }
       } catch { /* lesson lane is supplementary */ }
 
@@ -579,12 +670,15 @@ export async function main(options: UserPromptSubmitMainOptions = {}): Promise<s
           // keywordSearch excludes tool_observation by default.
           includeToolObservations: true
         });
+        keywordCandidateCount = allKeywordResults.length;
         let results = allKeywordResults.filter((result) => result.score >= minScore);
+        thresholdFilteredCount = allKeywordResults.length - results.length;
 
         // recall rescue: if nothing found at tuned threshold, retry with fallback floor
         if (results.length === 0 && FALLBACK_MIN_SCORE < minScore) {
           usedFallbackFloor = true;
           results = allKeywordResults.filter((result) => result.score >= FALLBACK_MIN_SCORE);
+          thresholdFilteredCount = allKeywordResults.length - results.length;
         }
 
         for (const result of allKeywordResults) {
@@ -660,6 +754,11 @@ export async function main(options: UserPromptSubmitMainOptions = {}): Promise<s
       // One trace id shared by the query trace and every helpfulness row it
       // produced, so the dashboard can show question -> memories -> evidence.
       const retrievalTraceId = randomUUID();
+      // Request identity for this hook invocation. Any other trace written for
+      // the same request collapses onto this row instead of double-counting
+      // the client's request volume (specs R2).
+      const deliveryClient = options.deliveryClient ?? 'claude-hook';
+      const retrievalRequestId = `${deliveryClient}:${input.session_id}:${turnId}`;
 
       if (injectableMemories.length > 0) {
         let referenceItems: MemoryReferenceItem[] = injectableMemories;
@@ -686,10 +785,14 @@ export async function main(options: UserPromptSubmitMainOptions = {}): Promise<s
           }));
         }
 
-        // Increment access count only for high-confidence memories injected into the prompt.
-        const eventIds = injectableMemories.map((m) => m.id).filter((v): v is string => Boolean(v));
-        if (!isHookEvaluationMode() && eventIds.length > 0) {
-          await memoryService.incrementMemoryAccess(eventIds);
+        // Increment access count only for high-confidence memories injected into
+        // the prompt, and only for the ones that are actually events: a lesson
+        // id never matched a row in events, so those access writes were lost.
+        const injectedRefs = injectableMemories
+          .filter((m): m is HookMemoryCandidate & { id: string } => Boolean(m.id))
+          .map((m) => ({ kind: hookMemoryRefKind(m), id: m.id }));
+        if (!isHookEvaluationMode() && injectedRefs.length > 0) {
+          await memoryService.incrementMemoryAccess(injectedRefs);
         }
 
         // Record each injected retrieval for helpfulness tracking.
@@ -704,9 +807,15 @@ export async function main(options: UserPromptSubmitMainOptions = {}): Promise<s
               {
                 traceId: retrievalTraceId,
                 source: 'user_prompt',
+                memoryKind: hookMemoryRefKind(m),
+                // Formatted, not delivered. The delivery reporter below raises
+                // this to emitted only after stdout actually accepts the write.
+                deliveryStatus: 'formatted',
+                deliveryEvidence: 'context_formatted',
                 presentationMode: options.contextPresentation ?? 'evidence',
                 triggerType: 'user_prompt',
-                deliveryClient: 'claude-hook',
+                deliveryClient,
+                requestId: retrievalRequestId,
                 injectedContent: options.contextPresentation === 'reference'
                   ? memoryReferenceSummary(m.content, retrievalQuery)
                   : selectEvidencePreview(m.content, retrievalQuery)
@@ -726,7 +835,55 @@ export async function main(options: UserPromptSubmitMainOptions = {}): Promise<s
       // Record query-level trace for dashboard stats (retrieval_traces table)
       const allCandidateIds = mergedMemories.map((m) => m.id).filter((v): v is string => Boolean(v));
       const selectedIds = injectableMemories.map((m) => m.id).filter((v): v is string => Boolean(v));
+      const selectedKeys = new Set(injectableMemories
+        .filter((m) => Boolean(m.id))
+        .map((m) => `${hookMemoryRefKind(m)}:${m.id}`));
+      // Typed items keep the event/lesson split that the flat id arrays lose.
+      // Only a hash of the delivered excerpt is stored — never the excerpt —
+      // so telemetry cannot resurrect the text of a deleted memory (specs R1).
+      const traceItems = [...mergedMemories, ...injectableMemories]
+        .filter((m): m is HookMemoryCandidate & { id: string } => Boolean(m.id))
+        .map((m, index) => {
+          const selected = selectedKeys.has(`${hookMemoryRefKind(m)}:${m.id}`);
+          return {
+            kind: hookMemoryRefKind(m),
+            id: m.id,
+            rank: index,
+            score: m.score ?? null,
+            selected,
+            contentHash: selected
+              ? memoryContentHash(options.contextPresentation === 'reference'
+                ? memoryReferenceSummary(m.content, retrievalQuery)
+                : selectEvidencePreview(m.content, retrievalQuery))
+              : null
+          };
+        });
       if (!isHookEvaluationMode()) {
+        // Only consulted when nothing was selected, so the common path pays
+        // nothing for distinguishing "empty project" from "nothing matched".
+        let projectHasEvents: boolean | null = null;
+        if (injectableMemories.length === 0) {
+          try {
+            projectHasEvents = (await memoryService.getRecentEvents(1)).length > 0;
+          } catch {
+            projectHasEvents = null;
+          }
+        }
+        const outcomeDiagnostics = buildHookOutcomeDiagnostics({
+          semantic: semanticCandidateCount,
+          keyword: keywordCandidateCount,
+          graduated: graduatedCandidateCount,
+          lesson: lessonCandidateCount,
+          thresholdFiltered: thresholdFilteredCount,
+          qualityFiltered: Math.max(0, mergedMemories.length - injectableMemories.length),
+          selected: injectableMemories.length,
+          minScore,
+          topScore: mergedMemories.reduce<number | null>(
+            (top, memory) => (typeof memory.score === 'number' && (top === null || memory.score > top) ? memory.score : top),
+            null
+          ),
+          projectHasEvents
+        });
         try {
           await memoryService.recordQueryTrace({
             traceId: retrievalTraceId,
@@ -737,12 +894,29 @@ export async function main(options: UserPromptSubmitMainOptions = {}): Promise<s
             strategy: RETRIEVAL_MODE,
             candidateEventIds: allCandidateIds,
             selectedEventIds: selectedIds,
+            items: traceItems,
             confidence: summarizeHookInjectionConfidence(injectableMemories),
             presentationMode: options.contextPresentation ?? 'evidence',
             triggerType: 'user_prompt',
-            deliveryClient: 'claude-hook'
+            deliveryClient,
+            requestId: retrievalRequestId,
+            runtimeVersion: process.env.CLAUDE_MEMORY_LAYER_VERSION,
+            outcomeDiagnostics
           });
         } catch { /* non-critical */ }
+
+        // Delivery is proven by the stdout write, not by selection (specs R3).
+        if (injectableMemories.length > 0) {
+          registerHookDeliveryReporter(async (outcome) => {
+            try {
+              await memoryService.recordDeliveryOutcome({
+                traceId: retrievalTraceId,
+                status: outcome.status,
+                evidence: outcome.status === 'emitted' ? 'hook_stdout' : 'write_error'
+              });
+            } catch { /* delivery telemetry is best-effort */ }
+          });
+        }
 
         // Access/helpfulness evidence above must be durable before graduation
         // is scheduled. The daemon only acknowledges the schedule here; the

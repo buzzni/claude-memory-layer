@@ -614,8 +614,10 @@ export class MemoryService {
   /**
    * Increment access count for memories that were used in prompts
    */
-  async incrementMemoryAccess(eventIds: string[]): Promise<void> {
-    return this.retrievalOrchestrator.incrementMemoryAccess(eventIds);
+  async incrementMemoryAccess(
+    refs: Array<string | { kind: import('../core/memory-ref.js').MemoryKind; id: string }>
+  ): Promise<void> {
+    return this.retrievalOrchestrator.incrementMemoryAccess(refs);
   }
 
   /**
@@ -633,16 +635,38 @@ export class MemoryService {
     sessionId: string,
     score: number,
     query: string,
-    options?: { traceId?: string; source?: string; injectedContent?: string } & RetrievalTelemetryContext
+    options?: {
+      traceId?: string;
+      source?: string;
+      injectedContent?: string;
+      memoryKind?: import('../core/memory-ref.js').MemoryKind;
+      memoryProjectId?: string | null;
+      deliveryStatus?: import('../core/retrieval-telemetry.js').DeliveryStatus;
+      deliveryEvidence?: import('../core/retrieval-telemetry.js').DeliveryEvidenceSource;
+    } & RetrievalTelemetryContext
   ): Promise<void> {
     return this.retrievalOrchestrator.recordRetrieval(eventId, sessionId, score, query, options);
+  }
+
+  /**
+   * Record what actually happened to a delivery after selection (specs R3).
+   * Hooks call this once their context has really been written out.
+   */
+  async recordDeliveryOutcome(input: {
+    traceId: string;
+    status: import('../core/retrieval-telemetry.js').DeliveryStatus;
+    evidence: import('../core/retrieval-telemetry.js').DeliveryEvidenceSource;
+    deliveredAt?: Date;
+    refs?: Array<{ kind: import('../core/memory-ref.js').MemoryKind; id: string; projectId?: string | null }>;
+  }): Promise<number> {
+    return this.retrievalOrchestrator.recordDeliveryOutcome(input);
   }
 
   /**
    * Record a query-level retrieval trace (used by user-prompt-submit hook).
    * Feeds the retrieval_traces table that powers dashboard stats.
    */
-  async recordQueryTrace(input: RecordQueryTraceInput): Promise<void> {
+  async recordQueryTrace(input: RecordQueryTraceInput): Promise<string | undefined> {
     return this.retrievalOrchestrator.recordQueryTrace(input);
   }
 
@@ -700,7 +724,25 @@ export class MemoryService {
   async recordReferenceNavigation(
     input: RecordReferenceNavigationInput
   ): Promise<RecordReferenceNavigationResult> {
-    return this.retrievalAnalyticsService.recordReferenceNavigation(input);
+    return this.retrievalAnalyticsService.recordReferenceNavigation({
+      ...input,
+      targetProjectId: input.targetProjectId === undefined ? this.projectHash : input.targetProjectId
+    });
+  }
+
+  /** Per-client retrieval instrumentation coverage (specs R2). */
+  async getRetrievalClientCoverage(options: { since?: Date; until?: Date } = {}) {
+    return this.retrievalAnalyticsService.getRetrievalClientCoverage(options);
+  }
+
+  /** Typed selection totals by memory kind (specs R1). */
+  async getTypedSelectionSummary(options: { since?: Date; until?: Date; resolveLegacy?: boolean } = {}) {
+    return this.retrievalAnalyticsService.getTypedSelectionSummary(options);
+  }
+
+  /** Bounded re-evaluation of deliveries whose observation window closed (specs R3). */
+  async reevaluateBoundedUsefulness(options: { limit?: number; now?: Date } = {}) {
+    return this.retrievalAnalyticsService.reevaluateBoundedUsefulness(options);
   }
 
   /**

@@ -6,13 +6,16 @@
  */
 
 import type { RetrievalDebugLane } from '../retrieval-debug-lanes.js';
+import { emptyTypedSelectionSummary } from '../retrieval-telemetry.js';
 import type {
   RecordReferenceNavigationInput,
   RecordReferenceNavigationResult,
   RetrievalOutcomeDiagnostics,
   RetrievalPresentationMode,
   RetrievalTelemetryStats,
+  RetrievalClientCoverage,
   RetrievalTriggerType,
+  TypedSelectionSummary,
   UsefulnessAggregateV2
 } from '../retrieval-telemetry.js';
 import type { MemoryEvent } from '../types.js';
@@ -183,6 +186,14 @@ export interface RetrievalAnalyticsStore {
   getRetrievalTelemetryStats?(): Promise<RetrievalTelemetryStats>;
   getUsefulnessAggregateV2?(options?: UsefulnessAggregateV2Options): Promise<UsefulnessAggregateV2>;
   recordReferenceNavigation?(input: RecordReferenceNavigationInput): Promise<RecordReferenceNavigationResult>;
+  getRetrievalClientCoverage?(options?: { since?: Date; until?: Date }): Promise<RetrievalClientCoverage[]>;
+  getTypedSelectionSummary?(options?: { since?: Date; until?: Date; resolveLegacy?: boolean }): Promise<TypedSelectionSummary>;
+  reevaluateBoundedUsefulness?(options?: { limit?: number; now?: Date; windowMs?: number }): Promise<{
+    sessionsReevaluated: number;
+    rowsReevaluated: number;
+    windowMs: number;
+    cutoff: string;
+  }>;
 }
 
 export interface UsefulnessAggregateV2Options {
@@ -244,6 +255,36 @@ export class RetrievalAnalyticsService {
         // Best-effort backfill: one broken session should not block hook startup.
       }
     }
+
+    // Deliveries evaluated before their adoption window closed are revisited
+    // once, in a bounded pass, so a late response is not frozen as
+    // "not observed" (specs R3).
+    try {
+      await this.deps.retrievalStore.reevaluateBoundedUsefulness?.({ limit: 200 });
+    } catch {
+      // Bounded re-evaluation is supplementary telemetry.
+    }
+  }
+
+  /** Per-client instrumentation coverage; unobserved clients stay unknown. */
+  async getRetrievalClientCoverage(options: { since?: Date; until?: Date } = {}): Promise<RetrievalClientCoverage[]> {
+    await this.deps.initialize();
+    return this.deps.retrievalStore.getRetrievalClientCoverage?.(options) ?? [];
+  }
+
+  /** Typed selection totals; legacy traces are resolved read-only. */
+  async getTypedSelectionSummary(
+    options: { since?: Date; until?: Date; resolveLegacy?: boolean } = {}
+  ): Promise<TypedSelectionSummary> {
+    await this.deps.initialize();
+    return this.deps.retrievalStore.getTypedSelectionSummary?.(options) ?? emptyTypedSelectionSummary();
+  }
+
+  /** Bounded re-evaluation of deliveries whose observation window has closed. */
+  async reevaluateBoundedUsefulness(options: { limit?: number; now?: Date } = {}) {
+    await this.deps.initialize();
+    return this.deps.retrievalStore.reevaluateBoundedUsefulness?.(options)
+      ?? { sessionsReevaluated: 0, rowsReevaluated: 0, windowMs: 0, cutoff: new Date().toISOString() };
   }
 
   async getHelpfulMemories(limit: number = 10): Promise<HelpfulMemory[]> {

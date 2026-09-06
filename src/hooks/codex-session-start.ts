@@ -10,4 +10,4 @@ import { runHook } from '../adapters/claude/hooks/hook-runtime.js';
 void runHook({
   name: 'codex-session-start',
   fallbackOutput: '{"hookSpecificOutput":{"hookEventName":"SessionStart"}}'
-}, () => main({ contextPresentation: 'reference' }));
+}, () => main({ contextPresentation: 'reference', deliveryClient: 'codex-hook' }));

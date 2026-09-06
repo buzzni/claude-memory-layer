@@ -47,7 +47,8 @@ function updateRetrievalTelemetryUI() {
   const container = document.getElementById('retrieval-telemetry-summary');
   if (!container) return;
   const telemetry = state.retrievalTelemetry;
-  const usefulnessV2 = state.memoryUsefulness?.usefulnessV2;
+  const usefulnessV2 = state.memoryUsefulness?.telemetryRollout?.usefulnessV3Ui === false
+    ? null : state.memoryUsefulness?.usefulnessV2;
   if ((!telemetry || telemetry.error) && !usefulnessV2) {
     container.textContent = 'No presentation-aware telemetry yet.';
     return;
@@ -65,18 +66,100 @@ function updateRetrievalTelemetryUI() {
   const v2Rate = rate => rate && rate.value !== null && rate.value !== undefined
     ? `${(Number(rate.value) * 100).toFixed(1)}% (${formatNumber(rate.numerator)}/${formatNumber(rate.denominator)}, ${formatNumber(rate.unknown)} unknown)`
     : `n/a (${formatNumber(rate?.denominator || 0)} measured, ${formatNumber(rate?.unknown || 0)} unknown)`;
+  const counts = usefulnessV2?.deliveryStatusCounts || {};
+  // Delivery is evidence, not an assumption: `formatted` never counts as
+  // delivered, and `unknown` is shown rather than folded into a denominator.
+  const deliveryEvidence = usefulnessV2 ? `
+    <div style="margin-top:6px;">
+      <strong>Delivery evidence</strong>
+      emitted ${formatNumber(counts.emitted || 0)} ·
+      acknowledged ${formatNumber(counts.acknowledged || 0)} ·
+      formatted-only ${formatNumber(counts.formatted || 0)} ·
+      failed ${formatNumber(counts.failed || 0)} ·
+      unknown ${formatNumber(counts.unknown || 0)}
+    </div>
+    ${usefulnessV2.deliveryEvidenceBasis === 'legacy_assumed'
+      ? '<div style="margin-top:4px;opacity:0.8;">These rows come from the evaluator generation that assumed delivery (legacy_assumed).</div>'
+      : ''}
+    ${usefulnessV2.legacyAssumedDeliveryRows
+      ? `<div style="margin-top:4px;opacity:0.8;">${formatNumber(usefulnessV2.legacyAssumedDeliveryRows)} legacy rows assumed delivery (evaluator v2) and are excluded from these rates.</div>`
+      : ''}
+  ` : '';
+  const kinds = usefulnessV2?.selectedByKind || {};
+  const typedSelections = telemetry?.typedSelections;
+  const typedRow = usefulnessV2 || typedSelections ? `
+    <div style="margin-top:6px;">
+      <strong>Selected by kind</strong>
+      event ${formatNumber(kinds.event ?? typedSelections?.byKind?.event ?? 0)} ·
+      lesson ${formatNumber(kinds.lesson ?? typedSelections?.byKind?.lesson ?? 0)} ·
+      core ${formatNumber(kinds.core ?? typedSelections?.byKind?.core ?? 0)} ·
+      unknown ${formatNumber(kinds.unknown ?? typedSelections?.byKind?.unknown ?? 0)}
+      ${typedSelections ? `<span style="opacity:0.8;"> (${formatNumber(typedSelections.typedTraces || 0)} typed traces, ${formatNumber(typedSelections.legacyResolvedTraces || 0)} legacy resolved, ${formatNumber(typedSelections.ambiguous || 0)} ambiguous)</span>` : ''}
+    </div>
+  ` : '';
+  const coverageRows = (telemetry?.clientCoverage || []).map(row => `
+    <div>${escapeHtml(row.client)}: ${formatNumber(row.observedRequests)} observed ·
+      ${formatNumber(row.instrumentedRequests)} instrumented ·
+      ${row.coverageState === 'measured' ? `${(Number(row.coverage) * 100).toFixed(1)}%` : 'coverage unknown'}</div>
+  `).join('');
+  // A client whose requests were never observed reports "unknown", never 0%.
+  const coverage = coverageRows ? `
+    <div style="margin-top:6px;"><strong>Client coverage</strong>${coverageRows}</div>
+  ` : '';
   const v2Telemetry = usefulnessV2 ? `
     <div class="usefulness-v2-funnel" style="margin-top:10px;">
       <div><strong>Selection</strong> ${v2Rate(usefulnessV2.rates?.selectionYield)}</div>
       <div><strong>Delivery</strong> ${v2Rate(usefulnessV2.rates?.deliveryRate)}</div>
-      <div><strong>Evidence grounding</strong> ${v2Rate(usefulnessV2.rates?.evidenceGrounding)}</div>
+      <div><strong>Evidence grounding (${escapeHtml(usefulnessV2.evidenceGroundingScope || 'evidence/user_prompt')})</strong> ${v2Rate(usefulnessV2.rates?.evidenceGrounding)}</div>
       <div><strong>Reference navigation</strong> ${v2Rate(usefulnessV2.rates?.referenceNavigation)}</div>
       <div><strong>Task success</strong> ${v2Rate(usefulnessV2.rates?.taskSuccess)}</div>
       <div><strong>Explicit feedback</strong> ${v2Rate(usefulnessV2.rates?.explicitPositive)}</div>
-      <div style="margin-top:6px;">Evaluator ${escapeHtml(usefulnessV2.evaluatorVersion || 'v2')} · ${usefulnessV2.sampleState === 'sufficient' ? 'sufficient sample' : 'insufficient sample'} · session-start excluded</div>
+      ${deliveryEvidence}
+      ${typedRow}
+      ${coverage}
+      ${excludedTriggerSections(state.memoryUsefulness?.usefulnessAllTriggers, usefulnessV2)}
+      <div style="margin-top:6px;">Evaluator ${escapeHtml(usefulnessV2.evaluatorVersion || 'v3')} · ${usefulnessV2.sampleState === 'sufficient' ? 'sufficient sample' : 'insufficient sample'} · session-start excluded · window ${Math.round((usefulnessV2.evaluationWindowMs || 0) / 60000)}m</div>
+      <div style="margin-top:4px;opacity:0.8;">${escapeHtml(usefulnessV2.heuristics?.note || '')}</div>
     </div>
   ` : '';
   container.innerHTML = legacyTelemetry + v2Telemetry;
+}
+
+/**
+ * Populations kept out of the headline metric, each shown on its own row.
+ *
+ * The headline `Evidence grounding (prompt)` is evidence + user_prompt only
+ * (specs §3.4). session_start is a different delivery shape and explicit
+ * search / context pack are tool calls, so both are reported beside it rather
+ * than averaged in — mixing them is what produced the 9.1% figure the spec
+ * rejects in favour of 18.8%.
+ *
+ * `evidenceAllTriggers` on each aggregate covers every trigger in that
+ * aggregate's own population, so:
+ *   session_start   = allTriggers.evidenceAllTriggers - promptScoped.evidenceAllTriggers
+ *   other triggers  = promptScoped.evidenceAllTriggers - promptScoped (headline)
+ */
+function excludedTriggerSections(allTriggers, promptOnly) {
+  if (!promptOnly) return '';
+  const row = (label, grounded, evaluated) => {
+    if (evaluated === 0 && grounded === 0) return '';
+    const rate = evaluated > 0 ? `${((grounded / evaluated) * 100).toFixed(1)}%` : 'n/a';
+    return `<div style="margin-top:6px;"><strong>${label}</strong> ${rate} grounded (${formatNumber(grounded)}/${formatNumber(evaluated)})</div>`;
+  };
+  const promptScopedAll = promptOnly.evidenceAllTriggers || { evaluated: 0, grounded: 0 };
+  const everyTrigger = allTriggers?.evidenceAllTriggers || null;
+
+  const otherEvaluated = Math.max(0, (promptScopedAll.evaluated || 0) - (promptOnly.evidenceEvaluated || 0));
+  const otherGrounded = Math.max(0, (promptScopedAll.grounded || 0) - (promptOnly.evidenceGrounded || 0));
+  const sessionStartEvaluated = everyTrigger
+    ? Math.max(0, (everyTrigger.evaluated || 0) - (promptScopedAll.evaluated || 0))
+    : 0;
+  const sessionStartGrounded = everyTrigger
+    ? Math.max(0, (everyTrigger.grounded || 0) - (promptScopedAll.grounded || 0))
+    : 0;
+
+  return row('session_start (separate)', sessionStartGrounded, sessionStartEvaluated)
+    + row('other triggers (search / context pack)', otherGrounded, otherEvaluated);
 }
 
 function applyUsefulnessWindowResponse(memoryUsefulness) {

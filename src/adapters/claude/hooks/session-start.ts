@@ -14,7 +14,11 @@ import {
   type CanonicalMemoryInjection
 } from '../../../core/operations/canonical-memory-injection-service.js';
 import { readStdin } from './hook-runtime.js';
-import { formatClaudeContextHookOutput, isHookEvaluationMode } from './hook-output.js';
+import {
+  formatClaudeContextHookOutput,
+  isHookEvaluationMode,
+  registerHookDeliveryReporter
+} from './hook-output.js';
 import { isPromptOnlySessionSummary } from './prompt-injection-policy.js';
 import {
   formatMemoryReferenceContext,
@@ -256,6 +260,11 @@ export function formatLessonIndexContext(
 
 export interface SessionStartMainOptions {
   contextPresentation?: 'evidence' | 'reference';
+  /**
+   * Client label for this hook's telemetry. Codex reuses this hook body, so an
+   * explicit label keeps per-client coverage attributable (specs R2).
+   */
+  deliveryClient?: string;
 }
 
 export function registerSessionBestEffort(
@@ -307,6 +316,11 @@ export async function main(options: SessionStartMainOptions = {}): Promise<strin
   // SessionStart already carries the authoritative cwd. Resolve from it
   // directly so a missing/stale auxiliary registry can never route this hook
   // into another project's store.
+  const deliveryClient = options.deliveryClient ?? 'claude-hook';
+  // A session may emit SessionStart more than once (resume/compact). Keep all
+  // three lanes for one invocation related without collapsing a later start
+  // onto the earlier invocation's trace.
+  const requestPrefix = `${deliveryClient}:session-start:${input.session_id}:${randomUUID()}`;
   const memoryService = getLightweightMemoryServiceForProject(input.cwd);
 
   try {
@@ -335,6 +349,10 @@ export async function main(options: SessionStartMainOptions = {}): Promise<strin
       }
     }
 
+    // Traces whose context this hook formatted. Delivery is confirmed only
+    // once the envelope is actually written to stdout (specs R3).
+    const deliveredTraceIds: string[] = [];
+
     // Core memory blocks remain a no-query/no-scoring lane and come before
     // incidental recent events. Once asset enforcement is enabled, the
     // service filters this lane through the active actor binding.
@@ -349,17 +367,38 @@ export async function main(options: SessionStartMainOptions = {}): Promise<strin
           .filter((item) => ('value' in item ? item.value : item).content.trim().length > 0)
           .map((item) => `core:${('value' in item ? item.value : item).blockKey}`);
         if (!isHookEvaluationMode() && deliveredCoreBlockIds.length > 0) {
+          const coreTraceId = randomUUID();
           await memoryService.recordQueryTrace({
+            traceId: coreTraceId,
             sessionId: input.session_id,
             queryText: '[session-start] core memory',
             strategy: 'core-memory',
             candidateEventIds: deliveredCoreBlockIds,
             selectedEventIds: deliveredCoreBlockIds,
+            // Core blocks are not events; typing them keeps them out of
+            // event-joined metrics as unresolved ids (specs R1).
+            items: deliveredCoreBlockIds.map((id, index) => ({
+              kind: 'core' as const,
+              id,
+              rank: index,
+              selected: true
+            })),
             confidence: 'core',
             presentationMode: 'core',
             triggerType: 'session_start',
-            deliveryClient: 'claude-hook'
+            deliveryClient,
+            requestId: `${requestPrefix}:core`,
+            runtimeVersion: process.env.CLAUDE_MEMORY_LAYER_VERSION,
+            outcomeDiagnostics: {
+              outcomeReason: 'selected',
+              laneCandidateCounts: {},
+              filteredCounts: {},
+              topScore: null,
+              threshold: 0,
+              freshnessState: 'unknown'
+            }
           });
+          deliveredTraceIds.push(coreTraceId);
         }
       } catch {
         // Core memory injection is supplementary; never fail session start over it.
@@ -394,11 +433,30 @@ export async function main(options: SessionStartMainOptions = {}): Promise<strin
               strategy: 'session-start-lessons',
               candidateEventIds: lessons.map((lesson) => lesson.lessonId),
               selectedEventIds: shownIds,
+              // Lessons are lessons, not events: this is exactly the mix that
+              // made 465 selections look like dangling event ids (specs R1).
+              items: lessons.map((lesson, index) => ({
+                kind: 'lesson' as const,
+                id: lesson.lessonId,
+                rank: index,
+                selected: shownIds.includes(lesson.lessonId)
+              })),
               confidence: 'session-start',
               presentationMode: 'reference',
               triggerType: 'session_start',
-              deliveryClient: 'claude-hook'
+              deliveryClient,
+              requestId: `${requestPrefix}:lessons`,
+              runtimeVersion: process.env.CLAUDE_MEMORY_LAYER_VERSION,
+              outcomeDiagnostics: {
+                outcomeReason: shownIds.length > 0 ? 'selected' : 'unknown',
+                laneCandidateCounts: {},
+                filteredCounts: {},
+                topScore: null,
+                threshold: 0,
+                freshnessState: 'unknown'
+              }
             }).catch(() => undefined);
+            deliveredTraceIds.push(lessonTraceId);
             for (const lesson of lessons) {
               if (!shownIds.includes(lesson.lessonId)) continue;
               await memoryService.recordRetrieval(
@@ -409,9 +467,12 @@ export async function main(options: SessionStartMainOptions = {}): Promise<strin
                 {
                   traceId: lessonTraceId,
                   source: 'session_start',
+                  memoryKind: 'lesson',
+                  deliveryStatus: 'formatted',
+                  deliveryEvidence: 'context_formatted',
                   presentationMode: 'reference',
                   triggerType: 'session_start',
-                  deliveryClient: 'claude-hook',
+                  deliveryClient,
                   injectedContent: `${lesson.name} — ${lesson.trigger}`
                 }
               ).catch(() => undefined);
@@ -477,11 +538,28 @@ export async function main(options: SessionStartMainOptions = {}): Promise<strin
             strategy: 'session-start-hook',
             candidateEventIds: injectedEvents.map((event) => event.id),
             selectedEventIds: injectedEvents.map((event) => event.id),
+            items: injectedEvents.map((event, index) => ({
+              kind: 'event' as const,
+              id: event.id,
+              rank: index,
+              selected: true
+            })),
             confidence: 'session-start',
             presentationMode,
             triggerType: 'session_start',
-            deliveryClient: 'claude-hook'
+            deliveryClient,
+            requestId: `${requestPrefix}:recent`,
+            runtimeVersion: process.env.CLAUDE_MEMORY_LAYER_VERSION,
+            outcomeDiagnostics: {
+              outcomeReason: 'selected',
+              laneCandidateCounts: {},
+              filteredCounts: {},
+              topScore: null,
+              threshold: 0,
+              freshnessState: 'unknown'
+            }
           });
+          deliveredTraceIds.push(batchTraceId);
         } catch { /* non-critical telemetry */ }
       }
       for (const event of injectedEvents) {
@@ -494,9 +572,12 @@ export async function main(options: SessionStartMainOptions = {}): Promise<strin
             {
               traceId: batchTraceId,
               source: 'session_start',
+              memoryKind: 'event',
+              deliveryStatus: 'formatted',
+              deliveryEvidence: 'context_formatted',
               presentationMode,
               triggerType: 'session_start',
-              deliveryClient: 'claude-hook',
+              deliveryClient,
               // Grounding is measured against the exact text injected above,
               // not the full event.
               injectedContent: excerpts.get(event.id) ?? sessionStartExcerpt(event)
@@ -504,6 +585,28 @@ export async function main(options: SessionStartMainOptions = {}): Promise<strin
           );
         } catch { /* non-critical telemetry */ }
       }
+    }
+
+    if (!isHookEvaluationMode() && context && deliveredTraceIds.length > 0) {
+      const traceIds = [...deliveredTraceIds];
+      const projectPath = input.cwd;
+      registerHookDeliveryReporter(async (outcome) => {
+        // This runs after the envelope is written, by which point the `finally`
+        // below has already closed the hook's service, so open a short-lived
+        // one for the delivery record.
+        const deliveryService = getLightweightMemoryServiceForProject(projectPath);
+        try {
+          for (const traceId of traceIds) {
+            await deliveryService.recordDeliveryOutcome({
+              traceId,
+              status: outcome.status,
+              evidence: outcome.status === 'emitted' ? 'hook_stdout' : 'write_error'
+            }).catch(() => undefined);
+          }
+        } finally {
+          await deliveryService.close().catch(() => undefined);
+        }
+      });
     }
 
     const output: SessionStartOutput = JSON.parse(formatClaudeContextHookOutput('SessionStart', context));

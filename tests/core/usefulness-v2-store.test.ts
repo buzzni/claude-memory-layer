@@ -64,12 +64,20 @@ describe('usefulness v2 persistence and aggregation', () => {
       content: 'Production deploys use port 37777 and scripts/release-npm.sh.'
     });
     if (!memory.success) throw new Error('fixture append failed');
-    const retrievalTime = Date.now();
+    const retrievalTime = Date.now() - 180_000;
     await store.recordRetrieval(memory.eventId, 'session-v2', 0.9, 'how do I deploy?', {
       traceId: 'trace-v2',
       injectedContent: 'Production deploys use port 37777 and scripts/release-npm.sh.',
       presentationMode: 'evidence',
       triggerType: 'user_prompt'
+    });
+    // Adoption requires observed delivery: without it the overlap below could
+    // not be attributed to this memory at all (specs R3).
+    await store.recordDeliveryOutcome({
+      traceId: 'trace-v2',
+      status: 'emitted',
+      evidence: 'hook_stdout',
+      deliveredAt: new Date(retrievalTime)
     });
     await store.append({
       eventType: 'agent_response',
@@ -181,7 +189,7 @@ describe('usefulness v2 persistence and aggregation', () => {
       evaluatorVersion: 'v2'
     });
 
-    const aggregate = await store.getUsefulnessAggregateV2({ minimumSample: 2 });
+    const aggregate = await store.getUsefulnessAggregateV2({ minimumSample: 2, evaluatorVersion: 'v2' });
     expect(aggregate).toMatchObject({ eligible: 4, selected: 1, sampleState: 'insufficient_sample' });
     expect(aggregate.rates.selectionYield).toEqual({ numerator: 1, denominator: 4, unknown: 0, value: 0.25 });
     expect(aggregate.rates.deliveryRate).toEqual({ numerator: 1, denominator: 1, unknown: 0, value: 1 });
@@ -198,7 +206,7 @@ describe('usefulness v2 persistence and aggregation', () => {
       content: 'The service uses port 37777.'
     });
     if (!memory.success) throw new Error('fixture append failed');
-    const retrievalTime = Date.now();
+    const retrievalTime = Date.now() - 180_000;
     await store.recordRetrieval(memory.eventId, 'session-window', 0.8, 'which port?', {
       traceId: 'trace-window',
       injectedContent: 'The service uses port 37777.',
@@ -265,12 +273,14 @@ describe('usefulness v2 persistence and aggregation', () => {
     const retrievalWindow = await store.getUsefulnessAggregateV2({
       since: new Date('2026-01-01T00:00:00.000Z'),
       until: new Date('2026-02-01T00:00:00.000Z'),
-      minimumSample: 1
+      minimumSample: 1,
+      evaluatorVersion: 'v2'
     });
     const evaluationOnlyWindow = await store.getUsefulnessAggregateV2({
       since: new Date('2027-01-01T00:00:00.000Z'),
       until: new Date('2027-02-01T00:00:00.000Z'),
-      minimumSample: 1
+      minimumSample: 1,
+      evaluatorVersion: 'v2'
     });
     expect(retrievalWindow).toMatchObject({ eligible: 1, selected: 1, evidenceGrounded: 1, sampleState: 'sufficient' });
     expect(evaluationOnlyWindow).toMatchObject({ eligible: 0, selected: 0, evidenceGrounded: 0, sampleState: 'insufficient_sample' });
@@ -305,7 +315,7 @@ describe('usefulness v2 persistence and aggregation', () => {
       adoption: 'unknown'
     });
 
-    const aggregate = await store.getUsefulnessAggregateV2({ minimumSample: 1 });
+    const aggregate = await store.getUsefulnessAggregateV2({ minimumSample: 1, evaluatorVersion: 'v2' });
     expect(aggregate.referencesEligible).toBe(2);
     expect(aggregate.rates.referenceNavigation).toEqual({
       numerator: 1,
@@ -352,7 +362,7 @@ describe('usefulness v2 persistence and aggregation', () => {
 
     const db = store.getDatabase();
     expect(Number(sqliteGet<{ count: number }>(db, 'SELECT COUNT(*) AS count FROM memory_usefulness_observations_v2')?.count)).toBe(3);
-    const aggregate = await store.getUsefulnessAggregateV2({ minimumSample: 1 });
+    const aggregate = await store.getUsefulnessAggregateV2({ minimumSample: 1, evaluatorVersion: 'v2' });
     expect(aggregate).toMatchObject({
       eligible: 1,
       referencesEligible: 1,
@@ -365,7 +375,7 @@ describe('usefulness v2 persistence and aggregation', () => {
       excludesSessionStart: true
     });
     expect(aggregate.rates.explicitPositive).toEqual({ numerator: 1, denominator: 1, unknown: 0, value: 1 });
-    const withCore = await store.getUsefulnessAggregateV2({ minimumSample: 1, includeSessionStart: true });
+    const withCore = await store.getUsefulnessAggregateV2({ minimumSample: 1, includeSessionStart: true, evaluatorVersion: 'v2' });
     expect(withCore.eligible).toBe(2);
     expect(withCore.unknownByDimension.adoption).toBe(1);
     await store.close();

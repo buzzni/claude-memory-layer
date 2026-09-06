@@ -117,6 +117,17 @@ import {
   formatPruneToolObservationVectorsResult,
   resolvePruneToolObservationVectorsOptions
 } from './prune-tool-observation-vectors-command.js';
+import {
+  formatBackfillTraceItemsResult,
+  resolveBackfillTraceItemsOptions
+} from './backfill-trace-items-command.js';
+import { summarizeTypedSelections } from '../../core/retrieval-trace-ledger.js';
+import {
+  buildMemoryAuditReport,
+  formatMemoryAuditMarkdown,
+  resolveMemoryAuditOptions
+} from './memory-audit-report.js';
+import { emptyTypedSelectionSummary } from '../../core/retrieval-telemetry.js';
 import { pruneToolObservationVectors } from '../../core/operations/tool-observation-vector-backfill.js';
 import {
   formatAutoHealToolObservationVectorsResult,
@@ -1751,6 +1762,52 @@ repairCommand
   });
 
 repairCommand
+  .command('backfill-trace-items')
+  .description('Backfill typed retrieval trace items (event/lesson/rule/core) for legacy traces (dry-run by default)')
+  .option('-p, --project <path>', 'Project path (defaults to cwd)')
+  .option('--apply', 'Write the typed items (default is a dry-run preview)')
+  .option('--limit <count>', 'Maximum traces to process (default 1000)')
+  .option('--since <iso>', 'Only traces created at or after this ISO timestamp')
+  .action(async (options) => {
+    try {
+      const backfillOptions = resolveBackfillTraceItemsOptions(options);
+      const storagePath = getProjectStoragePath(backfillOptions.projectPath);
+      const dbPath = path.join(storagePath, 'events.sqlite');
+
+      if (!fs.existsSync(dbPath)) {
+        console.log(formatBackfillTraceItemsResult({
+          dryRun: backfillOptions.dryRun,
+          scannedTraces: 0,
+          tracesWithItems: 0,
+          writtenItems: 0,
+          byKind: { event: 0, lesson: 0, rule: 0, core: 0, unknown: 0 },
+          unresolved: 0,
+          ambiguous: 0
+        }));
+        return;
+      }
+
+      // A dry run opens the store read-only, so previewing the backfill cannot
+      // modify anything (specs R1).
+      const store = new SQLiteEventStore(dbPath, { readonly: backfillOptions.dryRun });
+      try {
+        const result = await store.backfillRetrievalTraceItems({
+          dryRun: backfillOptions.dryRun,
+          limit: backfillOptions.limit,
+          since: backfillOptions.since
+        });
+        console.log(formatBackfillTraceItemsResult(result));
+      } finally {
+        await store.close().catch(() => undefined);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Backfill trace items failed: ${message}`);
+      process.exit(1);
+    }
+  });
+
+repairCommand
   .command('redact-credentials')
   .description('Redact credentials already stored in SQLite, the markdown mirror and vectors (dry-run by default)')
   .option('-p, --project <path>', 'Project path (defaults to cwd)')
@@ -2248,6 +2305,145 @@ lessonCommand
 /**
  * Retention command - dry-run lifecycle audits for project-scoped memory
  */
+program
+  .command('audit')
+  .description('Read-only per-project memory audit (schema, aliases, denominators, coverage)')
+  .option('--classify <assignments...>', 'Explicit HASH=production|test|unknown labels; default unknown')
+  .option('--since <iso>', 'Window start (inclusive, ISO timestamp)')
+  .option('--until <iso>', 'Window end (exclusive, ISO timestamp)')
+  .option('--all-projects', 'Audit every store under the memory root (default: this project only)')
+  .option('--read-only', 'Documents the contract; this command has no writing mode', true)
+  .option('--format <format>', 'json | markdown (default markdown)')
+  .option('-p, --project <path>', 'Project path when not using --all-projects (defaults to cwd)')
+  .action((options) => {
+    try {
+      const resolved = resolveMemoryAuditOptions(options);
+      const report = buildMemoryAuditReport({
+        since: resolved.since,
+        until: resolved.until,
+        allProjects: resolved.allProjects,
+        projectPath: resolved.projectPath,
+        projectClasses: resolved.projectClasses
+      });
+      console.log(resolved.format === 'json'
+        ? JSON.stringify(report, null, 2)
+        : formatMemoryAuditMarkdown(report));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Memory audit failed: ${message}`);
+      process.exit(1);
+    }
+  });
+
+const retrievalCommand = program
+  .command('retrieval')
+  .description('Read-only retrieval ledger reports (no migration, no writes)');
+
+retrievalCommand
+  .command('selections')
+  .description('Typed selection totals by memory kind; legacy traces are resolved read-only')
+  .option('-p, --project <path>', 'Project path (defaults to cwd)')
+  .option('--since <iso>', 'Window start (inclusive, ISO timestamp)')
+  .option('--until <iso>', 'Window end (exclusive, ISO timestamp)')
+  .option('--json', 'Print machine-readable JSON')
+  .action((options) => {
+    try {
+      const projectPath: string = options.project ?? process.cwd();
+      const parseBoundary = (value: string | undefined, flag: string): Date | undefined => {
+        if (value === undefined) return undefined;
+        const parsed = new Date(value);
+        if (Number.isNaN(parsed.getTime())) throw new Error(`${flag} must be an ISO timestamp`);
+        return parsed;
+      };
+      const since = parseBoundary(options.since, '--since');
+      const until = parseBoundary(options.until, '--until');
+      const storagePath = getProjectStoragePath(projectPath);
+      const dbPath = path.join(storagePath, 'events.sqlite');
+
+      const summary = fs.existsSync(dbPath)
+        ? (() => {
+          // Read-only snapshot: reporting must never create, migrate or write
+          // to a user's store (specs R1/R5).
+          const db = createSQLiteDatabase(dbPath, {
+            readonly: true,
+            snapshot: true,
+            canonicalMemoryRoot: path.dirname(path.dirname(storagePath)),
+            walMode: false
+          });
+          try {
+            return summarizeTypedSelections(db, { since, until });
+          } finally {
+            sqliteClose(db);
+          }
+        })()
+        : emptyTypedSelectionSummary();
+
+      if (options.json) {
+        console.log(JSON.stringify({ projectPath, since: since?.toISOString() ?? null, until: until?.toISOString() ?? null, summary }, null, 2));
+        return;
+      }
+      console.log('Typed retrieval selections');
+      console.log(`Window: ${since?.toISOString() ?? 'all'} .. ${until?.toISOString() ?? 'now'}`);
+      for (const [kind, count] of Object.entries(summary.byKind)) {
+        console.log(`  ${kind}: ${count}`);
+      }
+      console.log(`Total: ${summary.total}`);
+      console.log(`Unresolved: ${summary.unresolved} · Ambiguous: ${summary.ambiguous}`);
+      console.log(`Traces: ${summary.typedTraces} typed · ${summary.legacyResolvedTraces} legacy resolved read-only`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Retrieval selections report failed: ${message}`);
+      process.exit(1);
+    }
+  });
+
+retrievalCommand
+  .command('reevaluate')
+  .description('Bounded re-evaluation of deliveries whose adoption window has closed (dry-run by default)')
+  .option('-p, --project <path>', 'Project path (defaults to cwd)')
+  .option('--limit <count>', 'Maximum helpfulness rows to revisit (default 200)')
+  .option('--apply', 'Write the re-evaluated observations (default reports the pending count only)')
+  .action(async (options) => {
+    try {
+      const projectPath: string = options.project ?? process.cwd();
+      const limit = options.limit === undefined ? 200 : Number.parseInt(options.limit, 10);
+      if (!Number.isFinite(limit) || limit < 1) {
+        throw new Error('retrieval reevaluate --limit must be a positive integer');
+      }
+      const dbPath = path.join(getProjectStoragePath(projectPath), 'events.sqlite');
+      if (!fs.existsSync(dbPath)) {
+        console.log('No store for this project; nothing to re-evaluate.');
+        return;
+      }
+      const apply = options.apply === true;
+      // A bounded, explicitly invoked job — the counterpart to the pass that
+      // rides along with the conversation hook. The dry run opens the store
+      // read-only so previewing cannot write (specs R3).
+      const store = new SQLiteEventStore(dbPath, { readonly: !apply });
+      try {
+        if (!apply) {
+          const pending = await store.countPendingBoundedUsefulness();
+          console.log('Bounded usefulness re-evaluation (dry-run)');
+          console.log(`Cutoff: ${pending.cutoff}`);
+          console.log(`Pending rows: ${pending.pendingRows}`);
+          console.log('Re-run with --apply to revisit them.');
+          return;
+        }
+        const result = await store.reevaluateBoundedUsefulness({ limit });
+        console.log('Bounded usefulness re-evaluation');
+        console.log(`Cutoff: ${result.cutoff}`);
+        console.log(`Window: ${result.windowMs}ms`);
+        console.log(`Sessions: ${result.sessionsReevaluated} · Rows: ${result.rowsReevaluated}`);
+      } finally {
+        await store.close().catch(() => undefined);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Retrieval reevaluate failed: ${message}`);
+      process.exit(1);
+    }
+  });
+
 const retentionCommand = program
   .command('retention')
   .description('Audit retention/governance lifecycle state without mutating memory data');

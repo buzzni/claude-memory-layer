@@ -8,7 +8,11 @@
  * can focus on its logic and simply return the JSON string to emit.
  */
 
+import { reportHookDelivery } from './hook-output.js';
+
 const DEFAULT_STDIN_TIMEOUT_MS = 10_000;
+/** Ceiling on the delivery record written before a forced exit. */
+const DELIVERY_REPORT_GRACE_MS = 1_000;
 const DEFAULT_OVERALL_TIMEOUT_MS = 30_000;
 
 /**
@@ -74,9 +78,16 @@ export function readStdin(options: { timeoutMs?: number } = {}): Promise<string>
   });
 }
 
-/** Write exactly one newline-terminated JSON envelope to stdout. */
+/**
+ * Write exactly one newline-terminated JSON envelope to stdout, then report the
+ * observed write result so injected memories can be marked emitted or failed
+ * rather than assumed delivered (specs R3).
+ */
 function emitHookOutput(json: string): void {
-  process.stdout.write(json.endsWith('\n') ? json : `${json}\n`);
+  const payload = json.endsWith('\n') ? json : `${json}\n`;
+  process.stdout.write(payload, (error) => {
+    void reportHookDelivery(error ? { status: 'failed', error } : { status: 'emitted' });
+  });
 }
 
 export interface RunHookOptions {
@@ -114,10 +125,27 @@ export async function runHook(options: RunHookOptions, run: () => Promise<string
     emitHookOutput(json);
   };
 
+  // The fallback envelope carries no injected context, so anything the hook
+  // body had selected was never delivered. Report that before emitting, which
+  // also clears the reporter so the write callback cannot then claim `emitted`.
+  const reportUndelivered = (error: unknown) => reportHookDelivery({ status: 'failed', error });
+
   const watchdog = setTimeout(() => {
     if (debug) console.error(`[${options.name}] hook timed out after ${timeoutMs}ms; forcing exit`);
-    emit(options.fallbackOutput);
-    process.exit(0);
+    // The `failed` record is awaited before the forced exit, bounded by its own
+    // short timeout: a hook that times out with memories selected must not
+    // leave them looking delivered, and must not hang here either (specs R3).
+    const timedOut = new Error(`hook timed out after ${timeoutMs}ms`);
+    void Promise.race([
+      reportUndelivered(timedOut),
+      new Promise<void>((resolve) => {
+        const guard = setTimeout(resolve, DELIVERY_REPORT_GRACE_MS);
+        guard.unref?.();
+      })
+    ]).finally(() => {
+      emit(options.fallbackOutput);
+      process.exit(0);
+    });
   }, timeoutMs);
   watchdog.unref?.();
 
@@ -125,6 +153,7 @@ export async function runHook(options: RunHookOptions, run: () => Promise<string
     emit(await run());
   } catch (error) {
     if (debug) console.error(`[${options.name}] hook error:`, error);
+    await reportUndelivered(error);
     emit(options.fallbackOutput);
   }
   // Intentionally no forced exit here: allow best-effort background work
