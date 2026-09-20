@@ -3136,7 +3136,13 @@ function appendRelevantMemories(
   }
 }
 
-function appendCuratedLessons(lines: string[], lessons: CanonicalMemoryInjection<MemoryLesson>[]): void {
+/**
+ * specs/lesson-learning-reliability R4 — a delivered lesson id must resolve
+ * through mem-lesson-get. Pointing at mem-lesson-list made the model page the
+ * catalog (or reach for the event paths mem-details/mem-source-ref) with an id
+ * those tools cannot resolve.
+ */
+export function appendCuratedLessons(lines: string[], lessons: CanonicalMemoryInjection<MemoryLesson>[]): void {
   if (lessons.length === 0) return;
   lines.push('### Curated Lessons', '');
   for (const { value: lesson, injectionMode } of lessons.slice(0, 3)) {
