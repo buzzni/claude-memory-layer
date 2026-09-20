@@ -2825,9 +2825,9 @@ async function loadCuratedLessons(
     const repository = new LessonRepository(db);
     const selector = new CanonicalMemoryInjectionService(db);
     const pageSize = 500;
-    let selected: CanonicalMemoryInjection<MemoryLesson>[] = [];
-    // The repository limit is a page size, not the eligible catalog boundary.
-    // Use the same read snapshot for every page and retain only the best three.
+    const candidates: CanonicalMemoryInjection<MemoryLesson>[] = [];
+    // Semantic top-1 margins require the entire eligible snapshot: discarding
+    // an ambiguous earlier page would make a weaker later candidate look safe.
     for (let offset = 0; ; offset += pageSize) {
       const lessons = await repository.list({ projectHash, limit: pageSize, offset });
       const items = selector.select({
@@ -2838,15 +2838,14 @@ async function loadCuratedLessons(
           .filter((lesson) => lesson.sourceClass === 'curated')
           .map((lesson) => ({ canonicalType: 'lesson', canonicalId: lesson.lessonId, value: lesson }))
       }).items;
-      const candidates = [...selected, ...items];
-      selected = (await rankCuratedLessonsHybrid(candidates.map((item) => item.value), query, 3))
-        .flatMap((lesson) => {
-          const item = candidates.find((candidate) => candidate.value.lessonId === lesson.lessonId);
-          return item ? [item] : [];
-        });
-      if (lessons.length < pageSize || (!query?.trim() && selected.length === 3)) break;
+      candidates.push(...items);
+      if (lessons.length < pageSize || (!query?.trim() && candidates.length >= 3)) break;
     }
-    return selected;
+    return (await rankCuratedLessonsHybrid(candidates.map((item) => item.value), query, 3))
+      .flatMap((lesson) => {
+        const item = candidates.find((candidate) => candidate.value.lessonId === lesson.lessonId);
+        return item ? [item] : [];
+      });
   } catch {
     return [];
   } finally {
@@ -3161,7 +3160,13 @@ export function appendCuratedLessons(lines: string[], lessons: CanonicalMemoryIn
       continue;
     }
     lines.push(`  - Apply when: ${sanitizeOperationString(lesson.trigger, 240)}`);
+    if (lesson.scope) lines.push(`  - Scope: ${sanitizeOperationString(lesson.scope, 240)}`);
+    for (const value of lesson.validation ?? []) lines.push(`  - Validate: ${sanitizeOperationString(value, 300)}`);
+    for (const value of lesson.failureModes) lines.push(`  - Caution: ${sanitizeOperationString(value, 300)}`);
+    if (lesson.reconsiderWhen) lines.push(`  - Reconsider: ${sanitizeOperationString(lesson.reconsiderWhen, 240)}`);
+    if (lesson.validVersions?.length) lines.push(`  - Versions: ${sanitizeOperationString(lesson.validVersions.join(', '), 240)}`);
     const stepLimit = injectionMode === 'summary' ? 2 : 5;
+    if (injectionMode === 'summary' || lesson.steps.length > stepLimit) lines.push('  - Partial lesson: retrieve the full body with mem-lesson-get before applying.');
     for (const step of lesson.steps.slice(0, stepLimit)) {
       lines.push(`  - ${sanitizeOperationString(step, 300)}`);
     }

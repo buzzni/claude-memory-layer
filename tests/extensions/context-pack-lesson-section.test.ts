@@ -20,6 +20,24 @@ function injection(mode: 'direct' | 'summary' | 'reference'): CanonicalMemoryInj
 }
 
 describe('context pack curated lesson section', () => {
+  it.each(['direct', 'summary'] as const)('keeps applicability and counterexamples in %s output', mode => {
+    const item = injection(mode);
+    Object.assign(item.value, { scope: 'Development only', validation: ['Verify the owner first'], reconsiderWhen: 'Ownership changed', failureModes: ['Never stop a production listener'], steps: ['First', 'Second', 'Third'] });
+    const lines: string[] = [];
+    appendCuratedLessons(lines, [item]);
+    const text = lines.join('\n');
+    for (const value of ['Development only', 'Verify the owner first', 'Ownership changed', 'Never stop a production listener']) expect(text).toContain(value);
+    if (mode === 'summary') expect(text).toContain('Partial');
+  });
+
+  it('marks a six-step direct lesson as partial when only five steps fit', () => {
+    const item = injection('direct');
+    item.value.steps = ['One', 'Two', 'Three', 'Four', 'Five', 'Required final check'];
+    const lines: string[] = [];
+    appendCuratedLessons(lines, [item]);
+    expect(lines.join('\n')).toContain('Partial lesson');
+  });
+
   it('본문 조회는 그 lessonId 로 mem-lesson-get 을 쓰라고 안내한다', () => {
     const lines: string[] = [];
     appendCuratedLessons(lines, [injection('direct')]);

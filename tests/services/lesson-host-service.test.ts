@@ -72,6 +72,21 @@ afterEach(() => {
 });
 
 describe('authenticated lesson host service', () => {
+  it('does not replay an obsolete lesson body after its revision changes', async () => {
+    const { store, service, cleanup } = fixture();
+    await store.initialize();
+    try {
+      const repo = new LessonRepository(store.getDatabase());
+      const input = { projectHash: 'project-a', name: 'Revision safe runbook', trigger: 'When checking revisions', steps: ['Old procedure'], confidence: 1, actor: 'test', sourceClass: 'curated', sourceEventIds: ['fixture-evidence'] };
+      const lesson = await repo.upsert(input);
+      const request = { version: 1, requestId: 'get-retry-revision', binding: 'reader', lessonId: lesson.lessonId };
+      expect(await service.get(request)).toMatchObject({ outcome: 'found', lesson: { steps: ['Old procedure'] } });
+      await repo.upsert({ ...input, steps: ['Corrected procedure'] });
+      expect(await service.get(request)).toEqual({ outcome: 'not_found' });
+      expect(await service.get({ ...request, requestId: 'get-current-revision' })).toMatchObject({ outcome: 'found', lesson: { steps: ['Corrected procedure'] } });
+    } finally { await cleanup(); }
+  });
+
   it('appends verified normal-end evidence through canonical ingestion and returns its persisted event id', async () => {
     const { store, service, cleanup } = fixture();
     await store.initialize();

@@ -171,10 +171,17 @@ function evidenceAnchorPriority(term: string): number {
   return Math.min(1, term.length / 20);
 }
 
+function memoryEvidencePreview(memory: { type: string; content: string }, query: string): string {
+  const preview = selectEvidencePreview(memory.content, query);
+  return memory.type === 'lesson' && preview !== memory.content
+    ? `[Partial lesson; retrieve the full body with mem-lesson-get before applying] ${preview}`
+    : preview;
+}
+
 export function formatMemoryContext(items: Array<{ type: string; content: string; id?: string; memoryLevel?: string }>, query: string): string {
   if (items.length === 0) return '';
   const lines = items.map((m) => {
-    const preview = selectEvidencePreview(m.content, query);
+    const preview = memoryEvidencePreview(m, query);
     const sourceRef = m.id ? ` [${m.type === 'lesson' ? 'lesson' : 'event'}:${m.id}]` : '';
     const level = m.memoryLevel && m.memoryLevel !== 'L0' ? ` ${m.memoryLevel}` : '';
     return `- [${m.type}${level}] ${preview}${sourceRef}`;
@@ -561,6 +568,10 @@ export async function main(options: UserPromptSubmitMainOptions = {}): Promise<s
             trigger: injectedLesson.trigger ? String(injectedLesson.trigger) : undefined,
             steps: Array.isArray(injectedLesson.steps) ? injectedLesson.steps.map(String) : [],
             failureModes: Array.isArray(injectedLesson.failureModes) ? injectedLesson.failureModes.map(String) : [],
+            scope: injectedLesson.scope,
+            validation: injectedLesson.validation,
+            reconsiderWhen: injectedLesson.reconsiderWhen,
+            validVersions: injectedLesson.validVersions,
             confidence: Number(injectedLesson.confidence ?? 0)
           });
           if (candidate) mergedMemories.push(candidate);
@@ -713,7 +724,7 @@ export async function main(options: UserPromptSubmitMainOptions = {}): Promise<s
                 deliveryClient: 'claude-hook',
                 injectedContent: options.contextPresentation === 'reference'
                   ? memoryReferenceSummary(m.content, retrievalQuery)
-                  : selectEvidencePreview(m.content, retrievalQuery)
+                  : memoryEvidencePreview(m, retrievalQuery)
               }
             );
           } catch { /* non-critical */ }
@@ -803,13 +814,13 @@ export function lessonForInjection(
 ) {
   if (injectionMode === 'direct') return lesson;
   if (injectionMode === 'summary') {
-    const conditions = [lesson.scope && `scope: ${lesson.scope}`, ...(lesson.validation ?? []).map((value) => `validation: ${value}`), lesson.reconsiderWhen && `reconsider: ${lesson.reconsiderWhen}`, lesson.validVersions?.length && `versions: ${lesson.validVersions.join(', ')}`].filter(Boolean) as string[];
-    return { ...lesson, steps: [...lesson.steps.slice(0, 2), `[partial lesson; retrieve full body with mem-lesson-get lessonId=${lesson.lessonId} revision=${lesson.revision ?? 1}]`], failureModes: [...lesson.failureModes, ...conditions] };
+    return { ...lesson, steps: [...lesson.steps.slice(0, 2), `[partial lesson; retrieve full body with mem-lesson-get lessonId=${lesson.lessonId} revision=${lesson.revision ?? 1}]`], failureModes: lesson.failureModes };
   }
   return {
     ...lesson,
     name: `[lesson:${lesson.lessonId}] ${lesson.name}`,
     trigger: '',
+    scope: undefined, validation: [], reconsiderWhen: undefined, validVersions: [],
     steps: [`[reference only; retrieve with mem-lesson-get lessonId=${lesson.lessonId} revision=${lesson.revision ?? 1}]`],
     failureModes: []
   };

@@ -167,7 +167,7 @@ export class LessonHostService {
     const lesson = new LessonRepository(this.options.db).get(request.lessonId);
     if (!lesson || lesson.projectHash !== binding.projectHash || !this.canReadLesson(binding, lesson.lessonId)) return { outcome: 'not_found' as const };
     const response = { outcome: 'found' as const, lesson: lessonBody(lesson) };
-    const fingerprint = requestFingerprint(request); return this.options.db.transaction(() => { const replay = this.idempotent(request.requestId, binding, 'get', fingerprint); if (replay) return replay; this.writeTrace({ traceId: randomUUID(), requestId: request.requestId, binding, phase: 'read', outcome: 'read', lessons: [lesson] }); this.remember(request.requestId, binding, 'get', fingerprint, response); return response; })();
+    const fingerprint = requestFingerprint(request); return this.options.db.transaction(() => { const replay = this.idempotent(request.requestId, binding, 'get', fingerprint); if (replay) { const cached = replay as { lesson?: { lessonId?: string; revision?: number } }; return cached.lesson?.lessonId === lesson.lessonId && cached.lesson.revision === lesson.revision ? replay : { outcome: 'not_found' as const }; } this.writeTrace({ traceId: randomUUID(), requestId: request.requestId, binding, phase: 'read', outcome: 'read', lessons: [lesson] }); this.remember(request.requestId, binding, 'get', fingerprint, response); return response; })();
   }
 
   async recordRead(input: unknown) {

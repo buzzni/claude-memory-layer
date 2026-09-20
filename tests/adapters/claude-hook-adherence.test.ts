@@ -37,18 +37,23 @@ describe('Claude user prompt adherence trigger heuristics', () => {
   it('keeps reference-mode lesson injection to a non-body hint', () => {
     const lesson = lessonForInjection({
       lessonId: 'lesson-1', name: 'Safe deployment', trigger: 'When production is unstable',
-      steps: ['Inspect private rollout notes'], failureModes: ['Do not disclose credentials'], confidence: 1
+      steps: ['Inspect private rollout notes'], failureModes: ['Do not disclose credentials'], confidence: 1,
+      scope: 'Private scope', validation: ['Private validation'], reconsiderWhen: 'Private reason', validVersions: ['private-v1']
     }, 'reference');
     expect(lesson.name).toBe('[lesson:lesson-1] Safe deployment');
     expect(lesson.trigger).toBe('');
     expect(lesson.steps).toEqual(['[reference only; retrieve with mem-lesson-get lessonId=lesson-1 revision=1]']);
     expect(lesson.failureModes).toEqual([]);
+    expect(lesson.scope).toBeUndefined();
+    expect(lesson.validation).toEqual([]);
+    expect(lesson.reconsiderWhen).toBeUndefined();
+    expect(lesson.validVersions).toEqual([]);
   });
 
   it('renders summary conditions and an explicit partial-body retrieval hint', () => {
     const lesson = lessonForInjection({ lessonId: 'lesson-2', revision: 4, name: 'Safe deploy', trigger: 'deploy', steps: ['one', 'two', 'three'], failureModes: ['rollback'], confidence: 1, scope: 'production', validation: ['staging passed'], reconsiderWhen: 'policy changes', validVersions: ['v2'] }, 'summary');
     expect(lesson.steps.at(-1)).toContain('mem-lesson-get lessonId=lesson-2 revision=4');
-    expect(lesson.failureModes).toEqual(expect.arrayContaining(['scope: production', 'validation: staging passed', 'reconsider: policy changes', 'versions: v2']));
+    expect(lesson).toMatchObject({ failureModes: ['rollback'], scope: 'production', validation: ['staging passed'], reconsiderWhen: 'policy changes', validVersions: ['v2'] });
   });
 
   it('renders a long evidence excerpt around the strongest query identifier', () => {
@@ -183,6 +188,15 @@ describe('Claude user prompt adherence trigger heuristics', () => {
 });
 
 describe('formatMemoryContext', () => {
+  it('requires full retrieval when a long lesson preview omits applicability conditions', () => {
+    const content = 'Scope: development only\n' + 'Background detail. '.repeat(30) + '\nRun repair TARGET_PORT';
+    const text = formatMemoryContext([{ type: 'lesson', id: 'long-lesson', content }], 'TARGET_PORT');
+    expect(text).toContain('Partial lesson');
+    expect(text).toContain('mem-lesson-get');
+    expect(text).toContain('before applying');
+    expect(text).toContain('[lesson:long-lesson]');
+  });
+
   // Mirrors the scraper in scripts/evaluate-memory-field.ts, which recovers the
   // injected event ids from this text to score retrieval. Any marker the
   // instruction text adds would be counted as a selected memory for every case.

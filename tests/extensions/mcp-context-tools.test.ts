@@ -177,6 +177,31 @@ describe('MCP project context tools', () => {
       const unrelated = await handleToolCall('mem-context-pack', { projectPath, query: '청구서 환불 정책' });
       expect(unrelated.isError).not.toBe(true);
       expect(textOf(unrelated)).not.toContain('### Curated Lessons');
+      // Two near-equal leaders on the first page must not be discarded before
+      // a weaker semantic candidate on the second page is compared.
+      const vectorModule = await import('../../src/extensions/vector/embedder.js');
+      const hybrid = await import('../../src/extensions/mcp/hybrid-lesson-ranking.js');
+      const embedder = { getModelName: () => 'fixture/paged-margin', initialize: async () => undefined,
+        embed: async (text: string) => {
+          if (text === 'restore historical behavior') return { vector: [1, 0] };
+          const score = text.includes('Release checklist 0\n') ? .91 : text.includes('Release checklist 1\n') ? .90 : text.includes('포트 충돌 복구') ? .87 : .3;
+          return { vector: [score, Math.sqrt(1 - score * score)] };
+        } } as never;
+      const embeddingSpy = vi.spyOn(vectorModule, 'getDefaultEmbedder').mockReturnValue(embedder);
+      const previousExperiment = process.env.CLAUDE_MEMORY_LESSON_HYBRID_EXPERIMENT;
+      process.env.CLAUDE_MEMORY_LESSON_HYBRID_EXPERIMENT = 'true';
+      try {
+        const all = [...await repo.list({ projectHash, limit: 500 }), ...await repo.list({ projectHash, limit: 500, offset: 500 })];
+        await hybrid.warmHybridLessonCache(all, embedder);
+        const ambiguous = await handleToolCall('mem-context-pack', { projectPath, query: 'restore historical behavior' });
+        expect(ambiguous.isError).not.toBe(true);
+        expect(textOf(ambiguous)).not.toContain('### Curated Lessons');
+      } finally {
+        embeddingSpy.mockRestore();
+        if (previousExperiment === undefined) delete process.env.CLAUDE_MEMORY_LESSON_HYBRID_EXPERIMENT;
+        else process.env.CLAUDE_MEMORY_LESSON_HYBRID_EXPERIMENT = previousExperiment;
+      }
+
     } finally {
       await store.close();
       storageSpy.mockRestore();

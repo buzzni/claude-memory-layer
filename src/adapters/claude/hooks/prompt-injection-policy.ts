@@ -346,6 +346,10 @@ export interface LessonEvidenceInput {
   steps: string[];
   failureModes?: string[];
   confidence: number;
+  scope?: string;
+  validation?: string[];
+  reconsiderWhen?: string;
+  validVersions?: string[];
 }
 
 /**
@@ -405,7 +409,15 @@ export function scoreLessonEvidence(
   return {
     id: lesson.lessonId,
     type: 'lesson',
-    content,
+    content: [
+      lesson.steps.length > 8 && `[Partial lesson; retrieve the full body with mem-lesson-get lessonId=${lesson.lessonId} before applying]`,
+      lesson.scope && `Scope: ${lesson.scope}`,
+      ...(lesson.validation ?? []).map((value) => `Validate: ${value}`),
+      lesson.reconsiderWhen && `Reconsider: ${lesson.reconsiderWhen}`,
+      lesson.validVersions?.length && `Versions: ${lesson.validVersions.join(', ')}`,
+      ...(lesson.failureModes ?? []).map((value) => `Caution: ${value}`),
+      formatLessonContent({ ...lesson, failureModes: [] })
+    ].filter(Boolean).join('\n'),
     score,
     source: 'lesson'
   };
