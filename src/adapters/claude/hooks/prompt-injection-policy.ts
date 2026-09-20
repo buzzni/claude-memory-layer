@@ -461,8 +461,19 @@ function meaningfulTerms(value: string): string[] {
   ));
 }
 
+/**
+ * specs/lesson-learning-reliability R3 — strip the Korean case particles that
+ * make a paraphrase ("포트 충돌로") miss the stored wording ("포트 충돌"). The
+ * same normalizer runs over query and content, so a wrong stem cannot invent a
+ * match; the two-character floor keeps real nouns that end in a particle
+ * syllable ("경로", "정도") intact instead of collapsing them to one letter.
+ */
+const KOREAN_PARTICLE_SUFFIX =
+  /(?:으로|에서|에게|한테|까지|부터|마다|처럼|보다|은|는|이|가|을|를|에|의|와|과|도|로)$/u;
+
 function normalizeTerm(value: string): string {
-  return value.replace(/(?:은|는|이|가|을|를|에|의|와|과|도|으로|에서|에게|한테)$/u, '');
+  const stripped = value.replace(KOREAN_PARTICLE_SUFFIX, '');
+  return stripped.length >= 2 ? stripped : value;
 }
 
 export function summarizeHookInjectionConfidence(candidates: HookMemoryCandidate[]): 'none' | 'medium' | 'high' {

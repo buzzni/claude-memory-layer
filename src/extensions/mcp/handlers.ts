@@ -3148,7 +3148,7 @@ export function appendCuratedLessons(lines: string[], lessons: CanonicalMemoryIn
   for (const { value: lesson, injectionMode } of lessons.slice(0, 3)) {
     lines.push(`- [lesson:${sanitizeOperationString(lesson.lessonId, 120)}] ${sanitizeOperationString(lesson.name, 180)}`);
     if (injectionMode === 'reference') {
-      lines.push('  - Reference only: use mem-lesson-list with the same projectPath for details.');
+      lines.push('  - Reference only: use mem-lesson-get with the same projectPath and this lessonId.');
       continue;
     }
     lines.push(`  - Apply when: ${sanitizeOperationString(lesson.trigger, 240)}`);
@@ -3157,7 +3157,7 @@ export function appendCuratedLessons(lines: string[], lessons: CanonicalMemoryIn
       lines.push(`  - ${sanitizeOperationString(step, 300)}`);
     }
   }
-  lines.push('- Details: use mem-lesson-list with the same projectPath.', '');
+  lines.push('- Details: use mem-lesson-get with the same projectPath and the lessonId above.', '');
 }
 
 function appendRecentTimeline(
