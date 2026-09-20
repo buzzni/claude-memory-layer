@@ -140,6 +140,77 @@ describe('MCP project context tools', () => {
     mocks.renderExternalMarketContextReport.mockReset().mockReturnValue('### MarketContextSnapshot\n**Bull case**\n**Bear case**\n**Risks**\n**Catalysts**');
   });
 
+  it('preserves queryless lesson browsing and retrieves a match beyond the first SQLite page', async () => {
+    const fs = await import('node:fs');
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const registry = await import('../../src/core/registry/project-path.js');
+    const { SQLiteEventStore } = await import('../../src/core/sqlite-event-store.js');
+    const { LessonRepository } = await import('../../src/core/operations/lesson-repository.js');
+    const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'cml-lesson-pack-'));
+    const projectPath = path.join(sandbox, 'project');
+    fs.mkdirSync(projectPath);
+    const storage = path.join(sandbox, 'memory', 'projects', hashProjectPath(projectPath));
+    fs.mkdirSync(storage, { recursive: true });
+    const store = new SQLiteEventStore(path.join(storage, 'events.sqlite'));
+    const storageSpy = vi.spyOn(registry, 'getProjectStoragePath').mockReturnValue(storage);
+    const previousMode = process.env.CLAUDE_MEMORY_ASSET_PERMISSION_MODE;
+    process.env.CLAUDE_MEMORY_ASSET_PERMISSION_MODE = 'legacy';
+    try {
+      await store.initialize();
+      const repo = new LessonRepository(store.getDatabase());
+      const projectHash = hashProjectPath(projectPath);
+      const common = { projectHash, sourceClass: 'curated', sourceEventIds: ['fixture-evidence'], actor: 'test' };
+      for (let i = 0; i < 500; i++) {
+        await repo.upsert({ ...common, name: `Release checklist ${i}`, trigger: 'Publish a package',
+          steps: ['Validate the build'], confidence: 1 });
+      }
+      const target = await repo.upsert({ ...common, name: '포트 충돌 복구', trigger: '포트 충돌로 서버가 종료될 때',
+        steps: ['남은 프로세스를 확인한다'], confidence: 0.8 });
+      const browse = await handleToolCall('mem-context-pack', { projectPath });
+      expect(browse.isError).not.toBe(true);
+      expect(textOf(browse)).toContain('Release checklist');
+      const matched = await handleToolCall('mem-context-pack', { projectPath, query: '포트 충돌 복구' });
+      expect(matched.isError).not.toBe(true);
+      expect(textOf(matched)).toContain(`[lesson:${target.lessonId}]`);
+      expect(textOf(matched)).not.toContain('Release checklist');
+      const unrelated = await handleToolCall('mem-context-pack', { projectPath, query: '청구서 환불 정책' });
+      expect(unrelated.isError).not.toBe(true);
+      expect(textOf(unrelated)).not.toContain('### Curated Lessons');
+      // Two near-equal leaders on the first page must not be discarded before
+      // a weaker semantic candidate on the second page is compared.
+      const vectorModule = await import('../../src/extensions/vector/embedder.js');
+      const hybrid = await import('../../src/extensions/mcp/hybrid-lesson-ranking.js');
+      const embedder = { getModelName: () => 'fixture/paged-margin', initialize: async () => undefined,
+        embed: async (text: string) => {
+          if (text === 'restore historical behavior') return { vector: [1, 0] };
+          const score = text.includes('Release checklist 0\n') ? .91 : text.includes('Release checklist 1\n') ? .90 : text.includes('포트 충돌 복구') ? .87 : .3;
+          return { vector: [score, Math.sqrt(1 - score * score)] };
+        } } as never;
+      const embeddingSpy = vi.spyOn(vectorModule, 'getDefaultEmbedder').mockReturnValue(embedder);
+      const previousExperiment = process.env.CLAUDE_MEMORY_LESSON_HYBRID_EXPERIMENT;
+      process.env.CLAUDE_MEMORY_LESSON_HYBRID_EXPERIMENT = 'true';
+      try {
+        const all = [...await repo.list({ projectHash, limit: 500 }), ...await repo.list({ projectHash, limit: 500, offset: 500 })];
+        await hybrid.warmHybridLessonCache(all, embedder);
+        const ambiguous = await handleToolCall('mem-context-pack', { projectPath, query: 'restore historical behavior' });
+        expect(ambiguous.isError).not.toBe(true);
+        expect(textOf(ambiguous)).not.toContain('### Curated Lessons');
+      } finally {
+        embeddingSpy.mockRestore();
+        if (previousExperiment === undefined) delete process.env.CLAUDE_MEMORY_LESSON_HYBRID_EXPERIMENT;
+        else process.env.CLAUDE_MEMORY_LESSON_HYBRID_EXPERIMENT = previousExperiment;
+      }
+
+    } finally {
+      await store.close();
+      storageSpy.mockRestore();
+      if (previousMode === undefined) delete process.env.CLAUDE_MEMORY_ASSET_PERMISSION_MODE;
+      else process.env.CLAUDE_MEMORY_ASSET_PERMISSION_MODE = previousMode;
+      fs.rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
   it('advertises context-pack, import-latest, project-timeline, and source-ref tools with projectPath support', () => {
     const byName = new Map(tools.map((tool) => [tool.name, tool]));
 

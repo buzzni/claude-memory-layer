@@ -79,10 +79,18 @@ export class CanonicalMemoryInjectionService {
       throw new Error(`actor identity is required when ${CANONICAL_MEMORY_PERMISSION_MODE_ENV}=${this.mode}`);
     }
 
+    // Lesson lifecycle eligibility is independent of legacy ACL compatibility.
+    // Apply it before the legacy fast-path so disabled/version-conditional
+    // lessons never enter any automatic injection lane.
+    const candidates = input.candidates.filter((candidate) => {
+      const lesson = candidate.value as Partial<{ recallEnabled: boolean; validVersions: string[] }>;
+      return candidate.canonicalType !== 'lesson' || (lesson.recallEnabled !== false && (lesson.validVersions?.length ?? 0) === 0);
+    });
+
     if (this.mode === 'legacy') {
       return {
         mode: this.mode,
-        items: input.candidates.map((candidate) => ({
+        items: candidates.map((candidate) => ({
           value: candidate.value,
           injectionMode: 'direct',
           priority: 0
@@ -91,7 +99,7 @@ export class CanonicalMemoryInjectionService {
     }
 
     const selected: Array<CanonicalMemoryInjection<T> & { canonicalId: string }> = [];
-    for (const candidate of input.candidates) {
+    for (const candidate of candidates) {
       const assetId = canonicalMemoryAssetId(candidate.canonicalType, candidate.canonicalId);
       const asset = this.repository.get(assetId, input.projectHash);
       const registered = Boolean(

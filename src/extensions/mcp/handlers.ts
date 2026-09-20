@@ -105,7 +105,7 @@ import type {
   PerspectiveObservationLevel
 } from '../../core/types.js';
 import { extractLessonWithLlm, isLlmLessonExtractionEnabled } from '../../adapters/llm/lesson-extraction-llm.js';
-import { rankCuratedLessons } from './lesson-ranking.js';
+import { rankCuratedLessonsHybrid } from './hybrid-lesson-ranking.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 
 type ToolResult = CallToolResult;
@@ -2397,7 +2397,7 @@ async function handleMemContextPack(memoryService: MemoryService, args: Record<s
 
   const search = await retrieveMcpMemories(memoryService, query, { topK: retrievalTopK, sessionId, retrievalMode });
   const recentEvents = await memoryService.getRecentEvents(recentLimit);
-  const curatedLessons = await loadCuratedLessons(projectPath, requesterActorId, query);
+  const curatedLessons = await loadCuratedLessons(projectPath, requesterActorId, optionalString(args.query));
 
   const timelineEvents = selectContextPackTimelineEvents(
     recentEvents,
@@ -2822,22 +2822,30 @@ async function loadCuratedLessons(
     );
     if (!table) return [];
     const projectHash = hashProjectPath(projectPath);
-    // Scan the whole catalog (repository ceiling), not the newest 20: the pack
-    // used to show the same three lessons for every question.
-    const lessons = await new LessonRepository(db).list({ projectHash, limit: 500 });
-    const items = new CanonicalMemoryInjectionService(db).select({
-      projectHash,
-      actorId: requesterActorId,
-      lane: 'context_pack',
-      candidates: lessons
-        .filter((lesson) => lesson.sourceClass === 'curated')
-        .map((lesson) => ({ canonicalType: 'lesson', canonicalId: lesson.lessonId, value: lesson }))
-    }).items;
-    const ranked = rankCuratedLessons(items.map((item) => item.value), query, 3);
-    return ranked.flatMap((lesson) => {
-      const item = items.find((candidate) => candidate.value.lessonId === lesson.lessonId);
-      return item ? [item] : [];
-    });
+    const repository = new LessonRepository(db);
+    const selector = new CanonicalMemoryInjectionService(db);
+    const pageSize = 500;
+    const candidates: CanonicalMemoryInjection<MemoryLesson>[] = [];
+    // Semantic top-1 margins require the entire eligible snapshot: discarding
+    // an ambiguous earlier page would make a weaker later candidate look safe.
+    for (let offset = 0; ; offset += pageSize) {
+      const lessons = await repository.list({ projectHash, limit: pageSize, offset });
+      const items = selector.select({
+        projectHash,
+        actorId: requesterActorId,
+        lane: 'context_pack',
+        candidates: lessons
+          .filter((lesson) => lesson.sourceClass === 'curated')
+          .map((lesson) => ({ canonicalType: 'lesson', canonicalId: lesson.lessonId, value: lesson }))
+      }).items;
+      candidates.push(...items);
+      if (lessons.length < pageSize || (!query?.trim() && candidates.length >= 3)) break;
+    }
+    return (await rankCuratedLessonsHybrid(candidates.map((item) => item.value), query, 3))
+      .flatMap((lesson) => {
+        const item = candidates.find((candidate) => candidate.value.lessonId === lesson.lessonId);
+        return item ? [item] : [];
+      });
   } catch {
     return [];
   } finally {
@@ -3136,22 +3144,34 @@ function appendRelevantMemories(
   }
 }
 
-function appendCuratedLessons(lines: string[], lessons: CanonicalMemoryInjection<MemoryLesson>[]): void {
+/**
+ * specs/lesson-learning-reliability R4 — a delivered lesson id must resolve
+ * through mem-lesson-get. Pointing at mem-lesson-list made the model page the
+ * catalog (or reach for the event paths mem-details/mem-source-ref) with an id
+ * those tools cannot resolve.
+ */
+export function appendCuratedLessons(lines: string[], lessons: CanonicalMemoryInjection<MemoryLesson>[]): void {
   if (lessons.length === 0) return;
   lines.push('### Curated Lessons', '');
   for (const { value: lesson, injectionMode } of lessons.slice(0, 3)) {
     lines.push(`- [lesson:${sanitizeOperationString(lesson.lessonId, 120)}] ${sanitizeOperationString(lesson.name, 180)}`);
     if (injectionMode === 'reference') {
-      lines.push('  - Reference only: use mem-lesson-list with the same projectPath for details.');
+      lines.push('  - Reference only: use mem-lesson-get with the same projectPath and this lessonId.');
       continue;
     }
     lines.push(`  - Apply when: ${sanitizeOperationString(lesson.trigger, 240)}`);
+    if (lesson.scope) lines.push(`  - Scope: ${sanitizeOperationString(lesson.scope, 240)}`);
+    for (const value of lesson.validation ?? []) lines.push(`  - Validate: ${sanitizeOperationString(value, 300)}`);
+    for (const value of lesson.failureModes) lines.push(`  - Caution: ${sanitizeOperationString(value, 300)}`);
+    if (lesson.reconsiderWhen) lines.push(`  - Reconsider: ${sanitizeOperationString(lesson.reconsiderWhen, 240)}`);
+    if (lesson.validVersions?.length) lines.push(`  - Versions: ${sanitizeOperationString(lesson.validVersions.join(', '), 240)}`);
     const stepLimit = injectionMode === 'summary' ? 2 : 5;
+    if (injectionMode === 'summary' || lesson.steps.length > stepLimit) lines.push('  - Partial lesson: retrieve the full body with mem-lesson-get before applying.');
     for (const step of lesson.steps.slice(0, stepLimit)) {
       lines.push(`  - ${sanitizeOperationString(step, 300)}`);
     }
   }
-  lines.push('- Details: use mem-lesson-list with the same projectPath.', '');
+  lines.push('- Details: use mem-lesson-get with the same projectPath and the lessonId above.', '');
 }
 
 function appendRecentTimeline(

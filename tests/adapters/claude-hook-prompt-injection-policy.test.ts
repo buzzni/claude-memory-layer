@@ -463,6 +463,12 @@ describe('curated lesson injection lane', () => {
     expect(candidate?.content).toContain('남은 preview 프로세스를 정리한다');
   });
 
+  it('preserves applicability metadata in native lesson evidence', () => {
+    const input = { ...lesson, steps: Array.from({ length: 9 }, (_, i) => `Step ${i}`), failureModes: ['one', 'two', 'three', 'four', 'Critical fifth condition'], scope: 'Development only', validation: ['Verify ownership'], reconsiderWhen: 'Owner changes', validVersions: ['v3'] };
+    const content = scoreLessonEvidence('preview 서버 EADDRINUSE 포트 충돌 복구', input)?.content;
+    for (const value of ['Development only', 'Verify ownership', 'Owner changes', 'v3', 'Critical fifth condition', 'Partial lesson']) expect(content).toContain(value);
+  });
+
   it('abstains when the lesson does not cover the query', () => {
     expect(scoreLessonEvidence('데스크탑 앱 자동 업데이트 서명 오류', lesson)).toBeNull();
   });
