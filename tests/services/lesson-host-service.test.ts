@@ -32,7 +32,7 @@ function fixture(now?: () => number) {
     }, eventStore: store,
     now
   });
-  return { store, service, bindings, cleanup: async () => store.close() };
+  return { dir, store, service, bindings, cleanup: async () => store.close() };
 }
 
 async function seedSource(store: SQLiteEventStore, projectHash = 'project-a'): Promise<string> {
@@ -298,6 +298,55 @@ describe('authenticated lesson host service', () => {
     await cleanup();
 
     expect(status).toMatchObject({ outcome: 'found', candidate: { status: 'expired' } });
+  });
+
+  it('applies host exclusion to the native hook query after reopening the store', async () => {
+    const { dir, store, service, cleanup } = fixture();
+    await store.initialize();
+    const sourceEventId = await seedSource(store);
+    const lesson = await new LessonRepository(store.getDatabase()).upsert({
+      projectHash: 'project-a', name: 'Restart exclusion', trigger: 'When restart exclusion is needed',
+      steps: ['Preserve the exclusion'], confidence: 1, sourceEventIds: [sourceEventId],
+    });
+    const query = new MemoryQueryService(() => store.initialize(), store);
+    expect((await query.listProjectLessonInjections('project-a', undefined)).map((item) => item.value.lessonId)).toEqual([lesson.lessonId]);
+    await service.setRecallEnabled({ version: 1, requestId: 'native-exclude', binding: 'reviewer', lessonId: lesson.lessonId, expectedRevision: lesson.revision, enabled: false, generation: 3 });
+    expect(await query.listProjectLessonInjections('project-a', undefined)).toEqual([]);
+    await cleanup();
+
+    const reopened = new SQLiteEventStore(join(dir, 'events.sqlite'));
+    try {
+      await reopened.initialize();
+      const native = new MemoryQueryService(() => reopened.initialize(), reopened);
+      expect(await native.listProjectLessonInjections('project-a', undefined)).toEqual([]);
+      expect(new LessonRepository(reopened.getDatabase()).get(lesson.lessonId)).toMatchObject({ recallEnabled: false });
+    } finally { await reopened.close(); }
+  });
+
+  it('fences registered asset withdrawal in both host and native lanes', async () => {
+    vi.stubEnv(CANONICAL_MEMORY_PERMISSION_MODE_ENV, 'registered');
+    const { store, service, cleanup } = fixture();
+    await store.initialize();
+    try {
+      const sourceEventId = await seedSource(store);
+      const lesson = await new LessonRepository(store.getDatabase()).upsert({
+        projectHash: 'project-a', name: 'Withdrawal fence', trigger: 'When withdrawal fencing is needed',
+        steps: ['Read current permission'], confidence: 1, sourceEventIds: [sourceEventId],
+      });
+      const permissions = new MemoryAssetPermissionService(store.getDatabase());
+      const asset = { projectHash: 'project-a', requesterActorId: 'actor-a', assetId: `lesson:${lesson.lessonId}` };
+      await permissions.create({ ...asset, assetType: 'lesson', title: lesson.name, sourceRefs: [asset.assetId] });
+      await permissions.bind({ ...asset, actorId: 'actor-a', injectionMode: 'direct' });
+      const native = new MemoryQueryService(() => store.initialize(), store);
+      expect(await native.listProjectLessonInjections('project-a', 'actor-a')).toHaveLength(1);
+      expect(await native.listProjectLessonInjections('project-a', 'actor-b')).toEqual([]);
+      expect(await native.listProjectLessonInjections('project-b', 'actor-a')).toEqual([]);
+      const request = { version: 1, requestId: 'withdrawal-native', binding: 'reader', turnId: 'withdrawal-turn', query: 'withdrawal fencing' };
+      expect(await service.recall(request)).toMatchObject({ outcome: 'selected' });
+      await permissions.update({ ...asset, status: 'archived' });
+      expect(await native.listProjectLessonInjections('project-a', 'actor-a')).toEqual([]);
+      expect(await service.recall(request)).toMatchObject({ outcome: 'no_match', lessons: [] });
+    } finally { await cleanup(); }
   });
 
   it('keeps the 501st eligible lesson in the shared native injection scan', async () => {

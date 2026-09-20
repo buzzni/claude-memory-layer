@@ -2,7 +2,7 @@
 
 > **Status**: 완료 — PR #87 머지, v2.4.0 발행·전역 설치 반영 (2026-09-05)
 > **Created**: 2026-09-05
-> **Last Updated**: 2026-09-20
+> **Last Updated**: 2026-09-21
 
 ## 1. 배경 — 어떻게 발견됐나
 
@@ -229,3 +229,11 @@ warnings, no errors), build, and import-boundary check passed. The stable artifa
 UserPromptSubmit skip only the lesson lane for host ownership. The local npm
 archive passed extracted-package factory/schema/capability smoke. No live user
 store, hook installation, paid review, or deployment was changed.
+
+
+## 8. 2026-09-21 후속 검증 (PR #89, 미배포)
+
+- native 공통 query에서 host의 개별 교훈 제외가 DB 재시작 후에도 유지되고, registered asset 철회가 host/native 양쪽에 적용되는 통합 테스트를 추가했다. Happy 프로젝트 전체 OFF는 이 계약과 별개이며 native가 해당 설정을 읽는다고 주장하지 않는다.
+- `scripts/evaluate-lesson-hybrid-heldout.ts <fixture.json> <result.json>`은 결과 JSON에 ranking gate를 쓰고 미달이면 exit 1을 반환한다. recall ≥.80, precision ≥.90, negative ≤.05, identifier=1, warm p95≤300ms를 검사하며 누락·비정상 수치는 성공으로 인증하지 않는다. 이 gate는 실제 runtime/권한·cold 성능 검증을 대신하지 않는다.
+- 회귀 14건 및 실제 frozen held-out 실행: recall .6833으로 `failures: [recallAt3]`, exit 1. semantic 기본 OFF와 기존 threshold/label을 유지했다.
+- 최종 전체 235 files / 1,608 tests 통과(`npm run test:run -- --maxWorkers=2`), typecheck·lint(기존45warnings/오류0)·build·architecture 통과. 이 변경은 아직 발행하거나 사용자 설치에 반영하지 않았다.
