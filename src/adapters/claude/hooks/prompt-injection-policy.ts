@@ -464,8 +464,8 @@ function meaningfulTerms(value: string): string[] {
 /**
  * specs/lesson-learning-reliability R3 — strip the Korean case particles that
  * make a paraphrase ("포트 충돌로") miss the stored wording ("포트 충돌"). The
- * same normalizer runs over query and content, so a wrong stem cannot invent a
- * match; the two-character floor keeps real nouns that end in a particle
+ * same heuristic runs over query and content; suffix collisions remain possible.
+ * The two-character floor keeps short nouns that end in a particle
  * syllable ("경로", "정도") intact instead of collapsing them to one letter.
  */
 const KOREAN_PARTICLE_SUFFIX =

@@ -2397,7 +2397,7 @@ async function handleMemContextPack(memoryService: MemoryService, args: Record<s
 
   const search = await retrieveMcpMemories(memoryService, query, { topK: retrievalTopK, sessionId, retrievalMode });
   const recentEvents = await memoryService.getRecentEvents(recentLimit);
-  const curatedLessons = await loadCuratedLessons(projectPath, requesterActorId, query);
+  const curatedLessons = await loadCuratedLessons(projectPath, requesterActorId, optionalString(args.query));
 
   const timelineEvents = selectContextPackTimelineEvents(
     recentEvents,
@@ -2822,22 +2822,31 @@ async function loadCuratedLessons(
     );
     if (!table) return [];
     const projectHash = hashProjectPath(projectPath);
-    // Scan the whole catalog (repository ceiling), not the newest 20: the pack
-    // used to show the same three lessons for every question.
-    const lessons = await new LessonRepository(db).list({ projectHash, limit: 500 });
-    const items = new CanonicalMemoryInjectionService(db).select({
-      projectHash,
-      actorId: requesterActorId,
-      lane: 'context_pack',
-      candidates: lessons
-        .filter((lesson) => lesson.sourceClass === 'curated')
-        .map((lesson) => ({ canonicalType: 'lesson', canonicalId: lesson.lessonId, value: lesson }))
-    }).items;
-    const ranked = rankCuratedLessons(items.map((item) => item.value), query, 3);
-    return ranked.flatMap((lesson) => {
-      const item = items.find((candidate) => candidate.value.lessonId === lesson.lessonId);
-      return item ? [item] : [];
-    });
+    const repository = new LessonRepository(db);
+    const selector = new CanonicalMemoryInjectionService(db);
+    const pageSize = 500;
+    let selected: CanonicalMemoryInjection<MemoryLesson>[] = [];
+    // The repository limit is a page size, not the eligible catalog boundary.
+    // Use the same read snapshot for every page and retain only the best three.
+    for (let offset = 0; ; offset += pageSize) {
+      const lessons = await repository.list({ projectHash, limit: pageSize, offset });
+      const items = selector.select({
+        projectHash,
+        actorId: requesterActorId,
+        lane: 'context_pack',
+        candidates: lessons
+          .filter((lesson) => lesson.sourceClass === 'curated')
+          .map((lesson) => ({ canonicalType: 'lesson', canonicalId: lesson.lessonId, value: lesson }))
+      }).items;
+      const candidates = [...selected, ...items];
+      selected = rankCuratedLessons(candidates.map((item) => item.value), query, 3)
+        .flatMap((lesson) => {
+          const item = candidates.find((candidate) => candidate.value.lessonId === lesson.lessonId);
+          return item ? [item] : [];
+        });
+      if (lessons.length < pageSize || (!query?.trim() && selected.length === 3)) break;
+    }
+    return selected;
   } catch {
     return [];
   } finally {

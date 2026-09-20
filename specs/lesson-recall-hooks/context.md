@@ -2,7 +2,7 @@
 
 > **Status**: 완료 — PR #87 머지, v2.4.0 발행·전역 설치 반영 (2026-09-05)
 > **Created**: 2026-09-05
-> **Last Updated**: 2026-09-05
+> **Last Updated**: 2026-09-20
 
 ## 1. 배경 — 어떻게 발견됐나
 
@@ -74,3 +74,16 @@ Memory evidence 에 `[lesson]` 로 등장.** 이전에는 같은 절차로 빈 �
 3. 활용 측정: `retrieval_traces.strategy='session-start-lessons'` 와 `memory_helpfulness.event_id IN
    memory_lessons` 로 주입·인용 비율을 본다. 지금까지는 이 숫자가 0 에 가까웠다.
 4. 후속 후보: 예산 초과 시 통합 압박(hermes "consolidate now"), `[lesson:]` 라벨 + 하네스 정규식.
+
+## 7. 2026-09-20 후속 회수 수정 (로컬 미배포)
+
+Desktop `specs/lesson-learning-reliability` 후속 구현 요청으로 context-pack을 개선했다. 위 v2.4.0 배포 기록은 과거 기준선이며 아래 변경은 별도 `lesson-search-regression` branch의 로컬 수정이다.
+
+- 질의가 있으면 관련 교훈만 반환하며 무관한 항목으로 남은 슬롯을 채우지 않는다. 질의가 생략되면 기존 탐색 목록을 유지한다. handler의 내부 기본 검색어를 교훈 질의로 잘못 전달하는 회귀도 실제 MCP 호출 테스트로 수정했다.
+- context-pack은 SQLite snapshot에서 500건씩 페이지를 읽어 전체 eligible catalog를 평가하고 상위 3건만 유지한다. 실제 DB에 501건을 넣어 낮은 confidence의 마지막 관련 교훈 회수와 무관 질의 미주입을 확인했다. native UserPromptSubmit의 500건 상한은 아직 별도 후속이다.
+- 한국어 조사 정규화에 `로` 등 표현을 추가하고 두 글자 어근을 보존했다. 형태소 분석이 아닌 휴리스틱이므로 의미상 동의어 전체를 해결했다거나 오탐이 없다고 해석하지 않는다.
+- context-pack의 본문 조회 안내를 `mem-lesson-get` + lessonId로 통일했다. reference 모드 본문 비노출 테스트도 추가했다. native prompt의 event/lesson 참조 혼용과 실제 전달 ack는 아직 미변경이다.
+- 주 에이전트 리뷰에서 queryless 호출 회귀, 실제 DB와 무관한 >500 배열 테스트의 한계, 잘못된 injectionMode fixture와 과도한 정규화 주석을 발견해 보완했다.
+- 검증: 관련 95 tests, 전체 232 files / 1,565 tests, typecheck, build, architecture boundary 통과. lint 0 errors / 기존 45 warnings. 실제 사용자 DB·설치 artifact·hooks 설정은 바꾸지 않았다.
+
+다음 단계는 native prompt 전체 범위·고정 평가셋·전달 예산/권한/ack 검증이다. 신규 후보 queue/API/비용 작업은 Desktop plan의 T4 계약 검토와 별개 승인 경계이며 이 로컬 패치로 완료 처리하지 않는다.
