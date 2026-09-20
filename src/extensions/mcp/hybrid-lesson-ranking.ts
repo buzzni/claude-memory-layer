@@ -19,14 +19,16 @@ const passage = (lesson: MemoryLesson, embedder: Embedder) => usesE5Prefix(embed
 const queryText = (query: string, embedder: Embedder) => usesE5Prefix(embedder) ? `query: ${query}` : query;
 const keyFor = (lesson: MemoryLesson, embedder: Embedder) => `${embedder.getModelName()}:${usesE5Prefix(embedder) ? 'e5-prefix-v2' : 'plain-v1'}:${lesson.projectHash}:${lesson.lessonId}:${lesson.revision}`;
 const cosine = (a: number[], b: number[]) => a.reduce((sum, value, index) => sum + value * (b[index] ?? 0), 0);
+const supportedSafetyOrFailureState = /\b(?:must|should)\s+not\s+trust\b|\b(?:server|service|process|worker|daemon|request|connection|build|test)\s+does\s+not\s+(?:start|respond|connect|complete|pass)\b|믿지\s*말고/giu;
 
 export function hybridLessonStatus(): HybridLessonStatus { return status; }
 const experimentEnabled = () => process.env.CLAUDE_MEMORY_LESSON_HYBRID_EXPERIMENT === 'true';
 export function isSemanticRescueEligible(query: string): boolean {
   if (isExplicitlyProhibitedLessonQuery(query)) return false;
-  // General conservative intent guard: a semantic neighbour cannot safely infer
-  // that a negated, skipped, or prohibited action wants its usual runbook.
-  return !/\b(?:not|without|skip|ignore|do[ -]?not|don't|never)\b|하지\s*않|하지마|말고|금지|건너뛰|무시/u.test(query);
+  // Remove only unambiguous safety/failure clauses before applying the existing
+  // conservative guard, so a second contraindication cannot be bypassed.
+  const remaining = query.replace(supportedSafetyOrFailureState, ' ');
+  return !/\b(?:not|without|skip|ignore|do[ -]?not|don't|never)\b|하지\s*않|하지마|말고|금지|건너뛰|무시/iu.test(remaining);
 }
 export function warmHybridLessonCache(lessons: readonly MemoryLesson[], embedder?: Embedder): Promise<void> {
   if (lessons.length === 0) return Promise.resolve();

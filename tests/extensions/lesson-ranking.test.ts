@@ -30,10 +30,46 @@ const oldest = lesson(
 const byRecency = [newest, middle, oldest];
 
 describe('rankCuratedLessons', () => {
+  it('recalls an exact technical subject despite unrelated question boilerplate, without accepting a partial or conflicting identifier', () => {
+    const exact = lesson('cache', 'applyHttpCachePolicy response rules', 'When applyHttpCachePolicy configures browser caching', '2026-09-01');
+    const other = lesson('other', 'applyHttpCachePolicyUnsafe legacy rules', 'Legacy browser caching', '2026-09-01');
+    const pool = [other, exact];
+    expect(rankCuratedLessons(pool, 'Investigate applyHttpCachePolicy tomorrow.', 3)).toEqual([exact]);
+    expect(rankCuratedLessons(pool, 'applyHttpCachePolicy 설정을 조사해 주세요', 3)).toEqual([exact]);
+    expect(rankCuratedLessons(pool, 'Explain applyHttpCachePolicy legacy rules browser caching', 3)).toEqual([exact]);
+    expect(rankCuratedLessons(pool, 'Investigate applyHttpCachePolicy and retryWithJitter tomorrow.', 3)).toEqual([]);
+    expect(rankCuratedLessons(pool, 'Investigate applyHttpCachePolicyMissing tomorrow.', 3)).toEqual([]);
+    expect(rankCuratedLessons(pool, 'Skip applyHttpCachePolicy tomorrow.', 3)).toEqual([]);
+    expect(rankCuratedLessons(pool, 'Do not use applyHttpCachePolicy tomorrow.', 3)).toEqual([]);
+  });
+
+  it('does not interpret a data structure name as an imperative prohibition', () => {
+    const skipList = lesson('skip', 'Skip list indexing', 'Skip list indexing performance', '2026-09-01');
+    expect(rankCuratedLessons([skipList], 'Explain skip list indexing performance', 3)).toEqual([skipList]);
+  });
+
+  it.each([
+    'Skip the preview 서버 EADDRINUSE 포트 충돌 복구 procedure',
+    'Ignore the preview 서버 EADDRINUSE 포트 충돌 복구 procedure',
+    'Omit the preview 서버 EADDRINUSE 포트 충돌 복구 procedure',
+    'Do-not apply the preview 서버 EADDRINUSE 포트 충돌 복구 procedure',
+    'preview 서버 EADDRINUSE 포트 충돌 복구 절차를 건너뛰어.',
+    'preview 서버 EADDRINUSE 포트 충돌 복구 절차는 사용 금지.',
+    'preview 서버 EADDRINUSE 포트 충돌 복구 절차를 무시해.',
+    'preview 서버 EADDRINUSE 포트 충돌 복구 절차를 적용하지 않는다.',
+  ])('does not let lexical matches bypass an explicit instruction to omit a procedure: %s', query => {
+    expect(rankCuratedLessons(byRecency, query, 3)).toEqual([]);
+  });
+
+  it('keeps a safety constraint searchable when the procedure itself is requested', () => {
+    expect(rankCuratedLessons(byRecency, 'preview 서버 EADDRINUSE 포트 충돌 복구 without losing data', 3))
+      .toEqual([oldest]);
+  });
+
   it.each([
     'preview 서버 포트 충돌 복구를 적용하지 마라.',
     'preview 서버 포트 충돌 복구를 적용하지마세요.',
-    'Do not apply the preview 서버 포트 충돌 복구 procedure.',
+    'Do not apply the preview 서버 포트 충돌 복구 procedure',
   ])('abstains when an otherwise exact query explicitly prohibits the procedure: %s', query => {
     expect(rankCuratedLessons(byRecency, query, 3)).toEqual([]);
   });

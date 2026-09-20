@@ -360,7 +360,19 @@ export function isExplicitlyProhibitedLessonQuery(query: string): boolean {
   // An exact identifier is not permission to suggest a procedure the caller
   // explicitly prohibited. Abstain conservatively; ordinary "without" clauses
   // remain searchable because they may describe the desired safety condition.
-  return /\b(?:do\s+not|don't|never)\b|지\s*마(?:라|세요|십시오)?(?:[.!?\s]|$)/iu.test(query);
+  return /\b(?:do[ -]+not|don't|never)\b|(?:^|[.!?;]\s*)(?:please\s+)?(?:skip|omit|ignore)\b|(?:사용|적용|실행|호출|설치|활성화|재시도)(?:\s*금지|하지\s*(?:않|말))|건너뛰|무시(?:해|하|할)|지\s*마(?:라|세요|십시오)?(?:[.!?\s]|$)/iu.test(query);
+}
+
+const lessonSymbolTokens = (value: string): string[] => value.match(/\b[A-Za-z][A-Za-z0-9_$]*(?:[./:-][A-Za-z0-9_$]+)*/g) ?? [];
+
+/** A sole exact code symbol in the subject is stronger than question boilerplate.
+ * Keep this lesson-only: transcript alignment retains its independent policy. */
+function hasExactLessonSubject(query: string, lesson: LessonEvidenceInput): boolean {
+  const anchors = [...new Set(lessonSymbolTokens(query).filter((token) => /[a-z][A-Z]|[_$./:-]|\d/.test(token)))];
+  if (anchors.length !== 1 || !/[a-z][A-Z]/.test(anchors[0])) return false;
+  // Do not turn a mention of a forbidden/alternative procedure into a match.
+  if (/\b(?:not|without|skip|omit|ignore|never)\b|하지\s*않|말고|금지|건너뛰|무시/iu.test(query)) return false;
+  return lessonSymbolTokens([lesson.name, lesson.trigger ?? ''].join(' ')).includes(anchors[0]);
 }
 
 export function scoreLessonEvidence(
@@ -369,19 +381,23 @@ export function scoreLessonEvidence(
 ): HookMemoryCandidate | null {
   if (isExplicitlyProhibitedLessonQuery(query)) return null;
   const content = formatLessonContent(lesson);
-  if (!hasQueryMemoryAlignment(query, content, 2)) return null;
+  const queriedSymbols = lessonSymbolTokens(query).filter((token) => /[a-z][A-Z]/.test(token));
+  const contentSymbols = new Set(lessonSymbolTokens(content));
+  if (queriedSymbols.some((symbol) => !contentSymbols.has(symbol))) return null;
+  const exactSubject = hasExactLessonSubject(query, lesson);
+  if (!exactSubject && !hasQueryMemoryAlignment(query, content, 2)) return null;
 
   const queryTerms = meaningfulTerms(query);
   const contentTerms = new Set(meaningfulTerms(content));
   const overlap = queryTerms.filter((term) => contentTerms.has(term)).length;
-  if (overlap < Math.min(3, queryTerms.length)) return null;
+  if (!exactSubject && overlap < Math.min(3, queryTerms.length)) return null;
 
-  const coverage = overlap / Math.max(1, Math.min(queryTerms.length, 8));
+  const coverage = exactSubject ? 1 : overlap / Math.max(1, Math.min(queryTerms.length, 8));
   const anchors = identifierAnchors(query);
   const lowered = content.toLowerCase();
   const matchedAnchors = anchors.filter((anchor) => lowered.includes(anchor.toLowerCase())).length;
-  const anchorCoverage = anchors.length === 0 ? 0 : matchedAnchors / anchors.length;
-  if (anchors.length >= 2 && matchedAnchors < Math.ceil(anchors.length * 0.6)) return null;
+  const anchorCoverage = exactSubject ? 1 : anchors.length === 0 ? 0 : matchedAnchors / anchors.length;
+  if (!exactSubject && anchors.length >= 2 && matchedAnchors < Math.ceil(anchors.length * 0.6)) return null;
 
   const confidencePrior = Math.min(0.05, Math.max(0, lesson.confidence) * 0.05);
   const score = Math.min(0.98, 0.5 + coverage * 0.28 + anchorCoverage * 0.12 + confidencePrior);
