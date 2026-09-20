@@ -105,7 +105,7 @@ import type {
   PerspectiveObservationLevel
 } from '../../core/types.js';
 import { extractLessonWithLlm, isLlmLessonExtractionEnabled } from '../../adapters/llm/lesson-extraction-llm.js';
-import { rankCuratedLessons } from './lesson-ranking.js';
+import { rankCuratedLessonsHybrid } from './hybrid-lesson-ranking.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 
 type ToolResult = CallToolResult;
@@ -2839,7 +2839,7 @@ async function loadCuratedLessons(
           .map((lesson) => ({ canonicalType: 'lesson', canonicalId: lesson.lessonId, value: lesson }))
       }).items;
       const candidates = [...selected, ...items];
-      selected = rankCuratedLessons(candidates.map((item) => item.value), query, 3)
+      selected = (await rankCuratedLessonsHybrid(candidates.map((item) => item.value), query, 3))
         .flatMap((lesson) => {
           const item = candidates.find((candidate) => candidate.value.lessonId === lesson.lessonId);
           return item ? [item] : [];

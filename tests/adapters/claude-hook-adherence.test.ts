@@ -9,7 +9,8 @@ import {
   formatMemoryContext,
   redactForStorage,
   lessonForInjection,
-  shouldPersistSubmittedPrompt
+  shouldPersistSubmittedPrompt,
+  shouldNativeInjectLessons
 } from '../../src/adapters/claude/hooks/user-prompt-submit.js';
 
 function adherenceState(overrides: Partial<AdherenceState> = {}): AdherenceState {
@@ -24,6 +25,14 @@ function adherenceState(overrides: Partial<AdherenceState> = {}): AdherenceState
   };
 }
 
+describe('host lesson ownership marker', () => {
+  it('suppresses only the native lesson lane for host ownership and preserves native default', () => {
+    expect(shouldNativeInjectLessons('host')).toBe(false);
+    expect(shouldNativeInjectLessons(undefined)).toBe(true);
+    expect(shouldNativeInjectLessons('native')).toBe(true);
+  });
+});
+
 describe('Claude user prompt adherence trigger heuristics', () => {
   it('keeps reference-mode lesson injection to a non-body hint', () => {
     const lesson = lessonForInjection({
@@ -32,8 +41,14 @@ describe('Claude user prompt adherence trigger heuristics', () => {
     }, 'reference');
     expect(lesson.name).toBe('[lesson:lesson-1] Safe deployment');
     expect(lesson.trigger).toBe('');
-    expect(lesson.steps).toEqual([]);
+    expect(lesson.steps).toEqual(['[reference only; retrieve with mem-lesson-get lessonId=lesson-1 revision=1]']);
     expect(lesson.failureModes).toEqual([]);
+  });
+
+  it('renders summary conditions and an explicit partial-body retrieval hint', () => {
+    const lesson = lessonForInjection({ lessonId: 'lesson-2', revision: 4, name: 'Safe deploy', trigger: 'deploy', steps: ['one', 'two', 'three'], failureModes: ['rollback'], confidence: 1, scope: 'production', validation: ['staging passed'], reconsiderWhen: 'policy changes', validVersions: ['v2'] }, 'summary');
+    expect(lesson.steps.at(-1)).toContain('mem-lesson-get lessonId=lesson-2 revision=4');
+    expect(lesson.failureModes).toEqual(expect.arrayContaining(['scope: production', 'validation: staging passed', 'reconsider: policy changes', 'versions: v2']));
   });
 
   it('renders a long evidence excerpt around the strongest query identifier', () => {
@@ -172,11 +187,11 @@ describe('formatMemoryContext', () => {
   // injected event ids from this text to score retrieval. Any marker the
   // instruction text adds would be counted as a selected memory for every case.
   // Built per call: a shared /g regex carries lastIndex between assertions.
-  function scrapeEventIds(context: string): string[] {
-    return Array.from(context.matchAll(/\[event:([a-f0-9-]+)\]/giu), (match) => match[1] ?? '');
+  function scrapeMemoryIds(context: string): string[] {
+    return Array.from(context.matchAll(/\[(?:event|lesson):([a-f0-9-]+)\]/giu), (match) => match[1] ?? '');
   }
 
-  it('marks each memory with its event id for the evaluation harness', () => {
+  it('marks events and lessons with their own ids for the evaluation harness', () => {
     const context = formatMemoryContext(
       [
         { type: 'lesson', content: 'PR 167 리뷰에서 null 처리 위험 발견', id: '3cf7e0c0-5dbe-4d91-90ed-524254e6bd4f' },
@@ -185,7 +200,7 @@ describe('formatMemoryContext', () => {
       'PR 167'
     );
 
-    expect(scrapeEventIds(context)).toEqual([
+    expect(scrapeMemoryIds(context)).toEqual([
       '3cf7e0c0-5dbe-4d91-90ed-524254e6bd4f',
       '70958fdb-14fe-4385-a8ad-24cbaa4ffc60'
     ]);
@@ -195,7 +210,7 @@ describe('formatMemoryContext', () => {
     const context = formatMemoryContext([{ type: 'lesson', content: '아이디 없는 근거' }], '질문');
 
     expect(context).toContain('아이디 없는 근거');
-    expect(scrapeEventIds(context)).toEqual([]);
+    expect(scrapeMemoryIds(context)).toEqual([]);
   });
 
   it('asks the model to self-report the memories it actually relied on', () => {

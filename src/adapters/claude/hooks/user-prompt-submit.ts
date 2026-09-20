@@ -56,6 +56,10 @@ const MAX_EPISODE_SEED_CANDIDATES = Math.max(MAX_CANDIDATES, MAX_MEMORIES * 10);
  * days. 500 is the repository's own list ceiling.
  */
 const LESSON_SCAN_LIMIT = 500;
+/** Host-only launch marker; never persisted or inferred from model input. */
+export function shouldNativeInjectLessons(owner = process.env.CLAUDE_MEMORY_LESSON_OWNER): boolean {
+  return owner !== 'host';
+}
 // Tuned default for noise/recall balance on shopping_assistant-like corpus
 const BASE_MIN_SCORE = readNumberEnv('CLAUDE_MEMORY_MIN_SCORE', 0.4, { min: 0, max: 1 });
 const FALLBACK_MIN_SCORE = readNumberEnv('CLAUDE_MEMORY_FALLBACK_MIN_SCORE', 0.3, { min: 0, max: 1 });
@@ -171,7 +175,7 @@ export function formatMemoryContext(items: Array<{ type: string; content: string
   if (items.length === 0) return '';
   const lines = items.map((m) => {
     const preview = selectEvidencePreview(m.content, query);
-    const sourceRef = m.id ? ` [event:${m.id}]` : '';
+    const sourceRef = m.id ? ` [${m.type === 'lesson' ? 'lesson' : 'event'}:${m.id}]` : '';
     const level = m.memoryLevel && m.memoryLevel !== 'L0' ? ` ${m.memoryLevel}` : '';
     return `- [${m.type}${level}] ${preview}${sourceRef}`;
   });
@@ -544,7 +548,7 @@ export async function main(options: UserPromptSubmitMainOptions = {}): Promise<s
 
       // Curated lesson lane. Lessons are not events, so no other lane can ever
       // surface them; without this the lesson feature is write-only.
-      try {
+      if (shouldNativeInjectLessons()) { try {
         const lessons = await memoryService.listProjectLessonInjections(
           resolveCanonicalMemoryActorId(input.actor_id),
           LESSON_SCAN_LIMIT
@@ -561,7 +565,7 @@ export async function main(options: UserPromptSubmitMainOptions = {}): Promise<s
           });
           if (candidate) mergedMemories.push(candidate);
         }
-      } catch { /* lesson lane is supplementary */ }
+      } catch { /* lesson lane is supplementary */ } }
 
       const shouldUseKeywordFallback =
         RETRIEVAL_MODE === 'keyword' ||
@@ -794,18 +798,19 @@ export async function main(options: UserPromptSubmitMainOptions = {}): Promise<s
 }
 
 export function lessonForInjection(
-  lesson: { lessonId: string; name: string; trigger: string; steps: string[]; failureModes: string[]; confidence: number },
+  lesson: { lessonId: string; revision?: number; name: string; trigger: string; steps: string[]; failureModes: string[]; confidence: number; scope?: string; validation?: string[]; reconsiderWhen?: string; validVersions?: string[] },
   injectionMode: 'direct' | 'summary' | 'reference'
 ) {
   if (injectionMode === 'direct') return lesson;
   if (injectionMode === 'summary') {
-    return { ...lesson, steps: lesson.steps.slice(0, 2), failureModes: [] };
+    const conditions = [lesson.scope && `scope: ${lesson.scope}`, ...(lesson.validation ?? []).map((value) => `validation: ${value}`), lesson.reconsiderWhen && `reconsider: ${lesson.reconsiderWhen}`, lesson.validVersions?.length && `versions: ${lesson.validVersions.join(', ')}`].filter(Boolean) as string[];
+    return { ...lesson, steps: [...lesson.steps.slice(0, 2), `[partial lesson; retrieve full body with mem-lesson-get lessonId=${lesson.lessonId} revision=${lesson.revision ?? 1}]`], failureModes: [...lesson.failureModes, ...conditions] };
   }
   return {
     ...lesson,
     name: `[lesson:${lesson.lessonId}] ${lesson.name}`,
     trigger: '',
-    steps: [],
+    steps: [`[reference only; retrieve with mem-lesson-get lessonId=${lesson.lessonId} revision=${lesson.revision ?? 1}]`],
     failureModes: []
   };
 }

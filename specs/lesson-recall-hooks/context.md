@@ -87,3 +87,145 @@ Desktop `specs/lesson-learning-reliability` 후속 구현 요청으로 context-p
 - 검증: 관련 95 tests, 전체 232 files / 1,565 tests, typecheck, build, architecture boundary 통과. lint 0 errors / 기존 45 warnings. 실제 사용자 DB·설치 artifact·hooks 설정은 바꾸지 않았다.
 
 다음 단계는 native prompt 전체 범위·고정 평가셋·전달 예산/권한/ack 검증이다. 신규 후보 queue/API/비용 작업은 Desktop plan의 T4 계약 검토와 별개 승인 경계이며 이 로컬 패치로 완료 처리하지 않는다.
+
+## 8. 2026-09-20 authenticated host contract (local, not integrated)
+
+- `specs/lesson-recall-hooks/host-contract.md` fixes the v1 callable package
+  contract at `dist/services/lesson-host-service.js`. CML verifies an opaque
+  host binding and neither mints identity nor exposes an unauthenticated REST
+  route. Happy/Desktop must supply the verifier and gateway/budget execution.
+- `memory_lessons` now has additive `revision` and `recall_enabled`; automatic
+  injection selection excludes disabled lessons in legacy and registered modes
+  while preserving existing asset lifecycle checks. The shared injection query
+  reads all 500-row pages, so native prompt/session-start callers no longer
+  silently omit a 501st eligible lesson.
+- Persistent candidate and id-only lifecycle trace tables support
+  pending/reviewed/accepted/rejected/expired, SHA-256 payload CAS, source
+  project validation, UI snapshots, and selected/delivered/read separation.
+  Candidate approval is an authenticated transaction; an existing lesson name
+  returns merge-required rather than being overwritten.
+- Verified locally: targeted host/native tests, full CML test suite, typecheck,
+  lint (0 errors, pre-existing warnings), build, and architecture boundary.
+  Actual Happy binding, provider acceptance, gateway budget reservation,
+  runtime A→B smoke, and the fixed recall-quality evaluation remain unverified.
+
+## 9. Fixed lexical evaluation finding (separate from host contract)
+
+Parent fixture `specs/lesson-learning-reliability/recall-evaluation.json` and
+`scripts/evaluate-lesson-recall.mjs` reported lexical recall@3 `0.60`,
+precision `1.00`, and negative false injection `0` (60 positives / 40
+negatives). Most misses are Korean lesson → English paraphrases, plus four
+Korean paraphrases. This is a measurement record, not a fixture-tuning task.
+
+Existing semantic retrieval cannot be directly reused for lessons: its vector
+outbox item kinds exclude `lesson`, and lesson rows have no embedding/index
+path. A separate approved follow-up must add a lesson vector projection/outbox
+and hybrid candidate union behind lexical exact-match preservation, then run
+the unchanged 60/40 fixture and negative/cross-scope gates. No synonym list or
+fixture-specific rule was added here.
+
+## 10. Host correctness follow-up and local hybrid diagnostic
+
+- Candidate writes and idempotency records now share SQLite transactions;
+  candidate review/approval rejects a mismatched generation, expired 30-day
+  item, or source-session/event mismatch. Pending/review capacity is 20.
+  Confirmed lessons retain scope, validation, reconsideration, and valid-version
+  metadata. Version-constrained lessons stay out of automatic injection until a
+  future host supplies a matching version context.
+- Candidate snapshots preserve duplicate lesson-id proposals without automatic
+  merge. Host snapshot lists are paginated at 100. Selected/delivered traces
+  store lesson revisions, and acknowledgement rejects a revision changed before
+  provider acceptance. The stable opening factory owns store migration and has
+  a post-build dynamic-import smoke test.
+- `npm run eval:lesson-hybrid -- <fixture> <existing-local-cache-dir>` performs
+  local cosine ranking with remote model access disabled. The isolated empty
+  cache diagnostic on 2026-09-20 returned `local_model_unavailable`; it made no
+  provider/API call and produced no cosine threshold claim.
+- A subsequently approved clone-only download through the existing managed
+  Embedder resolver measured the unchanged 60 positive / 40 negative fixture:
+  raw cosine retrieval@3 was 0.9833, raw precision@3 was 0.1967, and raw
+  negative false-injection was 1.0. This is explicitly not an operational
+  hybrid gate because the diagnostic always returns three neighbours. It does
+  not implement, calibrate, or enable hybrid recall. Any adoption needs the
+  existing relevance-abstention contract plus a separately frozen calibration
+  set and held-out evaluation; the fixed fixture must not tune a threshold.
+
+## 11. Final local verification boundary (2026-09-20)
+
+- Host recall now has a 900ms internal read/permission/ranking deadline, scans
+  100-row pages with event-loop yields, holds only page-local top candidates,
+  and returns typed `timeout` with no selection trace or write. The existing
+  warm lexical performance check is not evidence of a hard end-to-end budget.
+- Worker generation fencing applies to enqueue and `markReviewed`; a reviewed
+  candidate can be approved/rejected by a later current UI generation when its
+  exact revision/hash and expiry remain valid. The last async host verification
+  is immediately before each mutation transaction.
+- The model artifact actually used by the raw diagnostic was
+  `Xenova/multilingual-e5-small`, artifact SHA-256
+  `a89c5cc413885d7c2af5906da0f77f30d2ce4ef4bb11751fc7e22d652373ec4d`.
+  The Embedder download contract did not expose a revision, so it is recorded
+  as unavailable rather than invented. The cache is clone-local and ignored.
+- Verified: `npm run verify` (233 files / 1,575 tests; lint has 45 pre-existing
+  warnings and zero errors), `npm run build`, dist host-opening smoke,
+  `npm run check:architecture`, targeted host tests, and the local raw cosine
+  diagnostic. No user database, installation, hooks configuration, provider,
+  paid call, or publish action was changed.
+
+## 12. Approved T6 follow-up started (not complete)
+
+The fixed 60/40 fixture is held out unchanged. The raw cosine diagnostic is
+not an enabled recall path. The next implementation unit is a process-local,
+revision-keyed derived lesson-vector cache at the shared lexical ranking
+boundary, with asynchronous model warmup/status and cold lexical fallback.
+It must use a separately authored calibration corpus containing relevant,
+irrelevant, and condition-opposite cases to freeze any abstention threshold
+before measuring the held-out fixture. No authoritative SQLite vector schema
+change, user cache/config mutation, provider call, or threshold tuning against
+  the 60/40 fixture is authorized by this recorded state.
+
+## 13. T6 calibrated common hybrid result (2026-09-20)
+
+`benchmarks/lesson-recall/calibration-v1.json` is independent from the held-out
+60/40 fixture and includes English/Korean relevant cases, unrelated cases, and
+condition-opposite cases. It froze the general negation/skip/prohibition guard
+plus absolute cosine `0.82` and top-1 margin `0.03`; held-out labels did not
+choose these values. `rankCuratedLessonsHybrid` preserves lexical hits, starts
+a background process-local index build on cold semantic fallback, and only
+uses ready revision-keyed vectors in foreground. The held-out common-function
+result is saved at `benchmarks/lesson-recall/results/heldout-v1.json`: lexical
+recall@1 .6000 / precision 1 / negative false 0 / identifier .5932 / p95
+.175ms; hybrid .7667 / 1 / 0 / .7627 / 2.325ms. Native short-lived hook
+processes remain lexical-only: the existing persistent semantic daemon exposes
+only retrieve/graduate/summarize, not a lesson-cache warm/status operation.
+No new public daemon API was introduced without a separate contract.
+
+## 14. E5 prefix v2 experiment (2026-09-20)
+
+The official `intfloat/multilingual-e5-small` model card specifies `query:`
+and `passage:` retrieval prefixes. Lesson vectors alone now use that contract
+when the active model is an E5 family model; the global Embedder/event index
+remains unchanged. Cache keys include model and `e5-prefix-v2`. Independent
+calibration froze absolute `.826` and margin `.029` with the existing general
+negative-intent guard. The unchanged held-out v2 result is recall@3 `.7000`,
+precision `1`, negative false `0`, identifier retention `1`, p95 `2.667ms`.
+It misses the .80 quality target; no held-out threshold adjustment was made.
+
+## 15. Primary review and independent calibration v3 (2026-09-20)
+
+The independent 20-lesson/100-query calibration fixture includes 20 explicit
+opposite-condition queries. A shared prohibition guard now abstains before
+lexical ranking as well as semantic rescue; Korean spaced `하지 마라` is covered.
+The deterministic calibration-only grid froze cosine `.829` and margin `.026`.
+The unchanged held-out result is recall@3 `.683333`, precision `1`, negative
+false injection `0`, identifier retention `1`, warm p95 `42.798ms`.
+Semantic rescue remains off by default because the `.80` quality gate failed.
+Results and provenance are in `benchmarks/lesson-recall/results/`; neither
+held-out labels nor thresholds were altered after this measurement.
+
+Primary review also fixed cached recall revision comparison, tested final
+binding/policy withdrawal, and retained only a SHA-256 request fingerprint.
+Latest verification: 234 files / 1,592 tests passed, typecheck, lint (45 existing
+warnings, no errors), build, and import-boundary check passed. The stable artifact advertises native-owner support; both SessionStart and
+UserPromptSubmit skip only the lesson lane for host ownership. The local npm
+archive passed extracted-package factory/schema/capability smoke. No live user
+store, hook installation, paid review, or deployment was changed.

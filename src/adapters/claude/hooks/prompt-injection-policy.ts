@@ -356,10 +356,18 @@ export interface LessonEvidenceInput {
  * graduated lane does: a reviewed runbook must not outrank exact evidence just
  * for being curated, so confidence is only a small tie-breaker.
  */
+export function isExplicitlyProhibitedLessonQuery(query: string): boolean {
+  // An exact identifier is not permission to suggest a procedure the caller
+  // explicitly prohibited. Abstain conservatively; ordinary "without" clauses
+  // remain searchable because they may describe the desired safety condition.
+  return /\b(?:do\s+not|don't|never)\b|지\s*마(?:라|세요|십시오)?(?:[.!?\s]|$)/iu.test(query);
+}
+
 export function scoreLessonEvidence(
   query: string,
   lesson: LessonEvidenceInput
 ): HookMemoryCandidate | null {
+  if (isExplicitlyProhibitedLessonQuery(query)) return null;
   const content = formatLessonContent(lesson);
   if (!hasQueryMemoryAlignment(query, content, 2)) return null;
 

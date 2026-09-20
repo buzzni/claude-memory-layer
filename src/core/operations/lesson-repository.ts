@@ -28,6 +28,12 @@ interface MemoryLessonRow {
   failure_modes_json: string;
   skill_candidate: number;
   source_class?: string;
+  revision?: number;
+  recall_enabled?: number;
+  scope?: string | null;
+  validation_json?: string;
+  reconsider_when?: string | null;
+  valid_versions_json?: string;
   created_at: string;
   updated_at: string;
 }
@@ -90,6 +96,12 @@ function rowToLesson(row: MemoryLessonRow): MemoryLesson {
     failureModes: parseStringArray(row.failure_modes_json),
     skillCandidate: Number(row.skill_candidate) === 1,
     sourceClass: row.source_class === 'curated' ? 'curated' : 'derived',
+    revision: Number(row.revision ?? 1),
+    recallEnabled: Number(row.recall_enabled ?? 1) === 1,
+    scope: row.scope ?? undefined,
+    validation: parseStringArray(row.validation_json),
+    reconsiderWhen: row.reconsider_when ?? undefined,
+    validVersions: parseStringArray(row.valid_versions_json),
     createdAt: toDateFromSQLite(row.created_at),
     updatedAt: toDateFromSQLite(row.updated_at)
   });
@@ -108,6 +120,12 @@ function lessonToAuditJson(lesson: MemoryLesson): Record<string, unknown> {
     failureModes: lesson.failureModes,
     skillCandidate: lesson.skillCandidate,
     sourceClass: lesson.sourceClass,
+    revision: lesson.revision,
+    recallEnabled: lesson.recallEnabled,
+    scope: lesson.scope,
+    validation: lesson.validation,
+    reconsiderWhen: lesson.reconsiderWhen,
+    validVersions: lesson.validVersions,
     createdAt: lesson.createdAt.toISOString(),
     updatedAt: lesson.updatedAt.toISOString()
   };
@@ -136,7 +154,8 @@ export class LessonRepository {
         this.db,
         `UPDATE memory_lessons
          SET name = ?, trigger = ?, steps_json = ?, confidence = ?, source_session_ids = ?,
-             source_event_ids = ?, failure_modes_json = ?, skill_candidate = ?, source_class = ?, updated_at = ?
+             source_event_ids = ?, failure_modes_json = ?, skill_candidate = ?, source_class = ?,
+             revision = revision + 1, recall_enabled = ?, scope = ?, validation_json = ?, reconsider_when = ?, valid_versions_json = ?, updated_at = ?
          WHERE lesson_id = ? AND project_hash = ?`,
         [
           parsed.name,
@@ -148,6 +167,11 @@ export class LessonRepository {
           JSON.stringify(parsed.failureModes),
           parsed.skillCandidate ? 1 : 0,
           parsed.sourceClass,
+          parsed.recallEnabled === undefined ? (existing.recallEnabled ? 1 : 0) : (parsed.recallEnabled ? 1 : 0),
+          parsed.scope ?? existing.scope ?? null,
+          JSON.stringify(parsed.validation ?? existing.validation),
+          parsed.reconsiderWhen ?? existing.reconsiderWhen ?? null,
+          JSON.stringify(parsed.validVersions ?? existing.validVersions),
           now,
           existing.lessonId,
           projectHashToStorage(existing.projectHash)
@@ -164,8 +188,8 @@ export class LessonRepository {
       `INSERT INTO memory_lessons (
         lesson_id, project_hash, name, trigger, steps_json, confidence,
         source_session_ids, source_event_ids, failure_modes_json, skill_candidate,
-        source_class, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        source_class, revision, recall_enabled, scope, validation_json, reconsider_when, valid_versions_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         lessonId,
         projectHashToStorage(parsed.projectHash),
@@ -178,6 +202,12 @@ export class LessonRepository {
         JSON.stringify(parsed.failureModes),
         parsed.skillCandidate ? 1 : 0,
         parsed.sourceClass,
+        1,
+        parsed.recallEnabled === false ? 0 : 1,
+        parsed.scope ?? null,
+        JSON.stringify(parsed.validation ?? []),
+        parsed.reconsiderWhen ?? null,
+        JSON.stringify(parsed.validVersions ?? []),
         now,
         now
       ]
@@ -212,6 +242,17 @@ export class LessonRepository {
       params
     );
     return rows.map(rowToLesson);
+  }
+
+  setRecallEnabled(input: { lessonId: string; projectHash: string; expectedRevision: number; enabled: boolean }): MemoryLesson | null {
+    const result = sqliteRun(
+      this.db,
+      `UPDATE memory_lessons
+       SET recall_enabled = ?, revision = revision + 1, updated_at = ?
+       WHERE lesson_id = ? AND project_hash = ? AND revision = ?`,
+      [input.enabled ? 1 : 0, new Date().toISOString(), input.lessonId, projectHashToStorage(input.projectHash), input.expectedRevision]
+    );
+    return result.changes === 1 ? this.get(input.lessonId) : null;
   }
 
   getByProjectAndName(projectHash: string | undefined, name: string): MemoryLesson | null {

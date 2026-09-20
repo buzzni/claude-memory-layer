@@ -1,5 +1,6 @@
 import type { MemoryLesson } from '../../core/types.js';
 import { scoreLessonEvidence } from '../../adapters/claude/hooks/prompt-injection-policy.js';
+export { isExplicitlyProhibitedLessonQuery } from '../../adapters/claude/hooks/prompt-injection-policy.js';
 
 /**
  * specs/lesson-recall-hooks R5 · specs/lesson-learning-reliability R3 —

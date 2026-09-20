@@ -344,6 +344,10 @@ describe('formatLessonIndexContext', () => {
 });
 
 describe('sessionStartLessonBudget', () => {
+  it('leaves the native lesson lane empty when the host owns injection', () => {
+    expect(sessionStartLessonBudget({ CLAUDE_MEMORY_LESSON_OWNER: 'host', CLAUDE_MEMORY_SESSION_START_LESSON_BUDGET: '900' })).toBe(0);
+    expect(sessionStartLessonBudget({ CLAUDE_MEMORY_LESSON_OWNER: 'native' })).toBe(2400);
+  });
   it('defaults to 2400 characters, close to hermes MEMORY.md 2200', () => {
     expect(sessionStartLessonBudget({})).toBe(2400);
   });

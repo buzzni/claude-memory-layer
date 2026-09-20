@@ -1,0 +1,988 @@
+{
+  "purpose": "Approved R3 calibration only: 20 lessons, 60 relevant cases, 20 irrelevant negatives, and 20 explicit condition-opposite negatives. Identifier cases use literal technical symbols present in lesson text. Heldout data remains untouched.",
+  "lessons": [
+    {
+      "name": "CSV locale and quoting via parseCsvLocale",
+      "trigger": "Use parseCsvLocale when CSV delimiter, decimal rules, or quoted fields vary by locale.",
+      "steps": [
+        "Detect the locale before tokenizing.",
+        "Parse delimiters and escaped quotes for that locale.",
+        "Validate row widths after unquoting."
+      ],
+      "failureModes": [
+        "Quoted delimiters are treated as separators."
+      ],
+      "lessonId": "cal-csv-locale-quoting"
+    },
+    {
+      "name": "Queue visibility with queueLeaseVisibility",
+      "trigger": "Use queueLeaseVisibility when work can be queued, leased, running, retried, or completed.",
+      "steps": [
+        "Separate lease state from queue presence.",
+        "Hide expired leases from active work.",
+        "Expose stable item transitions."
+      ],
+      "failureModes": [
+        "Leased work appears pending and is claimed twice."
+      ],
+      "lessonId": "cal-queue-visibility"
+    },
+    {
+      "name": "Cross-host clock skew via validateClockSkew",
+      "trigger": "Use validateClockSkew for timestamp or expiry checks across machines.",
+      "steps": [
+        "Apply a documented skew window.",
+        "Use monotonic time for local deadlines.",
+        "Reject future or stale timestamps outside bounds."
+      ],
+      "failureModes": [
+        "Valid work expires early because clocks differ."
+      ],
+      "lessonId": "cal-clock-skew"
+    },
+    {
+      "name": "Symlink boundaries with resolveSymlinkBoundary",
+      "trigger": "Use resolveSymlinkBoundary for untrusted paths that must remain under an approved root.",
+      "steps": [
+        "Resolve the candidate and link targets.",
+        "Check the canonical result under the root.",
+        "Reject traversal through links or replaced components."
+      ],
+      "failureModes": [
+        "Textual path checks allow escape through a symlink."
+      ],
+      "lessonId": "cal-symlink-boundary"
+    },
+    {
+      "name": "Unicode keys with normalizeUnicodeKey",
+      "trigger": "Use normalizeUnicodeKey for user-visible Unicode identifiers with canonically equivalent forms.",
+      "steps": [
+        "Choose one normalization form.",
+        "Normalize stored and lookup keys.",
+        "Keep display spelling separately if needed."
+      ],
+      "failureModes": [
+        "Composed and decomposed names become duplicate records."
+      ],
+      "lessonId": "cal-unicode-normalization"
+    },
+    {
+      "name": "HTTP reads with applyHttpCachePolicy",
+      "trigger": "Use applyHttpCachePolicy for cacheable HTTP reads with freshness and authorization rules.",
+      "steps": [
+        "Set matching cache headers.",
+        "Use ETag or Last-Modified revalidation.",
+        "Vary cache keys when authorization changes output."
+      ],
+      "failureModes": [
+        "Stale or cross-user data is served from cache."
+      ],
+      "lessonId": "cal-http-caching"
+    },
+    {
+      "name": "Transient retries with retryWithJitter",
+      "trigger": "Use retryWithJitter when many clients retry classified transient failures.",
+      "steps": [
+        "Retry only transient failures.",
+        "Use bounded exponential backoff with jitter.",
+        "Stop at an attempt or deadline limit."
+      ],
+      "failureModes": [
+        "Synchronized retries create a thundering herd."
+      ],
+      "lessonId": "cal-retry-jitter"
+    },
+    {
+      "name": "Large uploads with completeMultipartUpload",
+      "trigger": "Use completeMultipartUpload for objects above the single-request reliability or size threshold.",
+      "steps": [
+        "Upload bounded numbered parts.",
+        "Retry and checksum parts independently.",
+        "Complete only after all parts exist."
+      ],
+      "failureModes": [
+        "The completed object has a missing or misordered part."
+      ],
+      "lessonId": "cal-multipart-upload"
+    },
+    {
+      "name": "Append logs with rotateAppendLog",
+      "trigger": "Use rotateAppendLog for append-only logs that must rotate without losing writes.",
+      "steps": [
+        "Coordinate writers and rotation.",
+        "Flush and close the old segment.",
+        "Publish exactly one new active segment."
+      ],
+      "failureModes": [
+        "Concurrent writes split across segments or lose the tail."
+      ],
+      "lessonId": "cal-append-log-rotation"
+    },
+    {
+      "name": "Managed files with protectImmutableAsset",
+      "trigger": "Use protectImmutableAsset when managed assets may have been modified by users.",
+      "steps": [
+        "Record ownership and a fingerprint.",
+        "Skip unchanged managed files.",
+        "Protect unowned files pending explicit resolution."
+      ],
+      "failureModes": [
+        "A user-edited asset is overwritten by filename match."
+      ],
+      "lessonId": "cal-immutable-assets"
+    },
+    {
+      "name": "Calendar dates with addCalendarDayInZone",
+      "trigger": "Use addCalendarDayInZone for local calendar scheduling across timezone or DST changes.",
+      "steps": [
+        "Interpret the date in its timezone.",
+        "Add calendar days before converting to an instant.",
+        "Persist the timezone or offset."
+      ],
+      "failureModes": [
+        "A next-day event shifts at a DST boundary."
+      ],
+      "lessonId": "cal-timezone-calendar"
+    },
+    {
+      "name": "Filesystem case with detectPathCaseCollision",
+      "trigger": "Use detectPathCaseCollision across case-sensitive and case-insensitive filesystems.",
+      "steps": [
+        "Use canonical filesystem spelling.",
+        "Detect case-only collisions before writing.",
+        "Do not silently lowercase case-sensitive paths."
+      ],
+      "failureModes": [
+        "Distinct files merge or the wrong file is targeted."
+      ],
+      "lessonId": "cal-path-case"
+    },
+    {
+      "name": "Changing lists with encodePageCursor",
+      "trigger": "Use encodePageCursor when paginating a changing collection without skips or duplicates.",
+      "steps": [
+        "Encode ordering and scope opaquely.",
+        "Use deterministic ordering with a unique tie-breaker.",
+        "Reject cursors from another scope or version."
+      ],
+      "failureModes": [
+        "Offset pagination skips records after inserts."
+      ],
+      "lessonId": "cal-pagination-cursor"
+    },
+    {
+      "name": "Byte streams with frameStreamMessage",
+      "trigger": "Use frameStreamMessage for multiple messages over a byte stream without inherent boundaries.",
+      "steps": [
+        "Prefix messages with bounded lengths.",
+        "Buffer partial reads.",
+        "Reject impossible lengths before allocation."
+      ],
+      "failureModes": [
+        "One read is mistaken for one complete message."
+      ],
+      "lessonId": "cal-socket-framing"
+    },
+    {
+      "name": "Text transfer with normalizeTextNewline",
+      "trigger": "Use normalizeTextNewline when text crosses newline or encoding conventions.",
+      "steps": [
+        "Detect or declare the encoding.",
+        "Normalize newlines only for permitted text.",
+        "Preserve binary content."
+      ],
+      "failureModes": [
+        "Text or binary-like content is corrupted by conversion."
+      ],
+      "lessonId": "cal-newline-encoding"
+    },
+    {
+      "name": "Consistent reads with readSnapshotTransaction",
+      "trigger": "Use readSnapshotTransaction when dependent database reads must see one state.",
+      "steps": [
+        "Start the required isolation transaction.",
+        "Read all dependent rows inside it.",
+        "Commit or discard the result atomically."
+      ],
+      "failureModes": [
+        "Rows from different database states form an impossible result."
+      ],
+      "lessonId": "cal-transaction-snapshot"
+    },
+    {
+      "name": "Per-item results with ackBatchItem",
+      "trigger": "Use ackBatchItem when a batch must report accepted, retried, or rejected items individually.",
+      "steps": [
+        "Assign stable item operation IDs.",
+        "Return per-item acknowledgement states.",
+        "Make acknowledgement idempotent."
+      ],
+      "failureModes": [
+        "The batch reports success after silently dropping an item."
+      ],
+      "lessonId": "cal-batch-ack"
+    },
+    {
+      "name": "HTTP encodings with negotiateCompression",
+      "trigger": "Use negotiateCompression when HTTP responses may be compressed by client preference.",
+      "steps": [
+        "Choose only an advertised encoding.",
+        "Set Content-Encoding and Vary.",
+        "Skip unsuitable or already compressed payloads."
+      ],
+      "failureModes": [
+        "Compressed bytes are sent to a client that did not negotiate them."
+      ],
+      "lessonId": "cal-compression-negotiation"
+    },
+    {
+      "name": "Shutdown with drainServiceGracefully",
+      "trigger": "Use drainServiceGracefully when shutdown must stop new work and bound in-flight work.",
+      "steps": [
+        "Reject new work.",
+        "Track active work to a deadline.",
+        "Force-close only after the deadline."
+      ],
+      "failureModes": [
+        "New work is accepted or active requests are cut off immediately."
+      ],
+      "lessonId": "cal-graceful-draining"
+    },
+    {
+      "name": "Uploads with validateUploadMime",
+      "trigger": "Use validateUploadMime when client-declared upload MIME types are untrusted.",
+      "steps": [
+        "Apply size and extension policy.",
+        "Inspect safe signatures or structure server-side.",
+        "Store or reject according to validated content."
+      ],
+      "failureModes": [
+        "A client MIME header is trusted as the actual file type."
+      ],
+      "lessonId": "cal-upload-mime"
+    }
+  ],
+  "cases": [
+    {
+      "id": "r01-i",
+      "query": "Use parseCsvLocale for regional CSV delimiters and quoted fields.",
+      "category": "identifier",
+      "expected": [
+        "cal-csv-locale-quoting"
+      ]
+    },
+    {
+      "id": "r01-k",
+      "query": "로케일별 CSV 구분자와 인용부호를 해석하고 행 폭을 검증해야 한다.",
+      "category": "ko-paraphrase",
+      "expected": [
+        "cal-csv-locale-quoting"
+      ]
+    },
+    {
+      "id": "r01-e",
+      "query": "Parse quoted separators according to the selected CSV locale before checking row width.",
+      "category": "en-paraphrase",
+      "expected": [
+        "cal-csv-locale-quoting"
+      ]
+    },
+    {
+      "id": "r02-i",
+      "query": "queueLeaseVisibility must distinguish queued, leased, running, and completed work.",
+      "category": "identifier",
+      "expected": [
+        "cal-queue-visibility"
+      ]
+    },
+    {
+      "id": "r02-k",
+      "query": "lease가 만료된 작업과 실행 중인 작업을 구분해 중복 claim을 막아야 한다.",
+      "category": "ko-paraphrase",
+      "expected": [
+        "cal-queue-visibility"
+      ]
+    },
+    {
+      "id": "r02-e",
+      "query": "Keep leased work out of the pending list while preserving retry visibility.",
+      "category": "en-paraphrase",
+      "expected": [
+        "cal-queue-visibility"
+      ]
+    },
+    {
+      "id": "r03-i",
+      "query": "Apply validateClockSkew to cross-machine expiry checks.",
+      "category": "identifier",
+      "expected": [
+        "cal-clock-skew"
+      ]
+    },
+    {
+      "id": "r03-k",
+      "query": "호스트 시계 차이를 고려하고 로컬 제한시간은 monotonic clock으로 재야 한다.",
+      "category": "ko-paraphrase",
+      "expected": [
+        "cal-clock-skew"
+      ]
+    },
+    {
+      "id": "r03-e",
+      "query": "Use a bounded skew window so a valid lease is not rejected by a clock that is ahead.",
+      "category": "en-paraphrase",
+      "expected": [
+        "cal-clock-skew"
+      ]
+    },
+    {
+      "id": "r04-i",
+      "query": "resolveSymlinkBoundary must verify the resolved path stays below the sandbox root.",
+      "category": "identifier",
+      "expected": [
+        "cal-symlink-boundary"
+      ]
+    },
+    {
+      "id": "r04-k",
+      "query": "입력 경로가 root처럼 보여도 symlink가 밖을 가리키면 canonical path를 검사한다.",
+      "category": "ko-paraphrase",
+      "expected": [
+        "cal-symlink-boundary"
+      ]
+    },
+    {
+      "id": "r04-e",
+      "query": "Resolve links before reading an untrusted path and reject targets outside the approved directory.",
+      "category": "en-paraphrase",
+      "expected": [
+        "cal-symlink-boundary"
+      ]
+    },
+    {
+      "id": "r05-i",
+      "query": "Use normalizeUnicodeKey for canonically equivalent user identifiers.",
+      "category": "identifier",
+      "expected": [
+        "cal-unicode-normalization"
+      ]
+    },
+    {
+      "id": "r05-k",
+      "query": "조합형과 분해형 Unicode 이름이 같은 키가 되도록 양쪽을 정규화한다.",
+      "category": "ko-paraphrase",
+      "expected": [
+        "cal-unicode-normalization"
+      ]
+    },
+    {
+      "id": "r05-e",
+      "query": "Normalize stored and lookup names so equivalent Unicode forms do not duplicate records.",
+      "category": "en-paraphrase",
+      "expected": [
+        "cal-unicode-normalization"
+      ]
+    },
+    {
+      "id": "r06-i",
+      "query": "applyHttpCachePolicy should define validators and authorization-aware cache variation.",
+      "category": "identifier",
+      "expected": [
+        "cal-http-caching"
+      ]
+    },
+    {
+      "id": "r06-k",
+      "query": "HTTP 조회 응답에 ETag와 Cache-Control을 적용하고 사용자별 캐시가 섞이지 않게 한다.",
+      "category": "ko-paraphrase",
+      "expected": [
+        "cal-http-caching"
+      ]
+    },
+    {
+      "id": "r06-e",
+      "query": "Define revalidation and vary the cache whenever authorization changes the representation.",
+      "category": "en-paraphrase",
+      "expected": [
+        "cal-http-caching"
+      ]
+    },
+    {
+      "id": "r07-i",
+      "query": "Use retryWithJitter for bounded retries of transient failures.",
+      "category": "identifier",
+      "expected": [
+        "cal-retry-jitter"
+      ]
+    },
+    {
+      "id": "r07-k",
+      "query": "일시적 장애 재시도에 지수 backoff와 무작위 jitter를 넣어 폭주를 피한다.",
+      "category": "ko-paraphrase",
+      "expected": [
+        "cal-retry-jitter"
+      ]
+    },
+    {
+      "id": "r07-e",
+      "query": "Retry only transient errors with bounded randomized backoff and a final deadline.",
+      "category": "en-paraphrase",
+      "expected": [
+        "cal-retry-jitter"
+      ]
+    },
+    {
+      "id": "r08-i",
+      "query": "completeMultipartUpload requires numbered, checksummed parts before completion.",
+      "category": "identifier",
+      "expected": [
+        "cal-multipart-upload"
+      ]
+    },
+    {
+      "id": "r08-k",
+      "query": "대용량 object를 part별로 올리고 checksum을 확인한 뒤 multipart complete를 호출한다.",
+      "category": "ko-paraphrase",
+      "expected": [
+        "cal-multipart-upload"
+      ]
+    },
+    {
+      "id": "r08-e",
+      "query": "Retry failed upload parts independently and complete the object only when every part exists.",
+      "category": "en-paraphrase",
+      "expected": [
+        "cal-multipart-upload"
+      ]
+    },
+    {
+      "id": "r09-i",
+      "query": "Use rotateAppendLog to publish one closed segment and one active segment.",
+      "category": "identifier",
+      "expected": [
+        "cal-append-log-rotation"
+      ]
+    },
+    {
+      "id": "r09-k",
+      "query": "append-only 로그를 flush한 뒤 새 active segment로 안전하게 전환한다.",
+      "category": "ko-paraphrase",
+      "expected": [
+        "cal-append-log-rotation"
+      ]
+    },
+    {
+      "id": "r09-e",
+      "query": "Coordinate writers during log rotation so the durable tail is not lost or split ambiguously.",
+      "category": "en-paraphrase",
+      "expected": [
+        "cal-append-log-rotation"
+      ]
+    },
+    {
+      "id": "r10-i",
+      "query": "protectImmutableAsset uses ownership markers and fingerprints for managed files.",
+      "category": "identifier",
+      "expected": [
+        "cal-immutable-assets"
+      ]
+    },
+    {
+      "id": "r10-k",
+      "query": "marker 없는 사용자 파일은 보호하고 fingerprint가 같은 managed asset은 건너뛴다.",
+      "category": "ko-paraphrase",
+      "expected": [
+        "cal-immutable-assets"
+      ]
+    },
+    {
+      "id": "r10-e",
+      "query": "Check ownership and fingerprints before replacing a managed asset instead of trusting its filename.",
+      "category": "en-paraphrase",
+      "expected": [
+        "cal-immutable-assets"
+      ]
+    },
+    {
+      "id": "r11-i",
+      "query": "Use addCalendarDayInZone for local dates across DST transitions.",
+      "category": "identifier",
+      "expected": [
+        "cal-timezone-calendar"
+      ]
+    },
+    {
+      "id": "r11-k",
+      "query": "DST 지역의 다음 날은 24시간을 더하지 말고 timezone의 calendar date로 계산한다.",
+      "category": "ko-paraphrase",
+      "expected": [
+        "cal-timezone-calendar"
+      ]
+    },
+    {
+      "id": "r11-e",
+      "query": "Perform local calendar-day arithmetic before converting the result to an instant.",
+      "category": "en-paraphrase",
+      "expected": [
+        "cal-timezone-calendar"
+      ]
+    },
+    {
+      "id": "r12-i",
+      "query": "detectPathCaseCollision handles case-only filesystem conflicts.",
+      "category": "identifier",
+      "expected": [
+        "cal-path-case"
+      ]
+    },
+    {
+      "id": "r12-k",
+      "query": "대소문자 구분 여부가 다른 파일시스템 사이에서 case-only 충돌을 먼저 찾는다.",
+      "category": "ko-paraphrase",
+      "expected": [
+        "cal-path-case"
+      ]
+    },
+    {
+      "id": "r12-e",
+      "query": "Preserve canonical spelling and detect case-only collisions instead of silently lowercasing paths.",
+      "category": "en-paraphrase",
+      "expected": [
+        "cal-path-case"
+      ]
+    },
+    {
+      "id": "r13-i",
+      "query": "encodePageCursor should bind ordering and query scope in a stable cursor.",
+      "category": "identifier",
+      "expected": [
+        "cal-pagination-cursor"
+      ]
+    },
+    {
+      "id": "r13-k",
+      "query": "변경되는 목록에는 offset 대신 정렬 키와 scope를 담은 opaque cursor를 사용한다.",
+      "category": "ko-paraphrase",
+      "expected": [
+        "cal-pagination-cursor"
+      ]
+    },
+    {
+      "id": "r13-e",
+      "query": "Use deterministic ordering and a scope-bound cursor to avoid skips between changing pages.",
+      "category": "en-paraphrase",
+      "expected": [
+        "cal-pagination-cursor"
+      ]
+    },
+    {
+      "id": "r14-i",
+      "query": "frameStreamMessage provides bounded framing for byte-stream sockets.",
+      "category": "identifier",
+      "expected": [
+        "cal-socket-framing"
+      ]
+    },
+    {
+      "id": "r14-k",
+      "query": "stream socket의 read 한 번을 메시지로 보지 말고 length frame이 완성될 때까지 buffer한다.",
+      "category": "ko-paraphrase",
+      "expected": [
+        "cal-socket-framing"
+      ]
+    },
+    {
+      "id": "r14-e",
+      "query": "Accumulate partial reads until a bounded length-prefixed stream frame is complete.",
+      "category": "en-paraphrase",
+      "expected": [
+        "cal-socket-framing"
+      ]
+    },
+    {
+      "id": "r15-i",
+      "query": "normalizeTextNewline must preserve encoding and binary content.",
+      "category": "identifier",
+      "expected": [
+        "cal-newline-encoding"
+      ]
+    },
+    {
+      "id": "r15-k",
+      "query": "텍스트 encoding을 확인하고 허용된 텍스트만 newline을 변환하며 binary는 보존한다.",
+      "category": "ko-paraphrase",
+      "expected": [
+        "cal-newline-encoding"
+      ]
+    },
+    {
+      "id": "r15-e",
+      "query": "Detect the source encoding and normalize line endings only for formats that allow text conversion.",
+      "category": "en-paraphrase",
+      "expected": [
+        "cal-newline-encoding"
+      ]
+    },
+    {
+      "id": "r16-i",
+      "query": "readSnapshotTransaction keeps dependent database reads on one snapshot.",
+      "category": "identifier",
+      "expected": [
+        "cal-transaction-snapshot"
+      ]
+    },
+    {
+      "id": "r16-k",
+      "query": "서로 의존하는 DB 조회는 같은 isolation transaction 안에서 읽어야 한다.",
+      "category": "ko-paraphrase",
+      "expected": [
+        "cal-transaction-snapshot"
+      ]
+    },
+    {
+      "id": "r16-e",
+      "query": "Read related rows from one transaction snapshot so the result cannot mix database generations.",
+      "category": "en-paraphrase",
+      "expected": [
+        "cal-transaction-snapshot"
+      ]
+    },
+    {
+      "id": "r17-i",
+      "query": "ackBatchItem returns idempotent per-item batch acknowledgements.",
+      "category": "identifier",
+      "expected": [
+        "cal-batch-ack"
+      ]
+    },
+    {
+      "id": "r17-k",
+      "query": "batch 전체 성공이 아니라 각 항목별 accepted, retry, rejected 결과를 반환한다.",
+      "category": "ko-paraphrase",
+      "expected": [
+        "cal-batch-ack"
+      ]
+    },
+    {
+      "id": "r17-e",
+      "query": "Give every batch item a stable operation ID and an individual acknowledgement state.",
+      "category": "en-paraphrase",
+      "expected": [
+        "cal-batch-ack"
+      ]
+    },
+    {
+      "id": "r18-i",
+      "query": "negotiateCompression must honor Accept-Encoding and set Vary.",
+      "category": "identifier",
+      "expected": [
+        "cal-compression-negotiation"
+      ]
+    },
+    {
+      "id": "r18-k",
+      "query": "client가 광고한 HTTP encoding만 선택하고 Content-Encoding과 Vary를 설정한다.",
+      "category": "ko-paraphrase",
+      "expected": [
+        "cal-compression-negotiation"
+      ]
+    },
+    {
+      "id": "r18-e",
+      "query": "Compress only with a negotiated encoding and vary caches on the negotiation header.",
+      "category": "en-paraphrase",
+      "expected": [
+        "cal-compression-negotiation"
+      ]
+    },
+    {
+      "id": "r19-i",
+      "query": "drainServiceGracefully stops new work while bounded in-flight work completes.",
+      "category": "identifier",
+      "expected": [
+        "cal-graceful-draining"
+      ]
+    },
+    {
+      "id": "r19-k",
+      "query": "종료 중에는 새 요청을 막고 기존 요청은 deadline까지 추적한 뒤 강제 종료한다.",
+      "category": "ko-paraphrase",
+      "expected": [
+        "cal-graceful-draining"
+      ]
+    },
+    {
+      "id": "r19-e",
+      "query": "Reject new work during shutdown and wait for active requests only until the drain deadline.",
+      "category": "en-paraphrase",
+      "expected": [
+        "cal-graceful-draining"
+      ]
+    },
+    {
+      "id": "r20-i",
+      "query": "validateUploadMime must not trust a client-declared upload MIME type.",
+      "category": "identifier",
+      "expected": [
+        "cal-upload-mime"
+      ]
+    },
+    {
+      "id": "r20-k",
+      "query": "업로드 MIME header만 믿지 말고 서버에서 실제 파일 signature와 정책을 확인한다.",
+      "category": "ko-paraphrase",
+      "expected": [
+        "cal-upload-mime"
+      ]
+    },
+    {
+      "id": "r20-e",
+      "query": "Validate uploaded content server-side and store it according to the detected type.",
+      "category": "en-paraphrase",
+      "expected": [
+        "cal-upload-mime"
+      ]
+    },
+    {
+      "id": "n01",
+      "query": "React 버튼의 hover 색상과 padding을 정리해줘.",
+      "category": "irrelevant",
+      "expected": []
+    },
+    {
+      "id": "n02",
+      "query": "How should a PostgreSQL index support a reporting JOIN?",
+      "category": "irrelevant",
+      "expected": []
+    },
+    {
+      "id": "n03",
+      "query": "한국어 이메일 제목을 자연스러운 영어로 번역해줘.",
+      "category": "irrelevant",
+      "expected": []
+    },
+    {
+      "id": "n04",
+      "query": "Design a REST endpoint for changing an avatar color.",
+      "category": "irrelevant",
+      "expected": []
+    },
+    {
+      "id": "n05",
+      "query": "Docker 이미지 README 소개 문구를 작성해줘.",
+      "category": "irrelevant",
+      "expected": []
+    },
+    {
+      "id": "n06",
+      "query": "Which font pairing fits a finance dashboard?",
+      "category": "irrelevant",
+      "expected": []
+    },
+    {
+      "id": "n07",
+      "query": "로그인 화면의 비밀번호 입력란 배치를 검토해줘.",
+      "category": "irrelevant",
+      "expected": []
+    },
+    {
+      "id": "n08",
+      "query": "Explain TypeScript classes versus interfaces.",
+      "category": "irrelevant",
+      "expected": []
+    },
+    {
+      "id": "n09",
+      "query": "회의실 예약 화면에 주간 보기 탭을 추가할 아이디어가 필요해.",
+      "category": "irrelevant",
+      "expected": []
+    },
+    {
+      "id": "n10",
+      "query": "Make the new CLI help text shorter and friendlier.",
+      "category": "irrelevant",
+      "expected": []
+    },
+    {
+      "id": "n11",
+      "query": "How should a responsive header center a product logo?",
+      "category": "irrelevant",
+      "expected": []
+    },
+    {
+      "id": "n12",
+      "query": "번역 파일의 존댓말과 반말 일관성을 점검해줘.",
+      "category": "irrelevant",
+      "expected": []
+    },
+    {
+      "id": "n13",
+      "query": "Suggest names for a background music feature.",
+      "category": "irrelevant",
+      "expected": []
+    },
+    {
+      "id": "n14",
+      "query": "사용자 프로필 카드에 생일 아이콘을 추가해줘.",
+      "category": "irrelevant",
+      "expected": []
+    },
+    {
+      "id": "n15",
+      "query": "What are good acceptance criteria for dark mode?",
+      "category": "irrelevant",
+      "expected": []
+    },
+    {
+      "id": "n16",
+      "query": "Markdown에서 숫자 목록과 굵은 글씨를 섞는 법을 알려줘.",
+      "category": "irrelevant",
+      "expected": []
+    },
+    {
+      "id": "n17",
+      "query": "Compare two SaaS pricing page layouts for mobile.",
+      "category": "irrelevant",
+      "expected": []
+    },
+    {
+      "id": "n18",
+      "query": "테스트 이름을 Given-When-Then 형식으로 바꿔줘.",
+      "category": "irrelevant",
+      "expected": []
+    },
+    {
+      "id": "n19",
+      "query": "How should a settings sidebar choose icon sizes?",
+      "category": "irrelevant",
+      "expected": []
+    },
+    {
+      "id": "n20",
+      "query": "온보딩 진행률 막대의 적절한 위치를 추천해줘.",
+      "category": "irrelevant",
+      "expected": []
+    },
+    {
+      "id": "n21",
+      "query": "Do not apply parseCsvLocale: the input is JSON Lines, not CSV, so delimiter and quote parsing are explicitly out of scope.",
+      "category": "condition-opposite",
+      "expected": []
+    },
+    {
+      "id": "n22",
+      "query": "queueLeaseVisibility를 적용하지 마라. 이것은 lease나 worker claim이 없는 단일 로컬 배열이다.",
+      "category": "condition-opposite",
+      "expected": []
+    },
+    {
+      "id": "n23",
+      "query": "Do not use validateClockSkew: every timestamp comes from one monotonic local clock, so cross-host skew is absent.",
+      "category": "condition-opposite",
+      "expected": []
+    },
+    {
+      "id": "n24",
+      "query": "resolveSymlinkBoundary를 실행하지 마라. 고정된 trusted path이고 symlink traversal은 lookup 전에 금지되어 있다.",
+      "category": "condition-opposite",
+      "expected": []
+    },
+    {
+      "id": "n25",
+      "query": "Do not use normalizeUnicodeKey: this is an opaque bytewise base64 identifier, not a Unicode display name.",
+      "category": "condition-opposite",
+      "expected": []
+    },
+    {
+      "id": "n26",
+      "query": "applyHttpCachePolicy를 적용하지 마라. 인증된 POST mutation 응답은 반드시 cache하지 않는다.",
+      "category": "condition-opposite",
+      "expected": []
+    },
+    {
+      "id": "n27",
+      "query": "Do not use retryWithJitter: this is a permanent schema validation error and must never be retried.",
+      "category": "condition-opposite",
+      "expected": []
+    },
+    {
+      "id": "n28",
+      "query": "completeMultipartUpload를 시작하지 마라. 파일은 단일 PUT 제한보다 작고 multipart 조건이 없다.",
+      "category": "condition-opposite",
+      "expected": []
+    },
+    {
+      "id": "n29",
+      "query": "Do not apply rotateAppendLog: the file is an immutable random-access database, not an append-only log.",
+      "category": "condition-opposite",
+      "expected": []
+    },
+    {
+      "id": "n30",
+      "query": "protectImmutableAsset을 실행하지 마라. 이 파일은 사용자가 소유한 mutable 설정 파일이며 managed asset이 아니다.",
+      "category": "condition-opposite",
+      "expected": []
+    },
+    {
+      "id": "n31",
+      "query": "Do not use addCalendarDayInZone: the requirement is a fixed 24-hour duration, not a local calendar date.",
+      "category": "condition-opposite",
+      "expected": []
+    },
+    {
+      "id": "n32",
+      "query": "detectPathCaseCollision을 적용하지 마라. Linux case-sensitive 환경만 지원하고 정확한 case가 이미 검증됐다.",
+      "category": "condition-opposite",
+      "expected": []
+    },
+    {
+      "id": "n33",
+      "query": "Do not use encodePageCursor: this immutable result fits on one page and has no continuation.",
+      "category": "condition-opposite",
+      "expected": []
+    },
+    {
+      "id": "n34",
+      "query": "frameStreamMessage를 적용하지 마라. UDP datagram 자체가 메시지 경계를 보존한다.",
+      "category": "condition-opposite",
+      "expected": []
+    },
+    {
+      "id": "n35",
+      "query": "Do not use normalizeTextNewline: the input is PNG binary data and must not undergo text conversion.",
+      "category": "condition-opposite",
+      "expected": []
+    },
+    {
+      "id": "n36",
+      "query": "readSnapshotTransaction을 사용하지 마라. 이 조회는 의도적으로 read-committed 현재 상태를 봐야 한다.",
+      "category": "condition-opposite",
+      "expected": []
+    },
+    {
+      "id": "n37",
+      "query": "Do not call ackBatchItem: this is fire-and-forget telemetry with no per-item delivery contract.",
+      "category": "condition-opposite",
+      "expected": []
+    },
+    {
+      "id": "n38",
+      "query": "negotiateCompression을 적용하지 마라. endpoint는 HTTP가 아닌 local Unix socket이라 Accept-Encoding이 없다.",
+      "category": "condition-opposite",
+      "expected": []
+    },
+    {
+      "id": "n39",
+      "query": "Do not use drainServiceGracefully: this emergency force-kill path must not wait for in-flight work.",
+      "category": "condition-opposite",
+      "expected": []
+    },
+    {
+      "id": "n40",
+      "query": "validateUploadMime을 실행하지 마라. 이 endpoint는 파일 업로드가 아니라 내부 생성 텍스트를 반환한다.",
+      "category": "condition-opposite",
+      "expected": []
+    }
+  ],
+  "provenance": "Independently authored by Luna without reading the frozen held-out fixture; 2026-09-20. Calibration-only; held-out unchanged."
+}

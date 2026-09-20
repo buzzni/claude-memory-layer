@@ -30,6 +30,14 @@ const oldest = lesson(
 const byRecency = [newest, middle, oldest];
 
 describe('rankCuratedLessons', () => {
+  it.each([
+    'preview 서버 포트 충돌 복구를 적용하지 마라.',
+    'preview 서버 포트 충돌 복구를 적용하지마세요.',
+    'Do not apply the preview 서버 포트 충돌 복구 procedure.',
+  ])('abstains when an otherwise exact query explicitly prohibits the procedure: %s', query => {
+    expect(rankCuratedLessons(byRecency, query, 3)).toEqual([]);
+  });
+
   it('puts the lesson that covers the query first even when it is the oldest', () => {
     const out = rankCuratedLessons(byRecency, 'preview 서버 EADDRINUSE 포트 충돌 복구', 3);
     expect(out[0]?.lessonId).toBe('l-old');

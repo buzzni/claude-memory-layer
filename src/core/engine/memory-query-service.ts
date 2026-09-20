@@ -125,13 +125,19 @@ export class MemoryQueryService {
   async listProjectLessonInjections(
     projectHash: string,
     actorId: string | undefined,
-    limit = 25
+    _limit = 25
   ): Promise<CanonicalMemoryInjection<MemoryLesson>[]> {
     await this.initialize();
     const db = this.queryStore.getDatabase?.();
     if (!db || !projectHash) return [];
     try {
-      const lessons = await new LessonRepository(db).list({ projectHash, limit });
+      const repository = new LessonRepository(db);
+      const lessons: MemoryLesson[] = [];
+      for (let offset = 0; ; offset += 500) {
+        const page = await repository.list({ projectHash, limit: 500, offset });
+        lessons.push(...page);
+        if (page.length < 500) break;
+      }
       return new CanonicalMemoryInjectionService(db).select({
         projectHash,
         actorId,

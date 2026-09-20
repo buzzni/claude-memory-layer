@@ -229,6 +229,12 @@ export const MemoryLessonSchema = z.object({
   failureModes: MemoryLessonStringArraySchema,
   skillCandidate: z.boolean().default(false),
   sourceClass: MemoryLessonSourceClassSchema.default('derived'),
+  revision: z.number().int().positive().default(1),
+  recallEnabled: z.boolean().default(true),
+  scope: MemoryLessonNonEmptyStringSchema.optional(),
+  validation: MemoryLessonStringArraySchema,
+  reconsiderWhen: MemoryLessonNonEmptyStringSchema.optional(),
+  validVersions: MemoryLessonStringArraySchema,
   createdAt: z.date(),
   updatedAt: z.date()
 });
@@ -246,6 +252,11 @@ export const UpsertMemoryLessonInputSchema = z.object({
   failureModes: MemoryLessonStringArraySchema,
   skillCandidate: z.boolean().default(false),
   sourceClass: MemoryLessonSourceClassSchema.default('derived'),
+  recallEnabled: z.boolean().optional(),
+  scope: MemoryLessonNonEmptyStringSchema.optional(),
+  validation: MemoryLessonStringArraySchema.optional(),
+  reconsiderWhen: MemoryLessonNonEmptyStringSchema.optional(),
+  validVersions: MemoryLessonStringArraySchema.optional(),
   actor: MemoryLessonNonEmptyStringSchema.optional()
 }).superRefine((value, ctx) => {
   if (value.sourceSessionIds.length === 0 && value.sourceEventIds.length === 0) {
