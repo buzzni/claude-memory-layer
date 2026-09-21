@@ -367,6 +367,22 @@ export function isExplicitlyProhibitedLessonQuery(query: string): boolean {
   return /\b(?:do[ -]+not|don't|never)\b|(?:^|[.!?;]\s*)(?:please\s+)?(?:skip|omit|ignore)\b|(?:사용|적용|실행|호출|설치|활성화|재시도)(?:\s*금지|하지\s*(?:않|말))|건너뛰|무시(?:해|하|할)|지\s*마(?:라|세요|십시오)?(?:[.!?\s]|$)/iu.test(query);
 }
 
+/** Remove only complete generic execution constraints from lexical scoring.
+ * The caller's query and action restrictions remain unchanged everywhere else.
+ * Targeted procedures, memory opt-outs and mixed clauses must reach the existing
+ * conservative prohibition guard, including unknown additions to these lists.
+ */
+function lessonScoringQuery(query: string): string {
+  const korean = /^(?:도구\s*호출|파일\s*(?:수정|변경))(?:(?:\s*[/·,]\s*|\s*(?:및|와|과)\s*)(?:도구\s*호출|파일\s*(?:수정|변경)))*(?:은|는|을|를)?\s*(?:하지\s*마(?:세요|십시오|라)|금지)$/u;
+  const english = /^(?:please\s+)?(?:do[ -]+not|don't|never)\s+(?:(?:call|use|invoke)\s+tools|(?:edit|modify|change)\s+files)(?:\s+(?:or|and)\s+(?:(?:call|use|invoke)\s+tools|(?:edit|modify|change)\s+files))*$/iu;
+  // Split only at complete sentence/line boundaries, never inside foo.ts or a
+  // code symbol. A clause attached with "but" is deliberately left ambiguous.
+  return query.split(/(?<=[.!?;])(?=\s)|[\r\n]+/u).filter(clause => {
+    const statement = clause.trim().replace(/[.!?;]$/, '').trim();
+    return !korean.test(statement) && !english.test(statement);
+  }).join(' ');
+}
+
 const lessonSymbolTokens = (value: string): string[] => value.match(/\b[A-Za-z][A-Za-z0-9_$]*(?:[./:-][A-Za-z0-9_$]+)*/g) ?? [];
 
 /** A sole exact code symbol in the subject is stronger than question boilerplate.
@@ -383,7 +399,8 @@ export function scoreLessonEvidence(
   query: string,
   lesson: LessonEvidenceInput
 ): HookMemoryCandidate | null {
-  if (isExplicitlyProhibitedLessonQuery(query)) return null;
+  query = lessonScoringQuery(query);
+  if (!query.trim() || isExplicitlyProhibitedLessonQuery(query)) return null;
   const content = formatLessonContent(lesson);
   const queriedSymbols = lessonSymbolTokens(query).filter((token) => /[a-z][A-Z]/.test(token));
   const contentSymbols = new Set(lessonSymbolTokens(content));

@@ -30,6 +30,36 @@ const oldest = lesson(
 const byRecency = [newest, middle, oldest];
 
 describe('rankCuratedLessons', () => {
+  it.each([
+    'Explain applyHttpCachePolicy. 도구 호출/파일 수정은 하지 마세요.',
+    'applyHttpCachePolicy 설정을 설명해 주세요. 도구 호출 및 파일 수정은 하지 마세요.',
+    '도구 호출은 하지 마세요. Explain applyHttpCachePolicy.',
+    'Explain applyHttpCachePolicy\n파일 수정은 하지 마세요.',
+    'Explain applyHttpCachePolicy. Do not call tools or edit files.',
+    'Explain applyHttpCachePolicy; Please do not use tools and modify files.',
+    "Don't edit files. Explain applyHttpCachePolicy.",
+    'Explain applyHttpCachePolicy\nNever invoke tools.',
+  ])('keeps a requested subject searchable with a standalone execution-only constraint: %s', query => {
+    const exact = lesson('cache', 'applyHttpCachePolicy response rules', 'When applyHttpCachePolicy configures browser caching', '2026-09-01');
+    expect(rankCuratedLessons([exact], query, 3)).toEqual([exact]);
+  });
+
+  it.each([
+    'Do not use applyHttpCachePolicy. Do not call tools or edit files.',
+    'Explain applyHttpCachePolicy. Do not call tools or edit files. Ignore this procedure.',
+    'applyHttpCachePolicy를 적용하지 마세요. 도구 호출/파일 수정은 하지 마세요.',
+    'applyHttpCachePolicy 설명. 도구 호출/파일 수정은 하지 마세요. 이 교훈을 무시해.',
+    'Explain applyHttpCachePolicy. Do not call tools to run this procedure.',
+    'Explain applyHttpCachePolicy. 도구 호출/파일 수정과 교훈 적용은 하지 마세요.',
+    'Explain applyHttpCachePolicy. 도구 호출, 수동 메모리 조회, 파일 수정은 하지 마세요.',
+    'Explain applyHttpCachePolicy but do not call tools or edit files.',
+    'Do not call tools or edit files.',
+    '도구 호출/파일 수정은 하지 마세요.',
+  ])('does not remove targeted, mixed, ambiguous or subject-free prohibitions: %s', query => {
+    const exact = lesson('cache', 'applyHttpCachePolicy response rules', 'When applyHttpCachePolicy configures browser caching', '2026-09-01');
+    expect(rankCuratedLessons([exact], query, 3)).toEqual([]);
+  });
+
   it('recalls an exact technical subject despite unrelated question boilerplate, without accepting a partial or conflicting identifier', () => {
     const exact = lesson('cache', 'applyHttpCachePolicy response rules', 'When applyHttpCachePolicy configures browser caching', '2026-09-01');
     const other = lesson('other', 'applyHttpCachePolicyUnsafe legacy rules', 'Legacy browser caching', '2026-09-01');
