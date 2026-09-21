@@ -72,6 +72,26 @@ afterEach(() => {
 });
 
 describe('authenticated lesson host service', () => {
+  it.each([
+    ['도구 호출/파일 수정은 하지 마세요.', 'applyHttpCachePolicy를 적용하지 마세요.'],
+    ['Do not call tools or edit files.', 'Do not apply applyHttpCachePolicy.'],
+  ])('recalls and acknowledges a lesson with an execution-only constraint while preserving explicit opt-out: %s', async (constraint, optOut) => {
+    const { store, service, cleanup } = fixture();
+    await store.initialize();
+    try {
+      const sourceEventId = await seedSource(store);
+      const lesson = await new LessonRepository(store.getDatabase()).upsert({ projectHash: 'project-a', name: 'applyHttpCachePolicy response rules', trigger: 'When applyHttpCachePolicy configures browser caching', steps: ['Explain the cache policy before changing it'], confidence: 0.9, sourceEventIds: [sourceEventId] });
+      const selected = await service.recall({ version: 1, requestId: 'constraint-select', binding: 'reader', turnId: 'constraint-turn', query: `Explain applyHttpCachePolicy. ${constraint}` });
+      expect(selected).toMatchObject({ outcome: 'selected', lessonIds: [lesson.lessonId] });
+      expect(await service.ackDelivery({ version: 1, requestId: 'constraint-deliver', binding: 'reader', turnId: 'constraint-turn', traceId: selected.traceId, lessonIds: [lesson.lessonId], lessonRevisions: [{ lessonId: lesson.lessonId, revision: lesson.revision }] })).toMatchObject({ outcome: 'delivered' });
+      expect(await service.recall({ version: 1, requestId: 'constraint-opt-out', binding: 'reader', turnId: 'opt-out-turn', query: `${optOut} ${constraint}` })).toMatchObject({ outcome: 'no_match', lessonIds: [] });
+      const traces = store.getDatabase().prepare('SELECT phase, query_text, lesson_ids_json FROM lesson_host_traces').all() as Array<{ phase: string; query_text: string | null; lesson_ids_json: string }>;
+      expect(traces.map(trace => trace.phase)).toEqual(['selected', 'delivered', 'selected']);
+      expect(JSON.parse(traces[2].lesson_ids_json)).toEqual([]);
+      expect(traces.every(trace => trace.query_text === null)).toBe(true);
+    } finally { await cleanup(); }
+  });
+
   it('does not replay an obsolete lesson body after its revision changes', async () => {
     const { store, service, cleanup } = fixture();
     await store.initialize();
