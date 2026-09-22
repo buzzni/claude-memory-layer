@@ -2954,9 +2954,10 @@ export class SQLiteEventStore {
     status: DeliveryStatus;
     evidence: DeliveryEvidenceSource;
     deliveredAt?: Date;
-    /** Restrict the update to specific typed refs; defaults to the whole trace. */
+    /** Omitted updates the whole trace; an empty list updates no items. */
     refs?: Array<{ kind: MemoryKind; id: string; projectId?: string | null }>;
   }): Promise<number> {
+    if (input.refs?.length === 0) return 0;
     if (this.readOnly) return 0;
     await this.initialize();
     const traceId = input.traceId?.trim();
@@ -2981,15 +2982,6 @@ export class SQLiteEventStore {
         params.push(...input.refs.map((ref) => ref.id));
       }
     }
-    const result = sqliteRun(
-      this.db,
-      `UPDATE memory_helpfulness
-       SET delivery_status = ?, delivery_evidence = ?,
-           delivered_at = CASE WHEN ? = 1 THEN COALESCE(delivered_at, ?) ELSE delivered_at END
-       WHERE trace_id = ?${refFilter}`,
-      params
-    );
-
     // Keep any already-evaluated observation consistent with the new evidence
     // rather than leaving a stale assumed value behind. The same ref scope
     // applies: updating every row of the trace would rewrite the delivery state
@@ -3004,14 +2996,50 @@ export class SQLiteEventStore {
       observationFilter = ` AND event_id IN (${input.refs.map(() => '?').join(',')})`;
       observationParams.push(...input.refs.map((ref) => usefulnessRowKey(normalizeMemoryKind(ref.kind), ref.id, ref.projectId)));
     }
-    sqliteRun(
-      this.db,
-      `UPDATE memory_usefulness_observations_v2
-       SET delivery_status = ?, delivery_evidence = ?, delivered = ?
-       WHERE trace_id = ? AND evaluator_version = ?${observationFilter}`,
-      observationParams
-    );
-    return Number(result?.changes ?? 0);
+    // Commit both representations together so a failed observation update
+    // cannot leave navigation and usefulness reporting different delivery states.
+    return this.runInImmediateTransaction(() => {
+      if (retrievalRollout().usefulnessV3Write) {
+        const deliveredValue = delivered === null ? null : delivered ? 1 : 0;
+        // An evaluation based on different delivery evidence is stale, even
+        // after its old window closed. Queue it for normal session evaluation
+        // and clear derived claims until that evaluation has run.
+        sqliteRun(this.db,
+          `UPDATE memory_helpfulness SET measured_at = NULL
+           WHERE trace_id = ?${refFilter} AND EXISTS (
+             SELECT 1 FROM memory_usefulness_observations_v2 o
+             WHERE o.trace_id = memory_helpfulness.trace_id
+               AND o.event_id = ${usefulnessRowKeySql('memory_helpfulness')}
+               AND o.evaluator_version = ? AND o.delivered IS NOT ?
+           )`,
+          [traceId, ...params.slice(5), CURRENT_USEFULNESS_EVALUATOR_VERSION, deliveredValue]);
+        sqliteRun(this.db,
+          `UPDATE memory_usefulness_observations_v2
+           SET adoption = ?, task_outcome = 'unknown', content_overlap_score = NULL,
+               reask_outcome = 'unknown', confidence = 0, evaluated_at = NULL, evaluation_cutoff = NULL
+           WHERE trace_id = ? AND evaluator_version = ?${observationFilter} AND delivered IS NOT ?`,
+          [delivered === false ? 'not_observed' : 'unknown', traceId,
+            CURRENT_USEFULNESS_EVALUATOR_VERSION, ...observationParams.slice(5), deliveredValue]);
+      }
+      const result = sqliteRun(
+        this.db,
+        `UPDATE memory_helpfulness
+         SET delivery_status = ?, delivery_evidence = ?,
+             delivered_at = CASE WHEN ? = 1 THEN COALESCE(delivered_at, ?) ELSE delivered_at END
+         WHERE trace_id = ?${refFilter}`,
+        params
+      );
+      if (retrievalRollout().usefulnessV3Write) {
+        sqliteRun(
+          this.db,
+          `UPDATE memory_usefulness_observations_v2
+           SET delivery_status = ?, delivery_evidence = ?, delivered = ?
+           WHERE trace_id = ? AND evaluator_version = ?${observationFilter}`,
+          observationParams
+        );
+      }
+      return Number(result?.changes ?? 0);
+    });
   }
 
   /**
@@ -3284,10 +3312,13 @@ export class SQLiteEventStore {
           `SELECT 1 AS opened
            FROM retrieval_navigation_events
            WHERE trace_id = ? AND target_event_id = ? AND attribution_outcome = 'attributed'${navigationKindClause}
+             AND julianday(first_opened_at) >= julianday(?)
+             AND julianday(first_opened_at) <= julianday(?)
            LIMIT 1`,
-          navigationKindClause
+          [...(navigationKindClause
             ? [retrieval.trace_id, retrieval.event_id, retrievalKind, retrieval.memory_project_id ?? null]
-            : [retrieval.trace_id, retrieval.event_id]
+            : [retrieval.trace_id, retrieval.event_id]),
+          new Date(retrievalTimeMs).toISOString(), new Date(evaluationCutoffMs).toISOString()]
         )
       );
       // Distinguish "the reference was not opened" from "we cannot attribute
@@ -4544,7 +4575,9 @@ export class SQLiteEventStore {
     if (this.readOnly && options.dryRun === false) {
       throw new Error('retrieval trace item backfill cannot run against a read-only store');
     }
-    return backfillTraceItems(this.db, options);
+    return options.dryRun === false
+      ? this.runInImmediateTransaction(() => backfillTraceItems(this.db, options))
+      : backfillTraceItems(this.db, options);
   }
 
   /**

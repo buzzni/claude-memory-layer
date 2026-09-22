@@ -37,6 +37,26 @@ async function seedLesson(store: SQLiteEventStore, lessonId: string, projectHash
 }
 
 describe('typed retrieval trace ledger (specs R1)', () => {
+  it('counts candidate-only typed traces without falling back to legacy selections', async () => {
+    const store = new SQLiteEventStore(databasePath());
+    try {
+      await store.recordRetrievalTrace({ traceId: 'candidate-only', queryText: 'q',
+        candidateEventIds: ['item'], selectedEventIds: [],
+        items: [{ kind: 'lesson', id: 'item', selected: false }] });
+      // A legacy representation must not override the explicit typed decision.
+      sqliteRun(store.getDatabase(), `UPDATE retrieval_traces SET selected_event_ids = '["item"]'
+        WHERE trace_id = 'candidate-only'`);
+      expect(await store.getTypedSelectionSummary()).toMatchObject({
+        typedTraces: 1, legacyResolvedTraces: 0, total: 0
+      });
+      expect(await store.getTypedSelectionSummary({ resolveLegacy: false })).toMatchObject({
+        typedTraces: 1, total: 0
+      });
+    } finally {
+      await store.close();
+    }
+  });
+
   it('keeps event and lesson selections apart instead of collapsing them into event ids', async () => {
     const store = new SQLiteEventStore(databasePath());
     await store.initialize();
@@ -209,6 +229,42 @@ describe('typed retrieval trace ledger (specs R1)', () => {
     );
     expect(rows).toEqual([{ memory_kind: 'lesson', memory_id: 'lesson-backfill' }]);
     await store.close();
+  });
+
+  it('retries a failed backfill without leaving a partially typed trace', async () => {
+    const store = new SQLiteEventStore(databasePath());
+    try {
+      await store.initialize();
+      sqliteRun(store.getDatabase(), `INSERT INTO retrieval_traces
+        (trace_id, query_text, candidate_event_ids, selected_event_ids)
+        VALUES ('partial', 'q', '["first","second"]', '["first","second"]')`);
+      sqliteExec(store.getDatabase(), `CREATE TRIGGER fail_second_item
+        BEFORE INSERT ON retrieval_trace_items WHEN NEW.memory_id = 'second'
+        BEGIN SELECT RAISE(ABORT, 'backfill failure'); END`);
+      await expect(store.backfillRetrievalTraceItems({ dryRun: false })).rejects.toThrow('backfill failure');
+      expect(await store.getRetrievalTraceItems('partial')).toHaveLength(0);
+      sqliteExec(store.getDatabase(), 'DROP TRIGGER fail_second_item');
+      expect((await store.backfillRetrievalTraceItems({ dryRun: false })).writtenItems).toBe(2);
+    } finally {
+      await store.close();
+    }
+  });
+
+  it('does not let empty or malformed recent traces starve a bounded backfill', async () => {
+    const store = new SQLiteEventStore(databasePath());
+    try {
+      await store.initialize();
+      for (const [index, ids] of ['["target"]', '[]', 'broken', '[null, 1, ""]'].entries()) {
+        sqliteRun(store.getDatabase(), `INSERT INTO retrieval_traces
+          (trace_id, query_text, candidate_event_ids, selected_event_ids, created_at)
+          VALUES (?, 'q', ?, '[]', ?)`, [`empty-${index}`, ids, new Date(1000 + index).toISOString()]);
+      }
+      expect((await store.backfillRetrievalTraceItems({ dryRun: true, limit: 1 })).writtenItems).toBe(1);
+      expect((await store.backfillRetrievalTraceItems({ dryRun: false, limit: 1 })).writtenItems).toBe(1);
+      expect(await store.getRetrievalTraceItems('empty-0')).toHaveLength(1);
+    } finally {
+      await store.close();
+    }
   });
 
   it('never increments events.access_count for a lesson reference', async () => {

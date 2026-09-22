@@ -152,12 +152,14 @@ const SUCCESS_PATTERN = /\b(?:passed|passing|succeeded|success|ok\b|0\s+errors?|
 const FAILURE_PATTERN = /\b(?:failed|failure|error|blocked)\b|\bexit[_ -]?code\s*[:=]?\s*[1-9]\d*\b/i;
 const RETRY_PATTERN = /\b(?:retry|retried|retrying|re-?run|second\s+attempt|다시\s*시도|재시도)\b/i;
 
-/** Redacted, bounded text used for classification. Never stored. */
+/** Redacted source text used only for classification, never returned or stored.
+ * Exclusion checks must inspect the complete evidence: a preview cutoff would
+ * silently admit candidates whose disqualifying material occurs later.
+ */
 function classifiableText(rows: SourceEventRow[]): string {
   return rows
     .map((row) => String(sanitizeGovernanceAuditValue(row.content ?? '')))
-    .join('\n')
-    .slice(0, 40_000);
+    .join('\n');
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

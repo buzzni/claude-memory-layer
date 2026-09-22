@@ -47,12 +47,13 @@ async function seedCurrentStore(homeDir: string, storeHash: string): Promise<voi
   const dbPath = path.join(storeDir(homeDir, storeHash), 'events.sqlite');
   const store = new SQLiteEventStore(dbPath);
   await store.initialize();
+  const storedAt = new Date();
   const memory = await store.append({
     eventType: 'agent_response',
     sessionId: 'source',
-    timestamp: new Date(),
+    timestamp: storedAt,
     content: 'Production deploys use port 37777 and scripts/release-npm.sh.',
-    metadata: { source: 'codex', originalTimestamp: new Date(Date.now() - 60_000).toISOString() }
+    metadata: { source: 'codex', originalTimestamp: new Date(storedAt.getTime() - 60_000).toISOString() }
   });
   if (!memory.success) throw new Error('fixture append failed');
   const now = new Date(Date.now() - 60_000);

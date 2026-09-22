@@ -2406,10 +2406,7 @@ retrievalCommand
   .action(async (options) => {
     try {
       const projectPath: string = options.project ?? process.cwd();
-      const limit = options.limit === undefined ? 200 : Number.parseInt(options.limit, 10);
-      if (!Number.isFinite(limit) || limit < 1) {
-        throw new Error('retrieval reevaluate --limit must be a positive integer');
-      }
+      const limit = parsePositiveIntegerOption(options.limit, 'limit') ?? 200;
       const dbPath = path.join(getProjectStoragePath(projectPath), 'events.sqlite');
       if (!fs.existsSync(dbPath)) {
         console.log('No store for this project; nothing to re-evaluate.');

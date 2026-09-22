@@ -63,6 +63,8 @@ export function recordReferenceNavigationOnDb(
   // columns cannot express this, and keep the older selection-based behaviour
   // rather than losing every attribution.
   const deliveryEvidenceAvailable = columnExists(db, 'memory_helpfulness', 'delivery_status');
+  const deliveryClock = columnExists(db, 'memory_helpfulness', 'delivered_at')
+    ? 'COALESCE(delivered_at, created_at)' : 'created_at';
   const wasDelivered = (traceId: string): boolean => {
     if (!deliveryEvidenceAvailable) return true;
     // A helpfulness row written before the typed columns carries kind
@@ -76,11 +78,14 @@ export function recordReferenceNavigationOnDb(
     const params: unknown[] = [traceId, input.targetEventId];
     if (kindClause) params.push(targetKind);
     if (scopeClause) params.push(targetProjectId);
+    params.push(windowStart, openedAtIso);
     const row = sqliteGet<{ delivered: number }>(
       db,
       `SELECT 1 AS delivered FROM memory_helpfulness
        WHERE trace_id = ? AND event_id = ?${kindClause}${scopeClause}
          AND delivery_status IN ('emitted', 'acknowledged')
+         AND julianday(${deliveryClock}) >= julianday(?)
+         AND julianday(${deliveryClock}) <= julianday(?)
        LIMIT 1`,
       params
     );
@@ -89,17 +94,16 @@ export function recordReferenceNavigationOnDb(
     // unknown, and must never become attributed navigation by assumption.
     return false;
   };
-  const traceRows = sqliteAll<Record<string, unknown>>(
-    db,
-    `SELECT trace_id, session_id, trigger_type, selected_event_ids
-     FROM retrieval_traces
-     WHERE presentation_mode = 'reference'
-       AND datetime(created_at) >= datetime(?)
-       AND datetime(created_at) <= datetime(?)
-     ORDER BY created_at DESC
-     LIMIT 500`,
-    [windowStart, openedAtIso]
-  ).filter((row) => {
+  // New stores use the actual delivery clock. The trace can have been selected
+  // much earlier; only legacy stores without delivery evidence use selection.
+  const traceWindowClause = deliveryEvidenceAvailable
+    ? `EXISTS (SELECT 1 FROM memory_helpfulness
+         WHERE trace_id = retrieval_traces.trace_id
+           AND delivery_status IN ('emitted', 'acknowledged')
+           AND julianday(${deliveryClock}) >= julianday(?)
+           AND julianday(${deliveryClock}) <= julianday(?))`
+    : 'julianday(created_at) >= julianday(?) AND julianday(created_at) <= julianday(?)';
+  const matchesTrace = (row: Record<string, unknown>): boolean => {
     if (input.attributionSessionId && row.session_id !== input.attributionSessionId) return false;
     // Prefer typed items so opening lesson X is never attributed to a trace
     // that merely delivered an event whose id happens to match (specs R1/R3).
@@ -119,14 +123,31 @@ export function recordReferenceNavigationOnDb(
       return false;
     }
     return selectedHere && wasDelivered(String(row.trace_id || ''));
-  });
+  };
 
-  const byTrace = new Map<string, Record<string, unknown>>();
-  for (const row of traceRows) {
-    const traceId = String(row.trace_id || '');
-    if (traceId) byTrace.set(traceId, row);
+  // A page boundary does not prove uniqueness: a matching delivery can be
+  // behind hundreds of unrelated traces. Scan stable pages until exhausted or
+  // two matches prove ambiguity, keeping only those two candidates in memory.
+  const candidates: Record<string, unknown>[] = [];
+  let cursor: Record<string, unknown> | undefined;
+  while (candidates.length < 2) {
+    const cursorClause = cursor
+      ? ' AND (created_at < ? OR (created_at = ? AND trace_id < ?))' : '';
+    const page = sqliteAll<Record<string, unknown>>(
+      db,
+      `SELECT trace_id, session_id, trigger_type, selected_event_ids, created_at
+       FROM retrieval_traces
+       WHERE presentation_mode = 'reference' AND ${traceWindowClause}${cursorClause}
+       ORDER BY created_at DESC, trace_id DESC LIMIT 500`,
+      [windowStart, openedAtIso, ...(cursor ? [cursor.created_at, cursor.created_at, cursor.trace_id] : [])]
+    );
+    for (const row of page) {
+      if (matchesTrace(row)) candidates.push(row);
+      if (candidates.length === 2) break;
+    }
+    if (page.length < 500) break;
+    cursor = page[page.length - 1];
   }
-  const candidates = Array.from(byTrace.values());
   const attributed = candidates.length === 1 ? candidates[0] : undefined;
   const traceId = attributed ? String(attributed.trace_id) : null;
   const outcome = candidates.length === 1
@@ -152,10 +173,11 @@ export function recordReferenceNavigationOnDb(
        AND navigation_action = ?
        AND navigation_client = ?
        AND attribution_outcome = ?
-       AND datetime(last_opened_at) >= datetime(?)
+       AND julianday(last_opened_at) >= julianday(?)
+       AND julianday(last_opened_at) <= julianday(?)
      ORDER BY last_opened_at DESC
      LIMIT 1`,
-    [input.targetEventId, targetKind, targetProjectId, traceId, input.action, navigationClient, outcome, windowStart]
+    [input.targetEventId, targetKind, targetProjectId, traceId, input.action, navigationClient, outcome, windowStart, openedAtIso]
   );
 
   if (repeated) {

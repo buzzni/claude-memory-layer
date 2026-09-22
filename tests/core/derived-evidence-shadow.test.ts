@@ -60,6 +60,23 @@ async function seedEvent(store: SQLiteEventStore, content: string, metadata?: Re
 }
 
 describe('derived evidence shadow evaluation (specs R4)', () => {
+  it.each([
+    ['NPM_TOKEN=synthetic-tail-secret', 'sensitive_material'],
+    ['npm ERR! EACCES permission denied', 'environment_dependent_failure']
+  ])('checks exclusion evidence beyond 40,000 characters: %s', async (tail, reason) => {
+    const store = new SQLiteEventStore(databasePath());
+    try {
+      await store.initialize();
+      const eventId = await seedEvent(store, 'Build output line.\n'.repeat(2500) + tail);
+      const report = evaluateDerivedEvidenceShadow(store.getDatabase(), [candidateFor('long-evidence', [eventId])]);
+      expect(report.shadowCandidates).toHaveLength(0);
+      expect(report.blocked[0].promotion.rejections).toContain(reason);
+      expect(JSON.stringify(report)).not.toContain('synthetic-tail-secret');
+    } finally {
+      await store.close();
+    }
+  });
+
   it('removes sensitive candidate text from the entire returned report', async () => {
     const store = new SQLiteEventStore(databasePath());
     await store.initialize();

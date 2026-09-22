@@ -1,10 +1,10 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 
 import { SQLiteEventStore } from '../../src/core/sqlite-event-store.js';
-import { sqliteGet, sqliteRun } from '../../src/core/sqlite-wrapper.js';
+import { sqliteExec, sqliteGet, sqliteRun } from '../../src/core/sqlite-wrapper.js';
 import { CURRENT_USEFULNESS_EVALUATOR_VERSION } from '../../src/core/retrieval-telemetry.js';
 import { USEFULNESS_V2_EVALUATION_WINDOW_MS } from '../../src/core/usefulness-outcome-v2.js';
 
@@ -17,6 +17,7 @@ function databasePath(): string {
 }
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -89,6 +90,128 @@ async function seedDelivery(store: SQLiteEventStore, options: {
 }
 
 describe('delivery evidence and bounded re-evaluation (specs R3)', () => {
+  it.each([true, false])('invalidates adoption when delivery evidence changes (initially emitted: %s)', async (emitted) => {
+    const store = new SQLiteEventStore(databasePath());
+    try {
+      await store.initialize();
+      const retrievalTime = new Date(Date.now() - 3_600_000);
+      const eventId = await seedDelivery(store, {
+        traceId: 'changed-evidence', sessionId: 'changed-session', retrievalTime, emitted,
+        responseAt: new Date(retrievalTime.getTime() + 60_000)
+      });
+      await store.evaluateSessionHelpfulness('changed-session');
+      expect(observation(store, 'changed-evidence', eventId)?.adoption).toBe(emitted ? 'grounded' : 'unknown');
+      await store.recordDeliveryOutcome({
+        traceId: 'changed-evidence', status: emitted ? 'failed' : 'emitted',
+        evidence: emitted ? 'write_error' : 'hook_stdout', deliveredAt: retrievalTime
+      });
+      expect(observation(store, 'changed-evidence', eventId)).toMatchObject({
+        adoption: emitted ? 'not_observed' : 'unknown', task_outcome: 'unknown', evaluation_cutoff: null
+      });
+      expect(sqliteGet(store.getDatabase(),
+        `SELECT measured_at FROM memory_helpfulness WHERE trace_id = 'changed-evidence'`)).toEqual({ measured_at: null });
+      await store.evaluateSessionHelpfulness('changed-session');
+      expect(observation(store, 'changed-evidence', eventId)?.adoption).toBe(emitted ? 'not_observed' : 'grounded');
+    } finally {
+      await store.close();
+    }
+  });
+
+  it('does not rewrite an existing v3 observation while v3 writes are disabled', async () => {
+    const store = new SQLiteEventStore(databasePath());
+    try {
+      await store.initialize();
+      const eventId = await seedDelivery(store, {
+        traceId: 'paused-v3', sessionId: 'paused-session', retrievalTime: new Date(Date.now() - 60_000)
+      });
+      await store.evaluateSessionHelpfulness('paused-session');
+      const before = observation(store, 'paused-v3', eventId);
+      vi.stubEnv('CML_USEFULNESS_V3_WRITE', '0');
+      await store.recordDeliveryOutcome({ traceId: 'paused-v3', status: 'emitted', evidence: 'hook_stdout' });
+      expect(observation(store, 'paused-v3', eventId)).toEqual(before);
+      expect(sqliteGet(store.getDatabase(),
+        `SELECT delivery_status FROM memory_helpfulness WHERE trace_id = 'paused-v3'`))
+        .toEqual({ delivery_status: 'emitted' });
+    } finally {
+      await store.close();
+    }
+  });
+
+  it('treats an explicitly empty delivery ref scope as no matching items', async () => {
+    const store = new SQLiteEventStore(databasePath());
+    try {
+      await store.initialize();
+      const eventId = await seedDelivery(store, {
+        traceId: 'empty-scope', sessionId: 'empty-scope-session', retrievalTime: new Date(Date.now() - 60_000)
+      });
+      await store.evaluateSessionHelpfulness('empty-scope-session');
+      const before = observation(store, 'empty-scope', eventId);
+      expect(await store.recordDeliveryOutcome({
+        traceId: 'empty-scope', status: 'emitted', evidence: 'hook_stdout', refs: []
+      })).toBe(0);
+      expect(observation(store, 'empty-scope', eventId)).toEqual(before);
+      expect(sqliteGet(store.getDatabase(),
+        `SELECT delivery_status FROM memory_helpfulness WHERE trace_id = 'empty-scope'`))
+        .toEqual({ delivery_status: 'formatted' });
+    } finally {
+      await store.close();
+    }
+  });
+
+  it('rolls back both delivery ledgers when the observation update fails', async () => {
+    const store = new SQLiteEventStore(databasePath());
+    try {
+      await store.initialize();
+      const eventId = await seedDelivery(store, {
+        traceId: 'atomic-delivery', sessionId: 'atomic-session',
+        retrievalTime: new Date(Date.now() - 60_000)
+      });
+      await store.evaluateSessionHelpfulness('atomic-session');
+      const before = sqliteGet(store.getDatabase(),
+        `SELECT delivery_status, delivery_evidence, delivered_at FROM memory_helpfulness WHERE trace_id = 'atomic-delivery'`);
+      sqliteExec(store.getDatabase(), `CREATE TRIGGER reject_delivery_update
+        BEFORE UPDATE ON memory_usefulness_observations_v2
+        BEGIN SELECT RAISE(ABORT, 'injected delivery failure'); END`);
+      await expect(store.recordDeliveryOutcome({
+        traceId: 'atomic-delivery', status: 'emitted', evidence: 'hook_stdout'
+      })).rejects.toThrow('injected delivery failure');
+      expect(sqliteGet(store.getDatabase(),
+        `SELECT delivery_status, delivery_evidence, delivered_at FROM memory_helpfulness WHERE trace_id = 'atomic-delivery'`)).toEqual(before);
+      expect(observation(store, 'atomic-delivery', eventId)?.delivered).toBeNull();
+      sqliteExec(store.getDatabase(), 'DROP TRIGGER reject_delivery_update');
+      await store.recordDeliveryOutcome({ traceId: 'atomic-delivery', status: 'emitted', evidence: 'hook_stdout' });
+      expect(observation(store, 'atomic-delivery', eventId)?.delivered).toBe(1);
+    } finally {
+      await store.close();
+    }
+  });
+
+  it.each([-30_000, 60_000])('limits reference adoption to the evaluation cutoff (open offset %i)', async (offset) => {
+    const store = new SQLiteEventStore(databasePath());
+    try {
+      await store.initialize();
+      const now = Date.now();
+      const eventId = await seedDelivery(store, {
+        traceId: 'reference-cutoff', sessionId: 'reference-session',
+        retrievalTime: new Date(now - 60_000), emitted: true
+      });
+      sqliteRun(store.getDatabase(),
+        `UPDATE retrieval_traces SET presentation_mode = 'reference', created_at = ? WHERE trace_id = 'reference-cutoff'`,
+        [new Date(now - 60_000).toISOString()]);
+      sqliteRun(store.getDatabase(),
+        `UPDATE memory_helpfulness SET presentation_mode = 'reference' WHERE trace_id = 'reference-cutoff'`);
+      expect(await store.recordReferenceNavigation({
+        targetEventId: eventId, targetKind: 'event', action: 'expand', navigationClient: 'mcp',
+        openedAt: new Date(now + offset)
+      })).toMatchObject({ outcome: 'attributed' });
+      await store.evaluateSessionHelpfulness('reference-session');
+      expect(observation(store, 'reference-cutoff', eventId)?.adoption)
+        .toBe(offset < 0 ? 'navigated' : 'not_observed');
+    } finally {
+      await store.close();
+    }
+  });
+
   it('does not use a future-dated response beyond the recorded evaluation cutoff', async () => {
     const store = new SQLiteEventStore(databasePath());
     await store.initialize();

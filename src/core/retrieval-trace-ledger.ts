@@ -285,10 +285,11 @@ export function summarizeTypedSelections(
   const hasItems = tableExists(db, 'retrieval_trace_items');
   const legacyTraces: typeof traces = [];
   for (const trace of traces) {
-    const typed = hasItems ? readTraceItems(db, trace.trace_id).filter((item) => item.selected) : [];
+    const typed = hasItems ? readTraceItems(db, trace.trace_id) : [];
     if (typed.length > 0) {
       summary.typedTraces += 1;
       for (const item of typed) {
+        if (!item.selected) continue;
         summary.byKind[item.memoryKind] += 1;
         summary.total += 1;
         if (item.memoryKind === 'unknown') summary.unresolved += 1;
@@ -375,6 +376,16 @@ export function backfillTraceItems(
   if (hasItemsTable) {
     clauses.push('NOT EXISTS (SELECT 1 FROM retrieval_trace_items i WHERE i.trace_id = t.trace_id)');
   }
+  // Empty traces never gain typed rows, so letting them consume the limit
+  // would select the same empty batch forever. Filter usable arrays before
+  // LIMIT, including corrupt legacy JSON and arrays without string IDs.
+  clauses.push(`(${['candidate_event_ids', 'selected_event_ids'].map((column) =>
+    `EXISTS (SELECT 1 FROM json_each(
+      CASE WHEN json_valid(t.${column}) THEN
+        CASE WHEN json_type(t.${column}) = 'array' THEN t.${column} ELSE '[]' END
+      ELSE '[]' END
+    ) AS id WHERE id.type = 'text' AND length(trim(id.value)) > 0)`
+  ).join(' OR ')})`);
   params.push(limit);
 
   const traces = sqliteAll<{

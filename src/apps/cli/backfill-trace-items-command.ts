@@ -28,8 +28,8 @@ export function resolveBackfillTraceItemsOptions(
   if (options.project !== undefined && options.project.trim().length === 0) {
     throw new Error('backfill trace-items --project must not be empty');
   }
-  const limit = options.limit === undefined ? 1000 : Number.parseInt(options.limit, 10);
-  if (!Number.isFinite(limit) || limit < 1) {
+  const limit = options.limit === undefined ? 1000 : Number(options.limit);
+  if ((options.limit !== undefined && !/^\d+$/.test(options.limit.trim())) || !Number.isSafeInteger(limit) || limit < 1) {
     throw new Error('backfill trace-items --limit must be a positive integer');
   }
   let since: Date | undefined;
