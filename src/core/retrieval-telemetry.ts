@@ -1,3 +1,5 @@
+import type { MemoryKind } from './memory-ref.js';
+
 export const RETRIEVAL_PRESENTATION_MODES = ['evidence', 'reference', 'core', 'unknown'] as const;
 export type RetrievalPresentationMode = typeof RETRIEVAL_PRESENTATION_MODES[number];
 
@@ -27,6 +29,12 @@ export const RETRIEVAL_OUTCOME_REASONS = [
   'quality_filtered',
   'session_rescue_empty',
   'context_pack_policy_filtered',
+  // An empty selection with no diagnostics is not a failure. `runtime_error` is
+  // reserved for a caught exception; anything else uncategorised is `unknown`.
+  'unknown',
+  // Rows written before the schema carried an honest default. Readers surface
+  // this instead of re-classifying old data (specs R2).
+  'legacy_unclassified',
   'runtime_error'
 ] as const;
 
@@ -37,14 +45,28 @@ export type UsefulnessTaskOutcome = 'success' | 'failure' | 'mixed' | 'unknown';
 export type UsefulnessReaskOutcome = 'clarification' | 'repeat_failure' | 'topic_continuation' | 'none' | 'unknown';
 export type UsefulnessExplicitFeedback = 'positive' | 'negative' | null;
 
+/**
+ * Evaluator identity for the delivery-evidence generation. v2 rows assumed
+ * delivery; they are kept but never averaged together with v3 (specs R3).
+ */
+export const CURRENT_USEFULNESS_EVALUATOR_VERSION = 'v3';
+export const LEGACY_ASSUMED_DELIVERY_EVALUATOR_VERSIONS = ['v2'] as const;
+
 export interface MemoryUsefulnessObservationV2 {
   traceId: string;
+  /** Retained field name for schema compatibility; may hold any memory kind. */
   eventId: string;
+  /** Typed kind of `eventId`. Defaults to `event` only for legacy rows. */
+  memoryKind?: MemoryKind;
+  /** Owning project of the memory; part of its scope-aware identity (specs R1). */
+  memoryProjectId?: string | null;
   observationKind: 'outcome';
   presentationMode: RetrievalPresentationMode;
   triggerType: RetrievalTriggerType;
   selected: boolean;
   delivered: boolean | null;
+  deliveryStatus?: DeliveryStatus;
+  deliveryEvidence?: DeliveryEvidenceSource;
   adoption: UsefulnessAdoption;
   contentOverlapScore: number | null;
   taskOutcome: UsefulnessTaskOutcome;
@@ -53,6 +75,10 @@ export interface MemoryUsefulnessObservationV2 {
   confidence: number;
   evaluatedAt: string | null;
   evaluatorVersion: string;
+  /** Observation window applied after delivery, in ms. */
+  evaluationWindowMs?: number;
+  /** End of the window this evaluation could actually see. */
+  evaluationCutoff?: string | null;
 }
 
 export interface UsefulnessRateV2 {
@@ -95,7 +121,43 @@ export interface UsefulnessAggregateV2 {
   evaluatorVersion: string;
   excludesSessionStart: boolean;
   window: { since: string | null; until: string | null };
+  /** Observed delivery evidence levels. `unknown` is never folded into 0. */
+  deliveryStatusCounts: Record<DeliveryStatus, number>;
+  /** Rows from an evaluator generation that assumed delivery (v2). */
+  legacyAssumedDeliveryRows: number;
+  /**
+   * How the `delivered` values in this aggregate were obtained. A legacy
+   * evaluator's rows are labelled `legacy_assumed` rather than presented as
+   * observed delivery (specs R3).
+   */
+  deliveryEvidenceBasis: 'observed' | 'legacy_assumed';
+  /** Selected memories by typed kind (specs R1). */
+  selectedByKind: Record<MemoryKind, number>;
+  /**
+   * The population `evidenceGrounding` is measured over. The spec's headline
+   * comparison is prompt-triggered evidence only; session_start, explicit
+   * search and context-pack rows are reported separately, never averaged in.
+   */
+  evidenceGroundingScope: 'evidence/user_prompt';
+  /** Same counts over every trigger, for transparency about what was excluded. */
+  evidenceAllTriggers: { evaluated: number; grounded: number; unknown: number };
+  /** Bounded observation window used by this evaluator, in ms. */
+  evaluationWindowMs: number;
+  /**
+   * Every adoption/task signal below is a heuristic, not a confirmed outcome.
+   * Surfaced in JSON and UI so a reader never reads them as measured causality.
+   */
+  heuristics: {
+    grounding: 'text_overlap';
+    groundingThreshold: number;
+    taskOutcome: 'post_delivery_tool_success';
+    note: string;
+  };
 }
+
+export const USEFULNESS_HEURISTIC_NOTE =
+  'Grounding is text overlap between the delivered excerpt and later responses; '
+  + 'task outcome is post-delivery tool success. Both are heuristics, not verified causal effects.';
 
 export function normalizeUsefulnessMinimumSample(value: unknown): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) return 20;
@@ -108,6 +170,8 @@ export function emptyUsefulnessAggregateV2(options: {
   includeSessionStart?: boolean;
   since?: Date;
   until?: Date;
+  evaluationWindowMs?: number;
+  groundingThreshold?: number;
 } = {}): UsefulnessAggregateV2 {
   const rate = (): UsefulnessRateV2 => ({ numerator: 0, denominator: 0, unknown: 0, value: null });
   return {
@@ -134,11 +198,28 @@ export function emptyUsefulnessAggregateV2(options: {
     },
     sampleState: 'insufficient_sample',
     minimumSample: normalizeUsefulnessMinimumSample(options.minimumSample),
-    evaluatorVersion: options.evaluatorVersion ?? 'v2',
+    evaluatorVersion: options.evaluatorVersion ?? CURRENT_USEFULNESS_EVALUATOR_VERSION,
     excludesSessionStart: options.includeSessionStart !== true,
     window: {
       since: options.since?.toISOString() ?? null,
       until: options.until?.toISOString() ?? null
+    },
+    deliveryStatusCounts: { unknown: 0, formatted: 0, emitted: 0, acknowledged: 0, failed: 0 },
+    legacyAssumedDeliveryRows: 0,
+    deliveryEvidenceBasis: LEGACY_ASSUMED_DELIVERY_EVALUATOR_VERSIONS.includes(
+      (options.evaluatorVersion ?? CURRENT_USEFULNESS_EVALUATOR_VERSION) as typeof LEGACY_ASSUMED_DELIVERY_EVALUATOR_VERSIONS[number]
+    )
+      ? 'legacy_assumed'
+      : 'observed',
+    selectedByKind: { event: 0, lesson: 0, rule: 0, core: 0, unknown: 0 },
+    evidenceGroundingScope: 'evidence/user_prompt',
+    evidenceAllTriggers: { evaluated: 0, grounded: 0, unknown: 0 },
+    evaluationWindowMs: options.evaluationWindowMs ?? 0,
+    heuristics: {
+      grounding: 'text_overlap',
+      groundingThreshold: options.groundingThreshold ?? 0.3,
+      taskOutcome: 'post_delivery_tool_success',
+      note: USEFULNESS_HEURISTIC_NOTE
     }
   };
 }
@@ -161,12 +242,12 @@ const DIAGNOSTIC_COUNT_KEYS = new Set([
 export function normalizeRetrievalOutcomeReason(value: unknown): RetrievalOutcomeReason {
   return typeof value === 'string' && RETRIEVAL_OUTCOME_REASON_SET.has(value)
     ? value as RetrievalOutcomeReason
-    : 'runtime_error';
+    : 'unknown';
 }
 
 export function normalizeRetrievalOutcomeDiagnostics(
   value: unknown,
-  fallbackReason: RetrievalOutcomeReason = 'runtime_error'
+  fallbackReason: RetrievalOutcomeReason = 'unknown'
 ): RetrievalOutcomeDiagnostics {
   const raw = value && typeof value === 'object' ? value as Record<string, unknown> : {};
   return {
@@ -194,14 +275,160 @@ function normalizeDiagnosticCounts(value: unknown): Record<string, number> {
     .map(([key, count]) => [key, Math.max(0, Math.min(1_000_000, Math.floor(Number(count))))]));
 }
 
+/**
+ * Bumped whenever the trace ledger gains a field a reader must know about.
+ * Version 2 is the first schema with typed trace items, honest unknown outcome
+ * reasons and request metadata (specs/recent-memory-patterns-2026-09-06 R1-R2).
+ */
+export const RETRIEVAL_TELEMETRY_SCHEMA_VERSION = 2;
+
+/**
+ * Rows without a schema version predate the honest-default migration. Their
+ * stored `runtime_error` was a fallback, not an observed exception, so readers
+ * present them as legacy instead of re-classifying the stored value.
+ */
+export function presentedOutcomeReason(
+  storedReason: unknown,
+  telemetrySchemaVersion: unknown
+): RetrievalOutcomeReason {
+  const version = Number(telemetrySchemaVersion);
+  const reason = normalizeRetrievalOutcomeReason(storedReason);
+  if (Number.isFinite(version) && version >= 2) return reason;
+  return reason === 'runtime_error' ? 'legacy_unclassified' : reason;
+}
+
+/**
+ * How far a selected memory actually got. Selection alone is not delivery:
+ * `formatted` means the text was built, `emitted` means the hook wrote it to
+ * stdout successfully, `acknowledged` requires evidence the consumer read it.
+ */
+export const DELIVERY_STATUSES = ['unknown', 'formatted', 'emitted', 'acknowledged', 'failed'] as const;
+export type DeliveryStatus = typeof DELIVERY_STATUSES[number];
+
+/** Where the delivery status came from. `legacy_assumed` is never a new write. */
+export const DELIVERY_EVIDENCE_SOURCES = [
+  'none',
+  'context_formatted',
+  'hook_stdout',
+  'mcp_tool_result',
+  'consumer_ack',
+  'write_error',
+  'legacy_assumed'
+] as const;
+export type DeliveryEvidenceSource = typeof DELIVERY_EVIDENCE_SOURCES[number];
+
+const DELIVERY_STATUS_SET = new Set<string>(DELIVERY_STATUSES);
+const DELIVERY_EVIDENCE_SET = new Set<string>(DELIVERY_EVIDENCE_SOURCES);
+
+export function normalizeDeliveryStatus(value: unknown): DeliveryStatus {
+  return typeof value === 'string' && DELIVERY_STATUS_SET.has(value)
+    ? value as DeliveryStatus
+    : 'unknown';
+}
+
+export function normalizeDeliveryEvidence(value: unknown): DeliveryEvidenceSource {
+  return typeof value === 'string' && DELIVERY_EVIDENCE_SET.has(value)
+    ? value as DeliveryEvidenceSource
+    : 'none';
+}
+
+/**
+ * `delivered` stays null until evidence exists. Only an emitted/acknowledged
+ * delivery is true and only an observed write failure is false — a formatted
+ * but never-flushed context is unknown, not delivered.
+ */
+export function deliveredFromStatus(status: DeliveryStatus): boolean | null {
+  if (status === 'emitted' || status === 'acknowledged') return true;
+  if (status === 'failed') return false;
+  return null;
+}
+
 export interface RetrievalTelemetryContext {
   presentationMode?: RetrievalPresentationMode;
   triggerType?: RetrievalTriggerType;
   deliveryClient?: string;
+  /** Stable id for the caller-visible request that produced this retrieval. */
+  requestId?: string;
+  /** Set only by offline/benchmark evaluation runs so they can be excluded. */
+  evaluationRunId?: string;
+  runtimeVersion?: string;
+}
+
+/** One typed reference inside a trace: a candidate, a selection, or both. */
+export interface RetrievalTraceItemInput {
+  kind: MemoryKind;
+  id: string;
+  projectId?: string | null;
+  rank?: number;
+  selected?: boolean;
+  score?: number | null;
+  /** Hash of the delivered excerpt. Never the excerpt itself. */
+  contentHash?: string | null;
+  memoryVersion?: string | null;
+  deleted?: boolean;
+}
+
+export interface RetrievalTraceItem {
+  traceId: string;
+  itemKey: string;
+  memoryKind: MemoryKind;
+  memoryId: string;
+  projectId: string | null;
+  rank: number | null;
+  selected: boolean;
+  score: number | null;
+  contentHash: string | null;
+  memoryVersion: string | null;
+  deleted: boolean;
+}
+
+/** Typed selection totals for a fixed sample, with unresolved refs kept apart. */
+export interface TypedSelectionSummary {
+  byKind: Record<MemoryKind, number>;
+  total: number;
+  unresolved: number;
+  ambiguous: number;
+  /** Traces whose items were reconstructed by the read-only legacy resolver. */
+  legacyResolvedTraces: number;
+  typedTraces: number;
+}
+
+export function emptyTypedSelectionSummary(): TypedSelectionSummary {
+  return {
+    byKind: { event: 0, lesson: 0, rule: 0, core: 0, unknown: 0 },
+    total: 0,
+    unresolved: 0,
+    ambiguous: 0,
+    legacyResolvedTraces: 0,
+    typedTraces: 0
+  };
+}
+
+/**
+ * Per-client instrumentation coverage. A client whose requests we never see
+ * cannot be reported as 0% coverage — that would claim an observation we do not
+ * have — so `coverage` stays null with an explicit `unknown` state.
+ */
+export interface RetrievalClientCoverage {
+  client: string;
+  observedRequests: number;
+  instrumentedRequests: number;
+  unobservedOrUnknown: number;
+  coverage: number | null;
+  coverageState: 'measured' | 'unknown';
+}
+
+export function normalizeRequestId(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim().slice(0, 128);
+  return /^[A-Za-z0-9_.:@-]{1,128}$/.test(trimmed) ? trimmed : null;
 }
 
 export interface RecordReferenceNavigationInput {
   targetEventId: string;
+  /** Typed kind of the opened memory. Defaults to `event` for legacy callers. */
+  targetKind?: MemoryKind;
+  targetProjectId?: string | null;
   action: ReferenceNavigationAction;
   navigationClient: string;
   /** Optional current delivery session. When supplied, attribution never crosses its boundary. */

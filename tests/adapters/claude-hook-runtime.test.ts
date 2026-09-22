@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { runHook, readNumberEnv } from '../../src/adapters/claude/hooks/hook-runtime.js';
+import { registerHookDeliveryReporter } from '../../src/adapters/claude/hooks/hook-output.js';
 
 describe('readNumberEnv', () => {
   const KEY = 'CLAUDE_MEMORY_TEST_NUMBER';
@@ -88,5 +89,96 @@ describe('runHook', () => {
 
     expect(writes).toEqual(['{"ok":true}\n']);
     expect(exitSpy).toHaveBeenCalledWith(0);
+  });
+});
+
+/** stdout mock that honours the write callback, like the real stream. */
+function captureStdoutWithCallback(options: { error?: Error } = {}): string[] {
+  const writes: string[] = [];
+  vi.spyOn(process.stdout, 'write').mockImplementation(((
+    chunk: unknown,
+    callback?: (error?: Error | null) => void
+  ) => {
+    writes.push(String(chunk));
+    callback?.(options.error ?? null);
+    return true;
+  }) as unknown as typeof process.stdout.write);
+  return writes;
+}
+
+describe('hook delivery evidence (specs R3)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    registerHookDeliveryReporter(null);
+  });
+
+  it('reports emitted only after the stdout write actually succeeds', async () => {
+    captureStdoutWithCallback();
+    const outcomes: string[] = [];
+    await runHook({ name: 'test', fallbackOutput: '{}' }, async () => {
+      registerHookDeliveryReporter((outcome) => {
+        outcomes.push(outcome.status);
+      });
+      // Selection alone must not have reported anything yet.
+      expect(outcomes).toEqual([]);
+      return '{"context":"ok"}';
+    });
+    expect(outcomes).toEqual(['emitted']);
+  });
+
+  it('reports failed when the write reports an error', async () => {
+    captureStdoutWithCallback({ error: new Error('EPIPE') });
+    const outcomes: string[] = [];
+    await runHook({ name: 'test', fallbackOutput: '{}' }, async () => {
+      registerHookDeliveryReporter((outcome) => {
+        outcomes.push(outcome.status);
+      });
+      return '{"context":"ok"}';
+    });
+    expect(outcomes).toEqual(['failed']);
+  });
+
+  it('reports failed when the body throws and the context-free fallback is emitted', async () => {
+    captureStdoutWithCallback();
+    const outcomes: string[] = [];
+    await runHook({ name: 'test', fallbackOutput: '{}' }, async () => {
+      registerHookDeliveryReporter((outcome) => {
+        outcomes.push(outcome.status);
+      });
+      throw new Error('hook body failed after selecting memories');
+    });
+    // The fallback carries no injected context, so the selection was not
+    // delivered even though a valid envelope was written.
+    expect(outcomes).toEqual(['failed']);
+  });
+
+  it('records the failed delivery before the watchdog forces the process to exit', async () => {
+    vi.useFakeTimers();
+    captureStdoutWithCallback();
+    // The sequence is what matters: a real process.exit would end the process,
+    // so a delivery record still in flight at that moment is lost.
+    const sequence: string[] = [];
+    const exitSpy = vi
+      .spyOn(process, 'exit')
+      .mockImplementation((((code?: number) => {
+        sequence.push(`exit:${code}`);
+        return undefined;
+      }) as unknown) as typeof process.exit);
+
+    void runHook({ name: 'test', fallbackOutput: '{}', timeoutMs: 100 }, () => {
+      // The body selected memories, registered its reporter, then wedged.
+      registerHookDeliveryReporter(async (outcome) => {
+        // An asynchronous write (the real reporter opens a store) must still
+        // land before the forced exit.
+        await Promise.resolve();
+        sequence.push(outcome.status);
+      });
+      return new Promise<string>(() => {});
+    });
+    await vi.advanceTimersByTimeAsync(150);
+
+    expect(sequence).toEqual(['failed', 'exit:0']);
+    expect(exitSpy).toHaveBeenCalledWith(0);
+    vi.useRealTimers();
   });
 });

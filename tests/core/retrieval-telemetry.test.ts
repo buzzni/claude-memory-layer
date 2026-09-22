@@ -99,6 +99,21 @@ describe('retrieval presentation and navigation telemetry', () => {
     );
     sqliteClose(db);
 
+    // A reference that was only formatted has no delivery evidence, so an open
+    // cannot be attributed to it (specs R3, finding 10).
+    const openBeforeDelivery = await store.recordReferenceNavigation({
+      targetEventId: referenceId,
+      action: 'source_ref',
+      navigationClient: 'mcp'
+    });
+    expect(openBeforeDelivery).toEqual({ outcome: 'unattributed', traceId: null, repeated: false });
+
+    await store.recordDeliveryOutcome({
+      traceId: 'trace-reference',
+      status: 'emitted',
+      evidence: 'hook_stdout'
+    });
+
     const firstOpen = await store.recordReferenceNavigation({
       targetEventId: referenceId,
       action: 'source_ref',
@@ -135,7 +150,8 @@ describe('retrieval presentation and navigation telemetry', () => {
       navigationRate: 1,
       attributedOpenCount: 2,
       ambiguousOpenCount: 0,
-      unattributedOpenCount: 0
+      // The pre-delivery open above stays unattributed and is counted as such.
+      unattributedOpenCount: 1
     });
     await expect(store.getRetrievalTraceStats()).resolves.toMatchObject({ totalQueries: 1 });
     await expect(store.getRecentRetrievalTraces(10)).resolves.toEqual([
@@ -163,6 +179,7 @@ describe('retrieval presentation and navigation telemetry', () => {
         presentationMode: 'reference',
         triggerType: 'user_prompt'
       });
+      await store.recordRetrieval(eventId, sessionId, 0.8, 'q', { traceId, deliveryStatus: 'emitted', deliveryEvidence: 'hook_stdout', presentationMode: 'reference' });
     }
 
     await expect(store.recordReferenceNavigation({

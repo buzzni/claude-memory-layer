@@ -738,7 +738,7 @@ describe('MCP project context tools', () => {
       recordTrace: false
     });
     expect(mocks.projectService.getRecentEvents).toHaveBeenCalledWith(3);
-    expect(mocks.projectService.recordQueryTrace).toHaveBeenCalledWith({
+    expect(mocks.projectService.recordQueryTrace).toHaveBeenCalledWith(expect.objectContaining({
       sessionId: undefined,
       queryText: 'Codex Hermes MCP integration',
       queryRewriteKind: 'none',
@@ -746,8 +746,14 @@ describe('MCP project context tools', () => {
       candidateEventIds: [relevant.id],
       selectedEventIds: [relevant.id],
       confidence: 'suggested',
+      // Typed items, client identity and a per-invocation request id are part
+      // of the trace contract now (specs R1/R2).
+      items: [expect.objectContaining({ kind: 'event', id: relevant.id, selected: true })],
+      triggerType: 'context_pack',
+      deliveryClient: 'mcp',
+      requestId: expect.stringMatching(/^mcp-context-pack:/),
       outcomeDiagnostics: expect.objectContaining({ outcomeReason: 'selected' })
-    });
+    }));
     expect(text).toContain('## Project Context Pack');
     expect(text).toContain('### Relevant Memories');
     expect(text).toContain('Codex import CLI');
@@ -2069,6 +2075,7 @@ describe('MCP project context tools', () => {
     expect(text).not.toContain('secret:');
     expect(mocks.projectService.recordReferenceNavigation).toHaveBeenCalledWith({
       targetEventId: sensitive.id,
+      targetKind: 'event',
       action: 'source_ref',
       navigationClient: 'mcp'
     });

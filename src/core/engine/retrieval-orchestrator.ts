@@ -16,7 +16,14 @@ import {
   type UnifiedRetrievalResult
 } from '../retriever.js';
 import type { RetrievalDebugLane } from '../retrieval-debug-lanes.js';
-import type { RetrievalOutcomeDiagnostics, RetrievalTelemetryContext } from '../retrieval-telemetry.js';
+import type { MemoryKind } from '../memory-ref.js';
+import type {
+  DeliveryEvidenceSource,
+  DeliveryStatus,
+  RetrievalOutcomeDiagnostics,
+  RetrievalTelemetryContext,
+  RetrievalTraceItemInput
+} from '../retrieval-telemetry.js';
 import {
   getRuntimeResourceTelemetry,
   type RuntimeRetrievalTelemetry
@@ -52,6 +59,8 @@ export interface RetrieveMemoriesOptions {
 export interface RecordQueryTraceInput extends RetrievalTelemetryContext {
   /** Caller-provided trace id so helpfulness rows can link back to this trace */
   traceId?: string;
+  /** Typed references for this trace (specs R1). */
+  items?: RetrievalTraceItemInput[];
   sessionId?: string;
   queryText: string;
   rawQueryText?: string;
@@ -107,18 +116,37 @@ export interface RetrievalTraceStore {
     triggerType?: RetrievalTelemetryContext['triggerType'];
     deliveryClient?: string;
     outcomeDiagnostics?: RetrievalOutcomeDiagnostics;
-  }): Promise<void>;
+    items?: RetrievalTraceItemInput[];
+    requestId?: string;
+    evaluationRunId?: string;
+    runtimeVersion?: string;
+  }): Promise<string | undefined | void>;
 }
 
 export interface RetrievalAccessStore {
-  incrementAccessCount(eventIds: string[]): Promise<void>;
+  incrementAccessCount(refs: Array<string | { kind: MemoryKind; id: string }>): Promise<void>;
   recordRetrieval(
     eventId: string,
     sessionId: string,
     score: number,
     query: string,
-    options?: { traceId?: string; source?: string; injectedContent?: string } & RetrievalTelemetryContext
+    options?: {
+      traceId?: string;
+      source?: string;
+      injectedContent?: string;
+      memoryKind?: MemoryKind;
+      memoryProjectId?: string | null;
+      deliveryStatus?: DeliveryStatus;
+      deliveryEvidence?: DeliveryEvidenceSource;
+    } & RetrievalTelemetryContext
   ): Promise<void>;
+  recordDeliveryOutcome?(input: {
+    traceId: string;
+    status: DeliveryStatus;
+    evidence: DeliveryEvidenceSource;
+    deliveredAt?: Date;
+    refs?: Array<{ kind: MemoryKind; id: string; projectId?: string | null }>;
+  }): Promise<number>;
 }
 
 export interface RetrievalOrchestratorDeps {
@@ -231,15 +259,39 @@ export class RetrievalOrchestrator {
   /**
    * Record a query-level retrieval trace used by hooks and dashboard stats.
    */
-  async recordQueryTrace(input: RecordQueryTraceInput): Promise<void> {
+  async recordQueryTrace(input: RecordQueryTraceInput): Promise<string | undefined> {
     await this.deps.initialize();
-    await this.deps.traceStore.recordRetrievalTrace({
+    const traceId = await this.deps.traceStore.recordRetrievalTrace({
       ...input,
       projectHash: this.deps.getProjectHash() || undefined,
       candidateDetails: [],
       selectedDetails: [],
       fallbackTrace: [],
       outcomeDiagnostics: input.outcomeDiagnostics,
+    });
+    return typeof traceId === 'string' ? traceId : input.traceId;
+  }
+
+  /**
+   * Record delivery evidence for an already-traced retrieval (specs R3).
+   * Selection never implies delivery; this is the only path that can raise a
+   * delivery beyond `formatted`.
+   */
+  async recordDeliveryOutcome(input: {
+    traceId: string;
+    status: DeliveryStatus;
+    evidence: DeliveryEvidenceSource;
+    deliveredAt?: Date;
+    refs?: Array<{ kind: MemoryKind; id: string; projectId?: string | null }>;
+  }): Promise<number> {
+    if (!this.deps.accessStore.recordDeliveryOutcome) return 0;
+    await this.deps.initialize();
+    return this.deps.accessStore.recordDeliveryOutcome({
+      ...input,
+      refs: input.refs?.map((ref) => ({
+        ...ref,
+        projectId: ref.projectId === undefined ? this.deps.getProjectHash() || null : ref.projectId
+      }))
     });
   }
 
@@ -250,10 +302,10 @@ export class RetrievalOrchestrator {
    * initializes itself and no-ops in read-only mode, so this avoids triggering
    * the heavier retrieval/vector initialization path for prompt telemetry.
    */
-  async incrementMemoryAccess(eventIds: string[]): Promise<void> {
-    if (eventIds.length === 0) return;
+  async incrementMemoryAccess(refs: Array<string | { kind: MemoryKind; id: string }>): Promise<void> {
+    if (refs.length === 0) return;
 
-    await this.deps.accessStore.incrementAccessCount(eventIds);
+    await this.deps.accessStore.incrementAccessCount(refs);
   }
 
   /**
@@ -264,10 +316,21 @@ export class RetrievalOrchestrator {
     sessionId: string,
     score: number,
     query: string,
-    options?: { traceId?: string; source?: string; injectedContent?: string } & RetrievalTelemetryContext
+    options?: {
+      traceId?: string;
+      source?: string;
+      injectedContent?: string;
+      memoryKind?: MemoryKind;
+      memoryProjectId?: string | null;
+      deliveryStatus?: DeliveryStatus;
+      deliveryEvidence?: DeliveryEvidenceSource;
+    } & RetrievalTelemetryContext
   ): Promise<void> {
     await this.deps.initialize();
-    await this.deps.accessStore.recordRetrieval(eventId, sessionId, score, query, options);
+    await this.deps.accessStore.recordRetrieval(eventId, sessionId, score, query, {
+      ...options,
+      memoryProjectId: options?.memoryProjectId === undefined ? this.deps.getProjectHash() || null : options.memoryProjectId
+    });
   }
 
   private resolveGraphHopOptions(
@@ -342,7 +405,18 @@ export class RetrievalOrchestrator {
       outcomeDiagnostics: result.outcomeDiagnostics,
       presentationMode: telemetry?.presentationMode,
       triggerType: telemetry?.triggerType,
-      deliveryClient: telemetry?.deliveryClient
+      deliveryClient: telemetry?.deliveryClient,
+      // Retriever lanes only ever return events, so the kind is known here.
+      items: candidateEventIds.map((eventId, index) => ({
+        kind: 'event' as const,
+        id: eventId,
+        projectId: projectHash,
+        rank: index,
+        selected: selectedEventIds.includes(eventId)
+      })),
+      requestId: telemetry?.requestId,
+      evaluationRunId: telemetry?.evaluationRunId,
+      runtimeVersion: telemetry?.runtimeVersion
     });
   }
 

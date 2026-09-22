@@ -7,6 +7,9 @@ export default defineConfig({
     include: ['tests/**/*.test.ts'],
     testTimeout: 15_000,
     env: {
+      // Host-launched test runners must still exercise native recall by default.
+      // Host ownership tests supply their own explicit marker.
+      CLAUDE_MEMORY_LESSON_OWNER: '',
       // Tests must not pick up the developer's real operations.json — the
       // default registry loads it, so pin the loader to a nonexistent path.
       // Individual tests override this env var for their own fixtures.

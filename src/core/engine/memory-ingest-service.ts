@@ -409,6 +409,15 @@ export class MemoryIngestService {
   private normalizeInput(operation: IngestOperation, input: MemoryEventInput): MemoryEventInput {
     const projectHash = this.getProjectHash();
     const projectPath = this.getProjectPath();
+    // Store time and source time are two different clocks (specs R4). An
+    // importer replaying an old transcript passes the original instant as
+    // `originalTimestamp`; without recording both, a backlog is invisible and
+    // "the memory is two days old" can mean either thing.
+    const ingestedAt = new Date().toISOString();
+    const occurredAt = readOriginalTimestamp(input) ?? isoOrNull(input.timestamp);
+    const sourceLagMs = occurredAt !== null && Date.parse(occurredAt) <= Date.parse(ingestedAt)
+      ? Date.parse(ingestedAt) - Date.parse(occurredAt)
+      : null;
     const normalizedInput: MemoryEventInput = {
       ...input,
       metadata: mergeHierarchicalMetadata(
@@ -416,7 +425,10 @@ export class MemoryIngestService {
           ingest: {
             operation,
             pipeline: 'default',
-            ts: new Date().toISOString()
+            ts: ingestedAt,
+            ingestedAt,
+            ...(occurredAt ? { occurredAt } : {}),
+            ...(sourceLagMs === null ? {} : { sourceLagMs })
           },
           ...(projectHash
             ? {
@@ -455,4 +467,25 @@ export class MemoryIngestService {
 
     return normalizedInput;
   }
+}
+
+/**
+ * The original conversation instant, when an importer supplied one. Absent for
+ * live capture, where the store time is the source time.
+ */
+function readOriginalTimestamp(input: MemoryEventInput): string | null {
+  const metadata = input.metadata as Record<string, unknown> | undefined;
+  const raw = metadata?.originalTimestamp;
+  if (typeof raw !== 'string') return null;
+  const parsed = Date.parse(raw);
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
+}
+
+function isoOrNull(value: unknown): string | null {
+  if (value instanceof Date) return Number.isFinite(value.getTime()) ? value.toISOString() : null;
+  if (typeof value === 'string') {
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
+  }
+  return null;
 }

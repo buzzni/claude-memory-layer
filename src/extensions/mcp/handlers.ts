@@ -3,6 +3,10 @@
  * Implementation of tool calls
  */
 
+import { randomUUID } from 'crypto';
+import { recordReferenceNavigationOnDb } from '../../core/retrieval-navigation.js';
+import { evaluateDerivedEvidenceShadow } from '../../core/operations/derived-evidence-candidates.js';
+import type { RecordReferenceNavigationResult } from '../../core/retrieval-telemetry.js';
 import { existsSync, mkdirSync, readdirSync } from 'node:fs';
 import * as path from 'node:path';
 
@@ -919,7 +923,28 @@ async function handleLessonGet(context: MemoryOperationContext, args: Record<str
     });
     if (!decision.allowed) return { ...base, found: false };
   }
-  return { ...base, found: true, lesson: formatLesson(lesson) };
+  // Opening a lesson from the session-start index is navigation of a delivered
+  // reference. Recording it with the lesson kind links the open back to the
+  // trace that delivered it (specs R1/R3); without the kind, this open could be
+  // attributed to a same-id event delivery.
+  let navigation: RecordReferenceNavigationResult = { outcome: 'unattributed', traceId: null, repeated: false };
+  try {
+    navigation = recordReferenceNavigationOnDb(context.db, {
+      targetEventId: lesson.lessonId,
+      targetKind: 'lesson',
+      targetProjectId: context.projectHash,
+      action: 'expand',
+      navigationClient: 'mcp'
+    });
+  } catch {
+    // Lesson disclosure stays available if telemetry cannot be written.
+  }
+  return {
+    ...base,
+    found: true,
+    lesson: formatLesson(lesson),
+    navigation: { outcome: navigation.outcome, traceId: navigation.traceId }
+  };
 }
 
 async function handleLessonList(context: MemoryOperationContext, args: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -1005,6 +1030,31 @@ async function handleLessonCandidates(context: MemoryOperationContext, args: Rec
       : stats.skippedByBudget > 0
         ? `Read-only detection. ${stats.skippedByBudget} group(s) still await extraction (per-call budget); call again to continue. Review a candidate and call mem-lesson-save to promote it.`
         : 'Read-only detection. Review a candidate and call mem-lesson-save to promote it into a curated lesson.';
+  // Shadow evaluation of the same candidates (specs R4). Read-only: it attaches
+  // provenance and applies the promotion safeguards, and nothing it returns is
+  // retrievable — promotion is still an explicit mem-lesson-save.
+  const shadow = evaluateDerivedEvidenceShadow(context.db, result.candidates, {
+    projectId: context.projectHash
+  });
+  const blockedById = new Map(shadow.blocked.map((entry) => [entry.candidateId, entry]));
+  const shadowById = new Map(shadow.shadowCandidates.map((entry) => [entry.candidateId, entry]));
+  const describeShadow = (candidateId: string) => {
+    const entry = shadowById.get(candidateId) ?? blockedById.get(candidateId);
+    if (!entry) return undefined;
+    return {
+      state: entry.promotion.state,
+      rejections: entry.promotion.rejections,
+      usableForRecall: entry.promotion.usableForRecall,
+      applicability: entry.applicability.map((line) => sanitizeOperationString(line, 300)),
+      validity: entry.validity,
+      generatorVersion: entry.generatorVersion,
+      sourceRefs: entry.sourceRefs.slice(0, 10).map((ref) => ({
+        kind: ref.kind,
+        id: sanitizeOperationString(ref.id, 120)
+      })),
+      sourceClock: entry.sourceClock
+    };
+  };
   return {
     operation: 'mem-lesson-candidates',
     projectHash: context.projectHash,
@@ -1012,7 +1062,13 @@ async function handleLessonCandidates(context: MemoryOperationContext, args: Rec
     eligibleSessions: result.eligibleSessions,
     count: result.candidates.length,
     extraction: result.extraction,
-    candidates: result.candidates.map((candidate) => ({
+    candidates: result.candidates.map((rawCandidate) => {
+      const entry = shadowById.get(rawCandidate.candidateId) ?? blockedById.get(rawCandidate.candidateId);
+      const sensitive = entry?.promotion.rejections.includes('sensitive_material') === true;
+      const candidate = sensitive && entry
+        ? { ...rawCandidate, name: entry.name, trigger: entry.trigger, steps: entry.steps, failureModes: [] }
+        : rawCandidate;
+      return ({
       candidateId: sanitizeOperationString(candidate.candidateId, 120),
       name: sanitizeOperationString(candidate.name, 240),
       trigger: sanitizeOperationString(candidate.trigger, 500),
@@ -1020,8 +1076,20 @@ async function handleLessonCandidates(context: MemoryOperationContext, args: Rec
       steps: candidate.steps.slice(0, 10).map((step) => sanitizeOperationString(step, 500)),
       failureModes: candidate.failureModes.slice(0, 10).map((mode) => sanitizeOperationString(mode, 300)),
       sourceSessionIds: candidate.sourceSessionIds.slice(0, 10).map((id) => sanitizeOperationString(id, 120)),
-      sourceEventIds: candidate.sourceEventIds.slice(0, 10).map((id) => sanitizeOperationString(id, 120))
-    })),
+      sourceEventIds: candidate.sourceEventIds.slice(0, 10).map((id) => sanitizeOperationString(id, 120)),
+      shadow: describeShadow(candidate.candidateId)
+      });
+    }),
+    shadowEvaluation: {
+      mode: shadow.mode,
+      generatorVersion: shadow.generatorVersion,
+      evaluated: shadow.evaluated,
+      shadowCandidates: shadow.shadowCandidates.length,
+      blocked: shadow.blocked.length,
+      rejectionCounts: shadow.rejectionCounts,
+      unresolvedSourceRefs: shadow.unresolvedSourceRefs,
+      note: shadow.note
+    },
     note
   };
 }
@@ -2024,6 +2092,12 @@ async function handleMemSearch(memoryService: MemoryService, args: Record<string
   const eventType = eventTypeArg(args.eventType);
 
   const search = await retrieveMcpMemories(memoryService, query, { topK, fetchTopK, sessionId, eventType });
+  await recordMcpExplicitSearchTrace(memoryService, {
+    sessionId,
+    memories: search.memories,
+    diagnostics: search.diagnostics,
+    requestId: optionalString(args.requestId) ?? `mcp-search:${randomUUID()}`
+  });
 
   const lines: string[] = [
     '## Memory Search Results',
@@ -2335,6 +2409,7 @@ async function handleMemDetails(memoryService: MemoryService, args: Record<strin
     try {
       await memoryService.recordReferenceNavigation({
         targetEventId: event.id,
+        targetKind: 'event',
         action: 'details',
         navigationClient: 'mcp'
       });
@@ -2417,7 +2492,11 @@ async function handleMemContextPack(memoryService: MemoryService, args: Record<s
     sessionId,
     candidates: search.memories,
     selected: relevantMemories,
-    diagnostics: contextPackOutcomeDiagnostics(search.diagnostics, search.memories, relevantMemories)
+    diagnostics: contextPackOutcomeDiagnostics(search.diagnostics, search.memories, relevantMemories),
+    // One id per tool invocation: a caller-supplied id when present, otherwise
+    // a generated one, so this client's request volume is countable and a
+    // second trace for the same request cannot double-count it (specs R2).
+    requestId: optionalString(args.requestId) ?? `mcp-context-pack:${randomUUID()}`
   });
   const hasPerspectiveContext = optionalString(args.observerActorId) !== undefined
     || optionalString(args.targetActorId) !== undefined
@@ -2524,6 +2603,54 @@ async function handleMemContextPack(memoryService: MemoryService, args: Record<s
   return textResult(applyContextPackBudget(lines.join('\n'), maxContextChars));
 }
 
+/**
+ * Trace one explicit `mem-search` call (specs R2).
+ *
+ * The query text is deliberately not persisted: an ad-hoc search may contain a
+ * secret the caller never intended to store, and this path exists to make the
+ * client's request volume and its outcome reason measurable — not to log
+ * queries. Diagnostics, client, and a per-invocation request id are enough for
+ * per-client coverage without keeping the query.
+ */
+async function recordMcpExplicitSearchTrace(
+  memoryService: MemoryService,
+  input: {
+    sessionId?: string;
+    memories: ContextPackMemory[];
+    diagnostics?: RetrievalOutcomeDiagnostics;
+    requestId: string;
+  }
+): Promise<void> {
+  if (memoryService.capabilities?.telemetryWrites === false) return;
+  if (typeof memoryService.recordQueryTrace !== 'function') return;
+  try {
+    const selectedIds = uniqueContextPackEventIds(input.memories);
+    await memoryService.recordQueryTrace({
+      sessionId: input.sessionId,
+      queryText: '[mcp-search] explicit query (not stored)',
+      queryRewriteKind: 'none',
+      strategy: 'mcp-search',
+      candidateEventIds: selectedIds,
+      selectedEventIds: selectedIds,
+      items: selectedIds.map((id, index) => ({
+        kind: 'event' as const,
+        id,
+        rank: index,
+        selected: true
+      })),
+      confidence: input.memories.length > 0 ? 'suggested' : 'none',
+      presentationMode: 'reference',
+      triggerType: 'explicit_search',
+      deliveryClient: 'mcp',
+      requestId: input.requestId,
+      runtimeVersion: process.env.CLAUDE_MEMORY_LAYER_VERSION,
+      outcomeDiagnostics: input.diagnostics
+    });
+  } catch {
+    // Best-effort usage telemetry must not break a read-only search.
+  }
+}
+
 async function recordMcpContextPackTrace(
   memoryService: MemoryService,
   input: {
@@ -2532,6 +2659,7 @@ async function recordMcpContextPackTrace(
     candidates: ContextPackMemory[];
     selected: ContextPackMemory[];
     diagnostics?: RetrievalOutcomeDiagnostics;
+    requestId?: string;
   }
 ): Promise<void> {
   // Structural service doubles and older compatible facades may not expose
@@ -2539,14 +2667,29 @@ async function recordMcpContextPackTrace(
   // the write itself remains best-effort below.
   if (memoryService.capabilities?.telemetryWrites === false) return;
   try {
+    const candidateIds = uniqueContextPackEventIds(input.candidates);
+    const selectedIds = new Set(uniqueContextPackEventIds(input.selected));
     await memoryService.recordQueryTrace({
       sessionId: input.sessionId,
       queryText: sanitizeOperationString(input.query, 1000),
       queryRewriteKind: 'none',
       strategy: 'mcp-context-pack',
-      candidateEventIds: uniqueContextPackEventIds(input.candidates),
-      selectedEventIds: uniqueContextPackEventIds(input.selected),
+      candidateEventIds: candidateIds,
+      selectedEventIds: Array.from(selectedIds),
+      // Context pack only ever selects events, so the kind is known (specs R1).
+      items: candidateIds.map((id, index) => ({
+        kind: 'event' as const,
+        id,
+        rank: index,
+        selected: selectedIds.has(id)
+      })),
       confidence: input.selected.length > 0 ? 'suggested' : 'none',
+      // Identifies the MCP client's request so its coverage is measurable and a
+      // duplicate trace for the same request collapses (specs R2).
+      requestId: input.requestId,
+      runtimeVersion: process.env.CLAUDE_MEMORY_LAYER_VERSION,
+      triggerType: 'context_pack',
+      deliveryClient: 'mcp',
       outcomeDiagnostics: input.diagnostics
     });
   } catch {
@@ -2782,6 +2925,7 @@ async function handleMemSourceRef(memoryService: MemoryService, args: Record<str
     try {
       await memoryService.recordReferenceNavigation({
         targetEventId: event.id,
+        targetKind: 'event',
         action: 'source_ref',
         navigationClient: 'mcp'
       });

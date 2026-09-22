@@ -217,6 +217,21 @@ export class ReadOnlyDiagnosticsService {
     return tolerateMissingTable(() => store.getUsefulnessAggregateV2(options), empty);
   }
 
+  /** Per-client instrumentation coverage; empty when the store lacks traces. */
+  async getRetrievalClientCoverage(options: { since?: Date; until?: Date } = {}) {
+    const store = await this.store();
+    if (!store) return [];
+    return tolerateMissingTable(() => store.getRetrievalClientCoverage(options), []);
+  }
+
+  /** Typed selection totals; legacy traces are resolved read-only (specs R1). */
+  async getTypedSelectionSummary(options: { since?: Date; until?: Date; resolveLegacy?: boolean } = {}) {
+    const { emptyTypedSelectionSummary } = await import('../core/retrieval-telemetry.js');
+    const store = await this.store();
+    if (!store) return emptyTypedSelectionSummary();
+    return tolerateMissingTable(() => store.getTypedSelectionSummary(options), emptyTypedSelectionSummary());
+  }
+
   async getRecentRetrievalTraces(limit: number = 50): Promise<RetrievalTrace[]> {
     const store = await this.store();
     if (!store) return [];

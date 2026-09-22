@@ -1,3 +1,5 @@
+import { readIngestSourceClocks } from './ingest-source-clocks.js';
+import { retrievalRollout } from './retrieval-rollout.js';
 /**
  * SQLite-based EventStore implementation
  * Primary store for hooks - WAL mode enables concurrent access
@@ -46,11 +48,18 @@ import {
   USEFULNESS_V2_EVALUATION_WINDOW_MS
 } from './usefulness-outcome-v2.js';
 import {
+  CURRENT_USEFULNESS_EVALUATOR_VERSION,
+  LEGACY_ASSUMED_DELIVERY_EVALUATOR_VERSIONS,
+  RETRIEVAL_TELEMETRY_SCHEMA_VERSION,
+  deliveredFromStatus,
   emptyUsefulnessAggregateV2,
+  normalizeDeliveryEvidence,
+  normalizeDeliveryStatus,
+  normalizeRequestId,
   normalizeUsefulnessMinimumSample,
+  presentedOutcomeReason,
   normalizeRetrievalPresentationMode,
   normalizeRetrievalOutcomeDiagnostics,
-  normalizeRetrievalOutcomeReason,
   normalizeRetrievalTriggerType,
   normalizeTelemetryClient,
   type RecordReferenceNavigationInput,
@@ -60,10 +69,33 @@ import {
   type RetrievalTelemetryContext,
   type RetrievalTelemetryStats,
   type RetrievalTriggerType,
+  type DeliveryEvidenceSource,
+  type DeliveryStatus,
   type MemoryUsefulnessObservationV2,
+  type RetrievalClientCoverage,
+  type UsefulnessAdoption,
+  type RetrievalTraceItemInput,
+  type TypedSelectionSummary,
   type UsefulnessAggregateV2,
   type UsefulnessRateV2
 } from './retrieval-telemetry.js';
+import {
+  normalizeMemoryKind,
+  usefulnessRowKey,
+  usefulnessRowKeySql,
+  type MemoryKind
+} from './memory-ref.js';
+import { recordReferenceNavigationOnDb } from './retrieval-navigation.js';
+import {
+  backfillTraceItems,
+  ensureRetrievalTraceItemsSchema,
+  normalizeTraceItems,
+  readTraceItems,
+  resolveMemoryRefKinds,
+  summarizeTypedSelections,
+  writeTraceItems,
+  type TraceItemBackfillResult
+} from './retrieval-trace-ledger.js';
 
 export interface SQLiteEventStoreOptions extends SQLiteOptions {
   markdownMirrorRoot?: string;
@@ -116,6 +148,13 @@ function parseRetrievalTraceDetails(value: unknown): RetrievalTraceDetailRecord[
   return Array.isArray(parsed) ? normalizeRetrievalTraceDetails(parsed as RetrievalTraceDetailRecord[]) : [];
 }
 
+/**
+ * Read a trace's diagnostics.
+ *
+ * Rows written before the honest-default migration stored `runtime_error` as a
+ * fallback for "no diagnostics", not as an observed exception. They are shown
+ * as `legacy_unclassified` and never rewritten in place (specs R2).
+ */
 function parseRetrievalOutcomeDiagnostics(row: Record<string, unknown>): RetrievalOutcomeDiagnostics {
   let value: unknown;
   try {
@@ -125,10 +164,11 @@ function parseRetrievalOutcomeDiagnostics(row: Record<string, unknown>): Retriev
   } catch {
     value = undefined;
   }
-  return normalizeRetrievalOutcomeDiagnostics(
-    value,
-    normalizeRetrievalOutcomeReason(row.outcome_reason)
-  );
+  const presented = presentedOutcomeReason(row.outcome_reason, row.telemetry_schema_version);
+  const diagnostics = normalizeRetrievalOutcomeDiagnostics(value, presented);
+  return Number(row.telemetry_schema_version) >= 2
+    ? diagnostics
+    : { ...diagnostics, outcomeReason: presented };
 }
 
 function normalizeQueryRewriteKind(value?: string | null): QueryRewriteKind {
@@ -140,7 +180,9 @@ function normalizeQueryRewriteKind(value?: string | null): QueryRewriteKind {
 const REWRITTEN_QUERY_REWRITE_KIND_SQL = `LOWER(TRIM(COALESCE(query_rewrite_kind, 'none'))) IN ('follow-up-context', 'intent-rewrite')`;
 const DEFAULT_OUTBOX_STUCK_THRESHOLD_MS = 5 * 60 * 1000;
 const DEFAULT_OUTBOX_MAX_RETRIES = 3;
-export const REFERENCE_ATTRIBUTION_WINDOW_MS = 15 * 60 * 1000;
+// Re-exported for existing importers; the implementation moved next to the
+// navigation recorder so db-only callers can reuse both.
+export { REFERENCE_ATTRIBUTION_WINDOW_MS } from './retrieval-navigation.js';
 // Bump when introducing an ordered migration that must run exactly once; gate
 // such migrations on the persisted PRAGMA user_version.
 const SQLITE_SCHEMA_VERSION = 1;
@@ -630,6 +672,11 @@ export class SQLiteEventStore {
         tool_total_count INTEGER DEFAULT 0,
         was_reasked INTEGER DEFAULT 0,
         helpfulness_score REAL DEFAULT 0.5,
+        memory_kind TEXT NOT NULL DEFAULT 'unknown',
+        memory_project_id TEXT,
+        delivery_status TEXT NOT NULL DEFAULT 'unknown',
+        delivery_evidence TEXT NOT NULL DEFAULT 'none',
+        delivered_at TEXT,
         presentation_mode TEXT NOT NULL DEFAULT 'unknown',
         trigger_type TEXT NOT NULL DEFAULT 'unknown',
         delivery_client TEXT NOT NULL DEFAULT 'unknown',
@@ -655,6 +702,17 @@ export class SQLiteEventStore {
         explicit_feedback TEXT,
         confidence REAL NOT NULL,
         evaluated_at TEXT,
+        memory_kind TEXT NOT NULL DEFAULT 'unknown',
+        delivery_status TEXT NOT NULL DEFAULT 'unknown',
+        delivery_evidence TEXT NOT NULL DEFAULT 'none',
+        evaluation_window_ms INTEGER,
+        evaluation_cutoff TEXT,
+        -- Raw memory id and owning project. The event_id column holds a
+        -- kind-qualified key for non-event memories (see usefulnessRowKey) so
+        -- the primary key below cannot collapse a lesson onto an event that
+        -- happens to share its id.
+        memory_id TEXT,
+        memory_project_id TEXT,
         PRIMARY KEY(trace_id, event_id, observation_kind, evaluator_version)
       );
       CREATE INDEX IF NOT EXISTS idx_usefulness_v2_evaluator_trigger
@@ -680,9 +738,32 @@ export class SQLiteEventStore {
         presentation_mode TEXT NOT NULL DEFAULT 'unknown',
         trigger_type TEXT NOT NULL DEFAULT 'unknown',
         delivery_client TEXT NOT NULL DEFAULT 'unknown',
-        outcome_reason TEXT NOT NULL DEFAULT 'runtime_error',
+        outcome_reason TEXT NOT NULL DEFAULT 'unknown',
         retrieval_diagnostics_json TEXT,
+        request_id TEXT,
+        evaluation_run_id TEXT,
+        runtime_version TEXT,
+        telemetry_schema_version INTEGER NOT NULL DEFAULT 0,
         created_at TEXT DEFAULT (datetime('now'))
+      );
+
+      -- Typed references for each trace (specs R1). The legacy id arrays above
+      -- stay for old readers; these rows keep the memory kind so lessons are
+      -- never mistaken for events.
+      CREATE TABLE IF NOT EXISTS retrieval_trace_items (
+        trace_id TEXT NOT NULL,
+        item_key TEXT NOT NULL,
+        memory_kind TEXT NOT NULL,
+        memory_id TEXT NOT NULL,
+        project_id TEXT,
+        rank INTEGER,
+        selected INTEGER NOT NULL DEFAULT 0,
+        score REAL,
+        content_hash TEXT,
+        memory_version TEXT,
+        deleted INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT DEFAULT (datetime('now')),
+        PRIMARY KEY (trace_id, item_key)
       );
 
       -- Privacy-safe reference navigation. Target and trace identifiers are
@@ -694,6 +775,7 @@ export class SQLiteEventStore {
         delivery_session_id TEXT,
         presentation_mode TEXT NOT NULL DEFAULT 'reference',
         trigger_type TEXT NOT NULL DEFAULT 'unknown',
+        memory_kind TEXT NOT NULL DEFAULT 'event',
         navigation_action TEXT NOT NULL,
         navigation_client TEXT NOT NULL DEFAULT 'unknown',
         attribution_outcome TEXT NOT NULL,
@@ -814,6 +896,8 @@ export class SQLiteEventStore {
         failure_modes_json TEXT NOT NULL DEFAULT '[]',
         skill_candidate INTEGER NOT NULL DEFAULT 0,
         source_class TEXT NOT NULL DEFAULT 'derived',
+        access_count INTEGER NOT NULL DEFAULT 0,
+        last_accessed_at TEXT,
         revision INTEGER NOT NULL DEFAULT 1,
         recall_enabled INTEGER NOT NULL DEFAULT 1,
         scope TEXT,
@@ -1082,6 +1166,7 @@ export class SQLiteEventStore {
       CREATE INDEX IF NOT EXISTS idx_retrieval_traces_created_at ON retrieval_traces(created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_retrieval_traces_project_hash ON retrieval_traces(project_hash);
       CREATE INDEX IF NOT EXISTS idx_retrieval_traces_session_id ON retrieval_traces(session_id);
+
       CREATE INDEX IF NOT EXISTS idx_retrieval_navigation_trace ON retrieval_navigation_events(trace_id);
       CREATE INDEX IF NOT EXISTS idx_retrieval_navigation_target_time ON retrieval_navigation_events(target_event_id, last_opened_at DESC);
       CREATE INDEX IF NOT EXISTS idx_memory_facets_project_dimension_value ON memory_facets(project_hash, dimension, value);
@@ -1220,12 +1305,66 @@ export class SQLiteEventStore {
     this.addColumnIfMissing('retrieval_traces', 'presentation_mode', `TEXT NOT NULL DEFAULT 'unknown'`);
     this.addColumnIfMissing('retrieval_traces', 'trigger_type', `TEXT NOT NULL DEFAULT 'unknown'`);
     this.addColumnIfMissing('retrieval_traces', 'delivery_client', `TEXT NOT NULL DEFAULT 'unknown'`);
+    // Legacy stores keep 'runtime_error' as the column default so their
+    // existing rows are unchanged; readers present those as
+    // `legacy_unclassified` instead of re-classifying them (specs R2).
     this.addColumnIfMissing('retrieval_traces', 'outcome_reason', `TEXT NOT NULL DEFAULT 'runtime_error'`);
     this.addColumnIfMissing('retrieval_traces', 'retrieval_diagnostics_json', 'TEXT');
+    this.addColumnIfMissing('retrieval_traces', 'request_id', 'TEXT');
+    this.addColumnIfMissing('retrieval_traces', 'evaluation_run_id', 'TEXT');
+    this.addColumnIfMissing('retrieval_traces', 'runtime_version', 'TEXT');
+    this.addColumnIfMissing('retrieval_traces', 'telemetry_schema_version', 'INTEGER NOT NULL DEFAULT 0');
+    this.addColumnIfMissing('memory_helpfulness', 'memory_kind', `TEXT NOT NULL DEFAULT 'unknown'`);
+    this.addColumnIfMissing('retrieval_navigation_events', 'memory_kind', `TEXT NOT NULL DEFAULT 'event'`);
+    this.addColumnIfMissing('retrieval_navigation_events', 'memory_project_id', 'TEXT');
+    this.addColumnIfMissing('memory_helpfulness', 'delivery_status', `TEXT NOT NULL DEFAULT 'unknown'`);
+    this.addColumnIfMissing('memory_helpfulness', 'delivery_evidence', `TEXT NOT NULL DEFAULT 'none'`);
+    this.addColumnIfMissing('memory_helpfulness', 'delivered_at', 'TEXT');
+    this.addColumnIfMissing('memory_usefulness_observations_v2', 'memory_kind', `TEXT NOT NULL DEFAULT 'unknown'`);
+    this.addColumnIfMissing('memory_usefulness_observations_v2', 'delivery_status', `TEXT NOT NULL DEFAULT 'unknown'`);
+    this.addColumnIfMissing('memory_usefulness_observations_v2', 'delivery_evidence', `TEXT NOT NULL DEFAULT 'none'`);
+    this.addColumnIfMissing('memory_usefulness_observations_v2', 'evaluation_window_ms', 'INTEGER');
+    this.addColumnIfMissing('memory_usefulness_observations_v2', 'evaluation_cutoff', 'TEXT');
+    // The raw memory id, kept beside the primary-key column. `event_id` has to
+    // carry a kind-qualified key for non-event memories so an event and a
+    // lesson sharing an id cannot overwrite each other on the existing primary
+    // key; `memory_id` is what a reader joins on (specs R1, finding 2).
+    this.addColumnIfMissing('memory_usefulness_observations_v2', 'memory_id', 'TEXT');
+    this.addColumnIfMissing('memory_usefulness_observations_v2', 'memory_project_id', 'TEXT');
+    this.addColumnIfMissing('memory_helpfulness', 'memory_project_id', 'TEXT');
+    try {
+      // Typed trace items are additive: an older store gains the table without
+      // any change to the arrays its existing readers use.
+      ensureRetrievalTraceItemsSchema(this.db);
+      // Indexed only after the column migration above, so a legacy store that
+      // predates request_id is not asked to index a column it lacks.
+      sqliteExec(this.db, `CREATE INDEX IF NOT EXISTS idx_retrieval_traces_request_id ON retrieval_traces(request_id);`);
+    } catch {
+      // Partial migrations must not block store startup.
+    }
+    try {
+      // One request must map to one trace even when two processes write at the
+      // same moment. The partial index leaves the pre-existing rows with a NULL
+      // request id untouched (specs R2, finding 9).
+      sqliteExec(
+        this.db,
+        `CREATE UNIQUE INDEX IF NOT EXISTS idx_retrieval_traces_request_id_unique
+           ON retrieval_traces(request_id) WHERE request_id IS NOT NULL;`
+      );
+    } catch {
+      // A store that already contains duplicate request ids cannot take the
+      // unique index. Leave its history intact: the transaction in
+      // recordRetrievalTrace still serializes this process's own writers.
+    }
 
     // Explicit curation reuses the existing lesson artifact while preserving
     // whether the item came from a reviewed/manual capture or a derivation.
     this.addColumnIfMissing('memory_lessons', 'source_class', `TEXT NOT NULL DEFAULT 'derived'`);
+    // A lesson access used to be written against events.access_count, where it
+    // matched no row and was silently lost. The typed access path now records
+    // it here instead (specs R1).
+    this.addColumnIfMissing('memory_lessons', 'access_count', 'INTEGER NOT NULL DEFAULT 0');
+    this.addColumnIfMissing('memory_lessons', 'last_accessed_at', 'TEXT');
     this.addColumnIfMissing('memory_lessons', 'revision', 'INTEGER NOT NULL DEFAULT 1');
     this.addColumnIfMissing('memory_lessons', 'recall_enabled', 'INTEGER NOT NULL DEFAULT 1');
     this.addColumnIfMissing('memory_lessons', 'scope', 'TEXT');
@@ -2736,22 +2875,53 @@ export class SQLiteEventStore {
   /**
    * Increment access count for events
    */
-  async incrementAccessCount(eventIds: string[]): Promise<void> {
-    if (eventIds.length === 0 || this.readOnly) return;
+  /**
+   * Increment access counters for injected memories.
+   *
+   * Accepts typed references so a lesson id can no longer be used to update
+   * `events.access_count` — that write matched no row and silently lost the
+   * access signal for every lesson (specs R1). Bare strings stay supported for
+   * callers that only ever hold event ids.
+   */
+  async incrementAccessCount(refs: Array<string | { kind: MemoryKind; id: string }>): Promise<void> {
+    if (refs.length === 0 || this.readOnly) return;
 
     await this.initialize();
 
-    const placeholders = eventIds.map(() => '?').join(',');
+    // Each reference is counted against the table that actually owns it. A
+    // lesson id never matched a row in `events`, so those writes were lost
+    // entirely before the kind travelled with the reference (specs R1).
+    const typed = refs
+      .map((ref) => (typeof ref === 'string' ? { kind: 'event' as MemoryKind, id: ref } : ref))
+      .filter((ref) => Boolean(ref?.id));
+    const eventIds = Array.from(new Set(typed
+      .filter((ref) => normalizeMemoryKind(ref.kind) === 'event')
+      .map((ref) => ref.id)));
+    const lessonIds = Array.from(new Set(typed
+      .filter((ref) => normalizeMemoryKind(ref.kind) === 'lesson')
+      .map((ref) => ref.id)));
     const currentTime = toSQLiteTimestamp(new Date());
 
-    sqliteRun(
-      this.db,
-      `UPDATE events
-       SET access_count = access_count + 1,
-           last_accessed_at = ?
-       WHERE id IN (${placeholders})`,
-      [currentTime, ...eventIds]
-    );
+    if (eventIds.length > 0) {
+      sqliteRun(
+        this.db,
+        `UPDATE events
+         SET access_count = access_count + 1,
+             last_accessed_at = ?
+         WHERE id IN (${eventIds.map(() => '?').join(',')})`,
+        [currentTime, ...eventIds]
+      );
+    }
+    if (lessonIds.length > 0 && this.hasTableColumn('memory_lessons', 'access_count')) {
+      sqliteRun(
+        this.db,
+        `UPDATE memory_lessons
+         SET access_count = access_count + 1,
+             last_accessed_at = ?
+         WHERE lesson_id IN (${lessonIds.map(() => '?').join(',')})`,
+        [currentTime, ...lessonIds]
+      );
+    }
   }
 
   /**
@@ -2794,7 +2964,20 @@ export class SQLiteEventStore {
     sessionId: string,
     score: number,
     query: string,
-    options?: { traceId?: string; source?: string; injectedContent?: string } & RetrievalTelemetryContext
+    options?: {
+      traceId?: string;
+      source?: string;
+      injectedContent?: string;
+      /** Typed kind of the recorded memory. Defaults to `event`. */
+      memoryKind?: MemoryKind;
+      memoryProjectId?: string | null;
+      /**
+       * Delivery is not assumed. Selection records `formatted`; only a caller
+       * with output evidence upgrades it via recordDeliveryOutcome (specs R3).
+       */
+      deliveryStatus?: DeliveryStatus;
+      deliveryEvidence?: DeliveryEvidenceSource;
+    } & RetrievalTelemetryContext
   ): Promise<void> {
     if (this.readOnly) return;
     await this.initialize();
@@ -2807,19 +2990,125 @@ export class SQLiteEventStore {
       this.db,
       `INSERT INTO memory_helpfulness (
          id, event_id, session_id, retrieval_score, query_preview, trace_id, source,
-         injected_content, presentation_mode, trigger_type, delivery_client, created_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         injected_content, memory_kind, delivery_status, delivery_evidence,
+         presentation_mode, trigger_type, delivery_client, created_at, memory_project_id
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id, eventId, sessionId, score, query.slice(0, 200),
         options?.traceId || null,
         options?.source || 'user_prompt',
         options?.injectedContent ? options.injectedContent.slice(0, 2000) : null,
+        normalizeMemoryKind(options?.memoryKind ?? 'event'),
+        normalizeDeliveryStatus(options?.deliveryStatus ?? 'formatted'),
+        normalizeDeliveryEvidence(options?.deliveryEvidence ?? 'context_formatted'),
         normalizeRetrievalPresentationMode(options?.presentationMode),
         normalizeRetrievalTriggerType(options?.triggerType),
         normalizeTelemetryClient(options?.deliveryClient),
-        new Date().toISOString()
+        new Date().toISOString(),
+        options?.memoryProjectId?.trim() || null
       ]
     );
+  }
+
+  /**
+   * Record what actually happened to a delivery after selection (specs R3).
+   *
+   * Selection alone never sets delivered=true. A hook that successfully wrote
+   * its context to stdout reports `emitted`; a write failure reports `failed`;
+   * anything unobserved stays `unknown`. "Emitted" is not "the model read it" —
+   * only an explicit consumer acknowledgement is `acknowledged`.
+   */
+  async recordDeliveryOutcome(input: {
+    traceId: string;
+    status: DeliveryStatus;
+    evidence: DeliveryEvidenceSource;
+    deliveredAt?: Date;
+    /** Omitted updates the whole trace; an empty list updates no items. */
+    refs?: Array<{ kind: MemoryKind; id: string; projectId?: string | null }>;
+  }): Promise<number> {
+    if (input.refs?.length === 0) return 0;
+    if (this.readOnly) return 0;
+    await this.initialize();
+    const traceId = input.traceId?.trim();
+    if (!traceId) return 0;
+    const status = normalizeDeliveryStatus(input.status);
+    const evidence = normalizeDeliveryEvidence(input.evidence);
+    const deliveredAt = (input.deliveredAt ?? new Date()).toISOString();
+    const hasPositiveDelivery = deliveredFromStatus(status) === true;
+
+    // A ref filter matches on kind *and* id. Filtering by id alone would move
+    // the delivery status of an event that merely shares an id with the lesson
+    // the caller actually delivered (finding 3).
+    const hasHelpfulnessKind = this.hasTableColumn('memory_helpfulness', 'memory_kind');
+    const params: unknown[] = [status, evidence, hasPositiveDelivery ? 1 : 0, deliveredAt, traceId];
+    let refFilter = '';
+    if (input.refs && input.refs.length > 0) {
+      if (hasHelpfulnessKind) {
+        refFilter = ` AND (${input.refs.map(() => `(event_id = ? AND COALESCE(memory_kind, 'event') = ? AND memory_project_id IS ?)`).join(' OR ')})`;
+        for (const ref of input.refs) params.push(ref.id, normalizeMemoryKind(ref.kind), ref.projectId ?? null);
+      } else {
+        refFilter = ` AND event_id IN (${input.refs.map(() => '?').join(',')})`;
+        params.push(...input.refs.map((ref) => ref.id));
+      }
+    }
+    // Keep any already-evaluated observation consistent with the new evidence
+    // rather than leaving a stale assumed value behind. The same ref scope
+    // applies: updating every row of the trace would rewrite the delivery state
+    // of items this call says nothing about.
+    const delivered = deliveredFromStatus(status);
+    const observationParams: unknown[] = [
+      status, evidence, delivered === null ? null : delivered ? 1 : 0,
+      traceId, CURRENT_USEFULNESS_EVALUATOR_VERSION
+    ];
+    let observationFilter = '';
+    if (input.refs && input.refs.length > 0) {
+      observationFilter = ` AND event_id IN (${input.refs.map(() => '?').join(',')})`;
+      observationParams.push(...input.refs.map((ref) => usefulnessRowKey(normalizeMemoryKind(ref.kind), ref.id, ref.projectId)));
+    }
+    // Commit both representations together so a failed observation update
+    // cannot leave navigation and usefulness reporting different delivery states.
+    return this.runInImmediateTransaction(() => {
+      if (retrievalRollout().usefulnessV3Write) {
+        const deliveredValue = delivered === null ? null : delivered ? 1 : 0;
+        // An evaluation based on different delivery evidence is stale, even
+        // after its old window closed. Queue it for normal session evaluation
+        // and clear derived claims until that evaluation has run.
+        sqliteRun(this.db,
+          `UPDATE memory_helpfulness SET measured_at = NULL
+           WHERE trace_id = ?${refFilter} AND EXISTS (
+             SELECT 1 FROM memory_usefulness_observations_v2 o
+             WHERE o.trace_id = memory_helpfulness.trace_id
+               AND o.event_id = ${usefulnessRowKeySql('memory_helpfulness')}
+               AND o.evaluator_version = ? AND o.delivered IS NOT ?
+           )`,
+          [traceId, ...params.slice(5), CURRENT_USEFULNESS_EVALUATOR_VERSION, deliveredValue]);
+        sqliteRun(this.db,
+          `UPDATE memory_usefulness_observations_v2
+           SET adoption = ?, task_outcome = 'unknown', content_overlap_score = NULL,
+               reask_outcome = 'unknown', confidence = 0, evaluated_at = NULL, evaluation_cutoff = NULL
+           WHERE trace_id = ? AND evaluator_version = ?${observationFilter} AND delivered IS NOT ?`,
+          [delivered === false ? 'not_observed' : 'unknown', traceId,
+            CURRENT_USEFULNESS_EVALUATOR_VERSION, ...observationParams.slice(5), deliveredValue]);
+      }
+      const result = sqliteRun(
+        this.db,
+        `UPDATE memory_helpfulness
+         SET delivery_status = ?, delivery_evidence = ?,
+             delivered_at = CASE WHEN ? = 1 THEN COALESCE(delivered_at, ?) ELSE delivered_at END
+         WHERE trace_id = ?${refFilter}`,
+        params
+      );
+      if (retrievalRollout().usefulnessV3Write) {
+        sqliteRun(
+          this.db,
+          `UPDATE memory_usefulness_observations_v2
+           SET delivery_status = ?, delivery_evidence = ?, delivered = ?
+           WHERE trace_id = ? AND evaluator_version = ?${observationFilter}`,
+          observationParams
+        );
+      }
+      return Number(result?.changes ?? 0);
+    });
   }
 
   /**
@@ -2854,7 +3143,112 @@ export class SQLiteEventStore {
     );
 
     if (retrievals.length === 0) return;
+    await this.evaluateRetrievalRows(sessionId, retrievals);
+  }
 
+  /**
+   * Re-evaluate deliveries whose observation window had not closed yet when the
+   * session was first evaluated (specs R3).
+   *
+   * A session that ends immediately after an injection is evaluated with only
+   * the responses that existed at that moment; the 30-minute adoption window is
+   * still open. This bounded pass revisits exactly those rows once the window
+   * has actually elapsed, so a late response is not permanently recorded as
+   * "not observed". It never widens the window and never re-scores a delivery
+   * whose window was already complete.
+   */
+  async reevaluateBoundedUsefulness(options: {
+    limit?: number;
+    now?: Date;
+    windowMs?: number;
+  } = {}): Promise<{ sessionsReevaluated: number; rowsReevaluated: number; windowMs: number; cutoff: string }> {
+    const windowMs = options.windowMs ?? USEFULNESS_V2_EVALUATION_WINDOW_MS;
+    const now = options.now ?? new Date();
+    const summary = { sessionsReevaluated: 0, rowsReevaluated: 0, windowMs, cutoff: now.toISOString() };
+    if (this.readOnly) return summary;
+    await this.initialize();
+    if (!this.hasTableColumn('memory_usefulness_observations_v2', 'evaluation_cutoff')) return summary;
+
+    const limit = Math.min(Math.max(options.limit ?? 200, 1), 5_000);
+    const rows = sqliteAll<Record<string, unknown>>(
+      this.db,
+      `SELECT mh.* ${this.boundedReevaluationFromWhereSql()}
+       ORDER BY mh.created_at ASC
+       LIMIT ?`,
+      [CURRENT_USEFULNESS_EVALUATOR_VERSION, now.toISOString(), limit]
+    );
+    if (rows.length === 0) return summary;
+
+    const bySession = new Map<string, Record<string, unknown>[]>();
+    for (const row of rows) {
+      const sessionId = String(row.session_id || '');
+      if (!sessionId) continue;
+      const list = bySession.get(sessionId) ?? [];
+      list.push(row);
+      bySession.set(sessionId, list);
+    }
+    for (const [sessionId, sessionRows] of bySession) {
+      await this.evaluateRetrievalRows(sessionId, sessionRows, { evaluatedAt: now });
+      summary.sessionsReevaluated += 1;
+      summary.rowsReevaluated += sessionRows.length;
+    }
+    return summary;
+  }
+
+  /**
+   * Shared FROM/WHERE for the bounded re-evaluation pass: rows evaluated before
+   * their adoption window closed, whose window has since elapsed.
+   *
+   * The window opens when the memory was actually delivered, not when it was
+   * selected: a delivery recorded late (or never emitted) must not have its
+   * adoption window measured from the selection instant (specs R3, finding 4).
+   * Parameters, in order: evaluator version, "now".
+   */
+  private boundedReevaluationFromWhereSql(): string {
+    const anchorSql = this.hasTableColumn('memory_helpfulness', 'delivered_at')
+      ? `COALESCE(mh.delivered_at, mh.created_at)`
+      : `mh.created_at`;
+    return `FROM memory_helpfulness mh
+       JOIN memory_usefulness_observations_v2 o
+         ON o.trace_id = COALESCE(mh.trace_id, 'legacy:' || mh.id)
+        AND o.event_id = ${usefulnessRowKeySql('mh')}
+        AND o.evaluator_version = ?
+       WHERE mh.measured_at IS NOT NULL
+         AND o.evaluation_cutoff IS NOT NULL
+         AND o.evaluation_window_ms IS NOT NULL
+         -- window was still open at evaluation time ... (the 1ms slack keeps
+         -- julianday's floating-point rounding from re-queuing a row whose
+         -- cutoff already sits exactly on the window end)
+         AND julianday(o.evaluation_cutoff) < julianday(${anchorSql}) + ((o.evaluation_window_ms - 1) / 86400000.0)
+         -- ... and it has since elapsed
+         AND julianday(?) >= julianday(${anchorSql}) + (o.evaluation_window_ms / 86400000.0)`;
+  }
+
+  /**
+   * How many rows the bounded pass would revisit right now. Read-only, so a
+   * scheduled job can preview its work without writing anything (specs R3).
+   */
+  async countPendingBoundedUsefulness(options: { now?: Date } = {}): Promise<{ pendingRows: number; cutoff: string }> {
+    await this.initialize();
+    const now = options.now ?? new Date();
+    const cutoff = now.toISOString();
+    if (!this.hasTable('memory_usefulness_observations_v2')
+      || !this.hasTableColumn('memory_usefulness_observations_v2', 'evaluation_cutoff')) {
+      return { pendingRows: 0, cutoff };
+    }
+    const row = sqliteGet<{ pending: number }>(
+      this.db,
+      `SELECT COUNT(*) AS pending ${this.boundedReevaluationFromWhereSql()}`,
+      [CURRENT_USEFULNESS_EVALUATOR_VERSION, cutoff]
+    );
+    return { pendingRows: Number(row?.pending ?? 0), cutoff };
+  }
+
+  private async evaluateRetrievalRows(
+    sessionId: string,
+    retrievals: Record<string, unknown>[],
+    options: { evaluatedAt?: Date } = {}
+  ): Promise<void> {
     // Get session events to analyze behavior after retrieval
     const sessionEvents = sqliteAll<Record<string, unknown>>(
       this.db,
@@ -2868,7 +3262,12 @@ export class SQLiteEventStore {
 
     // Look up the injected memories' content once so each retrieval can be
     // checked for content grounding against the responses that followed it.
-    const retrievedEventIds = Array.from(new Set(retrievals.map((r) => r.event_id as string).filter(Boolean)));
+    // Only event-kind rows can be hydrated from the events table; a lesson row
+    // relies on its stored injected excerpt (specs R1).
+    const retrievedEventIds = Array.from(new Set(retrievals
+      .filter((r) => normalizeMemoryKind(r.memory_kind ?? 'event') === 'event')
+      .map((r) => r.event_id as string)
+      .filter(Boolean)));
     const memoryContentById = new Map<string, string>();
     for (let i = 0; i < retrievedEventIds.length; i += 100) {
       const chunk = retrievedEventIds.slice(i, i + 100);
@@ -2891,7 +3290,12 @@ export class SQLiteEventStore {
     };
 
     for (const retrieval of retrievals) {
-      const retrievalTimeMs = toEpochMs(retrieval.created_at);
+      // Adoption is measured from the moment the memory was actually delivered.
+      // Before that instant nothing could have used it, and a delivery that was
+      // never emitted has no anchor at all (specs R3, finding 4).
+      const selectedAtMs = toEpochMs(retrieval.created_at);
+      const deliveredAtMs = retrieval.delivered_at ? toEpochMs(retrieval.delivered_at) : 0;
+      const retrievalTimeMs = deliveredAtMs > 0 ? deliveredAtMs : selectedAtMs;
 
       // 1. Session continued after retrieval?
       const eventsAfter = sessionEvents.filter((e: any) => toEpochMs(e.timestamp) > retrievalTimeMs);
@@ -2947,29 +3351,49 @@ export class SQLiteEventStore {
       }
 
       const v2WindowEndMs = retrievalTimeMs + USEFULNESS_V2_EVALUATION_WINDOW_MS;
-      const v2PromptsAfter = promptsAfter.filter((event) => toEpochMs(event.timestamp) <= v2WindowEndMs);
+      const evaluatedAt = options.evaluatedAt ?? new Date();
+      const evaluationCutoffMs = Math.min(evaluatedAt.getTime(), v2WindowEndMs);
+      const v2PromptsAfter = promptsAfter.filter((event) => toEpochMs(event.timestamp) <= evaluationCutoffMs);
       const v2ToolOutcomesAfter = toolEvents
         .filter((event) => {
           const eventTimeMs = toEpochMs(event.timestamp);
-          return eventTimeMs > retrievalTimeMs && eventTimeMs <= v2WindowEndMs;
+          return eventTimeMs > retrievalTimeMs && eventTimeMs <= evaluationCutoffMs;
         })
         .map((event) => parseToolOutcome(event.content));
-      const v2ResponsesAfter = responsesAfter.filter((event) => toEpochMs(event.timestamp) <= v2WindowEndMs);
+      const v2ResponsesAfter = responsesAfter.filter((event) => toEpochMs(event.timestamp) <= evaluationCutoffMs);
       const v2Evidence = presentationMode !== 'reference' && v2ResponsesAfter.length > 0 && memoryContent
         ? computeMemoryUsageEvidence(memoryContent, v2ResponsesAfter)
         : null;
       const v2ContentOverlapScore = v2Evidence?.contentOverlapScore ?? null;
 
+      // Kind-aware: an open of lesson X must not count as an open of the event
+      // that happens to share its id (specs R1). A row whose own kind is
+      // `unknown` (written before the typed columns existed) cannot narrow
+      // anything, so it matches on id alone rather than excluding itself.
+      const retrievalKind = normalizeMemoryKind(retrieval.memory_kind);
+      const navigationKindClause = retrievalKind !== 'unknown'
+        && this.hasTableColumn('retrieval_navigation_events', 'memory_kind')
+        ? ` AND COALESCE(memory_kind, 'event') = ? AND memory_project_id IS ?`
+        : '';
       const referenceOpened = presentationMode === 'reference' && Boolean(retrieval.trace_id) && Boolean(
         sqliteGet<{ opened: number }>(
           this.db,
           `SELECT 1 AS opened
            FROM retrieval_navigation_events
-           WHERE trace_id = ? AND target_event_id = ? AND attribution_outcome = 'attributed'
+           WHERE trace_id = ? AND target_event_id = ? AND attribution_outcome = 'attributed'${navigationKindClause}
+             AND julianday(first_opened_at) >= julianday(?)
+             AND julianday(first_opened_at) <= julianday(?)
            LIMIT 1`,
-          [retrieval.trace_id, retrieval.event_id]
+          [...(navigationKindClause
+            ? [retrieval.trace_id, retrieval.event_id, retrievalKind, retrieval.memory_project_id ?? null]
+            : [retrieval.trace_id, retrieval.event_id]),
+          new Date(retrievalTimeMs).toISOString(), new Date(evaluationCutoffMs).toISOString()]
         )
       );
+      // Distinguish "the reference was not opened" from "we cannot attribute
+      // opens at all": without a trace link no navigation can ever be
+      // attributed to this delivery, so absence proves nothing (specs R3).
+      const referenceAttributable = presentationMode === 'reference' && Boolean(retrieval.trace_id);
 
       // Calculate helpfulness score
       // Weights tuned for shopping-assistant-like corpora where sessions
@@ -3018,30 +3442,54 @@ export class SQLiteEventStore {
 
       const triggerType = normalizeRetrievalTriggerType(retrieval.trigger_type ?? retrieval.source);
       const adoption = presentationMode === 'reference'
-        ? (referenceOpened ? 'navigated' : 'not_observed')
+        ? (referenceOpened ? 'navigated' : referenceAttributable ? 'not_observed' : 'unknown')
         : presentationMode === 'evidence'
           ? (v2ContentOverlapScore === null ? 'unknown' : v2ContentOverlapScore >= 0.3 ? 'grounded' : 'not_observed')
+          : 'unknown';
+      // Delivery comes from recorded evidence only. A selection that was
+      // formatted but never observed leaving the process stays unknown.
+      const deliveryStatus = normalizeDeliveryStatus(retrieval.delivery_status);
+      const deliveryEvidence = normalizeDeliveryEvidence(retrieval.delivery_evidence);
+      const delivered = deliveredFromStatus(deliveryStatus);
+      // Adoption requires delivery evidence. Text overlap in a later response
+      // cannot be attributed to a memory that was only formatted, or whose
+      // write failed: the model never saw it. Those stay `unknown` rather than
+      // becoming grounded (or a "task success") on an assumption (specs R3,
+      // finding 11). A `failed` delivery is a real observation of non-adoption.
+      const evidencedAdoption: UsefulnessAdoption = delivered === true
+        ? adoption
+        : delivered === false
+          ? 'not_observed'
           : 'unknown';
       await this.upsertUsefulnessObservationV2(buildUsefulnessObservationV2({
         traceId: String(retrieval.trace_id || `legacy:${retrieval.id}`),
         eventId: String(retrieval.event_id),
+        memoryKind: normalizeMemoryKind(retrieval.memory_kind),
+        memoryProjectId: (retrieval.memory_project_id as string | null | undefined) ?? null,
         presentationMode,
         triggerType,
-        delivered: true,
-        adoption,
+        delivered,
+        deliveryStatus,
+        deliveryEvidence,
+        adoption: evidencedAdoption,
         contentOverlapScore: presentationMode === 'evidence' ? v2ContentOverlapScore : null,
         toolOutcomes: v2ToolOutcomesAfter,
         reaskOutcome: classifyReaskOutcome(
           retrieval.query_preview,
           v2PromptsAfter.map((event) => event.content)
         ),
-        evaluatedAt: new Date().toISOString()
+        evaluatedAt: evaluatedAt.toISOString(),
+        evaluationWindowMs: USEFULNESS_V2_EVALUATION_WINDOW_MS,
+        // The cutoff is what this evaluation could actually see. When it falls
+        // short of the window end, reevaluateBoundedUsefulness revisits the row.
+        evaluationCutoff: new Date(Math.min(evaluatedAt.getTime(), v2WindowEndMs)).toISOString()
       }));
     }
   }
 
   async upsertUsefulnessObservationV2(input: MemoryUsefulnessObservationV2): Promise<void> {
     if (this.readOnly) return;
+    if (input.evaluatorVersion === CURRENT_USEFULNESS_EVALUATOR_VERSION && !retrievalRollout().usefulnessV3Write) return;
     await this.initialize();
     const delivered = input.delivered === null ? null : input.delivered ? 1 : 0;
     const overlapValue = input.contentOverlapScore === null ? null : Number(input.contentOverlapScore);
@@ -3054,14 +3502,56 @@ export class SQLiteEventStore {
     if (!input.traceId.trim() || !input.eventId.trim() || !input.evaluatorVersion.trim()) {
       throw new Error('v2 usefulness observation requires trace, event, and evaluator version');
     }
+    const hasTypedColumns = this.hasTableColumn('memory_usefulness_observations_v2', 'memory_kind');
+    const hasMemoryIdColumn = this.hasTableColumn('memory_usefulness_observations_v2', 'memory_id');
+    const memoryKind = normalizeMemoryKind(input.memoryKind ?? 'event');
+    // Non-event memories are stored under a kind-qualified key. The primary key
+    // is (trace_id, event_id, observation_kind, evaluator_version), so a lesson
+    // and an event that share an id would otherwise overwrite one another —
+    // and an event-table join would claim the lesson row as a dangling event.
+    const rowKey = hasTypedColumns && input.evaluatorVersion !== 'v2'
+      ? usefulnessRowKey(memoryKind, input.eventId.trim(), input.memoryProjectId)
+      : input.eventId.trim();
+    const typedColumns = hasTypedColumns
+      ? ', memory_kind, delivery_status, delivery_evidence, evaluation_window_ms, evaluation_cutoff'
+        + (hasMemoryIdColumn ? ', memory_id, memory_project_id' : '')
+      : '';
+    const typedPlaceholders = hasTypedColumns
+      ? ', ?, ?, ?, ?, ?' + (hasMemoryIdColumn ? ', ?, ?' : '')
+      : '';
+    const typedUpdates = hasTypedColumns
+      ? `,
+         memory_kind = excluded.memory_kind,
+         delivery_status = excluded.delivery_status,
+         delivery_evidence = excluded.delivery_evidence,
+         evaluation_window_ms = excluded.evaluation_window_ms,
+         evaluation_cutoff = excluded.evaluation_cutoff`
+        + (hasMemoryIdColumn
+          ? `,
+         memory_id = excluded.memory_id,
+         memory_project_id = excluded.memory_project_id`
+          : '')
+      : '';
+    const typedValues = hasTypedColumns
+      ? [
+        memoryKind,
+        normalizeDeliveryStatus(input.deliveryStatus),
+        normalizeDeliveryEvidence(input.deliveryEvidence),
+        typeof input.evaluationWindowMs === 'number' && Number.isFinite(input.evaluationWindowMs)
+          ? Math.max(0, Math.floor(input.evaluationWindowMs))
+          : null,
+        input.evaluationCutoff ?? null,
+        ...(hasMemoryIdColumn ? [input.eventId.trim(), input.memoryProjectId ?? null] : [])
+      ]
+      : [];
     sqliteRun(
       this.db,
       `INSERT INTO memory_usefulness_observations_v2 (
          trace_id, event_id, observation_kind, evaluator_version,
          presentation_mode, trigger_type, selected, delivered, adoption,
          content_overlap_score, task_outcome, reask_outcome, explicit_feedback,
-         confidence, evaluated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         confidence, evaluated_at${typedColumns}
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?${typedPlaceholders})
        ON CONFLICT(trace_id, event_id, observation_kind, evaluator_version) DO UPDATE SET
          presentation_mode = excluded.presentation_mode,
          trigger_type = excluded.trigger_type,
@@ -3073,14 +3563,14 @@ export class SQLiteEventStore {
          reask_outcome = excluded.reask_outcome,
          explicit_feedback = excluded.explicit_feedback,
          confidence = excluded.confidence,
-         evaluated_at = excluded.evaluated_at`,
+         evaluated_at = excluded.evaluated_at${typedUpdates}`,
       [
-        input.traceId.trim(), input.eventId.trim(), 'outcome', input.evaluatorVersion.trim(),
+        input.traceId.trim(), rowKey, 'outcome', input.evaluatorVersion.trim(),
         normalizeRetrievalPresentationMode(input.presentationMode),
         normalizeRetrievalTriggerType(input.triggerType),
         input.selected ? 1 : 0, delivered, input.adoption, overlap,
         input.taskOutcome, input.reaskOutcome, input.explicitFeedback, confidence,
-        input.evaluatedAt
+        input.evaluatedAt, ...typedValues
       ]
     );
   }
@@ -3094,13 +3584,16 @@ export class SQLiteEventStore {
   } = {}): Promise<UsefulnessAggregateV2> {
     await this.initialize();
     const minimumSample = normalizeUsefulnessMinimumSample(options.minimumSample);
-    const evaluatorVersion = options.evaluatorVersion?.trim() || 'v2';
+    // Default to the delivery-evidence evaluator. v2 rows assumed delivery, so
+    // they are readable on request but never averaged in by default (specs R3).
+    const evaluatorVersion = options.evaluatorVersion?.trim() || CURRENT_USEFULNESS_EVALUATOR_VERSION;
     const base = emptyUsefulnessAggregateV2({
       minimumSample,
       evaluatorVersion,
       includeSessionStart: options.includeSessionStart,
       since: options.since,
-      until: options.until
+      until: options.until,
+      evaluationWindowMs: USEFULNESS_V2_EVALUATION_WINDOW_MS
     });
     if (!this.hasTable('memory_usefulness_observations_v2')) return base;
     const clauses = ['o.evaluator_version = ?'];
@@ -3114,15 +3607,30 @@ export class SQLiteEventStore {
       clauses.push('datetime(COALESCE(t.created_at, o.evaluated_at)) < datetime(?)');
       params.push(options.until.toISOString());
     }
+    const hasTypedColumns = this.hasTableColumn('memory_usefulness_observations_v2', 'memory_kind');
+    const typedSelect = hasTypedColumns ? ', o.memory_kind, o.delivery_status' : '';
     const rows = sqliteAll<Record<string, unknown>>(
       this.db,
-      `SELECT o.selected, o.delivered, o.presentation_mode, o.adoption, o.task_outcome,
-              o.reask_outcome, o.explicit_feedback
+      `SELECT o.selected, o.delivered, o.presentation_mode, o.trigger_type, o.adoption, o.task_outcome,
+              o.reask_outcome, o.explicit_feedback${typedSelect}
        FROM memory_usefulness_observations_v2 o
        LEFT JOIN retrieval_traces t ON t.trace_id = o.trace_id
        WHERE ${clauses.join(' AND ')}`,
       params
     );
+    // Rows written by an evaluator generation that assumed delivery. Counted
+    // and shown, never merged into this aggregate's rates.
+    const legacyAssumedDeliveryRows = LEGACY_ASSUMED_DELIVERY_EVALUATOR_VERSIONS.includes(
+      evaluatorVersion as typeof LEGACY_ASSUMED_DELIVERY_EVALUATOR_VERSIONS[number]
+    )
+      ? rows.length
+      : Number(sqliteGet<{ count: number }>(
+        this.db,
+        `SELECT COUNT(*) AS count FROM memory_usefulness_observations_v2 o
+         LEFT JOIN retrieval_traces t ON t.trace_id = o.trace_id
+         WHERE ${clauses.join(' AND ')}`,
+        ['v2', ...params.slice(1)]
+      )?.count ?? 0);
     const traceClauses: string[] = [];
     const traceParams: unknown[] = [];
     if (!options.includeSessionStart) traceClauses.push(`trigger_type != 'session_start'`);
@@ -3149,6 +3657,7 @@ export class SQLiteEventStore {
     if (rows.length === 0) {
       return {
         ...base,
+        legacyAssumedDeliveryRows,
         eligible,
         selected,
         rates: {
@@ -3166,9 +3675,19 @@ export class SQLiteEventStore {
     const observationCount = rows.length;
     const delivered = rows.filter((row) => Number(row.delivered) === 1).length;
     const deliveryUnknown = rows.filter((row) => row.delivered === null || row.delivered === undefined).length;
-    const evidenceRows = rows.filter((row) => row.presentation_mode === 'evidence');
-    const evidenceEvaluated = evidenceRows.filter((row) => row.adoption === 'grounded' || row.adoption === 'not_observed').length;
+    // The headline grounding metric is deliberately narrow: evidence-mode
+    // injections triggered by a user prompt. session_start has a different
+    // delivery shape, and explicit_search / context_pack are tool calls whose
+    // "adoption" means something else — averaging them together produced the
+    // 9.1% figure the spec rejects in favour of 18.8% (specs §3.4, R3).
+    const allEvidenceRows = rows.filter((row) => row.presentation_mode === 'evidence');
+    const evidenceRows = allEvidenceRows.filter((row) => row.trigger_type === 'user_prompt');
+    const isEvaluatedAdoption = (row: Record<string, unknown>) =>
+      row.adoption === 'grounded' || row.adoption === 'not_observed';
+    const evidenceEvaluated = evidenceRows.filter(isEvaluatedAdoption).length;
     const evidenceGrounded = evidenceRows.filter((row) => row.adoption === 'grounded').length;
+    const evidenceAllTriggersEvaluated = allEvidenceRows.filter(isEvaluatedAdoption).length;
+    const evidenceAllTriggersGrounded = allEvidenceRows.filter((row) => row.adoption === 'grounded').length;
     const references = rows.filter((row) => row.presentation_mode === 'reference');
     const referencesNavigated = references.filter((row) => row.adoption === 'navigated').length;
     const referenceUnknown = references.filter((row) => row.adoption === 'unknown').length;
@@ -3191,13 +3710,27 @@ export class SQLiteEventStore {
       unknown,
       value: denominator > 0 ? Math.round((numerator / denominator) * 10_000) / 10_000 : null
     });
+    const deliveryStatusCounts = { ...base.deliveryStatusCounts };
+    const selectedByKind = { ...base.selectedByKind };
+    for (const row of rows) {
+      deliveryStatusCounts[normalizeDeliveryStatus(row.delivery_status)] += 1;
+      if (Number(row.selected) === 1) selectedByKind[normalizeMemoryKind(row.memory_kind ?? 'event')] += 1;
+    }
     return {
       ...base,
+      deliveryStatusCounts,
+      selectedByKind,
+      legacyAssumedDeliveryRows,
       eligible,
       selected,
       delivered,
       evidenceEvaluated,
       evidenceGrounded,
+      evidenceAllTriggers: {
+        evaluated: evidenceAllTriggersEvaluated,
+        grounded: evidenceAllTriggersGrounded,
+        unknown: allEvidenceRows.length - evidenceAllTriggersEvaluated
+      },
       referencesEligible: references.length,
       referencesNavigated,
       taskOutcomesEvaluated: taskEvaluated,
@@ -3541,8 +4074,20 @@ export class SQLiteEventStore {
         );
       }
 
-      // Hydrate memory summaries.
-      const eventIds = Array.from(new Set(helpRows.map((row) => row.event_id as string).filter(Boolean)));
+      // Hydrate memory summaries. Lessons are not events: joining every id
+      // against `events` rendered each injected lesson as "no longer
+      // available", which is what made lesson selections look like data loss.
+      const hasHelpfulnessKind = this.hasTableColumn('memory_helpfulness', 'memory_kind');
+      const kindOf = (row: Record<string, unknown>): MemoryKind =>
+        hasHelpfulnessKind ? normalizeMemoryKind(row.memory_kind) : 'event';
+      const eventIds = Array.from(new Set(helpRows
+        .filter((row) => kindOf(row) === 'event' || kindOf(row) === 'unknown')
+        .map((row) => row.event_id as string)
+        .filter(Boolean)));
+      const lessonIds = Array.from(new Set(helpRows
+        .filter((row) => kindOf(row) === 'lesson')
+        .map((row) => row.event_id as string)
+        .filter(Boolean)));
       const eventById = new Map<string, { content: string; event_type: string }>();
       if (eventIds.length > 0) {
         const rows = sqliteAll<{ id: string; content: string; event_type: string }>(
@@ -3551,6 +4096,19 @@ export class SQLiteEventStore {
           eventIds
         );
         for (const row of rows) eventById.set(row.id, row);
+      }
+      if (lessonIds.length > 0 && this.hasTable('memory_lessons')) {
+        const rows = sqliteAll<{ lesson_id: string; name: string; trigger: string }>(
+          this.db,
+          `SELECT lesson_id, name, trigger FROM memory_lessons WHERE lesson_id IN (${lessonIds.map(() => '?').join(',')})`,
+          lessonIds
+        );
+        for (const row of rows) {
+          eventById.set(row.lesson_id, {
+            content: [row.name, row.trigger].filter(Boolean).join(' — '),
+            event_type: 'lesson'
+          });
+        }
       }
 
       const memories = helpRows.map((row) => {
@@ -3870,49 +4428,225 @@ export class SQLiteEventStore {
     triggerType?: RetrievalTriggerType;
     deliveryClient?: string;
     outcomeDiagnostics?: RetrievalOutcomeDiagnostics;
-  }): Promise<void> {
-    if (this.readOnly) return;
+    /** Typed references (specs R1). Preferred over the id arrays by new readers. */
+    items?: RetrievalTraceItemInput[];
+    /** Stable id of the caller request; a repeat write updates instead of duplicating. */
+    requestId?: string;
+    evaluationRunId?: string;
+    runtimeVersion?: string;
+  }): Promise<string | undefined> {
+    if (this.readOnly) return undefined;
     await this.initialize();
 
-    const traceId = input.traceId || randomUUID();
+    const requestId = normalizeRequestId(input.requestId);
     const queryRewriteKind = normalizeQueryRewriteKind(input.queryRewriteKind);
     const candidateDetails = normalizeRetrievalTraceDetails(input.candidateDetails);
     const selectedDetails = normalizeRetrievalTraceDetails(input.selectedDetails);
+    // No diagnostics and no selection is "we did not classify this", not a
+    // runtime failure. `runtime_error` is now written only by a caller that
+    // actually caught an exception (specs R2).
     const outcomeDiagnostics = normalizeRetrievalOutcomeDiagnostics(
       input.outcomeDiagnostics,
-      input.selectedEventIds.length > 0 ? 'selected' : 'runtime_error'
+      input.selectedEventIds.length > 0 ? 'selected' : 'unknown'
     );
-    sqliteRun(
-      this.db,
-      `INSERT INTO retrieval_traces (
-        trace_id, session_id, project_hash, query_text, raw_query_text, query_rewrite_kind, strategy,
-        candidate_event_ids, selected_event_ids, candidate_details_json, selected_details_json,
-        candidate_count, selected_count, confidence, fallback_trace,
-        presentation_mode, trigger_type, delivery_client, outcome_reason, retrieval_diagnostics_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        traceId,
-        input.sessionId || null,
-        input.projectHash || null,
-        input.queryText,
-        input.rawQueryText || null,
-        queryRewriteKind,
-        input.strategy || null,
-        JSON.stringify(input.candidateEventIds || []),
-        JSON.stringify(input.selectedEventIds || []),
-        JSON.stringify(candidateDetails),
-        JSON.stringify(selectedDetails),
-        (input.candidateEventIds || []).length,
-        (input.selectedEventIds || []).length,
-        input.confidence || null,
-        JSON.stringify(input.fallbackTrace || []),
-        normalizeRetrievalPresentationMode(input.presentationMode),
-        normalizeRetrievalTriggerType(input.triggerType),
-        normalizeTelemetryClient(input.deliveryClient),
-        outcomeDiagnostics.outcomeReason,
-        JSON.stringify(outcomeDiagnostics)
-      ]
-    );
+    const values = [
+      input.sessionId || null,
+      input.projectHash || null,
+      input.queryText,
+      input.rawQueryText || null,
+      queryRewriteKind,
+      input.strategy || null,
+      JSON.stringify(input.candidateEventIds || []),
+      JSON.stringify(input.selectedEventIds || []),
+      JSON.stringify(candidateDetails),
+      JSON.stringify(selectedDetails),
+      (input.candidateEventIds || []).length,
+      (input.selectedEventIds || []).length,
+      input.confidence || null,
+      JSON.stringify(input.fallbackTrace || []),
+      normalizeRetrievalPresentationMode(input.presentationMode),
+      normalizeRetrievalTriggerType(input.triggerType),
+      normalizeTelemetryClient(input.deliveryClient),
+      outcomeDiagnostics.outcomeReason,
+      JSON.stringify(outcomeDiagnostics),
+      requestId,
+      normalizeRequestId(input.evaluationRunId),
+      input.runtimeVersion?.slice(0, 64) || null,
+      RETRIEVAL_TELEMETRY_SCHEMA_VERSION
+    ];
+
+    const updateSql = `UPDATE retrieval_traces SET
+           session_id = ?, project_hash = ?, query_text = ?, raw_query_text = ?,
+           query_rewrite_kind = ?, strategy = ?, candidate_event_ids = ?, selected_event_ids = ?,
+           candidate_details_json = ?, selected_details_json = ?, candidate_count = ?,
+           selected_count = ?, confidence = ?, fallback_trace = ?, presentation_mode = ?,
+           trigger_type = ?, delivery_client = ?, outcome_reason = ?, retrieval_diagnostics_json = ?,
+           request_id = ?, evaluation_run_id = ?, runtime_version = ?, telemetry_schema_version = ?
+         WHERE trace_id = ?`;
+    const insertSql = `INSERT INTO retrieval_traces (
+          session_id, project_hash, query_text, raw_query_text, query_rewrite_kind, strategy,
+          candidate_event_ids, selected_event_ids, candidate_details_json, selected_details_json,
+          candidate_count, selected_count, confidence, fallback_trace,
+          presentation_mode, trigger_type, delivery_client, outcome_reason, retrieval_diagnostics_json,
+          request_id, evaluation_run_id, runtime_version, telemetry_schema_version, trace_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+
+    // The same request can be traced twice (the orchestrator's automatic trace
+    // plus an explicit hook trace). Collapsing on requestId keeps one request
+    // equal to one row so client coverage is not double-counted.
+    //
+    // The lookup and the write run inside one immediate transaction and the
+    // request id carries a unique index where the store allows one, so a
+    // concurrent writer in another process cannot slip a second row in between
+    // the SELECT and the INSERT (finding 9). Where the index could not be
+    // created (a store that already holds duplicate request ids), the
+    // transaction still serializes this process's own writers.
+    const write = (): { traceId: string; replacedExisting: boolean } => {
+      const existing = requestId
+        ? sqliteGet<{ trace_id: string }>(
+          this.db,
+          `SELECT trace_id FROM retrieval_traces WHERE request_id = ? LIMIT 1`,
+          [requestId]
+        )
+        : undefined;
+      const resolvedTraceId = existing?.trace_id || input.traceId || randomUUID();
+      if (existing) {
+        sqliteRun(this.db, updateSql, [...values, resolvedTraceId]);
+        return { traceId: resolvedTraceId, replacedExisting: true };
+      }
+      try {
+        sqliteRun(this.db, insertSql, [...values, resolvedTraceId]);
+        return { traceId: resolvedTraceId, replacedExisting: false };
+      } catch (error) {
+        // Lost the race against another writer holding the same request id:
+        // adopt its row instead of creating a duplicate.
+        if (!requestId) throw error;
+        const raced = sqliteGet<{ trace_id: string }>(
+          this.db,
+          `SELECT trace_id FROM retrieval_traces WHERE request_id = ? LIMIT 1`,
+          [requestId]
+        );
+        if (!raced) throw error;
+        sqliteRun(this.db, updateSql, [...values, raced.trace_id]);
+        return { traceId: raced.trace_id, replacedExisting: true };
+      }
+    };
+
+    return this.runInImmediateTransaction(() => {
+      const result = write();
+      const hasExistingTypedItems = result.replacedExisting
+        && readTraceItems(this.db, result.traceId).length > 0;
+      if (retrievalRollout().typedTraceWrite || hasExistingTypedItems) {
+        this.writeTypedTraceItems(result.traceId, input, { replaceExisting: result.replacedExisting });
+      }
+      return result.traceId;
+    });
+  }
+
+  /**
+   * Run `fn` inside an IMMEDIATE transaction when the connection allows it.
+   *
+   * A read-then-write that must stay atomic across processes needs the write
+   * lock taken up front. Reuse an existing transaction, but never bypass a
+   * failed lock acquisition: the arrays and typed ledger must commit together.
+   */
+  private runInImmediateTransaction<T>(fn: () => T): T {
+    if (this.db.inTransaction) return fn();
+    sqliteExec(this.db, 'BEGIN IMMEDIATE');
+    try {
+      const result = fn();
+      sqliteExec(this.db, 'COMMIT');
+      return result;
+    } catch (error) {
+      try {
+        sqliteExec(this.db, 'ROLLBACK');
+      } catch { /* the transaction was already resolved */ }
+      throw error;
+    }
+  }
+
+  /**
+   * Persist the typed item rows for a trace. Callers that pass explicit items
+   * keep their kinds; otherwise ids are resolved read-only against the local
+   * tables so an untyped caller still produces correct rows instead of
+   * defaulting every reference to "event".
+   */
+  private writeTypedTraceItems(
+    traceId: string,
+    input: {
+      projectHash?: string;
+      candidateEventIds: string[];
+      selectedEventIds: string[];
+      items?: RetrievalTraceItemInput[];
+    },
+    options: { replaceExisting?: boolean } = {}
+  ): void {
+    try {
+      const projectId = input.projectHash || null;
+      let items: RetrievalTraceItemInput[];
+      if (input.items && input.items.length > 0) {
+        items = input.items;
+      } else {
+        const selected = new Set(input.selectedEventIds || []);
+        const all = Array.from(new Set([...(input.candidateEventIds || []), ...(input.selectedEventIds || [])]));
+        const resolved = resolveMemoryRefKinds(this.db, all, { projectId });
+        items = all.map((id, index) => {
+          const ref = resolved.get(id);
+          return {
+            kind: ref?.resolution === 'resolved' ? ref.kind : 'unknown',
+            id,
+            projectId: ref?.projectId ?? projectId,
+            rank: index,
+            selected: selected.has(id),
+            // Unresolved is not deleted: the row may predate a table or live in
+            // a store this process cannot read. `deleted` records an observed
+            // deletion only (specs R1).
+            deleted: false
+          };
+        });
+      }
+      const normalized = normalizeTraceItems(items, { projectId });
+      if (options.replaceExisting) {
+        // A request-id replay replaces the legacy arrays wholesale. Replace
+        // the typed rows wholesale too: the regular UPSERT intentionally keeps
+        // selected/deleted monotonic and therefore cannot represent a selected
+        // item becoming only a candidate on a corrected replay.
+        sqliteRun(this.db, 'DELETE FROM retrieval_trace_items WHERE trace_id = ?', [traceId]);
+      }
+      writeTraceItems(this.db, traceId, normalized);
+    } catch (error) {
+      // Let the caller roll back both representations on any ledger failure.
+      throw error;
+    }
+  }
+
+  /** Typed references recorded for a trace (specs R1). */
+  async getRetrievalTraceItems(traceId: string) {
+    await this.initialize();
+    return readTraceItems(this.db, traceId);
+  }
+
+  /**
+   * Typed selection totals for a window. Traces written before the typed ledger
+   * are resolved read-only; nothing is written by this call.
+   */
+  async getTypedSelectionSummary(options: { since?: Date; until?: Date; resolveLegacy?: boolean } = {}): Promise<TypedSelectionSummary> {
+    await this.initialize();
+    return summarizeTypedSelections(this.db, options);
+  }
+
+  /**
+   * Explicit backfill of typed items for legacy traces. Defaults to a dry run;
+   * read-only reports never call it.
+   */
+  async backfillRetrievalTraceItems(options: { dryRun?: boolean; limit?: number; since?: Date } = {}): Promise<TraceItemBackfillResult> {
+    await this.initialize();
+    if (this.readOnly && options.dryRun === false) {
+      throw new Error('retrieval trace item backfill cannot run against a read-only store');
+    }
+    return options.dryRun === false
+      ? this.runInImmediateTransaction(() => backfillTraceItems(this.db, options))
+      : backfillTraceItems(this.db, options);
   }
 
   /**
@@ -3929,98 +4663,87 @@ export class SQLiteEventStore {
       return { outcome: 'unattributed', traceId: null, repeated: false };
     }
     await this.initialize();
+    return recordReferenceNavigationOnDb(this.db, input);
+  }
 
-    const openedAt = input.openedAt ?? new Date();
-    const windowStart = new Date(openedAt.getTime() - REFERENCE_ATTRIBUTION_WINDOW_MS).toISOString();
-    const openedAtIso = openedAt.toISOString();
-    const traceRows = sqliteAll<Record<string, unknown>>(
+  /**
+   * Per-client instrumentation coverage (specs R2).
+   *
+   * Only requests this store actually saw can be counted. A client that never
+   * writes telemetry has no row here at all, and a client whose rows lack a
+   * request id reports coverage `unknown` — reporting 0% would assert an
+   * observation we do not have.
+   */
+  async getRetrievalClientCoverage(options: { since?: Date; until?: Date } = {}): Promise<RetrievalClientCoverage[]> {
+    await this.initialize();
+    if (!this.hasTable('retrieval_traces')) return [];
+    const hasRequestId = this.hasTableColumn('retrieval_traces', 'request_id');
+    const clauses: string[] = [];
+    const params: unknown[] = [];
+    if (options.since) {
+      clauses.push('julianday(created_at) >= julianday(?)');
+      params.push(options.since.toISOString());
+    }
+    if (options.until) {
+      clauses.push('julianday(created_at) < julianday(?)');
+      params.push(options.until.toISOString());
+    }
+    const where = clauses.length > 0 ? ` WHERE ${clauses.join(' AND ')}` : '';
+    const instrumentedSql = hasRequestId
+      ? `COUNT(DISTINCT CASE WHEN request_id IS NOT NULL THEN request_id END)`
+      : '0';
+    const observedSql = hasRequestId
+      ? `COUNT(DISTINCT COALESCE(request_id, trace_id))`
+      : `COUNT(DISTINCT trace_id)`;
+    const rows = sqliteAll<{ client: string; observed: number; instrumented: number; unknown_client: number }>(
       this.db,
-      `SELECT trace_id, session_id, trigger_type, selected_event_ids
-       FROM retrieval_traces
-       WHERE presentation_mode = 'reference'
-         AND datetime(created_at) >= datetime(?)
-         AND datetime(created_at) <= datetime(?)
-       ORDER BY created_at DESC
-       LIMIT 500`,
-      [windowStart, openedAtIso]
-    ).filter((row) => {
-      if (input.attributionSessionId && row.session_id !== input.attributionSessionId) return false;
-      try {
-        const selected = JSON.parse(String(row.selected_event_ids || '[]'));
-        return Array.isArray(selected) && selected.includes(input.targetEventId);
-      } catch {
-        return false;
-      }
+      `SELECT COALESCE(delivery_client, 'unknown') AS client,
+              ${observedSql} AS observed,
+              ${instrumentedSql} AS instrumented,
+              SUM(CASE WHEN delivery_client IS NULL OR delivery_client = 'unknown' THEN 1 ELSE 0 END) AS unknown_client
+       FROM retrieval_traces${where}
+       GROUP BY COALESCE(delivery_client, 'unknown')
+       ORDER BY observed DESC`,
+      params
+    );
+    return rows.map((row) => {
+      const observed = Number(row.observed || 0);
+      const instrumented = Number(row.instrumented || 0);
+      const unobserved = Number(row.unknown_client || 0);
+      return {
+        client: String(row.client || 'unknown'),
+        observedRequests: observed,
+        instrumentedRequests: instrumented,
+        unobservedOrUnknown: unobserved,
+        coverage: observed > 0 && instrumented > 0
+          ? Math.round((instrumented / observed) * 10_000) / 10_000
+          : null,
+        coverageState: observed > 0 && instrumented > 0 ? 'measured' : 'unknown'
+      };
     });
+  }
 
-    const byTrace = new Map<string, Record<string, unknown>>();
-    for (const row of traceRows) {
-      const traceId = String(row.trace_id || '');
-      if (traceId) byTrace.set(traceId, row);
-    }
-    const candidates = Array.from(byTrace.values());
-    const attributed = candidates.length === 1 ? candidates[0] : undefined;
-    const traceId = attributed ? String(attributed.trace_id) : null;
-    const outcome = candidates.length === 1
-      ? 'attributed'
-      : candidates.length > 1
-        ? 'ambiguous'
-        : 'unattributed';
-    const reason = candidates.length === 1
-      ? 'unique_recent_reference_delivery'
-      : candidates.length > 1
-        ? 'multiple_recent_reference_deliveries'
-        : 'no_recent_reference_delivery';
-    const navigationClient = normalizeTelemetryClient(input.navigationClient);
-
-    const repeated = sqliteGet<{ navigation_id: string }>(
-      this.db,
-      `SELECT navigation_id
-       FROM retrieval_navigation_events
-       WHERE target_event_id = ?
-         AND trace_id IS ?
-         AND navigation_action = ?
-         AND navigation_client = ?
-         AND attribution_outcome = ?
-         AND datetime(last_opened_at) >= datetime(?)
-       ORDER BY last_opened_at DESC
-       LIMIT 1`,
-      [input.targetEventId, traceId, input.action, navigationClient, outcome, windowStart]
-    );
-
-    if (repeated) {
-      sqliteRun(
-        this.db,
-        `UPDATE retrieval_navigation_events
-         SET open_count = open_count + 1, last_opened_at = ?
-         WHERE navigation_id = ?`,
-        [openedAtIso, repeated.navigation_id]
-      );
-      return { outcome, traceId, repeated: true };
-    }
-
-    sqliteRun(
-      this.db,
-      `INSERT INTO retrieval_navigation_events (
-         navigation_id, target_event_id, trace_id, delivery_session_id,
-         presentation_mode, trigger_type, navigation_action, navigation_client,
-         attribution_outcome, attribution_reason, open_count, first_opened_at, last_opened_at
-       ) VALUES (?, ?, ?, ?, 'reference', ?, ?, ?, ?, ?, 1, ?, ?)`,
-      [
-        randomUUID(),
-        input.targetEventId,
-        traceId,
-        attributed?.session_id || input.attributionSessionId || null,
-        normalizeRetrievalTriggerType(attributed?.trigger_type),
-        input.action,
-        navigationClient,
-        outcome,
-        reason,
-        openedAtIso,
-        openedAtIso
-      ]
-    );
-    return { outcome, traceId, repeated: false };
+  /**
+   * Per-source ingest clocks and lag (specs R4).
+   *
+   * `timestamp` is when this store wrote the row; importers additionally keep
+   * the original conversation instant. Reporting them per source is what makes
+   * an importer backlog visible instead of looking like "old memories". Rows
+   * whose original instant is unknown are counted, never assumed lag-free.
+   */
+  async getIngestSourceClocks(options: { since?: Date; until?: Date } = {}): Promise<Array<{
+    source: string;
+    events: number;
+    withSourceClock: number;
+    unknownSourceClock: number;
+    latestOccurredAt: string | null;
+    latestIngestedAt: string | null;
+    maxLagMs: number | null;
+    medianLagMs: number | null;
+  }>> {
+    await this.initialize();
+    if (!this.hasTable('events')) return [];
+    return readIngestSourceClocks(this.db, options);
   }
 
   async getRetrievalTelemetryStats(): Promise<RetrievalTelemetryStats> {

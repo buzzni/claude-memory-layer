@@ -392,7 +392,9 @@ describe('dashboard memory usefulness stats', () => {
       selected: 0,
       sampleState: 'insufficient_sample',
       minimumSample: 20,
-      evaluatorVersion: 'v2'
+      // Default evaluator is the delivery-evidence generation; v2 rows assumed
+      // delivery and are reported separately.
+      evaluatorVersion: 'v3'
     });
     expect(body.usefulnessV2.window.since).toBe('2026-05-01T12:00:00.000Z');
   });
@@ -968,6 +970,45 @@ describe('dashboard memory usefulness stats', () => {
     expect(html).toContain('Task success</strong> n/a');
     expect(html).toContain('Evaluator v2 · insufficient sample');
     expect(html).not.toContain('Task success</strong> 0.0%');
+  });
+
+  it('reports session_start and tool-triggered evidence beside the prompt metric, never inside it', () => {
+    const elements = { 'retrieval-telemetry-summary': new TestElement() };
+    const hooks = loadOverviewWithElements(elements, ['state.js', 'views.js', 'overview.js', 'usefulness.js']);
+    hooks.state.retrievalTelemetry = null;
+    hooks.state.memoryUsefulness = {
+      usefulnessV2: {
+        evaluatorVersion: 'v3',
+        sampleState: 'sufficient',
+        evidenceGroundingScope: 'evidence/user_prompt',
+        // Headline: prompt-triggered evidence only.
+        evidenceEvaluated: 10,
+        evidenceGrounded: 2,
+        // Every non-session_start trigger, i.e. prompt + explicit search.
+        evidenceAllTriggers: { evaluated: 14, grounded: 3, unknown: 1 },
+        rates: {
+          selectionYield: { numerator: 3, denominator: 4, unknown: 0, value: 0.75 },
+          deliveryRate: { numerator: 2, denominator: 3, unknown: 1, value: 0.6667 },
+          evidenceGrounding: { numerator: 2, denominator: 10, unknown: 1, value: 0.2 },
+          referenceNavigation: { numerator: 0, denominator: 0, unknown: 0, value: null },
+          taskSuccess: { numerator: 0, denominator: 0, unknown: 0, value: null },
+          explicitPositive: { numerator: 0, denominator: 0, unknown: 0, value: null }
+        }
+      },
+      usefulnessAllTriggers: {
+        // Same population plus session_start.
+        evidenceAllTriggers: { evaluated: 20, grounded: 4, unknown: 3 }
+      }
+    };
+
+    hooks.updateRetrievalTelemetryUI();
+    const html = elements['retrieval-telemetry-summary'].innerHTML;
+    expect(html).toContain('Evidence grounding (evidence/user_prompt)');
+    expect(html).toContain('20.0% (2/10, 1 unknown)');
+    // session_start: 20 - 14 evaluated, 4 - 3 grounded.
+    expect(html).toContain('session_start (separate)</strong> 16.7% grounded (1/6)');
+    // explicit search / context pack: 14 - 10 evaluated, 3 - 2 grounded.
+    expect(html).toContain('other triggers (search / context pack)</strong> 25.0% grounded (1/4)');
   });
 
   it('refreshes the v2 funnel when the usefulness window response changes', () => {

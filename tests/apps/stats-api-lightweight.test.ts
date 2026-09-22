@@ -211,7 +211,9 @@ describe('stats API lightweight read paths', () => {
     const res = await createApp().request('/api/stats/retrieval-telemetry?project=abc12345');
 
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual(telemetry);
+    // Additive fields: a service without the newer read paths still returns
+    // the full legacy telemetry body.
+    expect(await res.json()).toEqual({ ...telemetry, clientCoverage: [], typedSelections: null });
     expect(mocks.service.getRetrievalTelemetryStats).toHaveBeenCalledTimes(1);
     expect(mocks.getServiceFromQuery).not.toHaveBeenCalled();
   });

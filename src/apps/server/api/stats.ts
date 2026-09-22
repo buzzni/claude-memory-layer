@@ -4,6 +4,7 @@
  */
 
 import { Hono } from 'hono';
+import { retrievalRollout } from '../../../core/retrieval-rollout.js';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -1821,7 +1822,21 @@ statsRouter.get('/retrieval-telemetry', async (c) => {
   const memoryService = getDiagnosticsServiceFromQuery(c);
   try {
     await memoryService.initialize();
-    return c.json(await memoryService.getRetrievalTelemetryStats());
+    const [telemetry, clientCoverage, typedSelections] = await Promise.all([
+      memoryService.getRetrievalTelemetryStats(),
+      // Coverage is per client and stays `unknown` for clients whose requests
+      // this store never observed — never reported as 0% (specs R2).
+      // Structural service doubles and older facades may not expose the newer
+      // read paths; their absence must not blank the whole telemetry response.
+      typeof memoryService.getRetrievalClientCoverage === 'function'
+        ? memoryService.getRetrievalClientCoverage().catch(() => [])
+        : [],
+      // Typed event/lesson/core split; legacy traces resolved read-only (R1).
+      typeof memoryService.getTypedSelectionSummary === 'function'
+        ? memoryService.getTypedSelectionSummary().catch(() => null)
+        : null
+    ]);
+    return c.json({ ...telemetry, clientCoverage, typedSelections });
   } catch {
     return c.json({
       deliveries: { totalTraces: 0, totalItems: 0, byPresentation: [], byTrigger: [], legacyUnknownRows: 0 },
@@ -1833,7 +1848,9 @@ statsRouter.get('/retrieval-telemetry', async (c) => {
         attributedOpenCount: 0,
         ambiguousOpenCount: 0,
         unattributedOpenCount: 0
-      }
+      },
+      clientCoverage: [],
+      typedSelections: null
     });
   } finally {
     await memoryService.shutdown();
@@ -1852,18 +1869,29 @@ statsRouter.get('/usefulness', async (c) => {
     const windowStart = new Date(now - windowToMs(window));
     // Fetch exactly the window's events (uncapped) rather than a 20k slice, so
     // the result can't be silently truncated for an active window.
-    const [events, helpfulness, traces, usefulnessV2] = await Promise.all([
+    const [events, helpfulness, traces, usefulnessV2, usefulnessAllTriggers, usefulnessLegacyAssumedDelivery] = await Promise.all([
       memoryService.getEventsAfter(windowStart.toISOString()),
       memoryService.getHelpfulnessStats(windowStart),
       memoryService.getRecentRetrievalTraces(traceLimit),
       memoryService.getUsefulnessAggregateV2({ since: windowStart, minimumSample: 20 })
-        .catch(() => emptyUsefulnessAggregateV2({ since: windowStart, minimumSample: 20 }))
+        .catch(() => emptyUsefulnessAggregateV2({ since: windowStart, minimumSample: 20 })),
+      // session_start is a separate population with its own delivery shape and
+      // is reported beside, never inside, the prompt-time numbers (specs R3).
+      memoryService.getUsefulnessAggregateV2({ since: windowStart, minimumSample: 20, includeSessionStart: true })
+        .catch(() => emptyUsefulnessAggregateV2({ since: windowStart, minimumSample: 20, includeSessionStart: true })),
+      // Rows from the evaluator generation that assumed delivery. Shown apart
+      // so no average mixes assumed and observed delivery.
+      memoryService.getUsefulnessAggregateV2({ since: windowStart, minimumSample: 20, evaluatorVersion: 'v2' })
+        .catch(() => emptyUsefulnessAggregateV2({ since: windowStart, minimumSample: 20, evaluatorVersion: 'v2' }))
     ]);
     return c.json({
       ...computeMemoryUsefulnessSummary(events, helpfulness, traces, now, window, {
         tracesLimit: traceLimit
       }),
-      usefulnessV2
+      usefulnessV2,
+      usefulnessAllTriggers,
+      usefulnessLegacyAssumedDelivery,
+      telemetryRollout: retrievalRollout()
     });
   } catch (error) {
     console.error('[stats/usefulness] failed to calculate dashboard metrics', error);

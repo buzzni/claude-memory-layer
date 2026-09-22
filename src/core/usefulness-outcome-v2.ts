@@ -1,10 +1,14 @@
-import type {
-  MemoryUsefulnessObservationV2,
-  RetrievalPresentationMode,
-  RetrievalTriggerType,
-  UsefulnessAdoption,
-  UsefulnessReaskOutcome,
-  UsefulnessTaskOutcome
+import type { MemoryKind } from './memory-ref.js';
+import {
+  CURRENT_USEFULNESS_EVALUATOR_VERSION,
+  type DeliveryEvidenceSource,
+  type DeliveryStatus,
+  type MemoryUsefulnessObservationV2,
+  type RetrievalPresentationMode,
+  type RetrievalTriggerType,
+  type UsefulnessAdoption,
+  type UsefulnessReaskOutcome,
+  type UsefulnessTaskOutcome
 } from './retrieval-telemetry.js';
 
 export type ParsedToolOutcome = 'success' | 'failure' | 'unknown';
@@ -77,24 +81,34 @@ export function classifyReaskOutcome(
 export function buildUsefulnessObservationV2(input: {
   traceId: string;
   eventId: string;
+  memoryKind?: MemoryKind;
+  memoryProjectId?: string | null;
   presentationMode: RetrievalPresentationMode;
   triggerType: RetrievalTriggerType;
   delivered: boolean | null;
+  deliveryStatus?: DeliveryStatus;
+  deliveryEvidence?: DeliveryEvidenceSource;
   adoption: UsefulnessAdoption;
   contentOverlapScore: number | null;
   toolOutcomes: ParsedToolOutcome[];
   reaskOutcome: UsefulnessReaskOutcome;
   evaluatedAt: string | null;
   evaluatorVersion?: string;
+  evaluationWindowMs?: number;
+  evaluationCutoff?: string | null;
 }): MemoryUsefulnessObservationV2 {
   return {
     traceId: input.traceId,
     eventId: input.eventId,
+    memoryKind: input.memoryKind ?? 'event',
+    memoryProjectId: input.memoryProjectId ?? null,
     observationKind: 'outcome',
     presentationMode: input.presentationMode,
     triggerType: input.triggerType,
     selected: true,
     delivered: input.delivered,
+    deliveryStatus: input.deliveryStatus ?? 'unknown',
+    deliveryEvidence: input.deliveryEvidence ?? 'none',
     adoption: input.adoption,
     contentOverlapScore: input.contentOverlapScore,
     taskOutcome: deriveTaskOutcome(input.adoption, input.toolOutcomes),
@@ -102,7 +116,9 @@ export function buildUsefulnessObservationV2(input: {
     explicitFeedback: null,
     confidence: confidenceFor(input.presentationMode, input.adoption),
     evaluatedAt: input.evaluatedAt,
-    evaluatorVersion: input.evaluatorVersion ?? 'v2'
+    evaluatorVersion: input.evaluatorVersion ?? CURRENT_USEFULNESS_EVALUATOR_VERSION,
+    evaluationWindowMs: input.evaluationWindowMs ?? USEFULNESS_V2_EVALUATION_WINDOW_MS,
+    evaluationCutoff: input.evaluationCutoff ?? null
   };
 }
 

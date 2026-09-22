@@ -1,0 +1,2514 @@
+{
+  "since": "2026-09-03T15:25:00+00:00",
+  "until": "2026-09-05T15:25:00+00:00",
+  "stores_scanned": 187,
+  "errors": [],
+  "active": [
+    {
+      "store": "store-001",
+      "events48": {
+        "n": 51,
+        "sessions": 17,
+        "chars": 50885
+      },
+      "traces48": 91,
+      "projects": [
+        {
+          "path_hint": "other",
+          "sessions_all": 5
+        },
+        {
+          "path_hint": "other",
+          "sessions_all": 5
+        },
+        {
+          "path_hint": "other",
+          "sessions_all": 5
+        }
+      ],
+      "event_days": [
+        {
+          "period": "last24",
+          "n": 31
+        },
+        {
+          "period": "previous24",
+          "n": 20
+        }
+      ],
+      "event_types": [
+        {
+          "event_type": "agent_response",
+          "n": 32
+        },
+        {
+          "event_type": "session_summary",
+          "n": 1
+        },
+        {
+          "event_type": "tool_observation",
+          "n": 2
+        },
+        {
+          "event_type": "user_prompt",
+          "n": 16
+        }
+      ],
+      "sources": [
+        {
+          "source": "codex",
+          "n": 5
+        },
+        {
+          "source": "native_or_unknown",
+          "n": 46
+        }
+      ],
+      "exact_duplicate_excess": 10,
+      "event_total": 245,
+      "trace_dimensions": {
+        "trigger_type": [
+          {
+            "value": "session_start",
+            "n": 45
+          },
+          {
+            "value": "user_prompt",
+            "n": 46
+          }
+        ],
+        "presentation_mode": [
+          {
+            "value": "evidence",
+            "n": 26
+          },
+          {
+            "value": "reference",
+            "n": 65
+          }
+        ],
+        "delivery_client": [
+          {
+            "value": "claude-hook",
+            "n": 91
+          }
+        ],
+        "outcome_reason": [
+          {
+            "value": "runtime_error",
+            "n": 42
+          },
+          {
+            "value": "selected",
+            "n": 49
+          }
+        ]
+      },
+      "trace_counts": {
+        "candidates": 1115,
+        "selected": 139,
+        "empty": 42
+      },
+      "selection": {
+        "unique_events": 19,
+        "occurrences": 139,
+        "top5_occurrences": 92,
+        "age_at_window_end": {
+          "2to7d": 34,
+          "under2d": 105
+        },
+        "sources": {
+          "native_or_unknown": 138,
+          "codex": 1
+        }
+      },
+      "memory_helpfulness": 139,
+      "memory_lessons": 0,
+      "consolidated_memories": 0,
+      "helpfulness": {
+        "n": 139,
+        "measured": 139,
+        "avg_score": 0.47227338129496405
+      },
+      "usefulness_v2": [
+        {
+          "evaluator_version": "v2",
+          "adoption": "not_observed",
+          "delivered": 1,
+          "task_outcome": "unknown",
+          "n": 103
+        },
+        {
+          "evaluator_version": "v2",
+          "adoption": "unknown",
+          "delivered": 1,
+          "task_outcome": "unknown",
+          "n": 36
+        }
+      ],
+      "embedding_status_all": []
+    },
+    {
+      "store": "store-003",
+      "events48": {
+        "n": 0,
+        "sessions": 0,
+        "chars": 0
+      },
+      "traces48": 1,
+      "projects": [
+        {
+          "path_hint": "other",
+          "sessions_all": 21
+        }
+      ],
+      "event_days": [],
+      "event_types": [],
+      "sources": [],
+      "exact_duplicate_excess": 0,
+      "event_total": 77,
+      "trace_dimensions": {
+        "trigger_type": [
+          {
+            "value": "session_start",
+            "n": 1
+          }
+        ],
+        "presentation_mode": [
+          {
+            "value": "evidence",
+            "n": 1
+          }
+        ],
+        "delivery_client": [
+          {
+            "value": "claude-hook",
+            "n": 1
+          }
+        ],
+        "outcome_reason": [
+          {
+            "value": "selected",
+            "n": 1
+          }
+        ]
+      },
+      "trace_counts": {
+        "candidates": 3,
+        "selected": 3,
+        "empty": 0
+      },
+      "selection": {
+        "unique_events": 3,
+        "occurrences": 3,
+        "top5_occurrences": 3,
+        "age_at_window_end": {
+          "over7d": 3
+        },
+        "sources": {
+          "native_or_unknown": 3
+        }
+      },
+      "memory_helpfulness": 3,
+      "memory_lessons": 0,
+      "consolidated_memories": 0,
+      "helpfulness": {
+        "n": 3,
+        "measured": 0,
+        "avg_score": 0.5
+      },
+      "usefulness_v2": [],
+      "embedding_status_all": []
+    },
+    {
+      "store": "store-006",
+      "events48": {
+        "n": 1,
+        "sessions": 1,
+        "chars": 17
+      },
+      "traces48": 1,
+      "projects": [
+        {
+          "path_hint": "test-looking",
+          "sessions_all": 1
+        }
+      ],
+      "event_days": [
+        {
+          "period": "previous24",
+          "n": 1
+        }
+      ],
+      "event_types": [
+        {
+          "event_type": "user_prompt",
+          "n": 1
+        }
+      ],
+      "sources": [
+        {
+          "source": "native_or_unknown",
+          "n": 1
+        }
+      ],
+      "exact_duplicate_excess": 0,
+      "event_total": 1,
+      "trace_dimensions": {
+        "trigger_type": [
+          {
+            "value": "user_prompt",
+            "n": 1
+          }
+        ],
+        "presentation_mode": [
+          {
+            "value": "evidence",
+            "n": 1
+          }
+        ],
+        "delivery_client": [
+          {
+            "value": "claude-hook",
+            "n": 1
+          }
+        ],
+        "outcome_reason": [
+          {
+            "value": "runtime_error",
+            "n": 1
+          }
+        ]
+      },
+      "trace_counts": {
+        "candidates": 0,
+        "selected": 0,
+        "empty": 1
+      },
+      "selection": {
+        "unique_events": 0,
+        "occurrences": 0,
+        "top5_occurrences": 0,
+        "age_at_window_end": {},
+        "sources": {}
+      },
+      "memory_helpfulness": 0,
+      "memory_lessons": 0,
+      "consolidated_memories": 0,
+      "helpfulness": {
+        "n": 0,
+        "measured": null,
+        "avg_score": null
+      },
+      "usefulness_v2": [],
+      "embedding_status_all": []
+    },
+    {
+      "store": "store-013",
+      "events48": {
+        "n": 0,
+        "sessions": 0,
+        "chars": 0
+      },
+      "traces48": 2,
+      "projects": [
+        {
+          "path_hint": "test-looking",
+          "sessions_all": 2
+        },
+        {
+          "path_hint": "test-looking",
+          "sessions_all": 1
+        }
+      ],
+      "event_days": [],
+      "event_types": [],
+      "sources": [],
+      "exact_duplicate_excess": 0,
+      "event_total": 0,
+      "trace_dimensions": {
+        "trigger_type": [
+          {
+            "value": "user_prompt",
+            "n": 2
+          }
+        ],
+        "presentation_mode": [
+          {
+            "value": "reference",
+            "n": 2
+          }
+        ],
+        "delivery_client": [
+          {
+            "value": "claude-hook",
+            "n": 2
+          }
+        ],
+        "outcome_reason": [
+          {
+            "value": "runtime_error",
+            "n": 2
+          }
+        ]
+      },
+      "trace_counts": {
+        "candidates": 0,
+        "selected": 0,
+        "empty": 2
+      },
+      "selection": {
+        "unique_events": 0,
+        "occurrences": 0,
+        "top5_occurrences": 0,
+        "age_at_window_end": {},
+        "sources": {}
+      },
+      "memory_helpfulness": 0,
+      "memory_lessons": 0,
+      "consolidated_memories": 0,
+      "helpfulness": {
+        "n": 0,
+        "measured": null,
+        "avg_score": null
+      },
+      "usefulness_v2": [],
+      "embedding_status_all": []
+    },
+    {
+      "store": "store-032",
+      "events48": {
+        "n": 1,
+        "sessions": 1,
+        "chars": 17
+      },
+      "traces48": 1,
+      "projects": [
+        {
+          "path_hint": "test-looking",
+          "sessions_all": 1
+        }
+      ],
+      "event_days": [
+        {
+          "period": "previous24",
+          "n": 1
+        }
+      ],
+      "event_types": [
+        {
+          "event_type": "user_prompt",
+          "n": 1
+        }
+      ],
+      "sources": [
+        {
+          "source": "native_or_unknown",
+          "n": 1
+        }
+      ],
+      "exact_duplicate_excess": 0,
+      "event_total": 1,
+      "trace_dimensions": {
+        "trigger_type": [
+          {
+            "value": "user_prompt",
+            "n": 1
+          }
+        ],
+        "presentation_mode": [
+          {
+            "value": "evidence",
+            "n": 1
+          }
+        ],
+        "delivery_client": [
+          {
+            "value": "claude-hook",
+            "n": 1
+          }
+        ],
+        "outcome_reason": [
+          {
+            "value": "runtime_error",
+            "n": 1
+          }
+        ]
+      },
+      "trace_counts": {
+        "candidates": 0,
+        "selected": 0,
+        "empty": 1
+      },
+      "selection": {
+        "unique_events": 0,
+        "occurrences": 0,
+        "top5_occurrences": 0,
+        "age_at_window_end": {},
+        "sources": {}
+      },
+      "memory_helpfulness": 0,
+      "memory_lessons": 0,
+      "consolidated_memories": 0,
+      "helpfulness": {
+        "n": 0,
+        "measured": null,
+        "avg_score": null
+      },
+      "usefulness_v2": [],
+      "embedding_status_all": []
+    },
+    {
+      "store": "store-052",
+      "events48": {
+        "n": 77,
+        "sessions": 3,
+        "chars": 319501
+      },
+      "traces48": 13,
+      "projects": [
+        {
+          "path_hint": "other",
+          "sessions_all": 49
+        },
+        {
+          "path_hint": "other",
+          "sessions_all": 2
+        },
+        {
+          "path_hint": "other",
+          "sessions_all": 1
+        }
+      ],
+      "event_days": [
+        {
+          "period": "last24",
+          "n": 77
+        }
+      ],
+      "event_types": [
+        {
+          "event_type": "agent_response",
+          "n": 16
+        },
+        {
+          "event_type": "session_summary",
+          "n": 3
+        },
+        {
+          "event_type": "tool_observation",
+          "n": 50
+        },
+        {
+          "event_type": "user_prompt",
+          "n": 8
+        }
+      ],
+      "sources": [
+        {
+          "source": "native_or_unknown",
+          "n": 77
+        }
+      ],
+      "exact_duplicate_excess": 0,
+      "event_total": 6970,
+      "trace_dimensions": {
+        "trigger_type": [
+          {
+            "value": "session_start",
+            "n": 5
+          },
+          {
+            "value": "user_prompt",
+            "n": 8
+          }
+        ],
+        "presentation_mode": [
+          {
+            "value": "evidence",
+            "n": 13
+          }
+        ],
+        "delivery_client": [
+          {
+            "value": "claude-hook",
+            "n": 13
+          }
+        ],
+        "outcome_reason": [
+          {
+            "value": "runtime_error",
+            "n": 2
+          },
+          {
+            "value": "selected",
+            "n": 11
+          }
+        ]
+      },
+      "trace_counts": {
+        "candidates": 165,
+        "selected": 31,
+        "empty": 2
+      },
+      "selection": {
+        "unique_events": 27,
+        "occurrences": 31,
+        "top5_occurrences": 9,
+        "age_at_window_end": {
+          "2to7d": 3,
+          "over7d": 15,
+          "under2d": 13
+        },
+        "sources": {
+          "native_or_unknown": 25,
+          "codex": 6
+        }
+      },
+      "memory_helpfulness": 31,
+      "memory_lessons": 0,
+      "consolidated_memories": 0,
+      "helpfulness": {
+        "n": 31,
+        "measured": 31,
+        "avg_score": 0.48455442949933814
+      },
+      "usefulness_v2": [
+        {
+          "evaluator_version": "v2",
+          "adoption": "grounded",
+          "delivered": 1,
+          "task_outcome": "success",
+          "n": 4
+        },
+        {
+          "evaluator_version": "v2",
+          "adoption": "not_observed",
+          "delivered": 1,
+          "task_outcome": "unknown",
+          "n": 27
+        }
+      ],
+      "embedding_status_all": []
+    },
+    {
+      "store": "store-060",
+      "events48": {
+        "n": 26,
+        "sessions": 2,
+        "chars": 70758
+      },
+      "traces48": 5,
+      "projects": [
+        {
+          "path_hint": "other",
+          "sessions_all": 8
+        },
+        {
+          "path_hint": "other",
+          "sessions_all": 1
+        },
+        {
+          "path_hint": "other",
+          "sessions_all": 1
+        }
+      ],
+      "event_days": [
+        {
+          "period": "last24",
+          "n": 25
+        },
+        {
+          "period": "previous24",
+          "n": 1
+        }
+      ],
+      "event_types": [
+        {
+          "event_type": "agent_response",
+          "n": 2
+        },
+        {
+          "event_type": "session_summary",
+          "n": 2
+        },
+        {
+          "event_type": "tool_observation",
+          "n": 20
+        },
+        {
+          "event_type": "user_prompt",
+          "n": 2
+        }
+      ],
+      "sources": [
+        {
+          "source": "native_or_unknown",
+          "n": 26
+        }
+      ],
+      "exact_duplicate_excess": 0,
+      "event_total": 52,
+      "trace_dimensions": {
+        "trigger_type": [
+          {
+            "value": "session_start",
+            "n": 3
+          },
+          {
+            "value": "user_prompt",
+            "n": 2
+          }
+        ],
+        "presentation_mode": [
+          {
+            "value": "evidence",
+            "n": 5
+          }
+        ],
+        "delivery_client": [
+          {
+            "value": "claude-hook",
+            "n": 5
+          }
+        ],
+        "outcome_reason": [
+          {
+            "value": "selected",
+            "n": 5
+          }
+        ]
+      },
+      "trace_counts": {
+        "candidates": 12,
+        "selected": 11,
+        "empty": 0
+      },
+      "selection": {
+        "unique_events": 7,
+        "occurrences": 11,
+        "top5_occurrences": 9,
+        "age_at_window_end": {
+          "over7d": 7,
+          "under2d": 4
+        },
+        "sources": {
+          "codex": 5,
+          "native_or_unknown": 6
+        }
+      },
+      "memory_helpfulness": 11,
+      "memory_lessons": 0,
+      "consolidated_memories": 0,
+      "helpfulness": {
+        "n": 11,
+        "measured": 11,
+        "avg_score": 0.4116363636363637
+      },
+      "usefulness_v2": [
+        {
+          "evaluator_version": "v2",
+          "adoption": "grounded",
+          "delivered": 1,
+          "task_outcome": "success",
+          "n": 2
+        },
+        {
+          "evaluator_version": "v2",
+          "adoption": "not_observed",
+          "delivered": 1,
+          "task_outcome": "unknown",
+          "n": 6
+        },
+        {
+          "evaluator_version": "v2",
+          "adoption": "unknown",
+          "delivered": 1,
+          "task_outcome": "unknown",
+          "n": 3
+        }
+      ],
+      "embedding_status_all": []
+    },
+    {
+      "store": "store-062",
+      "events48": {
+        "n": 1,
+        "sessions": 1,
+        "chars": 1941
+      },
+      "traces48": 0,
+      "projects": [
+        {
+          "path_hint": "other",
+          "sessions_all": 1
+        }
+      ],
+      "event_days": [
+        {
+          "period": "last24",
+          "n": 1
+        }
+      ],
+      "event_types": [
+        {
+          "event_type": "agent_response",
+          "n": 1
+        }
+      ],
+      "sources": [
+        {
+          "source": "native_or_unknown",
+          "n": 1
+        }
+      ],
+      "exact_duplicate_excess": 0,
+      "event_total": 97,
+      "memory_helpfulness": 0,
+      "memory_lessons": 0,
+      "consolidated_memories": 0,
+      "helpfulness": {
+        "n": 0,
+        "measured": null,
+        "avg_score": null
+      },
+      "usefulness_v2": [],
+      "embedding_status_all": []
+    },
+    {
+      "store": "store-070",
+      "events48": {
+        "n": 3821,
+        "sessions": 32,
+        "chars": 12053651
+      },
+      "traces48": 557,
+      "projects": [
+        {
+          "path_hint": "other",
+          "sessions_all": 178
+        },
+        {
+          "path_hint": "other",
+          "sessions_all": 15
+        },
+        {
+          "path_hint": "other",
+          "sessions_all": 13
+        }
+      ],
+      "event_days": [
+        {
+          "period": "last24",
+          "n": 2752
+        },
+        {
+          "period": "previous24",
+          "n": 1069
+        }
+      ],
+      "event_types": [
+        {
+          "event_type": "agent_response",
+          "n": 499
+        },
+        {
+          "event_type": "session_summary",
+          "n": 25
+        },
+        {
+          "event_type": "tool_observation",
+          "n": 2809
+        },
+        {
+          "event_type": "user_prompt",
+          "n": 488
+        }
+      ],
+      "sources": [
+        {
+          "source": "codex",
+          "n": 52
+        },
+        {
+          "source": "native_or_unknown",
+          "n": 3769
+        }
+      ],
+      "exact_duplicate_excess": 20,
+      "event_total": 59168,
+      "trace_dimensions": {
+        "trigger_type": [
+          {
+            "value": "session_start",
+            "n": 137
+          },
+          {
+            "value": "unknown",
+            "n": 1
+          },
+          {
+            "value": "user_prompt",
+            "n": 419
+          }
+        ],
+        "presentation_mode": [
+          {
+            "value": "evidence",
+            "n": 507
+          },
+          {
+            "value": "reference",
+            "n": 49
+          },
+          {
+            "value": "unknown",
+            "n": 1
+          }
+        ],
+        "delivery_client": [
+          {
+            "value": "claude-hook",
+            "n": 556
+          },
+          {
+            "value": "unknown",
+            "n": 1
+          }
+        ],
+        "outcome_reason": [
+          {
+            "value": "runtime_error",
+            "n": 68
+          },
+          {
+            "value": "selected",
+            "n": 489
+          }
+        ]
+      },
+      "trace_counts": {
+        "candidates": 11236,
+        "selected": 1631,
+        "empty": 68
+      },
+      "selection": {
+        "unique_events": 579,
+        "occurrences": 1631,
+        "top5_occurrences": 127,
+        "age_at_window_end": {
+          "over7d": 232,
+          "2to7d": 153,
+          "under2d": 793,
+          "lesson_reference": 453
+        },
+        "sources": {
+          "codex": 135,
+          "native_or_unknown": 1043
+        }
+      },
+      "memory_helpfulness": 1628,
+      "memory_lessons": 47,
+      "consolidated_memories": 0,
+      "helpfulness": {
+        "n": 1628,
+        "measured": 1628,
+        "avg_score": 0.5316721304513882
+      },
+      "usefulness_v2": [
+        {
+          "evaluator_version": "v2",
+          "adoption": "grounded",
+          "delivered": 1,
+          "task_outcome": "success",
+          "n": 85
+        },
+        {
+          "evaluator_version": "v2",
+          "adoption": "grounded",
+          "delivered": 1,
+          "task_outcome": "unknown",
+          "n": 68
+        },
+        {
+          "evaluator_version": "v2",
+          "adoption": "not_observed",
+          "delivered": 1,
+          "task_outcome": "unknown",
+          "n": 1223
+        },
+        {
+          "evaluator_version": "v2",
+          "adoption": "unknown",
+          "delivered": 1,
+          "task_outcome": "unknown",
+          "n": 251
+        }
+      ],
+      "embedding_status_all": []
+    },
+    {
+      "store": "store-077",
+      "events48": {
+        "n": 4,
+        "sessions": 1,
+        "chars": 3342
+      },
+      "traces48": 1,
+      "projects": [
+        {
+          "path_hint": "other",
+          "sessions_all": 1
+        }
+      ],
+      "event_days": [
+        {
+          "period": "last24",
+          "n": 4
+        }
+      ],
+      "event_types": [
+        {
+          "event_type": "agent_response",
+          "n": 1
+        },
+        {
+          "event_type": "session_summary",
+          "n": 1
+        },
+        {
+          "event_type": "tool_observation",
+          "n": 1
+        },
+        {
+          "event_type": "user_prompt",
+          "n": 1
+        }
+      ],
+      "sources": [
+        {
+          "source": "native_or_unknown",
+          "n": 4
+        }
+      ],
+      "exact_duplicate_excess": 0,
+      "event_total": 4,
+      "trace_dimensions": {
+        "trigger_type": [
+          {
+            "value": "user_prompt",
+            "n": 1
+          }
+        ],
+        "presentation_mode": [
+          {
+            "value": "evidence",
+            "n": 1
+          }
+        ],
+        "delivery_client": [
+          {
+            "value": "claude-hook",
+            "n": 1
+          }
+        ],
+        "outcome_reason": [
+          {
+            "value": "runtime_error",
+            "n": 1
+          }
+        ]
+      },
+      "trace_counts": {
+        "candidates": 0,
+        "selected": 0,
+        "empty": 1
+      },
+      "selection": {
+        "unique_events": 0,
+        "occurrences": 0,
+        "top5_occurrences": 0,
+        "age_at_window_end": {},
+        "sources": {}
+      },
+      "memory_helpfulness": 0,
+      "memory_lessons": 0,
+      "consolidated_memories": 0,
+      "helpfulness": {
+        "n": 0,
+        "measured": null,
+        "avg_score": null
+      },
+      "usefulness_v2": [],
+      "embedding_status_all": []
+    },
+    {
+      "store": "store-091",
+      "events48": {
+        "n": 0,
+        "sessions": 0,
+        "chars": 0
+      },
+      "traces48": 1,
+      "projects": [
+        {
+          "path_hint": "other",
+          "sessions_all": 1
+        }
+      ],
+      "event_days": [],
+      "event_types": [],
+      "sources": [],
+      "exact_duplicate_excess": 0,
+      "event_total": 0,
+      "trace_dimensions": {
+        "trigger_type": [
+          {
+            "value": "user_prompt",
+            "n": 1
+          }
+        ],
+        "presentation_mode": [
+          {
+            "value": "reference",
+            "n": 1
+          }
+        ],
+        "delivery_client": [
+          {
+            "value": "claude-hook",
+            "n": 1
+          }
+        ],
+        "outcome_reason": [
+          {
+            "value": "runtime_error",
+            "n": 1
+          }
+        ]
+      },
+      "trace_counts": {
+        "candidates": 0,
+        "selected": 0,
+        "empty": 1
+      },
+      "selection": {
+        "unique_events": 0,
+        "occurrences": 0,
+        "top5_occurrences": 0,
+        "age_at_window_end": {},
+        "sources": {}
+      },
+      "memory_helpfulness": 0,
+      "memory_lessons": 0,
+      "consolidated_memories": 0,
+      "helpfulness": {
+        "n": 0,
+        "measured": null,
+        "avg_score": null
+      },
+      "usefulness_v2": [],
+      "embedding_status_all": []
+    },
+    {
+      "store": "store-096",
+      "events48": {
+        "n": 17,
+        "sessions": 1,
+        "chars": 53281
+      },
+      "traces48": 3,
+      "projects": [
+        {
+          "path_hint": "other",
+          "sessions_all": 3
+        }
+      ],
+      "event_days": [
+        {
+          "period": "last24",
+          "n": 17
+        }
+      ],
+      "event_types": [
+        {
+          "event_type": "agent_response",
+          "n": 2
+        },
+        {
+          "event_type": "session_summary",
+          "n": 1
+        },
+        {
+          "event_type": "tool_observation",
+          "n": 12
+        },
+        {
+          "event_type": "user_prompt",
+          "n": 2
+        }
+      ],
+      "sources": [
+        {
+          "source": "native_or_unknown",
+          "n": 17
+        }
+      ],
+      "exact_duplicate_excess": 0,
+      "event_total": 75,
+      "trace_dimensions": {
+        "trigger_type": [
+          {
+            "value": "session_start",
+            "n": 1
+          },
+          {
+            "value": "user_prompt",
+            "n": 2
+          }
+        ],
+        "presentation_mode": [
+          {
+            "value": "evidence",
+            "n": 3
+          }
+        ],
+        "delivery_client": [
+          {
+            "value": "claude-hook",
+            "n": 3
+          }
+        ],
+        "outcome_reason": [
+          {
+            "value": "selected",
+            "n": 3
+          }
+        ]
+      },
+      "trace_counts": {
+        "candidates": 12,
+        "selected": 7,
+        "empty": 0
+      },
+      "selection": {
+        "unique_events": 6,
+        "occurrences": 7,
+        "top5_occurrences": 6,
+        "age_at_window_end": {
+          "over7d": 7
+        },
+        "sources": {
+          "native_or_unknown": 7
+        }
+      },
+      "memory_helpfulness": 7,
+      "memory_lessons": 0,
+      "consolidated_memories": 0,
+      "helpfulness": {
+        "n": 7,
+        "measured": 7,
+        "avg_score": 0.5490398055649476
+      },
+      "usefulness_v2": [
+        {
+          "evaluator_version": "v2",
+          "adoption": "grounded",
+          "delivered": 1,
+          "task_outcome": "success",
+          "n": 2
+        },
+        {
+          "evaluator_version": "v2",
+          "adoption": "not_observed",
+          "delivered": 1,
+          "task_outcome": "unknown",
+          "n": 5
+        }
+      ],
+      "embedding_status_all": []
+    },
+    {
+      "store": "store-101",
+      "events48": {
+        "n": 1,
+        "sessions": 1,
+        "chars": 17
+      },
+      "traces48": 1,
+      "projects": [
+        {
+          "path_hint": "test-looking",
+          "sessions_all": 1
+        }
+      ],
+      "event_days": [
+        {
+          "period": "previous24",
+          "n": 1
+        }
+      ],
+      "event_types": [
+        {
+          "event_type": "user_prompt",
+          "n": 1
+        }
+      ],
+      "sources": [
+        {
+          "source": "native_or_unknown",
+          "n": 1
+        }
+      ],
+      "exact_duplicate_excess": 0,
+      "event_total": 1,
+      "trace_dimensions": {
+        "trigger_type": [
+          {
+            "value": "user_prompt",
+            "n": 1
+          }
+        ],
+        "presentation_mode": [
+          {
+            "value": "evidence",
+            "n": 1
+          }
+        ],
+        "delivery_client": [
+          {
+            "value": "claude-hook",
+            "n": 1
+          }
+        ],
+        "outcome_reason": [
+          {
+            "value": "runtime_error",
+            "n": 1
+          }
+        ]
+      },
+      "trace_counts": {
+        "candidates": 0,
+        "selected": 0,
+        "empty": 1
+      },
+      "selection": {
+        "unique_events": 0,
+        "occurrences": 0,
+        "top5_occurrences": 0,
+        "age_at_window_end": {},
+        "sources": {}
+      },
+      "memory_helpfulness": 0,
+      "memory_lessons": 0,
+      "consolidated_memories": 0,
+      "helpfulness": {
+        "n": 0,
+        "measured": null,
+        "avg_score": null
+      },
+      "usefulness_v2": [],
+      "embedding_status_all": []
+    },
+    {
+      "store": "store-106",
+      "events48": {
+        "n": 0,
+        "sessions": 0,
+        "chars": 0
+      },
+      "traces48": 1,
+      "projects": [
+        {
+          "path_hint": "other",
+          "sessions_all": 1
+        }
+      ],
+      "event_days": [],
+      "event_types": [],
+      "sources": [],
+      "exact_duplicate_excess": 0,
+      "event_total": 0,
+      "trace_dimensions": {
+        "trigger_type": [
+          {
+            "value": "user_prompt",
+            "n": 1
+          }
+        ],
+        "presentation_mode": [
+          {
+            "value": "reference",
+            "n": 1
+          }
+        ],
+        "delivery_client": [
+          {
+            "value": "claude-hook",
+            "n": 1
+          }
+        ],
+        "outcome_reason": [
+          {
+            "value": "runtime_error",
+            "n": 1
+          }
+        ]
+      },
+      "trace_counts": {
+        "candidates": 0,
+        "selected": 0,
+        "empty": 1
+      },
+      "selection": {
+        "unique_events": 0,
+        "occurrences": 0,
+        "top5_occurrences": 0,
+        "age_at_window_end": {},
+        "sources": {}
+      },
+      "memory_helpfulness": 0,
+      "memory_lessons": 0,
+      "consolidated_memories": 0,
+      "helpfulness": {
+        "n": 0,
+        "measured": null,
+        "avg_score": null
+      },
+      "usefulness_v2": [],
+      "embedding_status_all": []
+    },
+    {
+      "store": "store-108",
+      "events48": {
+        "n": 12,
+        "sessions": 1,
+        "chars": 48287
+      },
+      "traces48": 4,
+      "projects": [
+        {
+          "path_hint": "other",
+          "sessions_all": 2
+        },
+        {
+          "path_hint": "other",
+          "sessions_all": 1
+        },
+        {
+          "path_hint": "other",
+          "sessions_all": 1
+        }
+      ],
+      "event_days": [
+        {
+          "period": "last24",
+          "n": 12
+        }
+      ],
+      "event_types": [
+        {
+          "event_type": "agent_response",
+          "n": 1
+        },
+        {
+          "event_type": "session_summary",
+          "n": 1
+        },
+        {
+          "event_type": "tool_observation",
+          "n": 8
+        },
+        {
+          "event_type": "user_prompt",
+          "n": 2
+        }
+      ],
+      "sources": [
+        {
+          "source": "native_or_unknown",
+          "n": 12
+        }
+      ],
+      "exact_duplicate_excess": 0,
+      "event_total": 80,
+      "trace_dimensions": {
+        "trigger_type": [
+          {
+            "value": "session_start",
+            "n": 2
+          },
+          {
+            "value": "user_prompt",
+            "n": 2
+          }
+        ],
+        "presentation_mode": [
+          {
+            "value": "evidence",
+            "n": 3
+          },
+          {
+            "value": "reference",
+            "n": 1
+          }
+        ],
+        "delivery_client": [
+          {
+            "value": "claude-hook",
+            "n": 4
+          }
+        ],
+        "outcome_reason": [
+          {
+            "value": "selected",
+            "n": 4
+          }
+        ]
+      },
+      "trace_counts": {
+        "candidates": 32,
+        "selected": 9,
+        "empty": 0
+      },
+      "selection": {
+        "unique_events": 9,
+        "occurrences": 9,
+        "top5_occurrences": 5,
+        "age_at_window_end": {
+          "lesson_reference": 3,
+          "over7d": 5,
+          "under2d": 1
+        },
+        "sources": {
+          "native_or_unknown": 6
+        }
+      },
+      "memory_helpfulness": 9,
+      "memory_lessons": 0,
+      "consolidated_memories": 0,
+      "helpfulness": {
+        "n": 9,
+        "measured": 9,
+        "avg_score": 0.513445061870037
+      },
+      "usefulness_v2": [
+        {
+          "evaluator_version": "v2",
+          "adoption": "grounded",
+          "delivered": 1,
+          "task_outcome": "success",
+          "n": 1
+        },
+        {
+          "evaluator_version": "v2",
+          "adoption": "not_observed",
+          "delivered": 1,
+          "task_outcome": "unknown",
+          "n": 8
+        }
+      ],
+      "embedding_status_all": []
+    },
+    {
+      "store": "store-125",
+      "events48": {
+        "n": 1,
+        "sessions": 1,
+        "chars": 17
+      },
+      "traces48": 1,
+      "projects": [
+        {
+          "path_hint": "test-looking",
+          "sessions_all": 1
+        }
+      ],
+      "event_days": [
+        {
+          "period": "previous24",
+          "n": 1
+        }
+      ],
+      "event_types": [
+        {
+          "event_type": "user_prompt",
+          "n": 1
+        }
+      ],
+      "sources": [
+        {
+          "source": "native_or_unknown",
+          "n": 1
+        }
+      ],
+      "exact_duplicate_excess": 0,
+      "event_total": 1,
+      "trace_dimensions": {
+        "trigger_type": [
+          {
+            "value": "user_prompt",
+            "n": 1
+          }
+        ],
+        "presentation_mode": [
+          {
+            "value": "evidence",
+            "n": 1
+          }
+        ],
+        "delivery_client": [
+          {
+            "value": "claude-hook",
+            "n": 1
+          }
+        ],
+        "outcome_reason": [
+          {
+            "value": "runtime_error",
+            "n": 1
+          }
+        ]
+      },
+      "trace_counts": {
+        "candidates": 0,
+        "selected": 0,
+        "empty": 1
+      },
+      "selection": {
+        "unique_events": 0,
+        "occurrences": 0,
+        "top5_occurrences": 0,
+        "age_at_window_end": {},
+        "sources": {}
+      },
+      "memory_helpfulness": 0,
+      "memory_lessons": 0,
+      "consolidated_memories": 0,
+      "helpfulness": {
+        "n": 0,
+        "measured": null,
+        "avg_score": null
+      },
+      "usefulness_v2": [],
+      "embedding_status_all": []
+    },
+    {
+      "store": "store-141",
+      "events48": {
+        "n": 0,
+        "sessions": 0,
+        "chars": 0
+      },
+      "traces48": 1,
+      "projects": [
+        {
+          "path_hint": "other",
+          "sessions_all": 1
+        }
+      ],
+      "event_days": [],
+      "event_types": [],
+      "sources": [],
+      "exact_duplicate_excess": 0,
+      "event_total": 0,
+      "trace_dimensions": {
+        "trigger_type": [
+          {
+            "value": "user_prompt",
+            "n": 1
+          }
+        ],
+        "presentation_mode": [
+          {
+            "value": "reference",
+            "n": 1
+          }
+        ],
+        "delivery_client": [
+          {
+            "value": "claude-hook",
+            "n": 1
+          }
+        ],
+        "outcome_reason": [
+          {
+            "value": "runtime_error",
+            "n": 1
+          }
+        ]
+      },
+      "trace_counts": {
+        "candidates": 0,
+        "selected": 0,
+        "empty": 1
+      },
+      "selection": {
+        "unique_events": 0,
+        "occurrences": 0,
+        "top5_occurrences": 0,
+        "age_at_window_end": {},
+        "sources": {}
+      },
+      "memory_helpfulness": 0,
+      "memory_lessons": 0,
+      "consolidated_memories": 0,
+      "helpfulness": {
+        "n": 0,
+        "measured": null,
+        "avg_score": null
+      },
+      "usefulness_v2": [],
+      "embedding_status_all": []
+    },
+    {
+      "store": "store-145",
+      "events48": {
+        "n": 61,
+        "sessions": 4,
+        "chars": 267238
+      },
+      "traces48": 6,
+      "projects": [
+        {
+          "path_hint": "other",
+          "sessions_all": 118
+        },
+        {
+          "path_hint": "other",
+          "sessions_all": 3
+        },
+        {
+          "path_hint": "other",
+          "sessions_all": 1
+        }
+      ],
+      "event_days": [
+        {
+          "period": "last24",
+          "n": 29
+        },
+        {
+          "period": "previous24",
+          "n": 32
+        }
+      ],
+      "event_types": [
+        {
+          "event_type": "agent_response",
+          "n": 3
+        },
+        {
+          "event_type": "session_summary",
+          "n": 4
+        },
+        {
+          "event_type": "tool_observation",
+          "n": 51
+        },
+        {
+          "event_type": "user_prompt",
+          "n": 3
+        }
+      ],
+      "sources": [
+        {
+          "source": "native_or_unknown",
+          "n": 61
+        }
+      ],
+      "exact_duplicate_excess": 1,
+      "event_total": 4767,
+      "trace_dimensions": {
+        "trigger_type": [
+          {
+            "value": "session_start",
+            "n": 3
+          },
+          {
+            "value": "user_prompt",
+            "n": 3
+          }
+        ],
+        "presentation_mode": [
+          {
+            "value": "evidence",
+            "n": 6
+          }
+        ],
+        "delivery_client": [
+          {
+            "value": "claude-hook",
+            "n": 6
+          }
+        ],
+        "outcome_reason": [
+          {
+            "value": "selected",
+            "n": 6
+          }
+        ]
+      },
+      "trace_counts": {
+        "candidates": 72,
+        "selected": 21,
+        "empty": 0
+      },
+      "selection": {
+        "unique_events": 14,
+        "occurrences": 21,
+        "top5_occurrences": 12,
+        "age_at_window_end": {
+          "2to7d": 14,
+          "under2d": 6,
+          "over7d": 1
+        },
+        "sources": {
+          "native_or_unknown": 19,
+          "codex": 2
+        }
+      },
+      "memory_helpfulness": 21,
+      "memory_lessons": 0,
+      "consolidated_memories": 0,
+      "helpfulness": {
+        "n": 21,
+        "measured": 21,
+        "avg_score": 0.5993571428571428
+      },
+      "usefulness_v2": [
+        {
+          "evaluator_version": "v2",
+          "adoption": "grounded",
+          "delivered": 1,
+          "task_outcome": "success",
+          "n": 10
+        },
+        {
+          "evaluator_version": "v2",
+          "adoption": "not_observed",
+          "delivered": 1,
+          "task_outcome": "unknown",
+          "n": 11
+        }
+      ],
+      "embedding_status_all": [
+        {
+          "status": "pending",
+          "n": 1
+        }
+      ]
+    },
+    {
+      "store": "store-158",
+      "events48": {
+        "n": 2625,
+        "sessions": 13,
+        "chars": 7554963
+      },
+      "traces48": 259,
+      "projects": [
+        {
+          "path_hint": "other",
+          "sessions_all": 800
+        },
+        {
+          "path_hint": "other",
+          "sessions_all": 26
+        },
+        {
+          "path_hint": "other",
+          "sessions_all": 9
+        }
+      ],
+      "event_days": [
+        {
+          "period": "last24",
+          "n": 1944
+        },
+        {
+          "period": "previous24",
+          "n": 681
+        }
+      ],
+      "event_types": [
+        {
+          "event_type": "agent_response",
+          "n": 190
+        },
+        {
+          "event_type": "session_summary",
+          "n": 10
+        },
+        {
+          "event_type": "tool_observation",
+          "n": 2194
+        },
+        {
+          "event_type": "user_prompt",
+          "n": 231
+        }
+      ],
+      "sources": [
+        {
+          "source": "codex",
+          "n": 55
+        },
+        {
+          "source": "native_or_unknown",
+          "n": 2570
+        }
+      ],
+      "exact_duplicate_excess": 9,
+      "event_total": 48100,
+      "trace_dimensions": {
+        "trigger_type": [
+          {
+            "value": "session_start",
+            "n": 63
+          },
+          {
+            "value": "user_prompt",
+            "n": 196
+          }
+        ],
+        "presentation_mode": [
+          {
+            "value": "evidence",
+            "n": 225
+          },
+          {
+            "value": "reference",
+            "n": 34
+          }
+        ],
+        "delivery_client": [
+          {
+            "value": "claude-hook",
+            "n": 259
+          }
+        ],
+        "outcome_reason": [
+          {
+            "value": "runtime_error",
+            "n": 24
+          },
+          {
+            "value": "selected",
+            "n": 235
+          }
+        ]
+      },
+      "trace_counts": {
+        "candidates": 3546,
+        "selected": 572,
+        "empty": 24
+      },
+      "selection": {
+        "unique_events": 276,
+        "occurrences": 572,
+        "top5_occurrences": 48,
+        "age_at_window_end": {
+          "2to7d": 55,
+          "under2d": 386,
+          "over7d": 122,
+          "lesson_reference": 9
+        },
+        "sources": {
+          "native_or_unknown": 494,
+          "codex": 69
+        }
+      },
+      "memory_helpfulness": 572,
+      "memory_lessons": 0,
+      "consolidated_memories": 0,
+      "helpfulness": {
+        "n": 572,
+        "measured": 572,
+        "avg_score": 0.5335673606780349
+      },
+      "usefulness_v2": [
+        {
+          "evaluator_version": "v2",
+          "adoption": "grounded",
+          "delivered": 1,
+          "task_outcome": "success",
+          "n": 44
+        },
+        {
+          "evaluator_version": "v2",
+          "adoption": "grounded",
+          "delivered": 1,
+          "task_outcome": "unknown",
+          "n": 4
+        },
+        {
+          "evaluator_version": "v2",
+          "adoption": "not_observed",
+          "delivered": 1,
+          "task_outcome": "unknown",
+          "n": 404
+        },
+        {
+          "evaluator_version": "v2",
+          "adoption": "unknown",
+          "delivered": 1,
+          "task_outcome": "unknown",
+          "n": 120
+        }
+      ],
+      "embedding_status_all": [
+        {
+          "status": "pending",
+          "n": 1
+        }
+      ]
+    },
+    {
+      "store": "store-168",
+      "events48": {
+        "n": 0,
+        "sessions": 0,
+        "chars": 0
+      },
+      "traces48": 1,
+      "projects": [
+        {
+          "path_hint": "other",
+          "sessions_all": 1
+        }
+      ],
+      "event_days": [],
+      "event_types": [],
+      "sources": [],
+      "exact_duplicate_excess": 0,
+      "event_total": 0,
+      "trace_dimensions": {
+        "trigger_type": [
+          {
+            "value": "user_prompt",
+            "n": 1
+          }
+        ],
+        "presentation_mode": [
+          {
+            "value": "reference",
+            "n": 1
+          }
+        ],
+        "delivery_client": [
+          {
+            "value": "claude-hook",
+            "n": 1
+          }
+        ],
+        "outcome_reason": [
+          {
+            "value": "runtime_error",
+            "n": 1
+          }
+        ]
+      },
+      "trace_counts": {
+        "candidates": 0,
+        "selected": 0,
+        "empty": 1
+      },
+      "selection": {
+        "unique_events": 0,
+        "occurrences": 0,
+        "top5_occurrences": 0,
+        "age_at_window_end": {},
+        "sources": {}
+      },
+      "memory_helpfulness": 0,
+      "memory_lessons": 0,
+      "consolidated_memories": 0,
+      "helpfulness": {
+        "n": 0,
+        "measured": null,
+        "avg_score": null
+      },
+      "usefulness_v2": [],
+      "embedding_status_all": []
+    },
+    {
+      "store": "store-170",
+      "events48": {
+        "n": 1,
+        "sessions": 1,
+        "chars": 17
+      },
+      "traces48": 1,
+      "projects": [
+        {
+          "path_hint": "test-looking",
+          "sessions_all": 1
+        }
+      ],
+      "event_days": [
+        {
+          "period": "previous24",
+          "n": 1
+        }
+      ],
+      "event_types": [
+        {
+          "event_type": "user_prompt",
+          "n": 1
+        }
+      ],
+      "sources": [
+        {
+          "source": "native_or_unknown",
+          "n": 1
+        }
+      ],
+      "exact_duplicate_excess": 0,
+      "event_total": 1,
+      "trace_dimensions": {
+        "trigger_type": [
+          {
+            "value": "user_prompt",
+            "n": 1
+          }
+        ],
+        "presentation_mode": [
+          {
+            "value": "evidence",
+            "n": 1
+          }
+        ],
+        "delivery_client": [
+          {
+            "value": "claude-hook",
+            "n": 1
+          }
+        ],
+        "outcome_reason": [
+          {
+            "value": "runtime_error",
+            "n": 1
+          }
+        ]
+      },
+      "trace_counts": {
+        "candidates": 0,
+        "selected": 0,
+        "empty": 1
+      },
+      "selection": {
+        "unique_events": 0,
+        "occurrences": 0,
+        "top5_occurrences": 0,
+        "age_at_window_end": {},
+        "sources": {}
+      },
+      "memory_helpfulness": 0,
+      "memory_lessons": 0,
+      "consolidated_memories": 0,
+      "helpfulness": {
+        "n": 0,
+        "measured": null,
+        "avg_score": null
+      },
+      "usefulness_v2": [],
+      "embedding_status_all": []
+    },
+    {
+      "store": "store-171",
+      "events48": {
+        "n": 0,
+        "sessions": 0,
+        "chars": 0
+      },
+      "traces48": 1,
+      "projects": [
+        {
+          "path_hint": "other",
+          "sessions_all": 1
+        }
+      ],
+      "event_days": [],
+      "event_types": [],
+      "sources": [],
+      "exact_duplicate_excess": 0,
+      "event_total": 0,
+      "trace_dimensions": {
+        "trigger_type": [
+          {
+            "value": "user_prompt",
+            "n": 1
+          }
+        ],
+        "presentation_mode": [
+          {
+            "value": "reference",
+            "n": 1
+          }
+        ],
+        "delivery_client": [
+          {
+            "value": "claude-hook",
+            "n": 1
+          }
+        ],
+        "outcome_reason": [
+          {
+            "value": "runtime_error",
+            "n": 1
+          }
+        ]
+      },
+      "trace_counts": {
+        "candidates": 0,
+        "selected": 0,
+        "empty": 1
+      },
+      "selection": {
+        "unique_events": 0,
+        "occurrences": 0,
+        "top5_occurrences": 0,
+        "age_at_window_end": {},
+        "sources": {}
+      },
+      "memory_helpfulness": 0,
+      "memory_lessons": 0,
+      "consolidated_memories": 0,
+      "helpfulness": {
+        "n": 0,
+        "measured": null,
+        "avg_score": null
+      },
+      "usefulness_v2": [],
+      "embedding_status_all": []
+    },
+    {
+      "store": "store-174",
+      "events48": {
+        "n": 0,
+        "sessions": 0,
+        "chars": 0
+      },
+      "traces48": 1,
+      "projects": [
+        {
+          "path_hint": "other",
+          "sessions_all": 1
+        }
+      ],
+      "event_days": [],
+      "event_types": [],
+      "sources": [],
+      "exact_duplicate_excess": 0,
+      "event_total": 0,
+      "trace_dimensions": {
+        "trigger_type": [
+          {
+            "value": "user_prompt",
+            "n": 1
+          }
+        ],
+        "presentation_mode": [
+          {
+            "value": "reference",
+            "n": 1
+          }
+        ],
+        "delivery_client": [
+          {
+            "value": "claude-hook",
+            "n": 1
+          }
+        ],
+        "outcome_reason": [
+          {
+            "value": "runtime_error",
+            "n": 1
+          }
+        ]
+      },
+      "trace_counts": {
+        "candidates": 0,
+        "selected": 0,
+        "empty": 1
+      },
+      "selection": {
+        "unique_events": 0,
+        "occurrences": 0,
+        "top5_occurrences": 0,
+        "age_at_window_end": {},
+        "sources": {}
+      },
+      "memory_helpfulness": 0,
+      "memory_lessons": 0,
+      "consolidated_memories": 0,
+      "helpfulness": {
+        "n": 0,
+        "measured": null,
+        "avg_score": null
+      },
+      "usefulness_v2": [],
+      "embedding_status_all": []
+    },
+    {
+      "store": "store-178",
+      "events48": {
+        "n": 1,
+        "sessions": 1,
+        "chars": 17
+      },
+      "traces48": 1,
+      "projects": [
+        {
+          "path_hint": "test-looking",
+          "sessions_all": 1
+        }
+      ],
+      "event_days": [
+        {
+          "period": "previous24",
+          "n": 1
+        }
+      ],
+      "event_types": [
+        {
+          "event_type": "user_prompt",
+          "n": 1
+        }
+      ],
+      "sources": [
+        {
+          "source": "native_or_unknown",
+          "n": 1
+        }
+      ],
+      "exact_duplicate_excess": 0,
+      "event_total": 1,
+      "trace_dimensions": {
+        "trigger_type": [
+          {
+            "value": "user_prompt",
+            "n": 1
+          }
+        ],
+        "presentation_mode": [
+          {
+            "value": "evidence",
+            "n": 1
+          }
+        ],
+        "delivery_client": [
+          {
+            "value": "claude-hook",
+            "n": 1
+          }
+        ],
+        "outcome_reason": [
+          {
+            "value": "runtime_error",
+            "n": 1
+          }
+        ]
+      },
+      "trace_counts": {
+        "candidates": 0,
+        "selected": 0,
+        "empty": 1
+      },
+      "selection": {
+        "unique_events": 0,
+        "occurrences": 0,
+        "top5_occurrences": 0,
+        "age_at_window_end": {},
+        "sources": {}
+      },
+      "memory_helpfulness": 0,
+      "memory_lessons": 0,
+      "consolidated_memories": 0,
+      "helpfulness": {
+        "n": 0,
+        "measured": null,
+        "avg_score": null
+      },
+      "usefulness_v2": [],
+      "embedding_status_all": []
+    },
+    {
+      "store": "store-182",
+      "events48": {
+        "n": 1,
+        "sessions": 1,
+        "chars": 573
+      },
+      "traces48": 1,
+      "projects": [
+        {
+          "path_hint": "other",
+          "sessions_all": 1
+        }
+      ],
+      "event_days": [
+        {
+          "period": "previous24",
+          "n": 1
+        }
+      ],
+      "event_types": [
+        {
+          "event_type": "user_prompt",
+          "n": 1
+        }
+      ],
+      "sources": [
+        {
+          "source": "native_or_unknown",
+          "n": 1
+        }
+      ],
+      "exact_duplicate_excess": 0,
+      "event_total": 1,
+      "trace_dimensions": {
+        "trigger_type": [
+          {
+            "value": "user_prompt",
+            "n": 1
+          }
+        ],
+        "presentation_mode": [
+          {
+            "value": "evidence",
+            "n": 1
+          }
+        ],
+        "delivery_client": [
+          {
+            "value": "claude-hook",
+            "n": 1
+          }
+        ],
+        "outcome_reason": [
+          {
+            "value": "runtime_error",
+            "n": 1
+          }
+        ]
+      },
+      "trace_counts": {
+        "candidates": 0,
+        "selected": 0,
+        "empty": 1
+      },
+      "selection": {
+        "unique_events": 0,
+        "occurrences": 0,
+        "top5_occurrences": 0,
+        "age_at_window_end": {},
+        "sources": {}
+      },
+      "memory_helpfulness": 0,
+      "memory_lessons": 0,
+      "consolidated_memories": 0,
+      "helpfulness": {
+        "n": 0,
+        "measured": null,
+        "avg_score": null
+      },
+      "usefulness_v2": [],
+      "embedding_status_all": []
+    },
+    {
+      "store": "global",
+      "events48": {
+        "n": 2,
+        "sessions": 2,
+        "chars": 224
+      },
+      "traces48": 2,
+      "projects": [
+        {
+          "path_hint": "unknown",
+          "sessions_all": 5
+        },
+        {
+          "path_hint": "other",
+          "sessions_all": 2
+        },
+        {
+          "path_hint": "other",
+          "sessions_all": 1
+        }
+      ],
+      "event_days": [
+        {
+          "period": "last24",
+          "n": 2
+        }
+      ],
+      "event_types": [
+        {
+          "event_type": "user_prompt",
+          "n": 2
+        }
+      ],
+      "sources": [
+        {
+          "source": "native_or_unknown",
+          "n": 2
+        }
+      ],
+      "exact_duplicate_excess": 1,
+      "event_total": 42,
+      "trace_dimensions": {
+        "trigger_type": [
+          {
+            "value": "user_prompt",
+            "n": 2
+          }
+        ],
+        "presentation_mode": [
+          {
+            "value": "evidence",
+            "n": 2
+          }
+        ],
+        "delivery_client": [
+          {
+            "value": "claude-hook",
+            "n": 2
+          }
+        ],
+        "outcome_reason": [
+          {
+            "value": "runtime_error",
+            "n": 2
+          }
+        ]
+      },
+      "trace_counts": {
+        "candidates": 10,
+        "selected": 0,
+        "empty": 2
+      },
+      "selection": {
+        "unique_events": 0,
+        "occurrences": 0,
+        "top5_occurrences": 0,
+        "age_at_window_end": {},
+        "sources": {}
+      },
+      "memory_helpfulness": 0,
+      "memory_lessons": 0,
+      "consolidated_memories": 0,
+      "helpfulness": {
+        "n": 0,
+        "measured": null,
+        "avg_score": null
+      },
+      "usefulness_v2": [],
+      "embedding_status_all": []
+    }
+  ],
+  "inactive": 161
+}
