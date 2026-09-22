@@ -1,0 +1,21 @@
+{
+  "fixture": "/Users/justin/workspace/aplus-dev-studio-desktop/.aplus/worktrees/mqze6311dopi/witty-whale-avza/specs/lesson-learning-reliability/recall-evaluation.json",
+  "cacheDir": "/Users/justin/workspace/aplus-dev-studio-desktop/.aplus/worktrees/mqze6311dopi/witty-whale-avza/.aplus/checkouts/claude-memory-layer/.cache/lesson-hybrid-e5",
+  "remoteModels": false,
+  "status": "ready",
+  "lexical": {
+    "recallAt1": 0.6,
+    "precisionAt1": 1,
+    "negativeFalseInjection": 0,
+    "identifierRetention": 1,
+    "p95Ms": 0.11116599999999721
+  },
+  "hybrid": {
+    "recallAt1": 0.7,
+    "precisionAt1": 1,
+    "negativeFalseInjection": 0,
+    "identifierRetention": 1,
+    "p95Ms": 3.0357909999999038
+  },
+  "note": "Common-function evaluation; e5-prefix-v2 gate is frozen from calibration only and not tuned here."
+}

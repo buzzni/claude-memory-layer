@@ -1,0 +1,20 @@
+{
+  "purpose": "Calibration only; held-out recall-evaluation.json must not tune gates.",
+  "lessons": [
+    { "lessonId": "rollback", "name": "Safe rollback", "trigger": "When a deployment must be reverted", "steps": ["Stop rollout", "restore prior release"], "failureModes": [] },
+    { "lessonId": "schema", "name": "Schema migration", "trigger": "When changing persistent schema", "steps": ["Write additive migration", "verify rollback"], "failureModes": [] },
+    { "lessonId": "privacy", "name": "Redact credentials", "trigger": "When logging sensitive output", "steps": ["Filter credential values"], "failureModes": [] }
+  ],
+  "cases": [
+    { "id": "c-rollback-en", "query": "undo the last release safely", "expected": ["rollback"], "kind": "relevant" },
+    { "id": "c-schema-en", "query": "change database columns without breaking old data", "expected": ["schema"], "kind": "relevant" },
+    { "id": "c-privacy-en", "query": "remove API credentials from logs", "expected": ["privacy"], "kind": "relevant" },
+    { "id": "c-rollback-ko", "query": "배포를 안전하게 이전 버전으로 되돌리는 방법", "expected": ["rollback"], "kind": "relevant" },
+    { "id": "c-schema-ko", "query": "기존 데이터를 유지하면서 DB 구조를 바꾸는 절차", "expected": ["schema"], "kind": "relevant" },
+    { "id": "c-privacy-ko", "query": "로그에서 인증 정보를 가리는 방법", "expected": ["privacy"], "kind": "relevant" },
+    { "id": "c-unrelated", "query": "schedule a team lunch", "expected": [], "kind": "irrelevant" },
+    { "id": "c-unrelated-ko", "query": "회의실 점심 메뉴를 예약해줘", "expected": [], "kind": "irrelevant" },
+    { "id": "c-opposite-rollback", "query": "continue rolling out the new release and do not revert", "expected": [], "kind": "condition-opposite" },
+    { "id": "c-opposite-schema", "query": "delete old data and skip migration compatibility", "expected": [], "kind": "condition-opposite" }
+  ]
+}

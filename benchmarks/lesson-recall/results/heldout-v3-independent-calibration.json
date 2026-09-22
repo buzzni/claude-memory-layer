@@ -1,0 +1,21 @@
+{
+  "fixture": "/Users/justin/workspace/aplus-dev-studio-desktop/.aplus/worktrees/mqze6311dopi/witty-whale-avza/specs/lesson-learning-reliability/recall-evaluation.json",
+  "cacheDir": "/Users/justin/workspace/aplus-dev-studio-desktop/.aplus/worktrees/mqze6311dopi/witty-whale-avza/.aplus/checkouts/claude-memory-layer/.cache/lesson-hybrid-e5",
+  "remoteModels": false,
+  "status": "ready",
+  "lexical": {
+    "recallAt3": 0.6,
+    "precisionAt3": 1,
+    "negativeFalseInjection": 0,
+    "identifierRetention": 1,
+    "p95Ms": 0.1877500000000225
+  },
+  "hybrid": {
+    "recallAt3": 0.6833333333333333,
+    "precisionAt3": 1,
+    "negativeFalseInjection": 0,
+    "identifierRetention": 1,
+    "p95Ms": 42.7979170000001
+  },
+  "note": "Common-function evaluation; Gate is frozen from independent calibration-v3 only and not tuned here."
+}

@@ -1,0 +1,2567 @@
+{
+  "outcome": "raw_cosine_retrieval_measured",
+  "calibratedGate": {
+    "absoluteCosine": 0.829,
+    "top1Margin": 0.026,
+    "hits": 53,
+    "falseInjection": 0,
+    "precision": 1,
+    "identifierRetention": 1,
+    "recallAt3": 0.8833333333333333,
+    "negativeFalseInjection": 0,
+    "fixtureSha256": "e98f3c05833b88b90e1220b21547e3975396c5a49ac7da8ef72145b4d80e1a45",
+    "rule": "Fixed grid: cosine .700-.950 step .001; margin .000-.100 step .001; precision>=.90, negative<=.05, identifier retention=1; maximize recall then safety then stricter thresholds."
+  },
+  "model": "Xenova/multilingual-e5-small",
+  "modelDownloadedForDiagnostic": false,
+  "cacheDir": "/Users/justin/workspace/aplus-dev-studio-desktop/.aplus/worktrees/mqze6311dopi/witty-whale-avza/.aplus/checkouts/claude-memory-layer/.cache/lesson-hybrid-e5",
+  "embedderInputContract": {
+    "query": "query: prefix",
+    "document": "passage: prefix",
+    "pooling": "mean",
+    "normalize": true,
+    "truncation": true,
+    "maxLength": 512
+  },
+  "modelDirectory": "/Users/justin/workspace/aplus-dev-studio-desktop/.aplus/worktrees/mqze6311dopi/witty-whale-avza/.aplus/checkouts/claude-memory-layer/.cache/lesson-hybrid-e5/Xenova/multilingual-e5-small",
+  "modelArtifactSha256": "a89c5cc413885d7c2af5906da0f77f30d2ce4ef4bb11751fc7e22d652373ec4d",
+  "modelRevision": null,
+  "modelRevisionSource": "not recorded by the Embedder default download contract",
+  "positives": 60,
+  "negatives": 40,
+  "cosineRecallAt3": 1,
+  "cosinePrecisionAt3": 0.2,
+  "cosineNegativeFalseInjection": 1,
+  "frozenSemanticRescueGate": {
+    "enabled": false,
+    "absoluteCosine": 0.826,
+    "top1Margin": 0.029
+  },
+  "gatedRecallAt1": 0.8333333333333334,
+  "gatedNegativeFalseInjection": 0,
+  "gated": [
+    {
+      "id": "r01-i",
+      "selected": [
+        "cal-csv-locale-quoting"
+      ]
+    },
+    {
+      "id": "r01-k",
+      "selected": []
+    },
+    {
+      "id": "r01-e",
+      "selected": [
+        "cal-csv-locale-quoting"
+      ]
+    },
+    {
+      "id": "r02-i",
+      "selected": [
+        "cal-queue-visibility"
+      ]
+    },
+    {
+      "id": "r02-k",
+      "selected": []
+    },
+    {
+      "id": "r02-e",
+      "selected": [
+        "cal-queue-visibility"
+      ]
+    },
+    {
+      "id": "r03-i",
+      "selected": [
+        "cal-clock-skew"
+      ]
+    },
+    {
+      "id": "r03-k",
+      "selected": [
+        "cal-clock-skew"
+      ]
+    },
+    {
+      "id": "r03-e",
+      "selected": []
+    },
+    {
+      "id": "r04-i",
+      "selected": [
+        "cal-symlink-boundary"
+      ]
+    },
+    {
+      "id": "r04-k",
+      "selected": [
+        "cal-symlink-boundary"
+      ]
+    },
+    {
+      "id": "r04-e",
+      "selected": [
+        "cal-symlink-boundary"
+      ]
+    },
+    {
+      "id": "r05-i",
+      "selected": [
+        "cal-unicode-normalization"
+      ]
+    },
+    {
+      "id": "r05-k",
+      "selected": [
+        "cal-unicode-normalization"
+      ]
+    },
+    {
+      "id": "r05-e",
+      "selected": []
+    },
+    {
+      "id": "r06-i",
+      "selected": [
+        "cal-http-caching"
+      ]
+    },
+    {
+      "id": "r06-k",
+      "selected": [
+        "cal-http-caching"
+      ]
+    },
+    {
+      "id": "r06-e",
+      "selected": []
+    },
+    {
+      "id": "r07-i",
+      "selected": [
+        "cal-retry-jitter"
+      ]
+    },
+    {
+      "id": "r07-k",
+      "selected": [
+        "cal-retry-jitter"
+      ]
+    },
+    {
+      "id": "r07-e",
+      "selected": [
+        "cal-retry-jitter"
+      ]
+    },
+    {
+      "id": "r08-i",
+      "selected": [
+        "cal-multipart-upload"
+      ]
+    },
+    {
+      "id": "r08-k",
+      "selected": [
+        "cal-multipart-upload"
+      ]
+    },
+    {
+      "id": "r08-e",
+      "selected": [
+        "cal-multipart-upload"
+      ]
+    },
+    {
+      "id": "r09-i",
+      "selected": [
+        "cal-append-log-rotation"
+      ]
+    },
+    {
+      "id": "r09-k",
+      "selected": [
+        "cal-append-log-rotation"
+      ]
+    },
+    {
+      "id": "r09-e",
+      "selected": []
+    },
+    {
+      "id": "r10-i",
+      "selected": [
+        "cal-immutable-assets"
+      ]
+    },
+    {
+      "id": "r10-k",
+      "selected": [
+        "cal-immutable-assets"
+      ]
+    },
+    {
+      "id": "r10-e",
+      "selected": [
+        "cal-immutable-assets"
+      ]
+    },
+    {
+      "id": "r11-i",
+      "selected": [
+        "cal-timezone-calendar"
+      ]
+    },
+    {
+      "id": "r11-k",
+      "selected": []
+    },
+    {
+      "id": "r11-e",
+      "selected": [
+        "cal-timezone-calendar"
+      ]
+    },
+    {
+      "id": "r12-i",
+      "selected": [
+        "cal-path-case"
+      ]
+    },
+    {
+      "id": "r12-k",
+      "selected": [
+        "cal-path-case"
+      ]
+    },
+    {
+      "id": "r12-e",
+      "selected": [
+        "cal-path-case"
+      ]
+    },
+    {
+      "id": "r13-i",
+      "selected": [
+        "cal-pagination-cursor"
+      ]
+    },
+    {
+      "id": "r13-k",
+      "selected": [
+        "cal-pagination-cursor"
+      ]
+    },
+    {
+      "id": "r13-e",
+      "selected": [
+        "cal-pagination-cursor"
+      ]
+    },
+    {
+      "id": "r14-i",
+      "selected": [
+        "cal-socket-framing"
+      ]
+    },
+    {
+      "id": "r14-k",
+      "selected": []
+    },
+    {
+      "id": "r14-e",
+      "selected": [
+        "cal-socket-framing"
+      ]
+    },
+    {
+      "id": "r15-i",
+      "selected": [
+        "cal-newline-encoding"
+      ]
+    },
+    {
+      "id": "r15-k",
+      "selected": [
+        "cal-newline-encoding"
+      ]
+    },
+    {
+      "id": "r15-e",
+      "selected": [
+        "cal-newline-encoding"
+      ]
+    },
+    {
+      "id": "r16-i",
+      "selected": [
+        "cal-transaction-snapshot"
+      ]
+    },
+    {
+      "id": "r16-k",
+      "selected": [
+        "cal-transaction-snapshot"
+      ]
+    },
+    {
+      "id": "r16-e",
+      "selected": [
+        "cal-transaction-snapshot"
+      ]
+    },
+    {
+      "id": "r17-i",
+      "selected": [
+        "cal-batch-ack"
+      ]
+    },
+    {
+      "id": "r17-k",
+      "selected": [
+        "cal-batch-ack"
+      ]
+    },
+    {
+      "id": "r17-e",
+      "selected": [
+        "cal-batch-ack"
+      ]
+    },
+    {
+      "id": "r18-i",
+      "selected": [
+        "cal-compression-negotiation"
+      ]
+    },
+    {
+      "id": "r18-k",
+      "selected": [
+        "cal-compression-negotiation"
+      ]
+    },
+    {
+      "id": "r18-e",
+      "selected": [
+        "cal-compression-negotiation"
+      ]
+    },
+    {
+      "id": "r19-i",
+      "selected": [
+        "cal-graceful-draining"
+      ]
+    },
+    {
+      "id": "r19-k",
+      "selected": [
+        "cal-graceful-draining"
+      ]
+    },
+    {
+      "id": "r19-e",
+      "selected": [
+        "cal-graceful-draining"
+      ]
+    },
+    {
+      "id": "r20-i",
+      "selected": []
+    },
+    {
+      "id": "r20-k",
+      "selected": []
+    },
+    {
+      "id": "r20-e",
+      "selected": [
+        "cal-upload-mime"
+      ]
+    },
+    {
+      "id": "n01",
+      "selected": []
+    },
+    {
+      "id": "n02",
+      "selected": []
+    },
+    {
+      "id": "n03",
+      "selected": []
+    },
+    {
+      "id": "n04",
+      "selected": []
+    },
+    {
+      "id": "n05",
+      "selected": []
+    },
+    {
+      "id": "n06",
+      "selected": []
+    },
+    {
+      "id": "n07",
+      "selected": []
+    },
+    {
+      "id": "n08",
+      "selected": []
+    },
+    {
+      "id": "n09",
+      "selected": []
+    },
+    {
+      "id": "n10",
+      "selected": []
+    },
+    {
+      "id": "n11",
+      "selected": []
+    },
+    {
+      "id": "n12",
+      "selected": []
+    },
+    {
+      "id": "n13",
+      "selected": []
+    },
+    {
+      "id": "n14",
+      "selected": []
+    },
+    {
+      "id": "n15",
+      "selected": []
+    },
+    {
+      "id": "n16",
+      "selected": []
+    },
+    {
+      "id": "n17",
+      "selected": []
+    },
+    {
+      "id": "n18",
+      "selected": []
+    },
+    {
+      "id": "n19",
+      "selected": []
+    },
+    {
+      "id": "n20",
+      "selected": []
+    },
+    {
+      "id": "n21",
+      "selected": []
+    },
+    {
+      "id": "n22",
+      "selected": []
+    },
+    {
+      "id": "n23",
+      "selected": []
+    },
+    {
+      "id": "n24",
+      "selected": []
+    },
+    {
+      "id": "n25",
+      "selected": []
+    },
+    {
+      "id": "n26",
+      "selected": []
+    },
+    {
+      "id": "n27",
+      "selected": []
+    },
+    {
+      "id": "n28",
+      "selected": []
+    },
+    {
+      "id": "n29",
+      "selected": []
+    },
+    {
+      "id": "n30",
+      "selected": []
+    },
+    {
+      "id": "n31",
+      "selected": []
+    },
+    {
+      "id": "n32",
+      "selected": []
+    },
+    {
+      "id": "n33",
+      "selected": []
+    },
+    {
+      "id": "n34",
+      "selected": []
+    },
+    {
+      "id": "n35",
+      "selected": []
+    },
+    {
+      "id": "n36",
+      "selected": []
+    },
+    {
+      "id": "n37",
+      "selected": []
+    },
+    {
+      "id": "n38",
+      "selected": []
+    },
+    {
+      "id": "n39",
+      "selected": []
+    },
+    {
+      "id": "n40",
+      "selected": []
+    }
+  ],
+  "rankings": [
+    {
+      "id": "r01-i",
+      "kind": "identifier",
+      "expected": [
+        "cal-csv-locale-quoting"
+      ],
+      "actual": [
+        {
+          "lessonId": "cal-csv-locale-quoting",
+          "score": 0.9149725301036472
+        },
+        {
+          "lessonId": "cal-path-case",
+          "score": 0.7954062141393249
+        },
+        {
+          "lessonId": "cal-clock-skew",
+          "score": 0.7876031647346169
+        }
+      ]
+    },
+    {
+      "id": "r01-k",
+      "kind": "ko-paraphrase",
+      "expected": [
+        "cal-csv-locale-quoting"
+      ],
+      "actual": [
+        {
+          "lessonId": "cal-csv-locale-quoting",
+          "score": 0.8088180987027876
+        },
+        {
+          "lessonId": "cal-symlink-boundary",
+          "score": 0.7989459223731836
+        },
+        {
+          "lessonId": "cal-path-case",
+          "score": 0.7989306556212727
+        }
+      ]
+    },
+    {
+      "id": "r01-e",
+      "kind": "en-paraphrase",
+      "expected": [
+        "cal-csv-locale-quoting"
+      ],
+      "actual": [
+        {
+          "lessonId": "cal-csv-locale-quoting",
+          "score": 0.9062359347609963
+        },
+        {
+          "lessonId": "cal-path-case",
+          "score": 0.8151652167130071
+        },
+        {
+          "lessonId": "cal-clock-skew",
+          "score": 0.7967486778918588
+        }
+      ]
+    },
+    {
+      "id": "r02-i",
+      "kind": "identifier",
+      "expected": [
+        "cal-queue-visibility"
+      ],
+      "actual": [
+        {
+          "lessonId": "cal-queue-visibility",
+          "score": 0.9133059333432498
+        },
+        {
+          "lessonId": "cal-multipart-upload",
+          "score": 0.8125336485298891
+        },
+        {
+          "lessonId": "cal-graceful-draining",
+          "score": 0.805530387821922
+        }
+      ]
+    },
+    {
+      "id": "r02-k",
+      "kind": "ko-paraphrase",
+      "expected": [
+        "cal-queue-visibility"
+      ],
+      "actual": [
+        {
+          "lessonId": "cal-queue-visibility",
+          "score": 0.8094110538845404
+        },
+        {
+          "lessonId": "cal-graceful-draining",
+          "score": 0.7970360602649085
+        },
+        {
+          "lessonId": "cal-path-case",
+          "score": 0.7966062958041891
+        }
+      ]
+    },
+    {
+      "id": "r02-e",
+      "kind": "en-paraphrase",
+      "expected": [
+        "cal-queue-visibility"
+      ],
+      "actual": [
+        {
+          "lessonId": "cal-queue-visibility",
+          "score": 0.8515845509844938
+        },
+        {
+          "lessonId": "cal-retry-jitter",
+          "score": 0.8086556096033606
+        },
+        {
+          "lessonId": "cal-multipart-upload",
+          "score": 0.7982092778085411
+        }
+      ]
+    },
+    {
+      "id": "r03-i",
+      "kind": "identifier",
+      "expected": [
+        "cal-clock-skew"
+      ],
+      "actual": [
+        {
+          "lessonId": "cal-clock-skew",
+          "score": 0.9129770363072751
+        },
+        {
+          "lessonId": "cal-http-caching",
+          "score": 0.8145025413947239
+        },
+        {
+          "lessonId": "cal-upload-mime",
+          "score": 0.7981285671440739
+        }
+      ]
+    },
+    {
+      "id": "r03-k",
+      "kind": "ko-paraphrase",
+      "expected": [
+        "cal-clock-skew"
+      ],
+      "actual": [
+        {
+          "lessonId": "cal-clock-skew",
+          "score": 0.8297531858945156
+        },
+        {
+          "lessonId": "cal-timezone-calendar",
+          "score": 0.7909069471545032
+        },
+        {
+          "lessonId": "cal-graceful-draining",
+          "score": 0.7820542978016749
+        }
+      ]
+    },
+    {
+      "id": "r03-e",
+      "kind": "en-paraphrase",
+      "expected": [
+        "cal-clock-skew"
+      ],
+      "actual": [
+        {
+          "lessonId": "cal-clock-skew",
+          "score": 0.8485668589130771
+        },
+        {
+          "lessonId": "cal-queue-visibility",
+          "score": 0.818657762461665
+        },
+        {
+          "lessonId": "cal-retry-jitter",
+          "score": 0.8025214519987783
+        }
+      ]
+    },
+    {
+      "id": "r04-i",
+      "kind": "identifier",
+      "expected": [
+        "cal-symlink-boundary"
+      ],
+      "actual": [
+        {
+          "lessonId": "cal-symlink-boundary",
+          "score": 0.9029912037881382
+        },
+        {
+          "lessonId": "cal-retry-jitter",
+          "score": 0.8037239260884627
+        },
+        {
+          "lessonId": "cal-path-case",
+          "score": 0.8031530977422612
+        }
+      ]
+    },
+    {
+      "id": "r04-k",
+      "kind": "ko-paraphrase",
+      "expected": [
+        "cal-symlink-boundary"
+      ],
+      "actual": [
+        {
+          "lessonId": "cal-symlink-boundary",
+          "score": 0.8641504158737606
+        },
+        {
+          "lessonId": "cal-path-case",
+          "score": 0.8250275806538734
+        },
+        {
+          "lessonId": "cal-csv-locale-quoting",
+          "score": 0.7939406391761464
+        }
+      ]
+    },
+    {
+      "id": "r04-e",
+      "kind": "en-paraphrase",
+      "expected": [
+        "cal-symlink-boundary"
+      ],
+      "actual": [
+        {
+          "lessonId": "cal-symlink-boundary",
+          "score": 0.8682552853845497
+        },
+        {
+          "lessonId": "cal-path-case",
+          "score": 0.8126973967995512
+        },
+        {
+          "lessonId": "cal-graceful-draining",
+          "score": 0.7951069305267005
+        }
+      ]
+    },
+    {
+      "id": "r05-i",
+      "kind": "identifier",
+      "expected": [
+        "cal-unicode-normalization"
+      ],
+      "actual": [
+        {
+          "lessonId": "cal-unicode-normalization",
+          "score": 0.902402541569362
+        },
+        {
+          "lessonId": "cal-newline-encoding",
+          "score": 0.8260475911872633
+        },
+        {
+          "lessonId": "cal-pagination-cursor",
+          "score": 0.805351716278169
+        }
+      ]
+    },
+    {
+      "id": "r05-k",
+      "kind": "ko-paraphrase",
+      "expected": [
+        "cal-unicode-normalization"
+      ],
+      "actual": [
+        {
+          "lessonId": "cal-unicode-normalization",
+          "score": 0.8302146834137143
+        },
+        {
+          "lessonId": "cal-symlink-boundary",
+          "score": 0.7966391827519839
+        },
+        {
+          "lessonId": "cal-path-case",
+          "score": 0.7964257212762391
+        }
+      ]
+    },
+    {
+      "id": "r05-e",
+      "kind": "en-paraphrase",
+      "expected": [
+        "cal-unicode-normalization"
+      ],
+      "actual": [
+        {
+          "lessonId": "cal-unicode-normalization",
+          "score": 0.8996399985575787
+        },
+        {
+          "lessonId": "cal-newline-encoding",
+          "score": 0.8169728175880956
+        },
+        {
+          "lessonId": "cal-pagination-cursor",
+          "score": 0.8096420177526916
+        }
+      ]
+    },
+    {
+      "id": "r06-i",
+      "kind": "identifier",
+      "expected": [
+        "cal-http-caching"
+      ],
+      "actual": [
+        {
+          "lessonId": "cal-http-caching",
+          "score": 0.8858742031381817
+        },
+        {
+          "lessonId": "cal-upload-mime",
+          "score": 0.8354102700279489
+        },
+        {
+          "lessonId": "cal-clock-skew",
+          "score": 0.8186459247034854
+        }
+      ]
+    },
+    {
+      "id": "r06-k",
+      "kind": "ko-paraphrase",
+      "expected": [
+        "cal-http-caching"
+      ],
+      "actual": [
+        {
+          "lessonId": "cal-http-caching",
+          "score": 0.8633179661385092
+        },
+        {
+          "lessonId": "cal-path-case",
+          "score": 0.8113904733249168
+        },
+        {
+          "lessonId": "cal-pagination-cursor",
+          "score": 0.8102184579020879
+        }
+      ]
+    },
+    {
+      "id": "r06-e",
+      "kind": "en-paraphrase",
+      "expected": [
+        "cal-http-caching"
+      ],
+      "actual": [
+        {
+          "lessonId": "cal-http-caching",
+          "score": 0.838608823326124
+        },
+        {
+          "lessonId": "cal-batch-ack",
+          "score": 0.8116688242459107
+        },
+        {
+          "lessonId": "cal-clock-skew",
+          "score": 0.8006997430272649
+        }
+      ]
+    },
+    {
+      "id": "r07-i",
+      "kind": "identifier",
+      "expected": [
+        "cal-retry-jitter"
+      ],
+      "actual": [
+        {
+          "lessonId": "cal-retry-jitter",
+          "score": 0.9164014877260007
+        },
+        {
+          "lessonId": "cal-multipart-upload",
+          "score": 0.8218892658662935
+        },
+        {
+          "lessonId": "cal-symlink-boundary",
+          "score": 0.8084530053070955
+        }
+      ]
+    },
+    {
+      "id": "r07-k",
+      "kind": "ko-paraphrase",
+      "expected": [
+        "cal-retry-jitter"
+      ],
+      "actual": [
+        {
+          "lessonId": "cal-retry-jitter",
+          "score": 0.8468984402300757
+        },
+        {
+          "lessonId": "cal-batch-ack",
+          "score": 0.7925546624648144
+        },
+        {
+          "lessonId": "cal-graceful-draining",
+          "score": 0.790204828141485
+        }
+      ]
+    },
+    {
+      "id": "r07-e",
+      "kind": "en-paraphrase",
+      "expected": [
+        "cal-retry-jitter"
+      ],
+      "actual": [
+        {
+          "lessonId": "cal-retry-jitter",
+          "score": 0.8606668109254296
+        },
+        {
+          "lessonId": "cal-multipart-upload",
+          "score": 0.8167265035575983
+        },
+        {
+          "lessonId": "cal-graceful-draining",
+          "score": 0.7918153385015916
+        }
+      ]
+    },
+    {
+      "id": "r08-i",
+      "kind": "identifier",
+      "expected": [
+        "cal-multipart-upload"
+      ],
+      "actual": [
+        {
+          "lessonId": "cal-multipart-upload",
+          "score": 0.9023924001639987
+        },
+        {
+          "lessonId": "cal-upload-mime",
+          "score": 0.8123212892134388
+        },
+        {
+          "lessonId": "cal-batch-ack",
+          "score": 0.7977800188347282
+        }
+      ]
+    },
+    {
+      "id": "r08-k",
+      "kind": "ko-paraphrase",
+      "expected": [
+        "cal-multipart-upload"
+      ],
+      "actual": [
+        {
+          "lessonId": "cal-multipart-upload",
+          "score": 0.8819932049614932
+        },
+        {
+          "lessonId": "cal-batch-ack",
+          "score": 0.8144854117456919
+        },
+        {
+          "lessonId": "cal-clock-skew",
+          "score": 0.7976844739175315
+        }
+      ]
+    },
+    {
+      "id": "r08-e",
+      "kind": "en-paraphrase",
+      "expected": [
+        "cal-multipart-upload"
+      ],
+      "actual": [
+        {
+          "lessonId": "cal-multipart-upload",
+          "score": 0.8796438698840324
+        },
+        {
+          "lessonId": "cal-retry-jitter",
+          "score": 0.8262296989417919
+        },
+        {
+          "lessonId": "cal-batch-ack",
+          "score": 0.8037491352442594
+        }
+      ]
+    },
+    {
+      "id": "r09-i",
+      "kind": "identifier",
+      "expected": [
+        "cal-append-log-rotation"
+      ],
+      "actual": [
+        {
+          "lessonId": "cal-append-log-rotation",
+          "score": 0.904209551664226
+        },
+        {
+          "lessonId": "cal-multipart-upload",
+          "score": 0.8071789622224593
+        },
+        {
+          "lessonId": "cal-symlink-boundary",
+          "score": 0.7915719991260315
+        }
+      ]
+    },
+    {
+      "id": "r09-k",
+      "kind": "ko-paraphrase",
+      "expected": [
+        "cal-append-log-rotation"
+      ],
+      "actual": [
+        {
+          "lessonId": "cal-append-log-rotation",
+          "score": 0.8745261104777804
+        },
+        {
+          "lessonId": "cal-pagination-cursor",
+          "score": 0.8151980207704836
+        },
+        {
+          "lessonId": "cal-symlink-boundary",
+          "score": 0.8082122613683297
+        }
+      ]
+    },
+    {
+      "id": "r09-e",
+      "kind": "en-paraphrase",
+      "expected": [
+        "cal-append-log-rotation"
+      ],
+      "actual": [
+        {
+          "lessonId": "cal-append-log-rotation",
+          "score": 0.8565363385211557
+        },
+        {
+          "lessonId": "cal-path-case",
+          "score": 0.792463111052445
+        },
+        {
+          "lessonId": "cal-retry-jitter",
+          "score": 0.7819899632509446
+        }
+      ]
+    },
+    {
+      "id": "r10-i",
+      "kind": "identifier",
+      "expected": [
+        "cal-immutable-assets"
+      ],
+      "actual": [
+        {
+          "lessonId": "cal-immutable-assets",
+          "score": 0.9083331514354313
+        },
+        {
+          "lessonId": "cal-upload-mime",
+          "score": 0.7980523061570728
+        },
+        {
+          "lessonId": "cal-path-case",
+          "score": 0.7937982448325483
+        }
+      ]
+    },
+    {
+      "id": "r10-k",
+      "kind": "ko-paraphrase",
+      "expected": [
+        "cal-immutable-assets"
+      ],
+      "actual": [
+        {
+          "lessonId": "cal-immutable-assets",
+          "score": 0.8735460583306212
+        },
+        {
+          "lessonId": "cal-symlink-boundary",
+          "score": 0.7978793580469065
+        },
+        {
+          "lessonId": "cal-path-case",
+          "score": 0.7965096417729933
+        }
+      ]
+    },
+    {
+      "id": "r10-e",
+      "kind": "en-paraphrase",
+      "expected": [
+        "cal-immutable-assets"
+      ],
+      "actual": [
+        {
+          "lessonId": "cal-immutable-assets",
+          "score": 0.8847025394925683
+        },
+        {
+          "lessonId": "cal-path-case",
+          "score": 0.8014515613306077
+        },
+        {
+          "lessonId": "cal-symlink-boundary",
+          "score": 0.7913131408380766
+        }
+      ]
+    },
+    {
+      "id": "r11-i",
+      "kind": "identifier",
+      "expected": [
+        "cal-timezone-calendar"
+      ],
+      "actual": [
+        {
+          "lessonId": "cal-timezone-calendar",
+          "score": 0.9172274470940027
+        },
+        {
+          "lessonId": "cal-append-log-rotation",
+          "score": 0.7946513148441924
+        },
+        {
+          "lessonId": "cal-clock-skew",
+          "score": 0.7918918226596139
+        }
+      ]
+    },
+    {
+      "id": "r11-k",
+      "kind": "ko-paraphrase",
+      "expected": [
+        "cal-timezone-calendar"
+      ],
+      "actual": [
+        {
+          "lessonId": "cal-timezone-calendar",
+          "score": 0.862893096493664
+        },
+        {
+          "lessonId": "cal-clock-skew",
+          "score": 0.7901782230881035
+        },
+        {
+          "lessonId": "cal-csv-locale-quoting",
+          "score": 0.7713998951174513
+        }
+      ]
+    },
+    {
+      "id": "r11-e",
+      "kind": "en-paraphrase",
+      "expected": [
+        "cal-timezone-calendar"
+      ],
+      "actual": [
+        {
+          "lessonId": "cal-timezone-calendar",
+          "score": 0.8458977126516859
+        },
+        {
+          "lessonId": "cal-clock-skew",
+          "score": 0.8139741028835707
+        },
+        {
+          "lessonId": "cal-csv-locale-quoting",
+          "score": 0.8014971984537662
+        }
+      ]
+    },
+    {
+      "id": "r12-i",
+      "kind": "identifier",
+      "expected": [
+        "cal-path-case"
+      ],
+      "actual": [
+        {
+          "lessonId": "cal-path-case",
+          "score": 0.9001589824775116
+        },
+        {
+          "lessonId": "cal-immutable-assets",
+          "score": 0.8008808546013026
+        },
+        {
+          "lessonId": "cal-symlink-boundary",
+          "score": 0.7996560522662203
+        }
+      ]
+    },
+    {
+      "id": "r12-k",
+      "kind": "ko-paraphrase",
+      "expected": [
+        "cal-path-case"
+      ],
+      "actual": [
+        {
+          "lessonId": "cal-path-case",
+          "score": 0.8430782030091366
+        },
+        {
+          "lessonId": "cal-csv-locale-quoting",
+          "score": 0.7988945022930501
+        },
+        {
+          "lessonId": "cal-symlink-boundary",
+          "score": 0.7971980311017816
+        }
+      ]
+    },
+    {
+      "id": "r12-e",
+      "kind": "en-paraphrase",
+      "expected": [
+        "cal-path-case"
+      ],
+      "actual": [
+        {
+          "lessonId": "cal-path-case",
+          "score": 0.9030504642309254
+        },
+        {
+          "lessonId": "cal-symlink-boundary",
+          "score": 0.8180497588068838
+        },
+        {
+          "lessonId": "cal-csv-locale-quoting",
+          "score": 0.8080979837099332
+        }
+      ]
+    },
+    {
+      "id": "r13-i",
+      "kind": "identifier",
+      "expected": [
+        "cal-pagination-cursor"
+      ],
+      "actual": [
+        {
+          "lessonId": "cal-pagination-cursor",
+          "score": 0.8921181909296636
+        },
+        {
+          "lessonId": "cal-compression-negotiation",
+          "score": 0.8121188453553955
+        },
+        {
+          "lessonId": "cal-symlink-boundary",
+          "score": 0.804094396581361
+        }
+      ]
+    },
+    {
+      "id": "r13-k",
+      "kind": "ko-paraphrase",
+      "expected": [
+        "cal-pagination-cursor"
+      ],
+      "actual": [
+        {
+          "lessonId": "cal-pagination-cursor",
+          "score": 0.8694218965794296
+        },
+        {
+          "lessonId": "cal-unicode-normalization",
+          "score": 0.7983219622123856
+        },
+        {
+          "lessonId": "cal-http-caching",
+          "score": 0.7929220172024999
+        }
+      ]
+    },
+    {
+      "id": "r13-e",
+      "kind": "en-paraphrase",
+      "expected": [
+        "cal-pagination-cursor"
+      ],
+      "actual": [
+        {
+          "lessonId": "cal-pagination-cursor",
+          "score": 0.867883975606224
+        },
+        {
+          "lessonId": "cal-symlink-boundary",
+          "score": 0.8051981120049757
+        },
+        {
+          "lessonId": "cal-clock-skew",
+          "score": 0.7989910055033422
+        }
+      ]
+    },
+    {
+      "id": "r14-i",
+      "kind": "identifier",
+      "expected": [
+        "cal-socket-framing"
+      ],
+      "actual": [
+        {
+          "lessonId": "cal-socket-framing",
+          "score": 0.899576809419164
+        },
+        {
+          "lessonId": "cal-compression-negotiation",
+          "score": 0.7863481316243522
+        },
+        {
+          "lessonId": "cal-symlink-boundary",
+          "score": 0.7860385091586721
+        }
+      ]
+    },
+    {
+      "id": "r14-k",
+      "kind": "ko-paraphrase",
+      "expected": [
+        "cal-socket-framing"
+      ],
+      "actual": [
+        {
+          "lessonId": "cal-socket-framing",
+          "score": 0.8913863874005122
+        },
+        {
+          "lessonId": "cal-transaction-snapshot",
+          "score": 0.8248980053479804
+        },
+        {
+          "lessonId": "cal-newline-encoding",
+          "score": 0.8059531652303846
+        }
+      ]
+    },
+    {
+      "id": "r14-e",
+      "kind": "en-paraphrase",
+      "expected": [
+        "cal-socket-framing"
+      ],
+      "actual": [
+        {
+          "lessonId": "cal-socket-framing",
+          "score": 0.8629474145905849
+        },
+        {
+          "lessonId": "cal-multipart-upload",
+          "score": 0.8119798046223887
+        },
+        {
+          "lessonId": "cal-transaction-snapshot",
+          "score": 0.7995151971457344
+        }
+      ]
+    },
+    {
+      "id": "r15-i",
+      "kind": "identifier",
+      "expected": [
+        "cal-newline-encoding"
+      ],
+      "actual": [
+        {
+          "lessonId": "cal-newline-encoding",
+          "score": 0.9201072622801252
+        },
+        {
+          "lessonId": "cal-unicode-normalization",
+          "score": 0.8234135370476173
+        },
+        {
+          "lessonId": "cal-compression-negotiation",
+          "score": 0.817005326917354
+        }
+      ]
+    },
+    {
+      "id": "r15-k",
+      "kind": "ko-paraphrase",
+      "expected": [
+        "cal-newline-encoding"
+      ],
+      "actual": [
+        {
+          "lessonId": "cal-newline-encoding",
+          "score": 0.8909434758220277
+        },
+        {
+          "lessonId": "cal-pagination-cursor",
+          "score": 0.8191072687108831
+        },
+        {
+          "lessonId": "cal-symlink-boundary",
+          "score": 0.8141185734676671
+        }
+      ]
+    },
+    {
+      "id": "r15-e",
+      "kind": "en-paraphrase",
+      "expected": [
+        "cal-newline-encoding"
+      ],
+      "actual": [
+        {
+          "lessonId": "cal-newline-encoding",
+          "score": 0.8814410387444749
+        },
+        {
+          "lessonId": "cal-csv-locale-quoting",
+          "score": 0.8258043711228377
+        },
+        {
+          "lessonId": "cal-path-case",
+          "score": 0.8162887595137345
+        }
+      ]
+    },
+    {
+      "id": "r16-i",
+      "kind": "identifier",
+      "expected": [
+        "cal-transaction-snapshot"
+      ],
+      "actual": [
+        {
+          "lessonId": "cal-transaction-snapshot",
+          "score": 0.9235895884875833
+        },
+        {
+          "lessonId": "cal-http-caching",
+          "score": 0.8118963271586458
+        },
+        {
+          "lessonId": "cal-batch-ack",
+          "score": 0.8115396295914725
+        }
+      ]
+    },
+    {
+      "id": "r16-k",
+      "kind": "ko-paraphrase",
+      "expected": [
+        "cal-transaction-snapshot"
+      ],
+      "actual": [
+        {
+          "lessonId": "cal-transaction-snapshot",
+          "score": 0.8509689662065328
+        },
+        {
+          "lessonId": "cal-pagination-cursor",
+          "score": 0.8036206784689643
+        },
+        {
+          "lessonId": "cal-path-case",
+          "score": 0.7935832928638651
+        }
+      ]
+    },
+    {
+      "id": "r16-e",
+      "kind": "en-paraphrase",
+      "expected": [
+        "cal-transaction-snapshot"
+      ],
+      "actual": [
+        {
+          "lessonId": "cal-transaction-snapshot",
+          "score": 0.903860474155968
+        },
+        {
+          "lessonId": "cal-batch-ack",
+          "score": 0.7995928656821789
+        },
+        {
+          "lessonId": "cal-http-caching",
+          "score": 0.7982470519033904
+        }
+      ]
+    },
+    {
+      "id": "r17-i",
+      "kind": "identifier",
+      "expected": [
+        "cal-batch-ack"
+      ],
+      "actual": [
+        {
+          "lessonId": "cal-batch-ack",
+          "score": 0.9201087626114115
+        },
+        {
+          "lessonId": "cal-multipart-upload",
+          "score": 0.7912254933110261
+        },
+        {
+          "lessonId": "cal-http-caching",
+          "score": 0.7887421501458243
+        }
+      ]
+    },
+    {
+      "id": "r17-k",
+      "kind": "ko-paraphrase",
+      "expected": [
+        "cal-batch-ack"
+      ],
+      "actual": [
+        {
+          "lessonId": "cal-batch-ack",
+          "score": 0.8649239248137913
+        },
+        {
+          "lessonId": "cal-retry-jitter",
+          "score": 0.8238327470229312
+        },
+        {
+          "lessonId": "cal-multipart-upload",
+          "score": 0.8171620064189181
+        }
+      ]
+    },
+    {
+      "id": "r17-e",
+      "kind": "en-paraphrase",
+      "expected": [
+        "cal-batch-ack"
+      ],
+      "actual": [
+        {
+          "lessonId": "cal-batch-ack",
+          "score": 0.8896176389888513
+        },
+        {
+          "lessonId": "cal-transaction-snapshot",
+          "score": 0.8019817088172925
+        },
+        {
+          "lessonId": "cal-multipart-upload",
+          "score": 0.7958571531655523
+        }
+      ]
+    },
+    {
+      "id": "r18-i",
+      "kind": "identifier",
+      "expected": [
+        "cal-compression-negotiation"
+      ],
+      "actual": [
+        {
+          "lessonId": "cal-compression-negotiation",
+          "score": 0.8835436505238509
+        },
+        {
+          "lessonId": "cal-newline-encoding",
+          "score": 0.809080962301426
+        },
+        {
+          "lessonId": "cal-pagination-cursor",
+          "score": 0.8087119084814502
+        }
+      ]
+    },
+    {
+      "id": "r18-k",
+      "kind": "ko-paraphrase",
+      "expected": [
+        "cal-compression-negotiation"
+      ],
+      "actual": [
+        {
+          "lessonId": "cal-compression-negotiation",
+          "score": 0.8742450738699703
+        },
+        {
+          "lessonId": "cal-newline-encoding",
+          "score": 0.8161675854348702
+        },
+        {
+          "lessonId": "cal-pagination-cursor",
+          "score": 0.8150647521384906
+        }
+      ]
+    },
+    {
+      "id": "r18-e",
+      "kind": "en-paraphrase",
+      "expected": [
+        "cal-compression-negotiation"
+      ],
+      "actual": [
+        {
+          "lessonId": "cal-compression-negotiation",
+          "score": 0.8553190128195981
+        },
+        {
+          "lessonId": "cal-pagination-cursor",
+          "score": 0.7998979970266068
+        },
+        {
+          "lessonId": "cal-http-caching",
+          "score": 0.7983437280376623
+        }
+      ]
+    },
+    {
+      "id": "r19-i",
+      "kind": "identifier",
+      "expected": [
+        "cal-graceful-draining"
+      ],
+      "actual": [
+        {
+          "lessonId": "cal-graceful-draining",
+          "score": 0.8954718390091637
+        },
+        {
+          "lessonId": "cal-multipart-upload",
+          "score": 0.8086296791594223
+        },
+        {
+          "lessonId": "cal-retry-jitter",
+          "score": 0.8016040293903113
+        }
+      ]
+    },
+    {
+      "id": "r19-k",
+      "kind": "ko-paraphrase",
+      "expected": [
+        "cal-graceful-draining"
+      ],
+      "actual": [
+        {
+          "lessonId": "cal-graceful-draining",
+          "score": 0.8358109401522695
+        },
+        {
+          "lessonId": "cal-retry-jitter",
+          "score": 0.7969386331968507
+        },
+        {
+          "lessonId": "cal-symlink-boundary",
+          "score": 0.7905952062458623
+        }
+      ]
+    },
+    {
+      "id": "r19-e",
+      "kind": "en-paraphrase",
+      "expected": [
+        "cal-graceful-draining"
+      ],
+      "actual": [
+        {
+          "lessonId": "cal-graceful-draining",
+          "score": 0.8906245090584121
+        },
+        {
+          "lessonId": "cal-clock-skew",
+          "score": 0.7972151381237471
+        },
+        {
+          "lessonId": "cal-retry-jitter",
+          "score": 0.7909985324137949
+        }
+      ]
+    },
+    {
+      "id": "r20-i",
+      "kind": "identifier",
+      "expected": [
+        "cal-upload-mime"
+      ],
+      "actual": [
+        {
+          "lessonId": "cal-upload-mime",
+          "score": 0.9227353770880384
+        },
+        {
+          "lessonId": "cal-multipart-upload",
+          "score": 0.8223885678773855
+        },
+        {
+          "lessonId": "cal-immutable-assets",
+          "score": 0.80647810204704
+        }
+      ]
+    },
+    {
+      "id": "r20-k",
+      "kind": "ko-paraphrase",
+      "expected": [
+        "cal-upload-mime"
+      ],
+      "actual": [
+        {
+          "lessonId": "cal-upload-mime",
+          "score": 0.8730417492021099
+        },
+        {
+          "lessonId": "cal-http-caching",
+          "score": 0.8213438785347694
+        },
+        {
+          "lessonId": "cal-path-case",
+          "score": 0.8105086268114938
+        }
+      ]
+    },
+    {
+      "id": "r20-e",
+      "kind": "en-paraphrase",
+      "expected": [
+        "cal-upload-mime"
+      ],
+      "actual": [
+        {
+          "lessonId": "cal-upload-mime",
+          "score": 0.8738836181017675
+        },
+        {
+          "lessonId": "cal-multipart-upload",
+          "score": 0.8184236099967732
+        },
+        {
+          "lessonId": "cal-path-case",
+          "score": 0.807479817708785
+        }
+      ]
+    },
+    {
+      "id": "n01",
+      "kind": "irrelevant",
+      "expected": [],
+      "actual": [
+        {
+          "lessonId": "cal-symlink-boundary",
+          "score": 0.768002216458983
+        },
+        {
+          "lessonId": "cal-batch-ack",
+          "score": 0.7645609646099317
+        },
+        {
+          "lessonId": "cal-pagination-cursor",
+          "score": 0.7596667820903641
+        }
+      ]
+    },
+    {
+      "id": "n02",
+      "kind": "irrelevant",
+      "expected": [],
+      "actual": [
+        {
+          "lessonId": "cal-batch-ack",
+          "score": 0.8136366838499948
+        },
+        {
+          "lessonId": "cal-path-case",
+          "score": 0.7976256453802113
+        },
+        {
+          "lessonId": "cal-transaction-snapshot",
+          "score": 0.7914666079900369
+        }
+      ]
+    },
+    {
+      "id": "n03",
+      "kind": "irrelevant",
+      "expected": [],
+      "actual": [
+        {
+          "lessonId": "cal-upload-mime",
+          "score": 0.7874421193178291
+        },
+        {
+          "lessonId": "cal-path-case",
+          "score": 0.7863394369245122
+        },
+        {
+          "lessonId": "cal-csv-locale-quoting",
+          "score": 0.783793247585972
+        }
+      ]
+    },
+    {
+      "id": "n04",
+      "kind": "irrelevant",
+      "expected": [],
+      "actual": [
+        {
+          "lessonId": "cal-http-caching",
+          "score": 0.8167598461466611
+        },
+        {
+          "lessonId": "cal-pagination-cursor",
+          "score": 0.8034654341485074
+        },
+        {
+          "lessonId": "cal-compression-negotiation",
+          "score": 0.800671572455377
+        }
+      ]
+    },
+    {
+      "id": "n05",
+      "kind": "irrelevant",
+      "expected": [],
+      "actual": [
+        {
+          "lessonId": "cal-path-case",
+          "score": 0.7934390533623996
+        },
+        {
+          "lessonId": "cal-csv-locale-quoting",
+          "score": 0.7887500212868449
+        },
+        {
+          "lessonId": "cal-unicode-normalization",
+          "score": 0.7857331117081967
+        }
+      ]
+    },
+    {
+      "id": "n06",
+      "kind": "irrelevant",
+      "expected": [],
+      "actual": [
+        {
+          "lessonId": "cal-path-case",
+          "score": 0.7707262518631579
+        },
+        {
+          "lessonId": "cal-transaction-snapshot",
+          "score": 0.7643328488266026
+        },
+        {
+          "lessonId": "cal-symlink-boundary",
+          "score": 0.7605142931307578
+        }
+      ]
+    },
+    {
+      "id": "n07",
+      "kind": "irrelevant",
+      "expected": [],
+      "actual": [
+        {
+          "lessonId": "cal-symlink-boundary",
+          "score": 0.793836163929238
+        },
+        {
+          "lessonId": "cal-batch-ack",
+          "score": 0.7918897223345756
+        },
+        {
+          "lessonId": "cal-immutable-assets",
+          "score": 0.7849450309792503
+        }
+      ]
+    },
+    {
+      "id": "n08",
+      "kind": "irrelevant",
+      "expected": [],
+      "actual": [
+        {
+          "lessonId": "cal-symlink-boundary",
+          "score": 0.8060923527269259
+        },
+        {
+          "lessonId": "cal-socket-framing",
+          "score": 0.7996393125706613
+        },
+        {
+          "lessonId": "cal-path-case",
+          "score": 0.7962747048382814
+        }
+      ]
+    },
+    {
+      "id": "n09",
+      "kind": "irrelevant",
+      "expected": [],
+      "actual": [
+        {
+          "lessonId": "cal-timezone-calendar",
+          "score": 0.7944243496854011
+        },
+        {
+          "lessonId": "cal-pagination-cursor",
+          "score": 0.7793844836557012
+        },
+        {
+          "lessonId": "cal-clock-skew",
+          "score": 0.7786985372923962
+        }
+      ]
+    },
+    {
+      "id": "n10",
+      "kind": "irrelevant",
+      "expected": [],
+      "actual": [
+        {
+          "lessonId": "cal-newline-encoding",
+          "score": 0.8323050092970703
+        },
+        {
+          "lessonId": "cal-path-case",
+          "score": 0.8099681900086444
+        },
+        {
+          "lessonId": "cal-http-caching",
+          "score": 0.7995991378749494
+        }
+      ]
+    },
+    {
+      "id": "n11",
+      "kind": "irrelevant",
+      "expected": [],
+      "actual": [
+        {
+          "lessonId": "cal-compression-negotiation",
+          "score": 0.7959703521881566
+        },
+        {
+          "lessonId": "cal-batch-ack",
+          "score": 0.7919770633946572
+        },
+        {
+          "lessonId": "cal-http-caching",
+          "score": 0.7892716224771418
+        }
+      ]
+    },
+    {
+      "id": "n12",
+      "kind": "irrelevant",
+      "expected": [],
+      "actual": [
+        {
+          "lessonId": "cal-path-case",
+          "score": 0.8081553584109165
+        },
+        {
+          "lessonId": "cal-symlink-boundary",
+          "score": 0.8041146538114003
+        },
+        {
+          "lessonId": "cal-multipart-upload",
+          "score": 0.8030120452160079
+        }
+      ]
+    },
+    {
+      "id": "n13",
+      "kind": "irrelevant",
+      "expected": [],
+      "actual": [
+        {
+          "lessonId": "cal-socket-framing",
+          "score": 0.7740458601341504
+        },
+        {
+          "lessonId": "cal-retry-jitter",
+          "score": 0.7725933814910514
+        },
+        {
+          "lessonId": "cal-unicode-normalization",
+          "score": 0.7720791973856899
+        }
+      ]
+    },
+    {
+      "id": "n14",
+      "kind": "irrelevant",
+      "expected": [],
+      "actual": [
+        {
+          "lessonId": "cal-unicode-normalization",
+          "score": 0.7775790679699233
+        },
+        {
+          "lessonId": "cal-pagination-cursor",
+          "score": 0.7745360068837809
+        },
+        {
+          "lessonId": "cal-timezone-calendar",
+          "score": 0.7738481870250519
+        }
+      ]
+    },
+    {
+      "id": "n15",
+      "kind": "irrelevant",
+      "expected": [],
+      "actual": [
+        {
+          "lessonId": "cal-upload-mime",
+          "score": 0.7808597175289412
+        },
+        {
+          "lessonId": "cal-batch-ack",
+          "score": 0.7720912746078004
+        },
+        {
+          "lessonId": "cal-http-caching",
+          "score": 0.7606919774497662
+        }
+      ]
+    },
+    {
+      "id": "n16",
+      "kind": "irrelevant",
+      "expected": [],
+      "actual": [
+        {
+          "lessonId": "cal-newline-encoding",
+          "score": 0.7749130817204419
+        },
+        {
+          "lessonId": "cal-unicode-normalization",
+          "score": 0.7733626462421687
+        },
+        {
+          "lessonId": "cal-append-log-rotation",
+          "score": 0.7729845813770886
+        }
+      ]
+    },
+    {
+      "id": "n17",
+      "kind": "irrelevant",
+      "expected": [],
+      "actual": [
+        {
+          "lessonId": "cal-transaction-snapshot",
+          "score": 0.7926576077882508
+        },
+        {
+          "lessonId": "cal-path-case",
+          "score": 0.7885014068786871
+        },
+        {
+          "lessonId": "cal-http-caching",
+          "score": 0.7870348368754817
+        }
+      ]
+    },
+    {
+      "id": "n18",
+      "kind": "irrelevant",
+      "expected": [],
+      "actual": [
+        {
+          "lessonId": "cal-pagination-cursor",
+          "score": 0.800782377432742
+        },
+        {
+          "lessonId": "cal-csv-locale-quoting",
+          "score": 0.800639523106422
+        },
+        {
+          "lessonId": "cal-newline-encoding",
+          "score": 0.7996108362552691
+        }
+      ]
+    },
+    {
+      "id": "n19",
+      "kind": "irrelevant",
+      "expected": [],
+      "actual": [
+        {
+          "lessonId": "cal-batch-ack",
+          "score": 0.8048180140104757
+        },
+        {
+          "lessonId": "cal-unicode-normalization",
+          "score": 0.8037300452703643
+        },
+        {
+          "lessonId": "cal-pagination-cursor",
+          "score": 0.8001783451261386
+        }
+      ]
+    },
+    {
+      "id": "n20",
+      "kind": "irrelevant",
+      "expected": [],
+      "actual": [
+        {
+          "lessonId": "cal-transaction-snapshot",
+          "score": 0.7590582074408896
+        },
+        {
+          "lessonId": "cal-timezone-calendar",
+          "score": 0.7581205740347194
+        },
+        {
+          "lessonId": "cal-multipart-upload",
+          "score": 0.7562280922335477
+        }
+      ]
+    },
+    {
+      "id": "n21",
+      "kind": "condition-opposite",
+      "expected": [],
+      "actual": [
+        {
+          "lessonId": "cal-csv-locale-quoting",
+          "score": 0.8858974348084369
+        },
+        {
+          "lessonId": "cal-path-case",
+          "score": 0.8065534687122253
+        },
+        {
+          "lessonId": "cal-http-caching",
+          "score": 0.8048294379029886
+        }
+      ]
+    },
+    {
+      "id": "n22",
+      "kind": "condition-opposite",
+      "expected": [],
+      "actual": [
+        {
+          "lessonId": "cal-queue-visibility",
+          "score": 0.873510359260454
+        },
+        {
+          "lessonId": "cal-transaction-snapshot",
+          "score": 0.8260973994676892
+        },
+        {
+          "lessonId": "cal-path-case",
+          "score": 0.819687313584575
+        }
+      ]
+    },
+    {
+      "id": "n23",
+      "kind": "condition-opposite",
+      "expected": [],
+      "actual": [
+        {
+          "lessonId": "cal-clock-skew",
+          "score": 0.8826128748584501
+        },
+        {
+          "lessonId": "cal-timezone-calendar",
+          "score": 0.8117762573247068
+        },
+        {
+          "lessonId": "cal-append-log-rotation",
+          "score": 0.8051264098177608
+        }
+      ]
+    },
+    {
+      "id": "n24",
+      "kind": "condition-opposite",
+      "expected": [],
+      "actual": [
+        {
+          "lessonId": "cal-symlink-boundary",
+          "score": 0.8962768334872522
+        },
+        {
+          "lessonId": "cal-path-case",
+          "score": 0.8143380622392978
+        },
+        {
+          "lessonId": "cal-upload-mime",
+          "score": 0.8122485166455005
+        }
+      ]
+    },
+    {
+      "id": "n25",
+      "kind": "condition-opposite",
+      "expected": [],
+      "actual": [
+        {
+          "lessonId": "cal-unicode-normalization",
+          "score": 0.8428019480772562
+        },
+        {
+          "lessonId": "cal-pagination-cursor",
+          "score": 0.8122402826874695
+        },
+        {
+          "lessonId": "cal-newline-encoding",
+          "score": 0.8089056086060318
+        }
+      ]
+    },
+    {
+      "id": "n26",
+      "kind": "condition-opposite",
+      "expected": [],
+      "actual": [
+        {
+          "lessonId": "cal-http-caching",
+          "score": 0.877707211020825
+        },
+        {
+          "lessonId": "cal-upload-mime",
+          "score": 0.8267222916081223
+        },
+        {
+          "lessonId": "cal-multipart-upload",
+          "score": 0.8188671427569036
+        }
+      ]
+    },
+    {
+      "id": "n27",
+      "kind": "condition-opposite",
+      "expected": [],
+      "actual": [
+        {
+          "lessonId": "cal-retry-jitter",
+          "score": 0.847912027832006
+        },
+        {
+          "lessonId": "cal-batch-ack",
+          "score": 0.8103570596948756
+        },
+        {
+          "lessonId": "cal-clock-skew",
+          "score": 0.810006703165248
+        }
+      ]
+    },
+    {
+      "id": "n28",
+      "kind": "condition-opposite",
+      "expected": [],
+      "actual": [
+        {
+          "lessonId": "cal-multipart-upload",
+          "score": 0.8675300612608248
+        },
+        {
+          "lessonId": "cal-upload-mime",
+          "score": 0.8276212901937287
+        },
+        {
+          "lessonId": "cal-path-case",
+          "score": 0.7988716229216373
+        }
+      ]
+    },
+    {
+      "id": "n29",
+      "kind": "condition-opposite",
+      "expected": [],
+      "actual": [
+        {
+          "lessonId": "cal-append-log-rotation",
+          "score": 0.8374795595283357
+        },
+        {
+          "lessonId": "cal-immutable-assets",
+          "score": 0.8315754103821758
+        },
+        {
+          "lessonId": "cal-multipart-upload",
+          "score": 0.8101616729887977
+        }
+      ]
+    },
+    {
+      "id": "n30",
+      "kind": "condition-opposite",
+      "expected": [],
+      "actual": [
+        {
+          "lessonId": "cal-immutable-assets",
+          "score": 0.8888415561723366
+        },
+        {
+          "lessonId": "cal-upload-mime",
+          "score": 0.8173913376893265
+        },
+        {
+          "lessonId": "cal-transaction-snapshot",
+          "score": 0.8109289082216098
+        }
+      ]
+    },
+    {
+      "id": "n31",
+      "kind": "condition-opposite",
+      "expected": [],
+      "actual": [
+        {
+          "lessonId": "cal-timezone-calendar",
+          "score": 0.8458746212489123
+        },
+        {
+          "lessonId": "cal-clock-skew",
+          "score": 0.7860710278068672
+        },
+        {
+          "lessonId": "cal-graceful-draining",
+          "score": 0.7851405600747093
+        }
+      ]
+    },
+    {
+      "id": "n32",
+      "kind": "condition-opposite",
+      "expected": [],
+      "actual": [
+        {
+          "lessonId": "cal-path-case",
+          "score": 0.8856031017247277
+        },
+        {
+          "lessonId": "cal-http-caching",
+          "score": 0.8278040267422655
+        },
+        {
+          "lessonId": "cal-symlink-boundary",
+          "score": 0.8148748143504707
+        }
+      ]
+    },
+    {
+      "id": "n33",
+      "kind": "condition-opposite",
+      "expected": [],
+      "actual": [
+        {
+          "lessonId": "cal-pagination-cursor",
+          "score": 0.8418810415446962
+        },
+        {
+          "lessonId": "cal-transaction-snapshot",
+          "score": 0.8021585364872331
+        },
+        {
+          "lessonId": "cal-append-log-rotation",
+          "score": 0.7975358874057403
+        }
+      ]
+    },
+    {
+      "id": "n34",
+      "kind": "condition-opposite",
+      "expected": [],
+      "actual": [
+        {
+          "lessonId": "cal-socket-framing",
+          "score": 0.8400829736969916
+        },
+        {
+          "lessonId": "cal-transaction-snapshot",
+          "score": 0.7975949688470785
+        },
+        {
+          "lessonId": "cal-path-case",
+          "score": 0.7968239514246971
+        }
+      ]
+    },
+    {
+      "id": "n35",
+      "kind": "condition-opposite",
+      "expected": [],
+      "actual": [
+        {
+          "lessonId": "cal-newline-encoding",
+          "score": 0.8641358640927593
+        },
+        {
+          "lessonId": "cal-immutable-assets",
+          "score": 0.8077439271276188
+        },
+        {
+          "lessonId": "cal-symlink-boundary",
+          "score": 0.8064274495529028
+        }
+      ]
+    },
+    {
+      "id": "n36",
+      "kind": "condition-opposite",
+      "expected": [],
+      "actual": [
+        {
+          "lessonId": "cal-transaction-snapshot",
+          "score": 0.8867424291874081
+        },
+        {
+          "lessonId": "cal-http-caching",
+          "score": 0.828743021644648
+        },
+        {
+          "lessonId": "cal-immutable-assets",
+          "score": 0.8157961674968719
+        }
+      ]
+    },
+    {
+      "id": "n37",
+      "kind": "condition-opposite",
+      "expected": [],
+      "actual": [
+        {
+          "lessonId": "cal-batch-ack",
+          "score": 0.8280636815256699
+        },
+        {
+          "lessonId": "cal-compression-negotiation",
+          "score": 0.7886103564772577
+        },
+        {
+          "lessonId": "cal-socket-framing",
+          "score": 0.7883948029991943
+        }
+      ]
+    },
+    {
+      "id": "n38",
+      "kind": "condition-opposite",
+      "expected": [],
+      "actual": [
+        {
+          "lessonId": "cal-compression-negotiation",
+          "score": 0.8795420572734812
+        },
+        {
+          "lessonId": "cal-pagination-cursor",
+          "score": 0.8272050359801943
+        },
+        {
+          "lessonId": "cal-http-caching",
+          "score": 0.8270483399648216
+        }
+      ]
+    },
+    {
+      "id": "n39",
+      "kind": "condition-opposite",
+      "expected": [],
+      "actual": [
+        {
+          "lessonId": "cal-graceful-draining",
+          "score": 0.8516611366048743
+        },
+        {
+          "lessonId": "cal-symlink-boundary",
+          "score": 0.7923365195325457
+        },
+        {
+          "lessonId": "cal-retry-jitter",
+          "score": 0.7851912626950904
+        }
+      ]
+    },
+    {
+      "id": "n40",
+      "kind": "condition-opposite",
+      "expected": [],
+      "actual": [
+        {
+          "lessonId": "cal-upload-mime",
+          "score": 0.8809035161644754
+        },
+        {
+          "lessonId": "cal-multipart-upload",
+          "score": 0.8235650898426792
+        },
+        {
+          "lessonId": "cal-newline-encoding",
+          "score": 0.8166896709892704
+        }
+      ]
+    }
+  ],
+  "failures": []
+}

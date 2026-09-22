@@ -898,9 +898,68 @@ export class SQLiteEventStore {
         source_class TEXT NOT NULL DEFAULT 'derived',
         access_count INTEGER NOT NULL DEFAULT 0,
         last_accessed_at TEXT,
+        revision INTEGER NOT NULL DEFAULT 1,
+        recall_enabled INTEGER NOT NULL DEFAULT 1,
+        scope TEXT,
+        validation_json TEXT NOT NULL DEFAULT '[]',
+        reconsider_when TEXT,
+        valid_versions_json TEXT NOT NULL DEFAULT '[]',
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         UNIQUE(project_hash, name)
+      );
+
+      -- Authenticated host review queue. Candidate payloads are held apart
+      -- from recallable lessons until an authenticated UI action accepts them.
+      CREATE TABLE IF NOT EXISTS lesson_review_candidates (
+        candidate_id TEXT PRIMARY KEY,
+        project_hash TEXT NOT NULL,
+        evidence_key TEXT NOT NULL,
+        payload_hash TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        evidence_refs_json TEXT NOT NULL,
+        duplicate_lesson_ids_json TEXT NOT NULL DEFAULT '[]',
+        status TEXT NOT NULL,
+        revision INTEGER NOT NULL DEFAULT 1,
+        generation INTEGER NOT NULL,
+        expires_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(project_hash, evidence_key)
+      );
+      CREATE INDEX IF NOT EXISTS idx_lesson_review_candidates_scope_status
+        ON lesson_review_candidates(project_hash, status, updated_at DESC);
+
+      -- Privacy-safe lifecycle trace: ids/outcomes only; never raw query,
+      -- lesson body, evidence, or provider input.
+      CREATE TABLE IF NOT EXISTS lesson_host_traces (
+        trace_id TEXT PRIMARY KEY,
+        project_hash TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        actor_id TEXT NOT NULL,
+        machine_id TEXT NOT NULL,
+        generation INTEGER NOT NULL,
+        turn_id TEXT,
+        request_id TEXT NOT NULL,
+        phase TEXT NOT NULL,
+        outcome TEXT NOT NULL,
+        lesson_ids_json TEXT NOT NULL,
+        lesson_revisions_json TEXT NOT NULL DEFAULT '[]',
+        query_text TEXT,
+        created_at TEXT NOT NULL
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_lesson_host_trace_request
+        ON lesson_host_traces(project_hash, actor_id, request_id, phase);
+
+      CREATE TABLE IF NOT EXISTS lesson_host_idempotency (
+        project_hash TEXT NOT NULL,
+        actor_id TEXT NOT NULL,
+        request_id TEXT NOT NULL,
+        operation TEXT NOT NULL,
+        fingerprint TEXT NOT NULL,
+        result_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY(project_hash, actor_id, request_id, operation)
       );
 
       -- Perspective Memory: privacy-safe actors/peers
@@ -1306,8 +1365,18 @@ export class SQLiteEventStore {
     // it here instead (specs R1).
     this.addColumnIfMissing('memory_lessons', 'access_count', 'INTEGER NOT NULL DEFAULT 0');
     this.addColumnIfMissing('memory_lessons', 'last_accessed_at', 'TEXT');
+    this.addColumnIfMissing('memory_lessons', 'revision', 'INTEGER NOT NULL DEFAULT 1');
+    this.addColumnIfMissing('memory_lessons', 'recall_enabled', 'INTEGER NOT NULL DEFAULT 1');
+    this.addColumnIfMissing('memory_lessons', 'scope', 'TEXT');
+    this.addColumnIfMissing('memory_lessons', 'validation_json', `TEXT NOT NULL DEFAULT '[]'`);
+    this.addColumnIfMissing('memory_lessons', 'reconsider_when', 'TEXT');
+    this.addColumnIfMissing('memory_lessons', 'valid_versions_json', `TEXT NOT NULL DEFAULT '[]'`);
+    this.addColumnIfMissing('lesson_host_traces', 'machine_id', `TEXT NOT NULL DEFAULT ''`);
+    this.addColumnIfMissing('lesson_host_traces', 'lesson_revisions_json', `TEXT NOT NULL DEFAULT '[]'`);
+    this.addColumnIfMissing('lesson_review_candidates', 'duplicate_lesson_ids_json', `TEXT NOT NULL DEFAULT '[]'`);
     try {
       sqliteExec(this.db, `CREATE INDEX IF NOT EXISTS idx_memory_lessons_project_source_class ON memory_lessons(project_hash, source_class, updated_at DESC);`);
+      sqliteExec(this.db, `CREATE INDEX IF NOT EXISTS idx_memory_lessons_project_recall ON memory_lessons(project_hash, recall_enabled, confidence DESC, updated_at DESC);`);
     } catch {
       // index/table may not exist in partial migrations
     }

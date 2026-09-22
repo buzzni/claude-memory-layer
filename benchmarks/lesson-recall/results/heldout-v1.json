@@ -1,0 +1,19 @@
+{
+  "fixture": "/Users/justin/workspace/aplus-dev-studio-desktop/.aplus/worktrees/mqze6311dopi/witty-whale-avza/specs/lesson-learning-reliability/recall-evaluation.json",
+  "status": "ready",
+  "lexical": {
+    "recallAt1": 0.6,
+    "precisionAt1": 1,
+    "negativeFalseInjection": 0,
+    "identifierRetention": 1,
+    "p95Ms": 0.7546669999999835
+  },
+  "hybrid": {
+    "recallAt1": 0.7666666666666667,
+    "precisionAt1": 1,
+    "negativeFalseInjection": 0,
+    "identifierRetention": 1,
+    "p95Ms": 12.712958999999955
+  },
+  "note": "Common-function held-out evaluation; gate frozen from calibration-v1 and not tuned here."
+}

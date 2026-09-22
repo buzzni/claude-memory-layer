@@ -1,0 +1,19 @@
+{
+  "fixture": "/Users/justin/workspace/aplus-dev-studio-desktop/.aplus/worktrees/mqze6311dopi/witty-whale-avza/.aplus/checkouts/claude-memory-layer/benchmarks/lesson-recall/calibration-v1.json",
+  "status": "ready",
+  "lexical": {
+    "recallAt1": 0,
+    "precisionAt1": 0,
+    "negativeFalseInjection": 0,
+    "identifierRetention": null,
+    "p95Ms": 0.36808399999998187
+  },
+  "hybrid": {
+    "recallAt1": 0.6666666666666666,
+    "precisionAt1": 1,
+    "negativeFalseInjection": 0,
+    "identifierRetention": null,
+    "p95Ms": 218.80500000000006
+  },
+  "note": "Common-function held-out evaluation; gate frozen from calibration-v1 and not tuned here."
+}

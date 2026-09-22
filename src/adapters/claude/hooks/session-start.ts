@@ -224,6 +224,7 @@ const SESSION_START_LESSON_BUDGET_DEFAULT = 2400;
 const SESSION_START_LESSON_TRIGGER_CHARS = 90;
 
 export function sessionStartLessonBudget(env: NodeJS.ProcessEnv = process.env): number {
+  if (env.CLAUDE_MEMORY_LESSON_OWNER === 'host') return 0;
   const raw = env.CLAUDE_MEMORY_SESSION_START_LESSON_BUDGET;
   if (raw === undefined || raw === '') return SESSION_START_LESSON_BUDGET_DEFAULT;
   const parsed = Number(raw);

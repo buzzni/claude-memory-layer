@@ -3,6 +3,7 @@ dist/
 .claude-memory/
 memory/
 .history/
+.cache/lesson-hybrid-e5/
 test_access.js
 .omc/
 graphify-out/

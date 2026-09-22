@@ -1,0 +1,19 @@
+{
+  "fixture": "/Users/justin/workspace/aplus-dev-studio-desktop/.aplus/worktrees/mqze6311dopi/witty-whale-avza/.aplus/checkouts/claude-memory-layer/benchmarks/lesson-recall/calibration-v1.json",
+  "status": "ready",
+  "lexical": {
+    "recallAt1": 0,
+    "precisionAt1": 0,
+    "negativeFalseInjection": 0,
+    "identifierRetention": null,
+    "p95Ms": 0.3250409999999988
+  },
+  "hybrid": {
+    "recallAt1": 0.8333333333333334,
+    "precisionAt1": 1,
+    "negativeFalseInjection": 0,
+    "identifierRetention": null,
+    "p95Ms": 5.376957999999945
+  },
+  "note": "Common-function evaluation; e5-prefix-v2 gate is frozen from calibration only and not tuned here."
+}

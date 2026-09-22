@@ -1,0 +1,1046 @@
+{
+  "lessons": [
+    {
+      "lessonId": "lesson-kafka-offset-rewind",
+      "name": "[KAFKA-OFFSET-REWIND-2026] Rewind a Kafka consumer group to a timestamp",
+      "trigger": "Use [KAFKA-OFFSET-REWIND-2026] when a Kafka consumer group must replay records from a verified timestamp without changing unrelated groups.",
+      "steps": [
+        "Pause the target consumer group and record its current offsets.",
+        "Confirm the topic, partition range, replay timestamp, and retention window.",
+        "Use kafka-consumer-groups to reset only the target group to the timestamp.",
+        "Resume the group and compare lag and processed record counts with the change window."
+      ],
+      "failureModes": [
+        "Resetting a production group before recording its offsets makes rollback difficult.",
+        "A timestamp older than retention resolves to no usable offset.",
+        "Resetting every group on the topic causes unrelated consumers to replay data."
+      ]
+    },
+    {
+      "lessonId": "lesson-postgres-lock-timeout",
+      "name": "[POSTGRES-LOCK-TIMEOUT-2026] Diagnose and safely clear a PostgreSQL lock timeout",
+      "trigger": "Use [POSTGRES-LOCK-TIMEOUT-2026] when a PostgreSQL transaction is blocked by a lock and the owning session must be identified before termination.",
+      "steps": [
+        "Capture the blocked PID, relation, wait event, and transaction age from pg_stat_activity and pg_locks.",
+        "Identify the blocking session and confirm it belongs to the intended application or migration.",
+        "Ask the owner to finish or cancel the transaction before using pg_cancel_backend.",
+        "Use pg_terminate_backend only after recording the impact and verifying the blocker is safe to stop."
+      ],
+      "failureModes": [
+        "Killing the blocked session instead of the blocker leaves the lock in place.",
+        "Terminating an unknown long transaction can roll back valuable work.",
+        "A retry storm can recreate the lock immediately after it is cleared."
+      ]
+    },
+    {
+      "lessonId": "lesson-redis-stream-claim",
+      "name": "[REDIS-STREAM-CLAIM-2026] Recover a Redis Stream message from an idle consumer",
+      "trigger": "Use [REDIS-STREAM-CLAIM-2026] when a Redis Stream consumer has left pending messages idle and another consumer must claim them safely.",
+      "steps": [
+        "Inspect XPENDING for the stream and consumer group to verify the idle age and delivery count.",
+        "Confirm the original consumer is unavailable and choose a minimum idle threshold.",
+        "Use XAUTOCLAIM or XCLAIM for the bounded message range and record the new owner.",
+        "Process the messages idempotently, then acknowledge only after durable completion."
+      ],
+      "failureModes": [
+        "Claiming active messages below the idle threshold creates duplicate processing.",
+        "Acknowledging before the side effect completes loses the message on a crash.",
+        "Ignoring delivery counts can hide a poison message loop."
+      ]
+    },
+    {
+      "lessonId": "lesson-s3-multipart-abort",
+      "name": "[S3-MULTIPART-ABORT-2026] Abort stale S3 multipart uploads",
+      "trigger": "Use [S3-MULTIPART-ABORT-2026] when incomplete S3 multipart uploads are consuming storage and must be removed without touching completed objects.",
+      "steps": [
+        "List multipart uploads and filter by bucket, prefix, owner, and initiation age.",
+        "Exclude uploads inside an active retention or recovery window.",
+        "Abort each approved upload and capture the upload ID and response.",
+        "Recheck incomplete-upload storage after the lifecycle interval."
+      ],
+      "failureModes": [
+        "Deleting objects instead of aborting uploads leaves multipart parts behind.",
+        "A broad prefix can remove an active upload owned by another workflow.",
+        "Skipping pagination leaves stale uploads undiscovered."
+      ]
+    },
+    {
+      "lessonId": "lesson-docker-image-digest-pin",
+      "name": "[DOCKER-IMAGE-DIGEST-PIN-2026] Pin a Docker deployment to an image digest",
+      "trigger": "Use [DOCKER-IMAGE-DIGEST-PIN-2026] when a Docker deployment must consume an immutable image digest instead of a mutable tag.",
+      "steps": [
+        "Resolve the approved tag to its registry digest and verify the platform manifest.",
+        "Record the digest, source commit, vulnerability result, and approval ticket.",
+        "Replace the deployment image reference with repository@sha256:digest.",
+        "Roll out one canary, verify the running image ID, and then complete the rollout."
+      ],
+      "failureModes": [
+        "Pinning a local image ID that is absent from the registry breaks new nodes.",
+        "Changing the tag without changing the digest leaves the old artifact deployed.",
+        "A multi-architecture tag can resolve to an unintended platform."
+      ]
+    },
+    {
+      "lessonId": "lesson-k8s-pod-rollback",
+      "name": "[K8S-POD-ROLLBACK-2026] Roll back a Kubernetes Deployment revision",
+      "trigger": "Use [K8S-POD-ROLLBACK-2026] when a Kubernetes Deployment revision causes a verified regression and the previous revision is known to be safe.",
+      "steps": [
+        "Inspect rollout history, ReplicaSet health, and the first failing event.",
+        "Confirm the previous revision image and configuration are still available.",
+        "Run kubectl rollout undo for the named Deployment and watch rollout status.",
+        "Verify readiness, error rate, and dependent service behavior before closing the incident."
+      ],
+      "failureModes": [
+        "Rolling back without identifying the bad revision can restore another broken version.",
+        "A stale ConfigMap can make the old image fail after rollback.",
+        "Declaring success before old pods terminate leaves mixed behavior."
+      ]
+    },
+    {
+      "lessonId": "lesson-terraform-state-recover",
+      "name": "[TERRAFORM-STATE-RECOVER-2026] Recover a Terraform state lock",
+      "trigger": "Use [TERRAFORM-STATE-RECOVER-2026] when Terraform reports a stale state lock after the owning run has stopped.",
+      "steps": [
+        "Check the CI run, state backend metadata, and lock owner before changing the lock.",
+        "Verify no Terraform process is still planning or applying the workspace.",
+        "Use the backend-specific force-unlock command with the exact lock ID.",
+        "Run a refresh-only plan and review drift before any apply."
+      ],
+      "failureModes": [
+        "Force-unlocking a live apply permits concurrent state writes.",
+        "Using a lock ID from another workspace can damage the wrong state.",
+        "Applying immediately after unlock can hide unreviewed drift."
+      ]
+    },
+    {
+      "lessonId": "lesson-nginx-upstream-drain",
+      "name": "[NGINX-UPSTREAM-DRAIN-2026] Drain one NGINX upstream before maintenance",
+      "trigger": "Use [NGINX-UPSTREAM-DRAIN-2026] when one NGINX upstream must stop receiving new requests while existing connections finish.",
+      "steps": [
+        "Confirm the upstream address and current request and connection counts.",
+        "Mark only the target server down or drain it through the service discovery control plane.",
+        "Reload NGINX with a syntax check and observe that new requests avoid the target.",
+        "Wait for the connection drain, perform maintenance, then restore and verify traffic."
+      ],
+      "failureModes": [
+        "Editing the wrong upstream can remove capacity from an unrelated service.",
+        "A hard stop drops long-lived WebSocket or upload connections.",
+        "Restoring the server before health checks pass reintroduces failures."
+      ]
+    },
+    {
+      "lessonId": "lesson-git-rebase-conflict",
+      "name": "[GIT-REBASE-CONFLICT-2026] Resolve a Git rebase conflict with a clean handoff",
+      "trigger": "Use [GIT-REBASE-CONFLICT-2026] when a topic branch must be rebased and conflicting files need review before the rewritten history is shared.",
+      "steps": [
+        "Fetch the target base and create a safety branch pointing at the current topic tip.",
+        "Start the rebase and inspect every conflict with surrounding tests and ownership context.",
+        "Stage only reviewed resolutions, continue the rebase, and run focused checks.",
+        "Force-push with lease only after communicating the rewritten commit range."
+      ],
+      "failureModes": [
+        "Using git add -A can stage unrelated generated files.",
+        "Resolving by choosing one side blindly can drop required behavior.",
+        "A plain force-push can overwrite a teammate's new commits."
+      ]
+    },
+    {
+      "lessonId": "lesson-jwt-key-rotation",
+      "name": "[JWT-KEY-ROTATION-2026] Rotate JWT signing keys with overlap",
+      "trigger": "Use [JWT-KEY-ROTATION-2026] when JWT signing keys must rotate while already-issued tokens remain valid during a controlled overlap.",
+      "steps": [
+        "Generate the new key in the approved key store and assign a new key ID.",
+        "Publish the new public key to verifiers while retaining the old key for its token lifetime.",
+        "Switch signers to the new key and verify both key IDs across a canary.",
+        "Remove the old public key only after the maximum token lifetime and clock skew have elapsed."
+      ],
+      "failureModes": [
+        "Removing the old key immediately invalidates still-valid sessions.",
+        "Reusing a key ID can make caches interpret the wrong public key.",
+        "Rotating signers before verifiers creates transient authentication failures."
+      ]
+    },
+    {
+      "lessonId": "lesson-prometheus-rule-silence",
+      "name": "[PROMETHEUS-RULE-SILENCE-2026] Silence a noisy Prometheus alert during maintenance",
+      "trigger": "Use [PROMETHEUS-RULE-SILENCE-2026] when a known maintenance window would otherwise page on a specific Prometheus alert.",
+      "steps": [
+        "Identify the exact alert name and stable labels in Alertmanager.",
+        "Create a narrowly scoped silence with an owner, reason, start, and end time.",
+        "Confirm the intended alert is silenced while unrelated alerts still route.",
+        "Remove or review the silence after maintenance and attach the maintenance result."
+      ],
+      "failureModes": [
+        "Silencing by a broad instance label suppresses unrelated incidents.",
+        "An omitted expiration leaves the alert disabled indefinitely.",
+        "A silence without an owner cannot be audited or renewed safely."
+      ]
+    },
+    {
+      "lessonId": "lesson-rabbitmq-dlq-replay",
+      "name": "[RABBITMQ-DLQ-REPLAY-2026] Replay selected RabbitMQ dead-letter messages",
+      "trigger": "Use [RABBITMQ-DLQ-REPLAY-2026] when a bounded set of RabbitMQ dead-letter messages must be replayed after the consumer defect is fixed.",
+      "steps": [
+        "Inspect the dead-letter exchange, routing key, message headers, and failure reason.",
+        "Filter the replay by message ID or time range and preserve the original payload.",
+        "Republish to the approved exchange with a replay marker and bounded rate.",
+        "Confirm successful consumption and route persistent failures back to a quarantine queue."
+      ],
+      "failureModes": [
+        "Replaying the entire dead-letter queue can duplicate already-recovered work.",
+        "Omitting a replay marker makes duplicate diagnosis difficult.",
+        "Publishing before the consumer fix is deployed recreates the failure."
+      ]
+    },
+    {
+      "lessonId": "lesson-elastic-index-alias-swap",
+      "name": "[ELASTIC-INDEX-ALIAS-SWAP-2026] Swap an Elasticsearch write alias atomically",
+      "trigger": "Use [ELASTIC-INDEX-ALIAS-SWAP-2026] when a rebuilt Elasticsearch index is ready and reads or writes must move through an atomic alias change.",
+      "steps": [
+        "Build and validate the new index with mappings, document counts, and sample queries.",
+        "Pause or coordinate writers so the final catch-up has a known boundary.",
+        "Use the aliases API in one atomic action to move the write and read aliases.",
+        "Resume writers, monitor errors, and retain the old index until rollback is no longer needed."
+      ],
+      "failureModes": [
+        "Changing read and write aliases in separate calls creates a split-brain window.",
+        "Deleting the old index before validation removes the rollback path.",
+        "Skipping the final catch-up loses documents written during the rebuild."
+      ]
+    },
+    {
+      "lessonId": "lesson-ci-cache-invalidate",
+      "name": "[CI-CACHE-INVALIDATE-2026] Invalidate a CI dependency cache after a lockfile change",
+      "trigger": "Use [CI-CACHE-INVALIDATE-2026] when a CI dependency lockfile changed and stale cached packages are causing reproducible build failures.",
+      "steps": [
+        "Compare the lockfile hash and cache key used by the failing job.",
+        "Create a new cache key that includes the package manager and lockfile digest.",
+        "Invalidate only the affected branch or namespace and run one uncached job.",
+        "Verify the new cache is populated from the lockfile and that later jobs are reproducible."
+      ],
+      "failureModes": [
+        "Deleting every organization cache increases queue time and hides the scope of the defect.",
+        "Changing the key without the lockfile digest allows stale dependencies back in.",
+        "Reusing a cache across operating systems can restore incompatible binaries."
+      ]
+    },
+    {
+      "lessonId": "lesson-systemd-service-rollback",
+      "name": "[SYSTEMD-SERVICE-ROLLBACK-2026] Roll back a systemd service unit safely",
+      "trigger": "Use [SYSTEMD-SERVICE-ROLLBACK-2026] when a host service unit change causes startup failure and the last known-good unit is available.",
+      "steps": [
+        "Capture systemctl status, journal logs, the unit checksum, and the active package version.",
+        "Restore the last known-good unit or package from the approved artifact store.",
+        "Run systemd-analyze verify, daemon-reload, and a controlled restart.",
+        "Check readiness, dependencies, and restart count before returning the host to service."
+      ],
+      "failureModes": [
+        "Editing the unit while the service is running can leave an untracked partial change.",
+        "Skipping daemon-reload tests a stale unit definition.",
+        "Restarting dependent services in the wrong order extends the outage."
+      ]
+    },
+    {
+      "lessonId": "lesson-python-venv-repair",
+      "name": "[PYTHON-VENV-REPAIR-2026] Repair a Python virtual environment from a lock file",
+      "trigger": "Use [PYTHON-VENV-REPAIR-2026] when a Python virtual environment has broken entry points and must be recreated from the committed lock file.",
+      "steps": [
+        "Record the Python version, platform, failing command, and current lockfile checksum.",
+        "Move the damaged environment aside instead of deleting it immediately.",
+        "Create a fresh environment with the pinned interpreter and install from the lock file.",
+        "Run import, entry-point, and focused application checks before switching the service."
+      ],
+      "failureModes": [
+        "Installing unpinned latest packages changes behavior during repair.",
+        "Deleting the old environment first removes useful forensic evidence.",
+        "Using a different Python minor version can produce incompatible wheels."
+      ]
+    },
+    {
+      "lessonId": "lesson-helm-values-verify",
+      "name": "[HELM-VALUES-VERIFY-2026] Verify rendered Helm values before applying",
+      "trigger": "Use [HELM-VALUES-VERIFY-2026] when a Helm values change needs rendered-manifest review before it reaches a shared cluster.",
+      "steps": [
+        "Render the chart with the exact release, chart version, values files, and namespace.",
+        "Diff the rendered output against the last approved manifest and inspect security-sensitive fields.",
+        "Run schema and policy validation against the rendered resources.",
+        "Apply only the reviewed revision and verify the rollout against the rendered intent."
+      ],
+      "failureModes": [
+        "Rendering with a different chart version invalidates the review.",
+        "Reviewing values without rendered output misses template defaults.",
+        "Applying a local override file accidentally can change unrelated resources."
+      ]
+    },
+    {
+      "lessonId": "lesson-mysql-replica-lag",
+      "name": "[MYSQL-REPLICA-LAG-2026] Reduce MySQL replica lag before a read cutover",
+      "trigger": "Use [MYSQL-REPLICA-LAG-2026] when MySQL replica lag threatens a read cutover and the cause must be measured before traffic moves.",
+      "steps": [
+        "Measure Seconds_Behind_Source, relay backlog, apply throughput, and source write rate.",
+        "Check for long-running queries, locks, disk saturation, and replication errors.",
+        "Remove the verified bottleneck or throttle source writes during the catch-up window.",
+        "Cut over reads only after lag is zero or within the documented tolerance for two checks."
+      ],
+      "failureModes": [
+        "Treating NULL lag as zero can hide a stopped SQL thread.",
+        "Increasing parallel workers without checking lock contention can worsen lag.",
+        "Cutting over during catch-up serves stale reads."
+      ]
+    },
+    {
+      "lessonId": "lesson-cloudflare-dns-cutover",
+      "name": "[CLOUDFLARE-DNS-CUTOVER-2026] Perform a staged Cloudflare DNS cutover",
+      "trigger": "Use [CLOUDFLARE-DNS-CUTOVER-2026] when a Cloudflare DNS record must move to a new origin with a reversible staged cutover.",
+      "steps": [
+        "Verify the new origin certificate, health endpoint, and expected Host header.",
+        "Lower the record TTL ahead of the change and document the previous record.",
+        "Change the record or weighted split in a small percentage, then check regional probes.",
+        "Increase traffic gradually and restore the previous value if error or latency thresholds fail."
+      ],
+      "failureModes": [
+        "Changing DNS before the certificate is valid causes TLS failures.",
+        "Assuming a low TTL eliminates resolver caching overstates rollback speed.",
+        "A broad zone edit can change records unrelated to the service."
+      ]
+    },
+    {
+      "lessonId": "lesson-grpc-reflection-debug",
+      "name": "[GRPC-REFLECTION-DEBUG-2026] Debug a gRPC service with reflection",
+      "trigger": "Use [GRPC-REFLECTION-DEBUG-2026] when a gRPC endpoint supports reflection and an RPC must be inspected without a generated client.",
+      "steps": [
+        "Confirm the endpoint, TLS mode, authority header, and environment authorization.",
+        "Use grpcurl list and describe to inspect services and message schemas.",
+        "Invoke a read-only RPC with a minimal request and capture status metadata.",
+        "Remove debug access or disable reflection if it was temporarily enabled."
+      ],
+      "failureModes": [
+        "Sending a mutating RPC during discovery can change production state.",
+        "Ignoring TLS authority settings can target the wrong virtual host.",
+        "Leaving reflection enabled exposes service schema beyond the intended window."
+      ]
+    }
+  ],
+  "cases": [
+    {
+      "id": "case-001-ko",
+      "query": "Kafka 소비자 그룹을 특정 시각부터 안전하게 다시 재생하려면 어떻게 하나요?",
+      "expected": [
+        "lesson-kafka-offset-rewind"
+      ],
+      "category": "ko_paraphrase"
+    },
+    {
+      "id": "case-001-en",
+      "query": "How can I safely replay a Kafka consumer group from a verified timestamp?",
+      "expected": [
+        "lesson-kafka-offset-rewind"
+      ],
+      "category": "en_paraphrase"
+    },
+    {
+      "id": "case-001-identifier",
+      "query": "What is the procedure for KAFKA-OFFSET-REWIND-2026?",
+      "expected": [
+        "lesson-kafka-offset-rewind"
+      ],
+      "category": "identifier"
+    },
+    {
+      "id": "case-002-ko",
+      "query": "PostgreSQL에서 잠금 대기 원인 세션을 찾아 안전하게 해제하는 방법을 알려 주세요.",
+      "expected": [
+        "lesson-postgres-lock-timeout"
+      ],
+      "category": "ko_paraphrase"
+    },
+    {
+      "id": "case-002-en",
+      "query": "What is the safe procedure to identify and clear the PostgreSQL session blocking a transaction?",
+      "expected": [
+        "lesson-postgres-lock-timeout"
+      ],
+      "category": "en_paraphrase"
+    },
+    {
+      "id": "case-002-identifier",
+      "query": "What is the procedure for POSTGRES-LOCK-TIMEOUT-2026?",
+      "expected": [
+        "lesson-postgres-lock-timeout"
+      ],
+      "category": "identifier"
+    },
+    {
+      "id": "case-003-ko",
+      "query": "유휴 Redis Stream 메시지를 다른 소비자가 안전하게 인수하는 절차가 필요합니다.",
+      "expected": [
+        "lesson-redis-stream-claim"
+      ],
+      "category": "ko_paraphrase"
+    },
+    {
+      "id": "case-003-en",
+      "query": "How do I safely claim idle pending messages from a Redis Stream consumer?",
+      "expected": [
+        "lesson-redis-stream-claim"
+      ],
+      "category": "en_paraphrase"
+    },
+    {
+      "id": "case-003-identifier",
+      "query": "What is the procedure for REDIS-STREAM-CLAIM-2026?",
+      "expected": [
+        "lesson-redis-stream-claim"
+      ],
+      "category": "identifier"
+    },
+    {
+      "id": "case-004-ko",
+      "query": "완료되지 않은 S3 멀티파트 업로드만 찾아 중단하고 싶습니다.",
+      "expected": [
+        "lesson-s3-multipart-abort"
+      ],
+      "category": "ko_paraphrase"
+    },
+    {
+      "id": "case-004-en",
+      "query": "How can I remove only stale incomplete S3 multipart uploads without touching completed objects?",
+      "expected": [
+        "lesson-s3-multipart-abort"
+      ],
+      "category": "en_paraphrase"
+    },
+    {
+      "id": "case-004-identifier",
+      "query": "What is the procedure for S3-MULTIPART-ABORT-2026?",
+      "expected": [
+        "lesson-s3-multipart-abort"
+      ],
+      "category": "identifier"
+    },
+    {
+      "id": "case-005-ko",
+      "query": "Docker 배포가 mutable tag 대신 승인된 이미지 digest를 사용하게 하려면 어떻게 하나요?",
+      "expected": [
+        "lesson-docker-image-digest-pin"
+      ],
+      "category": "ko_paraphrase"
+    },
+    {
+      "id": "case-005-en",
+      "query": "How do I make a Docker deployment use an approved immutable image digest?",
+      "expected": [
+        "lesson-docker-image-digest-pin"
+      ],
+      "category": "en_paraphrase"
+    },
+    {
+      "id": "case-005-identifier",
+      "query": "What is the procedure for DOCKER-IMAGE-DIGEST-PIN-2026?",
+      "expected": [
+        "lesson-docker-image-digest-pin"
+      ],
+      "category": "identifier"
+    },
+    {
+      "id": "case-006-ko",
+      "query": "문제가 생긴 Kubernetes Deployment를 안전하게 이전 revision으로 되돌리는 절차를 알려 주세요.",
+      "expected": [
+        "lesson-k8s-pod-rollback"
+      ],
+      "category": "ko_paraphrase"
+    },
+    {
+      "id": "case-006-en",
+      "query": "What is the safe way to roll a Kubernetes Deployment back to a known-good revision?",
+      "expected": [
+        "lesson-k8s-pod-rollback"
+      ],
+      "category": "en_paraphrase"
+    },
+    {
+      "id": "case-006-identifier",
+      "query": "What is the procedure for K8S-POD-ROLLBACK-2026?",
+      "expected": [
+        "lesson-k8s-pod-rollback"
+      ],
+      "category": "identifier"
+    },
+    {
+      "id": "case-007-ko",
+      "query": "중단된 Terraform 실행 때문에 남은 state lock을 확인하고 복구하는 방법이 필요합니다.",
+      "expected": [
+        "lesson-terraform-state-recover"
+      ],
+      "category": "ko_paraphrase"
+    },
+    {
+      "id": "case-007-en",
+      "query": "How should I recover a stale Terraform state lock after confirming no apply is running?",
+      "expected": [
+        "lesson-terraform-state-recover"
+      ],
+      "category": "en_paraphrase"
+    },
+    {
+      "id": "case-007-identifier",
+      "query": "What is the procedure for TERRAFORM-STATE-RECOVER-2026?",
+      "expected": [
+        "lesson-terraform-state-recover"
+      ],
+      "category": "identifier"
+    },
+    {
+      "id": "case-008-ko",
+      "query": "점검 전에 NGINX upstream 하나만 신규 요청에서 빼고 기존 연결을 drain하고 싶습니다.",
+      "expected": [
+        "lesson-nginx-upstream-drain"
+      ],
+      "category": "ko_paraphrase"
+    },
+    {
+      "id": "case-008-en",
+      "query": "How can I drain one NGINX upstream while existing connections finish?",
+      "expected": [
+        "lesson-nginx-upstream-drain"
+      ],
+      "category": "en_paraphrase"
+    },
+    {
+      "id": "case-008-identifier",
+      "query": "What is the procedure for NGINX-UPSTREAM-DRAIN-2026?",
+      "expected": [
+        "lesson-nginx-upstream-drain"
+      ],
+      "category": "identifier"
+    },
+    {
+      "id": "case-009-ko",
+      "query": "공유하기 전에 Git rebase 충돌을 검토하며 해결하는 안전한 절차를 알려 주세요.",
+      "expected": [
+        "lesson-git-rebase-conflict"
+      ],
+      "category": "ko_paraphrase"
+    },
+    {
+      "id": "case-009-en",
+      "query": "What is a reviewable procedure for resolving conflicts during a Git rebase?",
+      "expected": [
+        "lesson-git-rebase-conflict"
+      ],
+      "category": "en_paraphrase"
+    },
+    {
+      "id": "case-009-identifier",
+      "query": "What is the procedure for GIT-REBASE-CONFLICT-2026?",
+      "expected": [
+        "lesson-git-rebase-conflict"
+      ],
+      "category": "identifier"
+    },
+    {
+      "id": "case-010-ko",
+      "query": "기존 JWT가 만료될 때까지 겹치는 기간을 두고 서명 키를 교체하려면 어떻게 하나요?",
+      "expected": [
+        "lesson-jwt-key-rotation"
+      ],
+      "category": "ko_paraphrase"
+    },
+    {
+      "id": "case-010-en",
+      "query": "How do I rotate JWT signing keys while keeping existing tokens valid during overlap?",
+      "expected": [
+        "lesson-jwt-key-rotation"
+      ],
+      "category": "en_paraphrase"
+    },
+    {
+      "id": "case-010-identifier",
+      "query": "What is the procedure for JWT-KEY-ROTATION-2026?",
+      "expected": [
+        "lesson-jwt-key-rotation"
+      ],
+      "category": "identifier"
+    },
+    {
+      "id": "case-011-ko",
+      "query": "점검 중 특정 Prometheus alert만 좁게 silence하는 절차가 필요합니다.",
+      "expected": [
+        "lesson-prometheus-rule-silence"
+      ],
+      "category": "ko_paraphrase"
+    },
+    {
+      "id": "case-011-en",
+      "query": "How can I silence one Prometheus alert narrowly during a documented maintenance window?",
+      "expected": [
+        "lesson-prometheus-rule-silence"
+      ],
+      "category": "en_paraphrase"
+    },
+    {
+      "id": "case-011-identifier",
+      "query": "What is the procedure for PROMETHEUS-RULE-SILENCE-2026?",
+      "expected": [
+        "lesson-prometheus-rule-silence"
+      ],
+      "category": "identifier"
+    },
+    {
+      "id": "case-012-ko",
+      "query": "수정된 소비자에 RabbitMQ dead-letter 메시지 일부만 다시 넣는 방법을 알려 주세요.",
+      "expected": [
+        "lesson-rabbitmq-dlq-replay"
+      ],
+      "category": "ko_paraphrase"
+    },
+    {
+      "id": "case-012-en",
+      "query": "What is the bounded procedure for replaying selected RabbitMQ dead-letter messages?",
+      "expected": [
+        "lesson-rabbitmq-dlq-replay"
+      ],
+      "category": "en_paraphrase"
+    },
+    {
+      "id": "case-012-identifier",
+      "query": "What is the procedure for RABBITMQ-DLQ-REPLAY-2026?",
+      "expected": [
+        "lesson-rabbitmq-dlq-replay"
+      ],
+      "category": "identifier"
+    },
+    {
+      "id": "case-013-ko",
+      "query": "새 Elasticsearch index가 준비됐을 때 read/write alias를 원자적으로 바꾸고 싶습니다.",
+      "expected": [
+        "lesson-elastic-index-alias-swap"
+      ],
+      "category": "ko_paraphrase"
+    },
+    {
+      "id": "case-013-en",
+      "query": "How do I atomically swap Elasticsearch read and write aliases to a rebuilt index?",
+      "expected": [
+        "lesson-elastic-index-alias-swap"
+      ],
+      "category": "en_paraphrase"
+    },
+    {
+      "id": "case-013-identifier",
+      "query": "What is the procedure for ELASTIC-INDEX-ALIAS-SWAP-2026?",
+      "expected": [
+        "lesson-elastic-index-alias-swap"
+      ],
+      "category": "identifier"
+    },
+    {
+      "id": "case-014-ko",
+      "query": "lockfile 변경 뒤 CI dependency cache 때문에 실패할 때 영향 범위만 무효화하는 방법이 필요합니다.",
+      "expected": [
+        "lesson-ci-cache-invalidate"
+      ],
+      "category": "ko_paraphrase"
+    },
+    {
+      "id": "case-014-en",
+      "query": "How can I invalidate only the CI dependency cache affected by a lockfile change?",
+      "expected": [
+        "lesson-ci-cache-invalidate"
+      ],
+      "category": "en_paraphrase"
+    },
+    {
+      "id": "case-014-identifier",
+      "query": "What is the procedure for CI-CACHE-INVALIDATE-2026?",
+      "expected": [
+        "lesson-ci-cache-invalidate"
+      ],
+      "category": "identifier"
+    },
+    {
+      "id": "case-015-ko",
+      "query": "호스트 서비스 unit 변경이 실패했을 때 systemd 서비스를 마지막 정상 버전으로 되돌리고 싶습니다.",
+      "expected": [
+        "lesson-systemd-service-rollback"
+      ],
+      "category": "ko_paraphrase"
+    },
+    {
+      "id": "case-015-en",
+      "query": "What steps safely roll a systemd service unit back to the last known-good version?",
+      "expected": [
+        "lesson-systemd-service-rollback"
+      ],
+      "category": "en_paraphrase"
+    },
+    {
+      "id": "case-015-identifier",
+      "query": "What is the procedure for SYSTEMD-SERVICE-ROLLBACK-2026?",
+      "expected": [
+        "lesson-systemd-service-rollback"
+      ],
+      "category": "identifier"
+    },
+    {
+      "id": "case-016-ko",
+      "query": "손상된 Python virtual environment를 커밋된 lock file로 다시 만드는 절차를 알려 주세요.",
+      "expected": [
+        "lesson-python-venv-repair"
+      ],
+      "category": "ko_paraphrase"
+    },
+    {
+      "id": "case-016-en",
+      "query": "How do I recreate a damaged Python virtual environment from the committed lock file?",
+      "expected": [
+        "lesson-python-venv-repair"
+      ],
+      "category": "en_paraphrase"
+    },
+    {
+      "id": "case-016-identifier",
+      "query": "What is the procedure for PYTHON-VENV-REPAIR-2026?",
+      "expected": [
+        "lesson-python-venv-repair"
+      ],
+      "category": "identifier"
+    },
+    {
+      "id": "case-017-ko",
+      "query": "공유 클러스터에 적용하기 전에 Helm values가 렌더링된 결과를 검증하는 방법이 필요합니다.",
+      "expected": [
+        "lesson-helm-values-verify"
+      ],
+      "category": "ko_paraphrase"
+    },
+    {
+      "id": "case-017-en",
+      "query": "How should I verify rendered Helm manifests before applying a values change?",
+      "expected": [
+        "lesson-helm-values-verify"
+      ],
+      "category": "en_paraphrase"
+    },
+    {
+      "id": "case-017-identifier",
+      "query": "What is the procedure for HELM-VALUES-VERIFY-2026?",
+      "expected": [
+        "lesson-helm-values-verify"
+      ],
+      "category": "identifier"
+    },
+    {
+      "id": "case-018-ko",
+      "query": "읽기 전환 전에 MySQL replica lag 원인을 측정하고 줄이는 안전한 절차를 알려 주세요.",
+      "expected": [
+        "lesson-mysql-replica-lag"
+      ],
+      "category": "ko_paraphrase"
+    },
+    {
+      "id": "case-018-en",
+      "query": "What should I measure and fix before cutting reads over to a lagging MySQL replica?",
+      "expected": [
+        "lesson-mysql-replica-lag"
+      ],
+      "category": "en_paraphrase"
+    },
+    {
+      "id": "case-018-identifier",
+      "query": "What is the procedure for MYSQL-REPLICA-LAG-2026?",
+      "expected": [
+        "lesson-mysql-replica-lag"
+      ],
+      "category": "identifier"
+    },
+    {
+      "id": "case-019-ko",
+      "query": "새 origin으로 Cloudflare DNS를 되돌릴 수 있게 단계적으로 전환하고 싶습니다.",
+      "expected": [
+        "lesson-cloudflare-dns-cutover"
+      ],
+      "category": "ko_paraphrase"
+    },
+    {
+      "id": "case-019-en",
+      "query": "How can I stage a reversible Cloudflare DNS cutover to a new origin?",
+      "expected": [
+        "lesson-cloudflare-dns-cutover"
+      ],
+      "category": "en_paraphrase"
+    },
+    {
+      "id": "case-019-identifier",
+      "query": "What is the procedure for CLOUDFLARE-DNS-CUTOVER-2026?",
+      "expected": [
+        "lesson-cloudflare-dns-cutover"
+      ],
+      "category": "identifier"
+    },
+    {
+      "id": "case-020-ko",
+      "query": "생성된 클라이언트 없이 reflection을 사용해 gRPC RPC를 읽기 전용으로 조사하려면 어떻게 하나요?",
+      "expected": [
+        "lesson-grpc-reflection-debug"
+      ],
+      "category": "ko_paraphrase"
+    },
+    {
+      "id": "case-020-en",
+      "query": "How do I inspect a gRPC service with reflection without using a generated client?",
+      "expected": [
+        "lesson-grpc-reflection-debug"
+      ],
+      "category": "en_paraphrase"
+    },
+    {
+      "id": "case-020-identifier",
+      "query": "What is the procedure for GRPC-REFLECTION-DEBUG-2026?",
+      "expected": [
+        "lesson-grpc-reflection-debug"
+      ],
+      "category": "identifier"
+    },
+    {
+      "id": "case-001-unrelated",
+      "query": "How do I sharpen a chef's knife without changing its bevel angle?",
+      "expected": [],
+      "category": "unrelated"
+    },
+    {
+      "id": "case-002-unrelated",
+      "query": "What is a reliable method for calibrating a home espresso grinder?",
+      "expected": [],
+      "category": "unrelated"
+    },
+    {
+      "id": "case-003-unrelated",
+      "query": "How should I prune a young apple tree in its first winter?",
+      "expected": [],
+      "category": "unrelated"
+    },
+    {
+      "id": "case-004-unrelated",
+      "query": "How can I pack a bicycle for an airline without damaging the derailleur?",
+      "expected": [],
+      "category": "unrelated"
+    },
+    {
+      "id": "case-005-unrelated",
+      "query": "What steps make a watercolor wash dry with an even edge?",
+      "expected": [],
+      "category": "unrelated"
+    },
+    {
+      "id": "case-006-unrelated",
+      "query": "How do I replace the air filter in a small gasoline lawn mower?",
+      "expected": [],
+      "category": "unrelated"
+    },
+    {
+      "id": "case-007-unrelated",
+      "query": "What is the best way to tune a violin after changing all four strings?",
+      "expected": [],
+      "category": "unrelated"
+    },
+    {
+      "id": "case-008-unrelated",
+      "query": "How can I repair a loose button on a wool coat?",
+      "expected": [],
+      "category": "unrelated"
+    },
+    {
+      "id": "case-009-unrelated",
+      "query": "How do I plan a three-day hiking route around water sources?",
+      "expected": [],
+      "category": "unrelated"
+    },
+    {
+      "id": "case-010-unrelated",
+      "query": "What is a safe technique for glazing a ceramic mug at home?",
+      "expected": [],
+      "category": "unrelated"
+    },
+    {
+      "id": "case-011-unrelated",
+      "query": "How can I photograph the moon with a basic mirrorless camera?",
+      "expected": [],
+      "category": "unrelated"
+    },
+    {
+      "id": "case-012-unrelated",
+      "query": "What steps prepare a sourdough starter for a long refrigerator rest?",
+      "expected": [],
+      "category": "unrelated"
+    },
+    {
+      "id": "case-013-unrelated",
+      "query": "How do I remove candle wax from a hardwood table without dulling the finish?",
+      "expected": [],
+      "category": "unrelated"
+    },
+    {
+      "id": "case-014-unrelated",
+      "query": "How should I organize a paper archive of family photographs?",
+      "expected": [],
+      "category": "unrelated"
+    },
+    {
+      "id": "case-015-unrelated",
+      "query": "What is a good method for checking a tent seam before a rainy trip?",
+      "expected": [],
+      "category": "unrelated"
+    },
+    {
+      "id": "case-016-unrelated",
+      "query": "How can I troubleshoot a bicycle disc brake that squeals?",
+      "expected": [],
+      "category": "unrelated"
+    },
+    {
+      "id": "case-017-unrelated",
+      "query": "How do I make a small balcony herb garden drain correctly?",
+      "expected": [],
+      "category": "unrelated"
+    },
+    {
+      "id": "case-018-unrelated",
+      "query": "What steps are needed to season a new cast-iron pan?",
+      "expected": [],
+      "category": "unrelated"
+    },
+    {
+      "id": "case-019-unrelated",
+      "query": "How can I replace a cracked guitar pickguard without lifting the finish?",
+      "expected": [],
+      "category": "unrelated"
+    },
+    {
+      "id": "case-020-unrelated",
+      "query": "What is a simple procedure for balancing a manual camera gimbal?",
+      "expected": [],
+      "category": "unrelated"
+    },
+    {
+      "id": "case-001-opposite",
+      "query": "If the Kafka consumer group is healthy and no replay is requested, do not rewind offsets; what should I do instead?",
+      "expected": [],
+      "category": "opposite_condition"
+    },
+    {
+      "id": "case-002-opposite",
+      "query": "When no PostgreSQL session is blocking anything, omit the lock-clearing procedure and leave sessions alone.",
+      "expected": [],
+      "category": "opposite_condition"
+    },
+    {
+      "id": "case-003-opposite",
+      "query": "If every Redis Stream message is active, do not claim an idle consumer; explain how to avoid claiming it.",
+      "expected": [],
+      "category": "opposite_condition"
+    },
+    {
+      "id": "case-004-opposite",
+      "query": "When there are no incomplete S3 multipart uploads, skip the abort procedure entirely.",
+      "expected": [],
+      "category": "opposite_condition"
+    },
+    {
+      "id": "case-005-opposite",
+      "query": "If the deployment is intentionally tracking a mutable tag, do not pin it to a digest.",
+      "expected": [],
+      "category": "opposite_condition"
+    },
+    {
+      "id": "case-006-opposite",
+      "query": "When the Kubernetes Deployment is healthy and no regression exists, do not roll it back.",
+      "expected": [],
+      "category": "opposite_condition"
+    },
+    {
+      "id": "case-007-opposite",
+      "query": "If Terraform has an active apply holding the lock, do not force-unlock or recover it.",
+      "expected": [],
+      "category": "opposite_condition"
+    },
+    {
+      "id": "case-008-opposite",
+      "query": "When every NGINX upstream must keep serving new traffic, omit the drain procedure.",
+      "expected": [],
+      "category": "opposite_condition"
+    },
+    {
+      "id": "case-009-opposite",
+      "query": "If the topic branch is already up to date and has no conflicts, do not run the rebase conflict procedure.",
+      "expected": [],
+      "category": "opposite_condition"
+    },
+    {
+      "id": "case-010-opposite",
+      "query": "When all JWT verifiers have already switched and no old tokens remain, do not perform key rotation overlap.",
+      "expected": [],
+      "category": "opposite_condition"
+    },
+    {
+      "id": "case-011-opposite",
+      "query": "If maintenance is not happening and alerts are actionable, do not silence the Prometheus rule.",
+      "expected": [],
+      "category": "opposite_condition"
+    },
+    {
+      "id": "case-012-opposite",
+      "query": "When the RabbitMQ dead-letter queue is empty, omit any replay procedure.",
+      "expected": [],
+      "category": "opposite_condition"
+    },
+    {
+      "id": "case-013-opposite",
+      "query": "If the Elasticsearch index is still receiving writes and has not been validated, do not swap aliases.",
+      "expected": [],
+      "category": "opposite_condition"
+    },
+    {
+      "id": "case-014-opposite",
+      "query": "When the CI lockfile has not changed and the cache is valid, do not invalidate it.",
+      "expected": [],
+      "category": "opposite_condition"
+    },
+    {
+      "id": "case-015-opposite",
+      "query": "If the systemd unit starts cleanly, do not roll it back to an older unit.",
+      "expected": [],
+      "category": "opposite_condition"
+    },
+    {
+      "id": "case-016-opposite",
+      "query": "When the Python virtual environment is healthy, omit the repair and recreation procedure.",
+      "expected": [],
+      "category": "opposite_condition"
+    },
+    {
+      "id": "case-017-opposite",
+      "query": "If the Helm values are unchanged and the rendered output is already approved, do not verify or apply a new render.",
+      "expected": [],
+      "category": "opposite_condition"
+    },
+    {
+      "id": "case-018-opposite",
+      "query": "When the MySQL replica has no lag and the cutover is cancelled, do not perform lag remediation.",
+      "expected": [],
+      "category": "opposite_condition"
+    },
+    {
+      "id": "case-019-opposite",
+      "query": "If the current Cloudflare origin is healthy and no migration is planned, do not cut DNS over.",
+      "expected": [],
+      "category": "opposite_condition"
+    },
+    {
+      "id": "case-020-opposite",
+      "query": "When gRPC reflection is disabled and no debugging authorization exists, do not enable or inspect it.",
+      "expected": [],
+      "category": "opposite_condition"
+    }
+  ]
+}
