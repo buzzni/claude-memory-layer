@@ -12,3 +12,9 @@ benchmarks/field-memory/*.local-report.json
 benchmarks/field-memory/fixtures/*.local/
 .env*
 !.env.example
+
+# auto-added by aplus-dev-studio (block env secrets)
+.env
+
+# auto-added by aplus-dev-studio (block env secrets)
+.env.*

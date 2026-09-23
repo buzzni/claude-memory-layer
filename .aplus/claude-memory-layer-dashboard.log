@@ -1,0 +1,107 @@
+
+🧠 Starting Code Memory Dashboard...
+
+🧠 Code Memory viewer started at http://localhost:62881
+
+📊 Dashboard: http://localhost:62881
+🔌 Bind: localhost
+🔐 Password: disabled
+Press Ctrl+C to stop the server
+
+<-- GET /
+--> GET / [32m200[0m 2ms
+<-- GET /style.css
+--> GET /style.css [32m200[0m 1ms
+<-- GET /assets/js/state.js
+--> GET /assets/js/state.js [32m200[0m 0ms
+<-- GET /assets/js/bootstrap.js
+--> GET /assets/js/bootstrap.js [32m200[0m 1ms
+<-- GET /assets/js/overview.js
+--> GET /assets/js/overview.js [32m200[0m 0ms
+<-- GET /assets/js/modals.js
+--> GET /assets/js/modals.js [32m200[0m 0ms
+<-- GET /assets/js/views.js
+--> GET /assets/js/views.js [32m200[0m 0ms
+<-- GET /assets/js/usefulness.js
+--> GET /assets/js/usefulness.js [32m200[0m 0ms
+<-- GET /assets/js/chat.js
+--> GET /assets/js/chat.js [32m200[0m 1ms
+<-- GET /assets/js/disclosure.js
+--> GET /assets/js/disclosure.js [32m200[0m 1ms
+<-- GET /api/projects
+--> GET /api/projects [32m200[0m 19ms
+<-- GET /api/stats
+<-- GET /api/stats/shared
+--> GET /api/stats/shared [32m200[0m 1ms
+<-- GET /api/stats/most-accessed?limit=10
+[most-accessed] Fetching most accessed memories, limit: 10
+[most-accessed] Got memories: 4
+--> GET /api/stats/most-accessed?limit=10 [32m200[0m 1ms
+<-- GET /api/stats/retrieval-traces?limit=20
+--> GET /api/stats/retrieval-traces?limit=20 [32m200[0m 1ms
+<-- GET /api/stats/helpfulness?limit=5
+--> GET /api/stats/helpfulness?limit=5 [32m200[0m 1ms
+<-- GET /api/health
+<-- GET /api/stats/operations?windowDays=7
+--> GET /api/stats/operations?windowDays=7 [32m200[0m 1ms
+<-- GET /api/stats/usefulness?window=7d
+--> GET /api/stats/usefulness?window=7d [32m200[0m 2ms
+<-- GET /api/events?type=user_prompt&sort=recent&limit=6
+--> GET /api/events?type=user_prompt&sort=recent&limit=6 [32m200[0m 1ms
+<-- GET /api/stats/retrieval-review-queue?limit=10
+--> GET /api/stats/retrieval-review-queue?limit=10 [32m200[0m 1ms
+<-- GET /api/stats/perspective?windowDays=7
+--> GET /api/stats/perspective?windowDays=7 [32m200[0m 1ms
+<-- GET /api/events?level=L0&limit=500&sort=recent
+--> GET /api/events?level=L0&limit=500&sort=recent [32m200[0m 2ms
+<-- GET /api/stats/usefulness-history?limit=6&withSelectionsOnly=false
+--> GET /api/stats/usefulness-history?limit=6&withSelectionsOnly=false [32m200[0m 1ms
+--> GET /api/stats [32m200[0m 28ms
+--> GET /api/health [32m200[0m 19ms
+<-- GET /api/stats/kpi?window=7d
+--> GET /api/stats/kpi?window=7d [32m200[0m 2ms
+<-- GET /favicon.ico
+--> GET /favicon.ico [32m200[0m 0ms
+<-- GET /api/events?level=L0&limit=20&sort=recent
+--> GET /api/events?level=L0&limit=20&sort=recent [32m200[0m 1ms
+<-- GET /api/stats/timeline?days=14
+--> GET /api/stats/timeline?days=14 [32m200[0m 2ms
+<-- GET /api/stats?project=e9894ad9
+<-- GET /api/stats/shared?project=e9894ad9
+--> GET /api/stats/shared?project=e9894ad9 [32m200[0m 1ms
+<-- GET /api/stats/most-accessed?project=e9894ad9&limit=10
+[most-accessed] Fetching most accessed memories, limit: 10
+[most-accessed] Got memories: 10
+--> GET /api/stats/most-accessed?project=e9894ad9&limit=10 [32m200[0m 1ms
+<-- GET /api/stats/helpfulness?project=e9894ad9&limit=5
+--> GET /api/stats/helpfulness?project=e9894ad9&limit=5 [32m200[0m 14ms
+<-- GET /api/stats/usefulness?project=e9894ad9&window=7d
+--> GET /api/stats/usefulness?project=e9894ad9&window=7d [32m200[0m 50ms
+<-- GET /api/stats/retrieval-traces?project=e9894ad9&limit=20
+--> GET /api/stats/retrieval-traces?project=e9894ad9&limit=20 [32m200[0m 2ms
+--> GET /api/stats?project=e9894ad9 [32m200[0m 482ms
+<-- GET /api/stats/retrieval-review-queue?project=e9894ad9&limit=10
+--> GET /api/stats/retrieval-review-queue?project=e9894ad9&limit=10 [32m200[0m 6ms
+<-- GET /api/stats/operations?project=e9894ad9&windowDays=7
+--> GET /api/stats/operations?project=e9894ad9&windowDays=7 [32m200[0m 3ms
+<-- GET /api/stats/perspective?project=e9894ad9&windowDays=7
+--> GET /api/stats/perspective?project=e9894ad9&windowDays=7 [32m200[0m 1ms
+<-- GET /api/events?project=e9894ad9&level=L0&limit=500&sort=recent
+--> GET /api/events?project=e9894ad9&level=L0&limit=500&sort=recent [32m200[0m 89ms
+<-- GET /api/health?project=e9894ad9
+<-- GET /api/projects/e9894ad9/detail?project=e9894ad9
+<-- GET /api/events?project=e9894ad9&type=user_prompt&sort=recent&limit=6
+--> GET /api/events?project=e9894ad9&type=user_prompt&sort=recent&limit=6 [32m200[0m 78ms
+<-- GET /api/stats/usefulness-history?project=e9894ad9&limit=6&withSelectionsOnly=false
+--> GET /api/stats/usefulness-history?project=e9894ad9&limit=6&withSelectionsOnly=false [32m200[0m 3ms
+--> GET /api/health?project=e9894ad9 [32m200[0m 151ms
+--> GET /api/projects/e9894ad9/detail?project=e9894ad9 [32m200[0m 154ms
+<-- GET /api/stats/kpi?project=e9894ad9&window=7d
+--> GET /api/stats/kpi?project=e9894ad9&window=7d [32m200[0m 342ms
+<-- GET /api/events?project=e9894ad9&level=L0&limit=20&sort=recent
+--> GET /api/events?project=e9894ad9&level=L0&limit=20&sort=recent [32m200[0m 88ms
+<-- GET /api/stats/timeline?project=e9894ad9&days=14
+--> GET /api/stats/timeline?project=e9894ad9&days=14 [32m200[0m 11ms
+
+
+👋 Shutting down dashboard...
