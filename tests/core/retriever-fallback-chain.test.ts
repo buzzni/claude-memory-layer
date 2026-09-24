@@ -1,0 +1,327 @@
+import { describe, it, expect } from 'vitest';
+import { Retriever } from '../../src/core/retriever.js';
+import { Matcher } from '../../src/core/matcher.js';
+import type { MemoryEvent } from '../../src/core/types.js';
+
+function ev(id: string, content: string): MemoryEvent {
+  return {
+    id,
+    eventType: 'user_prompt',
+    sessionId: 's1',
+    timestamp: new Date('2026-02-24T00:00:00.000Z'),
+    content,
+    canonicalKey: id,
+    dedupeKey: id,
+    metadata: {}
+  };
+}
+
+describe('Retriever fallback chain', () => {
+  it('falls back from fast to deep when fast has no result', async () => {
+    const e = ev('e1', 'deep result memory');
+    let vectorCalls = 0;
+
+    const fakeEventStore = {
+      async keywordSearch() {
+        return [];
+      },
+      async getRecentEvents() {
+        return [e];
+      },
+      async getEvent(id: string) {
+        return id === 'e1' ? e : null;
+      },
+      async getSessionEvents() {
+        return [e];
+      }
+    };
+
+    const fakeVectorStore = {
+      async search() {
+        vectorCalls += 1;
+        return [{ id: 'v1', eventId: 'e1', content: e.content, score: 0.9, sessionId: 's1', eventType: e.eventType, timestamp: e.timestamp.toISOString() }];
+      }
+    };
+
+    const fakeEmbedder = { async embed() { return { vector: [0.1, 0.2] }; } };
+
+    const retriever = new Retriever(fakeEventStore as any, fakeVectorStore as any, fakeEmbedder as any, new Matcher());
+    const out = await retriever.retrieve('result', { strategy: 'auto', topK: 3, includeSessionContext: false });
+
+    expect(out.memories.length).toBeGreaterThan(0);
+    expect(vectorCalls).toBeGreaterThan(0);
+    expect(out.fallbackTrace).toContain('fallback:deep');
+    expect(out.outcomeDiagnostics).toMatchObject({
+      outcomeReason: 'selected',
+      freshnessState: 'unknown'
+    });
+  });
+
+  it('classifies a fully exhausted zero-hit chain without forcing a result', async () => {
+    const fakeEventStore = {
+      async keywordSearch() { return []; },
+      async getRecentEvents() { return []; },
+      async getEvent() { return null; },
+      async getEvents() { return []; },
+      async getSessionEvents() { return []; }
+    };
+    const fakeVectorStore = { async search() { return []; } };
+    const fakeEmbedder = { async embed() { return { vector: [0.1, 0.2] }; } };
+    const retriever = new Retriever(fakeEventStore as any, fakeVectorStore as any, fakeEmbedder as any, new Matcher());
+
+    const out = await retriever.retrieve('missing exact identifier', {
+      strategy: 'auto',
+      topK: 3,
+      includeSessionContext: false
+    });
+
+    expect(out.memories).toEqual([]);
+    expect(out.outcomeDiagnostics).toMatchObject({
+      outcomeReason: 'no_vector_candidates',
+      topScore: null
+    });
+  });
+
+  it('applies custom rerank weights when provided', async () => {
+    const e1 = ev('a', 'keyword hit exact');
+    const e2 = ev('b', 'less related');
+
+    const fakeEventStore = {
+      async keywordSearch() { return []; },
+      async getRecentEvents() { return [e1, e2]; },
+      async getEvent(id: string) { return id === 'a' ? e1 : id === 'b' ? e2 : null; },
+      async getSessionEvents() { return [e1, e2]; }
+    };
+
+    const fakeVectorStore = {
+      async search() {
+        return [
+          { id: 'v1', eventId: 'b', content: e2.content, score: 0.95, sessionId: 's1', eventType: e2.eventType, timestamp: e2.timestamp.toISOString() },
+          { id: 'v2', eventId: 'a', content: e1.content, score: 0.7, sessionId: 's1', eventType: e1.eventType, timestamp: e1.timestamp.toISOString() },
+        ];
+      }
+    };
+
+    const fakeEmbedder = { async embed() { return { vector: [0.1, 0.2] }; } };
+    const retriever = new Retriever(fakeEventStore as any, fakeVectorStore as any, fakeEmbedder as any, new Matcher());
+
+    const out = await retriever.retrieve('keyword hit', {
+      strategy: 'deep',
+      topK: 3,
+      includeSessionContext: false,
+      rerankWeights: { semantic: 0.2, lexical: 0.7, recency: 0.1 }
+    });
+
+    expect(out.memories[0]?.event.id).toBe('a');
+  });
+
+  it('applies TTL/decay penalty for stale low-overlap memories', async () => {
+    const old = {
+      ...ev('old', 'generic memory'),
+      timestamp: new Date(Date.now() - 1000 * 60 * 60 * 24 * 120),
+    };
+    const fresh = {
+      ...ev('fresh', 'generic memory'),
+      timestamp: new Date(),
+    };
+
+    const fakeEventStore = {
+      async keywordSearch() { return []; },
+      async getRecentEvents() { return [old, fresh]; },
+      async getEvent(id: string) { return id === 'old' ? old : id === 'fresh' ? fresh : null; },
+      async getSessionEvents() { return [old, fresh]; }
+    };
+
+    const fakeVectorStore = {
+      async search() {
+        return [
+          { id: 'v1', eventId: 'old', content: old.content, score: 0.9, sessionId: old.sessionId, eventType: old.eventType, timestamp: old.timestamp.toISOString() },
+          { id: 'v2', eventId: 'fresh', content: fresh.content, score: 0.85, sessionId: fresh.sessionId, eventType: fresh.eventType, timestamp: fresh.timestamp.toISOString() },
+        ];
+      }
+    };
+
+    const fakeEmbedder = { async embed() { return { vector: [0.1, 0.2] }; } };
+    const retriever = new Retriever(fakeEventStore as any, fakeVectorStore as any, fakeEmbedder as any, new Matcher());
+
+    const out = await retriever.retrieve('different query', {
+      strategy: 'deep',
+      topK: 2,
+      includeSessionContext: false,
+      decayPolicy: { enabled: true, windowDays: 30, maxPenalty: 0.3 }
+    });
+
+    expect(out.memories[0]?.event.id).toBe('fresh');
+  });
+
+  it('merges rewritten deep query results when intentRewrite is enabled', async () => {
+    const a = ev('a', '원문 질의에서는 약한 결과');
+    const b = ev('b', '재작성 질의에서 강한 결과');
+
+    const fakeEventStore = {
+      async keywordSearch() { return []; },
+      async getRecentEvents() { return [a, b]; },
+      async getEvent(id: string) { return id === 'a' ? a : id === 'b' ? b : null; },
+      async getSessionEvents() { return [a, b]; }
+    };
+
+    let call = 0;
+    const fakeVectorStore = {
+      async search() {
+        call += 1;
+        if (call === 1) {
+          return [{ id: 'v1', eventId: 'a', content: a.content, score: 0.8, sessionId: 's1', eventType: a.eventType, timestamp: a.timestamp.toISOString() }];
+        }
+        return [{ id: 'v2', eventId: 'b', content: b.content, score: 0.95, sessionId: 's1', eventType: b.eventType, timestamp: b.timestamp.toISOString() }];
+      }
+    };
+
+    const fakeEmbedder = { async embed() { return { vector: [0.1, 0.2] }; } };
+    const retriever = new Retriever(fakeEventStore as any, fakeVectorStore as any, fakeEmbedder as any, new Matcher());
+    retriever.setQueryRewriter(async () => '확장된 재작성 질의');
+
+    const out = await retriever.retrieve('원문 질의', {
+      strategy: 'deep',
+      topK: 3,
+      includeSessionContext: false,
+      intentRewrite: true,
+    });
+
+    expect(out.memories[0]?.event.id).toBe('b');
+  });
+
+  it('expands related events with graph-hop retrieval', async () => {
+    const seed = ev('seed', 'seed event');
+    const neighbor = {
+      ...ev('neighbor', 'related artifact memory'),
+      metadata: { relatedEventIds: ['seed'] },
+    };
+    const seedWithEdge = { ...seed, metadata: { relatedEventIds: ['neighbor'] } };
+
+    const fakeEventStore = {
+      async keywordSearch() { return []; },
+      async getRecentEvents() { return [seedWithEdge, neighbor]; },
+      async getEvent(id: string) {
+        if (id === 'seed') return seedWithEdge;
+        if (id === 'neighbor') return neighbor;
+        return null;
+      },
+      async getSessionEvents() { return [seedWithEdge, neighbor]; }
+    };
+
+    const fakeVectorStore = {
+      async search() {
+        return [{ id: 'v1', eventId: 'seed', content: seedWithEdge.content, score: 0.95, sessionId: 's1', eventType: seedWithEdge.eventType, timestamp: seedWithEdge.timestamp.toISOString() }];
+      }
+    };
+
+    const fakeEmbedder = { async embed() { return { vector: [0.1, 0.2] }; } };
+    const retriever = new Retriever(fakeEventStore as any, fakeVectorStore as any, fakeEmbedder as any, new Matcher());
+
+    const out = await retriever.retrieve('seed event', {
+      strategy: 'deep',
+      topK: 5,
+      includeSessionContext: false,
+      graphHop: { enabled: true, maxHops: 1, hopPenalty: 0.1 }
+    });
+
+    const ids = out.memories.map((m) => m.event.id);
+    expect(ids).toContain('seed');
+    expect(ids).toContain('neighbor');
+  });
+
+  it('clamps related-event graph-hop retrieval to two hops', async () => {
+    const seed = { ...ev('seed', 'seed event root'), metadata: { relatedEventIds: ['hop1'] } };
+    const hop1 = { ...ev('hop1', 'seed event first related hop'), metadata: { relatedEventIds: ['hop2'] } };
+    const hop2 = { ...ev('hop2', 'seed event second related hop'), metadata: { relatedEventIds: ['hop3'] } };
+    const hop3 = ev('hop3', 'seed event third related hop');
+    const events = new Map([seed, hop1, hop2, hop3].map((event) => [event.id, event] as const));
+
+    const fakeEventStore = {
+      async keywordSearch() { return []; },
+      async getRecentEvents() { return [seed, hop1, hop2, hop3]; },
+      async getEvent(id: string) { return events.get(id) ?? null; },
+      async getSessionEvents() { return [seed, hop1, hop2, hop3]; }
+    };
+
+    const fakeVectorStore = {
+      async search() {
+        return [{ id: 'v1', eventId: 'seed', content: seed.content, score: 0.95, sessionId: 's1', eventType: seed.eventType, timestamp: seed.timestamp.toISOString() }];
+      }
+    };
+
+    const fakeEmbedder = { async embed() { return { vector: [0.1, 0.2] }; } };
+    const retriever = new Retriever(fakeEventStore as any, fakeVectorStore as any, fakeEmbedder as any, new Matcher());
+
+    const out = await retriever.retrieve('seed event', {
+      strategy: 'deep',
+      topK: 10,
+      includeSessionContext: false,
+      graphHop: { enabled: true, maxHops: 99, hopPenalty: 0.01 }
+    });
+
+    const ids = out.memories.map((m) => m.event.id);
+    expect(ids).toContain('seed');
+    expect(ids).toContain('hop1');
+    expect(ids).toContain('hop2');
+    expect(ids).not.toContain('hop3');
+  });
+
+  it('excludes low-signal and stale neighbors from default session context', async () => {
+    const handoff = ev('handoff', '[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into an active task handoff.');
+    const current = ev('current', 'memory retrieval provider validation current status is green and source refs are preserved');
+    const stale = ev('stale', 'obsolete stale state should not be injected as current context');
+    const events = new Map([handoff, current, stale].map((event) => [event.id, event] as const));
+
+    const fakeEventStore = {
+      async keywordSearch() { return []; },
+      async getRecentEvents() { return [handoff, current, stale]; },
+      async getEvent(id: string) { return events.get(id) ?? null; },
+      async getSessionEvents() { return [handoff, current, stale]; }
+    };
+
+    const fakeVectorStore = {
+      async search() {
+        return [{
+          id: 'v1',
+          eventId: 'current',
+          content: current.content,
+          score: 0.95,
+          sessionId: current.sessionId,
+          eventType: current.eventType,
+          timestamp: current.timestamp.toISOString()
+        }];
+      }
+    };
+
+    const fakeEmbedder = { async embed() { return { vector: [0.1, 0.2] }; } };
+    const retriever = new Retriever(fakeEventStore as any, fakeVectorStore as any, fakeEmbedder as any, new Matcher());
+    const out = await retriever.retrieve('current status for memory retrieval provider validation', { strategy: 'deep', topK: 3 });
+
+    expect(out.memories[0]?.event.id).toBe('current');
+    expect(out.context).toContain('source refs are preserved');
+    expect(out.context).not.toContain('CONTEXT COMPACTION');
+    expect(out.context).not.toContain('obsolete stale state');
+    expect(out.memories[0]?.sessionContext).toBeUndefined();
+  });
+
+  it('uses summary fallback for low-confidence validation-gate recall when both fast and deep fail', async () => {
+    const e = ev('e2', 'Validation gates before committing memory telemetry changes include typecheck build and replay checks.');
+
+    const fakeEventStore = {
+      async keywordSearch() { return []; },
+      async getRecentEvents() { return [e]; },
+      async getEvent(id: string) { return id === 'e2' ? e : null; },
+      async getSessionEvents() { return [e]; }
+    };
+
+    const fakeVectorStore = { async search() { return []; } };
+    const fakeEmbedder = { async embed() { return { vector: [0.1, 0.2] }; } };
+
+    const retriever = new Retriever(fakeEventStore as any, fakeVectorStore as any, fakeEmbedder as any, new Matcher());
+    const out = await retriever.retrieve('what validation gates should run before committing memory telemetry changes', { strategy: 'auto', topK: 3, includeSessionContext: false });
+
+    expect(out.fallbackTrace).toContain('fallback:summary');
+    expect(out.memories[0]?.event.id).toBe('e2');
+  });
+});

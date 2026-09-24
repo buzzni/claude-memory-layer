@@ -1,0 +1,398 @@
+/**
+ * Retrieval Analytics Service
+ *
+ * Owns retrieval telemetry read-model and helpfulness evaluation workflows so
+ * MemoryService can remain a thin facade over focused engine services.
+ */
+
+import type { RetrievalDebugLane } from '../retrieval-debug-lanes.js';
+import { emptyTypedSelectionSummary } from '../retrieval-telemetry.js';
+import type {
+  RecordReferenceNavigationInput,
+  RecordReferenceNavigationResult,
+  RetrievalOutcomeDiagnostics,
+  RetrievalPresentationMode,
+  RetrievalTelemetryStats,
+  RetrievalClientCoverage,
+  RetrievalTriggerType,
+  TypedSelectionSummary,
+  UsefulnessAggregateV2
+} from '../retrieval-telemetry.js';
+import type { MemoryEvent } from '../types.js';
+
+export interface RetrievalTraceStrategyStats {
+  strategy: string;
+  totalQueries: number;
+  queriesWithSelection: number;
+  rewrittenQueries: number;
+  rewriteRate: number;
+  totalCandidateCount: number;
+  totalSelectedCount: number;
+  avgCandidateCount: number;
+  avgSelectedCount: number;
+  selectionRate: number;
+  queryYieldRate: number;
+}
+
+export interface RetrievalTraceStats {
+  totalQueries: number;
+  avgCandidateCount: number;
+  avgSelectedCount: number;
+  selectionRate: number;
+  rewrittenQueries?: number;
+  rewriteRate?: number;
+  rewrittenQueriesWithSelection?: number;
+  rawQueriesWithSelection?: number;
+  rewrittenSelectionRate?: number;
+  rawSelectionRate?: number;
+  avgSelectedCountForRewrittenQueries?: number;
+  avgSelectedCountForRawQueries?: number;
+  strategyBreakdown?: RetrievalTraceStrategyStats[];
+}
+
+export interface HelpfulnessStats {
+  avgScore: number;
+  totalEvaluated: number;
+  totalRetrievals: number;
+  helpful: number;
+  neutral: number;
+  unhelpful: number;
+  /** Evaluated retrievals that had responses to check content grounding against */
+  contentEvaluated?: number;
+  /** Average content-grounding score (0..1) over contentEvaluated rows */
+  avgContentOverlap?: number;
+  /** Rows whose content grounding cleared the "actually used" threshold */
+  groundedCount?: number;
+}
+
+export interface DailyHelpfulnessStats {
+  date: string;
+  avgScore: number;
+  totalEvaluated: number;
+  totalRetrievals: number;
+  helpful: number;
+  neutral: number;
+  unhelpful: number;
+}
+
+export interface UsefulnessEvidenceMatch {
+  memorySnippet: string;
+  responseSnippet: string;
+  responseEventId: string;
+  similarity: number;
+  matchType: string;
+}
+
+export interface UsefulnessHistoryMemory {
+  eventId: string;
+  eventType: string | null;
+  summary: string;
+  retrievalScore: number;
+  helpfulnessScore: number | null;
+  contentOverlapScore: number | null;
+  evidence: UsefulnessEvidenceMatch[];
+  measuredAt: string | null;
+  source: string;
+  presentationMode: RetrievalPresentationMode;
+}
+
+export interface UsefulnessHistoryEntry {
+  traceId: string | null;
+  kind: 'query' | 'session_start';
+  sessionId: string | null;
+  question: string;
+  queryText: string | null;
+  strategy: string | null;
+  confidence: string | null;
+  candidateCount: number;
+  selectedCount: number;
+  createdAt: Date;
+  presentationMode: RetrievalPresentationMode;
+  memories: UsefulnessHistoryMemory[];
+}
+
+export interface UsefulnessHistoryOptions {
+  limit?: number;
+  offset?: number;
+  sessionId?: string;
+  withSelectionsOnly?: boolean;
+}
+
+export interface HelpfulMemory {
+  eventId: string;
+  summary: string;
+  helpfulnessScore: number;
+  accessCount: number;
+  evaluationCount: number;
+}
+
+export interface RetrievalTraceDetail {
+  eventId: string;
+  score: number;
+  semanticScore?: number;
+  lexicalScore?: number;
+  recencyScore?: number;
+  lanes?: RetrievalDebugLane[];
+}
+
+export interface RetrievalTrace {
+  traceId: string;
+  sessionId?: string;
+  projectHash?: string;
+  queryText: string;
+  rawQueryText?: string;
+  queryRewriteKind?: string;
+  strategy?: string;
+  candidateEventIds: string[];
+  selectedEventIds: string[];
+  candidateDetails: RetrievalTraceDetail[];
+  selectedDetails: RetrievalTraceDetail[];
+  candidateCount: number;
+  selectedCount: number;
+  confidence?: string;
+  fallbackTrace: string[];
+  presentationMode?: RetrievalPresentationMode;
+  triggerType?: RetrievalTriggerType;
+  deliveryClient?: string;
+  outcomeDiagnostics?: RetrievalOutcomeDiagnostics;
+  createdAt: Date;
+}
+
+export interface AccessedMemory {
+  memoryId: string;
+  summary: string;
+  topics: string[];
+  accessCount: number;
+  lastAccessed: string | null;
+  confidence: number;
+  createdAt: Date;
+}
+
+type AccessedMemoryEvent = MemoryEvent & {
+  access_count?: number;
+  last_accessed_at?: string | null;
+};
+
+export interface RetrievalAnalyticsStore {
+  getRetrievalTraceStats(): Promise<RetrievalTraceStats>;
+  getRecentRetrievalTraces(limit?: number): Promise<RetrievalTrace[]>;
+  getMostAccessed(limit?: number): Promise<AccessedMemoryEvent[]>;
+  evaluateSessionHelpfulness(sessionId: string): Promise<void>;
+  getUnevaluatedSessions(currentSessionId: string, limit?: number): Promise<string[]>;
+  getHelpfulMemories(limit?: number): Promise<HelpfulMemory[]>;
+  getHelpfulnessStats(since?: Date, until?: Date): Promise<HelpfulnessStats>;
+  getHelpfulnessStatsByDay?(since: Date, until: Date): Promise<DailyHelpfulnessStats[]>;
+  getUsefulnessHistory?(options?: UsefulnessHistoryOptions): Promise<UsefulnessHistoryEntry[]>;
+  getRetrievalTelemetryStats?(): Promise<RetrievalTelemetryStats>;
+  getUsefulnessAggregateV2?(options?: UsefulnessAggregateV2Options): Promise<UsefulnessAggregateV2>;
+  recordReferenceNavigation?(input: RecordReferenceNavigationInput): Promise<RecordReferenceNavigationResult>;
+  getRetrievalClientCoverage?(options?: { since?: Date; until?: Date }): Promise<RetrievalClientCoverage[]>;
+  getTypedSelectionSummary?(options?: { since?: Date; until?: Date; resolveLegacy?: boolean }): Promise<TypedSelectionSummary>;
+  reevaluateBoundedUsefulness?(options?: { limit?: number; now?: Date; windowMs?: number }): Promise<{
+    sessionsReevaluated: number;
+    rowsReevaluated: number;
+    windowMs: number;
+    cutoff: string;
+  }>;
+}
+
+export interface UsefulnessAggregateV2Options {
+  since?: Date;
+  until?: Date;
+  minimumSample?: number;
+  evaluatorVersion?: string;
+  includeSessionStart?: boolean;
+}
+
+export interface RetrievalAnalyticsServiceDeps {
+  initialize: () => Promise<void>;
+  retrievalStore: RetrievalAnalyticsStore;
+}
+
+export class RetrievalAnalyticsService {
+  constructor(private readonly deps: RetrievalAnalyticsServiceDeps) {}
+
+  async getRetrievalTraceStats(): Promise<RetrievalTraceStats> {
+    await this.deps.initialize();
+    return this.deps.retrievalStore.getRetrievalTraceStats();
+  }
+
+  async getRecentRetrievalTraces(limit: number = 50): Promise<RetrievalTrace[]> {
+    await this.deps.initialize();
+    return this.deps.retrievalStore.getRecentRetrievalTraces(limit);
+  }
+
+  async getMostAccessedMemories(limit: number = 10): Promise<AccessedMemory[]> {
+    // Preserve the historical lightweight path: SQLiteEventStore.getMostAccessed()
+    // initializes itself and no-ops safely in read-only scenarios, so dashboard
+    // access summaries should not trigger vector/embedder/worker initialization.
+    const events = await this.deps.retrievalStore.getMostAccessed(limit);
+
+    return events.map((event) => ({
+      memoryId: event.id,
+      summary: event.content.substring(0, 200) + (event.content.length > 200 ? '...' : ''),
+      topics: this.extractTopicsFromContent(event.content),
+      accessCount: event.access_count || 0,
+      lastAccessed: event.last_accessed_at || null,
+      confidence: 1.0,
+      createdAt: event.timestamp,
+    }));
+  }
+
+  async evaluateSessionHelpfulness(sessionId: string): Promise<void> {
+    await this.deps.initialize();
+    await this.deps.retrievalStore.evaluateSessionHelpfulness(sessionId);
+  }
+
+  async evaluatePendingSessions(currentSessionId: string, limit: number = 5): Promise<void> {
+    await this.deps.initialize();
+    const sessions = await this.deps.retrievalStore.getUnevaluatedSessions(currentSessionId, limit);
+
+    for (const sessionId of sessions) {
+      try {
+        await this.deps.retrievalStore.evaluateSessionHelpfulness(sessionId);
+      } catch {
+        // Best-effort backfill: one broken session should not block hook startup.
+      }
+    }
+
+    // Deliveries evaluated before their adoption window closed are revisited
+    // once, in a bounded pass, so a late response is not frozen as
+    // "not observed" (specs R3).
+    try {
+      await this.deps.retrievalStore.reevaluateBoundedUsefulness?.({ limit: 200 });
+    } catch {
+      // Bounded re-evaluation is supplementary telemetry.
+    }
+  }
+
+  /** Per-client instrumentation coverage; unobserved clients stay unknown. */
+  async getRetrievalClientCoverage(options: { since?: Date; until?: Date } = {}): Promise<RetrievalClientCoverage[]> {
+    await this.deps.initialize();
+    return this.deps.retrievalStore.getRetrievalClientCoverage?.(options) ?? [];
+  }
+
+  /** Typed selection totals; legacy traces are resolved read-only. */
+  async getTypedSelectionSummary(
+    options: { since?: Date; until?: Date; resolveLegacy?: boolean } = {}
+  ): Promise<TypedSelectionSummary> {
+    await this.deps.initialize();
+    return this.deps.retrievalStore.getTypedSelectionSummary?.(options) ?? emptyTypedSelectionSummary();
+  }
+
+  /** Bounded re-evaluation of deliveries whose observation window has closed. */
+  async reevaluateBoundedUsefulness(options: { limit?: number; now?: Date } = {}) {
+    await this.deps.initialize();
+    return this.deps.retrievalStore.reevaluateBoundedUsefulness?.(options)
+      ?? { sessionsReevaluated: 0, rowsReevaluated: 0, windowMs: 0, cutoff: new Date().toISOString() };
+  }
+
+  async getHelpfulMemories(limit: number = 10): Promise<HelpfulMemory[]> {
+    await this.deps.initialize();
+    return this.deps.retrievalStore.getHelpfulMemories(limit);
+  }
+
+  async getHelpfulnessStats(since?: Date, until?: Date): Promise<HelpfulnessStats> {
+    await this.deps.initialize();
+    return this.deps.retrievalStore.getHelpfulnessStats(since, until);
+  }
+
+  async getHelpfulnessStatsByDay(since: Date, until: Date): Promise<DailyHelpfulnessStats[]> {
+    await this.deps.initialize();
+    return this.deps.retrievalStore.getHelpfulnessStatsByDay?.(since, until) || [];
+  }
+
+  /**
+   * Per-question evidence history: which memories were injected for each
+   * retrieval query and how useful they turned out to be.
+   */
+  async getUsefulnessHistory(options: UsefulnessHistoryOptions = {}): Promise<UsefulnessHistoryEntry[]> {
+    await this.deps.initialize();
+    if (!this.deps.retrievalStore.getUsefulnessHistory) return [];
+    return this.deps.retrievalStore.getUsefulnessHistory(options);
+  }
+
+  async getRetrievalTelemetryStats(): Promise<RetrievalTelemetryStats> {
+    await this.deps.initialize();
+    return this.deps.retrievalStore.getRetrievalTelemetryStats?.() || {
+      deliveries: {
+        totalTraces: 0,
+        totalItems: 0,
+        byPresentation: [],
+        byTrigger: [],
+        legacyUnknownRows: 0
+      },
+      evidenceGrounding: {
+        evaluatedDeliveries: 0,
+        groundedDeliveries: 0,
+        groundingRate: 0,
+        averageContentOverlap: 0
+      },
+      referenceNavigation: {
+        eligibleTraces: 0,
+        navigatedTraces: 0,
+        navigationRate: 0,
+        attributedOpenCount: 0,
+        ambiguousOpenCount: 0,
+        unattributedOpenCount: 0
+      }
+    };
+  }
+
+  async getUsefulnessAggregateV2(options: UsefulnessAggregateV2Options = {}): Promise<UsefulnessAggregateV2> {
+    await this.deps.initialize();
+    const aggregate = await this.deps.retrievalStore.getUsefulnessAggregateV2?.(options);
+    if (aggregate) return aggregate;
+    const { emptyUsefulnessAggregateV2 } = await import('../retrieval-telemetry.js');
+    return emptyUsefulnessAggregateV2({
+      minimumSample: options.minimumSample,
+      evaluatorVersion: options.evaluatorVersion,
+      includeSessionStart: options.includeSessionStart,
+      since: options.since,
+      until: options.until
+    });
+  }
+
+  async recordReferenceNavigation(
+    input: RecordReferenceNavigationInput
+  ): Promise<RecordReferenceNavigationResult> {
+    await this.deps.initialize();
+    return this.deps.retrievalStore.recordReferenceNavigation?.(input)
+      || { outcome: 'unattributed', traceId: null, repeated: false };
+  }
+
+  /**
+   * Extract topic keywords from event content (markdown headings and key terms).
+   */
+  private extractTopicsFromContent(content: string): string[] {
+    const topics: Set<string> = new Set();
+
+    const headings = content.match(/^#{1,3}\s+(.+)$/gm);
+    if (headings) {
+      for (const heading of headings.slice(0, 5)) {
+        const text = heading.replace(/^#+\s+/, '').replace(/[*_`#]/g, '').trim();
+        if (text.length > 2 && text.length < 50) {
+          topics.add(text);
+        }
+      }
+    }
+
+    const boldTerms = content.match(/\*\*([^*]+)\*\*/g);
+    if (boldTerms) {
+      for (const boldTerm of boldTerms.slice(0, 5)) {
+        const text = boldTerm.replace(/\*\*/g, '').trim();
+        if (text.length > 2 && text.length < 30) {
+          topics.add(text);
+        }
+      }
+    }
+
+    return Array.from(topics).slice(0, 5);
+  }
+}
+
+export function createRetrievalAnalyticsService(
+  deps: RetrievalAnalyticsServiceDeps
+): RetrievalAnalyticsService {
+  return new RetrievalAnalyticsService(deps);
+}

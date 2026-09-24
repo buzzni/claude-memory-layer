@@ -1,0 +1,93 @@
+import { describe, expect, it } from 'vitest';
+
+import { ConfigSchema } from '../../src/core/types.js';
+import {
+  DEFAULT_ENABLED_MEMORY_OPERATIONS_CONFIG,
+  DEFAULT_ENABLED_SHARED_STORE_CONFIG as CONFIG_DEFAULT_ENABLED_SHARED_STORE_CONFIG,
+  DISABLED_MEMORY_OPERATIONS_CONFIG,
+  DISABLED_SHARED_STORE_CONFIG as CONFIG_DISABLED_SHARED_STORE_CONFIG,
+  DEFAULT_SHARED_STORAGE_PATH as CONFIG_DEFAULT_SHARED_STORAGE_PATH,
+  resolveSharedMemoryStoragePath,
+  SHARED_MEMORY_STORAGE_PATH_ENV
+} from '../../src/services/memory-service-config.js';
+import {
+  DEFAULT_ENABLED_SHARED_STORE_CONFIG as FACADE_DEFAULT_ENABLED_SHARED_STORE_CONFIG,
+  DISABLED_SHARED_STORE_CONFIG as FACADE_DISABLED_SHARED_STORE_CONFIG,
+  resolveSharedMemoryStoragePath as facadeResolveSharedMemoryStoragePath
+} from '../../src/services/memory-service.js';
+
+/**
+ * MemoryService should stay a thin compatibility facade. Shared defaults are
+ * owned by memory-service-config so registries can import them without pulling
+ * in the MemoryService class and creating a service-locator cycle.
+ */
+describe('memory-service-config', () => {
+  it('owns disabled shared-store defaults while memory-service preserves the public export', () => {
+    expect(CONFIG_DISABLED_SHARED_STORE_CONFIG).toMatchObject({
+      enabled: false,
+      autoPromote: false,
+      searchShared: false,
+      minConfidenceForPromotion: 0.8
+    });
+    expect(CONFIG_DISABLED_SHARED_STORE_CONFIG.sharedStoragePath).toContain('.claude-code');
+    expect(CONFIG_DISABLED_SHARED_STORE_CONFIG.sharedStoragePath).toContain('shared');
+    expect(FACADE_DISABLED_SHARED_STORE_CONFIG).toBe(CONFIG_DISABLED_SHARED_STORE_CONFIG);
+  });
+
+  it('owns enabled shared-store defaults while memory-service preserves the public export', () => {
+    expect(CONFIG_DEFAULT_ENABLED_SHARED_STORE_CONFIG).toEqual({
+      enabled: true,
+      autoPromote: true,
+      searchShared: true,
+      minConfidenceForPromotion: 0.8,
+      sharedStoragePath: CONFIG_DEFAULT_SHARED_STORAGE_PATH
+    });
+    expect(FACADE_DEFAULT_ENABLED_SHARED_STORE_CONFIG).toBe(CONFIG_DEFAULT_ENABLED_SHARED_STORE_CONFIG);
+  });
+
+  it('ships memory operations disabled by default with safe subfeatures', () => {
+    expect(DISABLED_MEMORY_OPERATIONS_CONFIG).toEqual({
+      enabled: false,
+      facets: { enabled: true },
+      actions: { enabled: true },
+      retention: { enabled: false, policyVersion: 'v1' },
+      graphExpansion: { enabled: false, maxHops: 1 },
+      codifyLite: { enabled: false },
+      lessons: { enabled: false },
+      perspectiveMemory: {
+        enabled: false,
+        deriver: { enabled: false, maxEventsPerBatch: 20, maxObserversPerSession: 5 },
+        specialists: {
+          enabled: false,
+          enabledProjectHashes: [],
+          enabledKinds: ['deduction', 'induction', 'contradiction', 'actor_card_maintenance'],
+          maxSourceObservations: 20,
+          maxDerivedObservations: 5,
+          maxCardUpdates: 3
+        }
+      }
+    });
+
+    expect(DEFAULT_ENABLED_MEMORY_OPERATIONS_CONFIG).toEqual({
+      ...DISABLED_MEMORY_OPERATIONS_CONFIG,
+      enabled: true
+    });
+  });
+
+  it('allows MCP shared-store tools to use only an explicit absolute override path', () => {
+    expect(facadeResolveSharedMemoryStoragePath).toBe(resolveSharedMemoryStoragePath);
+    expect(resolveSharedMemoryStoragePath({})).toBe(CONFIG_DEFAULT_SHARED_STORAGE_PATH);
+    expect(resolveSharedMemoryStoragePath({
+      [SHARED_MEMORY_STORAGE_PATH_ENV]: '/tmp/cml-shared-store'
+    })).toBe('/tmp/cml-shared-store');
+    expect(() => resolveSharedMemoryStoragePath({
+      [SHARED_MEMORY_STORAGE_PATH_ENV]: 'relative/shared-store'
+    })).toThrow(`${SHARED_MEMORY_STORAGE_PATH_ENV} must be an absolute path`);
+  });
+
+  it('parses memory operations config defaults without enabling ranking-changing features', () => {
+    const parsed = ConfigSchema.parse({});
+
+    expect(parsed.operations).toEqual(DISABLED_MEMORY_OPERATIONS_CONFIG);
+  });
+});
