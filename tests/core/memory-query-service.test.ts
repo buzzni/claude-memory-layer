@@ -1,0 +1,194 @@
+import { describe, expect, it, vi } from 'vitest';
+
+import { MemoryQueryService } from '../../src/core/engine/memory-query-service.js';
+import type { MemoryEvent } from '../../src/core/types.js';
+
+function event(overrides: Partial<MemoryEvent> = {}): MemoryEvent {
+  return {
+    id: '11111111-1111-4111-8111-111111111111',
+    eventType: 'user_prompt',
+    sessionId: 'session-1',
+    timestamp: new Date('2026-05-02T00:00:00.000Z'),
+    content: 'default content',
+    canonicalKey: 'default-content',
+    dedupeKey: 'session-1:default-content',
+    metadata: {},
+    ...overrides
+  };
+}
+
+function createService() {
+  const initialize = vi.fn(async () => {});
+  const events = [event()];
+  const turn = {
+    turnId: 'turn-1',
+    events,
+    startedAt: new Date('2026-05-02T00:00:00.000Z'),
+    promptPreview: 'default content',
+    eventCount: 1,
+    toolCount: 0,
+    hasResponse: false
+  };
+  const outboxStats = {
+    embedding: { pending: 1, processing: 2, failed: 3, total: 6, stuckProcessing: 1, oldestProcessingAgeMs: 600000 },
+    vector: { pending: 4, processing: 5, failed: 6, total: 15, stuckProcessing: 2, oldestProcessingAgeMs: 1200000 }
+  };
+  const outboxRecovery = {
+    embedding: { recoveredProcessing: 1, retriedFailed: 0 },
+    vector: { recoveredProcessing: 2, retriedFailed: 1 }
+  };
+  const projectScopeRepair = {
+    dryRun: true,
+    projectHash: 'abc12345',
+    scanned: 4,
+    repaired: 1,
+    quarantined: 2,
+    alreadyScoped: 1,
+    skipped: 0,
+    samples: []
+  };
+  const queryStore = {
+    keywordSearch: vi.fn(async () => [{ event: events[0], rank: -0.5 }]),
+    getSessionEvents: vi.fn(async () => events),
+    getRecentEvents: vi.fn(async () => events),
+    rebuildFtsIndex: vi.fn(async () => 7),
+    getOutboxStats: vi.fn(async () => outboxStats),
+    recoverStuckOutboxItems: vi.fn(async () => outboxRecovery),
+    repairLegacyProjectScope: vi.fn(async () => projectScopeRepair),
+    getEventsByLevel: vi.fn(async () => events),
+    getEventLevel: vi.fn(async () => 'working'),
+    getSessionTurns: vi.fn(async () => [turn]),
+    getEventsByTurn: vi.fn(async () => events),
+    countSessionTurns: vi.fn(async () => 11),
+    backfillTurnIds: vi.fn(async () => 13),
+    deleteSessionEvents: vi.fn(async () => 17),
+    countEvents: vi.fn(async () => 31)
+  };
+  const vectorStore = {
+    count: vi.fn(async () => 19),
+    countAll: vi.fn(async () => 99)
+  };
+  const graduation = {
+    getStats: vi.fn(async () => [{ level: 'working', count: 23 }])
+  };
+
+  return {
+    service: new MemoryQueryService(initialize, queryStore, { vectorStore, graduation }),
+    initialize,
+    queryStore,
+    vectorStore,
+    graduation,
+    events,
+    turn,
+    outboxStats,
+    outboxRecovery,
+    projectScopeRepair
+  };
+}
+
+describe('MemoryQueryService', () => {
+  it('delegates read and maintenance methods through the initialized store boundary', async () => {
+    const { service, initialize, queryStore, events, turn, outboxStats, outboxRecovery, projectScopeRepair } = createService();
+
+    await expect(service.rebuildFtsIndex()).resolves.toBe(7);
+    await expect(service.getOutboxStats()).resolves.toEqual(outboxStats);
+    await expect(service.recoverStuckOutboxItems({ stuckThresholdMs: 1234 })).resolves.toEqual(outboxRecovery);
+    await expect(service.repairLegacyProjectScope({ projectPath: '/repo/app', dryRun: true })).resolves.toEqual(projectScopeRepair);
+    await expect(service.getEventsByLevel('working', { limit: 2, offset: 3 })).resolves.toEqual(events);
+    await expect(service.getEventLevel('event-1')).resolves.toBe('working');
+    await expect(service.getSessionTurns('session-1', { limit: 5, offset: 8 })).resolves.toEqual([turn]);
+    await expect(service.getEventsByTurn('turn-1')).resolves.toEqual(events);
+    await expect(service.countSessionTurns('session-1')).resolves.toBe(11);
+    await expect(service.backfillTurnIds()).resolves.toBe(13);
+    await expect(service.deleteSessionEvents('session-1')).resolves.toBe(17);
+
+    expect(initialize).toHaveBeenCalledTimes(11);
+    expect(queryStore.rebuildFtsIndex).toHaveBeenCalledOnce();
+    expect(queryStore.getOutboxStats).toHaveBeenCalledOnce();
+    expect(queryStore.recoverStuckOutboxItems).toHaveBeenCalledWith({ stuckThresholdMs: 1234 });
+    expect(queryStore.repairLegacyProjectScope).toHaveBeenCalledWith({ projectPath: '/repo/app', dryRun: true });
+    expect(queryStore.getEventsByLevel).toHaveBeenCalledWith('working', { limit: 2, offset: 3 });
+    expect(queryStore.getEventLevel).toHaveBeenCalledWith('event-1');
+    expect(queryStore.getSessionTurns).toHaveBeenCalledWith('session-1', { limit: 5, offset: 8 });
+    expect(queryStore.getEventsByTurn).toHaveBeenCalledWith('turn-1');
+    expect(queryStore.countSessionTurns).toHaveBeenCalledWith('session-1');
+    expect(queryStore.backfillTurnIds).toHaveBeenCalledOnce();
+    expect(queryStore.deleteSessionEvents).toHaveBeenCalledWith('session-1');
+  });
+
+  it('composes memory statistics from event, vector, and graduation stores', async () => {
+    const { service, initialize, queryStore, vectorStore, graduation } = createService();
+
+    await expect(service.getStats()).resolves.toEqual({
+      totalEvents: 31,
+      vectorCount: 19,
+      levelStats: [{ level: 'working', count: 23 }]
+    });
+
+    expect(initialize).toHaveBeenCalledOnce();
+    // Counted in SQL, not by materializing a capped page of events.
+    expect(queryStore.countEvents).toHaveBeenCalledOnce();
+    expect(queryStore.getRecentEvents).not.toHaveBeenCalled();
+    expect(vectorStore.count).toHaveBeenCalledOnce();
+    expect(vectorStore.countAll).not.toHaveBeenCalled();
+    expect(graduation.getStats).toHaveBeenCalledOnce();
+  });
+
+  it('counts every vector table for maintenance integrity without changing public stats', async () => {
+    const { service, vectorStore } = createService();
+
+    await expect(service.countAllVectors()).resolves.toBe(99);
+
+    expect(vectorStore.countAll).toHaveBeenCalledOnce();
+    expect(vectorStore.count).not.toHaveBeenCalled();
+  });
+
+  it('falls back to scanning recent events for the total when the store cannot count', async () => {
+    const { service, queryStore } = createService();
+    delete (queryStore as { countEvents?: unknown }).countEvents;
+
+    await expect(service.getStats()).resolves.toMatchObject({ totalEvents: 1 });
+    expect(queryStore.getRecentEvents).toHaveBeenCalledWith(10000);
+  });
+
+  it('keeps lightweight read methods usable with only the narrow query store', async () => {
+    const initialize = vi.fn(async () => {});
+    const events = [event({ id: '22222222-2222-4222-8222-222222222222' })];
+    const queryStore = {
+      keywordSearch: vi.fn(async () => [{ event: events[0], rank: -0.5 }]),
+      getSessionEvents: vi.fn(async () => events),
+      getRecentEvents: vi.fn(async () => events)
+    };
+    const service = new MemoryQueryService(initialize, queryStore);
+
+    await expect(service.keywordSearch('query', { topK: 3 })).resolves.toEqual([{ event: events[0], score: 1 }]);
+    await expect(service.getSessionHistory('session-1')).resolves.toBe(events);
+    await expect(service.getRecentEvents(2)).resolves.toBe(events);
+
+    expect(initialize).toHaveBeenCalledTimes(3);
+    expect(queryStore.keywordSearch).toHaveBeenCalledWith('query', 3, { includeToolObservations: undefined });
+    expect(queryStore.getSessionEvents).toHaveBeenCalledWith('session-1');
+    expect(queryStore.getRecentEvents).toHaveBeenCalledWith(2, undefined);
+  });
+
+  it('normalizes ascending FTS ranks with the strongest match at score one', async () => {
+    const initialize = vi.fn(async () => {});
+    const strongest = event({ id: '11111111-1111-4111-8111-111111111111' });
+    const middle = event({ id: '22222222-2222-4222-8222-222222222222' });
+    const weakest = event({ id: '33333333-3333-4333-8333-333333333333' });
+    const service = new MemoryQueryService(initialize, {
+      keywordSearch: vi.fn(async () => [
+        { event: strongest, rank: -12 },
+        { event: middle, rank: -7 },
+        { event: weakest, rank: -2 }
+      ]),
+      getSessionEvents: vi.fn(async () => []),
+      getRecentEvents: vi.fn(async () => [])
+    });
+
+    await expect(service.keywordSearch('exact query', { minScore: 0.4 })).resolves.toEqual([
+      { event: strongest, score: 1 },
+      { event: middle, score: 0.5 }
+    ]);
+  });
+});

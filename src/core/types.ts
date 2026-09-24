@@ -1,0 +1,1466 @@
+/**
+ * Core types for claude-memory-layer plugin
+ * Idris2 inspired: Complete, immutable type definitions with Zod validation
+ */
+
+import { z } from 'zod';
+
+// ============================================================
+// Event Types
+// ============================================================
+
+export const EventTypeSchema = z.enum([
+  'user_prompt',
+  'agent_response',
+  'session_summary',
+  'tool_observation'
+]);
+export type EventType = z.infer<typeof EventTypeSchema>;
+
+// ============================================================
+// Memory Event (L0 EventStore)
+// ============================================================
+
+export const MemoryEventSchema = z.object({
+  id: z.string().uuid(),
+  eventType: EventTypeSchema,
+  sessionId: z.string(),
+  timestamp: z.date(),
+  content: z.string(),
+  canonicalKey: z.string(),
+  dedupeKey: z.string(),
+  metadata: z.record(z.unknown()).optional()
+});
+export type MemoryEvent = z.infer<typeof MemoryEventSchema>;
+
+// Input for creating new events (id, dedupeKey generated automatically)
+export const MemoryEventInputSchema = MemoryEventSchema.omit({
+  id: true,
+  dedupeKey: true,
+  canonicalKey: true
+});
+export type MemoryEventInput = z.infer<typeof MemoryEventInputSchema>;
+
+// ============================================================
+// Session
+// ============================================================
+
+export const SessionSchema = z.object({
+  id: z.string(),
+  startedAt: z.date(),
+  endedAt: z.date().optional(),
+  projectPath: z.string().optional(),
+  summary: z.string().optional(),
+  tags: z.array(z.string()).optional()
+});
+export type Session = z.infer<typeof SessionSchema>;
+
+// ============================================================
+// Insight (L1 Structured)
+// ============================================================
+
+export const InsightTypeSchema = z.enum([
+  'preference',
+  'pattern',
+  'expertise'
+]);
+export type InsightType = z.infer<typeof InsightTypeSchema>;
+
+export const InsightSchema = z.object({
+  id: z.string().uuid(),
+  insightType: InsightTypeSchema,
+  content: z.string(),
+  canonicalKey: z.string(),
+  confidence: z.number().min(0).max(1),
+  sourceEvents: z.array(z.string().uuid()),
+  createdAt: z.date(),
+  lastUpdated: z.date()
+});
+export type Insight = z.infer<typeof InsightSchema>;
+
+// ============================================================
+// Memory Match (Search Result)
+// ============================================================
+
+export const MemoryMatchSchema = z.object({
+  event: MemoryEventSchema,
+  score: z.number().min(0).max(1),
+  relevanceReason: z.string().optional()
+});
+export type MemoryMatch = z.infer<typeof MemoryMatchSchema>;
+
+// ============================================================
+// Match Confidence (AXIOMMIND)
+// ============================================================
+
+export const MatchConfidenceSchema = z.enum(['high', 'suggested', 'none']);
+export type MatchConfidence = z.infer<typeof MatchConfidenceSchema>;
+
+export const MatchResultSchema = z.object({
+  match: MemoryMatchSchema.nullable(),
+  confidence: MatchConfidenceSchema,
+  gap: z.number().optional(),
+  alternatives: z.array(MemoryMatchSchema).optional()
+});
+export type MatchResult = z.infer<typeof MatchResultSchema>;
+
+// AXIOMMIND Matching Thresholds
+export const MATCH_THRESHOLDS = {
+  minCombinedScore: 0.92,
+  minGap: 0.03,
+  suggestionThreshold: 0.75
+} as const;
+
+// ============================================================
+// Memory Level (Graduation Pipeline)
+// ============================================================
+
+export const MemoryLevelSchema = z.enum(['L0', 'L1', 'L2', 'L3', 'L4']);
+export type MemoryLevel = z.infer<typeof MemoryLevelSchema>;
+
+export const GraduationResultSchema = z.object({
+  eventId: z.string().uuid(),
+  fromLevel: MemoryLevelSchema,
+  toLevel: MemoryLevelSchema,
+  success: z.boolean(),
+  reason: z.string().optional()
+});
+export type GraduationResult = z.infer<typeof GraduationResultSchema>;
+
+// ============================================================
+// Evidence Span (AXIOMMIND Principle 4)
+// ============================================================
+
+export const EvidenceSpanSchema = z.object({
+  start: z.number().int().nonnegative(),
+  end: z.number().int().positive(),
+  confidence: z.number().min(0).max(1),
+  matchType: z.enum(['exact', 'fuzzy', 'none']),
+  originalQuote: z.string(),
+  alignedText: z.string()
+});
+export type EvidenceSpan = z.infer<typeof EvidenceSpanSchema>;
+
+// ============================================================
+// Memory Operations Config (AgentMemory-inspired operations layer)
+// ============================================================
+
+export const PerspectiveConsolidationSpecialistKindSchema = z.enum([
+  'deduction',
+  'induction',
+  'contradiction',
+  'actor_card_maintenance'
+]);
+export type PerspectiveConsolidationSpecialistKind = z.infer<typeof PerspectiveConsolidationSpecialistKindSchema>;
+
+export const MemoryOperationsConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  facets: z.object({
+    enabled: z.boolean().default(true)
+  }).default({}),
+  actions: z.object({
+    enabled: z.boolean().default(true)
+  }).default({}),
+  retention: z.object({
+    enabled: z.boolean().default(false),
+    policyVersion: z.string().default('v1')
+  }).default({}),
+  graphExpansion: z.object({
+    enabled: z.boolean().default(false),
+    maxHops: z.number().int().min(0).max(5).default(1)
+  }).default({}),
+  codifyLite: z.object({
+    enabled: z.boolean().default(false)
+  }).default({}),
+  lessons: z.object({
+    enabled: z.boolean().default(false)
+  }).default({}),
+  perspectiveMemory: z.object({
+    enabled: z.boolean().default(false),
+    deriver: z.object({
+      enabled: z.boolean().default(false),
+      maxEventsPerBatch: z.number().int().positive().max(100).default(20),
+      maxObserversPerSession: z.number().int().positive().max(50).default(5)
+    }).default({}),
+    specialists: z.object({
+      enabled: z.boolean().default(false),
+      enabledProjectHashes: z.array(z.string().trim().min(1)).max(100).default([]),
+      enabledKinds: z.array(PerspectiveConsolidationSpecialistKindSchema).default([
+        'deduction',
+        'induction',
+        'contradiction',
+        'actor_card_maintenance'
+      ]),
+      maxSourceObservations: z.number().int().positive().max(100).default(20),
+      maxDerivedObservations: z.number().int().min(0).max(20).default(5),
+      maxCardUpdates: z.number().int().min(0).max(40).default(3)
+    }).default({})
+  }).default({})
+}).default({});
+export type MemoryOperationsConfig = z.infer<typeof MemoryOperationsConfigSchema>;
+
+// ============================================================
+// Procedural Lesson Types (AgentMemory-inspired operations layer)
+// ============================================================
+
+const MemoryLessonNonEmptyStringSchema = z.string()
+  .transform((value) => value.trim())
+  .pipe(z.string().min(1));
+
+const MemoryLessonStringArraySchema = z.preprocess((value) => {
+  if (!Array.isArray(value)) return value;
+  return value
+    .map((item) => typeof item === 'string' ? item.trim() : item)
+    .filter((item) => typeof item !== 'string' || item.length > 0);
+}, z.array(MemoryLessonNonEmptyStringSchema)).default([]);
+
+export const MemoryLessonSourceClassSchema = z.enum(['derived', 'curated']);
+export type MemoryLessonSourceClass = z.infer<typeof MemoryLessonSourceClassSchema>;
+
+export const MemoryLessonSchema = z.object({
+  lessonId: z.string().uuid(),
+  projectHash: MemoryLessonNonEmptyStringSchema.optional(),
+  name: MemoryLessonNonEmptyStringSchema,
+  trigger: MemoryLessonNonEmptyStringSchema,
+  steps: MemoryLessonStringArraySchema.refine((steps) => steps.length > 0, 'steps must contain at least one step'),
+  confidence: z.number().min(0).max(1),
+  sourceSessionIds: MemoryLessonStringArraySchema,
+  sourceEventIds: MemoryLessonStringArraySchema,
+  failureModes: MemoryLessonStringArraySchema,
+  skillCandidate: z.boolean().default(false),
+  sourceClass: MemoryLessonSourceClassSchema.default('derived'),
+  revision: z.number().int().positive().default(1),
+  recallEnabled: z.boolean().default(true),
+  scope: MemoryLessonNonEmptyStringSchema.optional(),
+  validation: MemoryLessonStringArraySchema,
+  reconsiderWhen: MemoryLessonNonEmptyStringSchema.optional(),
+  validVersions: MemoryLessonStringArraySchema,
+  createdAt: z.date(),
+  updatedAt: z.date()
+});
+export type MemoryLesson = z.infer<typeof MemoryLessonSchema>;
+
+export const UpsertMemoryLessonInputSchema = z.object({
+  lessonId: z.string().uuid().optional(),
+  projectHash: MemoryLessonNonEmptyStringSchema.optional(),
+  name: MemoryLessonNonEmptyStringSchema,
+  trigger: MemoryLessonNonEmptyStringSchema,
+  steps: MemoryLessonStringArraySchema.refine((steps) => steps.length > 0, 'steps must contain at least one step'),
+  confidence: z.number().min(0).max(1).default(0.5),
+  sourceSessionIds: MemoryLessonStringArraySchema,
+  sourceEventIds: MemoryLessonStringArraySchema,
+  failureModes: MemoryLessonStringArraySchema,
+  skillCandidate: z.boolean().default(false),
+  sourceClass: MemoryLessonSourceClassSchema.default('derived'),
+  recallEnabled: z.boolean().optional(),
+  scope: MemoryLessonNonEmptyStringSchema.optional(),
+  validation: MemoryLessonStringArraySchema.optional(),
+  reconsiderWhen: MemoryLessonNonEmptyStringSchema.optional(),
+  validVersions: MemoryLessonStringArraySchema.optional(),
+  actor: MemoryLessonNonEmptyStringSchema.optional()
+}).superRefine((value, ctx) => {
+  if (value.sourceSessionIds.length === 0 && value.sourceEventIds.length === 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['sourceEventIds'],
+      message: 'sourceSessionIds or sourceEventIds is required'
+    });
+  }
+});
+export type UpsertMemoryLessonInput = z.input<typeof UpsertMemoryLessonInputSchema>;
+
+export const ListMemoryLessonsInputSchema = z.object({
+  projectHash: MemoryLessonNonEmptyStringSchema.optional(),
+  skillCandidate: z.boolean().optional(),
+  limit: z.number().int().positive().max(500).default(50),
+  offset: z.number().int().nonnegative().default(0)
+});
+export type ListMemoryLessonsInput = z.input<typeof ListMemoryLessonsInputSchema>;
+
+// ============================================================
+// Honcho-inspired Perspective Memory Types
+// ============================================================
+
+const PerspectiveMemoryNonEmptyStringSchema = z.string()
+  .transform((value) => value.trim())
+  .pipe(z.string().min(1));
+
+const PerspectiveMemoryOptionalStringSchema = z.preprocess((value) => {
+  if (typeof value !== 'string') return value;
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : undefined;
+}, PerspectiveMemoryNonEmptyStringSchema.optional());
+
+const PerspectiveMemoryStringArraySchema = z.preprocess((value) => {
+  if (!Array.isArray(value)) return value;
+  return value
+    .map((item) => typeof item === 'string' ? item.trim() : item)
+    .filter((item) => typeof item !== 'string' || item.length > 0);
+}, z.array(PerspectiveMemoryNonEmptyStringSchema)).default([]);
+
+const ActorCardSensitivePattern = /(?:\b(?:api[_-]?key|secret|password|passwd|token|access[_-]?token|client[_-]?secret|bearer)\b\s*[:=])|(?:\b(?:api[_-]?key|secret|password|passwd|token|access[_-]?token|client[_-]?secret|bearer)=)|(?:^|\s)(?:\/[A-Za-z0-9._-][^\s`'\"]*)/i;
+
+export const MemoryActorKindSchema = z.enum([
+  'user',
+  'assistant',
+  'subagent',
+  'tool',
+  'system',
+  'integration',
+  'unknown'
+]);
+export type MemoryActorKind = z.infer<typeof MemoryActorKindSchema>;
+
+export const SessionActorRoleSchema = z.enum([
+  'speaker',
+  'assistant',
+  'observer',
+  'tool',
+  'system',
+  'unknown'
+]);
+export type SessionActorRole = z.infer<typeof SessionActorRoleSchema>;
+
+export const PerspectiveObservationLevelSchema = z.enum([
+  'explicit',
+  'deductive',
+  'inductive',
+  'contradiction'
+]);
+export type PerspectiveObservationLevel = z.infer<typeof PerspectiveObservationLevelSchema>;
+
+export const PerspectiveObservationCreatedBySchema = z.enum(['rule', 'llm', 'manual', 'import']);
+export type PerspectiveObservationCreatedBy = z.infer<typeof PerspectiveObservationCreatedBySchema>;
+
+export const ActorCardEntryPrefixSchema = z.enum([
+  'IDENTITY',
+  'ATTRIBUTE',
+  'RELATIONSHIP',
+  'INSTRUCTION'
+]);
+export type ActorCardEntryPrefix = z.infer<typeof ActorCardEntryPrefixSchema>;
+
+export const ActorCardEntrySchema = z.string()
+  .transform((value) => value.trim())
+  .pipe(
+    z.string()
+      .min(1)
+      .max(200, 'actor card entry must be at most 200 characters')
+      .refine(
+        (value) => /^(IDENTITY|ATTRIBUTE|RELATIONSHIP|INSTRUCTION):\s*\S/.test(value),
+        'actor card entry prefix must be one of IDENTITY:, ATTRIBUTE:, RELATIONSHIP:, or INSTRUCTION:'
+      )
+      .refine(
+        (value) => !ActorCardSensitivePattern.test(value),
+        'actor card entry contains secret, redacted, sensitive, or path-like content'
+      )
+  );
+export type ActorCardEntry = z.infer<typeof ActorCardEntrySchema>;
+
+export const MemoryActorSchema = z.object({
+  actorId: PerspectiveMemoryNonEmptyStringSchema,
+  projectHash: PerspectiveMemoryOptionalStringSchema,
+  kind: MemoryActorKindSchema,
+  displayName: PerspectiveMemoryNonEmptyStringSchema,
+  source: PerspectiveMemoryNonEmptyStringSchema,
+  metadata: z.record(z.unknown()).optional(),
+  createdAt: z.date(),
+  updatedAt: z.date()
+});
+export type MemoryActor = z.infer<typeof MemoryActorSchema>;
+
+export const UpsertMemoryActorInputSchema = z.object({
+  actorId: PerspectiveMemoryOptionalStringSchema,
+  projectHash: PerspectiveMemoryOptionalStringSchema,
+  kind: MemoryActorKindSchema.default('unknown'),
+  displayName: PerspectiveMemoryNonEmptyStringSchema,
+  source: PerspectiveMemoryNonEmptyStringSchema,
+  metadata: z.record(z.unknown()).optional()
+});
+export type UpsertMemoryActorInput = z.input<typeof UpsertMemoryActorInputSchema>;
+
+export const ListMemoryActorsInputSchema = z.object({
+  projectHash: PerspectiveMemoryOptionalStringSchema,
+  kind: MemoryActorKindSchema.optional(),
+  source: PerspectiveMemoryOptionalStringSchema,
+  limit: z.number().int().positive().max(500).default(100)
+});
+export type ListMemoryActorsInput = z.input<typeof ListMemoryActorsInputSchema>;
+
+export const SessionActorSchema = z.object({
+  projectHash: PerspectiveMemoryOptionalStringSchema,
+  sessionId: PerspectiveMemoryNonEmptyStringSchema,
+  actorId: PerspectiveMemoryNonEmptyStringSchema,
+  roleInSession: SessionActorRoleSchema,
+  observeSelf: z.boolean().default(true),
+  observeOthers: z.boolean().default(false),
+  joinedAt: z.date(),
+  leftAt: z.date().optional(),
+  metadata: z.record(z.unknown()).optional()
+});
+export type SessionActor = z.infer<typeof SessionActorSchema>;
+
+export const UpsertSessionActorInputSchema = z.object({
+  projectHash: PerspectiveMemoryOptionalStringSchema,
+  sessionId: PerspectiveMemoryNonEmptyStringSchema,
+  actorId: PerspectiveMemoryNonEmptyStringSchema,
+  roleInSession: SessionActorRoleSchema.default('unknown'),
+  observeSelf: z.boolean().default(true),
+  observeOthers: z.boolean().default(false),
+  joinedAt: z.date().optional(),
+  leftAt: z.date().optional(),
+  metadata: z.record(z.unknown()).optional()
+});
+export type UpsertSessionActorInput = z.input<typeof UpsertSessionActorInputSchema>;
+
+export const ListSessionActorsInputSchema = z.object({
+  projectHash: PerspectiveMemoryOptionalStringSchema,
+  sessionId: PerspectiveMemoryNonEmptyStringSchema,
+  limit: z.number().int().positive().max(500).default(100)
+});
+export type ListSessionActorsInput = z.input<typeof ListSessionActorsInputSchema>;
+
+export const SetSessionActorObservationPolicyInputSchema = z.object({
+  projectHash: PerspectiveMemoryOptionalStringSchema,
+  sessionId: PerspectiveMemoryNonEmptyStringSchema,
+  actorId: PerspectiveMemoryNonEmptyStringSchema,
+  observeSelf: z.boolean(),
+  observeOthers: z.boolean()
+});
+export type SetSessionActorObservationPolicyInput = z.input<typeof SetSessionActorObservationPolicyInputSchema>;
+
+export const ActorCardSchema = z.object({
+  cardId: z.string().uuid(),
+  projectHash: PerspectiveMemoryOptionalStringSchema,
+  observerActorId: PerspectiveMemoryNonEmptyStringSchema,
+  observedActorId: PerspectiveMemoryNonEmptyStringSchema,
+  entries: z.array(ActorCardEntrySchema).max(40),
+  sourceEventIds: PerspectiveMemoryStringArraySchema,
+  updatedBy: PerspectiveMemoryOptionalStringSchema,
+  createdAt: z.date(),
+  updatedAt: z.date()
+});
+export type ActorCard = z.infer<typeof ActorCardSchema>;
+
+export const UpsertActorCardInputSchema = z.object({
+  projectHash: PerspectiveMemoryOptionalStringSchema,
+  observerActorId: PerspectiveMemoryNonEmptyStringSchema,
+  observedActorId: PerspectiveMemoryNonEmptyStringSchema,
+  entries: z.array(ActorCardEntrySchema).min(1).max(40, 'actor card supports at most 40 entries'),
+  sourceEventIds: PerspectiveMemoryStringArraySchema,
+  updatedBy: PerspectiveMemoryOptionalStringSchema
+});
+export type UpsertActorCardInput = z.input<typeof UpsertActorCardInputSchema>;
+
+export const GetActorCardInputSchema = z.object({
+  projectHash: PerspectiveMemoryOptionalStringSchema,
+  observerActorId: PerspectiveMemoryNonEmptyStringSchema,
+  observedActorId: PerspectiveMemoryNonEmptyStringSchema
+});
+export type GetActorCardInput = z.input<typeof GetActorCardInputSchema>;
+
+// ============================================================
+// Core Memory Blocks (Letta-inspired always-injected, self-editable state)
+// ============================================================
+
+export const CoreMemoryBlockKeySchema = z.enum(['project', 'user']);
+export type CoreMemoryBlockKey = z.infer<typeof CoreMemoryBlockKeySchema>;
+
+export const CORE_MEMORY_BLOCK_MAX_CHARS = 1200;
+
+export const CoreMemoryBlockSchema = z.object({
+  projectHash: PerspectiveMemoryOptionalStringSchema,
+  blockKey: CoreMemoryBlockKeySchema,
+  content: z.string().max(CORE_MEMORY_BLOCK_MAX_CHARS),
+  sourceEventIds: PerspectiveMemoryStringArraySchema,
+  updatedBy: PerspectiveMemoryOptionalStringSchema,
+  createdAt: z.date(),
+  updatedAt: z.date()
+});
+export type CoreMemoryBlock = z.infer<typeof CoreMemoryBlockSchema>;
+
+export const UpsertCoreMemoryBlockInputSchema = z.object({
+  projectHash: PerspectiveMemoryOptionalStringSchema,
+  blockKey: CoreMemoryBlockKeySchema,
+  content: z.string().trim().max(
+    CORE_MEMORY_BLOCK_MAX_CHARS,
+    `core memory block supports at most ${CORE_MEMORY_BLOCK_MAX_CHARS} characters`
+  ),
+  sourceEventIds: PerspectiveMemoryStringArraySchema,
+  updatedBy: PerspectiveMemoryOptionalStringSchema
+});
+export type UpsertCoreMemoryBlockInput = z.input<typeof UpsertCoreMemoryBlockInputSchema>;
+
+export const GetCoreMemoryBlockInputSchema = z.object({
+  projectHash: PerspectiveMemoryOptionalStringSchema,
+  blockKey: CoreMemoryBlockKeySchema.optional()
+});
+export type GetCoreMemoryBlockInput = z.input<typeof GetCoreMemoryBlockInputSchema>;
+
+export const PerspectiveObservationSchema = z.object({
+  observationId: z.string().uuid(),
+  projectHash: PerspectiveMemoryOptionalStringSchema,
+  observerActorId: PerspectiveMemoryNonEmptyStringSchema,
+  observedActorId: PerspectiveMemoryNonEmptyStringSchema,
+  sessionId: PerspectiveMemoryOptionalStringSchema,
+  level: PerspectiveObservationLevelSchema,
+  content: PerspectiveMemoryNonEmptyStringSchema,
+  confidence: z.number().min(0).max(1),
+  sourceEventIds: PerspectiveMemoryStringArraySchema,
+  sourceObservationIds: PerspectiveMemoryStringArraySchema,
+  createdBy: PerspectiveObservationCreatedBySchema,
+  metadata: z.record(z.unknown()).optional(),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+  deletedAt: z.date().optional()
+});
+export type PerspectiveObservation = z.infer<typeof PerspectiveObservationSchema>;
+
+export const CreatePerspectiveObservationInputSchema = z.object({
+  observationId: z.string().uuid().optional(),
+  projectHash: PerspectiveMemoryOptionalStringSchema,
+  observerActorId: PerspectiveMemoryNonEmptyStringSchema,
+  observedActorId: PerspectiveMemoryNonEmptyStringSchema,
+  sessionId: PerspectiveMemoryOptionalStringSchema,
+  level: PerspectiveObservationLevelSchema.default('explicit'),
+  content: PerspectiveMemoryNonEmptyStringSchema,
+  confidence: z.number().min(0).max(1).default(0.5),
+  sourceEventIds: PerspectiveMemoryStringArraySchema,
+  sourceObservationIds: PerspectiveMemoryStringArraySchema,
+  createdBy: PerspectiveObservationCreatedBySchema.default('manual'),
+  metadata: z.record(z.unknown()).optional(),
+  actor: PerspectiveMemoryOptionalStringSchema
+}).superRefine((value, ctx) => {
+  const hasEvidence = value.sourceEventIds.length > 0 || value.sourceObservationIds.length > 0;
+  if ((value.createdBy !== 'manual' || value.level !== 'explicit') && !hasEvidence) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['sourceEventIds'],
+      message: 'source evidence is required for non-manual or derived perspective observations'
+    });
+  }
+});
+export type CreatePerspectiveObservationInput = z.input<typeof CreatePerspectiveObservationInputSchema>;
+
+export const QueryPerspectiveObservationsInputSchema = z.object({
+  projectHash: PerspectiveMemoryOptionalStringSchema,
+  observerActorId: PerspectiveMemoryOptionalStringSchema,
+  observedActorId: PerspectiveMemoryOptionalStringSchema,
+  sessionId: PerspectiveMemoryOptionalStringSchema,
+  levels: z.array(PerspectiveObservationLevelSchema).optional(),
+  query: PerspectiveMemoryOptionalStringSchema,
+  includeDeleted: z.boolean().default(false),
+  limit: z.number().int().positive().max(500).default(50)
+});
+export type QueryPerspectiveObservationsInput = z.input<typeof QueryPerspectiveObservationsInputSchema>;
+
+export const DeletePerspectiveObservationInputSchema = z.object({
+  projectHash: PerspectiveMemoryOptionalStringSchema,
+  observationId: PerspectiveMemoryNonEmptyStringSchema,
+  actor: PerspectiveMemoryNonEmptyStringSchema
+});
+export type DeletePerspectiveObservationInput = z.input<typeof DeletePerspectiveObservationInputSchema>;
+
+export const ListPerspectiveObservationsBySourceInputSchema = z.object({
+  projectHash: PerspectiveMemoryOptionalStringSchema,
+  sourceEventId: PerspectiveMemoryNonEmptyStringSchema,
+  limit: z.number().int().positive().max(500).default(100)
+});
+export type ListPerspectiveObservationsBySourceInput = z.input<typeof ListPerspectiveObservationsBySourceInputSchema>;
+
+// ============================================================
+// Configuration
+// ============================================================
+
+export const ConfigSchema = z.object({
+  storage: z.object({
+    path: z.string().default('~/.claude-code/memory'),
+    maxSizeMB: z.number().default(500)
+  }).default({}),
+  embedding: z.object({
+    provider: z.enum(['local', 'openai']).default('local'),
+    model: z.string().default('Xenova/multilingual-e5-small'),
+    openaiModel: z.string().default('Xenova/multilingual-e5-small'),
+    batchSize: z.number().default(32)
+  }).default({}),
+  retrieval: z.object({
+    topK: z.number().default(5),
+    minScore: z.number().default(0.7),
+    maxTokens: z.number().default(2000)
+  }).default({}),
+  matching: z.object({
+    minCombinedScore: z.number().default(0.92),
+    minGap: z.number().default(0.03),
+    suggestionThreshold: z.number().default(0.75),
+    weights: z.object({
+      semanticSimilarity: z.number().default(0.4),
+      ftsScore: z.number().default(0.25),
+      recencyBonus: z.number().default(0.2),
+      statusWeight: z.number().default(0.15)
+    }).default({})
+  }).default({}),
+  privacy: z.object({
+    excludePatterns: z.array(z.string()).default(['password', 'secret', 'api_key', 'token', 'bearer']),
+    anonymize: z.boolean().default(false),
+    privateTags: z.object({
+      enabled: z.boolean().default(true),
+      marker: z.enum(['[PRIVATE]', '[REDACTED]', '']).default('[PRIVATE]'),
+      preserveLineCount: z.boolean().default(false),
+      supportedFormats: z.array(z.enum(['xml', 'bracket', 'comment'])).default(['xml'])
+    }).default({})
+  }).default({}),
+  toolObservation: z.object({
+    enabled: z.boolean().default(true),
+    excludedTools: z.array(z.string()).default(['TodoWrite', 'TodoRead']),
+    minOutputLength: z.number().default(100),
+    maxOutputLength: z.number().default(10000),
+    maxOutputLines: z.number().default(100),
+    storeOnlyOnSuccess: z.boolean().default(false)
+  }).default({}),
+  features: z.object({
+    autoSave: z.boolean().default(true),
+    sessionSummary: z.boolean().default(true),
+    insightExtraction: z.boolean().default(true),
+    crossProjectLearning: z.boolean().default(false),
+    singleWriterMode: z.boolean().default(true),
+    sharedStore: z.object({
+      enabled: z.boolean().default(true),
+      autoPromote: z.boolean().default(true),
+      searchShared: z.boolean().default(true),
+      minConfidenceForPromotion: z.number().default(0.8),
+      sharedStoragePath: z.string().default('~/.claude-code/memory/shared')
+    }).default({})
+  }).default({}),
+  operations: MemoryOperationsConfigSchema,
+  mode: z.enum(['session', 'endless']).default('session'),
+  endless: z.object({
+    enabled: z.boolean().default(false),
+    workingSet: z.object({
+      maxEvents: z.number().default(100),
+      timeWindowHours: z.number().default(24),
+      minRelevanceScore: z.number().default(0.5)
+    }).default({}),
+    consolidation: z.object({
+      triggerIntervalMs: z.number().default(3600000),
+      triggerEventCount: z.number().default(100),
+      triggerIdleMs: z.number().default(1800000),
+      useLLMSummarization: z.boolean().default(false)
+    }).default({}),
+    continuity: z.object({
+      minScoreForSeamless: z.number().default(0.7),
+      topicDecayHours: z.number().default(48)
+    }).default({})
+  }).optional()
+});
+export type Config = z.infer<typeof ConfigSchema>;
+
+// ============================================================
+// Append Result (AXIOMMIND Principle 2: Append-only)
+// ============================================================
+
+export type AppendResult =
+  | { success: true; eventId: string; isDuplicate: false }
+  | { success: true; eventId: string; isDuplicate: true }
+  | { success: false; error: string };
+
+// ============================================================
+// Hook Input/Output Types
+// ============================================================
+
+export interface SessionStartInput {
+  session_id: string;
+  cwd: string;
+  actor_id?: string;
+}
+
+export interface SessionStartOutput {
+  hookSpecificOutput: {
+    hookEventName: 'SessionStart';
+    additionalContext?: string;
+  };
+}
+
+export interface UserPromptSubmitInput {
+  session_id: string;
+  prompt: string;
+  actor_id?: string;
+}
+
+export interface UserPromptSubmitOutput {
+  hookSpecificOutput: {
+    hookEventName: 'UserPromptSubmit';
+    additionalContext?: string;
+  };
+}
+
+// Stop Hook Input (matches actual Claude Code hook format)
+export interface StopInput {
+  session_id: string;
+  transcript_path: string;
+  cwd: string;
+  permission_mode: string;
+  hook_event_name: string;
+  stop_hook_active: boolean;
+}
+
+export interface SessionEndInput {
+  session_id: string;
+}
+
+// PostToolUse Hook Input (matches actual Claude Code hook format)
+export interface PostToolUseInput {
+  session_id: string;
+  hook_event_name: string;
+  tool_name: string;
+  tool_input: Record<string, unknown>;
+  tool_use_id: string;
+  // Claude Code sends tool_response as an object, not tool_output as string
+  tool_response: {
+    stdout?: string;
+    stderr?: string;
+    content?: string;
+    interrupted?: boolean;
+    isImage?: boolean;
+    // For non-Bash tools, response may be a plain string or other format
+    [key: string]: unknown;
+  };
+  cwd: string;
+  transcript_path: string;
+  permission_mode: string;
+}
+
+// ============================================================
+// Tool Observation Types
+// ============================================================
+
+export const ToolMetadataSchema = z.object({
+  filePath: z.string().optional(),
+  fileType: z.string().optional(),
+  lineCount: z.number().optional(),
+  command: z.string().optional(),
+  exitCode: z.number().optional(),
+  pattern: z.string().optional(),
+  matchCount: z.number().optional(),
+  url: z.string().optional(),
+  statusCode: z.number().optional()
+});
+export type ToolMetadata = z.infer<typeof ToolMetadataSchema>;
+
+export const ToolObservationPayloadSchema = z.object({
+  toolName: z.string(),
+  toolInput: z.record(z.unknown()),
+  toolOutput: z.string(),
+  durationMs: z.number(),
+  success: z.boolean(),
+  errorMessage: z.string().optional(),
+  metadata: ToolMetadataSchema.optional()
+});
+export type ToolObservationPayload = z.infer<typeof ToolObservationPayloadSchema>;
+
+// ============================================================
+// Vector Record
+// ============================================================
+
+export interface VectorRecord {
+  id: string;
+  eventId: string;
+  sessionId: string;
+  eventType: string;
+  content: string;
+  vector: number[];
+  timestamp: string;
+  metadata?: Record<string, unknown>;
+}
+
+// ============================================================
+// Outbox Item (Single-Writer Pattern)
+// ============================================================
+
+export interface OutboxItem {
+  id: string;
+  eventId: string;
+  content: string;
+  status: 'pending' | 'processing' | 'done' | 'failed';
+  retryCount: number;
+  createdAt: Date;
+  errorMessage?: string;
+}
+
+export interface OutboxStatsOptions {
+  /** Processing rows older than this threshold are considered abandoned/stuck. */
+  stuckThresholdMs?: number;
+  /** Failed rows below this retry budget are counted as retryable; rows at/above it are counted as quarantined. */
+  maxRetries?: number;
+  /** Test hook for deterministic age calculations. */
+  now?: Date;
+}
+
+export interface OutboxQueueStats {
+  pending: number;
+  processing: number;
+  failed: number;
+  /** Failed rows that recovery can safely move back to pending without exposing payloads. */
+  retryableFailed?: number;
+  /** Failed rows at/above retry budget that need operator attention/quarantine handling. */
+  quarantinedFailed?: number;
+  total: number;
+  stuckProcessing: number;
+  /** Age in milliseconds for the oldest processing row, or null when none are processing. */
+  oldestProcessingAgeMs: number | null;
+}
+
+export interface OutboxStats {
+  embedding: OutboxQueueStats;
+  vector: OutboxQueueStats;
+}
+
+export interface OutboxRecoveryOptions {
+  /** Processing rows older than this threshold are considered abandoned. */
+  stuckThresholdMs?: number;
+  /** Retry failed rows whose retry_count is still below this value. */
+  maxRetries?: number;
+  /** Count rows that would be recovered/retried without mutating them. */
+  dryRun?: boolean;
+  /** Test hook for deterministic recovery cutoffs. */
+  now?: Date;
+}
+
+export interface OutboxRecoveryBucket {
+  recoveredProcessing: number;
+  retriedFailed: number;
+}
+
+export interface OutboxRecoveryResult {
+  embedding: OutboxRecoveryBucket;
+  vector: OutboxRecoveryBucket;
+}
+
+export interface ProjectScopeRepairOptions {
+  /** Absolute or logical project path used to derive the expected project hash. */
+  projectPath?: string;
+  /** Explicit project hash override for hash-only repair flows. */
+  projectHash?: string;
+  /** Inspect and count changes without mutating event metadata. */
+  dryRun?: boolean;
+  /** Test hook for deterministic repair metadata. */
+  now?: Date;
+}
+
+export interface ProjectScopeRepairSample {
+  eventId: string;
+  action: 'repaired' | 'quarantined';
+  reason: 'same-project-path' | 'session-project-path' | 'project-path-mismatch' | 'missing-project-scope' | 'scope-hash-mismatch' | 'content-project-mismatch';
+}
+
+export interface ProjectScopeRepairResult {
+  dryRun: boolean;
+  projectHash: string;
+  scanned: number;
+  repaired: number;
+  quarantined: number;
+  alreadyScoped: number;
+  skipped: number;
+  samples: ProjectScopeRepairSample[];
+}
+
+// ============================================================
+// Entity Types (Task, Condition, Artifact)
+// ============================================================
+
+export const EntityTypeSchema = z.enum(['task', 'condition', 'artifact', 'source_file']);
+export type EntityType = z.infer<typeof EntityTypeSchema>;
+
+export const TaskStatusSchema = z.enum([
+  'pending',
+  'in_progress',
+  'blocked',
+  'done',
+  'cancelled'
+]);
+export type TaskStatus = z.infer<typeof TaskStatusSchema>;
+
+export const TaskPrioritySchema = z.enum(['low', 'medium', 'high', 'critical']);
+export type TaskPriority = z.infer<typeof TaskPrioritySchema>;
+
+export const EntityStageSchema = z.enum([
+  'raw',
+  'working',
+  'candidate',
+  'verified',
+  'certified'
+]);
+export type EntityStage = z.infer<typeof EntityStageSchema>;
+
+export const EntityStatusSchema = z.enum([
+  'active',
+  'contested',
+  'deprecated',
+  'superseded'
+]);
+export type EntityStatus = z.infer<typeof EntityStatusSchema>;
+
+// Base Entity schema
+export const EntitySchema = z.object({
+  entityId: z.string(),
+  entityType: EntityTypeSchema,
+  canonicalKey: z.string(),
+  title: z.string(),
+  stage: EntityStageSchema,
+  status: EntityStatusSchema,
+  currentJson: z.record(z.unknown()),
+  titleNorm: z.string().optional(),
+  searchText: z.string().optional(),
+  createdAt: z.date(),
+  updatedAt: z.date()
+});
+export type Entity = z.infer<typeof EntitySchema>;
+
+// Task-specific current_json structure
+export const TaskCurrentJsonSchema = z.object({
+  status: TaskStatusSchema,
+  priority: TaskPrioritySchema.optional(),
+  blockers: z.array(z.string()).optional(),
+  blockerSuggestions: z.array(z.string()).optional(),
+  description: z.string().optional(),
+  project: z.string().optional()
+});
+export type TaskCurrentJson = z.infer<typeof TaskCurrentJsonSchema>;
+
+// Entity alias for canonical key lookup
+export const EntityAliasSchema = z.object({
+  entityType: EntityTypeSchema,
+  canonicalKey: z.string(),
+  entityId: z.string(),
+  isPrimary: z.boolean()
+});
+export type EntityAlias = z.infer<typeof EntityAliasSchema>;
+
+// ============================================================
+// Edge Types (Relationships)
+// ============================================================
+
+export const NodeTypeSchema = z.enum(['entry', 'entity', 'event']);
+export type NodeType = z.infer<typeof NodeTypeSchema>;
+
+export const RelationTypeSchema = z.enum([
+  'evidence_of',
+  'blocked_by',
+  'blocked_by_suggested',
+  'resolves_to',
+  'derived_from',
+  'supersedes',
+  'source_of',
+  'touched_in'
+]);
+export type RelationType = z.infer<typeof RelationTypeSchema>;
+
+export const EdgeSchema = z.object({
+  edgeId: z.string(),
+  srcType: NodeTypeSchema,
+  srcId: z.string(),
+  relType: RelationTypeSchema,
+  dstType: NodeTypeSchema,
+  dstId: z.string(),
+  metaJson: z.record(z.unknown()).optional(),
+  createdAt: z.date()
+});
+export type Edge = z.infer<typeof EdgeSchema>;
+
+// ============================================================
+// Task Event Types (SoT for Task Entity)
+// ============================================================
+
+export const TaskEventTypeSchema = z.enum([
+  'task_created',
+  'task_status_changed',
+  'task_priority_changed',
+  'task_blockers_set',
+  'task_transition_rejected',
+  'condition_declared',
+  'artifact_declared',
+  'condition_resolved_to'
+]);
+export type TaskEventType = z.infer<typeof TaskEventTypeSchema>;
+
+export const BlockerModeSchema = z.enum(['replace', 'suggest']);
+export type BlockerMode = z.infer<typeof BlockerModeSchema>;
+
+export const BlockerKindSchema = z.enum(['task', 'condition', 'artifact']);
+export type BlockerKind = z.infer<typeof BlockerKindSchema>;
+
+export const BlockerRefSchema = z.object({
+  kind: BlockerKindSchema,
+  entityId: z.string(),
+  rawText: z.string().optional(),
+  confidence: z.number().min(0).max(1).optional(),
+  candidates: z.array(z.string()).optional()
+});
+export type BlockerRef = z.infer<typeof BlockerRefSchema>;
+
+// Task event payloads
+export const TaskCreatedPayloadSchema = z.object({
+  taskId: z.string(),
+  title: z.string(),
+  canonicalKey: z.string(),
+  initialStatus: TaskStatusSchema,
+  priority: TaskPrioritySchema.optional(),
+  description: z.string().optional(),
+  project: z.string().optional()
+});
+export type TaskCreatedPayload = z.infer<typeof TaskCreatedPayloadSchema>;
+
+export const TaskStatusChangedPayloadSchema = z.object({
+  taskId: z.string(),
+  fromStatus: TaskStatusSchema,
+  toStatus: TaskStatusSchema,
+  reason: z.string().optional()
+});
+export type TaskStatusChangedPayload = z.infer<typeof TaskStatusChangedPayloadSchema>;
+
+export const TaskBlockersSetPayloadSchema = z.object({
+  taskId: z.string(),
+  mode: BlockerModeSchema,
+  blockers: z.array(BlockerRefSchema),
+  sourceEntryId: z.string().optional()
+});
+export type TaskBlockersSetPayload = z.infer<typeof TaskBlockersSetPayloadSchema>;
+
+// ============================================================
+// Entry Types (Immutable memory units)
+// ============================================================
+
+export const EntryTypeSchema = z.enum([
+  'fact',
+  'decision',
+  'insight',
+  'task_note',
+  'reference',
+  'preference',
+  'pattern',
+  'troubleshooting'
+]);
+export type EntryType = z.infer<typeof EntryTypeSchema>;
+
+export const EntrySchema = z.object({
+  entryId: z.string(),
+  createdTs: z.date(),
+  entryType: EntryTypeSchema,
+  title: z.string(),
+  contentJson: z.record(z.unknown()),
+  stage: EntityStageSchema,
+  status: EntityStatusSchema,
+  supersededBy: z.string().optional(),
+  buildId: z.string().optional(),
+  evidenceJson: z.record(z.unknown()).optional(),
+  canonicalKey: z.string()
+});
+export type Entry = z.infer<typeof EntrySchema>;
+
+// ============================================================
+// Evidence Aligner V2 Types
+// ============================================================
+
+export const ExtractedEvidenceSchema = z.object({
+  messageIndex: z.number().int().nonnegative(),
+  quote: z.string()
+});
+export type ExtractedEvidence = z.infer<typeof ExtractedEvidenceSchema>;
+
+export const AlignedEvidenceSchema = z.object({
+  messageIndex: z.number().int().nonnegative(),
+  quote: z.string(),
+  spanStart: z.number().int().nonnegative(),
+  spanEnd: z.number().int().positive(),
+  quoteHash: z.string(),
+  confidence: z.number().min(0).max(1),
+  matchMethod: z.enum(['exact', 'normalized', 'fuzzy'])
+});
+export type AlignedEvidence = z.infer<typeof AlignedEvidenceSchema>;
+
+export const FailedEvidenceSchema = z.object({
+  messageIndex: z.number().int().nonnegative(),
+  quote: z.string(),
+  failureReason: z.enum(['not_found', 'below_threshold', 'ambiguous', 'empty_quote', 'invalid_index'])
+});
+export type FailedEvidence = z.infer<typeof FailedEvidenceSchema>;
+
+export const EvidenceAlignResultSchema = z.discriminatedUnion('aligned', [
+  z.object({ aligned: z.literal(true), evidence: AlignedEvidenceSchema }),
+  z.object({ aligned: z.literal(false), evidence: FailedEvidenceSchema })
+]);
+export type EvidenceAlignResult = z.infer<typeof EvidenceAlignResultSchema>;
+
+// ============================================================
+// Vector Outbox V2 Types
+// ============================================================
+
+export const OutboxStatusSchema = z.enum(['pending', 'processing', 'done', 'failed']);
+export type OutboxStatus = z.infer<typeof OutboxStatusSchema>;
+
+export const OutboxItemKindSchema = z.enum(['entry', 'task_title', 'event', 'perspective_observation']);
+export type OutboxItemKind = z.infer<typeof OutboxItemKindSchema>;
+
+export const OutboxJobSchema = z.object({
+  jobId: z.string(),
+  itemKind: OutboxItemKindSchema,
+  itemId: z.string(),
+  embeddingVersion: z.string(),
+  status: OutboxStatusSchema,
+  retryCount: z.number().int().nonnegative(),
+  error: z.string().optional(),
+  createdAt: z.date(),
+  updatedAt: z.date()
+});
+export type OutboxJob = z.infer<typeof OutboxJobSchema>;
+
+// Valid state transitions for outbox
+export const VALID_OUTBOX_TRANSITIONS: Array<{ from: OutboxStatus; to: OutboxStatus }> = [
+  { from: 'pending', to: 'processing' },
+  { from: 'processing', to: 'done' },
+  { from: 'processing', to: 'failed' },
+  { from: 'failed', to: 'pending' }
+];
+
+// ============================================================
+// Build Runs (Pipeline metadata)
+// ============================================================
+
+export const BuildRunSchema = z.object({
+  buildId: z.string(),
+  startedAt: z.date(),
+  finishedAt: z.date().optional(),
+  extractorModel: z.string(),
+  extractorPromptHash: z.string(),
+  embedderModel: z.string(),
+  embeddingVersion: z.string(),
+  idrisVersion: z.string(),
+  schemaVersion: z.string(),
+  status: z.enum(['running', 'success', 'failed']),
+  error: z.string().optional()
+});
+export type BuildRun = z.infer<typeof BuildRunSchema>;
+
+// ============================================================
+// Pipeline Metrics
+// ============================================================
+
+export const PipelineMetricSchema = z.object({
+  id: z.string(),
+  ts: z.date(),
+  stage: z.string(),
+  latencyMs: z.number(),
+  success: z.boolean(),
+  error: z.string().optional(),
+  sessionId: z.string().optional()
+});
+export type PipelineMetric = z.infer<typeof PipelineMetricSchema>;
+
+// ============================================================
+// Progressive Disclosure Types
+// ============================================================
+
+// Layer 1: Search Index (lightweight)
+export const SearchIndexItemSchema = z.object({
+  id: z.string(),
+  summary: z.string().max(100),
+  score: z.number(),
+  type: z.enum(['user_prompt', 'agent_response', 'session_summary', 'tool_observation']),
+  timestamp: z.date(),
+  sessionId: z.string()
+});
+export type SearchIndexItem = z.infer<typeof SearchIndexItemSchema>;
+
+// Layer 2: Timeline
+export const TimelineItemSchema = z.object({
+  id: z.string(),
+  timestamp: z.date(),
+  type: z.enum(['user_prompt', 'agent_response', 'session_summary', 'tool_observation']),
+  preview: z.string().max(200),
+  isTarget: z.boolean()
+});
+export type TimelineItem = z.infer<typeof TimelineItemSchema>;
+
+// Layer 3: Full Detail
+export const FullDetailSchema = z.object({
+  id: z.string(),
+  content: z.string(),
+  type: z.enum(['user_prompt', 'agent_response', 'session_summary', 'tool_observation']),
+  timestamp: z.date(),
+  sessionId: z.string(),
+  citationId: z.string().optional(),
+  metadata: z.object({
+    tokenCount: z.number(),
+    hasCode: z.boolean(),
+    files: z.array(z.string()).optional(),
+    tools: z.array(z.string()).optional()
+  })
+});
+export type FullDetail = z.infer<typeof FullDetailSchema>;
+
+// Progressive Search Result
+export const ProgressiveSearchResultSchema = z.object({
+  index: z.array(SearchIndexItemSchema),
+  timeline: z.array(TimelineItemSchema).optional(),
+  details: z.array(FullDetailSchema).optional(),
+  meta: z.object({
+    totalMatches: z.number(),
+    expandedCount: z.number(),
+    estimatedTokens: z.number(),
+    expansionReason: z.string().optional()
+  })
+});
+export type ProgressiveSearchResult = z.infer<typeof ProgressiveSearchResultSchema>;
+
+// Progressive Disclosure Config
+export const ProgressiveDisclosureConfigSchema = z.object({
+  enabled: z.boolean().default(true),
+  layer1: z.object({
+    topK: z.number().default(10),
+    minScore: z.number().default(0.7)
+  }).default({}),
+  autoExpand: z.object({
+    enabled: z.boolean().default(true),
+    highConfidenceThreshold: z.number().default(0.92),
+    scoreGapThreshold: z.number().default(0.1),
+    maxAutoExpandCount: z.number().default(3)
+  }).default({}),
+  tokenBudget: z.object({
+    maxTotalTokens: z.number().default(2000),
+    layer1PerItem: z.number().default(50),
+    layer2PerItem: z.number().default(40),
+    layer3PerItem: z.number().default(500)
+  }).default({})
+});
+export type ProgressiveDisclosureConfig = z.infer<typeof ProgressiveDisclosureConfigSchema>;
+
+// ============================================================
+// Citation Types
+// ============================================================
+
+export const CitationSchema = z.object({
+  citationId: z.string().length(6),
+  eventId: z.string(),
+  createdAt: z.date()
+});
+export type Citation = z.infer<typeof CitationSchema>;
+
+export const CitationUsageSchema = z.object({
+  usageId: z.string(),
+  citationId: z.string(),
+  sessionId: z.string(),
+  usedAt: z.date(),
+  context: z.string().optional()
+});
+export type CitationUsage = z.infer<typeof CitationUsageSchema>;
+
+export interface CitedSearchResult {
+  event: MemoryEvent;
+  citation: Citation;
+  score: number;
+}
+
+export interface CitationStats {
+  usageCount: number;
+  lastUsed: Date | null;
+}
+
+// ============================================================
+// Endless Mode Types
+// ============================================================
+
+export const MemoryModeSchema = z.enum(['session', 'endless']);
+export type MemoryMode = z.infer<typeof MemoryModeSchema>;
+
+export const EndlessModeConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+
+  workingSet: z.object({
+    maxEvents: z.number().default(100),
+    timeWindowHours: z.number().default(24),
+    minRelevanceScore: z.number().default(0.5)
+  }).default({}),
+
+  consolidation: z.object({
+    triggerIntervalMs: z.number().default(3600000), // 1 hour
+    triggerEventCount: z.number().default(100),
+    triggerIdleMs: z.number().default(1800000), // 30 minutes
+    useLLMSummarization: z.boolean().default(false)
+  }).default({}),
+
+  continuity: z.object({
+    minScoreForSeamless: z.number().default(0.7),
+    topicDecayHours: z.number().default(48)
+  }).default({})
+});
+export type EndlessModeConfig = z.infer<typeof EndlessModeConfigSchema>;
+
+// Working Set Item
+export const WorkingSetItemSchema = z.object({
+  id: z.string(),
+  eventId: z.string(),
+  addedAt: z.date(),
+  relevanceScore: z.number(),
+  topics: z.array(z.string()).optional(),
+  expiresAt: z.date()
+});
+export type WorkingSetItem = z.infer<typeof WorkingSetItemSchema>;
+
+// Working Set
+export interface WorkingSet {
+  recentEvents: MemoryEvent[];
+  lastActivity: Date;
+  continuityScore: number;
+}
+
+// Consolidated Memory
+export const ConsolidatedMemorySchema = z.object({
+  memoryId: z.string(),
+  summary: z.string(),
+  topics: z.array(z.string()),
+  sourceEvents: z.array(z.string()),
+  confidence: z.number(),
+  createdAt: z.date(),
+  accessedAt: z.date().optional(),
+  accessCount: z.number().default(0)
+});
+export type ConsolidatedMemory = z.infer<typeof ConsolidatedMemorySchema>;
+
+// Consolidated Memory Input (for creation)
+export interface ConsolidatedMemoryInput {
+  summary: string;
+  topics: string[];
+  sourceEvents: string[];
+  confidence: number;
+}
+
+// Long-term Rule (promoted from stable summaries)
+export const ConsolidationRuleSchema = z.object({
+  ruleId: z.string(),
+  rule: z.string(),
+  topics: z.array(z.string()),
+  sourceMemoryIds: z.array(z.string()),
+  sourceEvents: z.array(z.string()),
+  confidence: z.number(),
+  createdAt: z.date()
+});
+export type ConsolidationRule = z.infer<typeof ConsolidationRuleSchema>;
+
+export interface ConsolidationRuleInput {
+  rule: string;
+  topics: string[];
+  sourceMemoryIds: string[];
+  sourceEvents: string[];
+  confidence: number;
+}
+
+export interface ConsolidationCostQualityReport {
+  beforeTokenEstimate: number;
+  afterTokenEstimate: number;
+  reductionRatio: number;
+  qualityGuardPassed: boolean;
+  details: string;
+}
+
+// Event Group (for consolidation)
+export interface EventGroup {
+  topics: string[];
+  events: MemoryEvent[];
+}
+
+// Context Snapshot (for continuity calculation)
+export interface ContextSnapshot {
+  id: string;
+  timestamp: number;
+  topics: string[];
+  files: string[];
+  entities: string[];
+}
+
+// Transition Type
+export const TransitionTypeSchema = z.enum(['seamless', 'topic_shift', 'break']);
+export type TransitionType = z.infer<typeof TransitionTypeSchema>;
+
+// Continuity Score Result
+export interface ContinuityScore {
+  score: number;
+  transitionType: TransitionType;
+}
+
+// Continuity Log
+export const ContinuityLogSchema = z.object({
+  logId: z.string(),
+  fromContextId: z.string().optional(),
+  toContextId: z.string().optional(),
+  continuityScore: z.number(),
+  transitionType: TransitionTypeSchema,
+  createdAt: z.date()
+});
+export type ContinuityLog = z.infer<typeof ContinuityLogSchema>;
+
+// Endless Mode Status
+export interface EndlessModeStatus {
+  mode: MemoryMode;
+  workingSetSize: number;
+  continuityScore: number;
+  consolidatedCount: number;
+  lastConsolidation: Date | null;
+}
+
+// ============================================================
+// Shared Store Types (Cross-Project Knowledge)
+// ============================================================
+
+export const SharedEntryTypeSchema = z.enum([
+  'troubleshooting',
+  'best_practice',
+  'common_error'
+]);
+export type SharedEntryType = z.infer<typeof SharedEntryTypeSchema>;
+
+export const SharedTroubleshootingEntrySchema = z.object({
+  entryId: z.string(),
+  sourceProjectHash: z.string(),
+  sourceEntryId: z.string(),
+  title: z.string(),
+  symptoms: z.array(z.string()),
+  rootCause: z.string(),
+  solution: z.string(),
+  topics: z.array(z.string()),
+  technologies: z.array(z.string()).optional(),
+  confidence: z.number().min(0).max(1),
+  usageCount: z.number().default(0),
+  lastUsedAt: z.date().optional(),
+  promotedAt: z.date(),
+  createdAt: z.date()
+});
+export type SharedTroubleshootingEntry = z.infer<typeof SharedTroubleshootingEntrySchema>;
+
+export interface SharedTroubleshootingInput {
+  sourceProjectHash: string;
+  sourceEntryId: string;
+  title: string;
+  symptoms: string[];
+  rootCause: string;
+  solution: string;
+  topics: string[];
+  technologies?: string[];
+  confidence: number;
+}
+
+export const SharedStoreConfigSchema = z.object({
+  enabled: z.boolean().default(true),
+  autoPromote: z.boolean().default(true),
+  searchShared: z.boolean().default(true),
+  minConfidenceForPromotion: z.number().default(0.8),
+  sharedStoragePath: z.string().default('~/.claude-code/memory/shared')
+});
+export type SharedStoreConfig = z.infer<typeof SharedStoreConfigSchema>;
+
+// Shared search result
+export interface SharedSearchResult {
+  id: string;
+  entryId: string;
+  content: string;
+  score: number;
+  entryType: SharedEntryType;
+}
