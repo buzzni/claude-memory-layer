@@ -146,3 +146,25 @@ describe('rankCuratedLessons', () => {
     expect(rankCuratedLessons(many, '프리뷰 서버가 포트 충돌로 재시작에 실패했어', 3)[0]?.lessonId).toBe('l-old');
   });
 });
+
+
+describe('bilingual read-only lesson recall', () => {
+  const runtime = lesson('runtime', 'happy-running-version-from-startup-diagnostic',
+    'Verify the Happy CLI running version rather than the installed package version', '2026-09-23',
+    ['Read the process startup diagnostic to confirm its running version']);
+  it.each([
+    '이 프로젝트에서 현재 대화가 실제 사용 중인 Happy CLI 버전을 확인해주세요. 설치된 패키지 버전과 구분해서 근거와 함께 짧게 알려주세요. 읽기 전용으로 확인하고 파일 수정·설치·교훈 저장은 하지 마세요. 인증정보나 대화 로그 전체는 출력하지 마세요.',
+    '실행 중인 Happy CLI 버전을 확인할 때 이 프로젝트에 저장된 관련 교훈이 있으면 찾아서 적용하고, 실제로 참고한 교훈 이름과 검증 근거를 구분해 알려주세요. 읽기 전용으로 확인하고 파일/교훈 저장·설치는 하지 마세요. 로그 전체나 인증정보는 출력하지 마세요.',
+  ])('recalls an English runbook for a Korean request with non-mutating constraints: %s', query => {
+    expect(rankCuratedLessons([runtime], query, 3)).toEqual([runtime]);
+  });
+  it.each([
+    'Happy CLI 버전 교훈을 적용하지 마세요.',
+    'Happy CLI 버전 확인. 교훈 검색은 하지 마세요.',
+    'Happy CLI 버전 확인. 파일 수정과 교훈 적용은 하지 마세요.',
+    '다른 도구의 버전을 확인해주세요.',
+    'Happy CLI 설치 방법을 알려주세요.',
+  ])('does not widen recall to prohibited or different tasks: %s', query => {
+    expect(rankCuratedLessons([runtime], query, 3)).toEqual([]);
+  });
+});

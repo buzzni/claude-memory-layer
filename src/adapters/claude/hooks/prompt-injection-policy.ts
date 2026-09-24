@@ -374,12 +374,14 @@ export function isExplicitlyProhibitedLessonQuery(query: string): boolean {
  */
 function lessonScoringQuery(query: string): string {
   const korean = /^(?:도구\s*호출|파일\s*(?:수정|변경))(?:(?:\s*[/·,]\s*|\s*(?:및|와|과)\s*)(?:도구\s*호출|파일\s*(?:수정|변경)))*(?:은|는|을|를)?\s*(?:하지\s*마(?:세요|십시오|라)|금지)$/u;
+  const readOnly = /^(?:읽기\s*전용으로\s*확인하고\s*)?(?:파일(?:\s*(?:수정|변경))?|설치|교훈\s*저장)(?:(?:\s*[/·,]\s*|\s*(?:및|와|과)\s*)(?:파일(?:\s*(?:수정|변경))?|설치|교훈\s*저장))*(?:은|는|을|를)?\s*하지\s*마(?:세요|십시오|라)$/u;
+  const privateOutput = /^(?:인증정보|(?:대화\s*)?로그\s*전체)(?:(?:\s*[/·,]\s*|\s*(?:나|이나|및|와|과)\s*)(?:인증정보|(?:대화\s*)?로그\s*전체))*(?:은|는|을|를)?\s*출력하지\s*마(?:세요|십시오|라)$/u;
   const english = /^(?:please\s+)?(?:do[ -]+not|don't|never)\s+(?:(?:call|use|invoke)\s+tools|(?:edit|modify|change)\s+files)(?:\s+(?:or|and)\s+(?:(?:call|use|invoke)\s+tools|(?:edit|modify|change)\s+files))*$/iu;
   // Split only at complete sentence/line boundaries, never inside foo.ts or a
   // code symbol. A clause attached with "but" is deliberately left ambiguous.
   return query.split(/(?<=[.!?;])(?=\s)|[\r\n]+/u).filter(clause => {
     const statement = clause.trim().replace(/[.!?;]$/, '').trim();
-    return !korean.test(statement) && !english.test(statement);
+    return !korean.test(statement) && !english.test(statement) && !readOnly.test(statement) && !privateOutput.test(statement);
   }).join(' ');
 }
 
@@ -408,8 +410,12 @@ export function scoreLessonEvidence(
   const exactSubject = hasExactLessonSubject(query, lesson);
   if (!exactSubject && !hasQueryMemoryAlignment(query, content, 2)) return null;
 
-  const queryTerms = meaningfulTerms(query);
-  const contentTerms = new Set(meaningfulTerms(content));
+  // A narrow technical noun equivalence, confined to lesson scoring. It does
+  // not lower the overlap gate: a product mention alone still cannot match.
+  const lessonTerms = (value: string) => [...new Set(meaningfulTerms(value)
+    .map(term => term === '버전' || term === 'versions' ? 'version' : term))];
+  const queryTerms = lessonTerms(query);
+  const contentTerms = new Set(lessonTerms(content));
   const overlap = queryTerms.filter((term) => contentTerms.has(term)).length;
   if (!exactSubject && overlap < Math.min(3, queryTerms.length)) return null;
 
