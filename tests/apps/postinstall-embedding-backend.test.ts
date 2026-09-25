@@ -60,7 +60,7 @@ describe('embedding backend postinstall repair', () => {
 
     expect(pkg.engines?.node).toBe('>=20.19.0');
     expect(pkg.dependencies?.['@hono/node-server']).toBe('^2.0.12');
-    expect(pkg.overrides?.sharp).toBe('0.35.3');
+    expect(pkg.overrides?.sharp).toBe('0.35.4');
   });
 
   it('installs the secured embedding backend through the required-backend repair hook', () => {
@@ -174,7 +174,7 @@ describe('embedding backend postinstall repair', () => {
     expect(postinstall.createManagedBackendManifest()).toEqual({
       private: true,
       dependencies: { '@huggingface/transformers': '3.8.1' },
-      overrides: { sharp: '0.35.3' }
+      overrides: { sharp: '0.35.4' }
     });
     expect(postinstall.createNpmInstallArgs(rootDir)).toEqual([
       'install',
