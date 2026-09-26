@@ -122,6 +122,15 @@ describe('rankCuratedLessons', () => {
     expect(rankCuratedLessons(byRecency, '오늘 회의록 요약해줘', 3)).toEqual([]);
   });
 
+  // 실사용 2026-09-26: "응 진행 해줘"에 무관한 교훈 3건이 붙었다. 의미 있는 단어가 0개면
+  // 겹침 기준 min(3, 0)이 0이 되어 모든 교훈이 기본 점수로 통과하던 결함.
+  it.each(['응 진행 해줘', '응', 'ok', '네 해주세요'])(
+    '의미 있는 단어가 없는 짧은 응답에는 아무 교훈도 내보내지 않는다: %s',
+    query => {
+      expect(rankCuratedLessons(byRecency, query, 3)).toEqual([]);
+    }
+  );
+
   it('keeps repository order when there is no query at all', () => {
     expect(rankCuratedLessons(byRecency, undefined, 2).map((l) => l.lessonId)).toEqual(['l-new', 'l-mid']);
   });
