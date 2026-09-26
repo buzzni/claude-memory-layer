@@ -417,7 +417,9 @@ export function scoreLessonEvidence(
   const queryTerms = lessonTerms(query);
   const contentTerms = new Set(lessonTerms(content));
   const overlap = queryTerms.filter((term) => contentTerms.has(term)).length;
-  if (!exactSubject && overlap < Math.min(3, queryTerms.length)) return null;
+  // A query with no meaningful term ("응 진행 해줘") has nothing to match; without
+  // this, min(3, 0) lets every lesson through at the base score.
+  if (!exactSubject && (queryTerms.length === 0 || overlap < Math.min(3, queryTerms.length))) return null;
 
   const coverage = exactSubject ? 1 : overlap / Math.max(1, Math.min(queryTerms.length, 8));
   const anchors = identifierAnchors(query);
