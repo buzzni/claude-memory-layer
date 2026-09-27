@@ -1,0 +1,108 @@
+import { chmodSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { SQLiteEventStore } from '../../src/core/sqlite-event-store.js';
+import { LessonRepository } from '../../src/core/operations/lesson-repository.js';
+import { MemoryAssetPermissionService } from '../../src/core/operations/memory-asset-permission-service.js';
+import { getProjectStoragePath, hashProjectPath } from '../../src/core/registry/project-path.js';
+import { handleToolCall } from '../../src/extensions/mcp/handlers.js';
+import { snapshotMemoryRoot, diffMemoryRootSnapshots } from '../helpers/memory-root-snapshot.js';
+
+const roots: string[] = [];
+afterEach(() => {
+  vi.unstubAllEnvs();
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
+async function fixture() {
+  const root = mkdtempSync(join(tmpdir(), 'cml-lesson-readonly-'));
+  roots.push(root);
+  const home = join(root, 'home');
+  mkdirSync(home);
+  vi.stubEnv('HOME', home);
+  vi.stubEnv('CLAUDE_MEMORY_ASSET_PERMISSION_MODE', 'legacy');
+  const projectPath = join(root, 'project');
+  const projectHash = hashProjectPath(projectPath);
+  const dbPath = join(getProjectStoragePath(projectPath), 'events.sqlite');
+  const store = new SQLiteEventStore(dbPath);
+  await store.initialize();
+  const lesson = await new LessonRepository(store.getDatabase()).upsert({
+    projectHash, name: 'Read a preview', trigger: 'When a preview is delivered',
+    steps: ['Read the complete lesson'], sourceEventIds: ['fixture-event'], sourceClass: 'curated'
+  });
+  return { root, projectPath, projectHash, dbPath, store, lesson, memoryRoot: join(home, '.claude-code', 'memory') };
+}
+
+async function read(projectPath: string, args: Record<string, unknown>) {
+  const result = await handleToolCall('mem-lesson-get', { projectPath, ...args });
+  expect(result.isError, JSON.stringify(result)).not.toBe(true);
+  return JSON.parse(String(result.content[0]?.text));
+}
+
+describe('MCP lesson body lookup in a read-only runtime', () => {
+  it('reads by id and name without writing a closed read-only canonical store', async () => {
+    const f = await fixture();
+    await f.store.close();
+    chmodSync(f.dbPath, 0o444);
+    const directory = getProjectStoragePath(f.projectPath);
+    chmodSync(directory, 0o555);
+    const before = snapshotMemoryRoot(f.memoryRoot);
+    try {
+      for (const args of [{ lessonId: f.lesson.lessonId }, { name: f.lesson.name }]) {
+        expect(await read(f.projectPath, args)).toMatchObject({ found: true, lesson: { steps: f.lesson.steps } });
+      }
+      expect(diffMemoryRootSnapshots(before, snapshotMemoryRoot(f.memoryRoot))).toEqual([]);
+    } finally {
+      chmodSync(directory, 0o755);
+      chmodSync(f.dbPath, 0o644);
+    }
+  });
+
+  it('reads committed WAL rows and preserves permission and project boundaries', async () => {
+    const f = await fixture();
+    try {
+      await new MemoryAssetPermissionService(f.store.getDatabase()).create({
+        projectHash: f.projectHash, requesterActorId: 'owner', assetId: `lesson:${f.lesson.lessonId}`,
+        assetType: 'lesson', title: f.lesson.name, sourceRefs: [`lesson:${f.lesson.lessonId}`]
+      });
+      const foreign = await new LessonRepository(f.store.getDatabase()).upsert({
+        projectHash: 'another-project', name: 'Foreign lesson', trigger: 'Never cross projects',
+        steps: ['Private step'], sourceEventIds: ['foreign-event']
+      });
+      vi.stubEnv('CLAUDE_MEMORY_ASSET_PERMISSION_MODE', 'strict');
+      const before = snapshotMemoryRoot(f.memoryRoot);
+      expect(await read(f.projectPath, { lessonId: f.lesson.lessonId, requesterActorId: 'owner' })).toMatchObject({ found: true });
+      expect(await read(f.projectPath, { lessonId: f.lesson.lessonId, requesterActorId: 'other' })).toMatchObject({ found: false });
+      expect((await handleToolCall('mem-lesson-get', { projectPath: f.projectPath, lessonId: f.lesson.lessonId })).isError).toBe(true);
+      expect(await read(f.projectPath, { lessonId: 'missing', requesterActorId: 'owner' })).toMatchObject({ found: false });
+      vi.stubEnv('CLAUDE_MEMORY_ASSET_PERMISSION_MODE', 'legacy');
+      expect(await read(f.projectPath, { lessonId: foreign.lessonId })).toMatchObject({ found: false });
+      expect(diffMemoryRootSnapshots(before, snapshotMemoryRoot(f.memoryRoot))).toEqual([]);
+    } finally { await f.store.close(); }
+  });
+
+  it('rejects temporary snapshots anywhere inside canonical memory storage', async () => {
+    const f = await fixture();
+    await f.store.close();
+    const temp = join(f.memoryRoot, 'other-project-temp');
+    mkdirSync(temp);
+    vi.stubEnv('TMPDIR', temp);
+    vi.stubEnv('TMP', temp);
+    vi.stubEnv('TEMP', temp);
+    const before = snapshotMemoryRoot(f.memoryRoot);
+    const result = await handleToolCall('mem-lesson-get', { projectPath: f.projectPath, lessonId: f.lesson.lessonId });
+    expect(result.isError).toBe(true);
+    expect(String(result.content[0]?.text)).toContain('Snapshot directory must be outside canonical memory storage');
+    expect(diffMemoryRootSnapshots(before, snapshotMemoryRoot(f.memoryRoot))).toEqual([]);
+  });
+
+  it('does not create an empty store for an unknown project', async () => {
+    const f = await fixture();
+    await f.store.close();
+    const before = snapshotMemoryRoot(f.memoryRoot);
+    const result = await handleToolCall('mem-lesson-get', { projectPath: join(f.root, 'unknown'), lessonId: f.lesson.lessonId });
+    expect(result.isError).toBe(true);
+    expect(diffMemoryRootSnapshots(before, snapshotMemoryRoot(f.memoryRoot))).toEqual([]);
+  });
+});

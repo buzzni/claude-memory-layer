@@ -669,19 +669,26 @@ async function handleMemoryOperationTool(name: string, args: Record<string, unkn
       default:
         throw new Error(`Unknown memory operation tool: ${name}`);
     }
-  });
+  }, name === 'mem-lesson-get');
 }
 
 async function withMemoryOperationContext<T>(
   args: Record<string, unknown>,
-  callback: (context: MemoryOperationContext) => Promise<T> | T
+  callback: (context: MemoryOperationContext) => Promise<T> | T,
+  readOnly = false
 ): Promise<T> {
   const projectPath = requiredProjectPath(args);
   const projectHash = hashProjectPath(projectPath);
   const storagePath = getProjectStoragePath(projectPath);
-  const store = new SQLiteEventStore(path.join(storagePath, 'events.sqlite'), { readonly: false });
-  await store.initialize();
+  // Lesson references must remain readable when the canonical store is mounted
+  // read-only. A snapshot also keeps WAL/SHM bookkeeping off the source store.
+  const store = new SQLiteEventStore(path.join(storagePath, 'events.sqlite'), {
+    readonly: readOnly,
+    snapshot: readOnly,
+    canonicalMemoryRoot: readOnly ? path.dirname(path.dirname(storagePath)) : undefined
+  });
   try {
+    await store.initialize();
     return await callback({ projectPath, projectHash, db: store.getDatabase() });
   } finally {
     await store.close();
