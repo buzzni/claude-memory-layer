@@ -177,3 +177,64 @@ describe('bilingual read-only lesson recall', () => {
     expect(rankCuratedLessons([runtime], query, 3)).toEqual([]);
   });
 });
+
+// Frozen applicability cases from the cross-session audit (2026-09-27).
+// Common downstream steps cannot establish a special condition.
+describe('applicability rather than incidental procedure vocabulary', () => {
+  const pool = [
+    lesson('conflict', 'merge-conflict-preserve-intent', 'PR merge 충돌 conflict 해결이 필요한 때', '2026-09-01',
+      ['commit push PR 생성 전에 Desktop 자식 패널 표시 코드를 확인한다']),
+    lesson('stale', 'closing-stale-pr-preserves-knowledge', '오래된 stale PR 닫기 close 직전', '2026-09-01',
+      ['commit push PR 작업 이력을 확인한다']),
+    lesson('stack', 'stacked-pr-branch-before-commit', 'stacked 스택 PR 브랜치 여러 개 작업 시', '2026-09-01',
+      ['commit push PR 전에 branch 를 확인한다']),
+    lesson('mapping', 'error-code-mapping-core-extension', 'Extension 오류 코드 매핑 변경 시', '2026-09-01',
+      ['Desktop 자식 패널 표시까지 확인한다']),
+  ];
+  it.each(['push & pr 해줘', 'commit & pr', 'commit push PR 해줘', 'Desktop 자식 패널 표시는 왜 안되는거지?'])(
+    'abstains without the special condition: %s', query => {
+      expect(rankCuratedLessons(pool, query, 3)).toEqual([]);
+    });
+  it.each([
+    ['PR merge 충돌 해결', 'conflict'],
+    ['resolve PR merge conflict', 'conflict'],
+    ['오래된 PR 닫기', 'stale'],
+    ['close stale PR', 'stale'],
+    ['스택 PR 브랜치 작업', 'stack'],
+    ['stacked PR branch', 'stack'],
+    ['Extension 오류 코드 매핑 변경', 'mapping'],
+  ])('retains an applicable condition: %s', (query, id) => {
+    expect(rankCuratedLessons(pool, query, 3).map(item => item.lessonId)).toEqual([id]);
+  });
+  it('preserves queryless exploration independently of automatic applicability', () => {
+    expect(rankCuratedLessons(pool, undefined, 3)).toEqual(pool.slice(0, 3));
+  });
+});
+
+it('requires the specific condition even when two subject words overlap', () => {
+  const squash = lesson('squash', 'stacked-pr-after-bottom-squash-merge', '스택 PR 아래 PR squash 머지 직후', '2026-09-01', ['merge 충돌 해결 전에 기록을 확인']);
+  const iframe = lesson('iframe', 'extension-panel-sandboxed-iframe', 'Extension 패널 테스트 작성 시', '2026-09-01', ['오류 코드 매핑을 확인']);
+  expect(rankCuratedLessons([squash], 'PR merge 충돌 해결', 3)).toEqual([]);
+  expect(rankCuratedLessons([iframe], 'Extension 패널 오류 코드 매핑', 3)).toEqual([]);
+  expect(rankCuratedLessons([squash], 'stacked PR squash merge', 3)).toEqual([squash]);
+  expect(rankCuratedLessons([iframe], 'Extension 패널 테스트', 3)).toEqual([iframe]);
+});
+
+it('ignores delivery locations and bare particles but preserves bilingual conflict conditions', () => {
+  const stack = lesson('stack', 'stacked-pr-branch-before-commit', '스택 PR 브랜치 작업 시', '2026-09-01', ['commit push PR 준비']);
+  const hygiene = lesson('hygiene', 'branch-hygiene-one-worktree', 'worktree 에서 branch commit PR 정리 시', '2026-09-01', ['commit push PR 확인']);
+  const conflict = lesson('conflict', 'merge-conflict-resolution', 'PR이 main과 conflicting 상태가 돼 실제 merge로 해소할 때', '2026-09-01', ['PR merge 충돌 해결']);
+  for (const query of ['새 브랜치 만들어서 commit push PR 해줘', 'commit & push to a new branch and open a PR', 'PR merge 해줘', 'worktree 에서 commit push PR 해줘', 'PR 브랜치 에서 commit 해줘']) {
+    expect(rankCuratedLessons([stack, hygiene, conflict], query, 3)).toEqual([]);
+  }
+  expect(rankCuratedLessons([conflict], 'PR merge 충돌 해결', 3)).toEqual([conflict]);
+  expect(rankCuratedLessons([conflict], 'resolve PR merge conflict', 3)).toEqual([conflict]);
+});
+
+it('does not use git itself as a special-condition clue', () => {
+  const hygiene = lesson('hygiene', 'branch-hygiene-one-worktree', 'main 브랜치 git worktree 에서 checkout 전', '2026-09-01', ['git pull 받고 push 전에 기록 확인']);
+  for (const query of ['main 브랜치에서 git pull 받고 push', 'git worktree 에서 main pull 해줘']) {
+    expect(rankCuratedLessons([hygiene], query, 3)).toEqual([]);
+  }
+  expect(rankCuratedLessons([hygiene], 'git checkout main', 3)).toEqual([hygiene]);
+});
