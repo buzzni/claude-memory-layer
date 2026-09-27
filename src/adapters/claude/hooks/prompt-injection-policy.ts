@@ -413,8 +413,23 @@ export function scoreLessonEvidence(
   // A narrow technical noun equivalence, confined to lesson scoring. It does
   // not lower the overlap gate: a product mention alone still cannot match.
   const lessonTerms = (value: string) => [...new Set(meaningfulTerms(value)
-    .map(term => term === '버전' || term === 'versions' ? 'version' : term))];
+    // A separated Korean particle is grammar, not applicability evidence.
+    .filter(term => term.replace(KOREAN_PARTICLE_SUFFIX, '') !== '')
+    .map(term => term === '버전' || term === 'versions' ? 'version'
+      : ['충돌', 'conflicts', 'conflicting'].includes(term) ? 'conflict' : term))];
   const queryTerms = lessonTerms(query);
+  // Procedure text often mentions commit/push/PR as a downstream step. It is
+  // not evidence that this turn meets the runbook's special condition. Require
+  // subject overlap and at least one clue beyond generic delivery vocabulary.
+  // Keep this gate lesson-only; transcript retrieval has a different contract.
+  const subjectTerms = new Set(lessonTerms([lesson.name, lesson.trigger ?? ''].join(' ')));
+  const subjectMatches = queryTerms.filter(term => subjectTerms.has(term));
+  const deliveryTerms = new Set([
+    'git', 'commit', 'push', 'pr', 'pull', 'request', 'branch', 'branches', 'worktree', 'main', 'merge',
+    '커밋', '푸시', '브랜치', '워크트리', '머지', '병합',
+  ]);
+  if (!exactSubject && (subjectMatches.length < Math.min(3, queryTerms.length)
+    || !subjectMatches.some(term => !deliveryTerms.has(term)))) return null;
   const contentTerms = new Set(lessonTerms(content));
   const overlap = queryTerms.filter((term) => contentTerms.has(term)).length;
   // A query with no meaningful term ("응 진행 해줘") has nothing to match; without
