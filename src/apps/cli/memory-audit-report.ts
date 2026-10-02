@@ -29,6 +29,12 @@ import {
 import { loadSessionRegistry, type SessionRegistry } from '../../core/registry/session-registry.js';
 import { summarizeTypedSelections } from '../../core/retrieval-trace-ledger.js';
 import {
+  auditLessonUsage,
+  type LessonQualitySummary,
+  type LessonUsageSummary,
+  type PromptQualitySummary
+} from '../../core/lesson-usage-audit.js';
+import {
   emptyTypedSelectionSummary,
   CURRENT_USEFULNESS_EVALUATOR_VERSION,
   presentedOutcomeReason,
@@ -86,6 +92,17 @@ export interface MemoryAuditStoreReport {
   };
   /** Read-only suggestion. Nothing is moved or merged by this report. */
   mergeSuggestion: string | null;
+  /** Stored user_prompt rows split by classifier v1; null when the store could not be read. */
+  promptQuality: PromptQualitySummary | null;
+  /** Lesson selection, host acknowledgement, and MCP body lookup counts kept per provenance. */
+  lessonUsage: LessonUsageSummary | null;
+  lessonQuality: LessonQualitySummary | null;
+  /**
+   * Set when the lesson/prompt sections threw unexpectedly (distinct from an
+   * unsupported schema, which each section reports itself). Enum only; the
+   * raw error is never printed.
+   */
+  lessonAuditError: 'computation_failed' | null;
 }
 
 export interface MemoryAuditReport {
@@ -305,7 +322,11 @@ function auditOneStore(
       : canonicalHashes.length === 1 && canonicalHashes[0] !== store.storeHash
         ? `Store hash differs from the canonical hash its registry paths resolve to (${canonicalHashes[0]}). `
           + 'Likely a worktree alias; verify the marker and the active store before consolidating.'
-        : null
+        : null,
+    promptQuality: null,
+    lessonUsage: null,
+    lessonQuality: null,
+    lessonAuditError: null
   };
 
   let db: SQLiteDatabase | undefined;
@@ -448,6 +469,24 @@ function auditOneStore(
         ? Math.round((base.evaluation.unknownAdoption / current.length) * 10_000) / 10_000
         : null;
       base.evaluation.legacyAssumedDeliveryRows = observations.filter((row) => row.evaluator_version === 'v2').length;
+    }
+
+    // Each section reports unsupported for missing tables/columns; a malformed
+    // section must not drop the rest of this store's report.
+    try {
+      const usage = auditLessonUsage(db, {
+        since: options.since,
+        until: options.until,
+        projectHash: store.storeHash === '__global__' ? null : store.storeHash
+      });
+      base.promptQuality = usage.promptQuality;
+      base.lessonUsage = usage.lessonUsage;
+      base.lessonQuality = usage.lessonQuality;
+    } catch {
+      base.promptQuality = null;
+      base.lessonUsage = null;
+      base.lessonQuality = null;
+      base.lessonAuditError = 'computation_failed';
     }
 
     const hasTraceRows = base.schemaCapability.retrievalTraces && Number(sqliteGet<{ count: number }>(
@@ -606,6 +645,7 @@ export function formatMemoryAuditMarkdown(report: MemoryAuditReport): string {
     }
   }
   lines.push('', 'Importer cursor: unknown; observed source timestamps above are not importer progress or backlog measurements.');
+  lines.push(...formatLessonUsageMarkdown(report.stores));
   if (suggestions.length > 0) {
     lines.push('', '## Suggestions (no action taken)', '');
     for (const store of suggestions) lines.push(`- \`${store.storeHash}\`: ${store.mergeSuggestion}`);
@@ -621,6 +661,76 @@ export function formatMemoryAuditMarkdown(report: MemoryAuditReport): string {
   lines.push('', '## Notes', '');
   for (const note of report.notes) lines.push(`- ${note}`);
   return lines.join('\n');
+}
+
+/** Why a lesson/prompt section has no numbers: a computation failure or an unsupported schema. */
+function sectionGap(store: MemoryAuditStoreReport): string {
+  return store.lessonAuditError ? `error: ${store.lessonAuditError}` : store.state === 'unreadable' ? 'unreadable' : 'unsupported';
+}
+
+function formatLessonUsageMarkdown(stores: MemoryAuditStoreReport[]): string[] {
+  const lines: string[] = [
+    '', '## Prompt quality (stored at events.timestamp; classifier v1 recognition, not ground truth)', '',
+    '| Store | user_prompt rows | automated envelopes | with scaffold | scaffold only | request after normalization | with proposal wrapper | classifier metadata |',
+    '|---|---:|---:|---:|---:|---:|---:|---:|'
+  ];
+  for (const store of stores) {
+    const quality = store.promptQuality;
+    if (!quality || quality.support === 'unsupported') {
+      lines.push(`| ${store.storeHash} | ${sectionGap(store)} | | | | | | |`);
+      continue;
+    }
+    lines.push(`| ${store.storeHash} | ${quality.userPrompts} | ${quality.automatedEnvelopes} | ${quality.withRecognizedScaffold} | `
+      + `${quality.scaffoldOnly} | ${quality.requestAfterNormalization} | ${quality.withProposalWrapper} | ${quality.storedWithClassifierMetadata} |`);
+  }
+
+  lines.push('', '## Lesson usage by provenance (not summed; applied and task success unknown)', '',
+    '| Store | Selected items (reference/evidence/other) | Host selected / delivered / read traces | Delivery lineage exact (distinct) / legacy unique / ambiguous / unlinked / inconsistent | MCP get calls: found / not found / errored / unknown / other project | Runtime versions |',
+    '|---|---|---|---|---|---|');
+  for (const store of stores) {
+    const usage = store.lessonUsage;
+    if (!usage) {
+      const gap = sectionGap(store);
+      lines.push(`| ${store.storeHash} | ${gap} | ${gap} | ${gap} | ${gap} | ${gap} |`);
+      continue;
+    }
+    const selection = usage.selection.support === 'supported'
+      ? `${usage.selection.items} (${usage.selection.byPresentation.reference}/${usage.selection.byPresentation.evidence}/${usage.selection.byPresentation.other})`
+      : 'unsupported';
+    const host = usage.host.support === 'supported'
+      ? `${usage.host.selected.traces} / ${usage.host.delivered.traces} / ${usage.host.read.traces}`
+      : 'unsupported';
+    const lineage = usage.host.deliveryLineage === 'unsupported'
+      ? 'unsupported'
+      : `${usage.host.deliveryLineage.exact} (${usage.host.deliveryLineage.exactDistinctSelections}) / ${usage.host.deliveryLineage.legacyUnique} / `
+        + `${usage.host.deliveryLineage.ambiguous} / ${usage.host.deliveryLineage.unlinked} / ${usage.host.deliveryLineage.inconsistent}`;
+    const lookups = usage.mcpBodyLookups.support === 'supported'
+      ? `${usage.mcpBodyLookups.calls}: ${usage.mcpBodyLookups.found} / ${usage.mcpBodyLookups.notFound} / ${usage.mcpBodyLookups.errored} / `
+        + `${usage.mcpBodyLookups.unknown} / ${usage.mcpBodyLookups.otherProject}`
+      : 'unsupported';
+    const versions = usage.runtimeVersions === 'unsupported'
+      ? 'unsupported'
+      : usage.runtimeVersions.map((entry) => `${entry.version}=${entry.traces}`).join(', ') || 'none';
+    lines.push(`| ${store.storeHash} | ${selection} | ${host} | ${lineage} | ${lookups} | ${versions} |`);
+  }
+  lines.push('', 'MCP body lookups are observed only through Claude PostToolUse; Codex/Hermes lookups are unobserved (not 0%). '
+    + 'mem-lesson-get navigation coverage is unsupported because it reads a snapshot.');
+
+  lines.push('', '## Lesson quality (no lesson is judged wrong for missing evidence)', '',
+    '`active` = recall_enabled only, not fully eligible (scope, permission and version gates are not evaluated).', '',
+    '| Store | Lessons (active/disabled) | Other-scope rows excluded | Evidence: no refs / local refs found / refs unresolved here | Session refs | Validation | Reconsider-when | Recently selected (unique) |',
+    '|---|---|---:|---|---:|---:|---:|---:|');
+  for (const store of stores) {
+    const quality = store.lessonQuality;
+    if (!quality || quality.support === 'unsupported') {
+      lines.push(`| ${store.storeHash} | ${sectionGap(store)} | | | | | | |`);
+      continue;
+    }
+    lines.push(`| ${store.storeHash} | ${quality.total} (${quality.active}/${quality.disabled}) | ${quality.otherScopeRows} | `
+      + `${quality.evidence.noRefs} / ${quality.evidence.localRefsFound} / ${quality.evidence.refsUnresolvedHere} | ${quality.withSessionRefs} | `
+      + `${quality.withValidation} | ${quality.withReconsiderWhen} | ${quality.recentlySelectedUnique} |`);
+  }
+  return lines;
 }
 
 export interface MemoryAuditCommandOptions {

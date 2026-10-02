@@ -14,7 +14,7 @@
 
 import { getLightweightMemoryServiceForProject } from '../../../services/memory-service.js';
 import { applyPrivacyFilter } from '../../../core/privacy/index.js';
-import { readTurnState, clearTurnState, writeLastAssistantSnippet } from '../../../core/turn-state.js';
+import { readTurnStateDetails, clearTurnState, writeLastAssistantSnippet } from '../../../core/turn-state.js';
 import type { StopInput, Config } from '../../../core/types.js';
 import { extractAssistantMessages } from '../transcript/turn-reconstructor.js';
 import { readStdin, readNumberEnv } from './hook-runtime.js';
@@ -44,7 +44,11 @@ export async function main(): Promise<string> {
     const memoryService = getLightweightMemoryServiceForProject(input.cwd);
 
     // Read current turn_id from state file
-    const turnId = readTurnState(input.session_id);
+    const turnState = readTurnStateDetails(input.session_id);
+    const turnId = turnState?.turnId ?? null;
+    // Responses to automated notifications carry their trigger so they are not
+    // read as the answer to the previous real request.
+    const turnTrigger = turnState?.turnTrigger;
 
     // Read assistant messages from transcript
     const assistantMessages = await extractAssistantMessages(input.transcript_path);
@@ -75,13 +79,18 @@ export async function main(): Promise<string> {
         content,
         {
           privacy: filterResult.metadata,
-          ...(turnId ? { turnId } : {})
+          ...(turnId ? { turnId } : {}),
+          ...(turnTrigger ? { turnTrigger } : {})
         }
       );
     }
 
-    // Save last assistant response snippet for next-turn retrieval context enrichment
-    if (assistantMessages.length > 0) {
+    // Save last assistant response snippet for next-turn retrieval context
+    // enrichment. A reply to an automated notification is not what the next
+    // human prompt follows up on, so it keeps the previous user turn's snippet
+    // (adherence lastPrompt is preserved the same way).
+    const isAutomatedTurn = turnTrigger !== undefined && turnTrigger !== 'user';
+    if (assistantMessages.length > 0 && !isAutomatedTurn) {
       const lastMessage = assistantMessages[assistantMessages.length - 1];
       writeLastAssistantSnippet(input.session_id, lastMessage);
     }

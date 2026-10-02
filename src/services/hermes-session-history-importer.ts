@@ -17,6 +17,8 @@ import type { Config } from '../core/types.js';
 import { MemoryService } from './memory-service.js';
 import { isWorthStoringPrompt, type ImportOptions, type ImportResult } from './session-history-importer.js';
 import { mergeAgentResponseBlocks } from './turn-buffering.js';
+import { normalizeUserPrompt, promptClassifierMetadata, type NormalizedPrompt } from '../core/prompt-normalizer.js';
+import type { TurnTrigger } from '../core/turn-state.js';
 
 export const HERMES_VALIDATION_DEFAULT_MAX_CONTENT_CHARS = 10_000;
 const HERMES_MEMORY_SESSION_PREFIX = 'hermes:';
@@ -135,7 +137,14 @@ type NormalizedHermesMessage = {
   role: 'user' | 'assistant';
   content: string;
   truncated: boolean;
+  /** User rows only: classifier result for the request text in `content`. */
+  prompt?: NormalizedPrompt;
+  /** User rows only: the pre-normalization, pre-bounded content earlier imports sanitized, when it differs. */
+  legacyContent?: string;
 };
+
+/** A user-role row that is an automated notification or host scaffolding only. */
+type AutomatedHermesUserMessage = { automated: Exclude<TurnTrigger, 'user'> };
 
 function normalizeMaybeRealpath(p: string): string {
   try {
@@ -230,13 +239,32 @@ function extractTextFromStructuredContent(value: unknown): string | null {
 function normalizeHermesMessage(
   row: HermesMessageRow,
   maxContentChars = HERMES_VALIDATION_DEFAULT_MAX_CONTENT_CHARS
-): NormalizedHermesMessage | 'empty-assistant' | 'unsupported' | 'trivial-user' {
+): NormalizedHermesMessage | AutomatedHermesUserMessage | 'empty-assistant' | 'unsupported' | 'trivial-user' {
   if (row.role !== 'user' && row.role !== 'assistant') return 'unsupported';
   const extracted = parseHermesEncodedContent(row.content);
   if (!extracted || extracted.trim().length === 0) {
     return row.role === 'assistant' ? 'empty-assistant' : 'trivial-user';
   }
-  if (row.role === 'user' && !isWorthStoringPrompt(extracted)) return 'trivial-user';
+  const bound = (text: string) => text.length > maxContentChars ? `${text.slice(0, maxContentChars)}...[truncated]` : text;
+  if (row.role === 'user') {
+    // Same policy as the native hook and the other importers: scaffolding is
+    // removed before the trivial filter and the privacy filter run.
+    const prompt = normalizeUserPrompt(extracted);
+    if (prompt.kind !== 'user') return { automated: prompt.kind };
+    if (!isWorthStoringPrompt(prompt.requestText)) return 'trivial-user';
+    // The full request goes to the writer, which applies privacy before its
+    // own length bound: cutting first could split a credential so the
+    // redaction pattern no longer matches and a prefix would be stored.
+    // `legacyContent` keeps the old bound -> privacy transform for dedupe only.
+    const legacyContent = bound(extracted);
+    return {
+      role: 'user',
+      content: prompt.requestText,
+      truncated: prompt.requestText.length > maxContentChars,
+      prompt,
+      ...(legacyContent !== prompt.requestText ? { legacyContent } : {})
+    };
+  }
 
   const truncated = extracted.length > maxContentChars;
   return {
@@ -293,7 +321,7 @@ export const HERMES_IMPORTABLE_SESSION_SCAN_FACTOR = 50;
 function hasImportableHermesMessages(db: Database, sessionId: string): boolean {
   return listHermesMessages(db, sessionId).some((message) => {
     const normalized = normalizeHermesMessage(message);
-    return typeof normalized === 'object' && normalized.role === 'user';
+    return typeof normalized === 'object' && 'role' in normalized && normalized.role === 'user';
   });
 }
 
@@ -422,7 +450,7 @@ export async function validateHermesSessions(options: HermesValidationOptions = 
           totals.emptyAssistantMessages++;
           continue;
         }
-        if (normalized === 'trivial-user') {
+        if (normalized === 'trivial-user' || 'automated' in normalized) {
           continue;
         }
 
@@ -612,6 +640,7 @@ export class HermesSessionHistoryImporter {
 
     const messages = listHermesMessages(db, session.id);
     let currentTurnId: string | null = null;
+    let currentTurnTrigger: TurnTrigger = 'user';
     let textBuffer: Array<{ content: string; row: HermesMessageRow }> = [];
     let lastProgressAt = 0;
 
@@ -637,6 +666,7 @@ export class HermesSessionHistoryImporter {
           originalTimestamp: timestampToIso(lastRow.timestamp),
           sourceMessageId: lastRow.id,
           turnId: currentTurnId,
+          ...(currentTurnTrigger !== 'user' ? { turnTrigger: currentTurnTrigger } : {}),
           source: 'hermes',
           hermesSource: session.source,
           sourceSessionId: session.id,
@@ -663,6 +693,22 @@ export class HermesSessionHistoryImporter {
         continue;
       }
       if (normalized === 'trivial-user') {
+        // A short human reply after an automated turn ends that turn; after a
+        // user turn the existing grouping is kept. Storage thresholds are unchanged.
+        if (currentTurnTrigger !== 'user') {
+          await flushTextBuffer();
+          currentTurnId = randomUUID();
+          currentTurnTrigger = 'user';
+        }
+        result.skippedDuplicates++;
+        continue;
+      }
+      if ('automated' in normalized) {
+        // A notification opens its own turn so its reply is not merged into
+        // the previous request's answer; the notification is not a prompt.
+        await flushTextBuffer();
+        currentTurnId = randomUUID();
+        currentTurnTrigger = normalized.automated;
         result.skippedDuplicates++;
         continue;
       }
@@ -670,10 +716,21 @@ export class HermesSessionHistoryImporter {
       if (normalized.role === 'user') {
         await flushTextBuffer();
         currentTurnId = randomUUID();
+        currentTurnTrigger = 'user';
+        const storedText = sanitizeForMemory(normalized.content);
+        const legacyContents = normalized.legacyContent !== undefined
+          ? [sanitizeForMemory(normalized.legacyContent)].filter((content) => content !== storedText)
+          : [];
+        if (legacyContents.length > 0 && await this.memoryService.hasSessionContent(memorySessionId, legacyContents)) {
+          result.skippedDuplicates++;
+          setStoredCount(getStoredCount() + 1);
+          continue;
+        }
         const appendResult = await this.memoryService.storeUserPrompt(
           memorySessionId,
-          sanitizeForMemory(normalized.content),
+          storedText,
           {
+            ...(normalized.prompt ? promptClassifierMetadata(normalized.prompt) : {}),
             importedFrom: this.stateDbPath,
             originalTimestamp: timestampToIso(message.timestamp),
             sourceMessageId: message.id,

@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 
@@ -161,5 +161,27 @@ describe('createSQLiteDatabase readonly semantics', () => {
       snapshotDirectory: unsafeSnapshotParent,
       canonicalMemoryRoot: canonicalRoot
     })).toThrowError(expect.objectContaining({ code: 'SQLITE_SNAPSHOT_UNSAFE_LOCATION' }));
+  });
+});
+
+describe('createSQLiteReadSnapshot clone isolation', () => {
+  it('clones (or copies) into an independent file and leaves the source untouched', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'cml-snapshot-clone-'));
+    try {
+      const source = path.join(dir, 'events.sqlite');
+      writeFileSync(source, Buffer.from('SQLite format 3\0fixture-bytes'));
+      const before = readFileSync(source);
+      const snapshot = createSQLiteReadSnapshot(source);
+      try {
+        expect(statSync(snapshot.databasePath).ino).not.toBe(statSync(source).ino);
+        expect(readFileSync(snapshot.databasePath)).toEqual(before);
+        writeFileSync(snapshot.databasePath, 'mutated');
+        expect(readFileSync(source)).toEqual(before);
+      } finally {
+        snapshot.cleanup();
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

@@ -7,6 +7,7 @@ import { applyPrivacyFilter } from '../core/privacy/index.js';
 import { CanonicalMemoryAccessService } from '../core/operations/canonical-memory-access-service.js';
 import { CanonicalMemoryInjectionService } from '../core/operations/canonical-memory-injection-service.js';
 import { LessonRepository } from '../core/operations/lesson-repository.js';
+import { deliveredSelectionTraceId } from '../core/lesson-host-lineage.js';
 import { writeGovernanceAuditEntrySync } from '../core/operations/governance-audit.js';
 import type { MemoryEvent, MemoryLesson } from '../core/types.js';
 import { sqliteAll, sqliteGet, sqliteRun, type SQLiteDatabase } from '../core/sqlite-wrapper.js';
@@ -184,12 +185,43 @@ export class LessonHostService {
     const request = BaseRequest.extend({ turnId: Identifier, traceId: Identifier, lessonIds: z.array(Identifier).max(3), lessonRevisions: z.array(z.object({ lessonId: Identifier, revision: z.number().int().positive() }).strict()).max(3) }).strict().parse(input);
     if (request.version !== 1) return { outcome: 'unsupported_version' as const };
     const binding = await this.readBinding(request.binding, 'lesson.read');
-    const selected = sqliteGet<TraceRow>(this.options.db, `SELECT * FROM lesson_host_traces WHERE trace_id = ?`, [request.traceId]);
     const revisions = request.lessonRevisions.map(({ lessonId, revision }) => ({ lessonId, revision }));
-    const current = revisions.every(({ lessonId, revision }) => { const lesson = new LessonRepository(this.options.db).get(lessonId); return lesson?.projectHash === binding.projectHash && lesson.revision === revision; });
-    if (!selected || selected.project_hash !== binding.projectHash || selected.session_id !== binding.sessionId || selected.actor_id !== binding.actorId || selected.machine_id !== binding.machineId || selected.generation !== binding.generation || selected.turn_id !== request.turnId || selected.phase !== 'selected' || JSON.stringify(parseJson<string[]>(selected.lesson_ids_json, [])) !== JSON.stringify(request.lessonIds) || JSON.stringify(parseJson(selected.lesson_revisions_json, [])) !== JSON.stringify(revisions) || !current) return { outcome: 'invalid_ack' as const };
     const response = { outcome: 'delivered' as const, traceId: request.traceId };
-    const fingerprint = requestFingerprint(request); return this.options.db.transaction(() => { const replay = this.idempotent(request.requestId, binding, 'delivered', fingerprint); if (replay) return replay; this.writeTrace({ traceId: randomUUID(), requestId: request.requestId, binding, turnId: request.turnId, phase: 'delivered', outcome: 'delivered', lessons: revisions.map(({ lessonId }) => new LessonRepository(this.options.db).get(lessonId)!) }); this.remember(request.requestId, binding, 'delivered', fingerprint, response); return response; })();
+    const fingerprint = requestFingerprint(request);
+    return this.options.db.transaction(() => {
+      // An ack that already succeeded is replayed before the lesson-revision
+      // currency check: a lesson edited after delivery must not turn a retried
+      // ack into invalid_ack. The replay still has to match the selected
+      // trace's full binding (project/session/actor/machine/generation/turn)
+      // and the revisions recorded at selection, so a later generation or
+      // another session cannot reuse it.
+      const selected = sqliteGet<TraceRow>(this.options.db, `SELECT * FROM lesson_host_traces WHERE trace_id = ?`, [request.traceId]);
+      const selectionMatches = selected !== undefined
+        && selected.project_hash === binding.projectHash
+        && selected.session_id === binding.sessionId
+        && selected.actor_id === binding.actorId
+        && selected.machine_id === binding.machineId
+        && selected.generation === binding.generation
+        && selected.turn_id === request.turnId
+        && selected.phase === 'selected'
+        && JSON.stringify(parseJson<string[]>(selected.lesson_ids_json, [])) === JSON.stringify(request.lessonIds)
+        && JSON.stringify(parseJson(selected.lesson_revisions_json, [])) === JSON.stringify(revisions);
+      const replay = this.idempotent(request.requestId, binding, 'delivered', fingerprint);
+      if (replay) return selectionMatches ? replay : { outcome: 'invalid_ack' as const };
+      if (!selectionMatches) return { outcome: 'invalid_ack' as const };
+      const repository = new LessonRepository(this.options.db);
+      const lessons: MemoryLesson[] = [];
+      for (const { lessonId, revision } of revisions) {
+        const lesson = repository.get(lessonId);
+        if (!lesson || lesson.projectHash !== binding.projectHash || lesson.revision !== revision) {
+          return { outcome: 'invalid_ack' as const };
+        }
+        lessons.push(lesson);
+      }
+      this.writeTrace({ traceId: randomUUID(), requestId: request.requestId, binding, turnId: request.turnId, phase: 'delivered', outcome: 'delivered', lessons });
+      this.remember(request.requestId, binding, 'delivered', fingerprint, response);
+      return response;
+    })();
   }
 
   async enqueueCandidate(input: unknown) {
@@ -301,8 +333,10 @@ export class LessonHostService {
   async listTraces(input: unknown) {
     const request = BaseRequest.extend({ limit: z.number().int().min(1).max(100).default(100), offset: z.number().int().nonnegative().default(0) }).strict().parse(input); if (request.version !== 1) return { outcome: 'unsupported_version' as const };
     const binding = await this.readBinding(request.binding, 'lesson.manage');
-    const rows = sqliteAll<TraceRow>(this.options.db, `SELECT trace_id, project_hash, session_id, actor_id, machine_id, turn_id, request_id, generation, lesson_ids_json, lesson_revisions_json, phase, outcome, created_at FROM lesson_host_traces WHERE project_hash=? ORDER BY created_at DESC LIMIT ? OFFSET ?`, [binding.projectHash, request.limit + 1, request.offset]);
-    return { outcome: 'ok' as const, traces: rows.slice(0, request.limit).map((row) => ({ traceId: row.trace_id, requestId: row.request_id, sessionId: row.session_id, actorId: row.actor_id, machineId: row.machine_id, turnId: row.turn_id, generation: row.generation, phase: row.phase, outcome: row.outcome, lessonIds: parseJson<string[]>(row.lesson_ids_json, []), lessonRevisions: parseJson<Array<{ lessonId: string; revision: number }>>(row.lesson_revisions_json, []), createdAt: row.created_at })), nextOffset: rows.length > request.limit ? request.offset + request.limit : null };
+    // A delivered row's selected trace is the traceId its ack response stored
+    // in the idempotency ledger (same project/actor/request), not a column.
+    const rows = sqliteAll<TraceRow & { delivered_result_json: string | null }>(this.options.db, `SELECT t.trace_id, t.project_hash, t.session_id, t.actor_id, t.machine_id, t.turn_id, t.request_id, t.generation, t.lesson_ids_json, t.lesson_revisions_json, t.phase, t.outcome, t.created_at, i.result_json AS delivered_result_json FROM lesson_host_traces t LEFT JOIN lesson_host_idempotency i ON t.phase='delivered' AND i.operation='delivered' AND i.project_hash=t.project_hash AND i.actor_id=t.actor_id AND i.request_id=t.request_id WHERE t.project_hash=? ORDER BY t.created_at DESC LIMIT ? OFFSET ?`, [binding.projectHash, request.limit + 1, request.offset]);
+    return { outcome: 'ok' as const, traces: rows.slice(0, request.limit).map((row) => ({ traceId: row.trace_id, requestId: row.request_id, sessionId: row.session_id, actorId: row.actor_id, machineId: row.machine_id, turnId: row.turn_id, generation: row.generation, phase: row.phase, outcome: row.outcome, lessonIds: parseJson<string[]>(row.lesson_ids_json, []), lessonRevisions: parseJson<Array<{ lessonId: string; revision: number }>>(row.lesson_revisions_json, []), createdAt: row.created_at, ...(row.phase === 'delivered' ? { selectionTraceId: deliveredSelectionTraceId(row.delivered_result_json) } : {}) })), nextOffset: rows.length > request.limit ? request.offset + request.limit : null };
   }
 
   private async transition(input: unknown, target: 'reviewed' | 'rejected', capability: 'lesson.review' | 'lesson.manage') {

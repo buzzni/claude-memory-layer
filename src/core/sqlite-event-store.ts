@@ -5258,6 +5258,24 @@ export class SQLiteEventStore {
   }
 
   /**
+   * True when any of the given contents was already appended to this session.
+   * Uses the append dedupe key, so importers can recognize rows written under
+   * an older content transform (raw or privacy-filtered) without a backfill.
+   */
+  async hasSessionContent(sessionId: string, contents: readonly string[]): Promise<boolean> {
+    await this.initialize();
+    for (const content of new Set(contents)) {
+      const existing = sqliteGet<{ event_id: string }>(
+        this.db,
+        `SELECT event_id FROM event_dedup WHERE dedupe_key = ?`,
+        [makeDedupeKey(content, sessionId)]
+      );
+      if (existing) return true;
+    }
+    return false;
+  }
+
+  /**
    * Delete all events for a session (for force reimport)
    */
   async deleteSessionEvents(sessionId: string): Promise<number> {

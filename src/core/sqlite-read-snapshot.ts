@@ -6,6 +6,13 @@
  * this copy so all connection bookkeeping stays outside the canonical memory
  * root. The copied WAL, when present, keeps committed uncheckpointed rows in
  * the diagnostic snapshot.
+ *
+ * Best effort, not a consistent point-in-time read: the database file and WAL
+ * are copied one after the other without a lock. A checkpoint running between
+ * the two copies can yield a torn copy (callers detect and retry that) or a
+ * valid but stale view, which is indistinguishable and not retried. Callers
+ * that need fresh data should repeat the read; no consistency or latency SLA
+ * is implied.
  */
 
 import * as fs from 'node:fs';
@@ -36,8 +43,16 @@ export function createSQLiteReadSnapshot(
   rejectSymlinkIfPresent(sourceWalPath, 'source WAL');
 
   const parent = path.resolve(options.snapshotDirectory ?? os.tmpdir());
-  const realParent = fs.realpathSync(parent);
-  if (!fs.lstatSync(realParent).isDirectory()) {
+  let realParent: string;
+  let parentIsDirectory: boolean;
+  try {
+    realParent = fs.realpathSync(parent);
+    parentIsDirectory = fs.lstatSync(realParent).isDirectory();
+  } catch {
+    // Failures preparing temporary storage say nothing about source readability.
+    throw snapshotError('SQLITE_SNAPSHOT_UNAVAILABLE', 'Temporary snapshot storage is unavailable');
+  }
+  if (!parentIsDirectory) {
     throw snapshotError('SQLITE_SNAPSHOT_UNSAFE_LOCATION', 'Snapshot parent must be a local directory');
   }
   if (options.canonicalMemoryRoot) {
@@ -47,10 +62,15 @@ export function createSQLiteReadSnapshot(
     }
   }
 
-  const snapshotRoot = fs.mkdtempSync(path.join(realParent, 'cml-sqlite-read-'));
+  let snapshotRoot: string;
+  try {
+    snapshotRoot = fs.mkdtempSync(path.join(realParent, 'cml-sqlite-read-'));
+  } catch {
+    throw snapshotError('SQLITE_SNAPSHOT_UNAVAILABLE', 'Temporary snapshot storage is unavailable');
+  }
   const databasePath = path.join(snapshotRoot, 'events.sqlite');
   try {
-    fs.copyFileSync(sourceDatabasePath, databasePath);
+    cloneOrCopyFile(sourceDatabasePath, databasePath);
     copyIfLocalFile(sourceWalPath, `${databasePath}-wal`);
     return {
       databasePath,
@@ -101,10 +121,19 @@ function realPathIfPresent(targetPath: string): string {
 function copyIfLocalFile(source: string, destination: string): void {
   try {
     const stat = fs.lstatSync(source);
-    if (stat.isFile() && !stat.isSymbolicLink()) fs.copyFileSync(source, destination);
+    if (stat.isFile() && !stat.isSymbolicLink()) cloneOrCopyFile(source, destination);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
   }
+}
+
+/**
+ * COPYFILE_FICLONE asks for a copy-on-write clone (APFS/btrfs/XFS reflink) and
+ * lets libuv fall back to a byte copy when the filesystem cannot clone, so the
+ * snapshot is never a hard link or shared inode with the canonical file.
+ */
+function cloneOrCopyFile(source: string, destination: string): void {
+  fs.copyFileSync(source, destination, fs.constants.COPYFILE_FICLONE);
 }
 
 function rejectSymlinkOrNonFile(targetPath: string, label: string): void {

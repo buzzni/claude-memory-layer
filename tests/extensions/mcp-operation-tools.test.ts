@@ -135,6 +135,14 @@ vi.mock('../../src/core/registry/project-path.js', () => ({
   resolveMemoryRootMarkerPath: () => null
 }));
 
+// Read-only lesson tools open a validated snapshot instead of SQLiteEventStore;
+// route that through the same fake database.
+vi.mock('../../src/core/registry/existing-store.js', () => ({
+  ExistingStoreReadError: class ExistingStoreReadError extends Error {},
+  withExistingStoreReadSnapshot: (_projectHash: string, callback: (db: unknown, resolution: unknown) => unknown) =>
+    callback(mocks.fakeDb, { status: 'existing' })
+}));
+
 vi.mock('../../src/core/sqlite-event-store.js', () => ({
   SQLiteEventStore: mocks.SQLiteEventStore
 }));

@@ -14,6 +14,8 @@ import { randomUUID } from 'crypto';
 import { MemoryService } from './memory-service.js';
 import { registerTerminalSession } from '../core/registry/session-registry.js';
 import { mergeAgentResponseBlocks, truncateAgentResponse } from './turn-buffering.js';
+import { planPromptStorage, promptClassifierMetadata } from '../core/prompt-normalizer.js';
+import type { TurnTrigger } from '../core/turn-state.js';
 
 export type ProgressEvent =
   | { phase: 'scan'; message: string }
@@ -318,6 +320,7 @@ export class SessionHistoryImporter {
     // - On new user_prompt or EOF, flush buffer as a single merged agent_response
     // - Filter out short transitional text (< 100 chars) like "Let me check..."
     let currentTurnId: string | null = null;
+    let currentTurnTrigger: TurnTrigger = 'user';
     let textBuffer: string[] = [];
     let lastTimestamp: string | undefined;
 
@@ -332,7 +335,12 @@ export class SessionHistoryImporter {
       const appendResult = await this.memoryService.storeAgentResponse(
         sessionId,
         truncated,
-        { importedFrom: filePath, originalTimestamp: lastTimestamp, turnId: currentTurnId }
+        {
+          importedFrom: filePath,
+          originalTimestamp: lastTimestamp,
+          turnId: currentTurnId,
+          ...(currentTurnTrigger !== 'user' ? { turnTrigger: currentTurnTrigger } : {})
+        }
       );
 
       if (appendResult.success && appendResult.isDuplicate) {
@@ -361,19 +369,53 @@ export class SessionHistoryImporter {
           const content = this.extractContent(entry);
           if (!content) continue;
 
+          // Same policy as the native hook: host scaffolding is removed, then
+          // the privacy filter runs on what is stored.
+          const plan = planPromptStorage(content);
+
+          // An automated notification still opens a turn so its reply is not
+          // merged into the previous request's answer, but it is not a prompt.
+          if (plan.normalized.kind !== 'user') {
+            currentTurnId = randomUUID();
+            currentTurnTrigger = plan.normalized.kind;
+            result.skippedDuplicates++;
+            continue;
+          }
+
           // Skip trivial inputs: slash commands, very short, no real words
-          if (!isWorthStoringPrompt(content)) {
+          if (!isWorthStoringPrompt(plan.normalized.requestText)) {
+            // A short human reply after an automated turn still ends that
+            // turn, so the answer that follows is not tagged as automated.
+            // After a user turn the existing grouping is kept.
+            if (currentTurnTrigger !== 'user') {
+              currentTurnId = randomUUID();
+              currentTurnTrigger = 'user';
+            }
             result.skippedDuplicates++;
             continue;
           }
 
           // New turn starts with each real user prompt
           currentTurnId = randomUUID();
+          currentTurnTrigger = 'user';
+
+          // Earlier imports stored the raw prompt and the hook stored its
+          // privacy-filtered form; either one means this prompt is already here.
+          if (plan.legacyContents.length > 0 && await this.memoryService.hasSessionContent(sessionId, plan.legacyContents)) {
+            result.skippedDuplicates++;
+            lineCount++;
+            continue;
+          }
 
           const appendResult = await this.memoryService.storeUserPrompt(
             sessionId,
-            content,
-            { importedFrom: filePath, originalTimestamp: entry.timestamp, turnId: currentTurnId }
+            plan.storedText,
+            {
+              importedFrom: filePath,
+              originalTimestamp: entry.timestamp,
+              turnId: currentTurnId,
+              ...promptClassifierMetadata(plan.normalized)
+            }
           );
 
           if (appendResult.success && appendResult.isDuplicate) {

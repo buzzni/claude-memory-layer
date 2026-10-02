@@ -33,7 +33,6 @@ import type {
   RetrievalOutcomeDiagnostics,
   RetrievalOutcomeReason
 } from '../../../core/retrieval-telemetry.js';
-import { applyPrivacyFilter } from '../../../core/privacy/index.js';
 import {
   formatMemoryReferenceContext,
   memoryReferenceSummary,
@@ -50,7 +49,8 @@ import {
   type HookMemoryCandidate,
   reserveLessonSlot
 } from './prompt-injection-policy.js';
-import type { Config, UserPromptSubmitInput, UserPromptSubmitOutput } from '../../../core/types.js';
+import { normalizeUserPrompt, promptClassifierMetadata, redactPromptForStorage } from '../../../core/prompt-normalizer.js';
+import type { UserPromptSubmitInput, UserPromptSubmitOutput } from '../../../core/types.js';
 
 // Configuration. All numeric env vars go through readNumberEnv so an invalid
 // value (e.g. a typo) falls back to the default instead of producing NaN, which
@@ -101,26 +101,6 @@ export interface AdherenceState {
 export type AdherenceDecision = { run: boolean; reason: string };
 
 /**
- * Privacy config for prompt persistence.
- *
- * The Stop hook filters assistant responses and PostToolUse filters tool
- * output, but user prompts were stored verbatim — so a credential pasted into
- * a question was written to the events table and then copied into every
- * derived artifact: query_preview, retrieval_traces, the adherence state file
- * and any session summary quoting the prompt. Real leaks were found this way.
- */
-const PROMPT_PRIVACY_CONFIG: Config['privacy'] = {
-  excludePatterns: ['password', 'secret', 'api_key', 'token', 'bearer'],
-  anonymize: false,
-  privateTags: {
-    enabled: true,
-    marker: '[PRIVATE]',
-    preserveLineCount: false,
-    supportedFormats: ['xml']
-  }
-};
-
-/**
  * Redact a prompt before it is persisted.
  *
  * Retrieval itself keeps using the raw prompt: redaction is only about what
@@ -128,7 +108,7 @@ const PROMPT_PRIVACY_CONFIG: Config['privacy'] = {
  * questions that merely mention a credential-shaped word.
  */
 export function redactForStorage(text: string): string {
-  return applyPrivacyFilter(text, PROMPT_PRIVACY_CONFIG).content;
+  return redactPromptForStorage(text);
 }
 
 /**
@@ -520,13 +500,29 @@ export async function main(options: UserPromptSubmitMainOptions = {}): Promise<s
     // Read input from stdin (parse inside try so malformed JSON still emits a safe envelope)
     const input: UserPromptSubmitInput = JSON.parse(await readStdin());
 
+    // Retrieval, query rewriting, adherence, and persistence all use the same
+    // request text: host scaffolding (lesson-proposal wrapper and its staging
+    // token, title directive, injected lesson list) is removed once, here,
+    // before the privacy filter runs at each storage boundary.
+    const normalizedPrompt = normalizeUserPrompt(input.prompt);
+    const prompt = normalizedPrompt.requestText;
+
     // Generate a new turn_id for this user prompt
     // This groups the prompt with subsequent tool calls and the final agent response
     const turnId = randomUUID();
 
-    // Persist turn state so PostToolUse and Stop hooks can read it
+    // Persist turn state so PostToolUse and Stop hooks can read it. Automated
+    // notifications still open a new turn, so their tool calls and response are
+    // not attributed to the previous real request.
     if (options.persistPrompt !== false && !isHookEvaluationMode()) {
-      writeTurnState(input.session_id, turnId);
+      writeTurnState(input.session_id, turnId, normalizedPrompt.kind);
+    }
+
+    // A task-notification or a scaffold-only message is not a user request:
+    // no retrieval, no stored prompt, and the adherence turn count and last
+    // prompt stay those of the last real request.
+    if (normalizedPrompt.kind !== 'user') {
+      return formatClaudeContextHookOutput('UserPromptSubmit', '');
     }
 
     // Use lightweight service (SQLite only, no embedder/vector - FAST!)
@@ -536,7 +532,7 @@ export async function main(options: UserPromptSubmitMainOptions = {}): Promise<s
 
     const adherenceState = readAdherenceState(input.session_id);
     const currentTurn = adherenceState.turnCount + 1;
-    const adherenceDecision = shouldRunAdherenceCheck(currentTurn, input.prompt, adherenceState);
+    const adherenceDecision = shouldRunAdherenceCheck(currentTurn, prompt, adherenceState);
     logAdherenceDecision(input.session_id, currentTurn, adherenceDecision.run, adherenceDecision.reason);
 
     // On first turn of a new session, backfill helpfulness for sessions
@@ -547,8 +543,8 @@ export async function main(options: UserPromptSubmitMainOptions = {}): Promise<s
 
     // Search strategy: turn-1 always enforce adherence check,
     // then adaptively enforce on write-intent/continuation/decision/code/topic-shift/interval
-    if (ENABLE_SEARCH && shouldRunMemorySearch(input.prompt, adherenceDecision)) {
-      const minScore = getDynamicMinScore(input.prompt);
+    if (ENABLE_SEARCH && shouldRunMemorySearch(prompt, adherenceDecision)) {
+      const minScore = getDynamicMinScore(prompt);
       let mergedMemories: HookMemoryCandidate[] = [];
       const episodeSeedCandidates: HookMemoryCandidate[] = [];
       // Lane counters feed the honest outcome reason for an empty selection
@@ -563,13 +559,13 @@ export async function main(options: UserPromptSubmitMainOptions = {}): Promise<s
       // and assistant response so short prompts ("그거 고쳐줘") resolve correctly.
       const lastSnippet = currentTurn > 1 ? readLastAssistantSnippet(input.session_id) : null;
       const retrievalQuery = buildRetrievalQuery({
-        prompt: input.prompt,
+        prompt: prompt,
         currentTurn,
         previousUserPrompt: adherenceState.lastPrompt,
         lastAssistantSnippet: lastSnippet,
         adherenceDecision
       });
-      const queryRewriteKind = getRetrievalQueryRewriteKind(input.prompt, retrievalQuery);
+      const queryRewriteKind = getRetrievalQueryRewriteKind(prompt, retrievalQuery);
 
       const canUseSemantic = RETRIEVAL_MODE === 'semantic' || RETRIEVAL_MODE === 'hybrid';
       if (canUseSemantic) {
@@ -818,7 +814,7 @@ export async function main(options: UserPromptSubmitMainOptions = {}): Promise<s
               m.id,
               input.session_id,
               m.score ?? minScore,
-              redactForStorage(input.prompt),
+              redactForStorage(prompt),
               {
                 traceId: retrievalTraceId,
                 source: 'user_prompt',
@@ -904,7 +900,7 @@ export async function main(options: UserPromptSubmitMainOptions = {}): Promise<s
             traceId: retrievalTraceId,
             sessionId: input.session_id,
             queryText: redactForStorage(retrievalQuery),
-            rawQueryText: redactForStorage(input.prompt),
+            rawQueryText: redactForStorage(prompt),
             queryRewriteKind,
             strategy: RETRIEVAL_MODE,
             candidateEventIds: allCandidateIds,
@@ -944,17 +940,18 @@ export async function main(options: UserPromptSubmitMainOptions = {}): Promise<s
 
     // Persist after retrieval so the current prompt cannot be retrieved as an
     // exact keyword match and injected back into the same turn.
-    if (shouldPersistSubmittedPrompt(input.prompt, options)) {
+    if (shouldPersistSubmittedPrompt(prompt, options)) {
       await memoryService.storeUserPrompt(
         input.session_id,
-        redactForStorage(input.prompt),
+        redactForStorage(prompt),
         {
           turnId,
           adherence: {
             checked: adherenceDecision.run,
             reason: adherenceDecision.reason,
             turn: currentTurn
-          }
+          },
+          ...promptClassifierMetadata(normalizedPrompt)
         }
       );
     }
@@ -966,7 +963,7 @@ export async function main(options: UserPromptSubmitMainOptions = {}): Promise<s
         lastCheckedTurn: adherenceDecision.run ? currentTurn : adherenceState.lastCheckedTurn,
         // Also redacted: this file feeds the next turn's retrieval-query
         // enrichment, so an unfiltered prompt here would resurface a secret.
-        lastPrompt: redactForStorage(input.prompt),
+        lastPrompt: redactForStorage(prompt),
         lastReason: adherenceDecision.reason,
         updatedAt: new Date().toISOString()
       });

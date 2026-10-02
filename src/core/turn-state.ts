@@ -20,10 +20,14 @@ import * as os from 'os';
 
 const TURN_STATE_DIR = path.join(os.homedir(), '.claude-code', 'memory');
 
+/** What opened the turn; automated notifications open a turn without a stored user prompt. */
+export type TurnTrigger = 'user' | 'task_notification' | 'scaffold_only';
+
 interface TurnState {
   turnId: string;
   sessionId: string;
   createdAt: string;
+  turnTrigger?: TurnTrigger;
 }
 
 /**
@@ -37,7 +41,7 @@ function getStatePath(sessionId: string): string {
  * Write a new turn state for a session.
  * Called by UserPromptSubmit hook when a new user prompt arrives.
  */
-export function writeTurnState(sessionId: string, turnId: string): void {
+export function writeTurnState(sessionId: string, turnId: string, turnTrigger?: TurnTrigger): void {
   try {
     // Ensure directory exists
     if (!fs.existsSync(TURN_STATE_DIR)) {
@@ -47,7 +51,8 @@ export function writeTurnState(sessionId: string, turnId: string): void {
     const state: TurnState = {
       turnId,
       sessionId,
-      createdAt: new Date().toISOString()
+      createdAt: new Date().toISOString(),
+      ...(turnTrigger ? { turnTrigger } : {})
     };
 
     const filePath = getStatePath(sessionId);
@@ -70,6 +75,11 @@ export function writeTurnState(sessionId: string, turnId: string): void {
  * Returns null if no turn state exists (events won't be grouped).
  */
 export function readTurnState(sessionId: string): string | null {
+  return readTurnStateDetails(sessionId)?.turnId ?? null;
+}
+
+/** Like readTurnState, plus the trigger recorded by UserPromptSubmit (absent for older state files). */
+export function readTurnStateDetails(sessionId: string): { turnId: string; turnTrigger?: TurnTrigger } | null {
   try {
     const filePath = getStatePath(sessionId);
 
@@ -94,7 +104,12 @@ export function readTurnState(sessionId: string): string | null {
       return null;
     }
 
-    return state.turnId;
+    const turnTrigger = state.turnTrigger === 'user'
+      || state.turnTrigger === 'task_notification'
+      || state.turnTrigger === 'scaffold_only'
+      ? state.turnTrigger
+      : undefined;
+    return { turnId: state.turnId, ...(turnTrigger ? { turnTrigger } : {}) };
   } catch (error) {
     // Non-critical: return null if we can't read
     if (process.env.CLAUDE_MEMORY_DEBUG) {

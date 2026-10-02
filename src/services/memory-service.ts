@@ -830,6 +830,11 @@ export class MemoryService {
     return this.queryService.deleteSessionEvents(sessionId);
   }
 
+  /** Whether any of these exact contents is already stored for the session (append dedupe key). */
+  async hasSessionContent(sessionId: string, contents: readonly string[]): Promise<boolean> {
+    return this.queryService.hasSessionContent(sessionId, contents);
+  }
+
   /**
    * Format Endless Mode context for Claude
    */

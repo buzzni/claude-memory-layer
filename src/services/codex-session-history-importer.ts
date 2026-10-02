@@ -15,6 +15,8 @@ import { MemoryService } from './memory-service.js';
 import { registerTerminalSession } from '../core/registry/session-registry.js';
 import type { ImportOptions, ImportResult } from './session-history-importer.js';
 import { mergeAgentResponseBlocks, truncateAgentResponse } from './turn-buffering.js';
+import { planPromptStorage, promptClassifierMetadata } from '../core/prompt-normalizer.js';
+import type { TurnTrigger } from '../core/turn-state.js';
 
 type CodexLogLine = {
   timestamp?: string;
@@ -776,6 +778,7 @@ export class CodexSessionHistoryImporter {
     let storedCount = 0;
 
     let currentTurnId: string | null = null;
+    let currentTurnTrigger: TurnTrigger = 'user';
     let textBuffer: string[] = [];
     let lastTimestamp: string | undefined;
 
@@ -790,7 +793,13 @@ export class CodexSessionHistoryImporter {
       const appendResult = await this.memoryService.storeAgentResponse(
         sessionId,
         truncated,
-        { importedFrom: filePath, originalTimestamp: lastTimestamp, turnId: currentTurnId, source: 'codex' }
+        {
+          importedFrom: filePath,
+          originalTimestamp: lastTimestamp,
+          turnId: currentTurnId,
+          source: 'codex',
+          ...(currentTurnTrigger !== 'user' ? { turnTrigger: currentTurnTrigger } : {})
+        }
       );
 
       if (appendResult.success && appendResult.isDuplicate) {
@@ -822,12 +831,32 @@ export class CodexSessionHistoryImporter {
               const content = extractTextFromContent(payload.content);
               if (!content) continue;
 
+              // Shared normalizer -> privacy policy. Codex keeps its existing
+              // (no trivial-length) filter; environment/AGENTS envelopes are
+              // not classified by classifier v1 and stay user prompts.
+              const plan = planPromptStorage(content);
               currentTurnId = randomUUID();
+              currentTurnTrigger = plan.normalized.kind;
+              if (plan.normalized.kind !== 'user') {
+                result.skippedDuplicates++;
+                continue;
+              }
+              if (plan.legacyContents.length > 0 && await this.memoryService.hasSessionContent(sessionId, plan.legacyContents)) {
+                result.skippedDuplicates++;
+                storedCount++;
+                continue;
+              }
 
               const appendResult = await this.memoryService.storeUserPrompt(
                 sessionId,
-                content,
-                { importedFrom: filePath, originalTimestamp: entry.timestamp, turnId: currentTurnId, source: 'codex' }
+                plan.storedText,
+                {
+                  importedFrom: filePath,
+                  originalTimestamp: entry.timestamp,
+                  turnId: currentTurnId,
+                  source: 'codex',
+                  ...promptClassifierMetadata(plan.normalized)
+                }
               );
 
               if (appendResult.success && appendResult.isDuplicate) {
