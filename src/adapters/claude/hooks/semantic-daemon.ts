@@ -3,7 +3,7 @@ import * as net from 'net';
 import * as os from 'os';
 import * as path from 'path';
 import { DISABLED_SHARED_STORE_CONFIG, MemoryService } from '../../../services/memory-service.js';
-import { getProjectStoragePath } from '../../../core/registry/project-path.js';
+import { getProjectStoragePath, hashProjectPath, resolveProjectAnchorPath } from '../../../core/registry/project-path.js';
 import { getSessionProject } from '../../../core/registry/session-registry.js';
 import { WorkerLock } from '../../../core/worker-lock.js';
 import { readNumberEnv } from './hook-runtime.js';
@@ -19,6 +19,7 @@ import {
 export interface SemanticDaemonRequest {
   type?: 'retrieve' | 'graduate' | 'summarize';
   sessionId?: string;
+  projectPath?: string;
   prompt?: string;
   topK?: number;
   minScore?: number;
@@ -35,6 +36,7 @@ export interface SemanticMemory {
 
 export interface SemanticDaemonResponse {
   ok: boolean;
+  projectHash?: string;
   memories?: SemanticMemory[];
   error?: string;
 }
@@ -115,6 +117,7 @@ export function parseSemanticDaemonRequest(raw: string): SemanticDaemonRequest {
 export function isValidSemanticDaemonRequest(
   input: SemanticDaemonRequest
 ): boolean {
+  if (!input || typeof input !== 'object') return false;
   if (typeof input.sessionId !== 'string' || input.sessionId.length === 0) return false;
   if (input.type === 'graduate' || input.type === 'summarize') {
     return input.evaluation === undefined || typeof input.evaluation === 'boolean';
@@ -124,6 +127,7 @@ export function isValidSemanticDaemonRequest(
     && input.prompt.length > 0
     && Number.isFinite(input.topK)
     && Number.isFinite(input.minScore)
+    && (input.projectPath === undefined || (typeof input.projectPath === 'string' && path.isAbsolute(input.projectPath)))
     && (input.evaluation === undefined || typeof input.evaluation === 'boolean');
 }
 
@@ -158,6 +162,24 @@ function getServiceForSession(sessionId: string): MemoryService {
   });
 
   serviceCache.set(key, service);
+  return service;
+}
+
+/** Explicit hook cwd takes precedence over missing or stale session metadata. */
+function getServiceForProject(projectPath: string): MemoryService {
+  const anchorPath = resolveProjectAnchorPath(projectPath);
+  const projectHash = hashProjectPath(anchorPath);
+  const cached = serviceCache.get(projectHash);
+  if (cached) return cached;
+  const service = new MemoryService({
+    storagePath: getProjectStoragePath(anchorPath),
+    projectHash,
+    projectPath: anchorPath,
+    readOnly: true,
+    analyticsEnabled: false,
+    sharedStoreConfig: DISABLED_SHARED_STORE_CONFIG
+  });
+  serviceCache.set(projectHash, service);
   return service;
 }
 
@@ -260,7 +282,9 @@ export async function handleSemanticDaemonRequest(raw: string): Promise<Semantic
       return { ok: true, memories: [] };
     }
 
-    const service = getServiceForSession(sessionId);
+    const service = input.projectPath !== undefined
+      ? getServiceForProject(input.projectPath)
+      : getServiceForSession(sessionId);
     const prompt = input.prompt!;
     let result;
     try {
@@ -298,7 +322,11 @@ export async function handleSemanticDaemonRequest(raw: string): Promise<Semantic
       sessionId: m.event.sessionId
     }));
 
-    return { ok: true, memories };
+    return {
+      ok: true,
+      memories,
+      ...(input.projectPath !== undefined ? { projectHash: hashProjectPath(input.projectPath) } : {})
+    };
   } catch (error) {
     return makeSemanticDaemonErrorResponse(error);
   }

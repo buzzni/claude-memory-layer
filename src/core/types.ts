@@ -681,6 +681,8 @@ export interface SessionStartOutput {
 }
 
 export interface UserPromptSubmitInput {
+  /** Native Claude/Codex hook inputs carry the authoritative project cwd. */
+  cwd: string;
   session_id: string;
   prompt: string;
   actor_id?: string;

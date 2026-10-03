@@ -18,10 +18,11 @@ import { randomUUID } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { getLightweightMemoryService } from '../../../services/memory-service.js';
+import { getLightweightMemoryServiceForProject } from '../../../services/memory-service.js';
 import { writeTurnState, readLastAssistantSnippet } from '../../../core/turn-state.js';
 import { retrieveSemanticMemories, scheduleSemanticGraduation } from './semantic-daemon-client.js';
 import { readStdin, readNumberEnv } from './hook-runtime.js';
+import { reportRecallDiagnostic } from './recall-diagnostics.js';
 import {
   formatClaudeContextHookOutput,
   isHookEvaluationMode,
@@ -188,6 +189,10 @@ export interface UserPromptSubmitMainOptions {
   contextPresentation?: 'evidence' | 'reference';
   /** Codex imports complete turns at SessionEnd, so prompt-time retrieval must not pre-store half a turn. */
   persistPrompt?: boolean;
+  /** Foreground host workers cannot leave detached maintenance writers behind. */
+  maintenance?: boolean;
+  /** Reuse an existing semantic daemon without starting one from a bounded worker. */
+  allowDaemonStart?: boolean;
   /**
    * Client label recorded on this hook's telemetry. Codex and Claude share this
    * hook body, so without an explicit label every Codex request would be
@@ -197,7 +202,7 @@ export interface UserPromptSubmitMainOptions {
 }
 
 async function expandEpisodeEvidence(
-  memoryService: ReturnType<typeof getLightweightMemoryService>,
+  memoryService: ReturnType<typeof getLightweightMemoryServiceForProject>,
   seeds: HookMemoryCandidate[]
 ): Promise<HookMemoryCandidate[]> {
   const expanded: HookMemoryCandidate[] = [];
@@ -422,10 +427,10 @@ export function buildRetrievalQuery(input: RetrievalQueryInput): string {
   return parts.join('\n\n');
 }
 
-function logAdherenceDecision(sessionId: string, turn: number, run: boolean, reason: string): void {
+function logAdherenceDecision(turn: number, run: boolean, reason: string): void {
   if (!process.env.CLAUDE_MEMORY_DEBUG) return;
   const mode = run ? 'enforced' : 'skipped';
-  console.error(`[adherence] session=${sessionId} turn=${turn} mode=${mode} reason=${reason}`);
+  console.error(`[adherence] turn=${turn} mode=${mode} reason=${reason}`);
 }
 
 export function getRetrievalQueryRewriteKind(prompt: string, retrievalQuery: string): 'none' | 'follow-up-context' {
@@ -496,9 +501,15 @@ export function buildHookOutcomeDiagnostics(counts: HookRetrievalLaneCounts): Re
 }
 
 export async function main(options: UserPromptSubmitMainOptions = {}): Promise<string> {
+  let stage: 'input' | 'service' | 'retrieval' = 'input';
   try {
     // Read input from stdin (parse inside try so malformed JSON still emits a safe envelope)
     const input: UserPromptSubmitInput = JSON.parse(await readStdin());
+    if (!input || typeof input.cwd !== 'string' || !path.isAbsolute(input.cwd)
+      || typeof input.session_id !== 'string' || !input.session_id.trim()
+      || typeof input.prompt !== 'string') {
+      throw Object.assign(new Error('invalid hook input'), { code: 'invalid_input' });
+    }
 
     // Retrieval, query rewriting, adherence, and persistence all use the same
     // request text: host scaffolding (lesson-proposal wrapper and its staging
@@ -522,22 +533,27 @@ export async function main(options: UserPromptSubmitMainOptions = {}): Promise<s
     // no retrieval, no stored prompt, and the adherence turn count and last
     // prompt stay those of the last real request.
     if (normalizedPrompt.kind !== 'user') {
+      reportRecallDiagnostic({ event: 'UserPromptSubmit', stage: 'complete', outcome: 'skipped', contextChars: 0 });
       return formatClaudeContextHookOutput('UserPromptSubmit', '');
     }
 
     // Use lightweight service (SQLite only, no embedder/vector - FAST!)
-    const memoryService = getLightweightMemoryService(input.session_id);
+    // Native hooks always carry cwd. An absent auxiliary session registration
+    // must never silently move recall to the global store or another project.
+    stage = 'service';
+    const memoryService = getLightweightMemoryServiceForProject(input.cwd);
+    stage = 'retrieval';
 
     let context = '';
 
     const adherenceState = readAdherenceState(input.session_id);
     const currentTurn = adherenceState.turnCount + 1;
     const adherenceDecision = shouldRunAdherenceCheck(currentTurn, prompt, adherenceState);
-    logAdherenceDecision(input.session_id, currentTurn, adherenceDecision.run, adherenceDecision.reason);
+    logAdherenceDecision(currentTurn, adherenceDecision.run, adherenceDecision.reason);
 
     // On first turn of a new session, backfill helpfulness for sessions
     // that ended without Stop hook (crash, force-close, etc.)
-    if (!isHookEvaluationMode() && currentTurn === 1) {
+    if (!isHookEvaluationMode() && options.maintenance !== false && currentTurn === 1) {
       memoryService.evaluatePendingSessions(input.session_id).catch(() => {});
     }
 
@@ -573,11 +589,13 @@ export async function main(options: UserPromptSubmitMainOptions = {}): Promise<s
           const semanticMemories = await retrieveSemanticMemories(
             {
               sessionId: input.session_id,
+              projectPath: input.cwd,
               prompt: retrievalQuery,
               topK: MAX_MEMORIES,
               minScore
             },
-            SEMANTIC_TIMEOUT_MS
+            SEMANTIC_TIMEOUT_MS,
+            { allowDaemonStart: options.allowDaemonStart }
           );
           mergedMemories = semanticMemories.map((memory) => ({
             ...memory,
@@ -932,9 +950,11 @@ export async function main(options: UserPromptSubmitMainOptions = {}): Promise<s
         // Access/helpfulness evidence above must be durable before graduation
         // is scheduled. The daemon only acknowledges the schedule here; the
         // bounded pass runs later and never delays this hook with worker work.
-        try {
-          await scheduleSemanticGraduation(input.session_id);
-        } catch { /* non-critical */ }
+        if (options.maintenance !== false) {
+          try {
+            await scheduleSemanticGraduation(input.session_id);
+          } catch { /* non-critical */ }
+        }
       }
     }
 
@@ -970,11 +990,10 @@ export async function main(options: UserPromptSubmitMainOptions = {}): Promise<s
     }
 
     const output: UserPromptSubmitOutput = JSON.parse(formatClaudeContextHookOutput('UserPromptSubmit', context));
+    reportRecallDiagnostic({ event: 'UserPromptSubmit', stage: 'complete', outcome: context ? 'selected' : 'empty', contextChars: context.length });
     return JSON.stringify(output);
   } catch (error) {
-    if (process.env.CLAUDE_MEMORY_DEBUG) {
-      console.error('Memory hook error:', error);
-    }
+    reportRecallDiagnostic({ event: 'UserPromptSubmit', stage, outcome: 'error', error: stage === 'input' ? { code: 'invalid_input' } : error });
     return formatClaudeContextHookOutput('UserPromptSubmit', '');
   }
 }

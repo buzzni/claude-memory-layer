@@ -4,9 +4,12 @@ import * as net from 'net';
 import * as os from 'os';
 import * as path from 'path';
 import { readNumberEnv } from './hook-runtime.js';
+import { hashProjectPath } from '../../../core/registry/project-path.js';
 
 interface SemanticRequest {
   sessionId: string;
+  /** Authoritative project scope supplied by the hook, independent of registration. */
+  projectPath?: string;
   prompt: string;
   topK: number;
   minScore: number;
@@ -23,6 +26,7 @@ interface SemanticMemory {
 interface SemanticDaemonRequest {
   type: 'retrieve' | 'graduate' | 'summarize';
   sessionId: string;
+  projectPath?: string;
   prompt?: string;
   topK?: number;
   minScore?: number;
@@ -31,6 +35,7 @@ interface SemanticDaemonRequest {
 
 interface SemanticDaemonResponse {
   ok: boolean;
+  projectHash?: string;
   memories?: SemanticMemory[];
   error?: string;
 }
@@ -49,11 +54,16 @@ let daemonStartPromise: Promise<void> | null = null;
 
 export async function retrieveSemanticMemories(
   request: SemanticRequest,
-  timeoutMs: number
+  timeoutMs: number,
+  options: { allowDaemonStart?: boolean } = {}
 ): Promise<SemanticMemory[]> {
+  if (request.projectPath !== undefined && !path.isAbsolute(request.projectPath)) {
+    throw new Error('invalid semantic project scope');
+  }
   const payload: SemanticDaemonRequest = {
     type: 'retrieve',
     sessionId: request.sessionId,
+    ...(request.projectPath !== undefined ? { projectPath: request.projectPath } : {}),
     prompt: request.prompt,
     topK: request.topK,
     minScore: request.minScore,
@@ -63,17 +73,12 @@ export async function retrieveSemanticMemories(
   try {
     return await requestFromDaemon(payload, timeoutMs);
   } catch (error) {
-    if (!isConnectionError(error)) {
+    if (!isConnectionError(error) || options.allowDaemonStart === false) {
       throw error;
     }
 
     await ensureDaemonRunning();
-    return requestFromDaemon(payload, timeoutMs).catch((retryError) => {
-      if (process.env.CLAUDE_MEMORY_DEBUG) {
-        console.error('[semantic-client] retry failed after daemon start:', retryError);
-      }
-      throw retryError;
-    });
+    return requestFromDaemon(payload, timeoutMs);
   }
 }
 
@@ -130,6 +135,7 @@ function requestFromDaemon(
   payload: SemanticDaemonRequest,
   timeoutMs: number
 ): Promise<SemanticMemory[]> {
+  const expectedProjectHash = payload.projectPath !== undefined ? hashProjectPath(payload.projectPath) : undefined;
   return new Promise((resolve, reject) => {
     const client = net.createConnection(DAEMON_SOCKET_PATH);
     client.setEncoding('utf8');
@@ -171,6 +177,13 @@ function requestFromDaemon(
         const parsed = JSON.parse(responseRaw || '{}') as SemanticDaemonResponse;
         if (!parsed.ok) {
           settle(new Error(parsed.error || 'semantic daemon error'));
+          return;
+        }
+        // Older daemons silently ignore projectPath and route through a
+        // possibly stale session registry. Reject them rather than accepting
+        // another project's memories; the caller can use its scoped SQLite lane.
+        if (expectedProjectHash !== undefined && parsed.projectHash !== expectedProjectHash) {
+          settle(new Error('semantic project scope not confirmed'));
           return;
         }
         settle(undefined, parsed.memories || []);

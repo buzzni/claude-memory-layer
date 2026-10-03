@@ -9,6 +9,8 @@
  */
 
 import { reportHookDelivery } from './hook-output.js';
+import type { ClaudeContextHookEvent } from './hook-output.js';
+import { reportRecallDiagnostic } from './recall-diagnostics.js';
 
 const DEFAULT_STDIN_TIMEOUT_MS = 10_000;
 /** Ceiling on the delivery record written before a forced exit. */
@@ -97,6 +99,8 @@ export interface RunHookOptions {
   fallbackOutput: string;
   /** Hard wall-clock ceiling; on expiry the process is forced to exit. */
   timeoutMs?: number;
+  /** Only context hooks participate in privacy-safe recall health reporting. */
+  recallEvent?: ClaudeContextHookEvent;
 }
 
 /**
@@ -131,6 +135,9 @@ export async function runHook(options: RunHookOptions, run: () => Promise<string
   const reportUndelivered = (error: unknown) => reportHookDelivery({ status: 'failed', error });
 
   const watchdog = setTimeout(() => {
+    if (!emitted && options.recallEvent) {
+      reportRecallDiagnostic({ event: options.recallEvent, stage: 'runtime', outcome: 'error', error: { code: 'timeout' } });
+    }
     if (debug) console.error(`[${options.name}] hook timed out after ${timeoutMs}ms; forcing exit`);
     // The `failed` record is awaited before the forced exit, bounded by its own
     // short timeout: a hook that times out with memories selected must not
@@ -152,7 +159,9 @@ export async function runHook(options: RunHookOptions, run: () => Promise<string
   try {
     emit(await run());
   } catch (error) {
-    if (debug) console.error(`[${options.name}] hook error:`, error);
+    if (options.recallEvent) {
+      reportRecallDiagnostic({ event: options.recallEvent, stage: 'runtime', outcome: 'error', error });
+    } else if (debug) console.error(`[${options.name}] hook error:`, error);
     await reportUndelivered(error);
     emit(options.fallbackOutput);
   }
