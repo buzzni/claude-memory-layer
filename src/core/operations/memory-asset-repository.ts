@@ -175,6 +175,11 @@ export class MemoryAssetRepository {
   }
 
   get(assetId: string, projectHash?: string): MemoryAsset | null {
+    // Read-only lesson readers also support stores from before asset registration.
+    // Only an absent table means unregistered; malformed existing schemas still fail.
+    if (!sqliteGet(this.db, "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'memory_assets'")) {
+      return null;
+    }
     const row = sqliteGet<MemoryAssetRow>(
       this.db,
       `SELECT * FROM memory_assets WHERE asset_id = ? AND project_hash = ?`,

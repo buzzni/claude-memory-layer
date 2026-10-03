@@ -830,6 +830,11 @@ export class MemoryService {
     return this.queryService.deleteSessionEvents(sessionId);
   }
 
+  /** Whether an exact user prompt is stored for this session (append dedupe key). */
+  async hasSessionUserPrompt(sessionId: string, contents: readonly string[]): Promise<boolean> {
+    return this.queryService.hasSessionUserPrompt(sessionId, contents);
+  }
+
   /**
    * Format Endless Mode context for Claude
    */

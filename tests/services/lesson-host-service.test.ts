@@ -237,6 +237,37 @@ describe('authenticated lesson host service', () => {
     expect(acknowledged).toEqual({ outcome: 'invalid_ack' });
   });
 
+  it('replays a successful ack after a revision change but fences a new ack, other scopes, and generations', async () => {
+    const { store, service, bindings, cleanup } = fixture();
+    await store.initialize();
+    const sourceEventId = await seedSource(store);
+    const repository = new LessonRepository(store.getDatabase());
+    const lesson = await repository.upsert({ projectHash: 'project-a', name: 'Replay fence', trigger: 'When an ack is retried', steps: ['Retry ack'], confidence: 0.9, sourceEventIds: [sourceEventId] });
+    const selected = await service.recall({ version: 1, requestId: 'select-replay', binding: 'reader', turnId: 'turn-replay', query: 'ack retried replay' });
+    const ack = (requestId: string, binding = 'reader') => service.ackDelivery({ version: 1, requestId, binding, turnId: 'turn-replay', traceId: selected.traceId, lessonIds: [lesson.lessonId], lessonRevisions: [{ lessonId: lesson.lessonId, revision: lesson.revision }] });
+    const first = await ack('ack-replay');
+    await repository.upsert({ lessonId: lesson.lessonId, projectHash: 'project-a', name: lesson.name, trigger: lesson.trigger, steps: ['Retry ack after edit'], confidence: lesson.confidence, sourceEventIds: [sourceEventId] });
+    const replayed = await ack('ack-replay');
+    const fresh = await ack('ack-after-edit');
+    const otherScope = await ack('ack-replay', 'other-project');
+    bindings.set('reader-next-generation', { ...bindings.get('reader')!, generation: 4 });
+    const nextGeneration = await ack('ack-replay', 'reader-next-generation');
+    const deliveredRows = store.getDatabase().prepare(`SELECT COUNT(*) AS count FROM lesson_host_traces WHERE phase = 'delivered'`).get() as { count: number };
+    const listed = await service.listTraces({ version: 1, requestId: 'trace-list-replay', binding: 'reviewer' });
+    await cleanup();
+
+    expect(first).toEqual({ outcome: 'delivered', traceId: selected.traceId });
+    expect(replayed).toEqual(first);
+    expect(fresh).toEqual({ outcome: 'invalid_ack' });
+    expect(otherScope).toEqual({ outcome: 'invalid_ack' });
+    expect(nextGeneration).toEqual({ outcome: 'invalid_ack' });
+    expect(deliveredRows.count).toBe(1);
+    if (listed.outcome !== 'ok') throw new Error('listTraces failed');
+    const delivered = listed.traces.filter((trace) => trace.phase === 'delivered');
+    expect(delivered).toEqual([expect.objectContaining({ selectionTraceId: selected.traceId })]);
+    expect(listed.traces.find((trace) => trace.phase === 'selected')).not.toHaveProperty('selectionTraceId');
+  });
+
   it('drops a selection withdrawn while the final binding check is pending', async () => {
     const { store, bindings, cleanup } = fixture(); await store.initialize();
     try {

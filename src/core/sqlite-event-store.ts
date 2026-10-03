@@ -1445,13 +1445,15 @@ export class SQLiteEventStore {
     await this.initialize();
 
     const canonicalKey = makeCanonicalKey(input.content);
-    const dedupeKey = makeDedupeKey(input.content, input.sessionId);
+    const dedupeKey = makeDedupeKey(input.content, input.sessionId, input.eventType);
 
-    // Check for duplicate
+    // Recognize old keys only for the same event type. A prompt and a quoted
+    // assistant response may have identical text and must remain separate rows.
     const existing = sqliteGet<{ event_id: string }>(
       this.db,
-      `SELECT event_id FROM event_dedup WHERE dedupe_key = ?`,
-      [dedupeKey]
+      `SELECT d.event_id FROM event_dedup d JOIN events e ON e.id = d.event_id
+       WHERE d.dedupe_key IN (?, ?) AND e.session_id = ? AND e.event_type = ?`,
+      [dedupeKey, makeDedupeKey(input.content, input.sessionId), input.sessionId, input.eventType]
     );
 
     if (existing) {
@@ -1814,6 +1816,8 @@ export class SQLiteEventStore {
 
     const getById = this.db.prepare(`SELECT id FROM events WHERE id = ?`);
     const getByDedupe = this.db.prepare(`SELECT event_id FROM event_dedup WHERE dedupe_key = ?`);
+    const getByContentRole = this.db.prepare(`SELECT d.event_id FROM event_dedup d JOIN events e ON e.id = d.event_id
+      WHERE d.dedupe_key IN (?, ?) AND e.session_id = ? AND e.event_type = ?`);
 
     const insertEvent = this.db.prepare(`
       INSERT INTO events (id, event_type, session_id, timestamp, content, canonical_key, dedupe_key, metadata, turn_id)
@@ -1842,13 +1846,26 @@ export class SQLiteEventStore {
         }
 
         const canonicalKey = ev.canonicalKey || makeCanonicalKey(ev.content);
-        const dedupeKey = ev.dedupeKey || makeDedupeKey(ev.content, ev.sessionId);
+        const legacyKey = makeDedupeKey(ev.content, ev.sessionId);
+        const typedKey = makeDedupeKey(ev.content, ev.sessionId, ev.eventType);
+        let dedupeKey = ev.dedupeKey || typedKey;
+        // Preserve caller-supplied opaque keys. For our standard keys, imports
+        // recognize both formats within the same role, without rewriting old
+        // rows or allowing an older key to suppress another event type.
+        const standardKey = dedupeKey === legacyKey || dedupeKey === typedKey;
+        if (standardKey && getByContentRole.get(typedKey, legacyKey, ev.sessionId, ev.eventType)) {
+          skipped++;
+          continue;
+        }
 
         // Skip if already present by dedupe key
         const existingByDedupe = getByDedupe.get(dedupeKey) as { event_id: string } | undefined;
         if (existingByDedupe) {
-          skipped++;
-          continue;
+          if (standardKey && dedupeKey === legacyKey) dedupeKey = typedKey;
+          else {
+            skipped++;
+            continue;
+          }
         }
 
         const metadata = ev.metadata || {};
@@ -1870,7 +1887,7 @@ export class SQLiteEventStore {
         insertLevel.run(ev.id);
         this.enqueueVectorOutboxEventSync(ev.id, ev.eventType);
         inserted++;
-        insertedEvents.push(ev);
+        insertedEvents.push({ ...ev, dedupeKey });
       }
     });
 
@@ -5255,6 +5272,25 @@ export class SQLiteEventStore {
     });
 
     return runDelete() > 0;
+  }
+
+  /**
+   * True when any of the given contents is a user prompt in this session.
+   * Uses the append dedupe key, so importers can recognize rows written under
+   * an older content transform (raw or privacy-filtered) without a backfill.
+   */
+  async hasSessionUserPrompt(sessionId: string, contents: readonly string[]): Promise<boolean> {
+    await this.initialize();
+    for (const content of new Set(contents)) {
+      const existing = sqliteGet<{ event_id: string }>(
+        this.db,
+        `SELECT d.event_id FROM event_dedup d JOIN events e ON e.id = d.event_id
+         WHERE d.dedupe_key IN (?, ?) AND e.session_id = ? AND e.event_type = 'user_prompt'`,
+        [makeDedupeKey(content, sessionId, 'user_prompt'), makeDedupeKey(content, sessionId), sessionId]
+      );
+      if (existing) return true;
+    }
+    return false;
   }
 
   /**

@@ -38,6 +38,7 @@ import {
 } from '../../core/external-market-context.js';
 import { generateCitationId } from '../../core/citation-generator.js';
 import { getProjectStoragePath, hashProjectPath, resolveMemoryRootMarkerPath } from '../../core/registry/project-path.js';
+import { ExistingStoreReadError, withExistingStoreReadSnapshot } from '../../core/registry/existing-store.js';
 import { applyPrivacyFilter, maskSensitiveInput } from '../../core/privacy/filter.js';
 import {
   ActionRepository,
@@ -669,8 +670,24 @@ async function handleMemoryOperationTool(name: string, args: Record<string, unkn
       default:
         throw new Error(`Unknown memory operation tool: ${name}`);
     }
-  }, name === 'mem-lesson-get');
+  }, READ_ONLY_MEMORY_OPERATION_TOOL_NAMES.has(name));
 }
+
+/** Pure reads served from one validated snapshot; they never create, migrate, or write the canonical store. */
+const READ_ONLY_MEMORY_OPERATION_TOOL_NAMES = new Set(['mem-lesson-get', 'mem-lesson-list']);
+
+/**
+ * Columns the lesson reader cannot default. Later additions (revision,
+ * recall_enabled, scope, validation_json, ...) are optional so stores written
+ * by older releases stay readable.
+ */
+const LESSON_READ_REQUIRED_COLUMNS = {
+  memory_lessons: [
+    'lesson_id', 'project_hash', 'name', 'trigger', 'steps_json', 'confidence',
+    'source_session_ids', 'source_event_ids', 'failure_modes_json', 'skill_candidate',
+    'created_at', 'updated_at'
+  ]
+} as const;
 
 async function withMemoryOperationContext<T>(
   args: Record<string, unknown>,
@@ -679,14 +696,18 @@ async function withMemoryOperationContext<T>(
 ): Promise<T> {
   const projectPath = requiredProjectPath(args);
   const projectHash = hashProjectPath(projectPath);
+  if (readOnly) {
+    // Lesson references must remain readable when the canonical store is
+    // mounted read-only. One snapshot keeps WAL/SHM bookkeeping off the source
+    // store, and a missing store is reported instead of created.
+    return await withExistingStoreReadSnapshot(
+      projectHash,
+      (db) => callback({ projectPath, projectHash, db }),
+      { requiredColumns: LESSON_READ_REQUIRED_COLUMNS }
+    );
+  }
   const storagePath = getProjectStoragePath(projectPath);
-  // Lesson references must remain readable when the canonical store is mounted
-  // read-only. A snapshot also keeps WAL/SHM bookkeeping off the source store.
-  const store = new SQLiteEventStore(path.join(storagePath, 'events.sqlite'), {
-    readonly: readOnly,
-    snapshot: readOnly,
-    canonicalMemoryRoot: readOnly ? path.dirname(path.dirname(storagePath)) : undefined
-  });
+  const store = new SQLiteEventStore(path.join(storagePath, 'events.sqlite'), { readonly: false });
   try {
     await store.initialize();
     return await callback({ projectPath, projectHash, db: store.getDatabase() });
@@ -3762,8 +3783,11 @@ function safeErrorSummary(error: unknown): string {
 
 function safeMcpErrorResult(error: unknown): ToolResult {
   const raw = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
-  const resolution = error instanceof MemoryStoreResolutionError ? error : undefined;
+  const resolution = error instanceof MemoryStoreResolutionError || error instanceof ExistingStoreReadError
+    ? error
+    : undefined;
   const code = resolution?.reason
+    ?? (resolution?.storeStatus === 'missing' ? 'store_missing' : undefined)
     ?? (raw.includes('readonly database') || raw.includes('read-only database')
       ? 'readonly_runtime'
       : 'runtime_error');
