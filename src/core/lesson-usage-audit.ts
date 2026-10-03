@@ -514,8 +514,7 @@ function summarizeHostTraces(db: SQLiteDatabase, options: LessonUsageAuditOption
     && selected.machine_id === row.machine_id
     && Number(selected.generation) === Number(row.generation)
     && selected.turn_id === row.turn_id
-    && sameStrict(strictLessonIds(selected.lesson_ids_json), strictLessonIds(row.lesson_ids_json))
-    && sameStrict(strictRevisions(selected.lesson_revisions_json), strictRevisions(row.lesson_revisions_json));
+    && sameStrict(strictLessonSnapshot(selected), strictLessonSnapshot(row));
   for (const row of delivered) {
     const ack = sqliteGet<{ result_json: string }>(
       db,
@@ -552,24 +551,24 @@ function summarizeHostTraces(db: SQLiteDatabase, options: LessonUsageAuditOption
   return summary;
 }
 
-/** Canonical lesson-id list, or null unless the payload is a JSON array of non-empty strings. */
-function strictLessonIds(value: unknown): string | null {
-  const parsed = parseJson(value);
-  if (!Array.isArray(parsed) || !parsed.every((id) => typeof id === 'string' && id.length > 0)) return null;
-  return JSON.stringify(parsed);
-}
-
-/** Canonical revision list, or null unless every entry is { lessonId: non-empty string, revision: positive integer }. */
-function strictRevisions(value: unknown): string | null {
-  const parsed = parseJson(value);
-  if (!Array.isArray(parsed)) return null;
+/**
+ * Canonical versioned lesson snapshot, or null unless every unique id has one
+ * positive integer revision. The native writer emits both arrays in the same
+ * order; validating them together prevents missing or foreign revisions from
+ * certifying a delivery. Two empty arrays are a valid zero-item snapshot.
+ */
+function strictLessonSnapshot(row: HostTraceRow): string | null {
+  const ids = parseJson(row.lesson_ids_json);
+  const revisions = parseJson(row.lesson_revisions_json);
+  if (!Array.isArray(ids) || !ids.every((id) => typeof id === 'string' && id.length > 0)
+    || new Set(ids).size !== ids.length || !Array.isArray(revisions) || revisions.length !== ids.length) return null;
   const entries: Array<{ lessonId: string; revision: number }> = [];
-  for (const entry of parsed) {
-    if (!isRecord(entry) || typeof entry.lessonId !== 'string' || entry.lessonId.length === 0
+  for (const [index, entry] of revisions.entries()) {
+    if (!isRecord(entry) || entry.lessonId !== ids[index]
       || typeof entry.revision !== 'number' || !Number.isInteger(entry.revision) || entry.revision < 1) {
       return null;
     }
-    entries.push({ lessonId: entry.lessonId, revision: entry.revision });
+    entries.push({ lessonId: ids[index], revision: entry.revision });
   }
   return JSON.stringify(entries);
 }

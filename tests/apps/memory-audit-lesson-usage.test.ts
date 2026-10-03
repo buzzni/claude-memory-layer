@@ -322,6 +322,44 @@ describe('memory audit lesson usage edge cases', () => {
     expect(lineage).toMatchObject({ exact: 0, inconsistent: 2, legacyUnique: 0, unlinked: 1 });
   });
 
+  it.each([
+    { lessons: ['lesson-good'], revisions: [] },
+    { lessons: ['lesson-good'], revisions: [{ lessonId: 'lesson-other', revision: 1 }] },
+    { lessons: ['lesson-good', 'lesson-other'], revisions: [{ lessonId: 'lesson-good', revision: 1 }, { lessonId: 'lesson-good', revision: 1 }] },
+    { lessons: ['lesson-good', 'lesson-good'], revisions: [{ lessonId: 'lesson-good', revision: 1 }, { lessonId: 'lesson-good', revision: 1 }] },
+    { lessons: [], revisions: [{ lessonId: 'lesson-good', revision: 1 }] }
+  ])('does not certify links without a one-to-one lesson/revision snapshot: %j', async ({ lessons, revisions }) => {
+    const homeDir = makeHome();
+    const db = await currentStore(homeDir);
+    for (const suffix of ['exact', 'legacy']) {
+      hostTrace(db, { traceId: `sel-${suffix}`, phase: 'selected', requestId: `r-sel-${suffix}`, turnId: suffix, lessons, revisions });
+      hostTrace(db, { traceId: `del-${suffix}`, phase: 'delivered', requestId: `r-del-${suffix}`, turnId: suffix, lessons, revisions });
+    }
+    ackRecord(db, 'r-del-exact', 'sel-exact');
+    sqliteClose(db);
+
+    const lineage = buildMemoryAuditReport({ homeDir, allProjects: true }).stores[0].lessonUsage?.host.deliveryLineage;
+    expect(lineage).toMatchObject({ exact: 0, inconsistent: 1, legacyUnique: 0, unlinked: 1 });
+  });
+
+  it('preserves empty and complete multi-lesson delivery snapshots', async () => {
+    const homeDir = makeHome();
+    const db = await currentStore(homeDir);
+    for (const [index, lessons] of [[], ['lesson-good', 'lesson-other']].entries()) {
+      const revisions = lessons.map((lessonId, revision) => ({ lessonId, revision: revision + 1 }));
+      for (const suffix of ['exact', 'legacy']) {
+        const key = `${index}-${suffix}`;
+        hostTrace(db, { traceId: `sel-${key}`, phase: 'selected', requestId: `r-sel-${key}`, turnId: key, lessons, revisions });
+        hostTrace(db, { traceId: `del-${key}`, phase: 'delivered', requestId: `r-del-${key}`, turnId: key, lessons, revisions });
+        if (suffix === 'exact') ackRecord(db, `r-del-${key}`, `sel-${key}`);
+      }
+    }
+    sqliteClose(db);
+
+    const lineage = buildMemoryAuditReport({ homeDir, allProjects: true }).stores[0].lessonUsage?.host.deliveryLineage;
+    expect(lineage).toMatchObject({ exact: 2, exactDistinctSelections: 2, inconsistent: 0, legacyUnique: 2, unlinked: 0 });
+  });
+
   it('prints only semver runtime versions and collapses other labels', async () => {
     const homeDir = makeHome();
     const db = await currentStore(homeDir);

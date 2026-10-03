@@ -39,9 +39,12 @@ host 전달 확인, MCP 본문 조회가 다른 원장에 남고, 자동 메시�
 
 - 알려진, 경계가 명확한 Saycode 교훈 제안 wrapper, title 지시문,
   주입된 교훈 목록만 제거한다. arbitrary XML/Markdown/영문 단락은 보존한다.
+  교훈 목록은 알려진 전체 footer가 인용·fence 밖의 독립 문단일 때만 닫힌 것으로
+  인정한다. 마지막 짧은 문장만 있거나 footer가 인용·코드 안에 있으면 보존한다.
 - task-notification은 메시지 전체가 해당 envelope일 때 자동 메시지로 취급.
   뒤에 실제 요청이 붙으면 실제 요청을 보존한다.
-- 인용·코드 예시로 주어진 wrapper는 제거하지 않는다. 불완전하거나 모호한
+- 인용·코드 예시로 주어진 wrapper는 제거하지 않는다. 4칸 공백 또는 탭으로
+  들여쓴 Markdown 코드도 분류 전에 들여쓰기를 보존한다. 불완전하거나 모호한
   경계는 보수적으로 원문을 유지한다. 사용자가 쓴 실제 title 변경 요청도 보존한다.
   닫히지 않은 Markdown fence 뒤의 host suffix도 모호한 사용자 텍스트로 보존한다.
   후행 title variant당 한 번만 제거하며 사용자 copy를 반복해서 제거하지 않는다.
@@ -57,6 +60,11 @@ host 전달 확인, MCP 본문 조회가 다른 원장에 남고, 자동 메시�
   갱신하지 않는다. 자동 알림 본문은 새 user_prompt로 보관하지 않는다.
 - normalizer → privacy 순서를 통일한다. importer는 과거 raw/privacy 적용 본문
   dedupe key를 확인해 구자료 재임포트 및 hook→import 중복을 차단한다.
+  과거 본문 검사는 같은 세션의 user_prompt에 한정하며 assistant/tool 본문이
+  일치한다는 이유로 실제 사용자 요청을 건너뛰지 않는다.
+  SQLite 저장 단계의 새 dedupe key도 이벤트 유형을 포함한다. 기존 키는 같은
+  유형일 때만 중복으로 인정하며, 구자료 재가져오기·머신 간 동기화에서도 두 키
+  형식을 호환한다. 기존 행·키를 재작성하거나 schema migration을 추가하지 않는다.
   source timestamp/message identity가 있는 경우 활용하되 새 중복 쓰기를 만들지 않는다.
 - Codex 기존 실제 요청의 trivial 필터 정책은 바꾸지 않는다. environment/AGENTS
   envelope의 새 분류는 범위 밖이며 classifier v1에서는 user로 표시될 수 있다.
@@ -107,6 +115,9 @@ schema와 구분하고 raw error text는 노출하지 않는다.
 - 새 schema column은 추가하지 않는다. delivered row와 같은 project/actor/request
   idempotency(operation=delivered)의 result_json.traceId가 selected trace ID다.
   감사는 이 관계와 전체 binding/lesson revision 일치를 검증해 exact로 연결한다.
+  교훈 ID와 revision 배열은 같은 순서의 일대일 대응이어야 하며 각 ID는 유일하고
+  revision은 양의 정수여야 한다. 두 빈 배열은 정상적인 항목 없는 결과로 인정한다.
+  누락·외부 ID·중복된 교훈 ID는 exact 또는 legacy unique로 연결하지 않는다.
 - 기존 v1 요청/응답을 바꾸지 않고 자료를 자동 backfill하지 않는다.
   ackDelivery는 현재 binding 확인 후 transaction 안에서 idempotent replay를
   먼저 확인한다. 이미 성공한 동일 요청은 revision 변경 뒤에도 원래 응답을 반환.

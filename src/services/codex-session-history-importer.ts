@@ -841,7 +841,7 @@ export class CodexSessionHistoryImporter {
                 result.skippedDuplicates++;
                 continue;
               }
-              if (plan.legacyContents.length > 0 && await this.memoryService.hasSessionContent(sessionId, plan.legacyContents)) {
+              if (plan.legacyContents.length > 0 && await this.memoryService.hasSessionUserPrompt(sessionId, plan.legacyContents)) {
                 result.skippedDuplicates++;
                 storedCount++;
                 continue;

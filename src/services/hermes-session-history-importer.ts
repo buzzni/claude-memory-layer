@@ -721,7 +721,7 @@ export class HermesSessionHistoryImporter {
         const legacyContents = normalized.legacyContent !== undefined
           ? [sanitizeForMemory(normalized.legacyContent)].filter((content) => content !== storedText)
           : [];
-        if (legacyContents.length > 0 && await this.memoryService.hasSessionContent(memorySessionId, legacyContents)) {
+        if (legacyContents.length > 0 && await this.memoryService.hasSessionUserPrompt(memorySessionId, legacyContents)) {
           result.skippedDuplicates++;
           setStoredCount(getStoredCount() + 1);
           continue;

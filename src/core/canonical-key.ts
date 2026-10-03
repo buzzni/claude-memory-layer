@@ -57,12 +57,14 @@ export function isSameCanonicalKey(a: string, b: string): boolean {
 }
 
 /**
- * Generate dedupe key (content + session for uniqueness)
+ * Generate dedupe key (content + session, optionally scoped to event type).
+ * Omitting the type preserves legacy keys for compatible lookups/imports.
  * AXIOMMIND Principle 3: Idempotency guarantee
  */
-export function makeDedupeKey(content: string, sessionId: string): string {
+export function makeDedupeKey(content: string, sessionId: string, eventType?: string): string {
   const contentHash = createHash('sha256').update(content).digest('hex');
-  return `${sessionId}:${contentHash}`;
+  const legacyKey = `${sessionId}:${contentHash}`;
+  return eventType ? `${legacyKey}:${eventType}` : legacyKey;
 }
 
 /**

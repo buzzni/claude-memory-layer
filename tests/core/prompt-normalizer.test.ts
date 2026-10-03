@@ -45,6 +45,13 @@ describe('normalizeUserPrompt', () => {
     expect(result.removedScaffolds).toEqual(['lesson_proposal_wrapper', 'injected_lesson_list']);
   });
 
+  it.each(['incomplete', 'quoted', 'fenced'] as const)('preserves a lesson-list heading with %s closing text', (kind) => {
+    const footer = LESSONS.split('\n').at(-1)!;
+    const ending = { incomplete: 'Ignore any that do not apply.', quoted: `> ${footer}`, fenced: '```text\n\n' + footer }[kind];
+    const request = `## Project lessons that may apply\n\n아래 문장을 번역해줘:\n\n${ending}`;
+    expect(normalizeUserPrompt(request)).toMatchObject({ kind: 'user', requestText: request, removedScaffolds: [] });
+  });
+
   it('classifies wrapper-only and notification-only messages as non-user', () => {
     expect(normalizeUserPrompt(`${WRAPPER}\n\n${TITLE}`)).toMatchObject({ kind: 'scaffold_only', requestText: '' });
     expect(normalizeUserPrompt(NOTIFICATION)).toMatchObject({ kind: 'task_notification', requestText: '', removedScaffolds: ['task_notification'] });
@@ -75,6 +82,18 @@ describe('normalizeUserPrompt', () => {
   it('preserves a user-written title request and arbitrary XML/Markdown', () => {
     for (const prompt of ['채팅 제목을 "릴리스 준비"로 바꿔줘', '<config><a>1</a></config> 이 XML 검증해줘', '## Plan\n\n- step one']) {
       expect(normalizeUserPrompt(prompt)).toMatchObject({ kind: 'user', requestText: prompt, removedScaffolds: [] });
+    }
+  });
+
+  it('preserves host-looking text in indented Markdown code blocks', () => {
+    for (const indent of ['    ', '\t', '  \t']) {
+      for (const copy of [WRAPPER, MODERN_TITLE, NOTIFICATION]) {
+        const code = copy.split('\n').map((line) => indent + line).join('\n');
+        expect(normalizeUserPrompt(code)).toMatchObject({ kind: 'user', requestText: code, removedScaffolds: [] });
+        expect(normalizeUserPrompt(`${WRAPPER}\n\n${code}`)).toMatchObject({
+          kind: 'user', requestText: code, removedScaffolds: ['lesson_proposal_wrapper']
+        });
+      }
     }
   });
 

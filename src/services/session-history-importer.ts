@@ -401,7 +401,7 @@ export class SessionHistoryImporter {
 
           // Earlier imports stored the raw prompt and the hook stored its
           // privacy-filtered form; either one means this prompt is already here.
-          if (plan.legacyContents.length > 0 && await this.memoryService.hasSessionContent(sessionId, plan.legacyContents)) {
+          if (plan.legacyContents.length > 0 && await this.memoryService.hasSessionUserPrompt(sessionId, plan.legacyContents)) {
             result.skippedDuplicates++;
             lineCount++;
             continue;
