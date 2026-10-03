@@ -21,6 +21,7 @@ import {
 } from './registry.js';
 import { createMcpIdleResourceController, parseMcpIdleReleaseMs } from './idle-resources.js';
 import { createMcpProcessLifecycle } from './process-lifecycle.js';
+import { isReadOnlyMcpRuntime, READ_ONLY_MCP_TOOL_NAMES } from './read-only-runtime.js';
 import {
   markRuntimeProcessStopped,
   registerRuntimeProcess
@@ -59,9 +60,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToo
 
 // Start server
 async function main() {
-  registerRuntimeProcess('mcp');
+  if (!isReadOnlyMcpRuntime()) registerRuntimeProcess('mcp');
   activeProfile = resolveMcpToolProfile();
   activeTools = getToolsForProfile(activeProfile);
+  if (isReadOnlyMcpRuntime()) activeTools = activeTools.filter(tool => READ_ONLY_MCP_TOOL_NAMES.has(tool.name));
   const transport = new StdioServerTransport();
   let lifecycleCheck: NodeJS.Timeout | null = null;
   const lifecycle = createMcpProcessLifecycle({
@@ -76,7 +78,7 @@ async function main() {
           shutdownMcpMemoryServices('process-shutdown')
         ]);
       } finally {
-        markRuntimeProcessStopped();
+        if (!isReadOnlyMcpRuntime()) markRuntimeProcessStopped();
       }
     },
     exit: (code) => process.exit(code),
@@ -108,6 +110,6 @@ main().catch((error) => {
   console.error('claude-memory-layer MCP server failed:', error instanceof Error ? error.message : 'unknown error');
   // stdin listeners are already attached at this point. Merely assigning
   // exitCode would keep a failed stdio server alive until its client closes.
-  markRuntimeProcessStopped();
+  if (!isReadOnlyMcpRuntime()) markRuntimeProcessStopped();
   process.exit(1);
 });
