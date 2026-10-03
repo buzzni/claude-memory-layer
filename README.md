@@ -809,6 +809,10 @@ MCP 서버는 stdio 종료·부모 프로세스 소실 시 함께 종료됩니�
 
 MCP 도구 surface는 `CLAUDE_MEMORY_MCP_PROFILE`로 `core`, `operations`, `governance`, `experimental`, `all` 중 하나를 선택할 수 있습니다. 기본값 `all`은 기존 전체 도구 목록과 동작을 보존합니다. 작은 context/search 중심 surface가 필요하면 MCP server entry의 `env`에 `CLAUDE_MEMORY_MCP_PROFILE=core`를 설정하세요. 프로필별 범위, mutation 분류, 롤백 방법은 [`docs/MCP_TOOL_PROFILES.md`](docs/MCP_TOOL_PROFILES.md)를 참고하세요.
 
+쓰기 제한 샌드박스에서 조회할 때는 MCP server entry의 `env`에 `CLAUDE_MEMORY_MCP_READ_ONLY=1`을 설정할 수 있습니다. Happy가 자동 recall을 담당해 `CLAUDE_MEMORY_RECALL_OWNER=host`를 전달하는 native MCP도 이 모드를 사용합니다. 선택한 프로필에서 `mem-context-pack`, `mem-search`, `mem-timeline`, `mem-details`, `mem-project-timeline`, `mem-source-ref`, `mem-stats`, `mem-lesson-get`, `mem-lesson-list`, `external-market-context`만 노출하며, 그 외 도구와 명시적 freshness refresh는 `read_only_runtime` 오류로 거절합니다.
+
+이 모드의 메모리 조회는 임시 SQLite snapshot과 어휘 검색을 사용합니다. 의미 검색용 모델·vector 초기화, 자동 import, 조회 telemetry 기록을 수행하지 않으므로 의미 검색 품질과 usage 집계에 차이가 있습니다. `mem-stats`는 기존 vector index가 있으면 읽기 전용으로 개수를 조회합니다. `mem-context-pack`의 `refreshLatest=false`도 모델 초기화 없이 조회합니다. 원본 메모리 파일을 읽을 권한과 canonical memory 밖의 임시 디렉터리에 쓸 권한은 필요하며, 이 설정이 샌드박스 권한을 늘려주지는 않습니다. 동시 checkpoint 중 snapshot은 최신 데이터를 놓칠 수 있으므로 최신성이 필요하면 조회를 반복하거나 권한이 있는 writable runtime에서 import 후 조회하세요. 새 바이너리 설치 후에는 MCP 프로세스를 재시작해야 적용됩니다.
+
 ### 제공되는 MCP 도구
 
 | 범주 | 도구 | 설명 |

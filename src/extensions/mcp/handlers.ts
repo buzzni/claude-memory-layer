@@ -111,6 +111,8 @@ import type {
 } from '../../core/types.js';
 import { extractLessonWithLlm, isLlmLessonExtractionEnabled } from '../../adapters/llm/lesson-extraction-llm.js';
 import { rankCuratedLessonsHybrid } from './hybrid-lesson-ranking.js';
+import { rankCuratedLessons } from './lesson-ranking.js';
+import { isReadOnlyMcpRuntime, READ_ONLY_MCP_TOOL_NAMES } from './read-only-runtime.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 
 type ToolResult = CallToolResult;
@@ -241,6 +243,15 @@ export async function handleToolCallInDomain(
   rawArgs: Record<string, unknown>
 ): Promise<ToolResult> {
   try {
+    const constrainedReads = isReadOnlyMcpRuntime();
+    if (constrainedReads && (!READ_ONLY_MCP_TOOL_NAMES.has(name)
+      || (name === 'mem-context-pack' && rawArgs.refreshLatest === true))) {
+      return {
+        isError: true,
+        content: [{ type: 'text', text: 'Error [read_only_runtime]: This MCP runtime supports snapshot reads only; imports and writes require an authorized writable runtime.' }],
+        structuredContent: { code: 'read_only_runtime', retryable: false, remediation: 'writable_runtime' }
+      };
+    }
     if (name === 'external-market-context') {
       return await handleExternalMarketContext(rawArgs);
     }
@@ -279,12 +290,12 @@ export async function handleToolCallInDomain(
       return await handleReadOnlyMemStats(args);
     }
 
-    const ownsReadOnlyService = name === 'mem-context-pack' && args.refreshLatest === false;
+    const ownsReadOnlyService = constrainedReads || (name === 'mem-context-pack' && args.refreshLatest === false);
     const memoryService = ownsReadOnlyService
       ? resolveReadOnlyMemoryService(args)
       : resolveMemoryService(args);
     try {
-      if (!LIGHTWEIGHT_READ_TOOL_NAMES.has(name)) {
+      if (!ownsReadOnlyService && !LIGHTWEIGHT_READ_TOOL_NAMES.has(name)) {
         await memoryService.initialize();
       }
 
@@ -2201,11 +2212,15 @@ async function retrieveMcpMemories(
       topK: fetchTopK,
       sessionId: options.sessionId,
       recordTrace: false,
+      ...(memoryService.capabilities?.canonicalWrites === false ? { strategy: 'fast' as const } : {}),
       ...(options.retrievalMode ? { retrievalMode: options.retrievalMode } : {})
     };
     const result = await memoryService.retrieveMemories(query, retrieveOptions);
     return {
       memories: selectMcpMemoryResults(result.memories, options.topK, options.eventType),
+      ...(memoryService.capabilities?.canonicalWrites === false
+        ? { warning: 'Read-only retrieval: used lexical search; semantic/vector retrieval and telemetry are disabled.' }
+        : {}),
       diagnostics: result.outcomeDiagnostics
     };
   } catch (error) {
@@ -2434,6 +2449,7 @@ async function handleMemDetails(memoryService: MemoryService, args: Record<strin
     lines.push('');
     lines.push('---');
     lines.push('');
+    if (memoryService.capabilities?.telemetryWrites === false) continue;
     try {
       await memoryService.recordReferenceNavigation({
         targetEventId: event.id,
@@ -2478,7 +2494,8 @@ async function handleMemContextPack(memoryService: MemoryService, args: Record<s
   };
   const genericContinuationQuery = isGenericContinuationQuery(query);
   const explicitFreshnessRefresh = args.refreshLatest === true;
-  const autoFreshnessRefresh = args.refreshLatest !== false
+  const autoFreshnessRefresh = memoryService.capabilities?.freshnessImports !== false
+    && args.refreshLatest !== false
     && !explicitFreshnessRefresh
     && genericContinuationQuery
     && sessionId === undefined
@@ -2500,7 +2517,7 @@ async function handleMemContextPack(memoryService: MemoryService, args: Record<s
 
   const search = await retrieveMcpMemories(memoryService, query, { topK: retrievalTopK, sessionId, retrievalMode });
   const recentEvents = await memoryService.getRecentEvents(recentLimit);
-  const curatedLessons = await loadCuratedLessons(projectPath, requesterActorId, optionalString(args.query));
+  const curatedLessons = await loadCuratedLessons(projectPath, requesterActorId, optionalString(args.query), memoryService.capabilities?.canonicalWrites === false);
 
   const timelineEvents = selectContextPackTimelineEvents(
     recentEvents,
@@ -2533,10 +2550,14 @@ async function handleMemContextPack(memoryService: MemoryService, args: Record<s
   let perspectiveWarning: string | undefined;
   if (hasPerspectiveContext) {
     try {
-      perspectiveBundle = await withMemoryOperationContext(args, (context) => loadPerspectiveContextBundle(context, args, {
-        query,
-        defaultLimit: perspectiveObservationLimit(args.reasoningLevel)
-      }));
+      const readPerspective = (context: MemoryOperationContext) => loadPerspectiveContextBundle(context, args, {
+        query, defaultLimit: perspectiveObservationLimit(args.reasoningLevel)
+      });
+      perspectiveBundle = memoryService.capabilities?.canonicalWrites === false
+        ? await withExistingStoreReadSnapshot(hashProjectPath(requiredProjectPath(args)), (db) => readPerspective({
+          projectPath: requiredProjectPath(args), projectHash: hashProjectPath(requiredProjectPath(args)), db
+        }))
+        : await withMemoryOperationContext(args, readPerspective);
     } catch (error) {
       perspectiveWarning = `Warning: perspective context unavailable; project memories returned without perspective lane (${safeErrorSummary(error)}).`;
     }
@@ -2950,6 +2971,7 @@ async function handleMemSourceRef(memoryService: MemoryService, args: Record<str
       }
     }
     lines.push('');
+    if (memoryService.capabilities?.telemetryWrites === false) continue;
     try {
       await memoryService.recordReferenceNavigation({
         targetEventId: event.id,
@@ -2973,7 +2995,8 @@ interface ContextPackMemory {
 async function loadCuratedLessons(
   projectPath: string | undefined,
   requesterActorId: string | undefined,
-  query?: string
+  query?: string,
+  lexicalOnly = false
 ): Promise<CanonicalMemoryInjection<MemoryLesson>[]> {
   if (!projectPath || !path.isAbsolute(projectPath)) return [];
   const storagePath = getProjectStoragePath(projectPath);
@@ -3013,7 +3036,9 @@ async function loadCuratedLessons(
       candidates.push(...items);
       if (lessons.length < pageSize || (!query?.trim() && candidates.length >= 3)) break;
     }
-    return (await rankCuratedLessonsHybrid(candidates.map((item) => item.value), query, 3))
+    const lessons = candidates.map((item) => item.value);
+    const ranked = lexicalOnly ? rankCuratedLessons(lessons, query, 3) : await rankCuratedLessonsHybrid(lessons, query, 3);
+    return ranked
       .flatMap((lesson) => {
         const item = candidates.find((candidate) => candidate.value.lessonId === lesson.lessonId);
         return item ? [item] : [];
