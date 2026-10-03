@@ -8,7 +8,7 @@ export function safeSourceLabel(value: unknown): string {
 }
 
 export function safeClientLabel(value: unknown): string {
-  return ['claude-hook', 'codex-hook', 'mcp', 'hermes', 'cli', 'dashboard'].includes(String(value))
+  return ['claude-hook', 'codex-hook', 'codex-host', 'mcp', 'hermes', 'cli', 'dashboard'].includes(String(value))
     ? String(value) : 'unknown';
 }
 

@@ -43,7 +43,7 @@ function storeDir(homeDir: string, storeHash: string): string {
 }
 
 /** A full, current-schema store with one prompt-triggered evidence delivery. */
-async function seedCurrentStore(homeDir: string, storeHash: string): Promise<void> {
+async function seedCurrentStore(homeDir: string, storeHash: string, deliveryClient = 'claude-hook'): Promise<void> {
   const dbPath = path.join(storeDir(homeDir, storeHash), 'events.sqlite');
   const store = new SQLiteEventStore(dbPath);
   await store.initialize();
@@ -67,8 +67,8 @@ async function seedCurrentStore(homeDir: string, storeHash: string): Promise<voi
     items: [{ kind: 'event', id: memory.eventId, projectId: storeHash, selected: true }],
     presentationMode: 'evidence',
     triggerType: 'user_prompt',
-    deliveryClient: 'claude-hook',
-    requestId: `claude-hook:session-audit:turn-1`
+    deliveryClient,
+    requestId: `${deliveryClient}:session-audit:turn-1`
   });
   await store.recordRetrieval(memory.eventId, 'session-audit', 0.9, 'how do I deploy?', {
     traceId: 'trace-audit',
@@ -76,7 +76,7 @@ async function seedCurrentStore(homeDir: string, storeHash: string): Promise<voi
     injectedContent: 'Production deploys use port 37777 and scripts/release-npm.sh.',
     presentationMode: 'evidence',
     triggerType: 'user_prompt',
-    deliveryClient: 'claude-hook'
+    deliveryClient
   });
   await store.recordDeliveryOutcome({
     traceId: 'trace-audit',
@@ -294,6 +294,14 @@ describe('read-only memory audit (specs R5)', () => {
     expect(legacy?.sources).toEqual([
       expect.objectContaining({ source: 'native', events: 1, unknownSourceClock: 1 })
     ]);
+  });
+
+  it('attributes host Codex recall to its own client instead of unknown', async () => {
+    const homeDir = makeHome();
+    await seedCurrentStore(homeDir, 'aaaaaaaa', 'codex-host');
+    const report = buildMemoryAuditReport({ homeDir, allProjects: true });
+    expect(report.stores.find((store) => store.storeHash === 'aaaaaaaa')?.clients)
+      .toEqual([{ client: 'codex-host', traces: 1 }]);
   });
 
   it('renders markdown and json without leaking absolute paths', async () => {

@@ -4,7 +4,14 @@
  */
 
 import { randomUUID } from 'crypto';
-import { getLightweightMemoryServiceForProject } from '../../../services/memory-service.js';
+import { isAbsolute } from 'path';
+import {
+  createMemoryService,
+  DISABLED_SHARED_STORE_CONFIG,
+  getLightweightMemoryServiceForProject,
+  getProjectStoragePath,
+  hashProjectPath
+} from '../../../services/memory-service.js';
 import { registerSession } from '../../../core/registry/session-registry.js';
 import { ensureDaemonRunning, scheduleSessionSummary } from './semantic-daemon-client.js';
 import { isLlmSummaryEnabled } from '../../llm/session-summary-llm.js';
@@ -14,6 +21,7 @@ import {
   type CanonicalMemoryInjection
 } from '../../../core/operations/canonical-memory-injection-service.js';
 import { readStdin } from './hook-runtime.js';
+import { reportRecallDiagnostic } from './recall-diagnostics.js';
 import {
   formatClaudeContextHookOutput,
   isHookEvaluationMode,
@@ -261,6 +269,8 @@ export function formatLessonIndexContext(
 
 export interface SessionStartMainOptions {
   contextPresentation?: 'evidence' | 'reference';
+  /** Host recall must not launch detached maintenance during a foreground turn. */
+  maintenance?: boolean;
   /**
    * Client label for this hook's telemetry. Codex reuses this hook body, so an
    * explicit label keeps per-client coverage attributable (specs R2).
@@ -280,9 +290,7 @@ export function registerSessionBestEffort(
     // The explicit cwd remains authoritative for this hook. Registry failure
     // may reduce routing quality for later cwd-less hooks, but must not suppress
     // project-scoped session startup or context delivery now.
-    if (process.env.CLAUDE_MEMORY_DEBUG) {
-      console.error('Memory session registration failed:', error);
-    }
+    reportRecallDiagnostic({ event: 'SessionStart', stage: 'registry', outcome: 'error', error });
     return false;
   }
 }
@@ -293,7 +301,12 @@ export async function main(options: SessionStartMainOptions = {}): Promise<strin
   let input: SessionStartInput;
   try {
     input = JSON.parse(await readStdin());
+    if (!input || typeof input.cwd !== 'string' || !isAbsolute(input.cwd)
+      || typeof input.session_id !== 'string' || !input.session_id.trim()) {
+      throw new Error('invalid hook input');
+    }
   } catch {
+    reportRecallDiagnostic({ event: 'SessionStart', stage: 'input', outcome: 'error', error: { code: 'invalid_input' } });
     return formatClaudeContextHookOutput('SessionStart', '');
   }
 
@@ -302,14 +315,14 @@ export async function main(options: SessionStartMainOptions = {}): Promise<strin
 
   // Start semantic daemon in the background (non-blocking) so VectorWorker
   // can process any pending embedding_outbox items immediately.
-  ensureDaemonRunning().catch(() => {
+  if (options.maintenance !== false) ensureDaemonRunning().catch(() => {
     // Ignore - daemon will start on first prompt if needed
   });
 
   // Self-heal stores that embedded tool_observation vectors before the
   // ingest-side fix existed. Cheap no-op once healed; the real cleanup (if
   // needed) runs detached so a large backlog can't block this hook.
-  spawnToolObservationVectorAutoHealIfNeeded(input.cwd).catch(() => {
+  if (options.maintenance !== false) spawnToolObservationVectorAutoHealIfNeeded(input.cwd).catch(() => {
     // Best-effort; next session's cheap check will retry.
   });
 
@@ -322,13 +335,16 @@ export async function main(options: SessionStartMainOptions = {}): Promise<strin
   // three lanes for one invocation related without collapsing a later start
   // onto the earlier invocation's trace.
   const requestPrefix = `${deliveryClient}:session-start:${input.session_id}:${randomUUID()}`;
-  const memoryService = getLightweightMemoryServiceForProject(input.cwd);
+  let memoryService: ReturnType<typeof getLightweightMemoryServiceForProject> | undefined;
+  let stage: 'service' | 'retrieval' = 'service';
 
   try {
+    memoryService = getLightweightMemoryServiceForProject(input.cwd);
     // Start session in memory service
     if (!isHookEvaluationMode()) {
       await memoryService.startSession(input.session_id, input.cwd);
     }
+    stage = 'retrieval';
 
     // Backfill session summaries for recent sessions that ended without Stop hook
     // (crash, force-close, etc.). Run in background - non-blocking.
@@ -338,7 +354,7 @@ export async function main(options: SessionStartMainOptions = {}): Promise<strin
     // generateSessionSummary directly, which kept reintroducing the
     // table-of-contents summary shape the LLM path exists to replace, on
     // every session that needed a backfill.
-    if (!isHookEvaluationMode()) {
+    if (!isHookEvaluationMode() && options.maintenance !== false) {
       if (isLlmSummaryEnabled()) {
         memoryService.getSessionsWithoutSummary(input.session_id, 5)
           .then((sessionIds) => Promise.all(
@@ -563,7 +579,7 @@ export async function main(options: SessionStartMainOptions = {}): Promise<strin
           deliveredTraceIds.push(batchTraceId);
         } catch { /* non-critical telemetry */ }
       }
-      for (const event of injectedEvents) {
+      for (const event of isHookEvaluationMode() ? [] : injectedEvents) {
         try {
           await memoryService.recordRetrieval(
             event.id,
@@ -595,7 +611,17 @@ export async function main(options: SessionStartMainOptions = {}): Promise<strin
         // This runs after the envelope is written, by which point the `finally`
         // below has already closed the hook's service, so open a short-lived
         // one for the delivery record.
-        const deliveryService = getLightweightMemoryServiceForProject(projectPath);
+        // The registry caches the service that `finally` just closed. A fresh
+        // uncached writer is required; a cached closed SQLite connection cannot
+        // persist evidence that stdout completed.
+        const deliveryService = createMemoryService({
+          storagePath: getProjectStoragePath(projectPath),
+          projectPath,
+          projectHash: hashProjectPath(projectPath),
+          lightweightMode: true,
+          analyticsEnabled: false,
+          sharedStoreConfig: DISABLED_SHARED_STORE_CONFIG
+        });
         try {
           for (const traceId of traceIds) {
             await deliveryService.recordDeliveryOutcome({
@@ -611,15 +637,14 @@ export async function main(options: SessionStartMainOptions = {}): Promise<strin
     }
 
     const output: SessionStartOutput = JSON.parse(formatClaudeContextHookOutput('SessionStart', context));
+    reportRecallDiagnostic({ event: 'SessionStart', stage: 'complete', outcome: context ? 'selected' : 'empty', contextChars: context.length });
     return JSON.stringify(output);
   } catch (error) {
-    if (process.env.CLAUDE_MEMORY_DEBUG) {
-      console.error('Memory hook error:', error);
-    }
+    reportRecallDiagnostic({ event: 'SessionStart', stage, outcome: 'error', error });
     return formatClaudeContextHookOutput('SessionStart', '');
   } finally {
     try {
-      await memoryService.close();
+      await memoryService?.close();
     } catch {
       // Best-effort cleanup
     }

@@ -36,7 +36,7 @@ export interface MemoryServiceRegistry<TService> {
   getMemoryServiceForSession(sessionId: string): TService;
   getLightweightMemoryService(sessionId: string): TService;
   getLightweightMemoryServiceForProject(projectPath: string): TService;
-  createMemoryService(config: MemoryServiceConfig): TService;
+  createMemoryService(config: MemoryServiceRegistryConfig): TService;
   shutdownAll(): Promise<void>;
 }
 
@@ -189,7 +189,7 @@ export function createMemoryServiceRegistry<TService>(
     getMemoryServiceForSession,
     getLightweightMemoryService,
     getLightweightMemoryServiceForProject,
-    createMemoryService: (config: MemoryServiceConfig): TService => deps.createService(config),
+    createMemoryService: (config: MemoryServiceRegistryConfig): TService => deps.createService(config),
     shutdownAll
   };
 }

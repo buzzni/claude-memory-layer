@@ -120,6 +120,11 @@ async function build() {
     entryPoints: ['src/services/lesson-host-service.ts'],
     outfile: 'dist/services/lesson-host-service.js'
   });
+  await esbuild.build({
+    ...commonOptions,
+    entryPoints: ['src/services/recall-host-contract.ts'],
+    outfile: 'dist/services/recall-host-contract.js'
+  });
 
   // Build server
   console.log('📦 Building server...');
@@ -164,6 +169,7 @@ async function build() {
   console.log('  - core/index.js');
   console.log('  - services/memory-service.js');
   console.log('  - services/lesson-host-service.js');
+  console.log('  - services/recall-host-contract.js');
   console.log('  - server/index.js');
   console.log('  - ui/index.html');
   console.log('  - .claude-plugin/');
