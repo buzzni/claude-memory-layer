@@ -121,7 +121,7 @@ describe('importer prompt normalization', () => {
     const { prompts, responses } = await sessionEvents(service, 'claude-session');
     expect(prompts.map((event) => event.content)).toEqual([STORED_REQUEST]);
     expect(prompts[0].content).not.toContain('hunter2-fixture');
-    expect(prompts[0].metadata).toMatchObject({ promptClassifier: { version: 1, kind: 'user', removed: ['lesson_proposal_wrapper', 'title_directive'] } });
+    expect(prompts[0].metadata).toMatchObject({ promptClassifier: { version: 2, kind: 'user', removed: ['lesson_proposal_wrapper', 'title_directive'] } });
     const promptTurn = prompts[0].metadata?.turnId;
     const answer = responses.find((event) => event.content.startsWith('first answer'))!;
     const notificationReply = responses.find((event) => event.content.startsWith('notification reply'))!;

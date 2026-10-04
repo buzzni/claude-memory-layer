@@ -12,7 +12,7 @@ import {
   formatDoctorReport,
   type DoctorCheckResult
 } from '../../src/apps/cli/doctor.js';
-import { REQUIRED_HOOK_FILES, type ClaudeSettingsWithHooks } from '../../src/apps/cli/claude-settings-hooks.js';
+import { getHooksConfig, REQUIRED_HOOK_FILES, type ClaudeSettingsWithHooks } from '../../src/apps/cli/claude-settings-hooks.js';
 
 describe('checkNodeVersion', () => {
   it('passes on a version at or above the minimum', () => {
@@ -94,6 +94,47 @@ describe('checkHooksInstalled', () => {
     expect(result.status).toBe('fail');
     expect(result.detail).not.toContain('SessionStart');
     expect(result.detail).toContain('Stop');
+  });
+
+  it('warns when registered hooks still point to a different installation', () => {
+    const result = checkHooksInstalled({ hooks: getHooksConfig('/old/claude-memory-layer/dist') }, '/active/claude-memory-layer/dist', {
+      existsImpl: () => true,
+      realpathImpl: (target) => target
+    });
+    expect(result.status).toBe('warn');
+    expect(result.detail).toContain('differ from the active CLI installation');
+    expect(result.detail).toContain('UserPromptSubmit');
+    expect(result.fix).toContain('claude-memory-layer install');
+  });
+
+  it('fails when registered command targets are missing even if expected files exist', () => {
+    const result = checkHooksInstalled({ hooks: getHooksConfig('/old/claude-memory-layer/dist') }, '/active/claude-memory-layer/dist', {
+      existsImpl: (target) => target.startsWith('/active/'),
+      realpathImpl: (target) => target
+    });
+    expect(result.status).toBe('fail');
+    expect(result.detail).toContain('Registered hook files do not exist');
+    expect(result.detail).toContain('SessionEnd');
+  });
+
+  it('passes only when all registered targets resolve to the active installation', () => {
+    const result = checkHooksInstalled({ hooks: getHooksConfig('/active/claude-memory-layer/dist') }, '/active/claude-memory-layer/dist', {
+      existsImpl: () => true,
+      realpathImpl: (target) => target
+    });
+    expect(result.status).toBe('pass');
+    expect(result.detail).toContain('active CLI installation');
+  });
+
+  it('warns instead of declaring an arbitrary shell wrapper current', () => {
+    const settings = { hooks: getHooksConfig('/active/claude-memory-layer/dist') };
+    settings.hooks.Stop![0].hooks[0].command = 'env CUSTOM_MODE=1 node /active/claude-memory-layer/dist/hooks/stop.js';
+    const result = checkHooksInstalled(settings, '/active/claude-memory-layer/dist', {
+      existsImpl: () => true,
+      realpathImpl: (target) => target
+    });
+    expect(result.status).toBe('warn');
+    expect(result.detail).toContain('Could not verify hook targets: Stop');
   });
 });
 

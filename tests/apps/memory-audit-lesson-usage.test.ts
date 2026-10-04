@@ -171,7 +171,7 @@ describe('memory audit lesson usage', () => {
     const store = report.stores[0];
 
     expect(store.promptQuality).toMatchObject({
-      support: 'supported', timeBasis: 'events.timestamp', classifierVersion: 1,
+      support: 'supported', timeBasis: 'events.timestamp', classifierVersion: 2,
       userPrompts: 5, automatedEnvelopes: 1, scaffoldOnly: 1, withRecognizedScaffold: 3,
       requestAfterNormalization: 3, withProposalWrapper: 2, storedWithClassifierMetadata: 1,
       scaffoldKinds: { lesson_proposal_wrapper: 2, task_notification: 1, title_directive: 0, injected_lesson_list: 0 }

@@ -81,8 +81,9 @@ import {
   type DoctorCheckResult
 } from './doctor.js';
 import {
-  hasHook,
+  inspectPluginHookTargets,
   mergePluginHooksIntoSettings,
+  PLUGIN_HOOKS,
   removePluginHooksFromSettings,
   REQUIRED_HOOK_FILES,
   type ClaudeSettingsWithHooks
@@ -107,6 +108,7 @@ import {
 } from './hermes-validation-output.js';
 import { runCodexImportOnce } from './codex-import-runner.js';
 import { readCodexAutoImportStatus } from '../../services/codex-session-auto-import.js';
+import { readCodexHostIngestStatus } from '../../services/codex-host-ingest.js';
 import { runHermesImportOnce } from './hermes-import-runner.js';
 import { formatDashboardStatus, resolveDashboardCommandOptions } from './dashboard-command.js';
 import {
@@ -1060,19 +1062,22 @@ program
 
       console.log('\n🧠 Claude Memory Layer Status\n');
 
-      // Check hooks
-      const hasSessionStartHook = hasHook(settings, 'SessionStart', 'session-start');
-      const hasUserPromptHook = hasHook(settings, 'UserPromptSubmit', 'user-prompt-submit');
-      const hasPostToolHook = hasHook(settings, 'PostToolUse', 'post-tool-use');
-      const hasStopHook = hasHook(settings, 'Stop', 'stop');
-      const hasSessionEndHook = hasHook(settings, 'SessionEnd', 'session-end');
-
+      const targets = inspectPluginHookTargets(settings, pluginPath);
+      const hookCheck = checkHooksInstalled(settings, pluginPath);
+      const targetLabels = {
+        missing: '❌ Not installed',
+        'missing-target': '❌ Hook file missing',
+        'different-target': '⚠️  Different installation',
+        unverifiable: '⚠️  Target could not be verified',
+        current: '✅ Installed'
+      } as const;
       console.log('Hooks:');
-      console.log(`  SessionStart: ${hasSessionStartHook ? '✅ Installed' : '❌ Not installed'}`);
-      console.log(`  UserPromptSubmit: ${hasUserPromptHook ? '✅ Installed' : '❌ Not installed'}`);
-      console.log(`  PostToolUse: ${hasPostToolHook ? '✅ Installed' : '❌ Not installed'}`);
-      console.log(`  Stop: ${hasStopHook ? '✅ Installed' : '❌ Not installed'}`);
-      console.log(`  SessionEnd: ${hasSessionEndHook ? '✅ Installed' : '❌ Not installed'}`);
+      for (const hookName of Object.keys(PLUGIN_HOOKS)) {
+        const checks = targets.filter((target) => target.hookName === hookName);
+        const status = (Object.keys(targetLabels) as Array<keyof typeof targetLabels>)
+          .find((candidate) => checks.some((target) => target.status === candidate))!;
+        console.log(`  ${hookName}: ${targetLabels[status]}`);
+      }
 
       // Check plugin files
       const hooksExist = REQUIRED_HOOK_FILES
@@ -1084,8 +1089,9 @@ program
       const dashboardRunning = await isServerRunning(37777);
       console.log(`\n${formatDashboardStatus(dashboardRunning, 37777)}`);
 
-      if (!hasSessionStartHook || !hasUserPromptHook || !hasPostToolHook || !hasStopHook || !hasSessionEndHook) {
-        console.log('\n💡 Run "claude-memory-layer install" to set up hooks.\n');
+      if (hookCheck.status !== 'pass') {
+        console.log(`\n${hookCheck.detail}`);
+        console.log(`💡 ${hookCheck.fix}\n`);
       } else {
         console.log('\n✅ Plugin is fully installed and configured.\n');
       }
@@ -1130,7 +1136,7 @@ program
     const checks: DoctorCheckResult[] = [
       checkNodeVersion(process.version, readEnginesNodeRange(packageRoot)),
       checkPluginFiles(pluginPath),
-      checkHooksInstalled(settings),
+      checkHooksInstalled(settings, pluginPath),
       checkEmbeddingBackend(packageRoot, await loadEmbeddingBackendAvailabilityCheck(packageRoot)),
       checkPathConsistency('claude-memory-layer', process.env.PATH ?? ''),
       checkPathConsistency('claude-memory-layer-mcp', process.env.PATH ?? ''),
@@ -3206,6 +3212,15 @@ codexHooksCmd
       console.log(`  Hook files: ${filesExist ? '✅ Found' : '❌ Not found'}`);
       console.log(`  Config: ${configPath}`);
       const importStatus = readCodexAutoImportStatus(path.resolve(options.project || process.cwd()));
+      const hostImportStatus = readCodexHostIngestStatus(path.resolve(options.project || process.cwd()));
+      if (hostImportStatus) {
+        const counts = hostImportStatus.status === 'success'
+          ? ` · ${hostImportStatus.importedPrompts ?? 0} prompts · ${hostImportStatus.importedResponses ?? 0} responses · ${hostImportStatus.skippedDuplicates ?? 0} duplicates`
+          : ` · ${hostImportStatus.reason ?? 'import_failed'}`;
+        console.log(`  Last host ingestion: ${hostImportStatus.status} at ${hostImportStatus.updatedAt}${counts}`);
+      } else {
+        console.log('  Last host ingestion: — No recorded completed-turn import for this project');
+      }
       if (importStatus) {
         const counts = importStatus.status === 'success'
           ? ` · ${importStatus.importedPrompts ?? 0} prompts · ${importStatus.importedResponses ?? 0} responses · ${importStatus.skippedDuplicates ?? 0} duplicates`

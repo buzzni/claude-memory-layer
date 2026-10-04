@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildHookCommand,
   getHooksConfig,
+  inspectPluginHookTargets,
   mergePluginHooksIntoSettings,
   removePluginHooksFromSettings,
   type ClaudeSettingsWithHooks
@@ -103,5 +104,79 @@ describe('Claude Code hook settings helpers', () => {
         ]
       }
     ]);
+  });
+
+  it('checks generated targets without expanding shell syntax in quoted paths', () => {
+    const pluginPath = "/tmp/installed with $dollars 'quotes' `ticks` and {glob}*/dist";
+    const settings = { hooks: getHooksConfig(pluginPath) };
+    const targets: string[] = [];
+    const checks = inspectPluginHookTargets(settings, pluginPath, {
+      existsImpl: (target) => { targets.push(target); return true; },
+      realpathImpl: (target) => target
+    });
+    expect(checks).toHaveLength(5);
+    expect(checks.every((check) => check.status === 'current')).toBe(true);
+    expect(targets.every((target) => target.startsWith(`${pluginPath}/hooks/`))).toBe(true);
+  });
+
+  it('treats symlink paths pointing at the same hook as current', () => {
+    const checks = inspectPluginHookTargets({ hooks: getHooksConfig('/alias/claude-memory-layer/dist') }, '/real/dist', {
+      existsImpl: () => true,
+      realpathImpl: (target) => target.replace('/alias/claude-memory-layer', '/real')
+    });
+    expect(checks.every((check) => check.status === 'current')).toBe(true);
+  });
+
+  it('does not hide an old duplicate when a current command also exists', () => {
+    const settings = { hooks: getHooksConfig('/new/claude-memory-layer/dist') };
+    settings.hooks.Stop?.[0].hooks.push({ type: 'command', command: 'node /old/claude-memory-layer/dist/hooks/stop.js' });
+    const checks = inspectPluginHookTargets(settings, '/new/claude-memory-layer/dist', {
+      existsImpl: () => true,
+      realpathImpl: (target) => target
+    });
+    expect(checks.filter((check) => check.hookName === 'Stop')).toEqual([
+      { hookName: 'Stop', status: 'current' },
+      { hookName: 'Stop', status: 'different-target' }
+    ]);
+  });
+
+  it('does not count unrelated hooks with the same file names as CML hooks', () => {
+    const settings = { hooks: getHooksConfig('/unrelated-plugin/dist') };
+    const before = structuredClone(settings);
+    const checks = inspectPluginHookTargets(settings, '/current/claude-memory-layer/dist', {
+      existsImpl: () => true,
+      realpathImpl: (target) => target
+    });
+    expect(checks.every((check) => check.status === 'missing')).toBe(true);
+    expect(settings).toEqual(before);
+  });
+
+  it('does not expand environment variables or execute wrappers while checking targets', () => {
+    const settings = { hooks: getHooksConfig('/current/claude-memory-layer/dist') };
+    settings.hooks.Stop![0].hooks[0].command = 'node "$PLUGIN/claude-memory-layer/dist/hooks/stop.js"';
+    settings.hooks.SessionEnd![0].hooks[0].command += ' && echo extra';
+    const checkedTargets: string[] = [];
+    const checks = inspectPluginHookTargets(settings, '/current/claude-memory-layer/dist', {
+      existsImpl: (target) => { checkedTargets.push(target); return true; },
+      realpathImpl: (target) => target
+    });
+    expect(checks.filter((check) => check.status === 'unverifiable').map((check) => check.hookName))
+      .toEqual(['Stop', 'SessionEnd']);
+    expect(checkedTargets).toHaveLength(3);
+  });
+
+  it('does not declare unquoted glob or brace expansion targets current', () => {
+    const pluginPath = '/tmp/claude-memory-layer-{old,new}*/dist';
+    const settings = { hooks: getHooksConfig(pluginPath) };
+    for (const entries of Object.values(settings.hooks)) {
+      for (const entry of entries ?? []) {
+        for (const hook of entry.hooks) hook.command = hook.command.replaceAll("'", '');
+      }
+    }
+    const checks = inspectPluginHookTargets(settings, pluginPath, {
+      existsImpl: () => { throw new Error('must not inspect a shell expansion'); },
+      realpathImpl: (target) => target
+    });
+    expect(checks.every((check) => check.status === 'unverifiable')).toBe(true);
   });
 });
