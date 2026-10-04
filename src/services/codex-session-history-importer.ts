@@ -15,7 +15,7 @@ import { MemoryService } from './memory-service.js';
 import { registerTerminalSession } from '../core/registry/session-registry.js';
 import type { ImportOptions, ImportResult } from './session-history-importer.js';
 import { mergeAgentResponseBlocks, truncateAgentResponse } from './turn-buffering.js';
-import { planPromptStorage, promptClassifierMetadata } from '../core/prompt-normalizer.js';
+import { planPromptStorage, promptClassifierMetadata, redactPromptForStorage } from '../core/prompt-normalizer.js';
 import type { TurnTrigger } from '../core/turn-state.js';
 
 type CodexLogLine = {
@@ -34,6 +34,7 @@ type CodexResponseItemMessagePayload = {
   type?: unknown;
   role?: unknown;
   content?: unknown;
+  phase?: unknown;
 };
 
 type CodexContentBlock = {
@@ -540,12 +541,80 @@ export interface CodexSessionHistoryImporterOptions {
   sessionsDir?: string;
 }
 
+type HostManagedEvent = {
+  sessionId?: unknown;
+  eventType?: unknown;
+  metadata?: unknown;
+  content?: unknown;
+};
+
+type HostGuardMemoryService = MemoryService & {
+  getEventsByTurn?: (turnId: string) => Promise<HostManagedEvent[]>;
+  getSessionHistory?: (sessionId: string) => Promise<HostManagedEvent[]>;
+};
+
+/**
+ * A completed-turn host import is authoritative for that native turn.  The
+ * older history importer still handles transcripts and partial host failures,
+ * so only a turn with both host prompt and host response is protected here.
+ */
+async function hasCompleteHostTurn(
+  memoryService: HostGuardMemoryService,
+  sessionId: string,
+  turnId: string,
+  promptContents: readonly string[] = []
+): Promise<boolean> {
+  if (!turnId || typeof memoryService.getEventsByTurn !== 'function') return false;
+  try {
+    const events = await memoryService.getEventsByTurn(turnId);
+    let prompt = false;
+    let response = false;
+    for (const event of events) {
+      if (typeof event.sessionId === 'string' && event.sessionId !== sessionId) continue;
+      const metadata = event.metadata;
+      if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) continue;
+      if ((metadata as Record<string, unknown>).ingestClient !== 'codex-host') continue;
+      if (event.eventType === 'user_prompt') prompt = true;
+      if (event.eventType === 'agent_response') response = true;
+    }
+    // If a legacy importer wrote the prompt first, host append dedupe keeps
+    // that existing row and only the response carries ingestClient. Treat an
+    // exact normalized legacy prompt as prompt coverage for this native turn.
+    if (!prompt && response && promptContents.length > 0 && typeof memoryService.getSessionHistory === 'function') {
+      const history = await memoryService.getSessionHistory(sessionId);
+      prompt = history.some(event => event.eventType === 'user_prompt'
+        && promptContents.includes(typeof event.content === 'string' ? event.content : ''));
+    }
+    return prompt && response;
+  } catch {
+    // A diagnostic lookup must never prevent the recovery importer from
+    // filling a partial or unavailable host write.
+    return false;
+  }
+}
+
+function isSessionScaffold(text: string): boolean {
+  let rest = text.trim();
+  if (rest.startsWith('# AGENTS.md instructions for ')) {
+    const open = rest.indexOf('\n<INSTRUCTIONS>\n');
+    const close = rest.indexOf('</INSTRUCTIONS>');
+    if (open < 0 || close < open) return false;
+    rest = rest.slice(close + '</INSTRUCTIONS>'.length).trim();
+  }
+  if (rest.startsWith('<environment_context>')) {
+    const close = rest.indexOf('</environment_context>');
+    if (close < 0) return false;
+    rest = rest.slice(close + '</environment_context>'.length).trim();
+  }
+  return rest.length === 0;
+}
+
 export class CodexSessionHistoryImporter {
-  private readonly memoryService: MemoryService;
+  private readonly memoryService: HostGuardMemoryService;
   private readonly sessionsRoot: string;
 
   constructor(memoryService: MemoryService, options: CodexSessionHistoryImporterOptions = {}) {
-    this.memoryService = memoryService;
+    this.memoryService = memoryService as HostGuardMemoryService;
     this.sessionsRoot = options.sessionsDir
       ? path.resolve(options.sessionsDir)
       : path.join(os.homedir(), '.codex', 'sessions');
@@ -759,7 +828,17 @@ export class CodexSessionHistoryImporter {
 
     const effectiveProjectPath = options.projectPath ?? meta.cwd ?? undefined;
 
-    if (options.force) {
+    // Keep host-owned rows intact on a forced legacy refresh: the legacy parser
+    // cannot recreate the host's final-answer/privacy contract. Plain legacy
+    // sessions retain the historical delete-then-reimport behavior.
+    const hasHostManagedRows = options.force && typeof this.memoryService.getSessionHistory === 'function'
+      ? (await this.memoryService.getSessionHistory(sessionId).catch(() => [])).some(event => {
+        const metadata = event.metadata;
+        return metadata && typeof metadata === 'object' && !Array.isArray(metadata)
+          && (metadata as Record<string, unknown>).ingestClient === 'codex-host';
+      })
+      : false;
+    if (options.force && !hasHostManagedRows) {
       const deleted = await this.memoryService.deleteSessionEvents(sessionId);
       if (options.verbose && deleted > 0) {
         console.log(`  Deleted ${deleted} existing events for session ${sessionId}`);
@@ -778,17 +857,35 @@ export class CodexSessionHistoryImporter {
     let storedCount = 0;
 
     let currentTurnId: string | null = null;
+    let currentNativeTurnId: string | null = null;
+    let currentTurnHostComplete = false;
     let currentTurnTrigger: TurnTrigger = 'user';
     let textBuffer: string[] = [];
     let lastTimestamp: string | undefined;
 
     const flushTextBuffer = async () => {
       if (storedCount >= limit) { textBuffer = []; return; }
-      if (textBuffer.length === 0 || !currentTurnId) return;
+      if (textBuffer.length === 0 || !currentTurnId || currentTurnHostComplete) {
+        textBuffer = [];
+        return;
+      }
+
+      // A host worker can finish the same turn after the legacy reader saw
+      // its prompt. Re-check before appending the response so a concurrent
+      // host completion cannot create a second answer.
+      if (currentNativeTurnId) {
+        currentTurnHostComplete = await hasCompleteHostTurn(this.memoryService, sessionId, currentNativeTurnId);
+        if (currentTurnHostComplete) {
+          result.skippedDuplicates++;
+          storedCount++;
+          textBuffer = [];
+          return;
+        }
+      }
 
       const merged = mergeAgentResponseBlocks(textBuffer);
       if (!merged) { textBuffer = []; return; }
-      const truncated = truncateAgentResponse(merged);
+      const truncated = truncateAgentResponse(redactPromptForStorage(merged));
 
       const appendResult = await this.memoryService.storeAgentResponse(
         sessionId,
@@ -818,6 +915,37 @@ export class CodexSessionHistoryImporter {
           const entry = JSON.parse(line) as CodexLogLine;
           result.totalMessages++;
 
+          if (entry.type === 'event_msg' && isRecord(entry.payload)) {
+            const eventPayload = entry.payload as Record<string, unknown>;
+            if (eventPayload.type === 'task_started') {
+              await flushTextBuffer();
+              currentNativeTurnId = typeof eventPayload.turn_id === 'string' && eventPayload.turn_id.trim()
+                ? eventPayload.turn_id : null;
+              currentTurnHostComplete = currentNativeTurnId
+                ? await hasCompleteHostTurn(this.memoryService, sessionId, currentNativeTurnId)
+                : false;
+              currentTurnId = null;
+              currentTurnTrigger = 'user';
+              textBuffer = [];
+            } else if (eventPayload.type === 'turn_aborted'
+              && (!eventPayload.turn_id || eventPayload.turn_id === currentNativeTurnId)) {
+              currentNativeTurnId = null;
+              currentTurnId = null;
+              currentTurnHostComplete = false;
+              textBuffer = [];
+            }
+            if (eventPayload.type === 'task_complete'
+              && !currentTurnHostComplete && textBuffer.length === 0
+              && typeof eventPayload.last_agent_message === 'string'
+              && eventPayload.last_agent_message.trim()) {
+              textBuffer.push(eventPayload.last_agent_message);
+              lastTimestamp = typeof entry.timestamp === 'string' ? entry.timestamp : lastTimestamp;
+            }
+            // task_complete deliberately leaves the native id in place until
+            // the next task starts so the trailing assistant frame is guarded.
+            continue;
+          }
+
           if (entry.type === 'response_item' && isRecord(entry.payload)) {
             const payload = entry.payload as CodexResponseItemMessagePayload;
             if (payload.type !== 'message') continue;
@@ -834,9 +962,23 @@ export class CodexSessionHistoryImporter {
               // Shared normalizer -> privacy policy. Codex keeps its existing
               // (no trivial-length) filter; environment/AGENTS envelopes are
               // not classified by classifier v1 and stay user prompts.
+              if (isSessionScaffold(content)) {
+                result.skippedDuplicates++;
+                continue;
+              }
+
               const plan = planPromptStorage(content);
-              currentTurnId = randomUUID();
+              currentTurnId = currentNativeTurnId ?? randomUUID();
               currentTurnTrigger = plan.normalized.kind;
+              if (currentNativeTurnId) {
+                currentTurnHostComplete = await hasCompleteHostTurn(this.memoryService, sessionId, currentNativeTurnId, [
+                  plan.storedText, ...plan.legacyContents
+                ]);
+              }
+              if (currentTurnHostComplete) {
+                result.skippedDuplicates++;
+                continue;
+              }
               if (plan.normalized.kind !== 'user') {
                 result.skippedDuplicates++;
                 continue;
@@ -866,6 +1008,7 @@ export class CodexSessionHistoryImporter {
               }
               storedCount++;
             } else if (role === 'assistant') {
+              if (payload.phase !== undefined && payload.phase !== null && payload.phase !== 'final_answer') continue;
               const content = extractTextFromContent(payload.content);
               if (content) {
                 textBuffer.push(content);

@@ -35,6 +35,23 @@
 6. Keep memory-use footers conditional on opened sources actually informing an
    answer. Do not manufacture citations to make the feature appear active.
 
+### Importer ownership and fork boundaries
+
+The completed-turn host importer is authoritative only after it has persisted
+both a `user_prompt` and an `agent_response` for the same native `turnId`.
+The legacy Codex history importer therefore skips that native turn as a unit;
+it remains enabled for a partial host write so a retry can recover the missing
+side.  Forced legacy reimports preserve transcripts containing native task
+markers, because deleting a clean host turn and rebuilding it from commentary
+records would weaken the host privacy and final-answer contract.  Setup-only
+AGENTS/environment records are ignored by both paths.
+
+Forked transcripts without a verified `subagent_history_start_ordinal` are
+intentionally rejected (`invalid_transcript`).  A `forked_from_id` alone does
+not identify which inherited records belong to the child, so accepting it
+could replay a parent turn into the child project.  Support for other native
+fork layouts requires a fixture that proves an equivalent boundary.
+
 ## Validation
 
 - Parser and service tests cover completion cutoff, privacy/normalization,

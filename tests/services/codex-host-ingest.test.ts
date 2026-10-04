@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
-import { importCodexCompletedTurns, type CodexCompletedImportDeps } from '../../src/services/codex-host-ingest.js';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { importCodexCompletedTurns, readCodexCompletedTurns, type CodexCompletedImportDeps } from '../../src/services/codex-host-ingest.js';
+import { createCodexSessionHistoryImporter } from '../../src/services/codex-session-history-importer.js';
+import { hashProjectPath } from '../../src/core/registry/project-path.js';
+import { createSQLiteDatabase, sqliteAll, sqliteClose } from '../../src/core/sqlite-wrapper.js';
 
 function fixture() {
   const service = {
@@ -20,6 +26,93 @@ function fixture() {
 }
 
 describe('Codex host completed-turn import', () => {
+  it.each([1, 1000])('keeps persisted original/derived source clocks consistent for native time scale %s', async (scale) => {
+    const root = await mkdtemp(join(tmpdir(), 'cml-host-clock-'));
+    const store = join(root, 'store');
+    const file = join(root, 'rollout.jsonl');
+    const startedAt = '2025-01-01T00:00:00.000Z';
+    const completedAt = '2025-01-01T00:00:01.000Z';
+    const message = (role: string, text: string) => ({ type: 'response_item', payload: {
+      type: 'message', role, content: [{ type: 'input_text', text }], ...(role === 'assistant' ? { phase: 'final_answer' } : {})
+    } });
+    try {
+      await writeFile(file, [
+        { type: 'session_meta', payload: { id: 'clock-thread', cwd: root } },
+        { type: 'event_msg', payload: { type: 'task_started', turn_id: 'clock-turn', started_at: Date.parse(startedAt) / scale } },
+        message('user', 'Verify source clock persistence.'), message('assistant', 'Source clock persistence verified.'),
+        { type: 'event_msg', payload: { type: 'task_complete', turn_id: 'clock-turn', completed_at: Date.parse(completedAt) / scale } }
+      ].map(row => JSON.stringify(row)).join('\n'));
+      const { MemoryService, DISABLED_SHARED_STORE_CONFIG } = await import('../../src/services/memory-service.js');
+      const deps: CodexCompletedImportDeps = { readTranscript: readCodexCompletedTurns, hashProjectPath, writeStatus: () => {},
+        createService: async () => new MemoryService({ storagePath: store, projectPath: root, projectHash: hashProjectPath(root),
+          lightweightMode: true, analyticsEnabled: false, sharedStoreConfig: DISABLED_SHARED_STORE_CONFIG }) };
+      const input = { projectPath: root, transcriptPath: file, sessionId: 'clock-thread', throughTurnId: 'clock-turn' };
+      await importCodexCompletedTurns(input, deps);
+      expect(await importCodexCompletedTurns(input, deps)).toMatchObject({ importedPrompts: 0, importedResponses: 0, skippedDuplicates: 2 });
+      const db = createSQLiteDatabase(join(store, 'events.sqlite'), { readonly: true });
+      try {
+        const rows = sqliteAll<{ event_type: string; metadata: string }>(db, 'SELECT event_type, metadata FROM events');
+        expect(rows).toHaveLength(2);
+        for (const row of rows) {
+          const metadata = JSON.parse(row.metadata);
+          const expected = row.event_type === 'user_prompt' ? startedAt : completedAt;
+          expect(metadata.originalTimestamp).toBe(expected);
+          expect(metadata.ingest.occurredAt).toBe(expected);
+          expect(metadata.ingest.sourceLagMs).toBe(Date.parse(metadata.ingest.ingestedAt) - Date.parse(expected));
+        }
+      } finally { sqliteClose(db); }
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('does not replay a complete host turn through the legacy importer', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'cml-host-legacy-'));
+    const store = join(root, 'store');
+    const file = join(root, 'rollout.jsonl');
+    const message = (role: string, text: string, phase?: string) => ({ type: 'response_item', payload: {
+      type: 'message', role, content: [{ type: role === 'user' ? 'input_text' : 'output_text', text }],
+      ...(phase ? { phase } : {})
+    } });
+    const records = [
+      { type: 'session_meta', payload: { id: 'host-legacy-thread', cwd: root } },
+      { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '# AGENTS.md instructions for /repo\n\n<INSTRUCTIONS>\nfixture\n</INSTRUCTIONS>\n<environment_context>\n<cwd>/repo</cwd>\n</environment_context>' }] } },
+      { type: 'event_msg', payload: { type: 'task_started', turn_id: 'native-turn', started_at: 1_790_000_000 } },
+      message('user', 'Keep only one durable completed turn.'),
+      message('assistant', 'The completed turn is already stored by the host.', 'final_answer'),
+      { type: 'event_msg', payload: { type: 'task_complete', turn_id: 'native-turn', completed_at: 1_790_000_001 } }
+    ];
+    try {
+      await writeFile(file, records.map(row => JSON.stringify(row)).join('\n'));
+      const { MemoryService, DISABLED_SHARED_STORE_CONFIG } = await import('../../src/services/memory-service.js');
+      const deps: CodexCompletedImportDeps = {
+        readTranscript: readCodexCompletedTurns,
+        hashProjectPath,
+        writeStatus: () => {},
+        createService: async () => new MemoryService({ storagePath: store, projectPath: root,
+          projectHash: hashProjectPath(root), lightweightMode: true, analyticsEnabled: false,
+          sharedStoreConfig: DISABLED_SHARED_STORE_CONFIG })
+      };
+      const input = { projectPath: root, transcriptPath: file, sessionId: 'host-legacy-thread', throughTurnId: 'native-turn' };
+      await importCodexCompletedTurns(input, deps);
+
+      const service = new MemoryService({ storagePath: store, projectPath: root,
+        projectHash: hashProjectPath(root), lightweightMode: true, analyticsEnabled: false,
+        sharedStoreConfig: DISABLED_SHARED_STORE_CONFIG });
+      try {
+        const legacy = await createCodexSessionHistoryImporter(service, { sessionsDir: root });
+        const result = await legacy.importSessionFile(file, { force: true });
+        expect(result.importedPrompts).toBe(0);
+        expect(result.importedResponses).toBe(0);
+        const events = await service.getSessionHistory('host-legacy-thread');
+        expect(events).toHaveLength(2);
+        expect(events.map(event => event.metadata?.ingestClient)).toEqual(['codex-host', 'codex-host']);
+      } finally {
+        await service.shutdown();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('imports completed user work with original clocks, closes its lightweight service, and leaves the session live', async () => {
     const { deps, service, input } = fixture();
     const result = await importCodexCompletedTurns(input, deps as unknown as CodexCompletedImportDeps);
