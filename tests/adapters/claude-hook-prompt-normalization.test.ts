@@ -87,7 +87,7 @@ describe('UserPromptSubmit prompt normalization', () => {
     expect(service.storeUserPrompt).toHaveBeenCalledTimes(1);
     const [, content, metadata] = service.storeUserPrompt.mock.calls[0];
     expect(content).toBe('배포 워크플로우의 승인 단계를 수정해줘');
-    expect(metadata.promptClassifier).toEqual({ version: 1, kind: 'user', removed: ['lesson_proposal_wrapper', 'title_directive'] });
+    expect(metadata.promptClassifier).toEqual({ version: 2, kind: 'user', removed: ['lesson_proposal_wrapper', 'title_directive'] });
 
     const adherenceFile = memoryDirFiles().find((file) => file.startsWith('.adherence-state-'));
     expect(adherenceFile).toBeDefined();

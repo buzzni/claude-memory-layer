@@ -17,6 +17,7 @@ import * as path from 'path';
 
 import {
   hasHook,
+  inspectPluginHookTargets,
   PLUGIN_HOOKS,
   REQUIRED_HOOK_FILES,
   type ClaudeSettingsWithHooks,
@@ -95,7 +96,36 @@ export function checkPluginFiles(
   return { name: 'plugin-files', status: 'pass', detail: pluginPath };
 }
 
-export function checkHooksInstalled(settings: ClaudeSettingsWithHooks): DoctorCheckResult {
+export function checkHooksInstalled(
+  settings: ClaudeSettingsWithHooks,
+  pluginPath?: string,
+  deps: Parameters<typeof inspectPluginHookTargets>[2] = {}
+): DoctorCheckResult {
+  if (pluginPath) {
+    const targets = inspectPluginHookTargets(settings, pluginPath, deps);
+    const names = (status: typeof targets[number]['status']): string => Array.from(new Set(
+      targets.filter((target) => target.status === status).map((target) => target.hookName)
+    )).join(', ');
+    const missing = names('missing');
+    const missingTargets = names('missing-target');
+    const differentTargets = names('different-target');
+    const unverifiable = names('unverifiable');
+    const details = [
+      missing && `Not installed in Claude settings: ${missing}`,
+      missingTargets && `Registered hook files do not exist: ${missingTargets}`,
+      differentTargets && `Hook targets differ from the active CLI installation: ${differentTargets}`,
+      unverifiable && `Could not verify hook targets: ${unverifiable}`
+    ].filter(Boolean);
+    if (details.length > 0) {
+      return {
+        name: 'hooks',
+        status: missing || missingTargets ? 'fail' : 'warn',
+        detail: details.join('. '),
+        fix: 'claude-memory-layer install (or verify an intentional custom plugin path)'
+      };
+    }
+    return { name: 'hooks', status: 'pass', detail: 'all hooks target the active CLI installation' };
+  }
   // Derived from PLUGIN_HOOKS — the map `install` writes from — so a hook
   // added there is automatically checked here instead of doctor reporting
   // "all hooks installed" while the new one is missing. The file name is a
