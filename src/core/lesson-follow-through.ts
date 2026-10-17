@@ -37,6 +37,16 @@ const NON_COMMAND = /===|=>|[{}]|\|\||&&/;
  * (origin/main, HEAD) and bare flags do not: sessions run `git status --short`,
  * `npm test` or `git show origin/main:` whether or not any lesson is involved.
  */
+function hasSpecificArgument(args: readonly string[]): boolean {
+  for (let i = 0; i < args.length; i++) {
+    // A redirect target (`2>/dev/null`, `> /tmp/out.log`) is plumbing, not a subject.
+    if (/^\d*[<>]+&?$/.test(args[i])) { i++; continue; }
+    if (/^\d*[<>]/.test(args[i])) continue;
+    if (isSpecificArgument(args[i])) return true;
+  }
+  return false;
+}
+
 function isSpecificArgument(token: string): boolean {
   let value = token.replace(/^['"]+|['"]+$/g, '');
   if (value.startsWith('-')) {
@@ -67,7 +77,7 @@ export function lessonCommandAnchors(lesson: { steps: readonly string[]; validat
       const anchor = normalizeCommand(cut >= 0 ? match[1].slice(0, cut) : match[1]);
       const tokens = anchor.split(' ');
       if (tokens.length < 2 || !/^[a-z][a-z0-9._-]*$/.test(tokens[0])) continue;
-      if (!tokens.slice(1).some(isSpecificArgument)) continue;
+      if (!hasSpecificArgument(tokens.slice(1))) continue;
       if (anchor.length < MIN_ANCHOR_CHARS) continue;
       if (!anchors.includes(anchor)) anchors.push(anchor);
     }
@@ -75,7 +85,14 @@ export function lessonCommandAnchors(lesson: { steps: readonly string[]; validat
   return anchors;
 }
 
-function parseObservation(content: string): { toolName: string; toolInput: Record<string, unknown>; toolOutput: unknown } | null {
+export interface ParsedToolObservation {
+  toolName: string;
+  toolInput: Record<string, unknown>;
+  toolOutput: unknown;
+}
+
+/** Parse one stored tool_observation content; null when it is not a tool record. */
+export function parseToolObservation(content: string): ParsedToolObservation | null {
   try {
     const parsed = JSON.parse(content) as unknown;
     if (!parsed || typeof parsed !== 'object') return null;
@@ -97,16 +114,18 @@ function shellCommand(toolInput: Record<string, unknown>): string | null {
   return null;
 }
 
-/** Evaluate stored tool_observation contents that followed a lesson's delivery. */
+/**
+ * Evaluate the tool observations that followed a lesson's delivery. Callers
+ * parse each observation once and reuse it across the lessons of a session.
+ */
 export function observeLessonFollowThrough(
   lesson: { lessonId: string; name: string; steps: readonly string[]; validation?: readonly string[] },
-  toolObservationContents: readonly string[]
+  observations: ReadonlyArray<ParsedToolObservation | null>
 ): LessonFollowThrough {
   const anchors = lessonCommandAnchors(lesson);
   const matched = new Set<string>();
   let bodyRead = false;
-  for (const content of toolObservationContents) {
-    const observation = parseObservation(content);
+  for (const observation of observations) {
     if (!observation) continue;
     if (LESSON_GET_TOOL_ALIASES.includes(observation.toolName)) {
       const target = observation.toolInput.lessonId === lesson.lessonId || observation.toolInput.name === lesson.name;

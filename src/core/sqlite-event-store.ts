@@ -87,7 +87,12 @@ import {
   type MemoryKind
 } from './memory-ref.js';
 import { recordReferenceNavigationOnDb } from './retrieval-navigation.js';
-import { observeLessonFollowThrough, type LessonFollowThrough } from './lesson-follow-through.js';
+import {
+  observeLessonFollowThrough,
+  parseToolObservation,
+  type LessonFollowThrough,
+  type ParsedToolObservation
+} from './lesson-follow-through.js';
 import {
   backfillTraceItems,
   ensureRetrievalTraceItemsSchema,
@@ -3335,6 +3340,9 @@ export class SQLiteEventStore {
       for (const row of rows) memoryContentById.set(row.id, row.content);
     }
     const lessonsById = this.loadLessonsForFollowThrough(retrievals);
+    // Parsed once per session, only when a lesson needs it: a long session has
+    // thousands of observations and dozens of lesson listings.
+    let parsedToolEvents: Array<{ timeMs: number; observation: ParsedToolObservation | null }> | null = null;
 
     // Events store ISO timestamps while memory_helpfulness.created_at uses
     // SQLite datetime('now') ("YYYY-MM-DD HH:MM:SS", UTC). Comparing the raw
@@ -3441,13 +3449,16 @@ export class SQLiteEventStore {
       // A lesson listing is followed up with mem-lesson-get, which records no
       // navigation event; the body read in the window is that open.
       const lesson = retrievalKind === 'lesson' ? lessonsById.get(String(retrieval.event_id)) : undefined;
-      const followThrough: LessonFollowThrough | null = lesson
-        ? observeLessonFollowThrough(lesson, toolEvents
-          .filter((event) => {
-            const eventTimeMs = toEpochMs(event.timestamp);
-            return eventTimeMs > retrievalTimeMs && eventTimeMs <= evaluationCutoffMs;
-          })
-          .map((event) => String(event.content ?? '')))
+      if (lesson && !parsedToolEvents) {
+        parsedToolEvents = toolEvents.map((event) => ({
+          timeMs: toEpochMs(event.timestamp),
+          observation: parseToolObservation(String(event.content ?? ''))
+        }));
+      }
+      const followThrough: LessonFollowThrough | null = lesson && parsedToolEvents
+        ? observeLessonFollowThrough(lesson, parsedToolEvents
+          .filter((event) => event.timeMs > retrievalTimeMs && event.timeMs <= evaluationCutoffMs)
+          .map((event) => event.observation))
         : null;
       const navigationOpened = presentationMode === 'reference' && Boolean(retrieval.trace_id) && Boolean(
         sqliteGet<{ opened: number }>(

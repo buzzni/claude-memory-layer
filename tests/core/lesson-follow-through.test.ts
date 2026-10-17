@@ -2,8 +2,12 @@ import { describe, expect, it } from 'vitest';
 
 import {
   lessonCommandAnchors,
-  observeLessonFollowThrough
+  observeLessonFollowThrough as observeParsed,
+  parseToolObservation
 } from '../../src/core/lesson-follow-through.js';
+
+const observeLessonFollowThrough = (target: Parameters<typeof observeParsed>[0], contents: string[]) =>
+  observeParsed(target, contents.map(parseToolObservation));
 
 const lesson = {
   lessonId: '11111111-1111-4111-8111-111111111111',
@@ -48,7 +52,8 @@ describe('lessonCommandAnchors', () => {
   it('drops commands without a specific file or path argument', () => {
     expect(lessonCommandAnchors({
       steps: ['`git status --short`', '`gh pr create`', '`git show origin/main:<path>`',
-        '`git rev-list --left-right --count origin/main...HEAD`', '`git checkout A || git checkout -B A`'],
+        '`git rev-list --left-right --count origin/main...HEAD`', '`git checkout A || git checkout -B A`',
+        '`git status --short 2>/dev/null`', '`npm test > /tmp/out.log`'],
       validation: []
     })).toEqual([]);
   });

@@ -455,9 +455,13 @@ export async function main(options: SessionStartMainOptions = {}): Promise<strin
           resolveCanonicalMemoryActorId(input.actor_id),
           500
         );
-        const usage = await memoryService
-          .getSessionStartLessonUsage(new Date(Date.now() - SESSION_START_LESSON_USAGE_WINDOW_MS))
-          .catch(() => new Map<string, SessionStartLessonUsage>());
+        // Order only: a usage read that fails must not cost the index itself.
+        let usage = new Map<string, SessionStartLessonUsage>();
+        try {
+          usage = await memoryService.getSessionStartLessonUsage(new Date(Date.now() - SESSION_START_LESSON_USAGE_WINDOW_MS));
+        } catch {
+          // Recency order.
+        }
         const lessons = rankSessionStartLessons(injections.map((item) => item.value), usage);
         const lessonContext = formatLessonIndexContext(lessons, { budgetChars: lessonBudget, totalCount: lessons.length });
         if (lessonContext) {
