@@ -13,6 +13,7 @@ import type { DerivationLiveness, RecentEventsReadOptions } from '../sqlite-even
 import type { SQLiteDatabase } from '../sqlite-wrapper.js';
 import type { VectorOptimizeOptions, VectorOptimizeResult, VectorPhysicalHealth } from '../vector-store.js';
 import { LessonRepository } from '../operations/lesson-repository.js';
+import { readSessionStartLessonUsage, type SessionStartLessonUsage } from '../lesson-follow-through.js';
 import { CoreMemoryBlockRepository } from '../operations/core-memory-block-repository.js';
 import {
   CanonicalMemoryInjectionService,
@@ -120,6 +121,20 @@ export class MemoryQueryService {
     } catch {
       // Lesson retrieval is supplementary: never fail a prompt over it.
       return [];
+    }
+  }
+
+  /** Session-start lesson listings and engagement since `since`, by lesson id. */
+  async getSessionStartLessonUsage(since: Date): Promise<Map<string, SessionStartLessonUsage>> {
+    await this.initialize();
+    const db = this.queryStore.getDatabase?.();
+    if (!db) return new Map();
+    try {
+      return readSessionStartLessonUsage(db, since);
+    } catch {
+      // Ordering signal only: an older store without the typed columns keeps
+      // the recency order.
+      return new Map();
     }
   }
 

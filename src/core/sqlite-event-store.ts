@@ -45,6 +45,7 @@ import {
   buildUsefulnessObservationV2,
   classifyReaskOutcome,
   parseToolOutcome,
+  SESSION_START_LESSON_EVALUATION_WINDOW_MS,
   USEFULNESS_V2_EVALUATION_WINDOW_MS
 } from './usefulness-outcome-v2.js';
 import {
@@ -86,6 +87,12 @@ import {
   type MemoryKind
 } from './memory-ref.js';
 import { recordReferenceNavigationOnDb } from './retrieval-navigation.js';
+import {
+  observeLessonFollowThrough,
+  parseToolObservation,
+  type LessonFollowThrough,
+  type ParsedToolObservation
+} from './lesson-follow-through.js';
 import {
   backfillTraceItems,
   ensureRetrievalTraceItemsSchema,
@@ -3261,6 +3268,43 @@ export class SQLiteEventStore {
     return { pendingRows: Number(row?.pending ?? 0), cutoff };
   }
 
+  private loadLessonsForFollowThrough(
+    retrievals: Record<string, unknown>[]
+  ): Map<string, { lessonId: string; name: string; steps: string[]; validation: string[] }> {
+    const lessons = new Map<string, { lessonId: string; name: string; steps: string[]; validation: string[] }>();
+    const ids = Array.from(new Set(retrievals
+      .filter((r) => normalizeMemoryKind(r.memory_kind) === 'lesson')
+      .map((r) => String(r.event_id || ''))
+      .filter(Boolean)));
+    if (ids.length === 0 || !this.hasTableColumn('memory_lessons', 'validation_json')) return lessons;
+    const parseList = (value: string): string[] => {
+      try {
+        const parsed = JSON.parse(value) as unknown;
+        return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : [];
+      } catch {
+        return [];
+      }
+    };
+    for (let i = 0; i < ids.length; i += 100) {
+      const chunk = ids.slice(i, i + 100);
+      const rows = sqliteAll<{ lesson_id: string; name: string; steps_json: string; validation_json: string }>(
+        this.db,
+        `SELECT lesson_id, name, steps_json, validation_json FROM memory_lessons
+         WHERE lesson_id IN (${chunk.map(() => '?').join(',')})`,
+        chunk
+      );
+      for (const row of rows) {
+        lessons.set(row.lesson_id, {
+          lessonId: row.lesson_id,
+          name: row.name,
+          steps: parseList(row.steps_json),
+          validation: parseList(row.validation_json)
+        });
+      }
+    }
+    return lessons;
+  }
+
   private async evaluateRetrievalRows(
     sessionId: string,
     retrievals: Record<string, unknown>[],
@@ -3295,6 +3339,10 @@ export class SQLiteEventStore {
       );
       for (const row of rows) memoryContentById.set(row.id, row.content);
     }
+    const lessonsById = this.loadLessonsForFollowThrough(retrievals);
+    // Parsed once per session, only when a lesson needs it: a long session has
+    // thousands of observations and dozens of lesson listings.
+    let parsedToolEvents: Array<{ timeMs: number; observation: ParsedToolObservation | null }> | null = null;
 
     // Events store ISO timestamps while memory_helpfulness.created_at uses
     // SQLite datetime('now') ("YYYY-MM-DD HH:MM:SS", UTC). Comparing the raw
@@ -3367,7 +3415,13 @@ export class SQLiteEventStore {
         evidenceMatches = evidence.matches;
       }
 
-      const v2WindowEndMs = retrievalTimeMs + USEFULNESS_V2_EVALUATION_WINDOW_MS;
+      // The session-start lesson index stays in context for the whole session;
+      // its bodies were opened 1.5–4.5 hours in, never within 30 minutes.
+      const v2WindowMs = normalizeMemoryKind(retrieval.memory_kind) === 'lesson'
+        && normalizeRetrievalTriggerType(retrieval.trigger_type ?? retrieval.source) === 'session_start'
+        ? SESSION_START_LESSON_EVALUATION_WINDOW_MS
+        : USEFULNESS_V2_EVALUATION_WINDOW_MS;
+      const v2WindowEndMs = retrievalTimeMs + v2WindowMs;
       const evaluatedAt = options.evaluatedAt ?? new Date();
       const evaluationCutoffMs = Math.min(evaluatedAt.getTime(), v2WindowEndMs);
       const v2PromptsAfter = promptsAfter.filter((event) => toEpochMs(event.timestamp) <= evaluationCutoffMs);
@@ -3392,7 +3446,21 @@ export class SQLiteEventStore {
         && this.hasTableColumn('retrieval_navigation_events', 'memory_kind')
         ? ` AND COALESCE(memory_kind, 'event') = ? AND memory_project_id IS ?`
         : '';
-      const referenceOpened = presentationMode === 'reference' && Boolean(retrieval.trace_id) && Boolean(
+      // A lesson listing is followed up with mem-lesson-get, which records no
+      // navigation event; the body read in the window is that open.
+      const lesson = retrievalKind === 'lesson' ? lessonsById.get(String(retrieval.event_id)) : undefined;
+      if (lesson && !parsedToolEvents) {
+        parsedToolEvents = toolEvents.map((event) => ({
+          timeMs: toEpochMs(event.timestamp),
+          observation: parseToolObservation(String(event.content ?? ''))
+        }));
+      }
+      const followThrough: LessonFollowThrough | null = lesson && parsedToolEvents
+        ? observeLessonFollowThrough(lesson, parsedToolEvents
+          .filter((event) => event.timeMs > retrievalTimeMs && event.timeMs <= evaluationCutoffMs)
+          .map((event) => event.observation))
+        : null;
+      const navigationOpened = presentationMode === 'reference' && Boolean(retrieval.trace_id) && Boolean(
         sqliteGet<{ opened: number }>(
           this.db,
           `SELECT 1 AS opened
@@ -3407,6 +3475,7 @@ export class SQLiteEventStore {
           new Date(retrievalTimeMs).toISOString(), new Date(evaluationCutoffMs).toISOString()]
         )
       );
+      const referenceOpened = navigationOpened || (presentationMode === 'reference' && followThrough?.bodyRead === true);
       // Distinguish "the reference was not opened" from "we cannot attribute
       // opens at all": without a trace link no navigation can ever be
       // attributed to this delivery, so absence proves nothing (specs R3).
@@ -3453,7 +3522,11 @@ export class SQLiteEventStore {
         [sessionContinued, promptCountAfter, toolSuccessCount, toolTotalCount,
          wasReasked, helpfulnessScore,
          contentOverlapScore,
-         evidenceMatches.length > 0 ? JSON.stringify(evidenceMatches) : null,
+         evidenceMatches.length > 0
+           ? JSON.stringify(evidenceMatches)
+           : followThrough
+             ? JSON.stringify({ lessonFollowThrough: { ...followThrough, opened: referenceOpened } })
+             : null,
          retrieval.id]
       );
 
@@ -3496,7 +3569,7 @@ export class SQLiteEventStore {
           v2PromptsAfter.map((event) => event.content)
         ),
         evaluatedAt: evaluatedAt.toISOString(),
-        evaluationWindowMs: USEFULNESS_V2_EVALUATION_WINDOW_MS,
+        evaluationWindowMs: v2WindowMs,
         // The cutoff is what this evaluation could actually see. When it falls
         // short of the window end, reevaluateBoundedUsefulness revisits the row.
         evaluationCutoff: new Date(Math.min(evaluatedAt.getTime(), v2WindowEndMs)).toISOString()

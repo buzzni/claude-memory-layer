@@ -52,7 +52,9 @@ hermes 의 내장 기억은 **관련도 검색이 없다** — "작은 파일 �
 ## 2. 요구사항
 
 - **R1. SessionStart 교훈 인덱스.** `session-start.ts` 가 `## Project Lessons` 절을 주입한다.
-  항목 = `- <name> — <trigger 앞 N자>`, 순서 = 저장소 정렬(`confidence DESC, updated_at DESC`),
+  항목 = `- <name> — <trigger 앞 N자>`, 순서 = `rankSessionStartLessons`(최근 14일 안에 본문 조회가
+  관측된 교훈 → 효과 없이 노출된 횟수가 적은 순 → `updated_at DESC` → `confidence DESC`). 저장소 정렬
+  (`confidence DESC`)을 그대로 쓰면 리뷰 승인 교훈(0.5)이 묻혀 같은 13개만 계속 노출됐다(2026-10-17 실측),
   문자 예산(기본 2,400자, env `CLAUDE_MEMORY_SESSION_START_LESSON_BUDGET`, `0` 이면 끔) 안에서 채운다.
   꼬리에 총 건수와 "본문은 `mem-lesson-get`, 전체는 `mem-lesson-list`" 안내를 붙인다.
   `CLAUDE_MEMORY_EVAL_DISABLE_SESSION_CONTEXT=true` 면 생략. 주입을 `recordQueryTrace`

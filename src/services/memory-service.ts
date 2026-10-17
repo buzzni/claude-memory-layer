@@ -35,6 +35,7 @@ import type {
   ProjectScopeRepairResult
 } from '../core/types.js';
 import type { EndlessMemoryServices } from '../extensions/endless-memory/index.js';
+import type { SessionStartLessonUsage } from '../core/lesson-follow-through.js';
 import {
   type EmbeddingMaintenanceService,
   type EmbeddingModelMaintenanceOptions,
@@ -276,6 +277,10 @@ export class MemoryService {
     limit = 25
   ): Promise<CanonicalMemoryInjection<MemoryLesson>[]> {
     return this.queryService.listProjectLessonInjections(this.projectHash ?? '', actorId, limit);
+  }
+
+  async getSessionStartLessonUsage(since: Date): Promise<Map<string, SessionStartLessonUsage>> {
+    return this.queryService.getSessionStartLessonUsage(since);
   }
 
   /** Core memory blocks (project/user), for unconditional session-start injection. */

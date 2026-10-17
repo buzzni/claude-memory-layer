@@ -5,6 +5,7 @@ import {
   selectSessionStartMemories,
   sessionStartExcerpt,
   formatLessonIndexContext,
+  rankSessionStartLessons,
   sessionStartLessonBudget
 } from '../../src/adapters/claude/hooks/session-start.js';
 import type { CoreMemoryBlock, EventType, MemoryEvent } from '../../src/core/types.js';
@@ -340,6 +341,44 @@ describe('formatLessonIndexContext', () => {
   it('returns nothing when the budget is zero or there are no lessons', () => {
     expect(formatLessonIndexContext(lessons, { budgetChars: 0, totalCount: 2 })).toBe('');
     expect(formatLessonIndexContext([], { budgetChars: 2400, totalCount: 0 })).toBe('');
+  });
+});
+
+// The index used to keep repository order (confidence DESC): every reviewed
+// lesson is saved at 0.5, so 13 of 354 lessons filled every session start and
+// nothing newer was ever listed. Order now follows observed engagement.
+describe('rankSessionStartLessons', () => {
+  const lesson = (lessonId: string, confidence: number, updatedAt: string) => ({
+    lessonId, confidence, updatedAt: new Date(updatedAt)
+  });
+  const old = lesson('a', 1, '2026-09-01T00:00:00.000Z');
+  const fresh = lesson('b', 0.5, '2026-10-10T00:00:00.000Z');
+  const middle = lesson('c', 0.9, '2026-10-01T00:00:00.000Z');
+
+  it('lists newer lessons first instead of letting confidence pin old ones on top', () => {
+    expect(rankSessionStartLessons([old, middle, fresh], new Map()).map((l) => l.lessonId)).toEqual(['b', 'c', 'a']);
+  });
+
+  it('rotates a lesson that was listed without being used behind ones not listed yet', () => {
+    const usage = new Map([['b', { exposures: 3, engaged: 0 }], ['c', { exposures: 1, engaged: 0 }]]);
+    expect(rankSessionStartLessons([old, middle, fresh], usage).map((l) => l.lessonId)).toEqual(['a', 'c', 'b']);
+  });
+
+  it('keeps a lesson that was read or followed at the top however often it was listed', () => {
+    const usage = new Map([['a', { exposures: 9, engaged: 1 }], ['b', { exposures: 0, engaged: 0 }]]);
+    expect(rankSessionStartLessons([fresh, middle, old], usage)[0].lessonId).toBe('a');
+  });
+
+  it('breaks exact ties by confidence, then id, so the order is deterministic', () => {
+    const at = '2026-10-01T00:00:00.000Z';
+    const tied = [lesson('z', 0.5, at), lesson('y', 0.9, at), lesson('x', 0.5, at)];
+    expect(rankSessionStartLessons(tied, new Map()).map((l) => l.lessonId)).toEqual(['y', 'x', 'z']);
+  });
+
+  it('does not mutate its input', () => {
+    const input = [old, fresh];
+    rankSessionStartLessons(input, new Map());
+    expect(input.map((l) => l.lessonId)).toEqual(['a', 'b']);
   });
 });
 

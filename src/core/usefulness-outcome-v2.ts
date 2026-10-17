@@ -15,6 +15,8 @@ export type ParsedToolOutcome = 'success' | 'failure' | 'unknown';
 
 /** Outcome signals are attributable only to the bounded task phase after delivery. */
 export const USEFULNESS_V2_EVALUATION_WINDOW_MS = 30 * 60 * 1000;
+/** A session-start lesson index is read any time during the session, not right after it is shown. */
+export const SESSION_START_LESSON_EVALUATION_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 export function parseToolOutcome(value: unknown): ParsedToolOutcome {
   let parsed = value;
