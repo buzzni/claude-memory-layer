@@ -716,6 +716,21 @@ function formatLessonUsageMarkdown(stores: MemoryAuditStoreReport[]): string[] {
   lines.push('', 'MCP body lookups are observed only through Claude PostToolUse; Codex/Hermes lookups are unobserved (not 0%). '
     + 'mem-lesson-get navigation coverage is unsupported because it reads a snapshot.');
 
+  lines.push('', '## Session-start lesson listings: what followed (observed signals, not application)', '',
+    'Within the evaluation window after a listing reached the model. A matched command may have another cause; '
+    + 'a lesson can be applied without running any of its commands.', '',
+    '| Store | Listings emitted | Evaluated with follow-through | Body opened | Ran a lesson command / lessons with commands |',
+    '|---|---:|---:|---:|---|');
+  for (const store of stores) {
+    const engagement = store.lessonUsage?.sessionStartEngagement;
+    if (!engagement || engagement.support === 'unsupported') {
+      lines.push(`| ${store.storeHash} | ${store.lessonUsage ? 'unsupported' : sectionGap(store)} | | | |`);
+      continue;
+    }
+    lines.push(`| ${store.storeHash} | ${engagement.emitted} | ${engagement.observed} | ${engagement.opened} | `
+      + `${engagement.followedCommand} / ${engagement.withCommandAnchors} |`);
+  }
+
   lines.push('', '## Lesson quality (no lesson is judged wrong for missing evidence)', '',
     '`active` = recall_enabled only, not fully eligible (scope, permission and version gates are not evaluated).', '',
     '| Store | Lessons (active/disabled) | Other-scope rows excluded | Evidence: no refs / local refs found / refs unresolved here | Session refs | Validation | Reconsider-when | Recently selected (unique) |',

@@ -118,9 +118,30 @@ export interface SelectionSummary {
   itemInjectionMode: 'unknown';
 }
 
+/**
+ * What sessions did within the evaluation window after a session-start listing
+ * reached the model, as the helpfulness evaluator observed it. Neither a body
+ * read nor a matched command proves the lesson was applied.
+ */
+export interface SessionStartEngagementSummary {
+  support: Support;
+  timeBasis: 'memory_helpfulness.created_at';
+  /** Listings that reached the model. */
+  emitted: number;
+  /** Of those, evaluated with follow-through evidence (older evaluations have none). */
+  observed: number;
+  /** A mem-lesson-get body read or reference navigation followed. */
+  opened: number;
+  /** The lesson names at least one distinctive shell command. */
+  withCommandAnchors: number;
+  /** A later shell command contained one of those commands. */
+  followedCommand: number;
+}
+
 export interface LessonUsageSummary {
   auditVersion: typeof LESSON_USAGE_AUDIT_VERSION;
   selection: SelectionSummary;
+  sessionStartEngagement: SessionStartEngagementSummary;
   host: HostTraceSummary;
   mcpBodyLookups: LessonLookupSummary;
   /** mem-lesson-get reads a snapshot, so canonical navigation rows are never written for it. */
@@ -172,6 +193,7 @@ export function auditLessonUsage(db: SQLiteDatabase, options: LessonUsageAuditOp
     lessonUsage: {
       auditVersion: LESSON_USAGE_AUDIT_VERSION,
       selection,
+      sessionStartEngagement: summarizeSessionStartEngagement(db, options),
       host,
       mcpBodyLookups: summarizeLessonLookups(db, options, pageSize),
       mcpNavigation: 'unsupported',
@@ -425,6 +447,43 @@ function summarizeSelections(db: SQLiteDatabase, options: LessonUsageAuditOption
   }
   summary.traces = traceIds.size;
   summary.uniqueLessons = lessons.size;
+  return summary;
+}
+
+function summarizeSessionStartEngagement(db: SQLiteDatabase, options: LessonUsageAuditOptions): SessionStartEngagementSummary {
+  const summary: SessionStartEngagementSummary = {
+    support: 'unsupported',
+    timeBasis: 'memory_helpfulness.created_at',
+    emitted: 0,
+    observed: 0,
+    opened: 0,
+    withCommandAnchors: 0,
+    followedCommand: 0
+  };
+  const columns = tableColumns(db, 'memory_helpfulness');
+  if (!['event_id', 'memory_kind', 'trigger_type', 'delivery_status', 'evidence_json', 'created_at'].every((column) => columns.has(column))) {
+    return summary;
+  }
+  summary.support = 'supported';
+  const window = windowSql('created_at', options);
+  // json_extract raises on malformed JSON, so it only runs on valid rows.
+  const field = (path: string) => `CASE WHEN json_valid(evidence_json) THEN json_extract(evidence_json, '$.lessonFollowThrough.${path}') END`;
+  const row = sqliteGet<{ emitted: number; observed: number; opened: number; anchors: number; followed: number }>(
+    db,
+    `SELECT COUNT(*) AS emitted,
+            COALESCE(SUM(CASE WHEN ${field('commandAnchors')} IS NOT NULL THEN 1 ELSE 0 END), 0) AS observed,
+            COALESCE(SUM(CASE WHEN ${field('opened')} = 1 THEN 1 ELSE 0 END), 0) AS opened,
+            COALESCE(SUM(CASE WHEN ${field('commandAnchors')} > 0 THEN 1 ELSE 0 END), 0) AS anchors,
+            COALESCE(SUM(CASE WHEN ${field('matchedAnchors')} > 0 THEN 1 ELSE 0 END), 0) AS followed
+     FROM memory_helpfulness
+     WHERE memory_kind = 'lesson' AND trigger_type = 'session_start' AND delivery_status = 'emitted'${window.sql}`,
+    window.params
+  );
+  summary.emitted = Number(row?.emitted ?? 0);
+  summary.observed = Number(row?.observed ?? 0);
+  summary.opened = Number(row?.opened ?? 0);
+  summary.withCommandAnchors = Number(row?.anchors ?? 0);
+  summary.followedCommand = Number(row?.followed ?? 0);
   return summary;
 }
 

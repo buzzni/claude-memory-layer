@@ -40,6 +40,7 @@ import type {
   SessionStartInput,
   SessionStartOutput
 } from '../../../core/types.js';
+import type { SessionStartLessonUsage } from '../../../core/lesson-follow-through.js';
 
 const CORE_MEMORY_BLOCK_LABELS: Record<CoreMemoryBlock['blockKey'], string> = {
   project: 'Project',
@@ -225,11 +226,13 @@ function compactCoreMemorySummary(content: string): string {
  * Mirrors hermes' MEMORY.md snapshot (whole bounded file at session start, no
  * retrieval) crossed with its skills index (name + one-liner always, body on
  * demand). Only name and trigger go in; the body is fetched with mem-lesson-get.
- * Items keep repository order (confidence DESC, updated_at DESC) and fill until
- * the character budget would be exceeded.
+ * Items follow rankSessionStartLessons and fill until the character budget
+ * would be exceeded.
  */
 const SESSION_START_LESSON_BUDGET_DEFAULT = 2400;
 const SESSION_START_LESSON_TRIGGER_CHARS = 90;
+/** Listings older than this no longer push a lesson down the index. */
+const SESSION_START_LESSON_USAGE_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
 
 export function sessionStartLessonBudget(env: NodeJS.ProcessEnv = process.env): number {
   if (env.CLAUDE_MEMORY_LESSON_OWNER === 'host') return 0;
@@ -244,6 +247,27 @@ function clipLessonTrigger(trigger: string): string {
   return normalized.length <= SESSION_START_LESSON_TRIGGER_CHARS
     ? normalized
     : `${normalized.slice(0, SESSION_START_LESSON_TRIGGER_CHARS - 1)}…`;
+}
+
+/**
+ * Order for the session-start index. Repository order (confidence DESC) pinned
+ * the same few lessons on every session, because reviewed lessons are saved at
+ * confidence 0.5. Instead: lessons whose body was opened lead; the rest go by
+ * how often they were already listed without effect, so the index rotates
+ * through the catalog; newer lessons first within the same count.
+ */
+export function rankSessionStartLessons<T extends { lessonId: string; confidence: number; updatedAt: Date }>(
+  lessons: readonly T[],
+  usage: ReadonlyMap<string, SessionStartLessonUsage>
+): T[] {
+  const engaged = (lesson: T) => usage.get(lesson.lessonId)?.engaged ?? 0;
+  const idle = (lesson: T) => Math.max(0, (usage.get(lesson.lessonId)?.exposures ?? 0) - engaged(lesson));
+  return [...lessons].sort((left, right) =>
+    engaged(right) - engaged(left)
+    || (engaged(left) > 0 ? 0 : idle(left) - idle(right))
+    || right.updatedAt.getTime() - left.updatedAt.getTime()
+    || right.confidence - left.confidence
+    || left.lessonId.localeCompare(right.lessonId));
 }
 
 export function formatLessonIndexContext(
@@ -431,7 +455,10 @@ export async function main(options: SessionStartMainOptions = {}): Promise<strin
           resolveCanonicalMemoryActorId(input.actor_id),
           500
         );
-        const lessons = injections.map((item) => item.value);
+        const usage = await memoryService
+          .getSessionStartLessonUsage(new Date(Date.now() - SESSION_START_LESSON_USAGE_WINDOW_MS))
+          .catch(() => new Map<string, SessionStartLessonUsage>());
+        const lessons = rankSessionStartLessons(injections.map((item) => item.value), usage);
         const lessonContext = formatLessonIndexContext(lessons, { budgetChars: lessonBudget, totalCount: lessons.length });
         if (lessonContext) {
           if (context) context += '\n';
