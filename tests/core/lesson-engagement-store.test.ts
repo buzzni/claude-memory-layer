@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
@@ -26,6 +26,7 @@ function databasePath(): string {
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -134,6 +135,34 @@ describe('lesson engagement after a session-start listing', () => {
     await store.evaluateSessionHelpfulness('session-late');
 
     expect(observation(store, 'session-late').adoption).toBe('navigated');
+    await store.close();
+  });
+
+  // The production order: Stop evaluates the listing at the end of the first
+  // turn, the body is opened later, and only the bounded pass sees that read.
+  it('picks up a later body read when the bounded pass revisits the listing after its window', async () => {
+    const store = new SQLiteEventStore(databasePath());
+    await store.initialize();
+    seedLesson(store);
+    const deliveredAt = new Date('2026-10-10T00:00:00.000Z');
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(deliveredAt.getTime() + 5 * 60_000));
+    await listAtSessionStart(store, 'session-stop', deliveredAt);
+    await store.evaluateSessionHelpfulness('session-stop');
+    expect(observation(store, 'session-stop').adoption).toBe('not_observed');
+
+    await tool(store, 'session-stop', new Date(deliveredAt.getTime() + 3 * 60 * 60_000), lessonGetObservation(true));
+    const early = await store.reevaluateBoundedUsefulness({ now: new Date(deliveredAt.getTime() + 4 * 60 * 60_000) });
+    expect(early.rowsReevaluated).toBe(0);
+
+    const later = new Date(deliveredAt.getTime() + 25 * 60 * 60_000);
+    vi.setSystemTime(later);
+    const revisit = await store.reevaluateBoundedUsefulness({ now: later });
+
+    expect(revisit.rowsReevaluated).toBe(1);
+    expect(observation(store, 'session-stop').adoption).toBe('navigated');
+    expect(readSessionStartLessonUsage(store.getDatabase(), new Date('2026-10-01T00:00:00.000Z')).get(LESSON_ID))
+      .toEqual({ exposures: 1, engaged: 1 });
     await store.close();
   });
 

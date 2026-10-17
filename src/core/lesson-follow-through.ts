@@ -54,7 +54,7 @@ function isSpecificArgument(token: string): boolean {
     if (assigned < 0) return false;
     value = value.slice(assigned + 1);
   }
-  if (/^(?:origin|upstream)\//i.test(value) || value.includes('HEAD')) return false;
+  if (/^(?:origin|upstream)\//i.test(value) || /(?:^|\.\.\.?)HEAD(?=$|[~^@:])/.test(value)) return false;
   return value.includes('/') || /\.[A-Za-z0-9]{1,6}$/.test(value);
 }
 

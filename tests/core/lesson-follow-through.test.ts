@@ -60,9 +60,9 @@ describe('lessonCommandAnchors', () => {
 
   it('keeps a command whose argument names a specific script or directory', () => {
     expect(lessonCommandAnchors({
-      steps: ['`node scripts/check-max-lines.mjs --base-ref=origin/main`', '`git diff origin/main -- config/`'],
+      steps: ['`node scripts/check-max-lines.mjs --base-ref=origin/main`', '`git diff origin/main -- config/`', '`cat src/HEADER.ts`'],
       validation: []
-    })).toEqual(['node scripts/check-max-lines.mjs --base-ref=origin/main', 'git diff origin/main -- config/']);
+    })).toEqual(['node scripts/check-max-lines.mjs --base-ref=origin/main', 'git diff origin/main -- config/', 'cat src/HEADER.ts']);
   });
 });
 
