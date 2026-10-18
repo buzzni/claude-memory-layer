@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  absorbKinds,
   achievablePrecision,
+  applyCatalogOverlay,
+  combineMaps,
   canonicalIds,
   canonicalizeItem,
   findHubLessons,
@@ -10,6 +13,7 @@ import {
   forKind,
   proposeTwinGroups,
   twinCanonicalMap,
+  unlabeledCandidates,
   preparePrompts,
   promptKey,
   scoreSelections,
@@ -149,5 +153,55 @@ describe('resolveCanonicalMap', () => {
     expect(resolveCanonicalMap({ c: 'b', b: 'a' })).toEqual({ c: 'a', b: 'a' });
     expect(() => resolveCanonicalMap({ a: 'b', b: 'a' })).toThrow(/cycle/);
     expect(canonicalIds(['c', 'a', 'x'], { c: 'a' })).toEqual(['a', 'x']);
+  });
+});
+
+describe('applyCatalogOverlay', () => {
+  const at = (iso: string) => new Date(iso);
+  const lesson = (lessonId: string, createdAt: string, sessions: string[] = []) => ({
+    lessonId, name: lessonId, trigger: `when ${lessonId}`, steps: ['s'], confidence: 0.6, sourceSessionIds: sessions, sourceEventIds: [], failureModes: [],
+    skillCandidate: false, sourceClass: 'curated' as const, revision: 1, recallEnabled: true, validation: [], validVersions: [], createdAt: at(createdAt), updatedAt: at(createdAt)
+  });
+  const catalog = [lesson('a', '2026-10-03T00:00:00.000Z', ['s1']), lesson('b', '2026-10-01T00:00:00.000Z', ['s2']), lesson('c', '2026-10-02T00:00:00.000Z')];
+  const runbook = { lessonId: 'rb-1', name: 'review-a-pr', trigger: 'PR 리뷰해줘', steps: ['read the diff'], failureModes: ['f'], validation: ['v'], absorbs: ['a', 'b'] };
+
+  it('replaces absorbed lessons with the runbook, available from its earliest absorbed lesson and carrying their sources', () => {
+    const result = applyCatalogOverlay(catalog, { runbooks: [runbook] });
+    expect(result.lessons.map((l) => l.lessonId)).toEqual(['c', 'rb-1']);
+    const added = result.lessons.find((l) => l.lessonId === 'rb-1')!;
+    expect(added.createdAt.toISOString()).toBe('2026-10-01T00:00:00.000Z');
+    expect(added.sourceSessionIds).toEqual(['s1', 's2']);
+    expect(added.steps).toEqual(['read the diff']);
+    expect(result.absorbedBy).toEqual({ a: 'rb-1', b: 'rb-1' });
+  });
+
+  it('rejects an overlay that absorbs an unknown or already-absorbed lesson, or reuses a catalog id', () => {
+    expect(() => applyCatalogOverlay(catalog, { runbooks: [{ ...runbook, absorbs: ['zz'] }] })).toThrow(/unknown/);
+    expect(() => applyCatalogOverlay(catalog, { runbooks: [runbook, { ...runbook, lessonId: 'rb-2', absorbs: ['b'] }] })).toThrow(/more than one/);
+    expect(() => applyCatalogOverlay(catalog, { runbooks: [{ ...runbook, lessonId: 'c' }] })).toThrow(/id/);
+    expect(() => applyCatalogOverlay(catalog, { runbooks: [{ ...runbook, absorbs: [] }] })).toThrow(/absorbs/);
+  });
+});
+
+describe('absorbKinds', () => {
+  it('gives a runbook the first-turn kind when any absorbed lesson applies from the first message', () => {
+    expect(absorbKinds({ a: 'event', b: 'first-turn', c: 'event' }, { a: 'rb', b: 'rb' })).toEqual({ rb: 'first-turn', c: 'event' });
+    expect(absorbKinds({ a: 'event' }, { a: 'rb' })).toEqual({ rb: 'event' });
+  });
+});
+
+describe('combineMaps', () => {
+  it('merges twin and runbook maps, follows twin → runbook chains and refuses a twin split from its group', () => {
+    expect(combineMaps({ b: 'a' }, { a: 'rb' })).toEqual({ b: 'rb', a: 'rb' });
+    // A whole twin group absorbed into one runbook is consistent.
+    expect(combineMaps({ b: 'a' }, { a: 'rb', b: 'rb' })).toEqual({ b: 'rb', a: 'rb' });
+    expect(() => combineMaps({ b: 'a' }, { b: 'rb' })).toThrow(/twin/);
+    expect(() => combineMaps({ b: 'a' }, { a: 'rb-1', b: 'rb-2' })).toThrow(/twin/);
+  });
+});
+
+describe('unlabeledCandidates', () => {
+  it('lists the ranked and lexical picks a replay could score that no label has judged yet, in rank order', () => {
+    expect(unlabeledCandidates({ ranked: ['a', 'rb', 'c', 'd'], lexical: ['e', 'a'], labeled: ['a', 'c'], applies: ['d'] }, 3)).toEqual(['rb', 'e']);
   });
 });

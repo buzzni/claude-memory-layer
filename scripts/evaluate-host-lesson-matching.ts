@@ -10,7 +10,9 @@
  *     --labels <labels.json> --since <iso> --until <iso> --split-at <iso> --out <report.json>
  *   ... --emit-sheet <sheet.json> --sample <n> [--seed <n>]   # candidates to label
  *   tsx scripts/evaluate-host-lesson-matching.ts --store <events.sqlite> --emit-twins <twins.json> [--twin-threshold 0.5]
- *   ... --canonical-map <map.json>   # {"map":{"<lessonId>":"<canonicalId>"}}: twins, or old lesson → runbook
+ *   ... --canonical-map <map.json>   # {"map":{"<lessonId>":"<canonicalId>"}}: twins
+ *   ... --catalog-overlay <overlay.json>   # CatalogOverlay: score the catalog as if runbooks had absorbed lessons
+ *   ... --emit-unlabeled <sheet.json>   # labeled prompts' candidates no label judged yet (label them, then rerun)
  *
  * Label file: {"version":1,"labels":{"<promptKey>":{"applies":[lessonId],"judged":[lessonId],"kinds"?:{"<lessonId>":"first-turn"|"event"}}}}
  * `judged` is every lesson the labeler saw for that prompt; a selection outside
@@ -181,6 +183,81 @@ export function mergeKinds(kinds: Readonly<Record<string, LessonKind>>, applies:
   return merged;
 }
 
+export interface CatalogOverlay {
+  runbooks: Array<{ lessonId: string; name: string; trigger: string; steps: string[]; failureModes?: string[]; validation?: string[]; absorbs: string[] }>;
+}
+
+/**
+ * The catalog as it would be after consolidation: absorbed lessons leave the
+ * pool and their runbook joins it. A runbook is available from its earliest
+ * absorbed lesson (its text may carry later rules: an optimistic bound) and
+ * inherits their sources, so own-session exclusion still applies to it.
+ */
+export function applyCatalogOverlay(catalog: readonly MemoryLesson[], overlay: CatalogOverlay): { lessons: MemoryLesson[]; absorbedBy: Record<string, string> } {
+  const byId = new Map(catalog.map((lesson) => [lesson.lessonId, lesson]));
+  const absorbedBy: Record<string, string> = {};
+  const runbooks: MemoryLesson[] = [];
+  for (const runbook of overlay.runbooks) {
+    if (byId.has(runbook.lessonId) || runbooks.some((other) => other.lessonId === runbook.lessonId)) throw new Error(`runbook id ${runbook.lessonId} is already in use`);
+    if (runbook.absorbs.length === 0) throw new Error(`runbook ${runbook.lessonId} absorbs no lesson`);
+    const absorbed = runbook.absorbs.map((id) => {
+      const lesson = byId.get(id);
+      if (!lesson) throw new Error(`runbook ${runbook.lessonId} absorbs unknown lesson ${id}`);
+      if (absorbedBy[id]) throw new Error(`lesson ${id} is absorbed by more than one runbook`);
+      absorbedBy[id] = runbook.lessonId;
+      return lesson;
+    });
+    const createdAt = new Date(Math.min(...absorbed.map((lesson) => lesson.createdAt.getTime())));
+    runbooks.push({
+      lessonId: runbook.lessonId, name: runbook.name, trigger: runbook.trigger, steps: runbook.steps,
+      failureModes: runbook.failureModes ?? [], validation: runbook.validation ?? [], validVersions: [],
+      confidence: Math.max(...absorbed.map((lesson) => lesson.confidence)),
+      sourceSessionIds: dedupe(absorbed.flatMap((lesson) => lesson.sourceSessionIds)),
+      sourceEventIds: dedupe(absorbed.flatMap((lesson) => lesson.sourceEventIds)),
+      skillCandidate: false, sourceClass: 'curated', revision: 1, recallEnabled: true, createdAt, updatedAt: createdAt
+    });
+  }
+  return { lessons: [...catalog.filter((lesson) => !absorbedBy[lesson.lessonId]), ...runbooks], absorbedBy };
+}
+
+/**
+ * Twin map then runbook map. A twin absorbed without its canonical twin, or
+ * into a different runbook, would score one rule as two: that is a broken overlay.
+ */
+export function combineMaps(twins: Readonly<Record<string, string>>, absorbedBy: Readonly<Record<string, string>>): Record<string, string> {
+  const map: Record<string, string> = { ...twins };
+  for (const [id, runbook] of Object.entries(absorbedBy)) {
+    if (twins[id] !== undefined && absorbedBy[twins[id]] !== runbook) {
+      throw new Error(`lesson ${id} is absorbed apart from its twin ${twins[id]}; absorb the whole twin group into one runbook`);
+    }
+    map[id] = runbook;
+  }
+  return resolveCanonicalMap(map);
+}
+
+/**
+ * Kinds after consolidation. A runbook covers its lessons' different moments,
+ * so it is first-turn when any absorbed lesson applies from the first message.
+ */
+export function absorbKinds(kinds: Readonly<Record<string, LessonKind>>, absorbedBy: Readonly<Record<string, string>>): Record<string, LessonKind> {
+  const merged: Record<string, LessonKind> = {};
+  for (const [id, kind] of Object.entries(kinds)) {
+    const target = absorbedBy[id] ?? id;
+    merged[target] = merged[target] === 'first-turn' ? 'first-turn' : kind;
+  }
+  return merged;
+}
+
+/**
+ * Candidates a replay can score that no label covers (a changed catalog, such
+ * as a runbook overlay, surfaces new ones). `depth` reaches past top-k because
+ * the candidate reductions drop ids and pull later ranks forward.
+ */
+export function unlabeledCandidates(row: { ranked: readonly string[]; lexical: readonly string[]; labeled: readonly string[]; applies: readonly string[] }, depth: number): string[] {
+  const known = new Set([...row.labeled, ...row.applies]);
+  return dedupe([...row.ranked.slice(0, depth), ...row.lexical]).filter((id) => !known.has(id));
+}
+
 export type LessonKind = 'first-turn' | 'event';
 /**
  * Scores one kind of applicable lesson. An event-type lesson (its trigger is a
@@ -235,8 +312,9 @@ async function main(): Promise<void> {
   const store = arg('store'); const since = arg('since'); const until = arg('until'); const splitAt = arg('split-at');
   const labelsPath = arg('labels'); const out = arg('out'); const sheet = arg('emit-sheet'); const twinsOut = arg('emit-twins');
   const twinThreshold = Number(arg('twin-threshold') ?? 0.5);
-  const canonicalMap = resolveCanonicalMap(arg('canonical-map')
+  const twinMap = resolveCanonicalMap(arg('canonical-map')
     ? (JSON.parse(readFileSync(arg('canonical-map')!, 'utf8')) as { map: Record<string, string> }).map : {});
+  const overlay = arg('catalog-overlay') ? JSON.parse(readFileSync(arg('catalog-overlay')!, 'utf8')) as CatalogOverlay : undefined;
   const topK = Number(arg('topk') ?? 5); const hubShare = Number(arg('hub-share') ?? 0.15);
   if (!Number.isInteger(topK) || topK < 1 || !(hubShare > 0 && hubShare <= 1)) throw new Error('--topk must be a positive integer and --hub-share in (0, 1]');
   if (twinsOut && !(twinThreshold > 0 && twinThreshold <= 1)) throw new Error('--twin-threshold must be in (0, 1]');
@@ -259,7 +337,11 @@ async function main(): Promise<void> {
     allLessons.push(...page);
     if (page.length < 500) break;
   }
-  const lessons = allLessons.filter((lesson) => lesson.recallEnabled);
+  const { lessons, absorbedBy } = overlay
+    ? applyCatalogOverlay(allLessons.filter((lesson) => lesson.recallEnabled), overlay)
+    : { lessons: allLessons.filter((lesson) => lesson.recallEnabled), absorbedBy: {} };
+  const canonicalMap = combineMaps(twinMap, absorbedBy);
+  const runbookIds = new Set(Object.values(absorbedBy));
   if (twinsOut) {
     const groups = proposeTwinGroups(lessons, twinThreshold);
     const names = Object.fromEntries(lessons.filter((lesson) => groups.some((group) => group.includes(lesson.lessonId))).map((lesson) => [lesson.lessonId, lesson.name]));
@@ -269,7 +351,7 @@ async function main(): Promise<void> {
   }
   // Sessions a lesson came from: its source sessions plus the sessions of its source events.
   const sessionOfEvent = db.prepare('SELECT session_id AS s FROM events WHERE id = ?');
-  const sourceSessions = new Map(allLessons.map((lesson) => [lesson.lessonId, new Set([
+  const sourceSessions = new Map([...allLessons, ...lessons.filter((lesson) => runbookIds.has(lesson.lessonId))].map((lesson) => [lesson.lessonId, new Set([
     ...lesson.sourceSessionIds,
     ...lesson.sourceEventIds.map((id) => (sessionOfEvent.get(id) as { s?: string } | undefined)?.s).filter((s): s is string => Boolean(s))
   ])]));
@@ -312,7 +394,10 @@ async function main(): Promise<void> {
   if (!labelsPath) throw new Error('--labels is required with --out');
   const labelFile = JSON.parse(readFileSync(labelsPath, 'utf8')) as { version: number; labels: Record<string, { applies: string[]; judged: string[]; kinds?: Record<string, LessonKind> }> };
   const canon = (ids: readonly string[]) => canonicalIds(ids, canonicalMap);
-  const created = new Map(allLessons.map((lesson) => [lesson.lessonId, lesson.createdAt.toISOString()]));
+  // Runbooks too: a label on a runbook id passes the same time filter.
+  const created = new Map([...allLessons, ...lessons].map((lesson) => [lesson.lessonId, lesson.createdAt.toISOString()]));
+  const lessonById = new Map([...allLessons, ...lessons].map((lesson) => [lesson.lessonId, lesson]));
+  const unlabeledSheet: Array<{ key: string; timestamp: string; prompt: string; candidates: Array<{ lessonId: string; name: string; trigger: string }> }> = [];
   const labeledPrompts = prepared.prompts.filter((prompt) => labelFile.labels[prompt.key]);
   let futureLabelPairs = 0; let recentPairs = 0;
   const rowsBySplit: Record<'calibration' | 'heldout', Array<Record<string, unknown>>> = { calibration: [], heldout: [] };
@@ -326,7 +411,8 @@ async function main(): Promise<void> {
     });
     const pool = available(prompt);
     const ranked = await rankEmbedding(prompt, pool);
-    const kinds = mergeKinds(label.kinds ?? {}, applies, canonicalMap);
+    // Twins must agree on a kind; a runbook spans its lessons' moments (absorbKinds).
+    const kinds = absorbKinds(mergeKinds(label.kinds ?? {}, applies, twinMap), absorbedBy);
     rowsBySplit[prompt.timestamp < splitAt ? 'calibration' : 'heldout'].push({
       sessionId: prompt.sessionId, applies: canon(applies), labeled: canon(label.judged), kinds,
       lexical: canon(rankCuratedLessons(pool, prompt.text, 3).map((lesson) => lesson.lessonId)),
@@ -334,6 +420,15 @@ async function main(): Promise<void> {
       rankedRaw: ranked.slice(0, 40),
       ranked: canon(ranked).slice(0, 20)
     });
+    const unjudged = unlabeledCandidates({ ranked: canon(ranked), lexical: canon(rankCuratedLessons(pool, prompt.text, 3).map((lesson) => lesson.lessonId)), labeled: canon(label.judged), applies: canon(applies) }, topK + 3);
+    if (unjudged.length > 0) {
+      unlabeledSheet.push({ key: prompt.key, timestamp: prompt.timestamp, prompt: prompt.text.slice(0, PROMPT_KEY_CHARS),
+        candidates: unjudged.map((id) => ({ lessonId: id, name: lessonById.get(id)!.name, trigger: lessonById.get(id)!.trigger })) });
+    }
+  }
+  if (arg('emit-unlabeled')) {
+    writeFileSync(arg('emit-unlabeled')!, `${JSON.stringify(unlabeledSheet, null, 1)}\n`);
+    process.stdout.write(`unlabeled sheet: ${unlabeledSheet.length} prompts, ${unlabeledSheet.reduce((sum, item) => sum + item.candidates.length, 0)} candidates\n`);
   }
 
   type Row = { sessionId: string; applies: string[]; labeled: string[]; kinds: Record<string, LessonKind>; lexical: string[]; rankedRaw: string[]; ranked: string[] };
@@ -354,7 +449,8 @@ async function main(): Promise<void> {
     lessons: lessons.length,
     prompts: { prepared: prepared.prompts.length, labeled: labeledPrompts.length, droppedAutomated: prepared.droppedAutomated, droppedDuplicates: prepared.droppedDuplicates, leftoverLessonBlockMarkers: prepared.leftoverMarkers },
     labels: { futureLessonPairsExcluded: futureLabelPairs, pairsWithin24hOfLessonCreation: recentPairs },
-    canonicalMap: { entries: Object.keys(canonicalMap).length },
+    canonicalMap: { entries: Object.keys(twinMap).length },
+    catalogOverlay: { runbooks: runbookIds.size, absorbedLessons: Object.keys(absorbedBy).length },
     candidateReduction: { topK, hubShare, hubsFromCalibration: hubs.size },
     splits: {}
   };
@@ -390,6 +486,7 @@ async function main(): Promise<void> {
       embeddingTop1: score((row) => row.ranked.slice(0, 1)),
       embeddingTop3: score((row) => row.ranked.slice(0, 3)),
       reduction,
+      ...(runbookIds.size > 0 ? { applicablePairsOnRunbooks: ratio({ k: rows.reduce((sum, row) => sum + row.applies.filter((id) => runbookIds.has(id)).length, 0), n: rows.reduce((sum, row) => sum + row.applies.length, 0) }) } : {}),
       // Present when labels mark kinds: an event-type lesson cannot be judged from a first message.
       ...(rows.some((row) => Object.keys(row.kinds).length > 0) ? {
         byKind: Object.fromEntries((['first-turn', 'event'] as const).map((kind) => [kind, {
