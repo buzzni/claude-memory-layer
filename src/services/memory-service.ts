@@ -283,6 +283,10 @@ export class MemoryService {
     return this.queryService.getSessionStartLessonUsage(since);
   }
 
+  async listProjectRunbookIds(): Promise<string[]> {
+    return this.queryService.listProjectRunbookIds(this.projectHash ?? '');
+  }
+
   /** Core memory blocks (project/user), for unconditional session-start injection. */
   async getCoreMemoryBlocks(): Promise<CoreMemoryBlock[]> {
     return this.queryService.getCoreMemoryBlocks(this.projectHash ?? '');

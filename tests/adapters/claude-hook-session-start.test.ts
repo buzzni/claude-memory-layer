@@ -6,7 +6,8 @@ import {
   sessionStartExcerpt,
   formatLessonIndexContext,
   rankSessionStartLessons,
-  sessionStartLessonBudget
+  sessionStartLessonBudget,
+  sessionStartLessonIndexScope
 } from '../../src/adapters/claude/hooks/session-start.js';
 import type { CoreMemoryBlock, EventType, MemoryEvent } from '../../src/core/types.js';
 
@@ -338,6 +339,16 @@ describe('formatLessonIndexContext', () => {
     expect(out).toContain('…');
   });
 
+  it('asks for runbooks to be opened whenever a task even partly matches, and keeps their request examples', () => {
+    const trigger = `PR을 만들거나 갱신하려고 브랜치를 push할 때. 예: ${"'Commit & pr', ".repeat(8)}'PR 올려줘'`;
+    const out = formatLessonIndexContext([{ name: 'prepare-and-push-pr-branch', trigger }], { budgetChars: 2400, totalCount: 1, variant: 'runbooks' });
+    expect(out).toContain('## Project Runbooks');
+    expect(out).toMatch(/even partly/);
+    expect(out).toContain('- prepare-and-push-pr-branch — ');
+    expect(out).toContain("'PR 올려줘'");
+    expect(out).toContain('(1 of 1 runbooks shown.)');
+  });
+
   it('returns nothing when the budget is zero or there are no lessons', () => {
     expect(formatLessonIndexContext(lessons, { budgetChars: 0, totalCount: 2 })).toBe('');
     expect(formatLessonIndexContext([], { budgetChars: 2400, totalCount: 0 })).toBe('');
@@ -382,9 +393,19 @@ describe('rankSessionStartLessons', () => {
   });
 });
 
+describe('sessionStartLessonIndexScope', () => {
+  it('lists every lesson natively, only runbooks when the host owns per-turn lessons, and nothing on the Codex path', () => {
+    expect(sessionStartLessonIndexScope({}, 'claude-hook')).toBe('all');
+    expect(sessionStartLessonIndexScope({ CLAUDE_MEMORY_LESSON_OWNER: 'native' }, 'claude-hook')).toBe('all');
+    expect(sessionStartLessonIndexScope({ CLAUDE_MEMORY_LESSON_OWNER: 'host' }, 'claude-hook')).toBe('runbooks');
+    expect(sessionStartLessonIndexScope({ CLAUDE_MEMORY_LESSON_OWNER: 'host' }, 'codex-hook')).toBe('none');
+    expect(sessionStartLessonIndexScope({ CLAUDE_MEMORY_LESSON_OWNER: 'host' }, 'codex-host')).toBe('none');
+  });
+});
+
 describe('sessionStartLessonBudget', () => {
-  it('leaves the native lesson lane empty when the host owns injection', () => {
-    expect(sessionStartLessonBudget({ CLAUDE_MEMORY_LESSON_OWNER: 'host', CLAUDE_MEMORY_SESSION_START_LESSON_BUDGET: '900' })).toBe(0);
+  it('does not depend on who owns per-turn lessons (the scope does)', () => {
+    expect(sessionStartLessonBudget({ CLAUDE_MEMORY_LESSON_OWNER: 'host', CLAUDE_MEMORY_SESSION_START_LESSON_BUDGET: '900' })).toBe(900);
     expect(sessionStartLessonBudget({ CLAUDE_MEMORY_LESSON_OWNER: 'native' })).toBe(2400);
   });
   it('defaults to 2400 characters, close to hermes MEMORY.md 2200', () => {
