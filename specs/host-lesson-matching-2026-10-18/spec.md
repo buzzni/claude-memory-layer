@@ -212,6 +212,31 @@ hermes-agent는 턴마다 검색하지 않는다. 작업 종류 단위의 작은
 - 한계: 라벨은 LLM 판정이고 runbook은 이름·trigger·앞 두 단계로 판정했다. 다른 배치의 라벨러가
   판정했으므로 관대함 차이가 섞일 수 있다. 신뢰구간이 겹치는 차이는 방향만 본다.
 
+### P1 구현 (branch `feature/runbook-consolidation`)
+
+- 적용 방식: 승인한 초안을 운영 명령으로 적용한다(Desktop 후보 흐름 대신, 사용자 결정 2026-10-18).
+  `claude-memory-layer lesson consolidate --project <path> --drafts <file> [--apply]`는 한 트랜잭션에서
+  runbook을 curated 교훈으로 추가하고, 흡수 교훈을 끄고 `memory_lessons.absorbed_into`로 runbook을
+  가리키게 한다. 흡수 교훈은 revision으로 고정하고 삭제하지 않는다. `lesson revert-consolidation`이
+  되돌린다. 미리보기는 저장소를 읽기만 한다. 흡수 교훈을 다시 켜면(host 토글·upsert) runbook에서 떨어진다.
+- runbook = 다른 교훈이 `absorbed_into`로 가리키는 교훈. 별도 표시 컬럼은 없다.
+- 인덱스: `CLAUDE_MEMORY_LESSON_OWNER=host`일 때 Claude SessionStart가 runbook만 나열한다
+  (Hermes 수준 지시문, trigger 200자). runbook이 없는 프로젝트는 지금처럼 비어 있고, Codex 경로는 없다.
+  `LESSON_HOST_CAPABILITIES.sessionStartRunbookIndex`로 알린다. 끄려면 launch에
+  `CLAUDE_MEMORY_SESSION_START_LESSON_BUDGET=0`.
+- 저장소 사본 시험: 계획 문제 0건, 적용 후 활성 교훈 354 → 257(runbook 11 추가, 108 비활성),
+  runbook 하나 되돌리면 24개 복원.
+
+### P1 인덱스 측정 절차
+
+1. 배포 후 2주 동안 `claude-memory-layer audit`의 "Host-mode runbook index" 표에서 평가된 세션 수와
+   runbook을 연 세션 수를 본다. 목록 라벨(`[session-start] runbook index`)로 분류하므로 되돌려도
+   과거 집계는 바뀌지 않는다. 평가 전 세션은 분모에서 뺀다.
+2. 평가된 세션의 첫 요청을 이 문서의 라벨 기준으로 "적용 runbook 있음/없음"으로 판정한다(로컬, 원문 커밋 금지).
+   감사는 이 분할을 하지 못한다. 목록은 모든 host 세션에 같은 내용으로 나가기 때문이다.
+3. 대조 기대치: 무작위 13개 목록이 한 요청에 맞을 확률(앞 절 0.5% 수준)을 같은 세션 수에 곱한다.
+4. 수용: 적용 runbook이 있는 세션의 조회율이 대조 기대치의 3배 이상, 없는 세션의 조회율 10% 이하.
+
 ## 단계 계획과 수용 기준
 
 | 단계 | 작업 | 수용 기준 |
