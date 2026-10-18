@@ -1378,12 +1378,16 @@ export class SQLiteEventStore {
     this.addColumnIfMissing('memory_lessons', 'validation_json', `TEXT NOT NULL DEFAULT '[]'`);
     this.addColumnIfMissing('memory_lessons', 'reconsider_when', 'TEXT');
     this.addColumnIfMissing('memory_lessons', 'valid_versions_json', `TEXT NOT NULL DEFAULT '[]'`);
+    // Set on a lesson a runbook absorbed (switched off, kept for provenance);
+    // a lesson that others point at is a runbook.
+    this.addColumnIfMissing('memory_lessons', 'absorbed_into', 'TEXT');
     this.addColumnIfMissing('lesson_host_traces', 'machine_id', `TEXT NOT NULL DEFAULT ''`);
     this.addColumnIfMissing('lesson_host_traces', 'lesson_revisions_json', `TEXT NOT NULL DEFAULT '[]'`);
     this.addColumnIfMissing('lesson_review_candidates', 'duplicate_lesson_ids_json', `TEXT NOT NULL DEFAULT '[]'`);
     try {
       sqliteExec(this.db, `CREATE INDEX IF NOT EXISTS idx_memory_lessons_project_source_class ON memory_lessons(project_hash, source_class, updated_at DESC);`);
       sqliteExec(this.db, `CREATE INDEX IF NOT EXISTS idx_memory_lessons_project_recall ON memory_lessons(project_hash, recall_enabled, confidence DESC, updated_at DESC);`);
+      sqliteExec(this.db, `CREATE INDEX IF NOT EXISTS idx_memory_lessons_project_absorbed_into ON memory_lessons(project_hash, absorbed_into);`);
     } catch {
       // index/table may not exist in partial migrations
     }

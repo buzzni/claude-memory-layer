@@ -34,6 +34,7 @@ interface MemoryLessonRow {
   validation_json?: string;
   reconsider_when?: string | null;
   valid_versions_json?: string;
+  absorbed_into?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -102,12 +103,13 @@ function rowToLesson(row: MemoryLessonRow): MemoryLesson {
     validation: parseStringArray(row.validation_json),
     reconsiderWhen: row.reconsider_when ?? undefined,
     validVersions: parseStringArray(row.valid_versions_json),
+    absorbedInto: row.absorbed_into ?? undefined,
     createdAt: toDateFromSQLite(row.created_at),
     updatedAt: toDateFromSQLite(row.updated_at)
   });
 }
 
-function lessonToAuditJson(lesson: MemoryLesson): Record<string, unknown> {
+export function lessonToAuditJson(lesson: MemoryLesson): Record<string, unknown> {
   return {
     lessonId: lesson.lessonId,
     projectHash: lesson.projectHash,
@@ -126,6 +128,7 @@ function lessonToAuditJson(lesson: MemoryLesson): Record<string, unknown> {
     validation: lesson.validation,
     reconsiderWhen: lesson.reconsiderWhen,
     validVersions: lesson.validVersions,
+    absorbedInto: lesson.absorbedInto,
     createdAt: lesson.createdAt.toISOString(),
     updatedAt: lesson.updatedAt.toISOString()
   };

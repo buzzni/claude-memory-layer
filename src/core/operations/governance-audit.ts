@@ -15,6 +15,7 @@ export const MEMORY_GOVERNANCE_AUDIT_OPERATIONS = [
   'verify',
   'lesson_promote',
   'lesson_capture',
+  'lesson_consolidate',
   'actor_card_upsert',
   'perspective_observation_create',
   'perspective_observation_delete',
