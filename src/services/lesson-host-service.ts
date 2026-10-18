@@ -19,7 +19,7 @@ export const LESSON_HOST_CAPABILITIES = Object.freeze({ version: 1, nativeLesson
 
 const Identifier = z.string().trim().min(1).max(240);
 const Hash = z.string().regex(/^[a-f0-9]{64}$/i, 'payloadHash must be a SHA-256 hex digest');
-const CandidatePayload = z.object({
+export const CandidatePayload = z.object({
   name: Identifier,
   trigger: Identifier,
   steps: z.array(Identifier).min(1).max(20),
@@ -76,7 +76,7 @@ export interface OpenLessonHostServiceResult {
   close(): Promise<void>;
 }
 
-type Candidate = z.output<typeof CandidatePayload>;
+export type Candidate = z.output<typeof CandidatePayload>;
 type CandidateStatus = 'pending' | 'reviewed' | 'accepted' | 'rejected' | 'expired';
 interface CandidateRow {
   candidate_id: string; project_hash: string; evidence_key: string; payload_hash: string;
@@ -117,7 +117,7 @@ function candidateFromRow(row: CandidateRow) {
   };
 }
 
-function assertCandidateSafe(candidate: Candidate): void {
+export function assertCandidateSafe(candidate: Candidate): void {
   const text = [candidate.name, candidate.trigger, candidate.scope, candidate.reconsiderWhen, ...candidate.steps, ...candidate.validation, ...candidate.failureModes, ...(candidate.validVersions ?? [])].join('\n');
   const privacy = applyPrivacyFilter(text, { excludePatterns: [], anonymize: false, privateTags: { enabled: true, marker: '[PRIVATE]', preserveLineCount: false, supportedFormats: ['xml'] } });
   const environmentSecret = /\b(?:export\s+)?[A-Z][A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY)\s*=\s*(?!\$[A-Z_])[\S]+/;
