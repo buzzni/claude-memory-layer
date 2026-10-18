@@ -31,6 +31,11 @@ const RunbookDraft = z.object({
   absorbs: z.array(z.object({ lessonId: Identifier, revision: z.number().int().positive() }).strict()).min(1)
 }).strict();
 const ConsolidationInput = z.object({ runbooks: z.array(RunbookDraft).min(1) }).strict();
+
+/** Validates the drafts' shape before any store is opened. */
+export function parseConsolidationDrafts(input: unknown): z.output<typeof ConsolidationInput> {
+  return ConsolidationInput.parse(input);
+}
 type RunbookDraft = z.output<typeof RunbookDraft>;
 // A runbook's provenance is its absorbed lessons, which may carry no event refs (CLI-curated ones).
 const RunbookPayload = CandidatePayload.extend({ sourceEventIds: z.array(Identifier).max(100) });
@@ -45,13 +50,14 @@ const PROVENANCE_LIMIT = 100;
 
 /** Read-only check of approved drafts against the store. Malformed or unsafe drafts throw. */
 export function planRunbookConsolidation(db: SQLiteDatabase, projectHash: string, input: unknown): ConsolidationPlan {
-  const { runbooks } = ConsolidationInput.parse(input);
+  const { runbooks } = parseConsolidationDrafts(input);
   const repository = new LessonRepository(db);
   const runbookIds = new Set(listRunbookIds(db, projectHash));
   const problems: string[] = [];
   const absorbedOnce = new Set<string>();
   const draftNames = new Set<string>();
   const planned = runbooks.map((draft) => {
+    const found: MemoryLesson[] = [];
     const absorbs = draft.absorbs.map(({ lessonId, revision }) => {
       const lesson = repository.get(lessonId);
       if (absorbedOnce.has(lessonId)) problems.push(`${draft.lessonId}: lesson ${lessonId} is absorbed more than once`);
@@ -62,16 +68,20 @@ export function planRunbookConsolidation(db: SQLiteDatabase, projectHash: string
       }
       if (lesson.revision !== revision) problems.push(`${draft.lessonId}: lesson ${lessonId} is at revision ${lesson.revision}, not ${revision}`);
       if (!lesson.recallEnabled) problems.push(`${draft.lessonId}: lesson ${lessonId} is already switched off`);
+      if (lesson.absorbedInto) problems.push(`${draft.lessonId}: lesson ${lessonId} is already absorbed into ${lesson.absorbedInto}`);
       if (runbookIds.has(lessonId)) problems.push(`${draft.lessonId}: lesson ${lessonId} is itself a runbook`);
+      found.push(lesson);
       return { lessonId, name: lesson.name, revision: lesson.revision };
     });
     if (repository.getByProjectAndName(projectHash, draft.name)) problems.push(`${draft.lessonId}: name ${draft.name} is already a lesson`);
     if (draftNames.has(draft.name)) problems.push(`${draft.lessonId}: name ${draft.name} is used by another draft`);
     draftNames.add(draft.name);
+    // The exact payload apply would store, provenance included, so a preview cannot pass what apply rejects.
+    const payload = RunbookPayload.safeParse(runbookPayload(draft, found));
+    if (payload.success) assertCandidateSafe(payload.data);
+    else problems.push(`${draft.lessonId}: runbook payload is invalid: ${payload.error.issues.map((issue) => `${issue.path.join('.')} ${issue.message}`).join(', ')}`);
     return { draftId: draft.lessonId, name: draft.name, absorbs };
   });
-  // Safety runs on the exact payload a host-approved lesson would carry.
-  for (const draft of runbooks) assertCandidateSafe(RunbookPayload.parse(runbookPayload(draft, [])));
   return { runbooks: planned, problems };
 }
 
@@ -80,7 +90,7 @@ export function applyRunbookConsolidation(db: SQLiteDatabase, projectHash: strin
   return sqliteTransaction(db, () => {
     const plan = planRunbookConsolidation(db, projectHash, input);
     if (plan.problems.length > 0) throw new Error(`runbook consolidation blocked: ${plan.problems.join('; ')}`);
-    const { runbooks } = ConsolidationInput.parse(input);
+    const { runbooks } = parseConsolidationDrafts(input);
     const repository = new LessonRepository(db);
     return {
       runbooks: runbooks.map((draft) => {
@@ -105,13 +115,26 @@ export function applyRunbookConsolidation(db: SQLiteDatabase, projectHash: strin
   });
 }
 
-/** Switches a runbook's absorbed lessons back on and the runbook off. */
+/** What a revert would change: the runbook to switch off and the lessons to switch back on. Throws for a non-runbook. */
+export function planRunbookRevert(db: SQLiteDatabase, projectHash: string, runbookId: string): { runbook: { lessonId: string; name: string; revision: number }; restore: Array<{ lessonId: string; name: string; revision: number }> } {
+  const runbook = new LessonRepository(db).get(runbookId);
+  const absorbed = listAbsorbedLessons(db, projectHash, runbookId);
+  if (!runbook || runbook.projectHash !== projectHash || absorbed.length === 0) throw new Error(`lesson ${runbookId} is not a runbook in this project`);
+  const brief = (lesson: MemoryLesson) => ({ lessonId: lesson.lessonId, name: lesson.name, revision: lesson.revision });
+  return { runbook: brief(runbook), restore: absorbed.map(brief) };
+}
+
+/**
+ * Switches a runbook's absorbed lessons back on and the runbook off. It is
+ * the operator's undo: lessons edited since consolidation come back as they
+ * are now, which the preview (planRunbookRevert) shows with revisions.
+ */
 export function revertRunbookConsolidation(db: SQLiteDatabase, projectHash: string, runbookId: string, actor: string): { runbookId: string; restored: string[] } {
   return sqliteTransaction(db, () => {
     const repository = new LessonRepository(db);
+    planRunbookRevert(db, projectHash, runbookId);
     const absorbed = listAbsorbedLessons(db, projectHash, runbookId);
-    const runbook = repository.get(runbookId);
-    if (!runbook || runbook.projectHash !== projectHash || absorbed.length === 0) throw new Error(`lesson ${runbookId} is not a runbook in this project`);
+    const runbook = repository.get(runbookId)!;
     const now = new Date().toISOString();
     for (const lesson of absorbed) {
       sqliteRun(db, `UPDATE memory_lessons SET recall_enabled = 1, absorbed_into = NULL, revision = revision + 1, updated_at = ? WHERE lesson_id = ? AND project_hash = ?`, [now, lesson.lessonId, projectHash]);
@@ -124,6 +147,7 @@ export function revertRunbookConsolidation(db: SQLiteDatabase, projectHash: stri
 }
 
 export function listAbsorbedLessons(db: SQLiteDatabase, projectHash: string, runbookId: string): MemoryLesson[] {
+  if (!hasAbsorptionColumn(db)) return [];
   const repository = new LessonRepository(db);
   return sqliteAll<{ lesson_id: string }>(db, `SELECT lesson_id FROM memory_lessons WHERE project_hash = ? AND absorbed_into = ? ORDER BY lesson_id`, [projectHash, runbookId])
     .map((row) => repository.get(row.lesson_id)!);
@@ -131,7 +155,13 @@ export function listAbsorbedLessons(db: SQLiteDatabase, projectHash: string, run
 
 /** Lessons that at least one absorbed lesson points at. */
 export function listRunbookIds(db: SQLiteDatabase, projectHash: string): string[] {
+  if (!hasAbsorptionColumn(db)) return [];
   return sqliteAll<{ id: string }>(db, `SELECT DISTINCT absorbed_into AS id FROM memory_lessons WHERE project_hash = ? AND absorbed_into IS NOT NULL ORDER BY id`, [projectHash]).map((row) => row.id);
+}
+
+/** A store opened read-only before its migration has no absorption links yet. */
+function hasAbsorptionColumn(db: SQLiteDatabase): boolean {
+  return sqliteAll<{ name: string }>(db, `PRAGMA table_info(memory_lessons)`).some((column) => column.name === 'absorbed_into');
 }
 
 function runbookPayload(draft: RunbookDraft, absorbed: readonly MemoryLesson[]) {

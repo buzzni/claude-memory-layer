@@ -403,6 +403,12 @@ describe('memory operations CLI commands', () => {
   it('consolidates approved runbook drafts only with --apply, and reverts them', () => {
     const fixture = createCliFixture('lesson-consolidate');
     try {
+      const earlyDrafts = path.join(fixture.home, 'early.json');
+      writeFileSync(earlyDrafts, JSON.stringify({ runbooks: [{ lessonId: 'rb-0', name: 'n', trigger: 't', steps: ['s'], validation: ['v'], scope: 's', reconsiderWhen: 'r', absorbs: [{ lessonId: 'x', revision: 1 }] }] }));
+      const preview = expectJsonCommand(fixture, ['lesson', 'consolidate', '--project', fixture.projectDir, '--drafts', earlyDrafts, '--json']);
+      expect(preview).toMatchObject({ dryRun: true, problems: ['this project has no lesson store'] });
+      expect(existsSync(fixture.dbPath)).toBe(false);
+
       const add = (name: string) => expectJsonCommand(fixture, ['lesson', 'add', '--project', fixture.projectDir, '--name', name,
         '--trigger', `when ${name}`, '--steps', `do ${name}`, '--apply', '--json']).lesson as JsonObject;
       const first = add('rebase-before-push');
@@ -427,8 +433,12 @@ describe('memory operations CLI commands', () => {
       const again = expectJsonCommand(fixture, ['lesson', 'consolidate', '--project', fixture.projectDir, '--drafts', draftsPath, '--json']);
       expect((again.problems as string[]).length).toBeGreaterThan(0);
 
+      const revertPreview = expectJsonCommand(fixture, ['lesson', 'revert-consolidation', '--project', fixture.projectDir, '--runbook', runbookId, '--json']);
+      expect((revertPreview.restore as JsonObject[]).length).toBe(2);
+      expect(enabled()).toBe(1);
       expectJsonCommand(fixture, ['lesson', 'revert-consolidation', '--project', fixture.projectDir, '--runbook', runbookId, '--apply', '--json']);
       expect(enabled()).toBe(2);
+      expectFailedCommand(fixture, ['lesson', 'revert-consolidation', '--project', fixture.projectDir, '--runbook', runbookId, '--json']);
     } finally {
       rmSync(fixture.home, { recursive: true, force: true });
     }

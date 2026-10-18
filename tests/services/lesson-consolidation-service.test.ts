@@ -5,10 +5,12 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { SQLiteEventStore } from '../../src/core/sqlite-event-store.js';
 import { LessonRepository } from '../../src/core/operations/lesson-repository.js';
-import { sqliteAll } from '../../src/core/sqlite-wrapper.js';
+import { sqliteAll, sqliteExec, sqliteRun } from '../../src/core/sqlite-wrapper.js';
 import {
   applyRunbookConsolidation,
+  listRunbookIds,
   planRunbookConsolidation,
+  planRunbookRevert,
   revertRunbookConsolidation
 } from '../../src/services/lesson-consolidation-service.js';
 
@@ -83,6 +85,18 @@ describe('planRunbookConsolidation', () => {
     ]);
   });
 
+  it('checks the provenance the runbook would actually carry, and an existing absorption link', async () => {
+    const { db, repo, a, b } = await fixture();
+    sqliteRun(db, `UPDATE memory_lessons SET source_session_ids = ? WHERE lesson_id = ?`, [JSON.stringify(['s'.repeat(241)]), a.lessonId]);
+    sqliteRun(db, `UPDATE memory_lessons SET absorbed_into = 'elsewhere' WHERE lesson_id = ?`, [b.lessonId]);
+    const plan = planRunbookConsolidation(db, 'project-a', { runbooks: [draft([{ lessonId: a.lessonId, revision: 1 }, { lessonId: b.lessonId, revision: 1 }])] });
+    expect(plan.problems).toEqual([
+      `rb-branch-1: lesson ${b.lessonId} is already absorbed into elsewhere`,
+      expect.stringMatching(/^rb-branch-1: runbook payload is invalid: /)
+    ]);
+    expect(repo.get(a.lessonId)).toMatchObject({ recallEnabled: true });
+  });
+
   it('refuses a malformed or unsafe runbook outright', async () => {
     const { db, a } = await fixture();
     const absorbs = [{ lessonId: a.lessonId, revision: 1 }];
@@ -121,7 +135,45 @@ describe('applyRunbookConsolidation', () => {
   });
 });
 
+describe('consolidation state under existing writers', () => {
+  it('rolls back every write when a later write in the transaction fails', async () => {
+    const { db, repo, a, b } = await fixture();
+    sqliteExec(db, `CREATE TRIGGER fail_second BEFORE UPDATE OF absorbed_into ON memory_lessons WHEN NEW.lesson_id = '${b.lessonId}' BEGIN SELECT RAISE(ABORT, 'injected'); END;`);
+    expect(() => applyRunbookConsolidation(db, 'project-a', { runbooks: [
+      draft([{ lessonId: a.lessonId, revision: 1 }]),
+      draft([{ lessonId: b.lessonId, revision: 1 }], { lessonId: 'rb-2', name: 'second-runbook' })
+    ] }, 'cml-cli')).toThrow(/injected/);
+    expect(repo.getByProjectAndName('project-a', 'prepare-and-push-pr-branch')).toBeNull();
+    expect(repo.get(a.lessonId)).toMatchObject({ recallEnabled: true, revision: 1 });
+    expect(sqliteAll(db, `SELECT 1 FROM memory_governance_audit WHERE actor = 'cml-cli'`)).toEqual([]);
+  });
+
+  it('detaches an absorbed lesson that is switched back on, and keeps it absorbed through an ordinary edit', async () => {
+    const { db, repo, a, b } = await fixture();
+    const [{ lessonId: runbookId }] = applyRunbookConsolidation(db, 'project-a', { runbooks: [draft([{ lessonId: a.lessonId, revision: 1 }, { lessonId: b.lessonId, revision: 1 }])] }, 'cml-cli').runbooks;
+    await repo.upsert({ projectHash: 'project-a', name: 'rebase-before-push', trigger: 'edited', steps: ['edited'], sourceSessionIds: ['session-edit'], sourceEventIds: [], failureModes: [] });
+    expect(repo.get(a.lessonId)).toMatchObject({ recallEnabled: false, absorbedInto: runbookId });
+    const enabled = repo.setRecallEnabled({ lessonId: a.lessonId, projectHash: 'project-a', expectedRevision: repo.get(a.lessonId)!.revision, enabled: true });
+    expect(enabled).toMatchObject({ recallEnabled: true });
+    expect(enabled!.absorbedInto).toBeUndefined();
+    await repo.upsert({ projectHash: 'project-a', name: 'push-rejected-retry', trigger: 'edited', steps: ['edited'], sourceSessionIds: ['session-edit'], sourceEventIds: [], failureModes: [], recallEnabled: true });
+    expect(repo.get(b.lessonId)!.absorbedInto).toBeUndefined();
+    expect(listRunbookIds(db, 'project-a')).toEqual([]);
+  });
+});
+
 describe('revertRunbookConsolidation', () => {
+  it('previews the runbook and the lessons a revert restores, and refuses a lesson that is not a runbook', async () => {
+    const { db, a, b, c } = await fixture();
+    const [{ lessonId }] = applyRunbookConsolidation(db, 'project-a', { runbooks: [draft([{ lessonId: a.lessonId, revision: 1 }, { lessonId: b.lessonId, revision: 1 }])] }, 'cml-cli').runbooks;
+    expect(planRunbookRevert(db, 'project-a', lessonId)).toEqual({ runbook: { lessonId, name: 'prepare-and-push-pr-branch', revision: 1 }, restore: [
+      { lessonId: a.lessonId, name: 'rebase-before-push', revision: 2 },
+      { lessonId: b.lessonId, name: 'push-rejected-retry', revision: 2 }
+    ].sort((x, y) => x.lessonId.localeCompare(y.lessonId)) });
+    expect(() => planRunbookRevert(db, 'project-a', c.lessonId)).toThrow(/not a runbook/);
+    expect(() => planRunbookRevert(db, 'project-a', 'missing')).toThrow(/not a runbook/);
+  });
+
   it('switches the absorbed lessons back on and the runbook off, and refuses a lesson that is not a runbook', async () => {
     const { db, repo, a, b } = await fixture();
     const [{ lessonId }] = applyRunbookConsolidation(db, 'project-a', { runbooks: [draft([{ lessonId: a.lessonId, revision: 1 }, { lessonId: b.lessonId, revision: 1 }])] }, 'cml-cli').runbooks;

@@ -17,7 +17,7 @@ import {
   getLightweightMemoryServiceForProject
 } from '../../services/memory-service.js';
 import { createReadOnlyDiagnosticsService } from '../../services/read-only-diagnostics-service.js';
-import { applyRunbookConsolidation, listAbsorbedLessons, planRunbookConsolidation, revertRunbookConsolidation } from '../../services/lesson-consolidation-service.js';
+import { applyRunbookConsolidation, parseConsolidationDrafts, planRunbookConsolidation, planRunbookRevert, revertRunbookConsolidation } from '../../services/lesson-consolidation-service.js';
 import { getProjectStoragePath, resolveProjectStoragePath, hashProjectPath } from '../../core/registry/project-path.js';
 import { resolveCanonicalRepoIdentity } from '../../core/registry/repo-identity.js';
 import { resolveExistingStore } from '../../core/registry/existing-store.js';
@@ -2319,12 +2319,14 @@ lessonCommand
   .option('--json', 'Print machine-readable JSON')
   .action((options) => runOperationCli(async () => {
     const context = resolveOperationProject(options.project);
-    const drafts = JSON.parse(fs.readFileSync(options.drafts, 'utf-8')) as unknown;
+    const drafts = parseConsolidationDrafts(JSON.parse(fs.readFileSync(options.drafts, 'utf-8')));
     const actor = requiredOperationOption(options.actor, 'actor');
-    // Both modes open the store for writing so its schema is current; only --apply changes lessons.
-    const payload = await withOperationWriteDatabase(context, async (db) => options.apply
-      ? { operation: 'lesson-consolidate', projectHash: context.projectHash, dryRun: false, ...applyRunbookConsolidation(db, context.projectHash, drafts, actor) }
-      : { operation: 'lesson-consolidate', projectHash: context.projectHash, dryRun: true, ...planRunbookConsolidation(db, context.projectHash, drafts) });
+    const base = { operation: 'lesson-consolidate', projectHash: context.projectHash };
+    // The preview reads the store as it is; only --apply opens it for writing (and migrates it).
+    const payload = options.apply
+      ? await withOperationWriteDatabase(context, async (db) => ({ ...base, dryRun: false, ...applyRunbookConsolidation(db, context.projectHash, drafts, actor) }))
+      : await withOperationExistingDatabase(context, { ...base, dryRun: true, runbooks: [], problems: ['this project has no lesson store'] }, ['memory_lessons'],
+        async (db) => ({ ...base, dryRun: true, ...planRunbookConsolidation(db, context.projectHash, drafts) }));
     writeOperationOutput(payload, options);
   }, 'Lesson consolidate'));
 
@@ -2339,10 +2341,12 @@ lessonCommand
   .action((options) => runOperationCli(async () => {
     const context = resolveOperationProject(options.project);
     const runbookId = requiredOperationOption(options.runbook, 'runbook');
-    const payload = await withOperationWriteDatabase(context, async (db) => options.apply
-      ? { operation: 'lesson-revert-consolidation', projectHash: context.projectHash, dryRun: false, ...revertRunbookConsolidation(db, context.projectHash, runbookId, requiredOperationOption(options.actor, 'actor')) }
-      : { operation: 'lesson-revert-consolidation', projectHash: context.projectHash, dryRun: true, runbookId,
-        wouldRestore: listAbsorbedLessons(db, context.projectHash, runbookId).map((lesson) => ({ lessonId: lesson.lessonId, name: lesson.name })) });
+    const actor = requiredOperationOption(options.actor, 'actor');
+    const base = { operation: 'lesson-revert-consolidation', projectHash: context.projectHash };
+    const payload = options.apply
+      ? await withOperationWriteDatabase(context, async (db) => ({ ...base, dryRun: false, ...revertRunbookConsolidation(db, context.projectHash, runbookId, actor) }))
+      : await withOperationExistingDatabase(context, null, ['memory_lessons'], async (db) => ({ ...base, dryRun: true, ...planRunbookRevert(db, context.projectHash, runbookId) }));
+    if (!payload) throw new Error(`lesson ${runbookId} is not a runbook in this project`);
     writeOperationOutput(payload, options);
   }, 'Lesson revert consolidation'));
 
