@@ -2,8 +2,11 @@ import { describe, expect, it } from 'vitest';
 
 import {
   achievablePrecision,
+  canonicalIds,
   canonicalizeItem,
   findHubLessons,
+  mergeKinds,
+  resolveCanonicalMap,
   forKind,
   proposeTwinGroups,
   twinCanonicalMap,
@@ -96,6 +99,18 @@ describe('twin groups and canonical ids', () => {
     expect(proposeTwinGroups(lessons, 0.99)).toEqual([]);
   });
 
+  it('does not chain A-B and B-C into one group when A and C do not overlap', () => {
+    const chain = [
+      { lessonId: 'p', name: 'aa bb', trigger: '' },
+      { lessonId: 'q', name: 'aa bb cc dd', trigger: '' },
+      { lessonId: 'r', name: 'cc dd', trigger: '' },
+    ];
+    for (const order of [chain, [...chain].reverse()]) {
+      const groups = proposeTwinGroups(order, 0.5);
+      expect(groups.some((group) => group.includes('p') && group.includes('r'))).toBe(false);
+    }
+  });
+
   it('maps every member of a group to its first id', () => {
     expect(twinCanonicalMap([['b', 'a'], ['d', 'c']])).toEqual({ b: 'a', d: 'c' });
   });
@@ -108,9 +123,31 @@ describe('twin groups and canonical ids', () => {
 
 describe('forKind', () => {
   const kinds = { a: 'first-turn', e: 'event' } as const;
-  it('keeps only applicable lessons of the kind and neither credits nor blames the other kind', () => {
+  it('scores each kind on its own lessons only; an unlabeled lesson counts as first-turn', () => {
     const item = { selected: ['a', 'e', 'x'], applies: ['a', 'e'], labeled: ['a', 'e', 'x'] };
     expect(forKind(item, kinds, 'first-turn')).toEqual({ selected: ['a', 'x'], applies: ['a'], labeled: ['a', 'x'] });
-    expect(forKind(item, kinds, 'event')).toEqual({ selected: ['e', 'x'], applies: ['e'], labeled: ['e', 'x'] });
+    expect(forKind(item, kinds, 'event')).toEqual({ selected: ['e'], applies: ['e'], labeled: ['e'] });
+  });
+  it('does not count an event lesson picked for a negative prompt against the first-turn view', () => {
+    const item = { selected: ['e'], applies: [], labeled: ['e'] };
+    expect(forKind(item, kinds, 'first-turn')).toEqual({ selected: [], applies: [], labeled: [] });
+  });
+});
+
+describe('mergeKinds', () => {
+  it('carries kinds onto canonical ids and refuses a merge of conflicting kinds, whatever the key order', () => {
+    expect(mergeKinds({ b: 'event' }, ['b'], { b: 'a' })).toEqual({ a: 'event' });
+    expect(() => mergeKinds({ a: 'first-turn', b: 'event' }, ['a', 'b'], { b: 'a' })).toThrow(/conflict/);
+    expect(() => mergeKinds({ b: 'event', a: 'first-turn' }, ['a', 'b'], { b: 'a' })).toThrow(/conflict/);
+    // b has no explicit kind, so it is first-turn and conflicts with a's event.
+    expect(() => mergeKinds({ a: 'event' }, ['a', 'b'], { b: 'a' })).toThrow(/conflict/);
+  });
+});
+
+describe('resolveCanonicalMap', () => {
+  it('follows chains to their end and rejects a cycle', () => {
+    expect(resolveCanonicalMap({ c: 'b', b: 'a' })).toEqual({ c: 'a', b: 'a' });
+    expect(() => resolveCanonicalMap({ a: 'b', b: 'a' })).toThrow(/cycle/);
+    expect(canonicalIds(['c', 'a', 'x'], { c: 'a' })).toEqual(['a', 'x']);
   });
 });

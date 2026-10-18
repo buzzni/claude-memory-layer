@@ -103,18 +103,30 @@ const dedupe = (ids: readonly string[]) => [...new Set(ids)];
  */
 export function proposeTwinGroups(lessons: ReadonlyArray<{ lessonId: string; name: string; trigger: string }>, threshold: number): string[][] {
   const tokens = lessons.map((lesson) => new Set(`${lesson.name} ${lesson.trigger}`.toLowerCase().match(/[a-z0-9가-힣]{2,}/g) ?? []));
-  const parent = lessons.map((_, i) => i);
-  const find = (i: number): number => (parent[i] === i ? i : (parent[i] = find(parent[i])));
-  for (let i = 0; i < lessons.length; i++) {
-    for (let j = i + 1; j < lessons.length; j++) {
-      const shared = [...tokens[i]].filter((token) => tokens[j].has(token)).length;
-      const union = tokens[i].size + tokens[j].size - shared;
-      if (union > 0 && shared / union >= threshold) parent[find(j)] = find(i);
-    }
+  const similarity = (i: number, j: number) => {
+    const shared = [...tokens[i]].filter((token) => tokens[j].has(token)).length;
+    const union = tokens[i].size + tokens[j].size - shared;
+    return union > 0 ? shared / union : 0;
+  };
+  const pairs: Array<[number, number, number]> = [];
+  for (let i = 0; i < lessons.length; i++) for (let j = i + 1; j < lessons.length; j++) {
+    const score = similarity(i, j);
+    if (score >= threshold) pairs.push([score, i, j]);
   }
-  const groups = new Map<number, string[]>();
-  lessons.forEach((lesson, i) => groups.set(find(i), [...(groups.get(find(i)) ?? []), lesson.lessonId]));
-  return [...groups.values()].filter((group) => group.length > 1).map((group) => [...group].sort()).sort((a, b) => a[0].localeCompare(b[0]));
+  // Complete linkage: clusters merge only when every cross pair is a twin, so
+  // A~B and B~C never pull an unrelated A and C together.
+  pairs.sort((a, b) => b[0] - a[0] || a[1] - b[1] || a[2] - b[2]);
+  const cluster = lessons.map((_, i) => [i]);
+  const owner = lessons.map((_, i) => i);
+  for (const [, i, j] of pairs) {
+    const a = owner[i]; const b = owner[j];
+    if (a === b || !cluster[a].every((x) => cluster[b].every((y) => similarity(x, y) >= threshold))) continue;
+    for (const y of cluster[b]) owner[y] = a;
+    cluster[a] = [...cluster[a], ...cluster[b]]; cluster[b] = [];
+  }
+  return cluster.filter((members) => members.length > 1)
+    .map((members) => members.map((i) => lessons[i].lessonId).sort())
+    .sort((a, b) => a[0].localeCompare(b[0]));
 }
 
 /** Every member of a group maps to the group's first id (sorted), so twins score as one lesson. */
@@ -127,10 +139,46 @@ export function twinCanonicalMap(groups: ReadonlyArray<readonly string[]>): Reco
   return map;
 }
 
-/** Applies an id map (twin groups, or old lesson → consolidated runbook) before scoring. */
+/** Follows chains (c → b → a) to their end; a cycle is a broken map, not a merge. */
+export function resolveCanonicalMap(map: Readonly<Record<string, string>>): Record<string, string> {
+  const resolved: Record<string, string> = {};
+  for (const start of Object.keys(map)) {
+    const seen = new Set([start]);
+    let current = map[start];
+    while (map[current] !== undefined) {
+      if (seen.has(current)) throw new Error(`canonical map has a cycle through ${current}`);
+      seen.add(current);
+      current = map[current];
+    }
+    if (current === start) throw new Error(`canonical map has a cycle through ${start}`);
+    resolved[start] = current;
+  }
+  return resolved;
+}
+
+/** The one id-mapping path: twins, or old lesson → consolidated runbook. */
+export function canonicalIds(ids: readonly string[], map: Readonly<Record<string, string>>): string[] {
+  return dedupe(ids.map((id) => map[id] ?? id));
+}
+
 export function canonicalizeItem<T extends ScoredItem>(item: T, map: Readonly<Record<string, string>>): T {
-  const to = (ids: readonly string[]) => dedupe(ids.map((id) => map[id] ?? id));
-  return { ...item, selected: to(item.selected), applies: to(item.applies), labeled: to(item.labeled) };
+  return { ...item, selected: canonicalIds(item.selected, map), applies: canonicalIds(item.applies, map), labeled: canonicalIds(item.labeled, map) };
+}
+
+/**
+ * Kinds of the applicable lessons, on canonical ids. Two lessons merged into
+ * one id must agree (an unlabeled one counts as first-turn); otherwise the
+ * label set is inconsistent and the result would depend on key order.
+ */
+export function mergeKinds(kinds: Readonly<Record<string, LessonKind>>, applies: readonly string[], map: Readonly<Record<string, string>>): Record<string, LessonKind> {
+  const merged: Record<string, LessonKind> = {};
+  for (const id of applies) {
+    const canonical = map[id] ?? id;
+    const kind = kinds[id] ?? 'first-turn';
+    if (merged[canonical] && merged[canonical] !== kind) throw new Error(`label kind conflict on ${canonical}: ${merged[canonical]} vs ${kind}`);
+    merged[canonical] = kind;
+  }
+  return merged;
 }
 
 export type LessonKind = 'first-turn' | 'event';
@@ -141,8 +189,7 @@ export type LessonKind = 'first-turn' | 'event';
  * A lesson without a kind label counts as first-turn.
  */
 export function forKind<T extends ScoredItem>(item: T, kinds: Readonly<Record<string, LessonKind>>, kind: LessonKind): T {
-  const other = new Set(item.applies.filter((id) => (kinds[id] ?? 'first-turn') !== kind));
-  const keep = (ids: readonly string[]) => ids.filter((id) => !other.has(id));
+  const keep = (ids: readonly string[]) => ids.filter((id) => (kinds[id] ?? 'first-turn') === kind);
   return { ...item, selected: keep(item.selected), applies: keep(item.applies), labeled: keep(item.labeled) };
 }
 
@@ -188,8 +235,8 @@ async function main(): Promise<void> {
   const store = arg('store'); const since = arg('since'); const until = arg('until'); const splitAt = arg('split-at');
   const labelsPath = arg('labels'); const out = arg('out'); const sheet = arg('emit-sheet'); const twinsOut = arg('emit-twins');
   const twinThreshold = Number(arg('twin-threshold') ?? 0.5);
-  const canonicalMap: Record<string, string> = arg('canonical-map')
-    ? (JSON.parse(readFileSync(arg('canonical-map')!, 'utf8')) as { map: Record<string, string> }).map : {};
+  const canonicalMap = resolveCanonicalMap(arg('canonical-map')
+    ? (JSON.parse(readFileSync(arg('canonical-map')!, 'utf8')) as { map: Record<string, string> }).map : {});
   const topK = Number(arg('topk') ?? 5); const hubShare = Number(arg('hub-share') ?? 0.15);
   if (!Number.isInteger(topK) || topK < 1 || !(hubShare > 0 && hubShare <= 1)) throw new Error('--topk must be a positive integer and --hub-share in (0, 1]');
   if (twinsOut && !(twinThreshold > 0 && twinThreshold <= 1)) throw new Error('--twin-threshold must be in (0, 1]');
@@ -204,12 +251,15 @@ async function main(): Promise<void> {
   const db = new Database(store, { readonly: true, fileMustExist: true });
   const projectHashes = (db.prepare('SELECT DISTINCT project_hash AS h FROM memory_lessons').all() as Array<{ h: string }>).map((row) => row.h);
   if (projectHashes.length !== 1) throw new Error(`expected one lesson project in the store, found ${projectHashes.length}`);
-  const lessons: MemoryLesson[] = [];
+  // Every lesson, including disabled ones: a consolidated (disabled) lesson's
+  // creation time and sources still decide its labels before it is mapped.
+  const allLessons: MemoryLesson[] = [];
   for (let offset = 0; ; offset += 500) {
     const page = await new LessonRepository(db as never).list({ projectHash: projectHashes[0], limit: 500, offset });
-    lessons.push(...page.filter((lesson) => lesson.recallEnabled));
+    allLessons.push(...page);
     if (page.length < 500) break;
   }
+  const lessons = allLessons.filter((lesson) => lesson.recallEnabled);
   if (twinsOut) {
     const groups = proposeTwinGroups(lessons, twinThreshold);
     const names = Object.fromEntries(lessons.filter((lesson) => groups.some((group) => group.includes(lesson.lessonId))).map((lesson) => [lesson.lessonId, lesson.name]));
@@ -219,7 +269,7 @@ async function main(): Promise<void> {
   }
   // Sessions a lesson came from: its source sessions plus the sessions of its source events.
   const sessionOfEvent = db.prepare('SELECT session_id AS s FROM events WHERE id = ?');
-  const sourceSessions = new Map(lessons.map((lesson) => [lesson.lessonId, new Set([
+  const sourceSessions = new Map(allLessons.map((lesson) => [lesson.lessonId, new Set([
     ...lesson.sourceSessionIds,
     ...lesson.sourceEventIds.map((id) => (sessionOfEvent.get(id) as { s?: string } | undefined)?.s).filter((s): s is string => Boolean(s))
   ])]));
@@ -261,8 +311,8 @@ async function main(): Promise<void> {
 
   if (!labelsPath) throw new Error('--labels is required with --out');
   const labelFile = JSON.parse(readFileSync(labelsPath, 'utf8')) as { version: number; labels: Record<string, { applies: string[]; judged: string[]; kinds?: Record<string, LessonKind> }> };
-  const canon = (ids: readonly string[]) => dedupe(ids.map((id) => canonicalMap[id] ?? id));
-  const created = new Map(lessons.map((lesson) => [lesson.lessonId, lesson.createdAt.toISOString()]));
+  const canon = (ids: readonly string[]) => canonicalIds(ids, canonicalMap);
+  const created = new Map(allLessons.map((lesson) => [lesson.lessonId, lesson.createdAt.toISOString()]));
   const labeledPrompts = prepared.prompts.filter((prompt) => labelFile.labels[prompt.key]);
   let futureLabelPairs = 0; let recentPairs = 0;
   const rowsBySplit: Record<'calibration' | 'heldout', Array<Record<string, unknown>>> = { calibration: [], heldout: [] };
@@ -276,23 +326,27 @@ async function main(): Promise<void> {
     });
     const pool = available(prompt);
     const ranked = await rankEmbedding(prompt, pool);
-    const kinds: Record<string, LessonKind> = {};
-    for (const [id, kind] of Object.entries(label.kinds ?? {})) kinds[canonicalMap[id] ?? id] ??= kind;
+    const kinds = mergeKinds(label.kinds ?? {}, applies, canonicalMap);
     rowsBySplit[prompt.timestamp < splitAt ? 'calibration' : 'heldout'].push({
       sessionId: prompt.sessionId, applies: canon(applies), labeled: canon(label.judged), kinds,
       lexical: canon(rankCuratedLessons(pool, prompt.text, 3).map((lesson) => lesson.lessonId)),
+      // Raw ids, so per-lesson filters (own session) run before twins collapse.
+      rankedRaw: ranked.slice(0, 40),
       ranked: canon(ranked).slice(0, 20)
     });
   }
 
-  type Row = { sessionId: string; applies: string[]; labeled: string[]; kinds: Record<string, LessonKind>; lexical: string[]; ranked: string[] };
+  type Row = { sessionId: string; applies: string[]; labeled: string[]; kinds: Record<string, LessonKind>; lexical: string[]; rankedRaw: string[]; ranked: string[] };
   const calibrationRows = rowsBySplit.calibration as Row[];
   const hubs = new Set(findHubLessons(calibrationRows.map((row) => row.ranked.slice(0, topK)), hubShare));
-  const reductions: Record<string, (row: Row, id: string) => boolean> = {
-    none: () => true,
-    excludeOwnSession: (row, id) => !sourceSessions.get(id)?.has(row.sessionId),
-    excludeHubs: (_row, id) => !hubs.has(id),
-    both: (row, id) => !sourceSessions.get(id)?.has(row.sessionId) && !hubs.has(id)
+  // Own-session exclusion reads a lesson's own sources, so it runs on raw ids;
+  // hubs were found on canonical lists, so that check runs after mapping.
+  const ownSession = (row: Row, rawId: string) => sourceSessions.get(rawId)?.has(row.sessionId) === true;
+  const reductions: Record<string, { raw: (row: Row, id: string) => boolean; canonical: (id: string) => boolean }> = {
+    none: { raw: () => true, canonical: () => true },
+    excludeOwnSession: { raw: (row, id) => !ownSession(row, id), canonical: () => true },
+    excludeHubs: { raw: () => true, canonical: (id) => !hubs.has(id) },
+    both: { raw: (row, id) => !ownSession(row, id), canonical: (id) => !hubs.has(id) }
   };
   const report: Record<string, unknown> = {
     spec: 'specs/host-lesson-matching-2026-10-18',
@@ -314,7 +368,7 @@ async function main(): Promise<void> {
       return { ...scored, promptHit: ratio(scored.promptHit), lessonPrecision: ratio(scored.lessonPrecision), lessonRecall: ratio(scored.lessonRecall), negativeInjection: ratio(scored.negativeInjection), anyWrong: ratio(scored.anyWrong) };
     };
     const reduction = Object.fromEntries(Object.entries(reductions).map(([name, keep]) => {
-      const candidates = rows.map((row) => row.ranked.filter((id) => keep(row, id)).slice(0, topK));
+      const candidates = rows.map((row) => canon(row.rankedRaw.filter((id) => keep.raw(row, id))).filter((id) => keep.canonical(id)).slice(0, topK));
       let positives = 0; let negatives = 0; let unlabeledCandidates = 0;
       rows.forEach((row, i) => {
         const labeled = new Set([...row.labeled, ...row.applies]);
