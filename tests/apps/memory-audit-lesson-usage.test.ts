@@ -239,16 +239,21 @@ describe('memory audit lesson usage', () => {
     listing({ status: 'formatted', evidence: follow(true, 1, 1) });   // never reached the model
     listing({ createdAt: BEFORE, evidence: follow(true, 1, 1) });     // outside the window
     listing({ trigger: 'user_prompt', evidence: follow(true, 1, 1) }); // not a session-start listing
+    // lesson-good is a runbook: another lesson was absorbed into it.
+    sqliteRun(db, `INSERT INTO memory_lessons (lesson_id, project_hash, name, trigger, steps_json, confidence, source_session_ids, source_event_ids, failure_modes_json, skill_candidate, recall_enabled, absorbed_into, created_at, updated_at)
+      VALUES ('absorbed-1', 'p', 'absorbed', 't', '["s"]', 0.5, '[]', '[]', '[]', 0, 0, 'lesson-good', ?, ?)`, [IN, IN]);
     sqliteClose(db);
 
     const report = buildMemoryAuditReport({ homeDir, allProjects: true, since: SINCE, until: UNTIL });
     expect(report.stores[0].lessonUsage?.sessionStartEngagement).toEqual({
       support: 'supported', timeBasis: 'memory_helpfulness.created_at',
-      emitted: 5, observed: 3, opened: 1, withCommandAnchors: 2, followedCommand: 1
+      emitted: 5, observed: 3, opened: 1, withCommandAnchors: 2, followedCommand: 1,
+      runbooks: { listings: 5, opened: 1, sessionsListed: 1, sessionsOpened: 1 }
     });
     const markdown = formatMemoryAuditMarkdown(report);
     expect(markdown).toContain('Session-start lesson listings');
     expect(markdown).toContain('| aaaaaaaa | 5 | 3 | 1 | 1 / 2 |');
+    expect(markdown).toContain('| aaaaaaaa | 1 | 1 | 5 | 1 |');
   });
 
   it('reports unsupported sections for a legacy store instead of failing or migrating it', () => {
@@ -269,6 +274,7 @@ describe('memory audit lesson usage', () => {
     expect(store.lessonUsage?.host).toMatchObject({ support: 'unsupported', deliveryLineage: 'unsupported' });
     expect(store.lessonUsage?.runtimeVersions).toBe('unsupported');
     expect(store.lessonQuality?.support).toBe('unsupported');
+    expect(store.lessonUsage?.sessionStartEngagement.runbooks).toBe('unsupported');
     expect(store.lessonAuditError).toBeNull();
     expect(snapshotTree(memoryRoot)).toEqual(before);
   });

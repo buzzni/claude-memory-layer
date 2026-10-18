@@ -730,6 +730,17 @@ function formatLessonUsageMarkdown(stores: MemoryAuditStoreReport[]): string[] {
     lines.push(`| ${store.storeHash} | ${engagement.emitted} | ${engagement.observed} | ${engagement.opened} | `
       + `${engagement.followedCommand} / ${engagement.withCommandAnchors} |`);
   }
+  lines.push('', 'Consolidated runbooks among those listings (a runbook is a lesson others were absorbed into):', '',
+    '| Store | Sessions that listed runbooks | Sessions that opened one | Runbook listings | Runbook listings opened |',
+    '|---|---:|---:|---:|---:|');
+  for (const store of stores) {
+    const runbooks = store.lessonUsage?.sessionStartEngagement.runbooks;
+    if (!runbooks || runbooks === 'unsupported') {
+      lines.push(`| ${store.storeHash} | ${store.lessonUsage ? 'unsupported' : sectionGap(store)} | | | |`);
+      continue;
+    }
+    lines.push(`| ${store.storeHash} | ${runbooks.sessionsListed} | ${runbooks.sessionsOpened} | ${runbooks.listings} | ${runbooks.opened} |`);
+  }
 
   lines.push('', '## Lesson quality (no lesson is judged wrong for missing evidence)', '',
     '`active` = recall_enabled only, not fully eligible (scope, permission and version gates are not evaluated).', '',
