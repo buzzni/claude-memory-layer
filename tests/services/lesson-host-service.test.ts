@@ -607,6 +607,40 @@ describe('lesson update proposals', () => {
     } finally { await cleanup(); }
   });
 
+  it('shows the reviewer the current lesson an update candidate replaces', async () => {
+    const { store, service, cleanup } = fixture();
+    await store.initialize();
+    try {
+      const original = await (await approved(service, candidate(await seedSource(store)), 'show-original')).approve();
+      const update = await approved(service, { ...candidate(await seedSource(store)), name: 'Renamed lesson', updatesLesson: { lessonId: original.lessonId, revision: original.lessonRevision } }, 'show-update');
+      const listed = await service.listCandidates({ version: 1, requestId: 'show-list', binding: 'reviewer' });
+      const row = listed.candidates.find((entry: { candidateId: string }) => entry.candidateId === update.queued.candidateId);
+      expect(row.updateTarget).toMatchObject({ available: true, lessonId: original.lessonId, currentRevision: 1, name: 'Verify focused changes', steps: ['Run focused tests', 'Run typecheck'], scope: 'this project focused service changes' });
+      const status = await service.reviewStatus({ version: 1, requestId: 'show-status', binding: 'reviewer', candidateId: update.queued.candidateId });
+      expect(status.candidate.updateTarget).toMatchObject({ available: true, currentRevision: 1 });
+
+      await service.setRecallEnabled({ version: 1, requestId: 'show-move', binding: 'reviewer', lessonId: original.lessonId, expectedRevision: 1, enabled: false, generation: 3 });
+      const moved = await service.reviewStatus({ version: 1, requestId: 'show-status-2', binding: 'reviewer', candidateId: update.queued.candidateId });
+      expect(moved.candidate.updateTarget).toMatchObject({ available: true, currentRevision: 2 });
+      const plain = listed.candidates.find((entry: { candidateId: string; updateTarget?: unknown }) => entry.candidateId !== update.queued.candidateId);
+      expect(plain).not.toHaveProperty('updateTarget');
+    } finally { await cleanup(); }
+  });
+
+  it('reports an unreadable update target as unavailable without its content', async () => {
+    const { store, service, cleanup } = fixture();
+    await store.initialize();
+    try {
+      const original = await (await approved(service, candidate(await seedSource(store)), 'hide-original')).approve();
+      const update = await approved(service, { ...candidate(await seedSource(store)), updatesLesson: { lessonId: original.lessonId, revision: original.lessonRevision } }, 'hide-update');
+      vi.stubEnv(CANONICAL_MEMORY_PERMISSION_MODE_ENV, 'registered');
+      const permissions = new MemoryAssetPermissionService(store.getDatabase());
+      await permissions.create({ projectHash: 'project-a', requesterActorId: 'owner-z', assetId: `lesson:${original.lessonId}`, assetType: 'lesson', title: 'owned elsewhere', sourceRefs: [`lesson:${original.lessonId}`] });
+      const status = await service.reviewStatus({ version: 1, requestId: 'hide-status', binding: 'reviewer', candidateId: update.queued.candidateId });
+      expect(status.candidate.updateTarget).toEqual({ available: false, lessonId: original.lessonId });
+    } finally { await cleanup(); }
+  });
+
   it('still requires an explicit update for a new proposal that reuses an existing name', async () => {
     const { store, service, cleanup } = fixture();
     await store.initialize();

@@ -349,14 +349,14 @@ export class LessonHostService {
     const request = BaseRequest.extend({ limit: z.number().int().min(1).max(100).default(100), offset: z.number().int().nonnegative().default(0) }).strict().parse(input); if (request.version !== 1) return { outcome: 'unsupported_version' as const };
     const binding = await this.readBinding(request.binding, 'lesson.manage'); this.expireCandidates(binding.projectHash);
     const rows = sqliteAll<CandidateRow>(this.options.db, `SELECT * FROM lesson_review_candidates WHERE project_hash = ? ORDER BY updated_at DESC LIMIT ? OFFSET ?`, [binding.projectHash, request.limit + 1, request.offset]);
-    return { outcome: 'ok' as const, candidates: rows.slice(0, request.limit).map(candidateFromRow), nextOffset: rows.length > request.limit ? request.offset + request.limit : null };
+    return { outcome: 'ok' as const, candidates: rows.slice(0, request.limit).map((row) => this.withUpdateTarget(binding, candidateFromRow(row))), nextOffset: rows.length > request.limit ? request.offset + request.limit : null };
   }
 
   async reviewStatus(input: unknown) {
     const request = BaseRequest.extend({ candidateId: Identifier }).strict().parse(input); if (request.version !== 1) return { outcome: 'unsupported_version' as const };
     const binding = await this.readBinding(request.binding, 'lesson.manage'); this.expireCandidates(binding.projectHash);
     const candidate = sqliteGet<CandidateRow>(this.options.db, `SELECT * FROM lesson_review_candidates WHERE candidate_id=? AND project_hash=?`, [request.candidateId, binding.projectHash]);
-    return candidate ? { outcome: 'found' as const, candidate: candidateFromRow(candidate) } : { outcome: 'not_found' as const };
+    return candidate ? { outcome: 'found' as const, candidate: this.withUpdateTarget(binding, candidateFromRow(candidate)) } : { outcome: 'not_found' as const };
   }
 
   async listLessons(input: unknown) {
@@ -393,6 +393,21 @@ export class LessonHostService {
   private async readBinding(token: unknown, capability: VerifiedLessonHostBinding['capabilities'][number]) { const binding = await this.options.verifyBinding(token); this.assertBinding(binding, capability); return binding; }
   private async writeBinding(token: unknown, generation: number, capability: VerifiedLessonHostBinding['capabilities'][number]) { const binding = await this.readBinding(token, capability); if (binding.generation !== generation) throw new Error('binding generation mismatch'); return binding; }
   private assertBinding(binding: VerifiedLessonHostBinding, capability: string) { if (!Identifier.safeParse(binding.projectHash).success || !Identifier.safeParse(binding.actorId).success || !binding.capabilities.includes(capability as never)) throw new Error('untrusted or unauthorized host binding'); }
+  /**
+   * An update candidate carries the lesson it would replace as it is now, so a
+   * reviewer compares current and proposed text regardless of list paging, and
+   * sees when the target moved past the revision the proposal was made against.
+   * A target this actor cannot read is reported unavailable, without content.
+   */
+  private withUpdateTarget<T extends { candidate: Candidate }>(binding: VerifiedLessonHostBinding, entry: T): T | (T & { updateTarget: Record<string, unknown> }) {
+    const target = entry.candidate.updatesLesson;
+    if (!target) return entry;
+    const lesson = new LessonRepository(this.options.db).get(target.lessonId);
+    if (!lesson || lesson.projectHash !== binding.projectHash || !this.canReadLesson(binding, target.lessonId)) {
+      return { ...entry, updateTarget: { available: false, lessonId: target.lessonId } };
+    }
+    return { ...entry, updateTarget: { available: true, lessonId: lesson.lessonId, currentRevision: lesson.revision, name: lesson.name, trigger: lesson.trigger, steps: lesson.steps, failureModes: lesson.failureModes, scope: lesson.scope ?? null, validation: lesson.validation, reconsiderWhen: lesson.reconsiderWhen ?? null, validVersions: lesson.validVersions, recallEnabled: lesson.recallEnabled } };
+  }
   private canWriteLesson(binding: VerifiedLessonHostBinding, lessonId: string): boolean { try { return new CanonicalMemoryAccessService(this.options.db).check({ projectHash: binding.projectHash, canonicalType: 'lesson', canonicalId: lessonId, requesterActorId: binding.actorId, permission: 'write' }).allowed; } catch { return false; } }
   private canReadLesson(binding: VerifiedLessonHostBinding, lessonId: string): boolean { try { return new CanonicalMemoryAccessService(this.options.db).check({ projectHash: binding.projectHash, canonicalType: 'lesson', canonicalId: lessonId, requesterActorId: binding.actorId, permission: 'read' }).allowed; } catch { return false; } }
   private assertSourceEvents(projectHash: string, ids: string[], sourceSessionIds?: string[]) { const rows = sqliteAll<{ id: string; session_id: string; metadata: string }>(this.options.db, `SELECT id, session_id, metadata FROM events WHERE id IN (${ids.map(() => '?').join(',')})`, ids); if (rows.length !== ids.length) throw new Error('source event refs are unavailable'); for (const row of rows) { const metadata = parseJson<Record<string, unknown>>(row.metadata, {}); if ((metadata.scope as { project?: { hash?: string } } | undefined)?.project?.hash !== projectHash) throw new Error('source event project mismatch'); } if (sourceSessionIds) { const expected = new Set(rows.map((row) => row.session_id)); if (sourceSessionIds.length !== expected.size || sourceSessionIds.some((id) => !expected.has(id))) throw new Error('source session refs do not match source events'); } }

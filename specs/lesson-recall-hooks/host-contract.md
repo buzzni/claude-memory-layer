@@ -124,6 +124,15 @@ target moved since. The audit entry records the full previous and new lesson
 `mem-lesson-get` returns the lesson `revision` and every field an update
 replaces, with up to 20 steps and failure modes and explicit truncation flags.
 
+`listCandidates` and `reviewStatus` add `updateTarget` to an update candidate:
+`{ available: true, lessonId, currentRevision, name, trigger, steps,
+failureModes, scope, validation, reconsiderWhen, validVersions, recallEnabled }`
+for the lesson as it is now, or `{ available: false, lessonId }` when it is gone
+or unreadable for this actor. A client shows current and proposed text side by
+side and does not offer approval when the target is unavailable or
+`currentRevision` differs from `updatesLesson.revision`: such a candidate can
+only be rejected and proposed again.
+
 When a host owns provider lesson injection it may set the launch-only
 environment marker `CLAUDE_MEMORY_LESSON_OWNER=host`. The native Claude
 `user-prompt-submit` and `session-start` hooks then skip only their curated lesson lanes; event-memory
