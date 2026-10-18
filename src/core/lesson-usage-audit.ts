@@ -16,6 +16,7 @@
 
 import { sqliteAll, sqliteGet, type SQLiteDatabase } from './sqlite-wrapper.js';
 import { deliveredSelectionTraceId } from './lesson-host-lineage.js';
+import { SESSION_START_RUNBOOK_INDEX_LABEL } from './lesson-follow-through.js';
 import {
   normalizeUserPrompt,
   PROMPT_CLASSIFIER_VERSION,
@@ -137,10 +138,11 @@ export interface SessionStartEngagementSummary {
   /** A later shell command contained one of those commands. */
   followedCommand: number;
   /**
-   * Listings of consolidated runbooks (lessons others were absorbed into),
-   * per listing and per session: the P1 runbook-index read rate.
+   * Listings from the host-mode runbook index, by the label recorded when they
+   * were listed (a later revert does not rewrite history): the P1 open rate.
+   * `sessionsObserved` is the denominator; sessions not evaluated yet are not unopened.
    */
-  runbooks: 'unsupported' | { listings: number; opened: number; sessionsListed: number; sessionsOpened: number };
+  runbooks: 'unsupported' | { listings: number; opened: number; sessionsListed: number; sessionsObserved: number; sessionsOpened: number };
 }
 
 export interface LessonUsageSummary {
@@ -490,22 +492,24 @@ function summarizeSessionStartEngagement(db: SQLiteDatabase, options: LessonUsag
   summary.opened = Number(row?.opened ?? 0);
   summary.withCommandAnchors = Number(row?.anchors ?? 0);
   summary.followedCommand = Number(row?.followed ?? 0);
-  if (columns.has('session_id') && tableColumns(db, 'memory_lessons').has('absorbed_into')) {
-    const runbooks = sqliteGet<{ listings: number; opened: number; sessions: number; sessions_opened: number }>(
+  if (columns.has('session_id') && columns.has('query_preview')) {
+    const runbooks = sqliteGet<{ listings: number; opened: number; sessions: number; sessions_observed: number; sessions_opened: number }>(
       db,
       `SELECT COUNT(*) AS listings,
               COALESCE(SUM(CASE WHEN ${field('opened')} = 1 THEN 1 ELSE 0 END), 0) AS opened,
               COUNT(DISTINCT session_id) AS sessions,
+              COUNT(DISTINCT CASE WHEN ${field('commandAnchors')} IS NOT NULL THEN session_id END) AS sessions_observed,
               COUNT(DISTINCT CASE WHEN ${field('opened')} = 1 THEN session_id END) AS sessions_opened
        FROM memory_helpfulness
        WHERE memory_kind = 'lesson' AND trigger_type = 'session_start' AND delivery_status = 'emitted'
-         AND event_id IN (SELECT absorbed_into FROM memory_lessons WHERE absorbed_into IS NOT NULL)${window.sql}`,
-      window.params
+         AND query_preview = ?${window.sql}`,
+      [SESSION_START_RUNBOOK_INDEX_LABEL, ...window.params]
     );
     summary.runbooks = {
       listings: Number(runbooks?.listings ?? 0),
       opened: Number(runbooks?.opened ?? 0),
       sessionsListed: Number(runbooks?.sessions ?? 0),
+      sessionsObserved: Number(runbooks?.sessions_observed ?? 0),
       sessionsOpened: Number(runbooks?.sessions_opened ?? 0)
     };
   }

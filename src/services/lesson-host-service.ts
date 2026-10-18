@@ -15,7 +15,8 @@ import { SQLiteEventStore } from '../core/sqlite-event-store.js';
 import { getProjectStoragePath, hashProjectPath, normalizeProjectPath } from '../core/registry/project-path.js';
 
 // Hosts must check this installed-artifact capability before suppressing native lessons.
-export const LESSON_HOST_CAPABILITIES = Object.freeze({ version: 1, nativeLessonOwnerMarker: true });
+// sessionStartRunbookIndex: under a host owner, SessionStart still lists consolidated runbooks.
+export const LESSON_HOST_CAPABILITIES = Object.freeze({ version: 1, nativeLessonOwnerMarker: true, sessionStartRunbookIndex: true });
 
 const Identifier = z.string().trim().min(1).max(240);
 const Hash = z.string().regex(/^[a-f0-9]{64}$/i, 'payloadHash must be a SHA-256 hex digest');

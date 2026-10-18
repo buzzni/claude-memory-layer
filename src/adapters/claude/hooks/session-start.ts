@@ -40,7 +40,7 @@ import type {
   SessionStartInput,
   SessionStartOutput
 } from '../../../core/types.js';
-import type { SessionStartLessonUsage } from '../../../core/lesson-follow-through.js';
+import { SESSION_START_RUNBOOK_INDEX_LABEL, type SessionStartLessonUsage } from '../../../core/lesson-follow-through.js';
 
 const CORE_MEMORY_BLOCK_LABELS: Record<CoreMemoryBlock['blockKey'], string> = {
   project: 'Project',
@@ -481,7 +481,7 @@ export async function main(options: SessionStartMainOptions = {}): Promise<strin
           const runbookIds = new Set(await memoryService.listProjectRunbookIds());
           injections = injections.filter((item) => runbookIds.has(item.value.lessonId));
         }
-        const indexLabel = lessonScope === 'runbooks' ? '[session-start] runbook index' : '[session-start] lesson index';
+        const indexLabel = lessonScope === 'runbooks' ? SESSION_START_RUNBOOK_INDEX_LABEL : '[session-start] lesson index';
         // Order only: a usage read that fails must not cost the index itself.
         let usage = new Map<string, SessionStartLessonUsage>();
         try {

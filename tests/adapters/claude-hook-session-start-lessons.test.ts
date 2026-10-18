@@ -100,10 +100,10 @@ afterEach(async () => {
   rmSync(home, { recursive: true, force: true });
 });
 
-async function sessionStartContext(): Promise<string> {
+async function sessionStartContext(deliveryClient?: string): Promise<string> {
   fixture.input = JSON.stringify({ cwd: '/repo/a', session_id: 'session-lessons', hook_event_name: 'SessionStart', source: 'startup' });
   const { main } = await import('../../src/adapters/claude/hooks/session-start.js');
-  const output = JSON.parse(await main({ persistPrompt: false, contextPresentation: 'reference' }));
+  const output = JSON.parse(await main({ persistPrompt: false, contextPresentation: 'reference', ...(deliveryClient ? { deliveryClient } : {}) }));
   return output.hookSpecificOutput.additionalContext ?? '';
 }
 
@@ -138,6 +138,18 @@ describe('SessionStart lesson index order', () => {
     fixture.service = createService(async () => new Map());
     fixture.service.listProjectRunbookIds.mockResolvedValue([]);
 
+    expect(await sessionStartContext()).not.toContain('## Project');
+  });
+
+  it('lists a runbook only if the actor may see it, and nothing with budget 0 or on the Codex path', async () => {
+    vi.stubEnv('CLAUDE_MEMORY_LESSON_OWNER', 'host');
+    fixture.service = createService(async () => new Map());
+    // 'z' is a runbook the canonical injection filter did not allow for this actor.
+    fixture.service.listProjectRunbookIds.mockResolvedValue(['c', 'z']);
+    expect(await listedLessons()).toEqual(['middle-lesson']);
+
+    expect(await sessionStartContext('codex-hook')).not.toContain('## Project');
+    vi.stubEnv('CLAUDE_MEMORY_SESSION_START_LESSON_BUDGET', '0');
     expect(await sessionStartContext()).not.toContain('## Project');
   });
 
