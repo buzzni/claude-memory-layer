@@ -99,7 +99,7 @@ installed artifact before choosing host ownership for a provider launch.
 Additional fields describe additional behaviour and are checked one by one,
 never by comparing the whole object.
 
-`lessonUpdates: true` (CML 2.4.13+) means a candidate payload may carry
+`lessonUpdates: true` (CML 2.4.14+) means a candidate payload may carry
 `updatesLesson: { lessonId, revision }`: the proposal revises that lesson
 instead of adding a new one. The payload schema is strict, so a host must not
 send the field to an installed artifact without this capability. Enqueue
@@ -116,7 +116,9 @@ Approving an update candidate requires `confirmUpdatesLesson: { lessonId,
 revision }` on the approve request, equal to the candidate's target; without it
 approval fails with `update_confirmation_required`, so a client that does not
 show updates cannot replace a lesson. Enqueue treats a target the actor cannot
-read as `lesson_not_found`; approval requires `write` on the target lesson
+read as `lesson_not_found`, and so does a lesson a runbook absorbed (switched
+off and pointing at it, see `lesson consolidate`): the runbook is what to
+revise, and `mem-lesson-get` names it as `absorbedInto`. Approval requires `write` on the target lesson
 (the same rule as `mem-lesson-save`) and otherwise fails with
 `permission_denied`. A replayed enqueue returns its first result even if the
 target moved since. The audit entry records the full previous and new lesson
@@ -128,7 +130,7 @@ replaces, with up to 20 steps and failure modes and explicit truncation flags.
 `{ available: true, lessonId, currentRevision, name, trigger, steps,
 failureModes, scope, validation, reconsiderWhen, validVersions, recallEnabled }`
 for the lesson as it is now, or `{ available: false, lessonId }` when it is gone
-or unreadable for this actor. A client shows current and proposed text side by
+or unreadable for this actor, or absorbed into a runbook. A client shows current and proposed text side by
 side and does not offer approval when the target is unavailable or
 `currentRevision` differs from `updatesLesson.revision`: such a candidate can
 only be rejected and proposed again.

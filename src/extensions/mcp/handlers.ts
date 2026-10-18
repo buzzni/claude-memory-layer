@@ -1202,6 +1202,8 @@ function formatLesson(lesson: Omit<MemoryLesson, 'validation' | 'validVersions' 
     reconsiderWhen: lesson.reconsiderWhen === undefined ? null : sanitizeOperationString(lesson.reconsiderWhen, 500),
     validVersions: capped(lesson.validVersions ?? [], 120),
     recallEnabled: lesson.recallEnabled ?? true,
+    // Set when a runbook absorbed this lesson: revise the runbook, not this one.
+    absorbedInto: lesson.absorbedInto === undefined ? null : sanitizeOperationString(lesson.absorbedInto, 120),
     sourceEventIds: lesson.sourceEventIds.slice(0, 10).map((id) => sanitizeOperationString(id, 120)),
     sourceSessionIds: lesson.sourceSessionIds.slice(0, 10).map((id) => sanitizeOperationString(id, 120)),
     createdAt: isoDate(lesson.createdAt),

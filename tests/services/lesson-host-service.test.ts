@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import * as hostContract from '../../src/services/lesson-host-service.js';
 import { createLessonHostService, hashLessonCandidatePayload } from '../../src/services/lesson-host-service.js';
+import { applyRunbookConsolidation } from '../../src/services/lesson-consolidation-service.js';
 import { SQLiteEventStore } from '../../src/core/sqlite-event-store.js';
 import { LessonRepository } from '../../src/core/operations/lesson-repository.js';
 import { MemoryQueryService } from '../../src/core/engine/memory-query-service.js';
@@ -624,6 +625,25 @@ describe('lesson update proposals', () => {
       expect(moved.candidate.updateTarget).toMatchObject({ available: true, currentRevision: 2 });
       const plain = listed.candidates.find((entry: { candidateId: string; updateTarget?: unknown }) => entry.candidateId !== update.queued.candidateId);
       expect(plain).not.toHaveProperty('updateTarget');
+    } finally { await cleanup(); }
+  });
+
+  it('treats a lesson a runbook absorbed as no update target: unavailable to review, refused to queue', async () => {
+    const { store, service, cleanup } = fixture();
+    await store.initialize();
+    try {
+      const original = await (await approved(service, candidate(await seedSource(store)), 'absorbed-original')).approve();
+      const queuedBefore = await approved(service, { ...candidate(await seedSource(store)), updatesLesson: { lessonId: original.lessonId, revision: original.lessonRevision } }, 'absorbed-update');
+      applyRunbookConsolidation(store.getDatabase(), 'project-a', { runbooks: [{
+        lessonId: 'rb-1', name: 'focused-change-runbook', trigger: 'when changing a focused service', steps: ['run focused tests'],
+        validation: ['focused test passed'], scope: 'this project', reconsiderWhen: 'the test command changes',
+        absorbs: [{ lessonId: original.lessonId, revision: original.lessonRevision }]
+      }] }, 'cml-cli');
+      const status = await service.reviewStatus({ version: 1, requestId: 'absorbed-status', binding: 'reviewer', candidateId: queuedBefore.queued.candidateId });
+      expect(status.candidate.updateTarget).toEqual({ available: false, lessonId: original.lessonId });
+      const payload = { ...candidate(await seedSource(store)), updatesLesson: { lessonId: original.lessonId, revision: original.lessonRevision + 1 } };
+      await expect(service.enqueueCandidate({ version: 1, requestId: 'absorbed-enqueue', binding: 'reviewer', evidenceKey: 'absorbed-evidence', payloadHash: hashLessonCandidatePayload(payload), generation: 3, candidate: payload }))
+        .rejects.toMatchObject({ code: 'lesson_not_found' });
     } finally { await cleanup(); }
   });
 

@@ -403,7 +403,8 @@ export class LessonHostService {
     const target = entry.candidate.updatesLesson;
     if (!target) return entry;
     const lesson = new LessonRepository(this.options.db).get(target.lessonId);
-    if (!lesson || lesson.projectHash !== binding.projectHash || !this.canReadLesson(binding, target.lessonId)) {
+    // A lesson a runbook absorbed is switched off for good; its runbook is what to update.
+    if (!lesson || lesson.projectHash !== binding.projectHash || lesson.absorbedInto || !this.canReadLesson(binding, target.lessonId)) {
       return { ...entry, updateTarget: { available: false, lessonId: target.lessonId } };
     }
     return { ...entry, updateTarget: { available: true, lessonId: lesson.lessonId, currentRevision: lesson.revision, name: lesson.name, trigger: lesson.trigger, steps: lesson.steps, failureModes: lesson.failureModes, scope: lesson.scope ?? null, validation: lesson.validation, reconsiderWhen: lesson.reconsiderWhen ?? null, validVersions: lesson.validVersions, recallEnabled: lesson.recallEnabled } };
@@ -423,8 +424,9 @@ export class LessonHostService {
    * and still at the revision the proposer read.
    */
   private requireUpdateTarget(binding: VerifiedLessonHostBinding, target: { lessonId: string; revision: number }) {
-    const row = sqliteGet<{ lesson_id: string; revision: number }>(this.options.db, `SELECT lesson_id, revision FROM memory_lessons WHERE lesson_id = ? AND project_hash = ?`, [target.lessonId, binding.projectHash]);
+    const row = sqliteGet<{ lesson_id: string; revision: number; absorbed_into: string | null }>(this.options.db, `SELECT lesson_id, revision, absorbed_into FROM memory_lessons WHERE lesson_id = ? AND project_hash = ?`, [target.lessonId, binding.projectHash]);
     if (!row || !this.canReadLesson(binding, target.lessonId)) throw codedError('updated lesson is not in this project', 'lesson_not_found');
+    if (row.absorbed_into) throw codedError('updated lesson was absorbed into a runbook; update the runbook instead', 'lesson_not_found');
     if (row.revision !== target.revision) throw codedError('updated lesson changed since the proposal read it', 'lesson_revision_conflict');
     return row;
   }

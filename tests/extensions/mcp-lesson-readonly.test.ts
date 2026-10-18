@@ -60,8 +60,16 @@ describe('MCP lesson body lookup for an update proposal', () => {
     expect(body.lesson).toMatchObject({
       revision: 2, steps, scope: 'desktop release', validation: ['npm run check'],
       reconsiderWhen: 'the release script moves', validVersions: ['2.4.x'], failureModes: ['skipping the check'],
-      stepsTruncated: false
+      stepsTruncated: false, absorbedInto: null
     });
+  });
+
+  it('names the runbook that absorbed a lesson, so an update goes to the runbook', async () => {
+    const f = await fixture();
+    f.store.getDatabase().prepare(`UPDATE memory_lessons SET recall_enabled = 0, absorbed_into = 'runbook-1' WHERE lesson_id = ?`).run(f.lesson.lessonId);
+    const body = await read(f.projectPath, { lessonId: f.lesson.lessonId });
+    await f.store.close();
+    expect(body.lesson).toMatchObject({ recallEnabled: false, absorbedInto: 'runbook-1' });
   });
 });
 
