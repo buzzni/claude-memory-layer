@@ -13,7 +13,7 @@ import { z } from 'zod';
 
 import { lessonToAuditJson, LessonRepository } from '../core/operations/lesson-repository.js';
 import { writeGovernanceAuditEntrySync } from '../core/operations/governance-audit.js';
-import { sqliteAll, sqliteRun, sqliteTransaction, type SQLiteDatabase } from '../core/sqlite-wrapper.js';
+import { sqliteRun, sqliteTransaction, type SQLiteDatabase } from '../core/sqlite-wrapper.js';
 import type { MemoryLesson } from '../core/types.js';
 import { assertCandidateSafe, CandidatePayload } from './lesson-host-service.js';
 
@@ -147,21 +147,11 @@ export function revertRunbookConsolidation(db: SQLiteDatabase, projectHash: stri
 }
 
 export function listAbsorbedLessons(db: SQLiteDatabase, projectHash: string, runbookId: string): MemoryLesson[] {
-  if (!hasAbsorptionColumn(db)) return [];
-  const repository = new LessonRepository(db);
-  return sqliteAll<{ lesson_id: string }>(db, `SELECT lesson_id FROM memory_lessons WHERE project_hash = ? AND absorbed_into = ? ORDER BY lesson_id`, [projectHash, runbookId])
-    .map((row) => repository.get(row.lesson_id)!);
+  return new LessonRepository(db).listAbsorbedInto(projectHash, runbookId);
 }
 
-/** Lessons that at least one absorbed lesson points at. */
 export function listRunbookIds(db: SQLiteDatabase, projectHash: string): string[] {
-  if (!hasAbsorptionColumn(db)) return [];
-  return sqliteAll<{ id: string }>(db, `SELECT DISTINCT absorbed_into AS id FROM memory_lessons WHERE project_hash = ? AND absorbed_into IS NOT NULL ORDER BY id`, [projectHash]).map((row) => row.id);
-}
-
-/** A store opened read-only before its migration has no absorption links yet. */
-function hasAbsorptionColumn(db: SQLiteDatabase): boolean {
-  return sqliteAll<{ name: string }>(db, `PRAGMA table_info(memory_lessons)`).some((column) => column.name === 'absorbed_into');
+  return new LessonRepository(db).listRunbookIds(projectHash);
 }
 
 function runbookPayload(draft: RunbookDraft, absorbed: readonly MemoryLesson[]) {

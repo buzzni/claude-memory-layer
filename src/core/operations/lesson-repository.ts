@@ -266,6 +266,20 @@ export class LessonRepository {
     return result.changes === 1 ? this.get(input.lessonId) : null;
   }
 
+  /** Lessons a runbook absorbed (switched off, pointing at it). */
+  listAbsorbedInto(projectHash: string, runbookId: string): MemoryLesson[] {
+    if (!this.hasAbsorptionColumn()) return [];
+    return sqliteAll<MemoryLessonRow>(this.db, `SELECT * FROM memory_lessons WHERE project_hash = ? AND absorbed_into = ? ORDER BY lesson_id`, [projectHashToStorage(projectHash), runbookId])
+      .map(rowToLesson);
+  }
+
+  /** Lessons that at least one absorbed lesson points at. */
+  listRunbookIds(projectHash: string): string[] {
+    if (!this.hasAbsorptionColumn()) return [];
+    return sqliteAll<{ id: string }>(this.db, `SELECT DISTINCT absorbed_into AS id FROM memory_lessons WHERE project_hash = ? AND absorbed_into IS NOT NULL ORDER BY id`, [projectHashToStorage(projectHash)])
+      .map((row) => row.id);
+  }
+
   getByProjectAndName(projectHash: string | undefined, name: string): MemoryLesson | null {
     const row = sqliteGet<MemoryLessonRow>(
       this.db,
@@ -273,6 +287,11 @@ export class LessonRepository {
       [projectHashToStorage(projectHash), name]
     );
     return row ? rowToLesson(row) : null;
+  }
+
+  /** A store opened read-only before its migration has no absorption links yet. */
+  private hasAbsorptionColumn(): boolean {
+    return sqliteAll<{ name: string }>(this.db, `PRAGMA table_info(memory_lessons)`).some((column) => column.name === 'absorbed_into');
   }
 
   private require(lessonId: string): MemoryLesson {
