@@ -9,8 +9,10 @@
  *   tsx scripts/evaluate-host-lesson-matching.ts --store <events.sqlite> \
  *     --labels <labels.json> --since <iso> --until <iso> --split-at <iso> --out <report.json>
  *   ... --emit-sheet <sheet.json> --sample <n> [--seed <n>]   # candidates to label
+ *   tsx scripts/evaluate-host-lesson-matching.ts --store <events.sqlite> --emit-twins <twins.json> [--twin-threshold 0.5]
+ *   ... --canonical-map <map.json>   # {"map":{"<lessonId>":"<canonicalId>"}}: twins, or old lesson → runbook
  *
- * Label file: {"version":1,"labels":{"<promptKey>":{"applies":[lessonId],"judged":[lessonId]}}}
+ * Label file: {"version":1,"labels":{"<promptKey>":{"applies":[lessonId],"judged":[lessonId],"kinds"?:{"<lessonId>":"first-turn"|"event"}}}}
  * `judged` is every lesson the labeler saw for that prompt; a selection outside
  * judged ∪ applies is counted as unlabeled, never as wrong.
  */
@@ -91,6 +93,59 @@ export function scoreSelections(items: ReadonlyArray<{ selected: readonly string
   };
 }
 
+type ScoredItem = { selected: readonly string[]; applies: readonly string[]; labeled: readonly string[] };
+const dedupe = (ids: readonly string[]) => [...new Set(ids)];
+
+/**
+ * Near-duplicate lessons ("twins") by token overlap of name and trigger. The
+ * catalog holds several copies of one rule; scoring them as different lessons
+ * counts a correct twin as a wrong answer. Groups are a proposal for review.
+ */
+export function proposeTwinGroups(lessons: ReadonlyArray<{ lessonId: string; name: string; trigger: string }>, threshold: number): string[][] {
+  const tokens = lessons.map((lesson) => new Set(`${lesson.name} ${lesson.trigger}`.toLowerCase().match(/[a-z0-9가-힣]{2,}/g) ?? []));
+  const parent = lessons.map((_, i) => i);
+  const find = (i: number): number => (parent[i] === i ? i : (parent[i] = find(parent[i])));
+  for (let i = 0; i < lessons.length; i++) {
+    for (let j = i + 1; j < lessons.length; j++) {
+      const shared = [...tokens[i]].filter((token) => tokens[j].has(token)).length;
+      const union = tokens[i].size + tokens[j].size - shared;
+      if (union > 0 && shared / union >= threshold) parent[find(j)] = find(i);
+    }
+  }
+  const groups = new Map<number, string[]>();
+  lessons.forEach((lesson, i) => groups.set(find(i), [...(groups.get(find(i)) ?? []), lesson.lessonId]));
+  return [...groups.values()].filter((group) => group.length > 1).map((group) => [...group].sort()).sort((a, b) => a[0].localeCompare(b[0]));
+}
+
+/** Every member of a group maps to the group's first id (sorted), so twins score as one lesson. */
+export function twinCanonicalMap(groups: ReadonlyArray<readonly string[]>): Record<string, string> {
+  const map: Record<string, string> = {};
+  for (const group of groups) {
+    const [canonical, ...rest] = [...group].sort();
+    for (const id of rest) map[id] = canonical;
+  }
+  return map;
+}
+
+/** Applies an id map (twin groups, or old lesson → consolidated runbook) before scoring. */
+export function canonicalizeItem<T extends ScoredItem>(item: T, map: Readonly<Record<string, string>>): T {
+  const to = (ids: readonly string[]) => dedupe(ids.map((id) => map[id] ?? id));
+  return { ...item, selected: to(item.selected), applies: to(item.applies), labeled: to(item.labeled) };
+}
+
+export type LessonKind = 'first-turn' | 'event';
+/**
+ * Scores one kind of applicable lesson. An event-type lesson (its trigger is a
+ * failure that shows up mid-task) cannot be judged from a first message, so in
+ * the first-turn view it is neither expected nor counted wrong, and vice versa.
+ * A lesson without a kind label counts as first-turn.
+ */
+export function forKind<T extends ScoredItem>(item: T, kinds: Readonly<Record<string, LessonKind>>, kind: LessonKind): T {
+  const other = new Set(item.applies.filter((id) => (kinds[id] ?? 'first-turn') !== kind));
+  const keep = (ids: readonly string[]) => ids.filter((id) => !other.has(id));
+  return { ...item, selected: keep(item.selected), applies: keep(item.applies), labeled: keep(item.labeled) };
+}
+
 /** Lessons that appear in the candidate list of at least `share` of prompts. */
 export function findHubLessons(candidateLists: ReadonlyArray<readonly string[]>, share: number): string[] {
   const counts = new Map<string, number>();
@@ -131,10 +186,14 @@ const ratio = (value: Ratio) => ({ ...value, rate: value.n ? +(value.k / value.n
 
 async function main(): Promise<void> {
   const store = arg('store'); const since = arg('since'); const until = arg('until'); const splitAt = arg('split-at');
-  const labelsPath = arg('labels'); const out = arg('out'); const sheet = arg('emit-sheet');
+  const labelsPath = arg('labels'); const out = arg('out'); const sheet = arg('emit-sheet'); const twinsOut = arg('emit-twins');
+  const twinThreshold = Number(arg('twin-threshold') ?? 0.5);
+  const canonicalMap: Record<string, string> = arg('canonical-map')
+    ? (JSON.parse(readFileSync(arg('canonical-map')!, 'utf8')) as { map: Record<string, string> }).map : {};
   const topK = Number(arg('topk') ?? 5); const hubShare = Number(arg('hub-share') ?? 0.15);
   if (!Number.isInteger(topK) || topK < 1 || !(hubShare > 0 && hubShare <= 1)) throw new Error('--topk must be a positive integer and --hub-share in (0, 1]');
-  if (!store || !since || !until || !splitAt || (!out && !sheet)) {
+  if (twinsOut && !(twinThreshold > 0 && twinThreshold <= 1)) throw new Error('--twin-threshold must be in (0, 1]');
+  if (!store || (!twinsOut && (!since || !until || !splitAt || (!out && !sheet)))) {
     throw new Error('usage: tsx scripts/evaluate-host-lesson-matching.ts --store <events.sqlite> --since <iso> --until <iso> --split-at <iso> (--labels <labels.json> --out <report.json> | --emit-sheet <sheet.json> --sample <n> [--seed <n>])');
   }
   const { default: Database } = await import('better-sqlite3');
@@ -150,6 +209,13 @@ async function main(): Promise<void> {
     const page = await new LessonRepository(db as never).list({ projectHash: projectHashes[0], limit: 500, offset });
     lessons.push(...page.filter((lesson) => lesson.recallEnabled));
     if (page.length < 500) break;
+  }
+  if (twinsOut) {
+    const groups = proposeTwinGroups(lessons, twinThreshold);
+    const names = Object.fromEntries(lessons.filter((lesson) => groups.some((group) => group.includes(lesson.lessonId))).map((lesson) => [lesson.lessonId, lesson.name]));
+    writeFileSync(twinsOut, `${JSON.stringify({ threshold: twinThreshold, groups, names, map: twinCanonicalMap(groups) }, null, 1)}\n`);
+    process.stdout.write(`twin groups: ${groups.length} covering ${Object.keys(names).length} lessons (review before use)\n`);
+    if (!out && !sheet) return;
   }
   // Sessions a lesson came from: its source sessions plus the sessions of its source events.
   const sessionOfEvent = db.prepare('SELECT session_id AS s FROM events WHERE id = ?');
@@ -194,7 +260,8 @@ async function main(): Promise<void> {
   }
 
   if (!labelsPath) throw new Error('--labels is required with --out');
-  const labelFile = JSON.parse(readFileSync(labelsPath, 'utf8')) as { version: number; labels: Record<string, { applies: string[]; judged: string[] }> };
+  const labelFile = JSON.parse(readFileSync(labelsPath, 'utf8')) as { version: number; labels: Record<string, { applies: string[]; judged: string[]; kinds?: Record<string, LessonKind> }> };
+  const canon = (ids: readonly string[]) => dedupe(ids.map((id) => canonicalMap[id] ?? id));
   const created = new Map(lessons.map((lesson) => [lesson.lessonId, lesson.createdAt.toISOString()]));
   const labeledPrompts = prepared.prompts.filter((prompt) => labelFile.labels[prompt.key]);
   let futureLabelPairs = 0; let recentPairs = 0;
@@ -209,14 +276,16 @@ async function main(): Promise<void> {
     });
     const pool = available(prompt);
     const ranked = await rankEmbedding(prompt, pool);
+    const kinds: Record<string, LessonKind> = {};
+    for (const [id, kind] of Object.entries(label.kinds ?? {})) kinds[canonicalMap[id] ?? id] ??= kind;
     rowsBySplit[prompt.timestamp < splitAt ? 'calibration' : 'heldout'].push({
-      sessionId: prompt.sessionId, applies, labeled: label.judged,
-      lexical: rankCuratedLessons(pool, prompt.text, 3).map((lesson) => lesson.lessonId),
-      ranked: ranked.slice(0, 20)
+      sessionId: prompt.sessionId, applies: canon(applies), labeled: canon(label.judged), kinds,
+      lexical: canon(rankCuratedLessons(pool, prompt.text, 3).map((lesson) => lesson.lessonId)),
+      ranked: canon(ranked).slice(0, 20)
     });
   }
 
-  type Row = { sessionId: string; applies: string[]; labeled: string[]; lexical: string[]; ranked: string[] };
+  type Row = { sessionId: string; applies: string[]; labeled: string[]; kinds: Record<string, LessonKind>; lexical: string[]; ranked: string[] };
   const calibrationRows = rowsBySplit.calibration as Row[];
   const hubs = new Set(findHubLessons(calibrationRows.map((row) => row.ranked.slice(0, topK)), hubShare));
   const reductions: Record<string, (row: Row, id: string) => boolean> = {
@@ -231,13 +300,17 @@ async function main(): Promise<void> {
     lessons: lessons.length,
     prompts: { prepared: prepared.prompts.length, labeled: labeledPrompts.length, droppedAutomated: prepared.droppedAutomated, droppedDuplicates: prepared.droppedDuplicates, leftoverLessonBlockMarkers: prepared.leftoverMarkers },
     labels: { futureLessonPairsExcluded: futureLabelPairs, pairsWithin24hOfLessonCreation: recentPairs },
+    canonicalMap: { entries: Object.keys(canonicalMap).length },
     candidateReduction: { topK, hubShare, hubsFromCalibration: hubs.size },
     splits: {}
   };
   for (const split of ['calibration', 'heldout'] as const) {
     const rows = rowsBySplit[split] as Row[];
-    const score = (pick: (row: Row) => string[]) => {
-      const scored = scoreSelections(rows.map((row) => ({ selected: pick(row), applies: row.applies, labeled: row.labeled })));
+    const score = (pick: (row: Row) => string[], kind?: LessonKind) => {
+      const scored = scoreSelections(rows.map((row) => {
+        const item = { selected: pick(row), applies: row.applies, labeled: row.labeled };
+        return kind ? forKind(item, row.kinds, kind) : item;
+      }));
       return { ...scored, promptHit: ratio(scored.promptHit), lessonPrecision: ratio(scored.lessonPrecision), lessonRecall: ratio(scored.lessonRecall), negativeInjection: ratio(scored.negativeInjection), anyWrong: ratio(scored.anyWrong) };
     };
     const reduction = Object.fromEntries(Object.entries(reductions).map(([name, keep]) => {
@@ -262,7 +335,15 @@ async function main(): Promise<void> {
       currentLexical: score((row) => row.lexical),
       embeddingTop1: score((row) => row.ranked.slice(0, 1)),
       embeddingTop3: score((row) => row.ranked.slice(0, 3)),
-      reduction
+      reduction,
+      // Present when labels mark kinds: an event-type lesson cannot be judged from a first message.
+      ...(rows.some((row) => Object.keys(row.kinds).length > 0) ? {
+        byKind: Object.fromEntries((['first-turn', 'event'] as const).map((kind) => [kind, {
+          currentLexical: score((row) => row.lexical, kind),
+          embeddingTop3: score((row) => row.ranked.slice(0, 3), kind),
+          embeddingTop5: score((row) => row.ranked.slice(0, 5), kind),
+        }]))
+      } : {})
     };
   }
   writeFileSync(out!, `${JSON.stringify(report, null, 2)}\n`);

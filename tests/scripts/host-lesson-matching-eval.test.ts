@@ -2,7 +2,11 @@ import { describe, expect, it } from 'vitest';
 
 import {
   achievablePrecision,
+  canonicalizeItem,
   findHubLessons,
+  forKind,
+  proposeTwinGroups,
+  twinCanonicalMap,
   preparePrompts,
   promptKey,
   scoreSelections,
@@ -76,5 +80,37 @@ describe('wilson', () => {
     expect(low).toBeCloseTo(0.578, 2);
     expect(high).toBeCloseTo(0.957, 2);
     expect(wilson(0, 0)).toBeNull();
+  });
+});
+
+// specs/host-lesson-matching-2026-10-18 P0 label cleanup.
+describe('twin groups and canonical ids', () => {
+  const lessons = [
+    { lessonId: 'a', name: 'gh-api-slurp-conflicts-with-jq', trigger: 'gh api --slurp with --jq fails' },
+    { lessonId: 'b', name: 'gh-api-slurp-conflicts-with-jq-flag', trigger: 'gh api --slurp with --jq fails' },
+    { lessonId: 'c', name: 'windows-installer-stalls', trigger: 'npm install hangs on windows' },
+  ];
+
+  it('groups near-duplicate lessons by name and trigger overlap', () => {
+    expect(proposeTwinGroups(lessons, 0.6)).toEqual([['a', 'b']]);
+    expect(proposeTwinGroups(lessons, 0.99)).toEqual([]);
+  });
+
+  it('maps every member of a group to its first id', () => {
+    expect(twinCanonicalMap([['b', 'a'], ['d', 'c']])).toEqual({ b: 'a', d: 'c' });
+  });
+
+  it('scores twins as one lesson once ids are canonical', () => {
+    const item = { selected: ['b'], applies: ['a'], labeled: ['a', 'b', 'x'] };
+    expect(canonicalizeItem(item, { b: 'a' })).toEqual({ selected: ['a'], applies: ['a'], labeled: ['a', 'x'] });
+  });
+});
+
+describe('forKind', () => {
+  const kinds = { a: 'first-turn', e: 'event' } as const;
+  it('keeps only applicable lessons of the kind and neither credits nor blames the other kind', () => {
+    const item = { selected: ['a', 'e', 'x'], applies: ['a', 'e'], labeled: ['a', 'e', 'x'] };
+    expect(forKind(item, kinds, 'first-turn')).toEqual({ selected: ['a', 'x'], applies: ['a'], labeled: ['a', 'x'] });
+    expect(forKind(item, kinds, 'event')).toEqual({ selected: ['e', 'x'], applies: ['e'], labeled: ['e', 'x'] });
   });
 });
