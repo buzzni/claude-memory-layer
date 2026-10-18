@@ -194,6 +194,7 @@ export interface CatalogOverlay {
  * inherits their sources, so own-session exclusion still applies to it.
  */
 export function applyCatalogOverlay(catalog: readonly MemoryLesson[], overlay: CatalogOverlay): { lessons: MemoryLesson[]; absorbedBy: Record<string, string> } {
+  // Every id is reserved, disabled ones included: their labels and creation times stay in use.
   const byId = new Map(catalog.map((lesson) => [lesson.lessonId, lesson]));
   const absorbedBy: Record<string, string> = {};
   const runbooks: MemoryLesson[] = [];
@@ -203,6 +204,7 @@ export function applyCatalogOverlay(catalog: readonly MemoryLesson[], overlay: C
     const absorbed = runbook.absorbs.map((id) => {
       const lesson = byId.get(id);
       if (!lesson) throw new Error(`runbook ${runbook.lessonId} absorbs unknown lesson ${id}`);
+      if (!lesson.recallEnabled) throw new Error(`runbook ${runbook.lessonId} absorbs disabled lesson ${id}`);
       if (absorbedBy[id]) throw new Error(`lesson ${id} is absorbed by more than one runbook`);
       absorbedBy[id] = runbook.lessonId;
       return lesson;
@@ -217,22 +219,30 @@ export function applyCatalogOverlay(catalog: readonly MemoryLesson[], overlay: C
       skillCandidate: false, sourceClass: 'curated', revision: 1, recallEnabled: true, createdAt, updatedAt: createdAt
     });
   }
-  return { lessons: [...catalog.filter((lesson) => !absorbedBy[lesson.lessonId]), ...runbooks], absorbedBy };
+  return { lessons: [...catalog.filter((lesson) => lesson.recallEnabled && !absorbedBy[lesson.lessonId]), ...runbooks], absorbedBy };
 }
 
 /**
- * Twin map then runbook map. A twin absorbed without its canonical twin, or
- * into a different runbook, would score one rule as two: that is a broken overlay.
+ * Twin map then runbook map. A twin group must be absorbed whole into one
+ * runbook: a twin left in the pool would score as the runbook it never was,
+ * and twins split across runbooks would score one rule as two.
  */
 export function combineMaps(twins: Readonly<Record<string, string>>, absorbedBy: Readonly<Record<string, string>>): Record<string, string> {
-  const map: Record<string, string> = { ...twins };
-  for (const [id, runbook] of Object.entries(absorbedBy)) {
-    if (twins[id] !== undefined && absorbedBy[twins[id]] !== runbook) {
-      throw new Error(`lesson ${id} is absorbed apart from its twin ${twins[id]}; absorb the whole twin group into one runbook`);
+  for (const [member, canonical] of Object.entries(twins)) {
+    if ((absorbedBy[member] !== undefined || absorbedBy[canonical] !== undefined) && absorbedBy[member] !== absorbedBy[canonical]) {
+      throw new Error(`twins ${member} and ${canonical} are not absorbed into the same runbook; absorb the whole twin group`);
     }
-    map[id] = runbook;
   }
-  return resolveCanonicalMap(map);
+  return resolveCanonicalMap({ ...twins, ...absorbedBy });
+}
+
+/**
+ * A judgment on an absorbed lesson says nothing about its runbook, which also
+ * holds the other lessons' rules; only an applicable absorbed lesson carries
+ * over (through applies). A runbook is otherwise judged directly.
+ */
+export function judgedAfterOverlay(judged: readonly string[], absorbedBy: Readonly<Record<string, string>>): string[] {
+  return judged.filter((id) => absorbedBy[id] === undefined);
 }
 
 /**
@@ -249,13 +259,12 @@ export function absorbKinds(kinds: Readonly<Record<string, LessonKind>>, absorbe
 }
 
 /**
- * Candidates a replay can score that no label covers (a changed catalog, such
- * as a runbook overlay, surfaces new ones). `depth` reaches past top-k because
- * the candidate reductions drop ids and pull later ranks forward.
+ * Candidates the report scores that no label covers (a changed catalog, such
+ * as a runbook overlay, surfaces new ones): every selection of every strategy.
  */
-export function unlabeledCandidates(row: { ranked: readonly string[]; lexical: readonly string[]; labeled: readonly string[]; applies: readonly string[] }, depth: number): string[] {
+export function unlabeledCandidates(selections: ReadonlyArray<readonly string[]>, row: { labeled: readonly string[]; applies: readonly string[] }): string[] {
   const known = new Set([...row.labeled, ...row.applies]);
-  return dedupe([...row.ranked.slice(0, depth), ...row.lexical]).filter((id) => !known.has(id));
+  return dedupe(selections.flat()).filter((id) => !known.has(id));
 }
 
 export type LessonKind = 'first-turn' | 'event';
@@ -338,7 +347,7 @@ async function main(): Promise<void> {
     if (page.length < 500) break;
   }
   const { lessons, absorbedBy } = overlay
-    ? applyCatalogOverlay(allLessons.filter((lesson) => lesson.recallEnabled), overlay)
+    ? applyCatalogOverlay(allLessons, overlay)
     : { lessons: allLessons.filter((lesson) => lesson.recallEnabled), absorbedBy: {} };
   const canonicalMap = combineMaps(twinMap, absorbedBy);
   const runbookIds = new Set(Object.values(absorbedBy));
@@ -396,11 +405,11 @@ async function main(): Promise<void> {
   const canon = (ids: readonly string[]) => canonicalIds(ids, canonicalMap);
   // Runbooks too: a label on a runbook id passes the same time filter.
   const created = new Map([...allLessons, ...lessons].map((lesson) => [lesson.lessonId, lesson.createdAt.toISOString()]));
-  const lessonById = new Map([...allLessons, ...lessons].map((lesson) => [lesson.lessonId, lesson]));
-  const unlabeledSheet: Array<{ key: string; timestamp: string; prompt: string; candidates: Array<{ lessonId: string; name: string; trigger: string }> }> = [];
   const labeledPrompts = prepared.prompts.filter((prompt) => labelFile.labels[prompt.key]);
   let futureLabelPairs = 0; let recentPairs = 0;
-  const rowsBySplit: Record<'calibration' | 'heldout', Array<Record<string, unknown>>> = { calibration: [], heldout: [] };
+  // `prompt` stays in memory for --emit-unlabeled; it never reaches the report.
+  type Row = { prompt: PreparedPrompt; sessionId: string; applies: string[]; labeled: string[]; kinds: Record<string, LessonKind>; lexical: string[]; rankedRaw: string[]; ranked: string[] };
+  const rowsBySplit: Record<'calibration' | 'heldout', Row[]> = { calibration: [], heldout: [] };
   for (const prompt of labeledPrompts) {
     const label = labelFile.labels[prompt.key];
     const applies = label.applies.filter((id) => {
@@ -413,26 +422,16 @@ async function main(): Promise<void> {
     const ranked = await rankEmbedding(prompt, pool);
     // Twins must agree on a kind; a runbook spans its lessons' moments (absorbKinds).
     const kinds = absorbKinds(mergeKinds(label.kinds ?? {}, applies, twinMap), absorbedBy);
-    rowsBySplit[prompt.timestamp < splitAt ? 'calibration' : 'heldout'].push({
-      sessionId: prompt.sessionId, applies: canon(applies), labeled: canon(label.judged), kinds,
+    rowsBySplit[prompt.timestamp < splitAt! ? 'calibration' : 'heldout'].push({
+      prompt, sessionId: prompt.sessionId, applies: canon(applies), labeled: canon(judgedAfterOverlay(label.judged, absorbedBy)), kinds,
       lexical: canon(rankCuratedLessons(pool, prompt.text, 3).map((lesson) => lesson.lessonId)),
       // Raw ids, so per-lesson filters (own session) run before twins collapse.
       rankedRaw: ranked.slice(0, 40),
       ranked: canon(ranked).slice(0, 20)
     });
-    const unjudged = unlabeledCandidates({ ranked: canon(ranked), lexical: canon(rankCuratedLessons(pool, prompt.text, 3).map((lesson) => lesson.lessonId)), labeled: canon(label.judged), applies: canon(applies) }, topK + 3);
-    if (unjudged.length > 0) {
-      unlabeledSheet.push({ key: prompt.key, timestamp: prompt.timestamp, prompt: prompt.text.slice(0, PROMPT_KEY_CHARS),
-        candidates: unjudged.map((id) => ({ lessonId: id, name: lessonById.get(id)!.name, trigger: lessonById.get(id)!.trigger })) });
-    }
-  }
-  if (arg('emit-unlabeled')) {
-    writeFileSync(arg('emit-unlabeled')!, `${JSON.stringify(unlabeledSheet, null, 1)}\n`);
-    process.stdout.write(`unlabeled sheet: ${unlabeledSheet.length} prompts, ${unlabeledSheet.reduce((sum, item) => sum + item.candidates.length, 0)} candidates\n`);
   }
 
-  type Row = { sessionId: string; applies: string[]; labeled: string[]; kinds: Record<string, LessonKind>; lexical: string[]; rankedRaw: string[]; ranked: string[] };
-  const calibrationRows = rowsBySplit.calibration as Row[];
+  const calibrationRows = rowsBySplit.calibration;
   const hubs = new Set(findHubLessons(calibrationRows.map((row) => row.ranked.slice(0, topK)), hubShare));
   // Own-session exclusion reads a lesson's own sources, so it runs on raw ids;
   // hubs were found on canonical lists, so that check runs after mapping.
@@ -443,6 +442,20 @@ async function main(): Promise<void> {
     excludeHubs: { raw: () => true, canonical: (id) => !hubs.has(id) },
     both: { raw: (row, id) => !ownSession(row, id), canonical: (id) => !hubs.has(id) }
   };
+  const reduce = (row: Row, keep: (typeof reductions)[string]) => canon(row.rankedRaw.filter((id) => keep.raw(row, id))).filter((id) => keep.canonical(id)).slice(0, topK);
+  if (arg('emit-unlabeled')) {
+    const lessonById = new Map(lessons.map((lesson) => [lesson.lessonId, lesson]));
+    const items = [];
+    for (const row of [...rowsBySplit.calibration, ...rowsBySplit.heldout]) {
+      // Every selection the report scores: lexical, fixed top-5 (top-1/3 are its prefixes) and each reduction.
+      const unjudged = unlabeledCandidates([row.lexical, row.ranked.slice(0, Math.max(5, topK)), ...Object.values(reductions).map((keep) => reduce(row, keep))], row);
+      if (unjudged.length === 0) continue;
+      items.push({ key: row.prompt.key, timestamp: row.prompt.timestamp, prompt: row.prompt.text.slice(0, PROMPT_KEY_CHARS),
+        candidates: unjudged.map((id) => ({ lessonId: id, name: lessonById.get(id)!.name, trigger: lessonById.get(id)!.trigger })) });
+    }
+    writeFileSync(arg('emit-unlabeled')!, `${JSON.stringify(items, null, 1)}\n`);
+    process.stdout.write(`unlabeled sheet: ${items.length} prompts, ${items.reduce((sum, item) => sum + item.candidates.length, 0)} candidates\n`);
+  }
   const report: Record<string, unknown> = {
     spec: 'specs/host-lesson-matching-2026-10-18',
     window: { since, until, splitAt },
@@ -455,7 +468,7 @@ async function main(): Promise<void> {
     splits: {}
   };
   for (const split of ['calibration', 'heldout'] as const) {
-    const rows = rowsBySplit[split] as Row[];
+    const rows = rowsBySplit[split];
     const score = (pick: (row: Row) => string[], kind?: LessonKind) => {
       const scored = scoreSelections(rows.map((row) => {
         const item = { selected: pick(row), applies: row.applies, labeled: row.labeled };
@@ -464,7 +477,7 @@ async function main(): Promise<void> {
       return { ...scored, promptHit: ratio(scored.promptHit), lessonPrecision: ratio(scored.lessonPrecision), lessonRecall: ratio(scored.lessonRecall), negativeInjection: ratio(scored.negativeInjection), anyWrong: ratio(scored.anyWrong) };
     };
     const reduction = Object.fromEntries(Object.entries(reductions).map(([name, keep]) => {
-      const candidates = rows.map((row) => canon(row.rankedRaw.filter((id) => keep.raw(row, id))).filter((id) => keep.canonical(id)).slice(0, topK));
+      const candidates = rows.map((row) => reduce(row, keep));
       let positives = 0; let negatives = 0; let unlabeledCandidates = 0;
       rows.forEach((row, i) => {
         const labeled = new Set([...row.labeled, ...row.applies]);

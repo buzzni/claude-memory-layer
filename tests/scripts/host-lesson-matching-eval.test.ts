@@ -13,6 +13,7 @@ import {
   forKind,
   proposeTwinGroups,
   twinCanonicalMap,
+  judgedAfterOverlay,
   unlabeledCandidates,
   preparePrompts,
   promptKey,
@@ -181,6 +182,13 @@ describe('applyCatalogOverlay', () => {
     expect(() => applyCatalogOverlay(catalog, { runbooks: [{ ...runbook, lessonId: 'c' }] })).toThrow(/id/);
     expect(() => applyCatalogOverlay(catalog, { runbooks: [{ ...runbook, absorbs: [] }] })).toThrow(/absorbs/);
   });
+
+  it('keeps disabled lessons out of the pool but reserves their ids, and refuses to absorb one', () => {
+    const withDisabled = [...catalog, { ...lesson('rb-1', '2026-09-01T00:00:00.000Z'), recallEnabled: false }];
+    expect(applyCatalogOverlay(withDisabled, { runbooks: [{ ...runbook, lessonId: 'rb-9' }] }).lessons.map((l) => l.lessonId)).toEqual(['c', 'rb-9']);
+    expect(() => applyCatalogOverlay(withDisabled, { runbooks: [runbook] })).toThrow(/id/);
+    expect(() => applyCatalogOverlay(withDisabled, { runbooks: [{ ...runbook, lessonId: 'rb-9', absorbs: ['rb-1'] }] })).toThrow(/disabled/);
+  });
 });
 
 describe('absorbKinds', () => {
@@ -191,17 +199,25 @@ describe('absorbKinds', () => {
 });
 
 describe('combineMaps', () => {
-  it('merges twin and runbook maps, follows twin → runbook chains and refuses a twin split from its group', () => {
-    expect(combineMaps({ b: 'a' }, { a: 'rb' })).toEqual({ b: 'rb', a: 'rb' });
-    // A whole twin group absorbed into one runbook is consistent.
+  it('merges twin and runbook maps and refuses a twin group that is not absorbed whole into one runbook', () => {
     expect(combineMaps({ b: 'a' }, { a: 'rb', b: 'rb' })).toEqual({ b: 'rb', a: 'rb' });
+    expect(combineMaps({ b: 'a' }, { c: 'rb' })).toEqual({ b: 'a', c: 'rb' });
+    // b would stay a candidate yet score as the runbook it never was.
+    expect(() => combineMaps({ b: 'a' }, { a: 'rb' })).toThrow(/twin/);
     expect(() => combineMaps({ b: 'a' }, { b: 'rb' })).toThrow(/twin/);
     expect(() => combineMaps({ b: 'a' }, { a: 'rb-1', b: 'rb-2' })).toThrow(/twin/);
   });
 });
 
 describe('unlabeledCandidates', () => {
-  it('lists the ranked and lexical picks a replay could score that no label has judged yet, in rank order', () => {
-    expect(unlabeledCandidates({ ranked: ['a', 'rb', 'c', 'd'], lexical: ['e', 'a'], labeled: ['a', 'c'], applies: ['d'] }, 3)).toEqual(['rb', 'e']);
+  it('lists every id any reported selection picks that no label has judged yet, in first-seen order', () => {
+    expect(unlabeledCandidates([['a', 'rb'], ['e', 'a'], ['x', 'd']], { labeled: ['a', 'c', 'x'], applies: ['d'] })).toEqual(['rb', 'e']);
+  });
+});
+
+describe('judgedAfterOverlay', () => {
+  it('drops judgments on absorbed lessons, so a runbook is judged only directly or through an applicable lesson', () => {
+    // a was judged and did not apply: that says nothing about the runbook, which also holds b's rules.
+    expect(judgedAfterOverlay(['a', 'c', 'rb'], { a: 'rb-1', b: 'rb-1' })).toEqual(['c', 'rb']);
   });
 });
