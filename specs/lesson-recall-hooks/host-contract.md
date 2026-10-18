@@ -96,6 +96,8 @@ trust a DTO normal-end flag. `evidenceKey` and request id are idempotent.
 The stable service entry exports `LESSON_HOST_CAPABILITIES` with `version: 1`
 and `nativeLessonOwnerMarker: true`. Hosts check these exact values on the
 installed artifact before choosing host ownership for a provider launch.
+Additional fields describe additional behaviour and are checked one by one,
+never by comparing the whole object.
 
 When a host owns provider lesson injection it may set the launch-only
 environment marker `CLAUDE_MEMORY_LESSON_OWNER=host`. The native Claude
@@ -103,6 +105,17 @@ environment marker `CLAUDE_MEMORY_LESSON_OWNER=host`. The native Claude
 retrieval is unchanged. Absent or other values preserve native ownership. The
 host must not set this marker unless it actually injects lessons; it is neither
 persisted nor a user setting or managed-hook change.
+
+With `sessionStartRunbookIndex: true`, one exception holds under the host
+marker: the Claude `session-start` hook lists the project's consolidated
+runbooks (lessons other lessons were absorbed into, see `claude-memory-layer
+lesson consolidate`) as references — name and trigger, body through
+`mem-lesson-get`. A project without runbooks lists nothing, so the lane stays
+empty until an operator consolidates. Per-turn lessons stay the host's; host
+recall may also select a runbook, and the host may deliver it again in a turn.
+The Codex `session-start` hook lists nothing under the host marker. A host
+that must keep the session-start lane empty sets
+`CLAUDE_MEMORY_SESSION_START_LESSON_BUDGET=0` for the launch.
 
 `markReviewed({ candidateId, expectedRevision, payloadHash, generation })`,
 `approveCandidate({ candidateId, expectedRevision, payloadHash, generation })`,

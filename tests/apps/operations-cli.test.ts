@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -395,6 +395,50 @@ describe('memory operations CLI commands', () => {
       ]);
       expect(listed).toMatchObject({ operation: 'mem-lesson-list', projectHash: fixture.projectHash, count: 1 });
       expect((listed.lessons as JsonObject[])[0]).toMatchObject({ name: 'Deploy GPU before API', sourceClass: 'curated' });
+    } finally {
+      rmSync(fixture.home, { recursive: true, force: true });
+    }
+  }, SLOW_CLI_TEST_TIMEOUT_MS);
+
+  it('consolidates approved runbook drafts only with --apply, and reverts them', () => {
+    const fixture = createCliFixture('lesson-consolidate');
+    try {
+      const earlyDrafts = path.join(fixture.home, 'early.json');
+      writeFileSync(earlyDrafts, JSON.stringify({ runbooks: [{ lessonId: 'rb-0', name: 'n', trigger: 't', steps: ['s'], validation: ['v'], scope: 's', reconsiderWhen: 'r', absorbs: [{ lessonId: 'x', revision: 1 }] }] }));
+      const preview = expectJsonCommand(fixture, ['lesson', 'consolidate', '--project', fixture.projectDir, '--drafts', earlyDrafts, '--json']);
+      expect(preview).toMatchObject({ dryRun: true, problems: ['this project has no lesson store'] });
+      expect(existsSync(fixture.dbPath)).toBe(false);
+
+      const add = (name: string) => expectJsonCommand(fixture, ['lesson', 'add', '--project', fixture.projectDir, '--name', name,
+        '--trigger', `when ${name}`, '--steps', `do ${name}`, '--apply', '--json']).lesson as JsonObject;
+      const first = add('rebase-before-push');
+      const second = add('push-rejected-retry');
+      const draftsPath = path.join(fixture.home, 'drafts.json');
+      writeFileSync(draftsPath, JSON.stringify({ runbooks: [{
+        lessonId: 'rb-1', name: 'prepare-and-push-pr-branch', trigger: 'PR 브랜치를 push할 때', steps: ['브랜치를 확인한다'],
+        failureModes: [], validation: ['0 behind'], scope: '브랜치 작업', reconsiderWhen: '브랜치 정책이 바뀔 때',
+        absorbs: [{ lessonId: first.lessonId, revision: 1 }, { lessonId: second.lessonId, revision: 1 }]
+      }] }));
+      const enabled = () => queryCount(fixture.dbPath, 'SELECT COUNT(*) AS count FROM memory_lessons WHERE recall_enabled = 1');
+
+      const dryRun = expectJsonCommand(fixture, ['lesson', 'consolidate', '--project', fixture.projectDir, '--drafts', draftsPath, '--json']);
+      expect(dryRun).toMatchObject({ operation: 'lesson-consolidate', dryRun: true, problems: [] });
+      expect(enabled()).toBe(2);
+
+      const applied = expectJsonCommand(fixture, ['lesson', 'consolidate', '--project', fixture.projectDir, '--drafts', draftsPath, '--apply', '--json']);
+      const runbookId = ((applied.runbooks as JsonObject[])[0]).lessonId as string;
+      expect(enabled()).toBe(1);
+      expect(queryCount(fixture.dbPath, 'SELECT COUNT(*) AS count FROM memory_lessons WHERE absorbed_into = ?', [runbookId])).toBe(2);
+
+      const again = expectJsonCommand(fixture, ['lesson', 'consolidate', '--project', fixture.projectDir, '--drafts', draftsPath, '--json']);
+      expect((again.problems as string[]).length).toBeGreaterThan(0);
+
+      const revertPreview = expectJsonCommand(fixture, ['lesson', 'revert-consolidation', '--project', fixture.projectDir, '--runbook', runbookId, '--json']);
+      expect((revertPreview.restore as JsonObject[]).length).toBe(2);
+      expect(enabled()).toBe(1);
+      expectJsonCommand(fixture, ['lesson', 'revert-consolidation', '--project', fixture.projectDir, '--runbook', runbookId, '--apply', '--json']);
+      expect(enabled()).toBe(2);
+      expectFailedCommand(fixture, ['lesson', 'revert-consolidation', '--project', fixture.projectDir, '--runbook', runbookId, '--json']);
     } finally {
       rmSync(fixture.home, { recursive: true, force: true });
     }

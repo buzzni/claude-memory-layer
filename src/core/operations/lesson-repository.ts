@@ -34,6 +34,7 @@ interface MemoryLessonRow {
   validation_json?: string;
   reconsider_when?: string | null;
   valid_versions_json?: string;
+  absorbed_into?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -102,12 +103,13 @@ function rowToLesson(row: MemoryLessonRow): MemoryLesson {
     validation: parseStringArray(row.validation_json),
     reconsiderWhen: row.reconsider_when ?? undefined,
     validVersions: parseStringArray(row.valid_versions_json),
+    absorbedInto: row.absorbed_into ?? undefined,
     createdAt: toDateFromSQLite(row.created_at),
     updatedAt: toDateFromSQLite(row.updated_at)
   });
 }
 
-function lessonToAuditJson(lesson: MemoryLesson): Record<string, unknown> {
+export function lessonToAuditJson(lesson: MemoryLesson): Record<string, unknown> {
   return {
     lessonId: lesson.lessonId,
     projectHash: lesson.projectHash,
@@ -126,6 +128,7 @@ function lessonToAuditJson(lesson: MemoryLesson): Record<string, unknown> {
     validation: lesson.validation,
     reconsiderWhen: lesson.reconsiderWhen,
     validVersions: lesson.validVersions,
+    absorbedInto: lesson.absorbedInto,
     createdAt: lesson.createdAt.toISOString(),
     updatedAt: lesson.updatedAt.toISOString()
   };
@@ -150,13 +153,18 @@ export class LessonRepository {
       if (projectHashToStorage(existing.projectHash) !== projectHashToStorage(parsed.projectHash)) {
         throw new Error('lesson projectHash mismatch');
       }
-      sqliteRun(
+      const recallEnabled = parsed.recallEnabled === undefined ? (existing.recallEnabled ? 1 : 0) : (parsed.recallEnabled ? 1 : 0);
+      // Revision CAS: a stale read must not overwrite a consolidation (or any
+      // other write) that landed in between. Switching a lesson on detaches it
+      // from the runbook that absorbed it.
+      const updated = sqliteRun(
         this.db,
         `UPDATE memory_lessons
          SET name = ?, trigger = ?, steps_json = ?, confidence = ?, source_session_ids = ?,
              source_event_ids = ?, failure_modes_json = ?, skill_candidate = ?, source_class = ?,
-             revision = revision + 1, recall_enabled = ?, scope = ?, validation_json = ?, reconsider_when = ?, valid_versions_json = ?, updated_at = ?
-         WHERE lesson_id = ? AND project_hash = ?`,
+             revision = revision + 1, recall_enabled = ?, absorbed_into = CASE WHEN ? = 1 THEN NULL ELSE absorbed_into END,
+             scope = ?, validation_json = ?, reconsider_when = ?, valid_versions_json = ?, updated_at = ?
+         WHERE lesson_id = ? AND project_hash = ? AND revision = ?`,
         [
           parsed.name,
           parsed.trigger,
@@ -167,16 +175,19 @@ export class LessonRepository {
           JSON.stringify(parsed.failureModes),
           parsed.skillCandidate ? 1 : 0,
           parsed.sourceClass,
-          parsed.recallEnabled === undefined ? (existing.recallEnabled ? 1 : 0) : (parsed.recallEnabled ? 1 : 0),
+          recallEnabled,
+          recallEnabled,
           parsed.scope ?? existing.scope ?? null,
           JSON.stringify(parsed.validation ?? existing.validation),
           parsed.reconsiderWhen ?? existing.reconsiderWhen ?? null,
           JSON.stringify(parsed.validVersions ?? existing.validVersions),
           now,
           existing.lessonId,
-          projectHashToStorage(existing.projectHash)
+          projectHashToStorage(existing.projectHash),
+          existing.revision
         ]
       );
+      if (updated.changes !== 1) throw new Error('lesson changed concurrently; retry the update');
       const saved = this.require(existing.lessonId);
       await this.auditLessonUpsert(parsed, existing, saved, auditOperation);
       return saved;
@@ -248,11 +259,25 @@ export class LessonRepository {
     const result = sqliteRun(
       this.db,
       `UPDATE memory_lessons
-       SET recall_enabled = ?, revision = revision + 1, updated_at = ?
+       SET recall_enabled = ?, absorbed_into = CASE WHEN ? = 1 THEN NULL ELSE absorbed_into END, revision = revision + 1, updated_at = ?
        WHERE lesson_id = ? AND project_hash = ? AND revision = ?`,
-      [input.enabled ? 1 : 0, new Date().toISOString(), input.lessonId, projectHashToStorage(input.projectHash), input.expectedRevision]
+      [input.enabled ? 1 : 0, input.enabled ? 1 : 0, new Date().toISOString(), input.lessonId, projectHashToStorage(input.projectHash), input.expectedRevision]
     );
     return result.changes === 1 ? this.get(input.lessonId) : null;
+  }
+
+  /** Lessons a runbook absorbed (switched off, pointing at it). */
+  listAbsorbedInto(projectHash: string, runbookId: string): MemoryLesson[] {
+    if (!this.hasAbsorptionColumn()) return [];
+    return sqliteAll<MemoryLessonRow>(this.db, `SELECT * FROM memory_lessons WHERE project_hash = ? AND absorbed_into = ? ORDER BY lesson_id`, [projectHashToStorage(projectHash), runbookId])
+      .map(rowToLesson);
+  }
+
+  /** Lessons that at least one absorbed lesson points at. */
+  listRunbookIds(projectHash: string): string[] {
+    if (!this.hasAbsorptionColumn()) return [];
+    return sqliteAll<{ id: string }>(this.db, `SELECT DISTINCT absorbed_into AS id FROM memory_lessons WHERE project_hash = ? AND absorbed_into IS NOT NULL ORDER BY id`, [projectHashToStorage(projectHash)])
+      .map((row) => row.id);
   }
 
   getByProjectAndName(projectHash: string | undefined, name: string): MemoryLesson | null {
@@ -262,6 +287,11 @@ export class LessonRepository {
       [projectHashToStorage(projectHash), name]
     );
     return row ? rowToLesson(row) : null;
+  }
+
+  /** A store opened read-only before its migration has no absorption links yet. */
+  private hasAbsorptionColumn(): boolean {
+    return sqliteAll<{ name: string }>(this.db, `PRAGMA table_info(memory_lessons)`).some((column) => column.name === 'absorbed_into');
   }
 
   private require(lessonId: string): MemoryLesson {

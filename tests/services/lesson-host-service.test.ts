@@ -433,5 +433,5 @@ describe('authenticated lesson host service', () => {
 });
 
 it('advertises native lesson ownership support on the stable host entry', () => {
-  expect((hostContract as Record<string, unknown>).LESSON_HOST_CAPABILITIES).toEqual({ version: 1, nativeLessonOwnerMarker: true });
+  expect((hostContract as Record<string, unknown>).LESSON_HOST_CAPABILITIES).toEqual({ version: 1, nativeLessonOwnerMarker: true, sessionStartRunbookIndex: true });
 });

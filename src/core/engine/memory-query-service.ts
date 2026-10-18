@@ -171,6 +171,14 @@ export class MemoryQueryService {
     }
   }
 
+  /** Lessons that absorbed others (consolidated runbooks). */
+  async listProjectRunbookIds(projectHash: string): Promise<string[]> {
+    await this.initialize();
+    const db = this.queryStore.getDatabase?.();
+    if (!db || !projectHash) return [];
+    return new LessonRepository(db).listRunbookIds(projectHash);
+  }
+
   /**
    * Core memory blocks (project/user) for legacy unconditional session-start
    * injection. Stored outside the events table, same reasoning as lessons:

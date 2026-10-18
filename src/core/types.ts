@@ -235,6 +235,8 @@ export const MemoryLessonSchema = z.object({
   validation: MemoryLessonStringArraySchema,
   reconsiderWhen: MemoryLessonNonEmptyStringSchema.optional(),
   validVersions: MemoryLessonStringArraySchema,
+  /** The runbook that absorbed this lesson; set only while it stays absorbed. */
+  absorbedInto: MemoryLessonNonEmptyStringSchema.optional(),
   createdAt: z.date(),
   updatedAt: z.date()
 });

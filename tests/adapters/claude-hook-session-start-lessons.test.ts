@@ -62,6 +62,7 @@ function createService(usage: () => Promise<Map<string, { exposures: number; eng
       lesson('c', 'middle-lesson', 0.9, '2026-10-01T00:00:00.000Z')
     ]),
     getSessionStartLessonUsage: vi.fn(usage),
+    listProjectRunbookIds: vi.fn().mockResolvedValue(['c']),
     searchGraduatedEvidence: vi.fn().mockResolvedValue([]),
     keywordSearch: vi.fn().mockResolvedValue([]),
     getEvent: vi.fn().mockResolvedValue(null),
@@ -99,12 +100,15 @@ afterEach(async () => {
   rmSync(home, { recursive: true, force: true });
 });
 
-async function listedLessons(): Promise<string[]> {
+async function sessionStartContext(deliveryClient?: string): Promise<string> {
   fixture.input = JSON.stringify({ cwd: '/repo/a', session_id: 'session-lessons', hook_event_name: 'SessionStart', source: 'startup' });
   const { main } = await import('../../src/adapters/claude/hooks/session-start.js');
-  const output = JSON.parse(await main({ persistPrompt: false, contextPresentation: 'reference' }));
-  const context: string = output.hookSpecificOutput.additionalContext ?? '';
-  return [...context.matchAll(/^- (\S+) — /gm)].map((match) => match[1]);
+  const output = JSON.parse(await main({ persistPrompt: false, contextPresentation: 'reference', ...(deliveryClient ? { deliveryClient } : {}) }));
+  return output.hookSpecificOutput.additionalContext ?? '';
+}
+
+async function listedLessons(): Promise<string[]> {
+  return [...(await sessionStartContext()).matchAll(/^- (\S+) — /gm)].map((match) => match[1]);
 }
 
 describe('SessionStart lesson index order', () => {
@@ -115,6 +119,38 @@ describe('SessionStart lesson index order', () => {
     const since = fixture.service.getSessionStartLessonUsage.mock.calls[0][0] as Date;
     expect(Date.now() - since.getTime()).toBeGreaterThan(13 * 24 * 60 * 60 * 1000);
     expect(Date.now() - since.getTime()).toBeLessThan(15 * 24 * 60 * 60 * 1000);
+  });
+
+  it('lists only runbooks when the host owns per-turn lessons, under their own trace label', async () => {
+    vi.stubEnv('CLAUDE_MEMORY_LESSON_OWNER', 'host');
+    // Traces are written only outside evaluation mode.
+    vi.stubEnv('CLAUDE_MEMORY_EVAL_MODE', '');
+    fixture.service = createService(async () => new Map());
+
+    const context = await sessionStartContext();
+    expect(context).toContain('## Project Runbooks');
+    expect([...context.matchAll(/^- (\S+) — /gm)].map((match) => match[1])).toEqual(['middle-lesson']);
+    expect(fixture.service.recordQueryTrace.mock.calls.map((call) => call[0])).toContainEqual(expect.objectContaining({ queryText: '[session-start] runbook index', strategy: 'session-start-lessons', selectedEventIds: ['c'] }));
+  });
+
+  it('lists nothing in host mode while the project has no runbooks', async () => {
+    vi.stubEnv('CLAUDE_MEMORY_LESSON_OWNER', 'host');
+    fixture.service = createService(async () => new Map());
+    fixture.service.listProjectRunbookIds.mockResolvedValue([]);
+
+    expect(await sessionStartContext()).not.toContain('## Project');
+  });
+
+  it('lists a runbook only if the actor may see it, and nothing with budget 0 or on the Codex path', async () => {
+    vi.stubEnv('CLAUDE_MEMORY_LESSON_OWNER', 'host');
+    fixture.service = createService(async () => new Map());
+    // 'z' is a runbook the canonical injection filter did not allow for this actor.
+    fixture.service.listProjectRunbookIds.mockResolvedValue(['c', 'z']);
+    expect(await listedLessons()).toEqual(['middle-lesson']);
+
+    expect(await sessionStartContext('codex-hook')).not.toContain('## Project');
+    vi.stubEnv('CLAUDE_MEMORY_SESSION_START_LESSON_BUDGET', '0');
+    expect(await sessionStartContext()).not.toContain('## Project');
   });
 
   it('keeps the index, newest first, when usage cannot be read', async () => {

@@ -17,6 +17,7 @@ import {
   getLightweightMemoryServiceForProject
 } from '../../services/memory-service.js';
 import { createReadOnlyDiagnosticsService } from '../../services/read-only-diagnostics-service.js';
+import { applyRunbookConsolidation, parseConsolidationDrafts, planRunbookConsolidation, planRunbookRevert, revertRunbookConsolidation } from '../../services/lesson-consolidation-service.js';
 import { getProjectStoragePath, resolveProjectStoragePath, hashProjectPath } from '../../core/registry/project-path.js';
 import { resolveCanonicalRepoIdentity } from '../../core/registry/repo-identity.js';
 import { resolveExistingStore } from '../../core/registry/existing-store.js';
@@ -2307,6 +2308,47 @@ lessonCommand
     });
     writeOperationOutput(payload, options);
   }, 'Lesson list'));
+
+lessonCommand
+  .command('consolidate')
+  .description('Replace reviewed lessons with approved runbooks (absorbed lessons are switched off, not deleted); dry-run unless --apply')
+  .requiredOption('-p, --project <path>', 'Project path')
+  .requiredOption('--drafts <file>', 'Approved runbook drafts JSON: {"runbooks":[{lessonId,name,trigger,steps,failureModes,validation,scope,reconsiderWhen,absorbs:[{lessonId,revision}]}]}')
+  .option('--actor <actor>', 'Actor for governance audit', 'cml-cli')
+  .option('--apply', 'Apply all drafts in one transaction; omitted means dry-run')
+  .option('--json', 'Print machine-readable JSON')
+  .action((options) => runOperationCli(async () => {
+    const context = resolveOperationProject(options.project);
+    const drafts = parseConsolidationDrafts(JSON.parse(fs.readFileSync(options.drafts, 'utf-8')));
+    const actor = requiredOperationOption(options.actor, 'actor');
+    const base = { operation: 'lesson-consolidate', projectHash: context.projectHash };
+    // The preview reads the store as it is; only --apply opens it for writing (and migrates it).
+    const payload = options.apply
+      ? await withOperationWriteDatabase(context, async (db) => ({ ...base, dryRun: false, ...applyRunbookConsolidation(db, context.projectHash, drafts, actor) }))
+      : await withOperationExistingDatabase(context, { ...base, dryRun: true, runbooks: [], problems: ['this project has no lesson store'] }, ['memory_lessons'],
+        async (db) => ({ ...base, dryRun: true, ...planRunbookConsolidation(db, context.projectHash, drafts) }));
+    writeOperationOutput(payload, options);
+  }, 'Lesson consolidate'));
+
+lessonCommand
+  .command('revert-consolidation')
+  .description('Switch a runbook\'s absorbed lessons back on and the runbook off; dry-run unless --apply')
+  .requiredOption('-p, --project <path>', 'Project path')
+  .requiredOption('--runbook <lessonId>', 'Runbook lesson id')
+  .option('--actor <actor>', 'Actor for governance audit', 'cml-cli')
+  .option('--apply', 'Apply the revert; omitted means dry-run')
+  .option('--json', 'Print machine-readable JSON')
+  .action((options) => runOperationCli(async () => {
+    const context = resolveOperationProject(options.project);
+    const runbookId = requiredOperationOption(options.runbook, 'runbook');
+    const actor = requiredOperationOption(options.actor, 'actor');
+    const base = { operation: 'lesson-revert-consolidation', projectHash: context.projectHash };
+    const payload = options.apply
+      ? await withOperationWriteDatabase(context, async (db) => ({ ...base, dryRun: false, ...revertRunbookConsolidation(db, context.projectHash, runbookId, actor) }))
+      : await withOperationExistingDatabase(context, null, ['memory_lessons'], async (db) => ({ ...base, dryRun: true, ...planRunbookRevert(db, context.projectHash, runbookId) }));
+    if (!payload) throw new Error(`lesson ${runbookId} is not a runbook in this project`);
+    writeOperationOutput(payload, options);
+  }, 'Lesson revert consolidation'));
 
 /**
  * Retention command - dry-run lifecycle audits for project-scoped memory
