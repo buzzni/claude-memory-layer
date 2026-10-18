@@ -99,6 +99,19 @@ installed artifact before choosing host ownership for a provider launch.
 Additional fields describe additional behaviour and are checked one by one,
 never by comparing the whole object.
 
+`lessonUpdates: true` (CML 2.4.13+) means a candidate payload may carry
+`updatesLesson: { lessonId, revision }`: the proposal revises that lesson
+instead of adding a new one. The payload schema is strict, so a host must not
+send the field to an installed artifact without this capability. Enqueue
+rejects a lesson outside the binding project (`lesson_not_found`) or one whose
+revision already moved (`lesson_revision_conflict`); duplicate suggestions
+exclude the target. Approval is a revision compare-and-swap: it keeps the
+lesson id and recall state, replaces the reviewed fields, unions provenance,
+bumps the revision, and audits the previous revision. A lesson that changed
+after enqueue fails approval with `lesson_revision_conflict` and the candidate
+stays reviewed. Renaming onto another lesson's name fails with
+`merge_required`, as does a new proposal that reuses an existing name.
+
 When a host owns provider lesson injection it may set the launch-only
 environment marker `CLAUDE_MEMORY_LESSON_OWNER=host`. The native Claude
 `user-prompt-submit` and `session-start` hooks then skip only their curated lesson lanes; event-memory
