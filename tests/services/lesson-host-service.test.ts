@@ -440,11 +440,12 @@ it('advertises native lesson ownership support on the stable host entry', () => 
 // existing lesson instead of adding a near-duplicate. The update is a revision
 // compare-and-swap on the lesson the proposal names.
 describe('lesson update proposals', () => {
-  async function approved(service: ReturnType<typeof fixture>['service'], payload: ReturnType<typeof candidate>, key: string) {
+  async function approved(service: ReturnType<typeof fixture>['service'], payload: ReturnType<typeof candidate> & { updatesLesson?: { lessonId: string; revision: number } }, key: string) {
     const payloadHash = hashLessonCandidatePayload(payload);
     const queued = await service.enqueueCandidate({ version: 1, requestId: `${key}-enqueue`, binding: 'reviewer', evidenceKey: `${key}-evidence`, payloadHash, generation: 3, candidate: payload });
     const reviewed = await service.markReviewed({ version: 1, requestId: `${key}-review`, binding: 'reviewer', candidateId: queued.candidateId, expectedRevision: queued.revision, payloadHash, generation: 3 });
-    return { queued, reviewed, payloadHash, approve: () => service.approveCandidate({ version: 1, requestId: `${key}-approve`, binding: 'reviewer', candidateId: queued.candidateId, expectedRevision: reviewed.revision, payloadHash, generation: 3 }) };
+    const confirm = (payload as { updatesLesson?: { lessonId: string; revision: number } }).updatesLesson;
+    return { queued, reviewed, payloadHash, approve: (overrides: Record<string, unknown> = {}) => service.approveCandidate({ version: 1, requestId: `${key}-approve`, binding: 'reviewer', candidateId: queued.candidateId, expectedRevision: reviewed.revision, payloadHash, generation: 3, ...(confirm ? { confirmUpdatesLesson: confirm } : {}), ...overrides }) };
   }
 
   it('advertises lesson updates as a host capability', () => {
@@ -475,7 +476,7 @@ describe('lesson update proposals', () => {
       expect(lessons.n).toBe(1);
       expect(lesson).toMatchObject({ name: revised.name, steps: revised.steps, revision: 2, recallEnabled: true });
       expect(lesson.sourceEventIds).toEqual([firstSource, secondSource]);
-      expect(JSON.parse(audit.before_json!)).toMatchObject({ revision: 1, name: 'Verify focused changes' });
+      expect(JSON.parse(audit.before_json!)).toMatchObject({ revision: 1, name: 'Verify focused changes', scope: 'this project focused service changes', validation: ['focused test passed'], reconsiderWhen: 'the test command or service boundary changes', failureModes: ['Do not skip verification'] });
     } finally { await cleanup(); }
   });
 
@@ -524,6 +525,85 @@ describe('lesson update proposals', () => {
       const collide = await approved(service, { ...candidate(await seedSource(store)), name: 'Verify focused changes', updatesLesson: { lessonId: second.lessonId, revision: second.lessonRevision } }, 'rename-collide');
       await expect(collide.approve()).rejects.toMatchObject({ code: 'merge_required' });
       expect(new LessonRepository(store.getDatabase()).get(first.lessonId)).toMatchObject({ revision: 1 });
+    } finally { await cleanup(); }
+  });
+
+  it('requires the approval to confirm the lesson an update replaces', async () => {
+    const { store, service, cleanup } = fixture();
+    await store.initialize();
+    try {
+      const original = await (await approved(service, candidate(await seedSource(store)), 'confirm-original')).approve();
+      const update = await approved(service, { ...candidate(await seedSource(store)), updatesLesson: { lessonId: original.lessonId, revision: original.lessonRevision } }, 'confirm-update');
+      await expect(update.approve({ confirmUpdatesLesson: undefined, requestId: 'confirm-missing' })).rejects.toMatchObject({ code: 'update_confirmation_required' });
+      await expect(update.approve({ confirmUpdatesLesson: { lessonId: original.lessonId, revision: 9 }, requestId: 'confirm-wrong' })).rejects.toMatchObject({ code: 'update_confirmation_required' });
+      expect(await update.approve()).toMatchObject({ outcome: 'accepted', lessonId: original.lessonId, lessonRevision: 2 });
+    } finally { await cleanup(); }
+  });
+
+  it('replays a queued update after its target moved, and replays an approval after success', async () => {
+    const { store, service, cleanup } = fixture();
+    await store.initialize();
+    try {
+      const original = await (await approved(service, candidate(await seedSource(store)), 'replay-original')).approve();
+      const payload = { ...candidate(await seedSource(store)), updatesLesson: { lessonId: original.lessonId, revision: original.lessonRevision } };
+      const update = await approved(service, payload, 'replay-update');
+      const accepted = await update.approve();
+      const enqueueAgain = await service.enqueueCandidate({ version: 1, requestId: 'replay-update-enqueue', binding: 'reviewer', evidenceKey: 'replay-update-evidence', payloadHash: update.payloadHash, generation: 3, candidate: payload });
+      expect(enqueueAgain).toMatchObject({ candidateId: update.queued.candidateId });
+      // The same evidence under a new request id (a retried worker) finds the stored candidate too.
+      const retried = await service.enqueueCandidate({ version: 1, requestId: 'replay-update-enqueue-retry', binding: 'reviewer', evidenceKey: 'replay-update-evidence', payloadHash: update.payloadHash, generation: 3, candidate: payload });
+      expect(retried).toMatchObject({ candidateId: update.queued.candidateId });
+      expect(await update.approve()).toEqual(accepted);
+    } finally { await cleanup(); }
+  });
+
+  it('lets only one of two updates queued against the same revision win', async () => {
+    const { store, service, cleanup } = fixture();
+    await store.initialize();
+    try {
+      const original = await (await approved(service, candidate(await seedSource(store)), 'race2-original')).approve();
+      const target = { lessonId: original.lessonId, revision: original.lessonRevision };
+      const first = await approved(service, { ...candidate(await seedSource(store)), steps: ['first'], updatesLesson: target }, 'race2-first');
+      const second = await approved(service, { ...candidate(await seedSource(store)), steps: ['second'], updatesLesson: target }, 'race2-second');
+      expect(await first.approve()).toMatchObject({ lessonRevision: 2 });
+      await expect(second.approve()).rejects.toMatchObject({ code: 'lesson_revision_conflict' });
+      expect(new LessonRepository(store.getDatabase()).get(original.lessonId)).toMatchObject({ steps: ['first'], revision: 2 });
+    } finally { await cleanup(); }
+  });
+
+  it('keeps a disabled lesson disabled when it is updated', async () => {
+    const { store, service, cleanup } = fixture();
+    await store.initialize();
+    try {
+      const original = await (await approved(service, candidate(await seedSource(store)), 'disabled-original')).approve();
+      await service.setRecallEnabled({ version: 1, requestId: 'disabled-off', binding: 'reviewer', lessonId: original.lessonId, expectedRevision: original.lessonRevision, enabled: false, generation: 3 });
+      const update = await approved(service, { ...candidate(await seedSource(store)), updatesLesson: { lessonId: original.lessonId, revision: 2 } }, 'disabled-update');
+      expect(await update.approve()).toMatchObject({ lessonRevision: 3 });
+      expect(new LessonRepository(store.getDatabase()).get(original.lessonId)).toMatchObject({ recallEnabled: false, revision: 3 });
+    } finally { await cleanup(); }
+  });
+
+  it('enforces lesson read on enqueue and lesson write on approval when permissions are registered', async () => {
+    const { store, service, cleanup } = fixture();
+    await store.initialize();
+    try {
+      const original = await (await approved(service, candidate(await seedSource(store)), 'acl-original')).approve();
+      vi.stubEnv(CANONICAL_MEMORY_PERMISSION_MODE_ENV, 'registered');
+      const permissions = new MemoryAssetPermissionService(store.getDatabase());
+      const asset = { projectHash: 'project-a', assetId: `lesson:${original.lessonId}` };
+      await permissions.create({ ...asset, requesterActorId: 'owner-z', assetType: 'lesson', title: 'owned elsewhere', sourceRefs: [asset.assetId] });
+      const target = { lessonId: original.lessonId, revision: original.lessonRevision };
+      const hidden = { ...candidate(await seedSource(store)), updatesLesson: target };
+      await expect(service.enqueueCandidate({ version: 1, requestId: 'acl-hidden', binding: 'reviewer', evidenceKey: 'acl-hidden-evidence', payloadHash: hashLessonCandidatePayload(hidden), generation: 3, candidate: hidden }))
+        .rejects.toMatchObject({ code: 'lesson_not_found' });
+
+      await permissions.setGrant({ ...asset, requesterActorId: 'owner-z', actorId: 'actor-a', permissions: ['read'] });
+      const readOnly = await approved(service, { ...candidate(await seedSource(store)), updatesLesson: target }, 'acl-read');
+      await expect(readOnly.approve()).rejects.toMatchObject({ code: 'permission_denied' });
+      expect(new LessonRepository(store.getDatabase()).get(original.lessonId)).toMatchObject({ revision: 1 });
+
+      await permissions.setGrant({ ...asset, requesterActorId: 'owner-z', actorId: 'actor-a', permissions: ['read', 'write'] });
+      expect(await readOnly.approve({ requestId: 'acl-read-approve-2' })).toMatchObject({ outcome: 'accepted', lessonRevision: 2 });
     } finally { await cleanup(); }
   });
 

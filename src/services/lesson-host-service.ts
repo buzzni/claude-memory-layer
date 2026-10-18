@@ -37,6 +37,7 @@ export const CandidatePayload = z.object({
   /** The lesson this proposal revises, at the revision the proposer read. */
   updatesLesson: z.object({ lessonId: Identifier, revision: z.number().int().positive() }).strict().optional()
 }).strict();
+const UpdateTarget = z.object({ lessonId: Identifier, revision: z.number().int().positive() }).strict();
 const BaseRequest = z.object({ version: z.number().int(), requestId: Identifier, binding: z.unknown() }).strict();
 const MutationBase = BaseRequest.extend({ generation: z.number().int().nonnegative() }).strict();
 const CandidateMutation = MutationBase.extend({
@@ -103,6 +104,15 @@ function requestFingerprint(value: unknown): string {
 
 export function hashLessonCandidatePayload(payload: unknown): string {
   return createHash('sha256').update(stableJson(CandidatePayload.parse(payload))).digest('hex');
+}
+
+/** Every field an update replaces, so the previous revision can be read back from the audit log. */
+function lessonAuditSnapshot(lesson: MemoryLesson): Record<string, unknown> {
+  return {
+    lessonId: lesson.lessonId, revision: lesson.revision, name: lesson.name, trigger: lesson.trigger, steps: lesson.steps,
+    failureModes: lesson.failureModes, scope: lesson.scope ?? null, validation: lesson.validation, reconsiderWhen: lesson.reconsiderWhen ?? null,
+    validVersions: lesson.validVersions, confidence: lesson.confidence, recallEnabled: lesson.recallEnabled, sourceClass: lesson.sourceClass
+  };
 }
 
 function codedError(message: string, code: string): Error & { code: string } {
@@ -237,7 +247,6 @@ export class LessonHostService {
     if (request.version !== 1) return { outcome: 'unsupported_version' as const };
     const binding = await this.writeBinding(request.binding, request.generation, 'lesson.review');
     const candidate = CandidatePayload.parse(request.candidate); assertCandidateSafe(candidate); this.assertSourceEvents(binding.projectHash, candidate.sourceEventIds, candidate.sourceSessionIds);
-    if (candidate.updatesLesson) this.requireUpdateTarget(binding.projectHash, candidate.updatesLesson);
     const computedHash = hashLessonCandidatePayload(candidate);
     if (request.payloadHash && request.payloadHash !== computedHash) throw new Error('payloadHash does not match canonical candidate payload');
     const fingerprint = requestFingerprint({ ...request, payloadHash: computedHash });
@@ -246,6 +255,9 @@ export class LessonHostService {
       this.expireCandidates(binding.projectHash);
       const existing = sqliteGet<CandidateRow>(this.options.db, `SELECT * FROM lesson_review_candidates WHERE project_hash = ? AND evidence_key = ?`, [binding.projectHash, request.evidenceKey]);
       if (!existing && sqliteGet<{ count: number }>(this.options.db, `SELECT COUNT(*) AS count FROM lesson_review_candidates WHERE project_hash=? AND status IN ('pending','reviewed')`, [binding.projectHash])!.count >= 20) throw new Error('pending candidate cap reached');
+      // A replayed or already-queued candidate is not re-validated against the
+      // target's current revision: approval is where a moved target is refused.
+      if (!existing && candidate.updatesLesson) this.requireUpdateTarget(binding, candidate.updatesLesson);
       const result = existing ? candidateFromRow(existing) : this.insertCandidate(binding, request.evidenceKey, computedHash, candidate, request.expiresAt);
       const response = { outcome: result.status, ...result }; this.remember(request.requestId, binding, 'enqueue', fingerprint, response); return response;
     })();
@@ -281,7 +293,7 @@ export class LessonHostService {
   async rejectCandidate(input: unknown) { return this.transition(input, 'rejected', 'lesson.manage'); }
 
   async approveCandidate(input: unknown) {
-    const request = CandidateMutation.parse(input);
+    const request = CandidateMutation.extend({ confirmUpdatesLesson: UpdateTarget.optional() }).strict().parse(input);
     if (request.version !== 1) return { outcome: 'unsupported_version' as const };
     await this.writeBinding(request.binding, request.generation, 'lesson.manage');
     const fingerprint = requestFingerprint(request);
@@ -295,6 +307,12 @@ export class LessonHostService {
       if (existing && existing.lesson_id !== candidate.updatesLesson?.lessonId) throw codedError('existing lesson requires an explicit merge proposal and lesson revision CAS', 'merge_required');
       const now = new Date().toISOString();
       if (candidate.updatesLesson) {
+        // An approver must name the lesson being replaced. A client that does
+        // not know about updates sends no confirmation and cannot replace one.
+        const confirm = request.confirmUpdatesLesson;
+        if (!confirm || confirm.lessonId !== candidate.updatesLesson.lessonId || confirm.revision !== candidate.updatesLesson.revision) {
+          throw codedError('approving this candidate replaces an existing lesson; confirm its lessonId and revision', 'update_confirmation_required');
+        }
         const lessonId = this.applyLessonUpdate(finalBinding, candidate, candidate.updatesLesson, now);
         const changed = sqliteRun(this.options.db, `UPDATE lesson_review_candidates SET status='accepted', revision=revision+1, updated_at=? WHERE candidate_id=? AND project_hash=? AND revision=? AND payload_hash=? AND status='reviewed'`, [now, row.candidate_id, finalBinding.projectHash, request.expectedRevision, request.payloadHash]);
         if (changed.changes !== 1) throw new Error('candidate changed before approval');
@@ -375,6 +393,7 @@ export class LessonHostService {
   private async readBinding(token: unknown, capability: VerifiedLessonHostBinding['capabilities'][number]) { const binding = await this.options.verifyBinding(token); this.assertBinding(binding, capability); return binding; }
   private async writeBinding(token: unknown, generation: number, capability: VerifiedLessonHostBinding['capabilities'][number]) { const binding = await this.readBinding(token, capability); if (binding.generation !== generation) throw new Error('binding generation mismatch'); return binding; }
   private assertBinding(binding: VerifiedLessonHostBinding, capability: string) { if (!Identifier.safeParse(binding.projectHash).success || !Identifier.safeParse(binding.actorId).success || !binding.capabilities.includes(capability as never)) throw new Error('untrusted or unauthorized host binding'); }
+  private canWriteLesson(binding: VerifiedLessonHostBinding, lessonId: string): boolean { try { return new CanonicalMemoryAccessService(this.options.db).check({ projectHash: binding.projectHash, canonicalType: 'lesson', canonicalId: lessonId, requesterActorId: binding.actorId, permission: 'write' }).allowed; } catch { return false; } }
   private canReadLesson(binding: VerifiedLessonHostBinding, lessonId: string): boolean { try { return new CanonicalMemoryAccessService(this.options.db).check({ projectHash: binding.projectHash, canonicalType: 'lesson', canonicalId: lessonId, requesterActorId: binding.actorId, permission: 'read' }).allowed; } catch { return false; } }
   private assertSourceEvents(projectHash: string, ids: string[], sourceSessionIds?: string[]) { const rows = sqliteAll<{ id: string; session_id: string; metadata: string }>(this.options.db, `SELECT id, session_id, metadata FROM events WHERE id IN (${ids.map(() => '?').join(',')})`, ids); if (rows.length !== ids.length) throw new Error('source event refs are unavailable'); for (const row of rows) { const metadata = parseJson<Record<string, unknown>>(row.metadata, {}); if ((metadata.scope as { project?: { hash?: string } } | undefined)?.project?.hash !== projectHash) throw new Error('source event project mismatch'); } if (sourceSessionIds) { const expected = new Set(rows.map((row) => row.session_id)); if (sourceSessionIds.length !== expected.size || sourceSessionIds.some((id) => !expected.has(id))) throw new Error('source session refs do not match source events'); } }
   private insertCandidate(binding: VerifiedLessonHostBinding, evidenceKey: string, payloadHash: string, candidate: Candidate, expiresAt?: string) { const candidateId = randomUUID(); const now = new Date().toISOString(); const maxExpiry = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(); const expires = expiresAt && expiresAt < maxExpiry ? expiresAt : maxExpiry; const duplicateLessonIds = this.findDuplicateLessonIds(binding.projectHash, candidate).filter((id) => id !== candidate.updatesLesson?.lessonId); sqliteRun(this.options.db, `INSERT INTO lesson_review_candidates (candidate_id, project_hash, evidence_key, payload_hash, payload_json, evidence_refs_json, duplicate_lesson_ids_json, status, revision, generation, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 1, ?, ?, ?, ?)`, [candidateId, binding.projectHash, evidenceKey, payloadHash, stableJson(candidate), JSON.stringify(candidate.sourceEventIds), JSON.stringify(duplicateLessonIds), binding.generation, expires, now, now]); return candidateFromRow(sqliteGet<CandidateRow>(this.options.db, `SELECT * FROM lesson_review_candidates WHERE candidate_id = ?`, [candidateId])!); }
@@ -383,21 +402,28 @@ export class LessonHostService {
   private validRecallReplay(replay: unknown, binding: VerifiedLessonHostBinding): boolean { const body = replay as { lessons?: Array<{ lessonId?: string; revision?: number; injectionMode?: 'direct' | 'summary' | 'reference' }> }; if (!Array.isArray(body.lessons)) return false; const current = body.lessons.map((item) => typeof item.lessonId === 'string' ? new LessonRepository(this.options.db).get(item.lessonId) : undefined); if (current.some((lesson, index) => !lesson || lesson.revision !== body.lessons![index]!.revision)) return false; return this.validRecallSelection(current.map((lesson, index) => ({ lesson: lesson!, injectionMode: body.lessons![index]!.injectionMode ?? 'direct' })), binding); }
   private validRecallSelection(selection: Array<{ lesson: MemoryLesson; injectionMode: 'direct' | 'summary' | 'reference' }>, binding: VerifiedLessonHostBinding): boolean { const current = selection.map(({ lesson }) => new LessonRepository(this.options.db).get(lesson.lessonId)); if (current.some((lesson, index) => !lesson || lesson.projectHash !== binding.projectHash || lesson.revision !== selection[index]!.lesson.revision || !lesson.recallEnabled || !this.canReadLesson(binding, lesson.lessonId))) return false; const allowed = new CanonicalMemoryInjectionService(this.options.db).select({ projectHash: binding.projectHash, actorId: binding.actorId, lane: 'prompt', candidates: current.map((lesson) => ({ canonicalType: 'lesson' as const, canonicalId: lesson!.lessonId, value: lesson! })) }).items; return allowed.length === selection.length && selection.every(({ lesson, injectionMode }) => allowed.some((item) => item.value.lessonId === lesson.lessonId && item.injectionMode === injectionMode)); }
   private findDuplicateLessonIds(projectHash: string, candidate: Candidate): string[] { const terms = new Set(`${candidate.name} ${candidate.trigger}`.toLowerCase().match(/[a-z0-9가-힣]{2,}/g) ?? []); return sqliteAll<{ lesson_id: string; name: string; trigger: string }>(this.options.db, `SELECT lesson_id, name, trigger FROM memory_lessons WHERE project_hash=?`, [projectHash]).filter((lesson) => { const other = new Set(`${lesson.name} ${lesson.trigger}`.toLowerCase().match(/[a-z0-9가-힣]{2,}/g) ?? []); let overlap = 0; for (const term of terms) if (other.has(term)) overlap += 1; return lesson.name === candidate.name || overlap >= 2 && overlap / Math.max(terms.size, other.size) >= 0.5; }).map((lesson) => lesson.lesson_id); }
-  /** The lesson an update proposal names must be in this project and still at the revision the proposer read. */
-  private requireUpdateTarget(projectHash: string, target: { lessonId: string; revision: number }) {
-    const row = sqliteGet<{ lesson_id: string; revision: number }>(this.options.db, `SELECT lesson_id, revision FROM memory_lessons WHERE lesson_id = ? AND project_hash = ?`, [target.lessonId, projectHash]);
-    if (!row) throw codedError('updated lesson is not in this project', 'lesson_not_found');
+  /**
+   * The lesson an update proposal names must be in this project, readable by
+   * this actor (an unreadable lesson is reported as absent, not as forbidden),
+   * and still at the revision the proposer read.
+   */
+  private requireUpdateTarget(binding: VerifiedLessonHostBinding, target: { lessonId: string; revision: number }) {
+    const row = sqliteGet<{ lesson_id: string; revision: number }>(this.options.db, `SELECT lesson_id, revision FROM memory_lessons WHERE lesson_id = ? AND project_hash = ?`, [target.lessonId, binding.projectHash]);
+    if (!row || !this.canReadLesson(binding, target.lessonId)) throw codedError('updated lesson is not in this project', 'lesson_not_found');
     if (row.revision !== target.revision) throw codedError('updated lesson changed since the proposal read it', 'lesson_revision_conflict');
     return row;
   }
   /** Revision CAS: replaces the reviewed fields, keeps the lesson id, recall state and accumulated provenance. */
   private applyLessonUpdate(binding: VerifiedLessonHostBinding, candidate: Candidate, target: { lessonId: string; revision: number }, now: string): string {
-    this.requireUpdateTarget(binding.projectHash, target);
+    this.requireUpdateTarget(binding, target);
+    // Same rule as mem-lesson-save: replacing a lesson needs write on that lesson, not only lesson.manage.
+    if (!this.canWriteLesson(binding, target.lessonId)) throw codedError('lesson write permission is required to replace it', 'permission_denied');
     const before = new LessonRepository(this.options.db).get(target.lessonId)!;
     const union = (left: readonly string[], right: readonly string[]) => [...new Set([...left, ...right])].slice(-100);
     const changed = sqliteRun(this.options.db, `UPDATE memory_lessons SET name = ?, trigger = ?, steps_json = ?, confidence = MAX(confidence, ?), source_session_ids = ?, source_event_ids = ?, failure_modes_json = ?, skill_candidate = ?, scope = ?, validation_json = ?, reconsider_when = ?, valid_versions_json = ?, revision = revision + 1, updated_at = ? WHERE lesson_id = ? AND project_hash = ? AND revision = ?`, [candidate.name, candidate.trigger, JSON.stringify(candidate.steps), candidate.confidence, JSON.stringify(union(before.sourceSessionIds, candidate.sourceSessionIds)), JSON.stringify(union(before.sourceEventIds, candidate.sourceEventIds)), JSON.stringify(candidate.failureModes), candidate.skillCandidate ? 1 : 0, candidate.scope, JSON.stringify(candidate.validation), candidate.reconsiderWhen, JSON.stringify(candidate.validVersions ?? []), now, target.lessonId, binding.projectHash, target.revision]);
     if (changed.changes !== 1) throw codedError('updated lesson changed since the proposal read it', 'lesson_revision_conflict');
-    writeGovernanceAuditEntrySync(this.options.db, { operation: 'lesson_promote', actor: binding.actorId, projectHash: binding.projectHash, targetType: 'lesson', targetId: target.lessonId, beforeJson: { lessonId: before.lessonId, revision: before.revision, name: before.name, trigger: before.trigger, steps: before.steps }, afterJson: { lessonId: target.lessonId, revision: target.revision + 1, name: candidate.name, trigger: candidate.trigger, steps: candidate.steps, sourceClass: 'curated' }, sourceEventIds: candidate.sourceEventIds });
+    const after = new LessonRepository(this.options.db).get(target.lessonId)!;
+    writeGovernanceAuditEntrySync(this.options.db, { operation: 'lesson_promote', actor: binding.actorId, projectHash: binding.projectHash, targetType: 'lesson', targetId: target.lessonId, beforeJson: lessonAuditSnapshot(before), afterJson: lessonAuditSnapshot(after), sourceEventIds: candidate.sourceEventIds });
     return target.lessonId;
   }
   private expireCandidates(projectHash: string) { sqliteRun(this.options.db, `UPDATE lesson_review_candidates SET status='expired', revision=revision+1, updated_at=? WHERE project_hash=? AND status IN ('pending','reviewed') AND expires_at IS NOT NULL AND expires_at <= ?`, [new Date().toISOString(), projectHash, new Date().toISOString()]); }

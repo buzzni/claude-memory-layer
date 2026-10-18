@@ -112,6 +112,18 @@ after enqueue fails approval with `lesson_revision_conflict` and the candidate
 stays reviewed. Renaming onto another lesson's name fails with
 `merge_required`, as does a new proposal that reuses an existing name.
 
+Approving an update candidate requires `confirmUpdatesLesson: { lessonId,
+revision }` on the approve request, equal to the candidate's target; without it
+approval fails with `update_confirmation_required`, so a client that does not
+show updates cannot replace a lesson. Enqueue treats a target the actor cannot
+read as `lesson_not_found`; approval requires `write` on the target lesson
+(the same rule as `mem-lesson-save`) and otherwise fails with
+`permission_denied`. A replayed enqueue returns its first result even if the
+target moved since. The audit entry records the full previous and new lesson
+(steps, failure modes, scope, validation, reconsider-when, valid versions).
+`mem-lesson-get` returns the lesson `revision` and every field an update
+replaces, with up to 20 steps and failure modes and explicit truncation flags.
+
 When a host owns provider lesson injection it may set the launch-only
 environment marker `CLAUDE_MEMORY_LESSON_OWNER=host`. The native Claude
 `user-prompt-submit` and `session-start` hooks then skip only their curated lesson lanes; event-memory

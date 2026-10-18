@@ -1176,29 +1176,32 @@ async function handleLessonSave(context: MemoryOperationContext, args: Record<st
   };
 }
 
-function formatLesson(lesson: {
-  lessonId: string;
-  name: string;
-  trigger: string;
-  confidence: number;
-  skillCandidate: boolean;
-  sourceClass: string;
-  steps: string[];
-  failureModes: string[];
-  sourceEventIds: string[];
-  sourceSessionIds: string[];
-  createdAt: Date;
-  updatedAt: Date;
-}): Record<string, unknown> {
+/**
+ * A proposal that revises a lesson copies its revision and full text from this
+ * view, so every field an update replaces is included, and steps and failure
+ * modes go up to the candidate schema bound (20) with an explicit truncation
+ * flag instead of a silent cut.
+ */
+const LESSON_LIST_FIELD_MAX = 20;
+function formatLesson(lesson: Omit<MemoryLesson, 'validation' | 'validVersions' | 'revision' | 'recallEnabled'> & Partial<Pick<MemoryLesson, 'validation' | 'validVersions' | 'revision' | 'recallEnabled'>>): Record<string, unknown> {
+  const capped = (values: readonly string[], chars: number) => values.slice(0, LESSON_LIST_FIELD_MAX).map((value) => sanitizeOperationString(value, chars));
   return {
     lessonId: sanitizeOperationString(lesson.lessonId, 120),
+    revision: lesson.revision ?? 1,
     name: sanitizeOperationString(lesson.name, 240),
     trigger: sanitizeOperationString(lesson.trigger, 500),
     confidence: Number(lesson.confidence),
     skillCandidate: Boolean(lesson.skillCandidate),
     sourceClass: lesson.sourceClass === 'curated' ? 'curated' : 'derived',
-    steps: lesson.steps.slice(0, 10).map((step) => sanitizeOperationString(step, 500)),
-    failureModes: lesson.failureModes.slice(0, 10).map((mode) => sanitizeOperationString(mode, 300)),
+    steps: capped(lesson.steps, 500),
+    stepsTruncated: lesson.steps.length > LESSON_LIST_FIELD_MAX,
+    failureModes: capped(lesson.failureModes, 300),
+    failureModesTruncated: lesson.failureModes.length > LESSON_LIST_FIELD_MAX,
+    scope: lesson.scope === undefined ? null : sanitizeOperationString(lesson.scope, 500),
+    validation: capped(lesson.validation ?? [], 500),
+    reconsiderWhen: lesson.reconsiderWhen === undefined ? null : sanitizeOperationString(lesson.reconsiderWhen, 500),
+    validVersions: capped(lesson.validVersions ?? [], 120),
+    recallEnabled: lesson.recallEnabled ?? true,
     sourceEventIds: lesson.sourceEventIds.slice(0, 10).map((id) => sanitizeOperationString(id, 120)),
     sourceSessionIds: lesson.sourceSessionIds.slice(0, 10).map((id) => sanitizeOperationString(id, 120)),
     createdAt: isoDate(lesson.createdAt),
