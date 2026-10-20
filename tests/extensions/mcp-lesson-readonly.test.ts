@@ -41,6 +41,38 @@ async function read(projectPath: string, args: Record<string, unknown>) {
   return JSON.parse(String(result.content[0]?.text));
 }
 
+// specs/host-lesson-matching-2026-10-18 P0: a proposal that revises a lesson
+// copies its revision and full text from this lookup, so nothing an update
+// replaces may be missing or cut here.
+describe('MCP lesson body lookup for an update proposal', () => {
+  it('returns the revision and every field an update replaces', async () => {
+    const f = await fixture();
+    const steps = Array.from({ length: 12 }, (_, i) => `step ${i + 1}`);
+    const repository = new LessonRepository(f.store.getDatabase());
+    await repository.upsert({
+      projectHash: f.projectHash, name: f.lesson.name, trigger: f.lesson.trigger, steps,
+      sourceEventIds: ['fixture-event'], sourceClass: 'curated', scope: 'desktop release',
+      validation: ['npm run check'], reconsiderWhen: 'the release script moves', validVersions: ['2.4.x'],
+      failureModes: ['skipping the check']
+    });
+    const body = await read(f.projectPath, { lessonId: f.lesson.lessonId });
+    await f.store.close();
+    expect(body.lesson).toMatchObject({
+      revision: 2, steps, scope: 'desktop release', validation: ['npm run check'],
+      reconsiderWhen: 'the release script moves', validVersions: ['2.4.x'], failureModes: ['skipping the check'],
+      stepsTruncated: false, absorbedInto: null
+    });
+  });
+
+  it('names the runbook that absorbed a lesson, so an update goes to the runbook', async () => {
+    const f = await fixture();
+    f.store.getDatabase().prepare(`UPDATE memory_lessons SET recall_enabled = 0, absorbed_into = 'runbook-1' WHERE lesson_id = ?`).run(f.lesson.lessonId);
+    const body = await read(f.projectPath, { lessonId: f.lesson.lessonId });
+    await f.store.close();
+    expect(body.lesson).toMatchObject({ recallEnabled: false, absorbedInto: 'runbook-1' });
+  });
+});
+
 describe('MCP lesson body lookup in a read-only runtime', () => {
   it('reads by id and name without writing a closed read-only canonical store', async () => {
     const f = await fixture();

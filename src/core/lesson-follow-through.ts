@@ -152,6 +152,13 @@ export function observeLessonFollowThrough(
  * such as `node scripts/check-max-lines.mjs` would match in most sessions and
  * hold the top of the index for reasons unrelated to the lesson.
  */
+/**
+ * The query label a host-mode runbook index listing is recorded under. The
+ * audit classifies runbook listings by it, so a later revert does not move
+ * past listings out of the runbook count.
+ */
+export const SESSION_START_RUNBOOK_INDEX_LABEL = '[session-start] runbook index';
+
 export function readSessionStartLessonUsage(
   db: SQLiteDatabase,
   since: Date

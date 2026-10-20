@@ -96,6 +96,44 @@ trust a DTO normal-end flag. `evidenceKey` and request id are idempotent.
 The stable service entry exports `LESSON_HOST_CAPABILITIES` with `version: 1`
 and `nativeLessonOwnerMarker: true`. Hosts check these exact values on the
 installed artifact before choosing host ownership for a provider launch.
+Additional fields describe additional behaviour and are checked one by one,
+never by comparing the whole object.
+
+`lessonUpdates: true` (CML 2.4.14+) means a candidate payload may carry
+`updatesLesson: { lessonId, revision }`: the proposal revises that lesson
+instead of adding a new one. The payload schema is strict, so a host must not
+send the field to an installed artifact without this capability. Enqueue
+rejects a lesson outside the binding project (`lesson_not_found`) or one whose
+revision already moved (`lesson_revision_conflict`); duplicate suggestions
+exclude the target. Approval is a revision compare-and-swap: it keeps the
+lesson id and recall state, replaces the reviewed fields, unions provenance,
+bumps the revision, and audits the previous revision. A lesson that changed
+after enqueue fails approval with `lesson_revision_conflict` and the candidate
+stays reviewed. Renaming onto another lesson's name fails with
+`merge_required`, as does a new proposal that reuses an existing name.
+
+Approving an update candidate requires `confirmUpdatesLesson: { lessonId,
+revision }` on the approve request, equal to the candidate's target; without it
+approval fails with `update_confirmation_required`, so a client that does not
+show updates cannot replace a lesson. Enqueue treats a target the actor cannot
+read as `lesson_not_found`, and so does a lesson a runbook absorbed (switched
+off and pointing at it, see `lesson consolidate`): the runbook is what to
+revise, and `mem-lesson-get` names it as `absorbedInto`. Approval requires `write` on the target lesson
+(the same rule as `mem-lesson-save`) and otherwise fails with
+`permission_denied`. A replayed enqueue returns its first result even if the
+target moved since. The audit entry records the full previous and new lesson
+(steps, failure modes, scope, validation, reconsider-when, valid versions).
+`mem-lesson-get` returns the lesson `revision` and every field an update
+replaces, with up to 20 steps and failure modes and explicit truncation flags.
+
+`listCandidates` and `reviewStatus` add `updateTarget` to an update candidate:
+`{ available: true, lessonId, currentRevision, name, trigger, steps,
+failureModes, scope, validation, reconsiderWhen, validVersions, recallEnabled }`
+for the lesson as it is now, or `{ available: false, lessonId }` when it is gone
+or unreadable for this actor, or absorbed into a runbook. A client shows current and proposed text side by
+side and does not offer approval when the target is unavailable or
+`currentRevision` differs from `updatesLesson.revision`: such a candidate can
+only be rejected and proposed again.
 
 When a host owns provider lesson injection it may set the launch-only
 environment marker `CLAUDE_MEMORY_LESSON_OWNER=host`. The native Claude
@@ -103,6 +141,17 @@ environment marker `CLAUDE_MEMORY_LESSON_OWNER=host`. The native Claude
 retrieval is unchanged. Absent or other values preserve native ownership. The
 host must not set this marker unless it actually injects lessons; it is neither
 persisted nor a user setting or managed-hook change.
+
+With `sessionStartRunbookIndex: true`, one exception holds under the host
+marker: the Claude `session-start` hook lists the project's consolidated
+runbooks (lessons other lessons were absorbed into, see `claude-memory-layer
+lesson consolidate`) as references — name and trigger, body through
+`mem-lesson-get`. A project without runbooks lists nothing, so the lane stays
+empty until an operator consolidates. Per-turn lessons stay the host's; host
+recall may also select a runbook, and the host may deliver it again in a turn.
+The Codex `session-start` hook lists nothing under the host marker. A host
+that must keep the session-start lane empty sets
+`CLAUDE_MEMORY_SESSION_START_LESSON_BUDGET=0` for the launch.
 
 `markReviewed({ candidateId, expectedRevision, payloadHash, generation })`,
 `approveCandidate({ candidateId, expectedRevision, payloadHash, generation })`,

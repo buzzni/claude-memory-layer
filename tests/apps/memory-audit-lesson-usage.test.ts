@@ -223,10 +223,10 @@ describe('memory audit lesson usage', () => {
     await store.close();
     const db = createSQLiteDatabase(dbPath);
     let seq = 0;
-    const listing = (input: { status?: string; evidence?: unknown; createdAt?: string; trigger?: string }) => sqliteRun(db,
-      `INSERT INTO memory_helpfulness (id, event_id, session_id, memory_kind, trigger_type, presentation_mode, delivery_status, evidence_json, measured_at, created_at)
-       VALUES (?, 'lesson-good', 'session-private-id', 'lesson', ?, 'reference', ?, ?, ?, ?)`,
-      [`h-${++seq}`, input.trigger ?? 'session_start', input.status ?? 'emitted',
+    const listing = (input: { status?: string; evidence?: unknown; createdAt?: string; trigger?: string; preview?: string; session?: string }) => sqliteRun(db,
+      `INSERT INTO memory_helpfulness (id, event_id, session_id, query_preview, memory_kind, trigger_type, presentation_mode, delivery_status, evidence_json, measured_at, created_at)
+       VALUES (?, 'lesson-good', ?, ?, 'lesson', ?, 'reference', ?, ?, ?, ?)`,
+      [`h-${++seq}`, input.session ?? 'session-private-id', input.preview ?? '[session-start] lesson index', input.trigger ?? 'session_start', input.status ?? 'emitted',
         input.evidence === undefined ? null : typeof input.evidence === 'string' ? input.evidence : JSON.stringify(input.evidence),
         IN, input.createdAt ?? IN]);
     const follow = (opened: boolean, commandAnchors: number, matchedAnchors: number) =>
@@ -239,16 +239,22 @@ describe('memory audit lesson usage', () => {
     listing({ status: 'formatted', evidence: follow(true, 1, 1) });   // never reached the model
     listing({ createdAt: BEFORE, evidence: follow(true, 1, 1) });     // outside the window
     listing({ trigger: 'user_prompt', evidence: follow(true, 1, 1) }); // not a session-start listing
+    // Runbook-index listings are classified by the label recorded when they were listed.
+    listing({ preview: '[session-start] runbook index', session: 'session-runbook-a', evidence: follow(true, 0, 0) });
+    listing({ preview: '[session-start] runbook index', session: 'session-runbook-a', evidence: follow(false, 0, 0) });
+    listing({ preview: '[session-start] runbook index', session: 'session-runbook-b' }); // not evaluated yet
     sqliteClose(db);
 
     const report = buildMemoryAuditReport({ homeDir, allProjects: true, since: SINCE, until: UNTIL });
     expect(report.stores[0].lessonUsage?.sessionStartEngagement).toEqual({
       support: 'supported', timeBasis: 'memory_helpfulness.created_at',
-      emitted: 5, observed: 3, opened: 1, withCommandAnchors: 2, followedCommand: 1
+      emitted: 8, observed: 5, opened: 2, withCommandAnchors: 2, followedCommand: 1,
+      runbooks: { listings: 3, opened: 1, sessionsListed: 2, sessionsObserved: 1, sessionsOpened: 1 }
     });
     const markdown = formatMemoryAuditMarkdown(report);
     expect(markdown).toContain('Session-start lesson listings');
-    expect(markdown).toContain('| aaaaaaaa | 5 | 3 | 1 | 1 / 2 |');
+    expect(markdown).toContain('| aaaaaaaa | 8 | 5 | 2 | 1 / 2 |');
+    expect(markdown).toContain('| aaaaaaaa | 2 | 1 | 1 | 3 | 1 |');
   });
 
   it('reports unsupported sections for a legacy store instead of failing or migrating it', () => {
@@ -269,6 +275,7 @@ describe('memory audit lesson usage', () => {
     expect(store.lessonUsage?.host).toMatchObject({ support: 'unsupported', deliveryLineage: 'unsupported' });
     expect(store.lessonUsage?.runtimeVersions).toBe('unsupported');
     expect(store.lessonQuality?.support).toBe('unsupported');
+    expect(store.lessonUsage?.sessionStartEngagement.runbooks).toBe('unsupported');
     expect(store.lessonAuditError).toBeNull();
     expect(snapshotTree(memoryRoot)).toEqual(before);
   });

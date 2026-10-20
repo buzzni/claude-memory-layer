@@ -40,7 +40,7 @@ import type {
   SessionStartInput,
   SessionStartOutput
 } from '../../../core/types.js';
-import type { SessionStartLessonUsage } from '../../../core/lesson-follow-through.js';
+import { SESSION_START_RUNBOOK_INDEX_LABEL, type SessionStartLessonUsage } from '../../../core/lesson-follow-through.js';
 
 const CORE_MEMORY_BLOCK_LABELS: Record<CoreMemoryBlock['blockKey'], string> = {
   project: 'Project',
@@ -231,22 +231,34 @@ function compactCoreMemorySummary(content: string): string {
  */
 const SESSION_START_LESSON_BUDGET_DEFAULT = 2400;
 const SESSION_START_LESSON_TRIGGER_CHARS = 90;
+/** Runbook triggers carry the request wordings that route to them; 90 chars cut those off. */
+const SESSION_START_RUNBOOK_TRIGGER_CHARS = 200;
 /** Listings older than this no longer push a lesson down the index. */
 const SESSION_START_LESSON_USAGE_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
 
+/**
+ * specs/host-lesson-matching-2026-10-18 P1 — which lessons the index lists.
+ * When the host owns per-turn lessons, the index keeps only consolidated
+ * runbooks (a short list of task kinds, Hermes-style); the host still
+ * delivers single lessons per turn. The Codex path has no runbook index yet.
+ */
+export function sessionStartLessonIndexScope(env: NodeJS.ProcessEnv, deliveryClient: string): 'all' | 'runbooks' | 'none' {
+  if (env.CLAUDE_MEMORY_LESSON_OWNER !== 'host') return 'all';
+  return deliveryClient.startsWith('codex') ? 'none' : 'runbooks';
+}
+
 export function sessionStartLessonBudget(env: NodeJS.ProcessEnv = process.env): number {
-  if (env.CLAUDE_MEMORY_LESSON_OWNER === 'host') return 0;
   const raw = env.CLAUDE_MEMORY_SESSION_START_LESSON_BUDGET;
   if (raw === undefined || raw === '') return SESSION_START_LESSON_BUDGET_DEFAULT;
   const parsed = Number(raw);
   return Number.isInteger(parsed) && parsed >= 0 ? parsed : SESSION_START_LESSON_BUDGET_DEFAULT;
 }
 
-function clipLessonTrigger(trigger: string): string {
+function clipLessonTrigger(trigger: string, limit: number): string {
   const normalized = trigger.replace(/\s+/g, ' ').trim();
-  return normalized.length <= SESSION_START_LESSON_TRIGGER_CHARS
+  return normalized.length <= limit
     ? normalized
-    : `${normalized.slice(0, SESSION_START_LESSON_TRIGGER_CHARS - 1)}…`;
+    : `${normalized.slice(0, limit - 1)}…`;
 }
 
 /**
@@ -272,17 +284,26 @@ export function rankSessionStartLessons<T extends { lessonId: string; confidence
 
 export function formatLessonIndexContext(
   lessons: ReadonlyArray<{ name: string; trigger: string }>,
-  options: { budgetChars: number; totalCount: number }
+  options: { budgetChars: number; totalCount: number; variant?: 'lessons' | 'runbooks' }
 ): string {
-  const header = '## Project Lessons\n\n'
-    + 'Curated lessons from earlier sessions in this project — the trigger says when each applies. '
-    + 'When one matches the task at hand, open it with `mem-lesson-get` (name) before acting; '
-    + '`mem-lesson-list` shows everything.\n\n';
-  const footer = (shown: number) =>
-    `\n(${shown} of ${options.totalCount} lessons shown; the rest are reachable with \`mem-lesson-list\`.)\n`;
+  const runbooks = options.variant === 'runbooks';
+  // The runbook wording follows hermes' skills index: open on a partial match, err on opening.
+  const header = runbooks
+    ? '## Project Runbooks\n\n'
+      + 'Runbooks for the recurring kinds of task in this project — the trigger says when each applies. '
+      + 'Before you start a task that matches one, even partly, open it with `mem-lesson-get` (name) and follow it; '
+      + 'when unsure, open it.\n\n'
+    : '## Project Lessons\n\n'
+      + 'Curated lessons from earlier sessions in this project — the trigger says when each applies. '
+      + 'When one matches the task at hand, open it with `mem-lesson-get` (name) before acting; '
+      + '`mem-lesson-list` shows everything.\n\n';
+  const footer = (shown: number) => runbooks
+    ? `\n(${shown} of ${options.totalCount} runbooks shown.)\n`
+    : `\n(${shown} of ${options.totalCount} lessons shown; the rest are reachable with \`mem-lesson-list\`.)\n`;
+  const triggerChars = runbooks ? SESSION_START_RUNBOOK_TRIGGER_CHARS : SESSION_START_LESSON_TRIGGER_CHARS;
   const items: string[] = [];
   for (const lesson of lessons) {
-    const line = `- ${lesson.name.trim()} — ${clipLessonTrigger(lesson.trigger)}\n`;
+    const line = `- ${lesson.name.trim()} — ${clipLessonTrigger(lesson.trigger, triggerChars)}\n`;
     const candidate = header + items.join('') + line + footer(items.length + 1);
     if (candidate.length > options.budgetChars) break;
     items.push(line);
@@ -448,13 +469,19 @@ export async function main(options: SessionStartMainOptions = {}): Promise<strin
 
     // specs/lesson-recall-hooks R1 — lesson index. Bounded like the core lane,
     // never query-scored; the per-turn lane handles relevance for what is cut here.
-    const lessonBudget = sessionStartLessonBudget();
+    const lessonScope = sessionStartLessonIndexScope(process.env, deliveryClient);
+    const lessonBudget = lessonScope === 'none' ? 0 : sessionStartLessonBudget();
     if (lessonBudget > 0 && process.env.CLAUDE_MEMORY_EVAL_DISABLE_SESSION_CONTEXT !== 'true') {
       try {
-        const injections = await memoryService.listProjectLessonInjections(
+        let injections = await memoryService.listProjectLessonInjections(
           resolveCanonicalMemoryActorId(input.actor_id),
           500
         );
+        if (lessonScope === 'runbooks') {
+          const runbookIds = new Set(await memoryService.listProjectRunbookIds());
+          injections = injections.filter((item) => runbookIds.has(item.value.lessonId));
+        }
+        const indexLabel = lessonScope === 'runbooks' ? SESSION_START_RUNBOOK_INDEX_LABEL : '[session-start] lesson index';
         // Order only: a usage read that fails must not cost the index itself.
         let usage = new Map<string, SessionStartLessonUsage>();
         try {
@@ -463,7 +490,7 @@ export async function main(options: SessionStartMainOptions = {}): Promise<strin
           // Recency order.
         }
         const lessons = rankSessionStartLessons(injections.map((item) => item.value), usage);
-        const lessonContext = formatLessonIndexContext(lessons, { budgetChars: lessonBudget, totalCount: lessons.length });
+        const lessonContext = formatLessonIndexContext(lessons, { budgetChars: lessonBudget, totalCount: lessons.length, variant: lessonScope === 'runbooks' ? 'runbooks' : 'lessons' });
         if (lessonContext) {
           if (context) context += '\n';
           context += lessonContext;
@@ -477,7 +504,7 @@ export async function main(options: SessionStartMainOptions = {}): Promise<strin
             await memoryService.recordQueryTrace({
               traceId: lessonTraceId,
               sessionId: input.session_id,
-              queryText: '[session-start] lesson index',
+              queryText: indexLabel,
               strategy: 'session-start-lessons',
               candidateEventIds: lessons.map((lesson) => lesson.lessonId),
               selectedEventIds: shownIds,
@@ -511,7 +538,7 @@ export async function main(options: SessionStartMainOptions = {}): Promise<strin
                 lesson.lessonId,
                 input.session_id,
                 0.5,
-                '[session-start] lesson index',
+                indexLabel,
                 {
                   traceId: lessonTraceId,
                   source: 'session_start',
