@@ -46,6 +46,20 @@ describe('normalizeUserPrompt', () => {
     expect(result.removedScaffolds).toEqual(['lesson_proposal_wrapper', 'injected_lesson_list']);
   });
 
+  // Happy (lesson-intake-updates) inserts update and naming guidance between the
+  // fixed first and last sentences; the wrapper must still be recognized.
+  it('removes the lesson proposal wrapper with the update and naming guidance', () => {
+    const wrapper = 'If this turn corrects an earlier mistake or verifies recovery from a failure, you may propose one reusable project lesson before finishing. '
+      + `Use mcp__happy__propose_lesson with token="${TOKEN}" and proposal containing name, trigger, steps (string[]), failureModes (string[]), scope, validation (string[]), reconsiderWhen, and optional validVersions (string[]). `
+      + 'If a project lesson shown or read in this turn covers the same kind of task, revise that lesson instead of adding a new one: read it in full with mem-lesson-get, then send its complete revised text with updatesLesson {lessonId, revision} from that lookup. '
+      + "Name a new lesson after the kind of task it governs (for example pr-conflict-resolution), never after a PR or issue number, an error string, a date or today's task; keep incident detail in a step or failure mode. "
+      + 'Only describe procedures actually verified in this turn. Exclude secrets, copied rules, transient environment failures and one-off narratives. '
+      + 'This only stages a candidate for human approval; it never approves a lesson. Skip this optional action if the user disallows tools or saving memory. Do not perform extra work just to generate a lesson.';
+    const result = normalizeUserPrompt(`${wrapper}\n\nPR conflict 해결해줘`);
+    expect(result).toMatchObject({ kind: 'user', requestText: 'PR conflict 해결해줘', removedScaffolds: ['lesson_proposal_wrapper'] });
+    expect(JSON.stringify(result)).not.toContain(TOKEN);
+  });
+
   // Happy #551 widened the footer; 78 of 1,214 stored Desktop prompts kept
   // the whole list because only the older footer was recognized.
   it('removes the current host lesson preview list with its widened footer', () => {
