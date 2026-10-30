@@ -31,6 +31,6 @@ export const RetrievalResultEnvelopeSchema = z.object({
   sourceRef: z.string().optional(),
   sessionId: z.string().optional(),
   turnId: z.string().optional(),
-  metadata: z.record(z.unknown()).optional()
+  metadata: z.record(z.string(), z.unknown()).optional()
 });
 export type RetrievalResultEnvelope = z.infer<typeof RetrievalResultEnvelopeSchema>;

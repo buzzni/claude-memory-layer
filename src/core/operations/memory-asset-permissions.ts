@@ -29,7 +29,7 @@ export const MemoryAssetSchema = z.object({
   status: MemoryAssetStatusSchema,
   visibility: MemoryAssetVisibilitySchema,
   sourceRefs: StringArraySchema,
-  metadata: z.record(z.unknown()).optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
   createdAt: z.date(),
   updatedAt: z.date()
 });
@@ -44,7 +44,7 @@ export const CreateMemoryAssetInputSchema = z.object({
   status: MemoryAssetStatusSchema.default('active'),
   visibility: MemoryAssetVisibilitySchema.default('private'),
   sourceRefs: StringArraySchema,
-  metadata: z.record(z.unknown()).optional()
+  metadata: z.record(z.string(), z.unknown()).optional()
 });
 export type CreateMemoryAssetInput = z.input<typeof CreateMemoryAssetInputSchema>;
 
@@ -56,7 +56,7 @@ export const UpdateMemoryAssetInputSchema = z.object({
   status: MemoryAssetStatusSchema.optional(),
   visibility: MemoryAssetVisibilitySchema.optional(),
   sourceRefs: StringArraySchema.optional(),
-  metadata: z.record(z.unknown()).optional()
+  metadata: z.record(z.string(), z.unknown()).optional()
 }).refine(
   (input) => input.title !== undefined
     || input.status !== undefined

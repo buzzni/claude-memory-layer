@@ -21,7 +21,7 @@ export const RawEventSchema = z.object({
   content: z.string(),
   toolName: z.string().optional(),
   sourceRef: z.string().optional(),
-  metadata: z.record(z.unknown()).default({}),
+  metadata: z.record(z.string(), z.unknown()).default({}),
   privacyLevel: PrivacyLevelSchema.default('internal'),
   createdAt: z.string()
 });

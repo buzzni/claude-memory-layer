@@ -71,7 +71,7 @@ export const RetentionPolicyInputSchema = z.object({
   helpfulnessScore: z.number().min(0).max(1).optional(),
   adherenceScore: z.number().min(0).max(1).optional(),
   evidenceConfidence: z.number().min(0).max(1).optional(),
-  metadata: z.record(z.unknown()).default({}),
+  metadata: z.record(z.string(), z.unknown()).default({}),
   facets: z.array(RetentionFacetSchema).default([])
 });
 export type RetentionPolicyInput = z.input<typeof RetentionPolicyInputSchema>;

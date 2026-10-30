@@ -122,7 +122,7 @@ export const AcquireLeaseInputSchema = z.object({
   holder: NonEmptyStringSchema,
   expiresAt: DateInputSchema,
   now: DateInputSchema.optional(),
-  metadata: z.record(z.unknown()).optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
   actor: NonEmptyStringSchema.optional(),
   projectHash: NonEmptyStringSchema.optional()
 });
@@ -153,7 +153,7 @@ export const CreateCheckpointInputSchema = z.object({
   sessionId: NonEmptyStringSchema.optional(),
   title: NonEmptyStringSchema,
   summary: NonEmptyStringSchema,
-  stateJson: z.record(z.unknown()).default({}),
+  stateJson: z.record(z.string(), z.unknown()).default({}),
   sourceEventIds: StringArraySchema,
   expiresAt: DateInputSchema.optional(),
   actor: NonEmptyStringSchema.optional()
