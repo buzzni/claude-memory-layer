@@ -2715,7 +2715,8 @@ program
       projectKey,
       direction,
       batchSize,
-      intervalMs
+      intervalMs,
+      localProject: { hash: hashProjectPath(projectPath), path: projectPath }
     });
 
     const runOnce = async () => {

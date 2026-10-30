@@ -637,6 +637,8 @@ claude-memory-layer mongo-sync --watch --interval 30000 --process-after-sync --p
 
 `--process-after-sync`는 pull된 이벤트가 있을 때만 실행되며, `--process-interval` 동안 debounce되어 매 sync tick마다 불필요하게 임베딩을 재처리하지 않습니다. 내부적으로 project-scoped `vector-worker.lock`을 사용하므로 별도 `process` worker가 이미 실행 중이면 skip합니다.
 
+서버마다 프로젝트 경로가 달라도 됩니다. Pull된 이벤트는 이 서버의 프로젝트(`--project` 경로의 hash)로 다시 귀속되어 project-scoped 검색에 나오며, 원래 서버의 project scope와 hostname은 `metadata.mongoSync`에 남습니다. 같은 프로젝트를 모으려면 모든 서버에서 `--mongo-project`(또는 `CLAUDE_MEMORY_MONGO_PROJECT`)를 같은 값으로 지정하세요. 기본값은 경로의 마지막 폴더 이름입니다.
+
 ### memU-inspired Retrieval 사용 예시
 
 아래 예시는 SDK/서비스 레벨에서 `retrieveMemories()` 호출 시 적용되는 옵션입니다.

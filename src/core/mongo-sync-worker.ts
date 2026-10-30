@@ -29,6 +29,12 @@ export interface MongoSyncWorkerConfig {
   intervalMs?: number;
   batchSize?: number;
   instanceId?: string;
+  /**
+   * This machine's project. Pulled events carry the scope of the machine that wrote them (its path hash), which
+   * project-scoped search here filters out, so pull re-homes them to this project and keeps the origin under
+   * `metadata.mongoSync`. Left unset, pulled metadata is stored as received.
+   */
+  localProject?: { hash: string; path?: string };
 }
 
 export interface MongoSyncStats {
@@ -81,6 +87,32 @@ function redactMongoUri(uri: string): string {
   return `${prefix}***${suffix}`;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function localizePulledMetadata(
+  doc: RemoteEventDoc,
+  localProject: { hash: string; path?: string }
+): Record<string, unknown> {
+  const metadata = isRecord(doc.metadata) ? { ...doc.metadata } : {};
+  const scope = isRecord(metadata.scope) ? { ...metadata.scope } : {};
+  const originProject = isRecord(scope.project) ? scope.project : undefined;
+  if (originProject?.hash === localProject.hash) return metadata;
+
+  scope.project = { ...originProject, hash: localProject.hash, ...(localProject.path ? { path: localProject.path } : {}) };
+  metadata.scope = scope;
+  const originTag = typeof originProject?.hash === 'string' ? `proj:${originProject.hash}` : null;
+  const localTag = `proj:${localProject.hash}`;
+  const tags = (Array.isArray(metadata.tags) ? metadata.tags : []).map((tag) => (tag === originTag ? localTag : tag));
+  metadata.tags = tags.includes(localTag) ? tags : [...tags, localTag];
+  metadata.mongoSync = {
+    ...(originProject ? { originProject } : {}),
+    ...(doc.source?.hostname ? { originHostname: doc.source.hostname } : {})
+  };
+  return metadata;
+}
+
 function parseIntOrZero(value: string | null | undefined): number {
   if (!value) return 0;
   const n = parseInt(value, 10);
@@ -88,7 +120,8 @@ function parseIntOrZero(value: string | null | undefined): number {
 }
 
 export class MongoSyncWorker {
-  private readonly config: Required<Omit<MongoSyncWorkerConfig, 'instanceId'>> & { instanceId: string };
+  private readonly config: Required<Omit<MongoSyncWorkerConfig, 'instanceId' | 'localProject'>>
+    & Pick<MongoSyncWorkerConfig, 'localProject'> & { instanceId: string };
   private intervalHandle: NodeJS.Timeout | null = null;
   private running = false;
 
@@ -117,7 +150,8 @@ export class MongoSyncWorker {
       direction: config.direction ?? 'both',
       intervalMs: config.intervalMs ?? 30000,
       batchSize: config.batchSize ?? 500,
-      instanceId: config.instanceId ?? randomUUID()
+      instanceId: config.instanceId ?? randomUUID(),
+      localProject: config.localProject
     };
   }
 
@@ -360,7 +394,7 @@ export class MongoSyncWorker {
         content: d.content,
         canonicalKey: d.canonicalKey,
         dedupeKey: d.dedupeKey,
-        metadata: d.metadata ?? undefined
+        metadata: this.config.localProject ? localizePulledMetadata(d, this.config.localProject) : d.metadata ?? undefined
       }));
 
       const result = await this.sqliteStore.importEvents(events);
