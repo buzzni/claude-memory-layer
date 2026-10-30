@@ -41,7 +41,7 @@ const CandidateSearchInputSchema = z.object({
   limit: z.number().int().positive().max(100).optional(),
   eventLimit: z.number().int().positive().max(10_000).optional(),
   maxSourceEventIds: z.number().int().positive().max(100).optional()
-}).default({});
+}).prefault({});
 
 export const PromoteLessonCandidateInputSchema = z.object({
   projectHash: NonEmptyStringSchema,

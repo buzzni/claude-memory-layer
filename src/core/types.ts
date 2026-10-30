@@ -29,7 +29,7 @@ export const MemoryEventSchema = z.object({
   content: z.string(),
   canonicalKey: z.string(),
   dedupeKey: z.string(),
-  metadata: z.record(z.unknown()).optional()
+  metadata: z.record(z.string(), z.unknown()).optional()
 });
 export type MemoryEvent = z.infer<typeof MemoryEventSchema>;
 
@@ -157,31 +157,31 @@ export const MemoryOperationsConfigSchema = z.object({
   enabled: z.boolean().default(false),
   facets: z.object({
     enabled: z.boolean().default(true)
-  }).default({}),
+  }).prefault({}),
   actions: z.object({
     enabled: z.boolean().default(true)
-  }).default({}),
+  }).prefault({}),
   retention: z.object({
     enabled: z.boolean().default(false),
     policyVersion: z.string().default('v1')
-  }).default({}),
+  }).prefault({}),
   graphExpansion: z.object({
     enabled: z.boolean().default(false),
     maxHops: z.number().int().min(0).max(5).default(1)
-  }).default({}),
+  }).prefault({}),
   codifyLite: z.object({
     enabled: z.boolean().default(false)
-  }).default({}),
+  }).prefault({}),
   lessons: z.object({
     enabled: z.boolean().default(false)
-  }).default({}),
+  }).prefault({}),
   perspectiveMemory: z.object({
     enabled: z.boolean().default(false),
     deriver: z.object({
       enabled: z.boolean().default(false),
       maxEventsPerBatch: z.number().int().positive().max(100).default(20),
       maxObserversPerSession: z.number().int().positive().max(50).default(5)
-    }).default({}),
+    }).prefault({}),
     specialists: z.object({
       enabled: z.boolean().default(false),
       enabledProjectHashes: z.array(z.string().trim().min(1)).max(100).default([]),
@@ -194,9 +194,9 @@ export const MemoryOperationsConfigSchema = z.object({
       maxSourceObservations: z.number().int().positive().max(100).default(20),
       maxDerivedObservations: z.number().int().min(0).max(20).default(5),
       maxCardUpdates: z.number().int().min(0).max(40).default(3)
-    }).default({})
-  }).default({})
-}).default({});
+    }).prefault({})
+  }).prefault({})
+}).prefault({});
 export type MemoryOperationsConfig = z.infer<typeof MemoryOperationsConfigSchema>;
 
 // ============================================================
@@ -365,7 +365,7 @@ export const MemoryActorSchema = z.object({
   kind: MemoryActorKindSchema,
   displayName: PerspectiveMemoryNonEmptyStringSchema,
   source: PerspectiveMemoryNonEmptyStringSchema,
-  metadata: z.record(z.unknown()).optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
   createdAt: z.date(),
   updatedAt: z.date()
 });
@@ -377,7 +377,7 @@ export const UpsertMemoryActorInputSchema = z.object({
   kind: MemoryActorKindSchema.default('unknown'),
   displayName: PerspectiveMemoryNonEmptyStringSchema,
   source: PerspectiveMemoryNonEmptyStringSchema,
-  metadata: z.record(z.unknown()).optional()
+  metadata: z.record(z.string(), z.unknown()).optional()
 });
 export type UpsertMemoryActorInput = z.input<typeof UpsertMemoryActorInputSchema>;
 
@@ -398,7 +398,7 @@ export const SessionActorSchema = z.object({
   observeOthers: z.boolean().default(false),
   joinedAt: z.date(),
   leftAt: z.date().optional(),
-  metadata: z.record(z.unknown()).optional()
+  metadata: z.record(z.string(), z.unknown()).optional()
 });
 export type SessionActor = z.infer<typeof SessionActorSchema>;
 
@@ -411,7 +411,7 @@ export const UpsertSessionActorInputSchema = z.object({
   observeOthers: z.boolean().default(false),
   joinedAt: z.date().optional(),
   leftAt: z.date().optional(),
-  metadata: z.record(z.unknown()).optional()
+  metadata: z.record(z.string(), z.unknown()).optional()
 });
 export type UpsertSessionActorInput = z.input<typeof UpsertSessionActorInputSchema>;
 
@@ -511,7 +511,7 @@ export const PerspectiveObservationSchema = z.object({
   sourceEventIds: PerspectiveMemoryStringArraySchema,
   sourceObservationIds: PerspectiveMemoryStringArraySchema,
   createdBy: PerspectiveObservationCreatedBySchema,
-  metadata: z.record(z.unknown()).optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
   createdAt: z.date(),
   updatedAt: z.date(),
   deletedAt: z.date().optional()
@@ -530,7 +530,7 @@ export const CreatePerspectiveObservationInputSchema = z.object({
   sourceEventIds: PerspectiveMemoryStringArraySchema,
   sourceObservationIds: PerspectiveMemoryStringArraySchema,
   createdBy: PerspectiveObservationCreatedBySchema.default('manual'),
-  metadata: z.record(z.unknown()).optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
   actor: PerspectiveMemoryOptionalStringSchema
 }).superRefine((value, ctx) => {
   const hasEvidence = value.sourceEventIds.length > 0 || value.sourceObservationIds.length > 0;
@@ -578,18 +578,18 @@ export const ConfigSchema = z.object({
   storage: z.object({
     path: z.string().default('~/.claude-code/memory'),
     maxSizeMB: z.number().default(500)
-  }).default({}),
+  }).prefault({}),
   embedding: z.object({
     provider: z.enum(['local', 'openai']).default('local'),
     model: z.string().default('Xenova/multilingual-e5-small'),
     openaiModel: z.string().default('Xenova/multilingual-e5-small'),
     batchSize: z.number().default(32)
-  }).default({}),
+  }).prefault({}),
   retrieval: z.object({
     topK: z.number().default(5),
     minScore: z.number().default(0.7),
     maxTokens: z.number().default(2000)
-  }).default({}),
+  }).prefault({}),
   matching: z.object({
     minCombinedScore: z.number().default(0.92),
     minGap: z.number().default(0.03),
@@ -599,8 +599,8 @@ export const ConfigSchema = z.object({
       ftsScore: z.number().default(0.25),
       recencyBonus: z.number().default(0.2),
       statusWeight: z.number().default(0.15)
-    }).default({})
-  }).default({}),
+    }).prefault({})
+  }).prefault({}),
   privacy: z.object({
     excludePatterns: z.array(z.string()).default(['password', 'secret', 'api_key', 'token', 'bearer']),
     anonymize: z.boolean().default(false),
@@ -609,8 +609,8 @@ export const ConfigSchema = z.object({
       marker: z.enum(['[PRIVATE]', '[REDACTED]', '']).default('[PRIVATE]'),
       preserveLineCount: z.boolean().default(false),
       supportedFormats: z.array(z.enum(['xml', 'bracket', 'comment'])).default(['xml'])
-    }).default({})
-  }).default({}),
+    }).prefault({})
+  }).prefault({}),
   toolObservation: z.object({
     enabled: z.boolean().default(true),
     excludedTools: z.array(z.string()).default(['TodoWrite', 'TodoRead']),
@@ -618,7 +618,7 @@ export const ConfigSchema = z.object({
     maxOutputLength: z.number().default(10000),
     maxOutputLines: z.number().default(100),
     storeOnlyOnSuccess: z.boolean().default(false)
-  }).default({}),
+  }).prefault({}),
   features: z.object({
     autoSave: z.boolean().default(true),
     sessionSummary: z.boolean().default(true),
@@ -631,8 +631,8 @@ export const ConfigSchema = z.object({
       searchShared: z.boolean().default(true),
       minConfidenceForPromotion: z.number().default(0.8),
       sharedStoragePath: z.string().default('~/.claude-code/memory/shared')
-    }).default({})
-  }).default({}),
+    }).prefault({})
+  }).prefault({}),
   operations: MemoryOperationsConfigSchema,
   mode: z.enum(['session', 'endless']).default('session'),
   endless: z.object({
@@ -641,17 +641,17 @@ export const ConfigSchema = z.object({
       maxEvents: z.number().default(100),
       timeWindowHours: z.number().default(24),
       minRelevanceScore: z.number().default(0.5)
-    }).default({}),
+    }).prefault({}),
     consolidation: z.object({
       triggerIntervalMs: z.number().default(3600000),
       triggerEventCount: z.number().default(100),
       triggerIdleMs: z.number().default(1800000),
       useLLMSummarization: z.boolean().default(false)
-    }).default({}),
+    }).prefault({}),
     continuity: z.object({
       minScoreForSeamless: z.number().default(0.7),
       topicDecayHours: z.number().default(48)
-    }).default({})
+    }).prefault({})
   }).optional()
 });
 export type Config = z.infer<typeof ConfigSchema>;
@@ -752,7 +752,7 @@ export type ToolMetadata = z.infer<typeof ToolMetadataSchema>;
 
 export const ToolObservationPayloadSchema = z.object({
   toolName: z.string(),
-  toolInput: z.record(z.unknown()),
+  toolInput: z.record(z.string(), z.unknown()),
   toolOutput: z.string(),
   durationMs: z.number(),
   success: z.boolean(),
@@ -911,7 +911,7 @@ export const EntitySchema = z.object({
   title: z.string(),
   stage: EntityStageSchema,
   status: EntityStatusSchema,
-  currentJson: z.record(z.unknown()),
+  currentJson: z.record(z.string(), z.unknown()),
   titleNorm: z.string().optional(),
   searchText: z.string().optional(),
   createdAt: z.date(),
@@ -965,7 +965,7 @@ export const EdgeSchema = z.object({
   relType: RelationTypeSchema,
   dstType: NodeTypeSchema,
   dstId: z.string(),
-  metaJson: z.record(z.unknown()).optional(),
+  metaJson: z.record(z.string(), z.unknown()).optional(),
   createdAt: z.date()
 });
 export type Edge = z.infer<typeof EdgeSchema>;
@@ -1050,12 +1050,12 @@ export const EntrySchema = z.object({
   createdTs: z.date(),
   entryType: EntryTypeSchema,
   title: z.string(),
-  contentJson: z.record(z.unknown()),
+  contentJson: z.record(z.string(), z.unknown()),
   stage: EntityStageSchema,
   status: EntityStatusSchema,
   supersededBy: z.string().optional(),
   buildId: z.string().optional(),
-  evidenceJson: z.record(z.unknown()).optional(),
+  evidenceJson: z.record(z.string(), z.unknown()).optional(),
   canonicalKey: z.string()
 });
 export type Entry = z.infer<typeof EntrySchema>;
@@ -1221,19 +1221,19 @@ export const ProgressiveDisclosureConfigSchema = z.object({
   layer1: z.object({
     topK: z.number().default(10),
     minScore: z.number().default(0.7)
-  }).default({}),
+  }).prefault({}),
   autoExpand: z.object({
     enabled: z.boolean().default(true),
     highConfidenceThreshold: z.number().default(0.92),
     scoreGapThreshold: z.number().default(0.1),
     maxAutoExpandCount: z.number().default(3)
-  }).default({}),
+  }).prefault({}),
   tokenBudget: z.object({
     maxTotalTokens: z.number().default(2000),
     layer1PerItem: z.number().default(50),
     layer2PerItem: z.number().default(40),
     layer3PerItem: z.number().default(500)
-  }).default({})
+  }).prefault({})
 });
 export type ProgressiveDisclosureConfig = z.infer<typeof ProgressiveDisclosureConfigSchema>;
 
@@ -1282,19 +1282,19 @@ export const EndlessModeConfigSchema = z.object({
     maxEvents: z.number().default(100),
     timeWindowHours: z.number().default(24),
     minRelevanceScore: z.number().default(0.5)
-  }).default({}),
+  }).prefault({}),
 
   consolidation: z.object({
     triggerIntervalMs: z.number().default(3600000), // 1 hour
     triggerEventCount: z.number().default(100),
     triggerIdleMs: z.number().default(1800000), // 30 minutes
     useLLMSummarization: z.boolean().default(false)
-  }).default({}),
+  }).prefault({}),
 
   continuity: z.object({
     minScoreForSeamless: z.number().default(0.7),
     topicDecayHours: z.number().default(48)
-  }).default({})
+  }).prefault({})
 });
 export type EndlessModeConfig = z.infer<typeof EndlessModeConfigSchema>;
 
