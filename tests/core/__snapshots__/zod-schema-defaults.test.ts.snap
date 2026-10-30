@@ -1,0 +1,287 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`core/types schema defaults > fills the same defaults for undefined and {} inputs 1`] = `
+{
+  "ConfigSchema": {
+    "fromEmpty": {
+      "embedding": {
+        "batchSize": 32,
+        "model": "Xenova/multilingual-e5-small",
+        "openaiModel": "Xenova/multilingual-e5-small",
+        "provider": "local",
+      },
+      "features": {
+        "autoSave": true,
+        "crossProjectLearning": false,
+        "insightExtraction": true,
+        "sessionSummary": true,
+        "sharedStore": {
+          "autoPromote": true,
+          "enabled": true,
+          "minConfidenceForPromotion": 0.8,
+          "searchShared": true,
+          "sharedStoragePath": "~/.claude-code/memory/shared",
+        },
+        "singleWriterMode": true,
+      },
+      "matching": {
+        "minCombinedScore": 0.92,
+        "minGap": 0.03,
+        "suggestionThreshold": 0.75,
+        "weights": {
+          "ftsScore": 0.25,
+          "recencyBonus": 0.2,
+          "semanticSimilarity": 0.4,
+          "statusWeight": 0.15,
+        },
+      },
+      "mode": "session",
+      "operations": {
+        "actions": {
+          "enabled": true,
+        },
+        "codifyLite": {
+          "enabled": false,
+        },
+        "enabled": false,
+        "facets": {
+          "enabled": true,
+        },
+        "graphExpansion": {
+          "enabled": false,
+          "maxHops": 1,
+        },
+        "lessons": {
+          "enabled": false,
+        },
+        "perspectiveMemory": {
+          "deriver": {
+            "enabled": false,
+            "maxEventsPerBatch": 20,
+            "maxObserversPerSession": 5,
+          },
+          "enabled": false,
+          "specialists": {
+            "enabled": false,
+            "enabledKinds": [
+              "deduction",
+              "induction",
+              "contradiction",
+              "actor_card_maintenance",
+            ],
+            "enabledProjectHashes": [],
+            "maxCardUpdates": 3,
+            "maxDerivedObservations": 5,
+            "maxSourceObservations": 20,
+          },
+        },
+        "retention": {
+          "enabled": false,
+          "policyVersion": "v1",
+        },
+      },
+      "privacy": {
+        "anonymize": false,
+        "excludePatterns": [
+          "password",
+          "secret",
+          "api_key",
+          "token",
+          "bearer",
+        ],
+        "privateTags": {
+          "enabled": true,
+          "marker": "[PRIVATE]",
+          "preserveLineCount": false,
+          "supportedFormats": [
+            "xml",
+          ],
+        },
+      },
+      "retrieval": {
+        "maxTokens": 2000,
+        "minScore": 0.7,
+        "topK": 5,
+      },
+      "storage": {
+        "maxSizeMB": 500,
+        "path": "~/.claude-code/memory",
+      },
+      "toolObservation": {
+        "enabled": true,
+        "excludedTools": [
+          "TodoWrite",
+          "TodoRead",
+        ],
+        "maxOutputLength": 10000,
+        "maxOutputLines": 100,
+        "minOutputLength": 100,
+        "storeOnlyOnSuccess": false,
+      },
+    },
+  },
+  "EndlessModeConfigSchema": {
+    "fromEmpty": {
+      "consolidation": {
+        "triggerEventCount": 100,
+        "triggerIdleMs": 1800000,
+        "triggerIntervalMs": 3600000,
+        "useLLMSummarization": false,
+      },
+      "continuity": {
+        "minScoreForSeamless": 0.7,
+        "topicDecayHours": 48,
+      },
+      "enabled": false,
+      "workingSet": {
+        "maxEvents": 100,
+        "minRelevanceScore": 0.5,
+        "timeWindowHours": 24,
+      },
+    },
+  },
+  "GetCoreMemoryBlockInputSchema": {
+    "fromEmpty": {},
+  },
+  "ListMemoryActorsInputSchema": {
+    "fromEmpty": {
+      "limit": 100,
+    },
+  },
+  "ListMemoryLessonsInputSchema": {
+    "fromEmpty": {
+      "limit": 50,
+      "offset": 0,
+    },
+  },
+  "MemoryOperationsConfigSchema": {
+    "fromEmpty": {
+      "actions": {
+        "enabled": true,
+      },
+      "codifyLite": {
+        "enabled": false,
+      },
+      "enabled": false,
+      "facets": {
+        "enabled": true,
+      },
+      "graphExpansion": {
+        "enabled": false,
+        "maxHops": 1,
+      },
+      "lessons": {
+        "enabled": false,
+      },
+      "perspectiveMemory": {
+        "deriver": {
+          "enabled": false,
+          "maxEventsPerBatch": 20,
+          "maxObserversPerSession": 5,
+        },
+        "enabled": false,
+        "specialists": {
+          "enabled": false,
+          "enabledKinds": [
+            "deduction",
+            "induction",
+            "contradiction",
+            "actor_card_maintenance",
+          ],
+          "enabledProjectHashes": [],
+          "maxCardUpdates": 3,
+          "maxDerivedObservations": 5,
+          "maxSourceObservations": 20,
+        },
+      },
+      "retention": {
+        "enabled": false,
+        "policyVersion": "v1",
+      },
+    },
+    "fromUndefined": {
+      "actions": {
+        "enabled": true,
+      },
+      "codifyLite": {
+        "enabled": false,
+      },
+      "enabled": false,
+      "facets": {
+        "enabled": true,
+      },
+      "graphExpansion": {
+        "enabled": false,
+        "maxHops": 1,
+      },
+      "lessons": {
+        "enabled": false,
+      },
+      "perspectiveMemory": {
+        "deriver": {
+          "enabled": false,
+          "maxEventsPerBatch": 20,
+          "maxObserversPerSession": 5,
+        },
+        "enabled": false,
+        "specialists": {
+          "enabled": false,
+          "enabledKinds": [
+            "deduction",
+            "induction",
+            "contradiction",
+            "actor_card_maintenance",
+          ],
+          "enabledProjectHashes": [],
+          "maxCardUpdates": 3,
+          "maxDerivedObservations": 5,
+          "maxSourceObservations": 20,
+        },
+      },
+      "retention": {
+        "enabled": false,
+        "policyVersion": "v1",
+      },
+    },
+  },
+  "ProgressiveDisclosureConfigSchema": {
+    "fromEmpty": {
+      "autoExpand": {
+        "enabled": true,
+        "highConfidenceThreshold": 0.92,
+        "maxAutoExpandCount": 3,
+        "scoreGapThreshold": 0.1,
+      },
+      "enabled": true,
+      "layer1": {
+        "minScore": 0.7,
+        "topK": 10,
+      },
+      "tokenBudget": {
+        "layer1PerItem": 50,
+        "layer2PerItem": 40,
+        "layer3PerItem": 500,
+        "maxTotalTokens": 2000,
+      },
+    },
+  },
+  "QueryPerspectiveObservationsInputSchema": {
+    "fromEmpty": {
+      "includeDeleted": false,
+      "limit": 50,
+    },
+  },
+  "SharedStoreConfigSchema": {
+    "fromEmpty": {
+      "autoPromote": true,
+      "enabled": true,
+      "minConfidenceForPromotion": 0.8,
+      "searchShared": true,
+      "sharedStoragePath": "~/.claude-code/memory/shared",
+    },
+  },
+  "ToolMetadataSchema": {
+    "fromEmpty": {},
+  },
+}
+`;
