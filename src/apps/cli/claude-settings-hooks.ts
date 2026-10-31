@@ -30,7 +30,9 @@ export const REQUIRED_HOOK_FILES = [
   'post-tool-use.js',
   'session-start.js',
   'stop.js',
-  'session-end.js'
+  'session-end.js',
+  'session-end-worker.js',
+  'session-end-handler.js'
 ] as const;
 
 export const PLUGIN_HOOKS = {

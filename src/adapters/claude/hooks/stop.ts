@@ -13,25 +13,13 @@
  */
 
 import { getLightweightMemoryServiceForProject } from '../../../services/memory-service.js';
-import { applyPrivacyFilter } from '../../../core/privacy/index.js';
 import { readTurnStateDetails, clearTurnState, writeLastAssistantSnippet } from '../../../core/turn-state.js';
-import type { StopInput, Config } from '../../../core/types.js';
+import type { StopInput } from '../../../core/types.js';
 import { readUnprocessedAssistantMessages } from '../transcript/stop-transcript-cursor.js';
-import { readStdin, readNumberEnv } from './hook-runtime.js';
+import { readStdin } from './hook-runtime.js';
+import { isStorableAgentResponse, normalizeAgentResponse, readMinAgentResponseLength } from './agent-response-normalization.js';
 import { scheduleSessionSummary } from './semantic-daemon-client.js';
 import { isLlmSummaryEnabled } from '../../llm/session-summary-llm.js';
-
-// Default privacy config
-const DEFAULT_PRIVACY_CONFIG: Config['privacy'] = {
-  excludePatterns: ['password', 'secret', 'api_key', 'token', 'bearer'],
-  anonymize: false,
-  privateTags: {
-    enabled: true,
-    marker: '[PRIVATE]',
-    preserveLineCount: false,
-    supportedFormats: ['xml']
-  }
-};
 
 export async function main(): Promise<string> {
   try {
@@ -54,7 +42,7 @@ export async function main(): Promise<string> {
     const transcriptBatch = readUnprocessedAssistantMessages(input.session_id, input.transcript_path);
     const assistantMessages = transcriptBatch.messages;
 
-    const MIN_AGENT_RESPONSE_LEN = readNumberEnv('CLAUDE_MEMORY_AGENT_RESPONSE_MIN_LEN', 150, { integer: true, min: 0 });
+    const minResponseLength = readMinAgentResponseLength();
     const lastIdx = assistantMessages.length - 1;
     let allStored = true;
 
@@ -63,24 +51,14 @@ export async function main(): Promise<string> {
       const { text, timestamp } = assistantMessages[i];
       const isLast = i === lastIdx;
 
-      // Apply privacy filter
-      const filterResult = applyPrivacyFilter(text, DEFAULT_PRIVACY_CONFIG);
-      let content = filterResult.content;
-
-      // Truncate very long responses
-      if (content.length > 5000) {
-        content = content.slice(0, 5000) + '...[truncated]';
-      }
-
-      // Skip very short responses (likely just tool calls or transition messages)
-      // Always store the last message (may be the final answer)
-      if (!isLast && content.trim().length < MIN_AGENT_RESPONSE_LEN) continue;
+      const { content, privacy } = normalizeAgentResponse(text);
+      if (!isStorableAgentResponse(content, isLast, minResponseLength)) continue;
 
       const stored = await memoryService.storeAgentResponse(
         input.session_id,
         content,
         {
-          privacy: filterResult.metadata,
+          privacy,
           // Every message of the turn is stored now, at Stop; keep when each
           // was written, the same way the transcript importers record it.
           ...(timestamp ? { originalTimestamp: timestamp } : {}),
