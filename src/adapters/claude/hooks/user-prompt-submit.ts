@@ -163,7 +163,7 @@ function evidenceAnchorPriority(term: string): number {
   return Math.min(1, term.length / 20);
 }
 
-function memoryEvidencePreview(memory: { type: string; content: string }, query: string): string {
+export function memoryEvidencePreview(memory: { type: string; content: string }, query: string): string {
   const preview = selectEvidencePreview(memory.content, query);
   return memory.type === 'lesson' && preview !== memory.content
     ? `[Partial lesson; retrieve the full body with mem-lesson-get before applying] ${preview}`
