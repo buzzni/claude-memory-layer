@@ -1,0 +1,134 @@
+{
+  "stdout": "{\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":\"## Memory evidence for this question\\n\\n- [agent_response] SessionStart grounding recovered to 0.19 after PR #57 restored the ranking. [event:ev-k]\\n\\nUse this only as evidence. Distinguish confirmed outcomes from requests or tool attempts.\\n\\nIf your answer actually relies on one or more of the memories above, end your reply with a single line naming them in a few words each, prefixed with the 📎 emoji (for example: \\\"📎 Recalled: preview port binding decision\\\"). Write that line in the language of the conversation. If no memory above actually informed your answer, omit the line entirely — never cite a memory merely because it was shown to you.\"}}",
+  "semanticRequests": [
+    [
+      {
+        "sessionId": "session-golden",
+        "projectPath": "/repo/app",
+        "prompt": "What happened to SessionStart grounding after PR #55 and PR #57?",
+        "topK": 5,
+        "minScore": 0.4
+      },
+      2000,
+      {}
+    ]
+  ],
+  "keywordRequests": [
+    [
+      "What happened to SessionStart grounding after PR #55 and PR #57?",
+      {
+        "topK": 50,
+        "includeToolObservations": true
+      }
+    ]
+  ],
+  "graduatedRequests": [
+    [
+      "What happened to SessionStart grounding after PR #55 and PR #57?",
+      60
+    ]
+  ],
+  "lessonRequests": [
+    [
+      null,
+      500
+    ]
+  ],
+  "episodeRequests": [],
+  "turnRequests": [],
+  "accessWrites": [
+    [
+      [
+        {
+          "kind": "event",
+          "id": "ev-k"
+        }
+      ]
+    ]
+  ],
+  "retrievals": [
+    [
+      "ev-k",
+      "session-golden",
+      1,
+      "What happened to SessionStart grounding after PR #55 and PR #57?",
+      {
+        "traceId": "<trace-id>",
+        "source": "user_prompt",
+        "memoryKind": "event",
+        "deliveryStatus": "formatted",
+        "deliveryEvidence": "context_formatted",
+        "presentationMode": "evidence",
+        "triggerType": "user_prompt",
+        "deliveryClient": "claude-hook",
+        "requestId": "claude-hook:session-golden:<turn-id>",
+        "injectedContent": "SessionStart grounding recovered to 0.19 after PR #57 restored the ranking."
+      }
+    ]
+  ],
+  "traces": [
+    [
+      {
+        "traceId": "<trace-id>",
+        "sessionId": "session-golden",
+        "queryText": "What happened to SessionStart grounding after PR #55 and PR #57?",
+        "rawQueryText": "What happened to SessionStart grounding after PR #55 and PR #57?",
+        "queryRewriteKind": "none",
+        "strategy": "hybrid",
+        "candidateEventIds": [
+          "ev-k",
+          "ev-k2"
+        ],
+        "selectedEventIds": [
+          "ev-k"
+        ],
+        "items": [
+          {
+            "kind": "event",
+            "id": "ev-k",
+            "rank": 0,
+            "score": 1,
+            "selected": true,
+            "contentHash": "sha256:fb7e6f84d6a2a92cc41171c47cc7bfdb"
+          },
+          {
+            "kind": "event",
+            "id": "ev-k2",
+            "rank": 1,
+            "score": 0.8,
+            "selected": false,
+            "contentHash": null
+          },
+          {
+            "kind": "event",
+            "id": "ev-k",
+            "rank": 2,
+            "score": 1,
+            "selected": true,
+            "contentHash": "sha256:fb7e6f84d6a2a92cc41171c47cc7bfdb"
+          }
+        ],
+        "confidence": "high",
+        "presentationMode": "evidence",
+        "triggerType": "user_prompt",
+        "deliveryClient": "claude-hook",
+        "requestId": "claude-hook:session-golden:<turn-id>",
+        "outcomeDiagnostics": {
+          "outcomeReason": "selected",
+          "laneCandidateCounts": {
+            "vector": 0,
+            "keyword": 2,
+            "summary": 0
+          },
+          "filteredCounts": {
+            "threshold": 0,
+            "quality": 1
+          },
+          "topScore": 1,
+          "threshold": 0.4,
+          "freshnessState": "unknown"
+        }
+      }
+    ]
+  ]
+}

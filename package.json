@@ -40,6 +40,7 @@
     "benchmark:replay": "tsx scripts/replay-retrieval-benchmark.ts --min-query-yield 1 --min-no-match-accuracy 1 --max-forbidden-hits 0 --max-failed-queries 0",
     "eval:retrieval-replay": "tsx scripts/replay-retrieval-benchmark.ts --fixture benchmarks/replay/golden-memory-usefulness-v1.json --format markdown --no-per-query --min-query-yield 1 --min-no-match-accuracy 1 --max-forbidden-hits 0 --max-failed-queries 0",
     "eval:retrieval-replay:report": "tsx scripts/replay-retrieval-benchmark.ts --fixture benchmarks/replay/golden-memory-usefulness-v1.json --format markdown --no-per-query",
+    "eval:hook-replay": "tsx scripts/replay-hook-grounding.ts --fixture benchmarks/replay/hook-grounding-fixture-v1.json",
     "eval:memory-field": "tsx scripts/evaluate-memory-field.ts",
     "eval:lesson-hybrid": "tsx scripts/evaluate-lesson-hybrid.ts",
     "eval:longmemeval:retrieval-smoke": "tsx scripts/longmemeval-retrieval-smoke.ts --input benchmarks/longmemeval/fixtures/retrieval-smoke-mini.json --no-per-query",
