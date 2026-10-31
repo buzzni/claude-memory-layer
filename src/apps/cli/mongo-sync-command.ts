@@ -302,19 +302,20 @@ export async function runMongoSyncAudit(
     return { status: 'skip', projectKey, detail: `no local store at ${dbPath}` };
   }
 
-  const store = new SQLiteEventStore(dbPath, { readonly: true });
+  let store: SQLiteEventStore | undefined;
   let connection: MongoAuditConnection | undefined;
   try {
+    store = new SQLiteEventStore(dbPath, { readonly: true });
     connection = await (deps.connect ?? connectMongoForAudit)(uri, dbName);
     const report = await auditMongoSync(store, connection.collection, { projectKey });
     return { status: report.status, projectKey, detail: summarizeAudit(report), report };
   } catch (error) {
     const safeUri = redactMongoUri(uri);
     const message = (error instanceof Error ? error.message : String(error)).split(uri).join(safeUri);
-    return { status: 'fail', projectKey, detail: `Mongo audit failed (${safeUri}, db=${dbName}): ${message}` };
+    return { status: 'fail', projectKey, detail: `Mongo sync audit failed (${safeUri}, db=${dbName}): ${message}` };
   } finally {
     await connection?.close().catch(() => undefined);
-    await store.close();
+    await store?.close();
   }
 }
 

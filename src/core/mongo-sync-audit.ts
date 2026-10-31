@@ -205,9 +205,12 @@ export async function auditMongoSync(
     })
     .sort((a, b) => a.firstSeq - b.firstSeq);
 
+  // Counted on each side of the cursor separately, so a push landing above it during the audit cannot mask a loss.
+  const localBelow = countAtMost(localSeqs, pullCursor);
+  const mongoBelow = await remote.countDocuments({ projectKey, seq: { $lte: pullCursor } });
   const mongoAbove = await remote.countDocuments({ projectKey, seq: { $gt: pullCursor } });
-  report.notYetPulled = mongoAbove - (localSeqs.length - countAtMost(localSeqs, pullCursor));
-  report.lostBelowPullCursor = missing - report.notYetPulled;
+  report.lostBelowPullCursor = mongoBelow - localBelow;
+  report.notYetPulled = mongoAbove - (localSeqs.length - localBelow);
   report.status = report.lostBelowPullCursor > 0 ? 'fail' : 'warn';
   if (report.lostBelowPullCursor > 0) {
     report.oldestGap = await findOldestGap(remote, projectKey, localSeqs, pullCursor);
