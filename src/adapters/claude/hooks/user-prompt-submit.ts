@@ -51,6 +51,7 @@ import {
   reserveLessonSlot
 } from './prompt-injection-policy.js';
 import { normalizeUserPrompt, promptClassifierMetadata, redactPromptForStorage } from '../../../core/prompt-normalizer.js';
+import { sanitizeRetrievalQuery } from '../../../core/retrieval-query-sanitizer.js';
 import type { UserPromptSubmitInput, UserPromptSubmitOutput } from '../../../core/types.js';
 
 // Configuration. All numeric env vars go through readNumberEnv so an invalid
@@ -414,8 +415,15 @@ function shouldEnrichRetrievalQuery(input: RetrievalQueryInput): boolean {
   return false;
 }
 
+const querySanitizerEnabled = () => process.env.CLAUDE_MEMORY_RETRIEVAL_QUERY_SANITIZER_EXPERIMENT === 'true';
+
+function currentRetrievalPrompt(prompt: string): string {
+  const trimmed = prompt.trim();
+  return querySanitizerEnabled() ? sanitizeRetrievalQuery(trimmed).query : trimmed;
+}
+
 export function buildRetrievalQuery(input: RetrievalQueryInput): string {
-  const currentPrompt = input.prompt.trim();
+  const currentPrompt = currentRetrievalPrompt(input.prompt);
   if (!shouldEnrichRetrievalQuery(input)) return currentPrompt;
 
   const previousUser = compactRetrievalContext(input.previousUserPrompt);
@@ -433,8 +441,10 @@ function logAdherenceDecision(turn: number, run: boolean, reason: string): void 
   console.error(`[adherence] turn=${turn} mode=${mode} reason=${reason}`);
 }
 
+// A query the sanitizer shortened is still the current prompt alone, not a
+// follow-up rewrite.
 export function getRetrievalQueryRewriteKind(prompt: string, retrievalQuery: string): 'none' | 'follow-up-context' {
-  return retrievalQuery === prompt.trim() ? 'none' : 'follow-up-context';
+  return retrievalQuery === currentRetrievalPrompt(prompt) ? 'none' : 'follow-up-context';
 }
 
 /**
