@@ -218,4 +218,32 @@ describe('WorkerLock', () => {
     expect(owner.release()).toBe(true);
     expect(existsSync(lockPath)).toBe(false);
   });
+
+  it('reports a busy holder the way acquire() would, without touching the lock file', () => {
+    const dir = makeTempDir('cml-worker-lock-holder-');
+    const lockPath = path.join(dir, 'vector-worker.lock');
+    const running = new Set([777]);
+    const isProcessRunning = (pid: number) => running.has(pid);
+    const now = new Date('2026-10-31T00:00:00.000Z');
+    const inspect = () => new WorkerLock(lockPath, { isProcessRunning, now: () => now }).busyHolder();
+
+    expect(inspect()).toBeNull();
+
+    writeFileSync(lockPath, JSON.stringify({ pid: 777, ownerId: 'other', acquiredAt: now.toISOString() }));
+    const before = readFileSync(lockPath, 'utf8');
+    expect(inspect()).toEqual({ pid: 777 });
+
+    running.clear();
+    expect(inspect()).toBeNull();
+    // A stale lock is only reported, never recovered: that is acquire()'s job.
+    expect(readFileSync(lockPath, 'utf8')).toBe(before);
+
+    // An unparseable lock is busy while it may still be initializing, then stale.
+    writeFileSync(lockPath, '{broken');
+    utimesSync(lockPath, now, now);
+    expect(inspect()).toEqual({ pid: null });
+    const old = new Date(now.getTime() - 60_000);
+    utimesSync(lockPath, old, old);
+    expect(inspect()).toBeNull();
+  });
 });

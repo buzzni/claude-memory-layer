@@ -79,10 +79,11 @@ import {
   checkPathConsistency,
   checkPluginFiles,
   checkProjectStoreAccess,
-  doctorExitCode,
-  formatDoctorReport,
-  type DoctorCheckResult
+  findClaudeMemoryPackage,
+  type DoctorCheckResult,
+  type EmbeddingBackendScript
 } from './doctor.js';
+import { repairEmbeddingBackend, runDoctor } from './doctor-fix.js';
 import {
   inspectPluginHookTargets,
   mergePluginHooksIntoSettings,
@@ -255,13 +256,6 @@ function getPluginPath(): string {
 }
 
 /**
- * The embedding backend healthcheck lives in scripts/postinstall-embedding-backend.cjs
- * (published as-is, listed in package.json `files`) rather than under src/, so
- * postinstall can run it standalone before any TypeScript is built. Loading it
- * by absolute path from packageRoot works in both dev and dist layouts, since
- * getPluginPath() already resolves packageRoot consistently across both.
- */
-/**
  * Reads the live `engines.node` range from the shipped package.json so doctor
  * enforces the same floor npm does — a hardcoded copy would keep passing on a
  * Node version the next release refuses to install on.
@@ -277,16 +271,21 @@ function readEnginesNodeRange(packageRoot: string): string | undefined {
   }
 }
 
-async function loadEmbeddingBackendAvailabilityCheck(packageRoot: string): Promise<((rootDir: string) => boolean) | null> {
+/**
+ * The embedding backend healthcheck lives in scripts/postinstall-embedding-backend.cjs
+ * (published as-is, listed in package.json `files`) rather than under src/, so
+ * postinstall can run it standalone before any TypeScript is built. Loading it
+ * by absolute path from packageRoot works in both dev and dist layouts, since
+ * getPluginPath() already resolves packageRoot consistently across both.
+ */
+async function loadEmbeddingBackendScript(packageRoot: string): Promise<EmbeddingBackendScript | null> {
   try {
     const scriptPath = path.join(packageRoot, 'scripts', 'postinstall-embedding-backend.cjs');
     if (!fs.existsSync(scriptPath)) return null;
     // Node's ESM loader imports a CJS module's `module.exports` object as
     // named exports here since it's a static object literal.
-    const mod = await import(pathToFileURL(scriptPath).href) as {
-      isEmbeddingBackendAvailable?: (rootDir: string) => boolean;
-    };
-    return typeof mod.isEmbeddingBackendAvailable === 'function' ? mod.isEmbeddingBackendAvailable : null;
+    const mod = await import(pathToFileURL(scriptPath).href) as Partial<EmbeddingBackendScript>;
+    return typeof mod.isEmbeddingBackendAvailable === 'function' ? mod as EmbeddingBackendScript : null;
   } catch {
     return null;
   }
@@ -1130,7 +1129,8 @@ program
 program
   .command('doctor')
   .description('Diagnose the environment: Node version, embedding backend, PATH conflicts, hooks, MCP client configs, store access')
-  .action(async () => {
+  .option('--fix', 'Repair the managed embedding backend when its check fails and repairing is safe; other checks stay report-only')
+  .action(async (options: { fix?: boolean }) => {
     const pluginPath = getPluginPath();
     const packageRoot = path.dirname(pluginPath);
     const settings = loadClaudeSettings();
@@ -1142,11 +1142,13 @@ program
       // Without a built entrypoint there is no invocation to suggest; checkPluginFiles reports the broken install.
     }
 
+    const embeddingBackendScript = await loadEmbeddingBackendScript(packageRoot);
+
     const checks: DoctorCheckResult[] = [
       checkNodeVersion(process.version, readEnginesNodeRange(packageRoot)),
       checkPluginFiles(pluginPath),
       checkHooksInstalled(settings, pluginPath),
-      checkEmbeddingBackend(packageRoot, await loadEmbeddingBackendAvailabilityCheck(packageRoot)),
+      checkEmbeddingBackend(packageRoot, embeddingBackendScript?.isEmbeddingBackendAvailable ?? null),
       checkPathConsistency('claude-memory-layer', process.env.PATH ?? ''),
       checkPathConsistency('claude-memory-layer-mcp', process.env.PATH ?? ''),
       ...readMcpClientConfigs({ cwd: process.cwd() })
@@ -1154,8 +1156,19 @@ program
       checkProjectStoreAccess(projectStorePath)
     ];
 
-    console.log(formatDoctorReport(checks));
-    process.exitCode = doctorExitCode(checks);
+    const memoryRoot = path.join(os.homedir(), '.claude-code', 'memory');
+    const { output, exitCode } = await runDoctor(checks, {
+      fix: options.fix === true,
+      repairEmbeddingBackend: (check) => repairEmbeddingBackend(check, {
+        packageRoot,
+        runningPackageRoot: findClaudeMemoryPackage(__filename, (p) => fs.readFileSync(p, 'utf-8'))?.packageRoot,
+        script: embeddingBackendScript,
+        memoryRoot,
+        semanticSocketPath: process.env.CLAUDE_MEMORY_SEMANTIC_SOCKET || path.join(memoryRoot, 'semantic-daemon.sock')
+      })
+    });
+    console.log(output);
+    process.exitCode = exitCode;
   });
 
 /**

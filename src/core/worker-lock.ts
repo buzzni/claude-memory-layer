@@ -106,6 +106,14 @@ export class WorkerLock {
     }
   }
 
+  /** Read-only: non-null when acquire() would find the lock busy, with the holder pid if known. */
+  busyHolder(): { pid: number | null } | null {
+    if (!existsSync(this.lockPath)) return null;
+    const existing = this.readPayload();
+    if (!existing) return this.unparseableLockMayBeInFlight() ? { pid: null } : null;
+    return this.isProcessRunning(existing.pid) ? { pid: existing.pid } : null;
+  }
+
   release(): boolean {
     if (!this.acquired || !existsSync(this.lockPath)) return false;
 
