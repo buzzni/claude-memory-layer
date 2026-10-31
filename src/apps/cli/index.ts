@@ -3786,16 +3786,17 @@ mcpCmd
   .description('Install claude-memory-layer MCP server into Claude Desktop config')
   .option('-c, --config-path <path>', 'Claude Desktop config path')
   .option('-n, --server-name <name>', 'MCP server name', 'claude-memory-layer')
-  .option('--command <command>', 'MCP server command', 'claude-memory-layer-mcp')
+  .option('--command <command>', 'MCP server command (default: this node + absolute path to this install\'s MCP entrypoint)')
   .option('--arg <arg...>', 'Arguments for the MCP server command')
   .option('--dry-run', 'Print the updated config without writing it')
-  .action((options: { configPath?: string; serverName: string; command: string; arg?: string[]; dryRun?: boolean }) => {
+  .action((options: { configPath?: string; serverName: string; command?: string; arg?: string[]; dryRun?: boolean }) => {
     try {
       const { configPath, config } = installMcpServer({
         configPath: options.configPath,
         serverName: options.serverName,
         command: options.command,
         args: options.arg ?? [],
+        pluginPath: getPluginPath(),
         dryRun: options.dryRun ?? false
       });
 
@@ -3807,6 +3808,8 @@ mcpCmd
 
       console.log(`\n✅ Installed MCP server '${options.serverName}' into Claude Desktop config.`);
       console.log(`   Config: ${configPath}`);
+      const entry = config.mcpServers?.[options.serverName];
+      console.log(`   Command: ${[entry?.command, ...(entry?.args ?? [])].join(' ')}`);
       console.log('   Restart Claude Desktop to load the new MCP server.\n');
     } catch (error) {
       console.error('MCP install failed:', error);

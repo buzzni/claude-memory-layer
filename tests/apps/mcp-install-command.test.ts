@@ -1,9 +1,10 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   getDefaultClaudeDesktopConfigPath,
+  installMcpServer,
   installMcpServerConfig,
   readJsonConfig,
   saveJsonConfig
@@ -55,5 +56,54 @@ describe('MCP install command helpers', () => {
       }
     });
     expect(readFileSync(configPath, 'utf8')).toContain('"mcpServers"');
+  });
+
+  describe('installMcpServer', () => {
+    function fakeInstall() {
+      const root = realpathSync(tempDir());
+      const pluginPath = join(root, 'lib', 'node_modules', 'claude-memory-layer', 'dist');
+      mkdirSync(join(pluginPath, 'mcp'), { recursive: true });
+      writeFileSync(join(pluginPath, 'mcp', 'index.js'), '');
+      // Reached through a symlink, the way a global bin dir links into lib/node_modules.
+      const linkedPluginPath = join(root, 'linked-dist');
+      symlinkSync(pluginPath, linkedPluginPath);
+      return { root, pluginPath, linkedPluginPath };
+    }
+
+    it('records the running node and the realpath of this package\'s MCP entrypoint by default', () => {
+      const { root, pluginPath, linkedPluginPath } = fakeInstall();
+      const configPath = join(root, 'claude_desktop_config.json');
+
+      installMcpServer({ configPath, pluginPath: linkedPluginPath, execPath: '/opt/node/bin/node' });
+
+      expect(readJsonConfig(configPath).mcpServers?.['claude-memory-layer']).toEqual({
+        command: '/opt/node/bin/node',
+        args: [join(pluginPath, 'mcp', 'index.js')]
+      });
+    });
+
+    it('appends extra args after the entrypoint', () => {
+      const { root, pluginPath } = fakeInstall();
+      const { config } = installMcpServer({
+        configPath: join(root, 'config.json'), pluginPath, execPath: '/opt/node/bin/node', args: ['--flag'], dryRun: true
+      });
+
+      expect(config.mcpServers?.['claude-memory-layer']?.args).toEqual([join(pluginPath, 'mcp', 'index.js'), '--flag']);
+    });
+
+    it('keeps an explicit --command as given', () => {
+      const { root, pluginPath } = fakeInstall();
+      const { config } = installMcpServer({
+        configPath: join(root, 'config.json'), pluginPath, command: 'claude-memory-layer-mcp', args: [], dryRun: true
+      });
+
+      expect(config.mcpServers?.['claude-memory-layer']).toEqual({ command: 'claude-memory-layer-mcp', args: [] });
+    });
+
+    it('refuses to record an entrypoint that does not exist', () => {
+      const root = tempDir();
+      expect(() => installMcpServer({ configPath: join(root, 'config.json'), pluginPath: join(root, 'dist'), dryRun: true }))
+        .toThrow(/MCP entrypoint not found/);
+    });
   });
 });

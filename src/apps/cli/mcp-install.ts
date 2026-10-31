@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 
@@ -79,11 +79,32 @@ export function installMcpServerConfig(
   };
 }
 
+/**
+ * The invocation `mcp install` records by default: the node running this CLI
+ * plus the realpath of this package's MCP entrypoint. A PATH name such as
+ * `claude-memory-layer-mcp` lets whichever install comes first on the MCP
+ * client's PATH (e.g. a stale nvm-managed one) serve the session instead.
+ */
+export function getDefaultMcpServerEntry(
+  pluginPath: string,
+  execPath: string = process.execPath
+): Required<Pick<McpServerEntry, 'command' | 'args'>> {
+  const entryPath = join(pluginPath, 'mcp', 'index.js');
+  if (!existsSync(entryPath)) {
+    throw new Error(`MCP entrypoint not found at ${entryPath}. Run "npm run build" or pass --command.`);
+  }
+  return { command: execPath, args: [realpathSync(entryPath)] };
+}
+
 export interface InstallMcpServerCommandOptions {
   configPath?: string;
   serverName?: string;
+  /** Overrides the default absolute invocation; recorded as given. */
   command?: string;
   args?: string[];
+  /** This package's dist directory; required unless `command` is given. */
+  pluginPath?: string;
+  execPath?: string;
   dryRun?: boolean;
 }
 
@@ -92,10 +113,12 @@ export function installMcpServer(options: InstallMcpServerCommandOptions = {}): 
   config: ClaudeDesktopConfig;
 } {
   const configPath = options.configPath ?? getDefaultClaudeDesktopConfigPath();
+  const invocation = options.command
+    ? { command: options.command, args: options.args ?? [] }
+    : defaultInvocation(options);
   const config = installMcpServerConfig(readJsonConfig(configPath), {
     serverName: options.serverName ?? 'claude-memory-layer',
-    command: options.command ?? 'claude-memory-layer-mcp',
-    args: options.args ?? []
+    ...invocation
   });
 
   if (!options.dryRun) {
@@ -103,4 +126,12 @@ export function installMcpServer(options: InstallMcpServerCommandOptions = {}): 
   }
 
   return { configPath, config };
+}
+
+function defaultInvocation(options: InstallMcpServerCommandOptions): { command: string; args: string[] } {
+  if (!options.pluginPath) {
+    throw new Error('MCP entrypoint not found: no plugin path given. Pass --command.');
+  }
+  const entry = getDefaultMcpServerEntry(options.pluginPath, options.execPath);
+  return { command: entry.command, args: [...entry.args, ...(options.args ?? [])] };
 }
