@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   buildRetrievalQuery,
   getRetrievalQueryRewriteKind,
@@ -184,6 +184,70 @@ describe('Claude user prompt adherence trigger heuristics', () => {
   it('does not classify whitespace-only prompt normalization as query rewrite', () => {
     expect(getRetrievalQueryRewriteKind('  상태 확인만 해줘  ', '상태 확인만 해줘')).toBe('none');
     expect(getRetrievalQueryRewriteKind('그거 계속', 'Previous user: 이전\nCurrent user: 그거 계속')).toBe('follow-up-context');
+  });
+});
+
+describe('CLAUDE_MEMORY_RETRIEVAL_QUERY_SANITIZER_EXPERIMENT', () => {
+  afterEach(() => { vi.unstubAllEnvs(); });
+
+  const pastedLog = Array.from({ length: 12 }, (_, i) => `[build] step ${i} finished without warnings`).join('\n');
+  const longPrompt = `  PR #122 이후 빌드가 느려졌다.\n${pastedLog}\n이 빌드는 왜 캐시를 다시 만들까?  `;
+  const longFollowUp = `그거 계속 진행해줘\n${pastedLog}`;
+  const inputs = {
+    long: { prompt: longPrompt, currentTurn: 1, adherenceDecision: { run: true, reason: 'first-turn' } },
+    followUp: {
+      prompt: longFollowUp,
+      currentTurn: 3,
+      previousUserPrompt: '빌드 캐시 조사',
+      lastAssistantSnippet: '캐시 키가 매번 바뀝니다.',
+      adherenceDecision: { run: true, reason: 'continuation-intent' }
+    },
+    short: { prompt: ' 상태 확인만 해줘 ', currentTurn: 1, adherenceDecision: { run: true, reason: 'first-turn' } }
+  } satisfies Record<string, Parameters<typeof buildRetrievalQuery>[0]>;
+  // What buildRetrievalQuery produced before the experiment existed.
+  const legacyQueries = {
+    long: longPrompt.trim(),
+    followUp: `Previous user: 빌드 캐시 조사\n\nPrevious assistant: 캐시 키가 매번 바뀝니다.\n\nCurrent user: ${longFollowUp}`,
+    short: '상태 확인만 해줘'
+  };
+
+  it.each([['unset', undefined], ['1', '1'], ['false', 'false']])(
+    'keeps every query byte-identical when the flag is %s',
+    (_label, value) => {
+      vi.stubEnv('CLAUDE_MEMORY_RETRIEVAL_QUERY_SANITIZER_EXPERIMENT', value);
+      for (const key of Object.keys(inputs) as Array<keyof typeof inputs>) {
+        const query = buildRetrievalQuery(inputs[key]);
+        expect(Buffer.from(query).equals(Buffer.from(legacyQueries[key]))).toBe(true);
+      }
+      expect(getRetrievalQueryRewriteKind(longPrompt, buildRetrievalQuery(inputs.long))).toBe('none');
+    }
+  );
+
+  it('queries with the extracted question and its identifiers when enabled', () => {
+    vi.stubEnv('CLAUDE_MEMORY_RETRIEVAL_QUERY_SANITIZER_EXPERIMENT', 'true');
+
+    expect(buildRetrievalQuery(inputs.long)).toBe('이 빌드는 왜 캐시를 다시 만들까? #122');
+  });
+
+  it('sanitizes only the current prompt of a follow-up query', () => {
+    vi.stubEnv('CLAUDE_MEMORY_RETRIEVAL_QUERY_SANITIZER_EXPERIMENT', 'true');
+
+    expect(buildRetrievalQuery(inputs.followUp)).toBe(
+      'Previous user: 빌드 캐시 조사\n\nPrevious assistant: 캐시 키가 매번 바뀝니다.\n\nCurrent user: 그거 계속 진행해줘'
+    );
+  });
+
+  it('leaves short prompts unchanged when enabled', () => {
+    vi.stubEnv('CLAUDE_MEMORY_RETRIEVAL_QUERY_SANITIZER_EXPERIMENT', 'true');
+
+    expect(buildRetrievalQuery(inputs.short)).toBe(legacyQueries.short);
+  });
+
+  it('does not label a sanitized-only query as follow-up context', () => {
+    vi.stubEnv('CLAUDE_MEMORY_RETRIEVAL_QUERY_SANITIZER_EXPERIMENT', 'true');
+
+    expect(getRetrievalQueryRewriteKind(longPrompt, buildRetrievalQuery(inputs.long))).toBe('none');
+    expect(getRetrievalQueryRewriteKind(longFollowUp, buildRetrievalQuery(inputs.followUp))).toBe('follow-up-context');
   });
 });
 

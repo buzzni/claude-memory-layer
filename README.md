@@ -235,6 +235,7 @@ touch <workspace-root>/.claude-memory-root
   - `CLAUDE_MEMORY_MIN_SCORE` (기본 0.4)
   - `CLAUDE_MEMORY_FALLBACK_MIN_SCORE` (기본 0.3, 결과 0건일 때 재시도)
   - `CLAUDE_MEMORY_FTS_ABSOLUTE_SCORE_EXPERIMENT` (기본 꺼짐, `true`면 FTS 점수를 결과 목록 내 상대값 대신 bm25 절대 척도 `x/(x+15)`로 계산. 흔한 토큰 하나만 맞은 결과가 1.0을 받지 않음)
+  - `CLAUDE_MEMORY_RETRIEVAL_QUERY_SANITIZER_EXPERIMENT` (기본 꺼짐, `true`면 UserPromptSubmit 검색 쿼리에서 200자를 넘는 현재 프롬프트를 물음표 문장 → 한국어 질문·요청 어미(`…까`, `…나요`, `…해줘`) 문장 → 마지막 문장 → 꼬리 250자 순으로 줄임. 버려진 부분의 경로·`#번호`·커밋 SHA는 쿼리 뒤에 붙임)
 
 ---
 
