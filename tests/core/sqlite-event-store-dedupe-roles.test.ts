@@ -74,8 +74,9 @@ describe('SQLite event dedupe across roles and legacy keys', () => {
     });
 
     expect(again).toMatchObject({ isDuplicate: true, eventId: first.eventId });
+    // Literal on purpose: keys already stored must keep matching new appends.
     expect(await store.getEvent(first.eventId!)).toMatchObject({
-      dedupeKey: makeDedupeKey(content, sessionId, 'agent_response')
+      dedupeKey: `${sessionId}:7229825b190888b9474e8e15b2161997107c8a0ced3c6e938b63bdcca0fb996c:agent_response`
     });
   });
 
