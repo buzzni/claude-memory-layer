@@ -114,7 +114,7 @@
   - `src/core/engine/memory-ingest-service.ts:170` `storeAgentResponse`는 `new Date()`를 쓴다 ✅.
   - 결과적으로 한 턴의 중간 응답이 모두 Stop 시각으로 찍힌다.
     - PostToolUse 이벤트보다 뒤로 정렬된다.
-    - `ingest-source-clocks.ts`에서는 출처 시각을 알 수 없는 이벤트(unknownSourceClock)가 된다.
+    - 저장 시각이 출처 시각(`metadata.ingest.occurredAt`)으로 기록된다. 그래서 `ingest-source-clocks.ts`에서 unknownSourceClock으로 집계되지 않고 sourceLag가 0에 가깝게 나온다(#120에서 확인).
   - importer 경로는 이미 `originalTimestamp`를 채운다(`src/services/session-history-importer.ts`).
 - **리스크**
   - 낮다. dedupeKey가 content, session, type 기반이라 timestamp 변경의 영향을 받지 않는다.
