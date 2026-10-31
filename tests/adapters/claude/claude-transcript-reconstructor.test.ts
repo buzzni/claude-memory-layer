@@ -67,7 +67,23 @@ describe('Claude turn reconstructor', () => {
       { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'tool-2' }] } }
     ]);
 
-    expect(messages).toEqual(['first\nsecond']);
+    expect(messages).toEqual([{ text: 'first\nsecond' }]);
+  });
+
+  it('keeps each assistant entry at its own transcript timestamp', () => {
+    const messages = extractAssistantTextMessages([
+      { type: 'user', timestamp: '2026-10-01T09:00:00.000Z', message: { content: 'question' } },
+      { type: 'assistant', timestamp: '2026-10-01T09:00:05.000Z', message: { content: [{ type: 'text', text: 'looking' }] } },
+      { type: 'assistant', timestamp: '2026-10-01T09:00:06.000Z', message: { content: [{ type: 'tool_use', id: 'tool-1' }] } },
+      { type: 'assistant', timestamp: '2026-10-01T09:03:40.000Z', message: { content: [{ type: 'text', text: 'done' }] } },
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'untimed' }] } }
+    ]);
+
+    expect(messages).toEqual([
+      { text: 'looking', timestamp: '2026-10-01T09:00:05.000Z' },
+      { text: 'done', timestamp: '2026-10-01T09:03:40.000Z' },
+      { text: 'untimed' }
+    ]);
   });
 
   it('reads assistant text messages from a transcript file', async () => {
@@ -79,7 +95,7 @@ describe('Claude turn reconstructor', () => {
       'utf8'
     );
 
-    await expect(extractAssistantMessages(transcriptPath)).resolves.toEqual(['final answer']);
+    await expect(extractAssistantMessages(transcriptPath)).resolves.toEqual([{ text: 'final answer' }]);
   });
 
   it('generates deterministic summaries from session events', () => {

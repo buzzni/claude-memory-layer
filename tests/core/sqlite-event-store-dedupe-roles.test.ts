@@ -60,6 +60,26 @@ describe('SQLite event dedupe across roles and legacy keys', () => {
     }
   );
 
+  it('keys an agent response by content, session and role, not by when it was written or stored', async () => {
+    const { store } = fixture();
+    const first = await store.append({
+      ...input('agent_response'),
+      timestamp: new Date('2026-10-01T09:05:00Z'),
+      metadata: { originalTimestamp: '2026-10-01T09:00:05.000Z' }
+    });
+    const again = await store.append({
+      ...input('agent_response'),
+      timestamp: new Date('2026-10-01T10:00:00Z'),
+      metadata: { originalTimestamp: '2026-10-01T09:59:00.000Z' }
+    });
+
+    expect(again).toMatchObject({ isDuplicate: true, eventId: first.eventId });
+    // Literal on purpose: keys already stored must keep matching new appends.
+    expect(await store.getEvent(first.eventId!)).toMatchObject({
+      dedupeKey: `${sessionId}:7229825b190888b9474e8e15b2161997107c8a0ced3c6e938b63bdcca0fb996c:agent_response`
+    });
+  });
+
   it('recognizes older exports after a typed append without duplicating the same role', async () => {
     const { store } = fixture();
     const prompt = await store.append(input('user_prompt'));
