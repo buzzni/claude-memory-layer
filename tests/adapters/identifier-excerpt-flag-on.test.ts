@@ -48,6 +48,14 @@ describe(`${FLAG}=true`, () => {
       expect(sessionStartExcerpt(event('agent_response', content))).toBe(legacy);
     });
 
+    it('does not cut away identifiers of the chosen window at a sentence boundary', () => {
+      const content = `#1 ${'word '.repeat(150)}#2 ${'word '.repeat(55)}. #3 ${'word '.repeat(100)}`;
+      const excerpt = sessionStartExcerpt(event('agent_response', content));
+
+      expect(excerpt).toContain('#2');
+      expect(excerpt).toContain('#3');
+    });
+
     it('redacts secrets before choosing the window', () => {
       const content = `${prose.repeat(10)}api_key=deadbeef1234567 then edited src/a.ts and src/b.ts for #9.`;
       const excerpt = sessionStartExcerpt(event('agent_response', content));
@@ -83,6 +91,7 @@ describe(`${FLAG}=true`, () => {
 
       expect(memoryReferenceSummary(content)).toBe('Rebased the branch. [code: fix/mongo-pull-cursor b107516] Done.');
       expect(memoryReferenceTitle('```\nvi src/a.ts\n```')).toBe('[code: src/a.ts]');
+      expect(memoryReferenceSummary('```bash\nFILE=src/a.ts\n```')).toBe('[code: src/a.ts]');
     });
   });
 

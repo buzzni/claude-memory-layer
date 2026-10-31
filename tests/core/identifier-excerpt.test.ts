@@ -39,6 +39,17 @@ describe('findIdentifiers', () => {
     expect(findIdentifiers(text)).toEqual([{ value: '#12', start: 4, end: 7 }]);
   });
 
+  it('finds identifiers assigned in shell or env syntax', () => {
+    expect(values('FILE=src/a.ts BRANCH=feat/fix-worker COMMIT=b107516 VERSION=v2.4.17'))
+      .toEqual(['src/a.ts', 'feat/fix-worker', 'b107516', 'v2.4.17']);
+  });
+
+  it('skips an over-long token without scanning it quadratically', () => {
+    const started = Date.now();
+    expect(values(`a${'가'.repeat(80_000)}b`)).toEqual([]);
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+
   it('ignores prose that only looks path- or hash-like', () => {
     expect(values('A/B test, and/or src/core, /role-context, 2026, 1234567, deadbeef, e.g. v2')).toEqual([]);
   });
@@ -67,6 +78,22 @@ describe('identifierWindowStart', () => {
 
     expect(start).toBeGreaterThan(0);
     expect(text.slice(start)).toBe(tail);
+  });
+
+  it('finds a denser window that ends at the last identifier', () => {
+    const text = `#1 #2 ${'word '.repeat(100)}#3 ${'word '.repeat(31)}#4 #5`;
+    const start = identifierWindowStart(text, 180);
+    const window = text.slice(start, start + 180);
+
+    expect(['#3', '#4', '#5'].every((id) => window.includes(id))).toBe(true);
+  });
+
+  it('finds a long identifier that only fits without lead-in', () => {
+    const path = `src/${'a'.repeat(140)}.ts`;
+    const text = `${'word '.repeat(100)}${path}`;
+    const start = identifierWindowStart(text, 180);
+
+    expect(text.slice(start, start + 180)).toContain(path);
   });
 
   it('counts a repeated identifier once', () => {

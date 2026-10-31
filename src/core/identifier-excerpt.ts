@@ -13,7 +13,8 @@
  * matched whole, so cost stays linear on a pasted blob.
  */
 
-const IDENTIFIER_TOKEN = /[^\s,;()[\]{}"'`<>|]+/g;
+// `=` separates too, so `FILE=src/a.ts` and `COMMIT=b107516` yield their values.
+const IDENTIFIER_TOKEN = /[^\s,;()[\]{}"'`<>|=]+/g;
 // Leading brackets/markup and trailing punctuation or Korean particles
 // (`src/a.ts를`, `#122에서`) are not part of the identifier.
 const LEADING_EDGE = /^[^\w~@./#]+/;
@@ -52,11 +53,16 @@ export function findIdentifiers(text: string): IdentifierSpan[] {
   let previous = '';
   for (const match of text.matchAll(IDENTIFIER_TOKEN)) {
     const raw = match[0];
+    // Checked before the edge regexes, which backtrack on a long run of non-word chars.
+    if (raw.length > MAX_IDENTIFIER_LENGTH) {
+      previous = '';
+      continue;
+    }
     const lead = raw.match(LEADING_EDGE)?.[0].length ?? 0;
     const value = raw.slice(lead).replace(TRAILING_EDGE, '');
     const isReference = /^\d+$/.test(value) && REFERENCE_PREFIX.test(previous);
     previous = value;
-    if (!value || value.length > MAX_IDENTIFIER_LENGTH) continue;
+    if (!value) continue;
     if (!isReference && !IDENTIFIER.test(value)) continue;
     const start = match.index + lead;
     spans.push({ value, start, end: start + value.length });
@@ -66,24 +72,30 @@ export function findIdentifiers(text: string): IdentifierSpan[] {
 
 /**
  * Offset of the `budget`-long window holding the most distinct identifiers.
- * The head (0) wins ties, so a memory whose head is already as dense as any
- * other window is excerpted exactly as before.
+ * Candidates start at the sentence before each identifier; a window ending
+ * right after an identifier is used only when it holds strictly more. The
+ * head (0) wins ties, so a memory whose head is already as dense as any other
+ * window is excerpted exactly as before.
  */
 export function identifierWindowStart(text: string, budget: number): number {
   if (text.length <= budget) return 0;
   const spans = findIdentifiers(text);
+  const sorted = (starts: number[]) => [...new Set(starts)].filter((start) => start > 0).sort((a, b) => a - b);
   let best = 0;
   let bestCount = distinctIn(spans, 0, 0, budget);
-  // Candidate starts only move forward, so the first span inside the window does too.
-  let first = 0;
-  for (const span of spans) {
-    const start = sentenceStartBefore(text, span.start, budget);
-    if (start <= best) continue;
-    while (spans[first].start < start) first += 1;
-    const count = distinctIn(spans, first, start, start + budget);
-    if (count > bestCount) {
-      best = start;
-      bestCount = count;
+  for (const candidates of [
+    sorted(spans.map((span) => sentenceStartBefore(text, span.start, budget))),
+    sorted(spans.map((span) => wordStartAfter(text, span.end - budget, span.start)))
+  ]) {
+    // Candidates are sorted, so the first span inside the window only moves forward.
+    let first = 0;
+    for (const start of candidates) {
+      while (first < spans.length && spans[first].start < start) first += 1;
+      const count = distinctIn(spans, first, start, start + budget);
+      if (count > bestCount) {
+        best = start;
+        bestCount = count;
+      }
     }
   }
   return best;
@@ -103,6 +115,14 @@ function distinctIn(spans: IdentifierSpan[], first: number, from: number, to: nu
     if (spans[i].start >= from && spans[i].end <= to) seen.add(spans[i].value);
   }
   return seen.size;
+}
+
+/** First word start at or after `from`, not past `limit`. */
+function wordStartAfter(text: string, from: number, limit: number): number {
+  if (from <= 0) return 0;
+  if (/\s/.test(text[from - 1])) return from;
+  const space = text.slice(from, limit).search(/\s/);
+  return space >= 0 ? from + space + 1 : limit;
 }
 
 function sentenceStartBefore(text: string, at: number, budget: number): number {

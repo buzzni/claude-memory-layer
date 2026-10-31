@@ -34,7 +34,7 @@ import {
   memoryReferenceSummary,
   redactReferenceText
 } from '../../../core/memory-reference-context.js';
-import { identifierExcerptEnabled, identifierWindowStart } from '../../../core/identifier-excerpt.js';
+import { findIdentifiers, identifierExcerptEnabled, identifierWindowStart } from '../../../core/identifier-excerpt.js';
 import type {
   CoreMemoryBlock,
   EventType,
@@ -190,7 +190,9 @@ export function sessionStartExcerpt(event: MemoryEvent): string {
   const head = collapsed.slice(start, start + budget);
   if (start + budget >= collapsed.length) return `...${head}`;
   const boundary = Math.max(head.lastIndexOf('. '), head.lastIndexOf(' / '), head.lastIndexOf('다 '));
-  const cut = boundary >= budget * 0.6 ? head.slice(0, boundary + 1) : head;
+  // An identifier window must keep the identifiers it was chosen for.
+  const keep = start > 0 ? (findIdentifiers(head).at(-1)?.end ?? 0) : 0;
+  const cut = boundary >= budget * 0.6 && boundary >= keep ? head.slice(0, boundary + 1) : head;
   return `${start > 0 ? '...' : ''}${cut.trimEnd()}...`;
 }
 
