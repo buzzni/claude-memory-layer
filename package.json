@@ -27,6 +27,7 @@
     "verify": "npm run typecheck && npm run lint && npm run test:run",
     "prepublishOnly": "npm run typecheck && npm run lint && npm run test:run && npm run build",
     "release:npm": "bash scripts/release-npm.sh",
+    "version": "node scripts/sync-manifest-versions.cjs",
     "smoke:dashboard": "tsx scripts/dashboard-smoke.ts",
     "check:architecture": "node scripts/check-import-boundaries.mjs",
     "ops:sync-gap:report": "node scripts/report-sync-gap.js",

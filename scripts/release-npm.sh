@@ -190,6 +190,7 @@ npm version "$BUMP" --no-git-tag-version >/dev/null
 NEW_VERSION="$(node -p "require('./package.json').version")"
 [[ "$NEW_VERSION" != "$OLD_VERSION" ]] || die "Version did not change (${OLD_VERSION})."
 printf 'new version: %s@%s\n' "$PACKAGE_NAME" "$NEW_VERSION"
+node scripts/guard-release-artifact.cjs manifest-versions
 
 log "Checking npm version immutability"
 if npm view "${PACKAGE_NAME}@${NEW_VERSION}" version >/dev/null 2>&1; then
@@ -275,7 +276,7 @@ TMP_DIR=""
 
 if [[ "$NO_GIT" -eq 0 ]]; then
   log "Creating release commit"
-  git add package.json package-lock.json
+  git add package.json package-lock.json .claude-plugin/plugin.json
   git commit -m "chore(release): v${NEW_VERSION}"
 fi
 
