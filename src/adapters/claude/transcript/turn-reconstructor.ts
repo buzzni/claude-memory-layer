@@ -18,6 +18,20 @@ function isTextContentBlock(value: unknown): value is { type: string; text: stri
     && typeof (value as { text?: unknown }).text === 'string';
 }
 
+/**
+ * A user entry that opens a turn: string content or text blocks, not a tool
+ * result (the rule the session history importer classifies prompts by), and
+ * not a meta entry Claude Code inserts itself, such as hook feedback.
+ */
+export function isUserPromptEntry(entry: ClaudeTranscriptEntry): boolean {
+  if (entry.type !== 'user' || entry.isMeta === true) return false;
+  const content = entry.message?.content;
+  if (typeof content === 'string') return true;
+  return Array.isArray(content)
+    && !content.some((block) => (block as { type?: unknown })?.type === 'tool_result')
+    && content.some(isTextContentBlock);
+}
+
 /** Extract assistant text messages from parsed Claude transcript entries. */
 export function extractAssistantTextMessages(entries: ClaudeTranscriptEntry[]): AssistantTextMessage[] {
   const messages: AssistantTextMessage[] = [];
