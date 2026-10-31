@@ -37,6 +37,7 @@ import type {
 import {
   formatMemoryReferenceContext,
   memoryReferenceSummary,
+  redactReferenceText,
   type MemoryReferenceItem
 } from '../../../core/memory-reference-context.js';
 import { resolveCanonicalMemoryActorId } from '../../../core/operations/canonical-memory-injection-service.js';
@@ -52,6 +53,7 @@ import {
 } from './prompt-injection-policy.js';
 import { normalizeUserPrompt, promptClassifierMetadata, redactPromptForStorage } from '../../../core/prompt-normalizer.js';
 import { sanitizeRetrievalQuery } from '../../../core/retrieval-query-sanitizer.js';
+import { identifierExcerptEnabled, identifierWindowStart } from '../../../core/identifier-excerpt.js';
 import type { UserPromptSubmitInput, UserPromptSubmitOutput } from '../../../core/types.js';
 
 // Configuration. All numeric env vars go through readNumberEnv so an invalid
@@ -142,16 +144,21 @@ function getDynamicMinScore(prompt: string): number {
 }
 
 export function selectEvidencePreview(content: string, query: string, maxChars: number = 300): string {
-  if (content.length <= maxChars) return content;
+  const identifierAnchored = identifierExcerptEnabled();
+  const text = identifierAnchored ? redactReferenceText(content) : content;
+  if (text.length <= maxChars) return text;
   const terms = (query.match(/[A-Za-z0-9_./:-]+|[가-힣]{2,}/g) ?? [])
     .filter((term) => term.length >= 2)
     .sort((a, b) => evidenceAnchorPriority(b) - evidenceAnchorPriority(a));
-  const lowered = content.toLowerCase();
+  const lowered = text.toLowerCase();
   const anchor = terms
     .map((term) => lowered.indexOf(term.toLowerCase()))
     .find((index) => index >= 0);
-  if (anchor === undefined) return content.slice(0, maxChars) + '...';
-  return evidencePreviewAt(content, Math.max(0, anchor - 80), maxChars);
+  if (anchor === undefined) {
+    const start = identifierAnchored ? identifierWindowStart(text, maxChars) : 0;
+    return start > 0 ? evidencePreviewAt(text, start, maxChars) : text.slice(0, maxChars) + '...';
+  }
+  return evidencePreviewAt(text, Math.max(0, anchor - 80), maxChars);
 }
 
 function evidencePreviewAt(content: string, start: number, maxChars: number): string {

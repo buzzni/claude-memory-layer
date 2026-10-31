@@ -31,8 +31,10 @@ import { isPromptOnlySessionSummary } from './prompt-injection-policy.js';
 import {
   formatMemoryReferenceContext,
   memoryEventReferenceItem,
-  memoryReferenceSummary
+  memoryReferenceSummary,
+  redactReferenceText
 } from '../../../core/memory-reference-context.js';
+import { identifierExcerptEnabled, identifierWindowStart } from '../../../core/identifier-excerpt.js';
 import type {
   CoreMemoryBlock,
   EventType,
@@ -177,14 +179,19 @@ export function selectSessionStartMemories(events: MemoryEvent[], limit: number)
  * backs off to the last sentence/clause boundary when there is one nearby.
  */
 export function sessionStartExcerpt(event: MemoryEvent): string {
-  const collapsed = event.content.trim().replace(/\s*\n+\s*/g, ' / ');
+  const identifierAnchored = identifierExcerptEnabled();
+  const content = identifierAnchored ? redactReferenceText(event.content) : event.content;
+  const collapsed = content.trim().replace(/\s*\n+\s*/g, ' / ');
   const budget = SESSION_START_EXCERPT_BUDGET[event.eventType] ?? DEFAULT_EXCERPT_BUDGET;
   if (collapsed.length <= budget) return collapsed;
 
-  const head = collapsed.slice(0, budget);
+  // Without the experiment the window is always the head.
+  const start = identifierAnchored ? identifierWindowStart(collapsed, budget) : 0;
+  const head = collapsed.slice(start, start + budget);
+  if (start + budget >= collapsed.length) return `...${head}`;
   const boundary = Math.max(head.lastIndexOf('. '), head.lastIndexOf(' / '), head.lastIndexOf('다 '));
   const cut = boundary >= budget * 0.6 ? head.slice(0, boundary + 1) : head;
-  return `${cut.trimEnd()}...`;
+  return `${start > 0 ? '...' : ''}${cut.trimEnd()}...`;
 }
 
 /**

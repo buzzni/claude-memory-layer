@@ -1,4 +1,5 @@
 import { generateCitationId } from './citation-generator.js';
+import { identifierExcerptEnabled, identifierWindowStart, keepCodeBlockIdentifiers } from './identifier-excerpt.js';
 import { applyPrivacyFilter } from './privacy/index.js';
 import type { Config, MemoryEvent } from './types.js';
 
@@ -36,8 +37,12 @@ export function redactReferenceText(content: string): string {
 }
 
 function safeText(content: string): string {
-  return redactReferenceText(content)
-    .replace(/```[\s\S]*?```/g, '[code]')
+  const redacted = redactReferenceText(content);
+  // Paths, SHAs, and PR numbers inside a code block are what grounds a reply.
+  const withoutCode = identifierExcerptEnabled()
+    ? keepCodeBlockIdentifiers(redacted)
+    : redacted.replace(/```[\s\S]*?```/g, '[code]');
+  return withoutCode
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -89,7 +94,10 @@ export function memoryReferenceSummary(content: string, query = '', maxChars = 1
     .sort((a, b) => queryTermPriority(b) - queryTermPriority(a))
     .map((term) => lowered.indexOf(term.toLowerCase()))
     .find((index) => index >= 0);
-  if (anchor === undefined) return truncateAtBoundary(normalized, maxChars);
+  if (anchor === undefined) {
+    const start = identifierExcerptEnabled() ? identifierWindowStart(normalized, maxChars) : 0;
+    return start > 0 ? excerptAt(normalized, start, maxChars) : truncateAtBoundary(normalized, maxChars);
+  }
 
   return excerptAt(normalized, Math.max(0, anchor - Math.floor(maxChars * 0.3)), maxChars);
 }

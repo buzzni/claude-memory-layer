@@ -238,6 +238,7 @@ touch <workspace-root>/.claude-memory-root
   - `CLAUDE_MEMORY_FALLBACK_MIN_SCORE` (기본 0.3, 결과 0건일 때 재시도)
   - `CLAUDE_MEMORY_FTS_ABSOLUTE_SCORE_EXPERIMENT` (기본 꺼짐, `true`면 FTS 점수를 결과 목록 내 상대값 대신 bm25 절대 척도 `x/(x+15)`로 계산. 흔한 토큰 하나만 맞은 결과가 1.0을 받지 않음)
   - `CLAUDE_MEMORY_RETRIEVAL_QUERY_SANITIZER_EXPERIMENT` (기본 꺼짐, `true`면 UserPromptSubmit 검색 쿼리에서 200자를 넘는 현재 프롬프트를 물음표 문장 → 한국어 질문·요청 어미(`…까`, `…나요`, `…해줘`) 문장 → 마지막 문장 → 꼬리 250자 순으로 줄임. 버려진 부분의 경로·`#번호`·커밋 SHA는 쿼리 뒤에 붙임)
+  - `CLAUDE_MEMORY_IDENTIFIER_EXCERPT_EXPERIMENT` (기본 꺼짐, `true`면 SessionStart·UserPromptSubmit 주입 발췌가 같은 글자 수 예산 안에서 파일 경로·PR·이슈 번호·커밋 SHA·브랜치명·버전이 가장 많이 모인 구간을 고름. 쿼리 용어가 본문에 있으면 그 위치가 우선이고, 앞부분만큼 밀집한 구간이 없으면 기존처럼 앞부분을 씀. reference 요약은 코드 블록을 `[code]` 대신 블록 안 식별자(최대 5개)로 바꾸고, 모든 경로에서 privacy filter를 먼저 적용)
 
 ---
 
