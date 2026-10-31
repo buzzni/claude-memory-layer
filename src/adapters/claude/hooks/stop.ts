@@ -16,7 +16,7 @@ import { getLightweightMemoryServiceForProject } from '../../../services/memory-
 import { applyPrivacyFilter } from '../../../core/privacy/index.js';
 import { readTurnStateDetails, clearTurnState, writeLastAssistantSnippet } from '../../../core/turn-state.js';
 import type { StopInput, Config } from '../../../core/types.js';
-import { extractAssistantMessages } from '../transcript/turn-reconstructor.js';
+import { readUnprocessedAssistantMessages } from '../transcript/stop-transcript-cursor.js';
 import { readStdin, readNumberEnv } from './hook-runtime.js';
 import { scheduleSessionSummary } from './semantic-daemon-client.js';
 import { isLlmSummaryEnabled } from '../../llm/session-summary-llm.js';
@@ -50,11 +50,13 @@ export async function main(): Promise<string> {
     // read as the answer to the previous real request.
     const turnTrigger = turnState?.turnTrigger;
 
-    // Read assistant messages from transcript
-    const assistantMessages = await extractAssistantMessages(input.transcript_path);
+    // Read the assistant messages appended since this session's previous Stop
+    const transcriptBatch = readUnprocessedAssistantMessages(input.session_id, input.transcript_path);
+    const assistantMessages = transcriptBatch.messages;
 
     const MIN_AGENT_RESPONSE_LEN = readNumberEnv('CLAUDE_MEMORY_AGENT_RESPONSE_MIN_LEN', 150, { integer: true, min: 0 });
     const lastIdx = assistantMessages.length - 1;
+    let allStored = true;
 
     // Store each assistant response
     for (let i = 0; i < assistantMessages.length; i++) {
@@ -74,7 +76,7 @@ export async function main(): Promise<string> {
       // Always store the last message (may be the final answer)
       if (!isLast && content.trim().length < MIN_AGENT_RESPONSE_LEN) continue;
 
-      await memoryService.storeAgentResponse(
+      const stored = await memoryService.storeAgentResponse(
         input.session_id,
         content,
         {
@@ -86,7 +88,10 @@ export async function main(): Promise<string> {
           ...(turnTrigger ? { turnTrigger } : {})
         }
       );
+      if (!stored.success) allStored = false;
     }
+    // A failed store keeps the cursor where it was so the next Stop retries it.
+    if (allStored) transcriptBatch.commit();
 
     // Save last assistant response snippet for next-turn retrieval context
     // enrichment. A reply to an automated notification is not what the next

@@ -20,8 +20,11 @@ const transcript = { messages: [] as string[] };
 vi.mock('../../src/services/memory-service.js', () => ({
   getLightweightMemoryServiceForProject: () => service
 }));
-vi.mock('../../src/adapters/claude/transcript/turn-reconstructor.js', () => ({
-  extractAssistantMessages: vi.fn(async () => transcript.messages.map((text) => ({ text })))
+vi.mock('../../src/adapters/claude/transcript/stop-transcript-cursor.js', () => ({
+  readUnprocessedAssistantMessages: vi.fn(() => ({
+    messages: transcript.messages.map((text) => ({ text })),
+    commit: () => {}
+  }))
 }));
 vi.mock('../../src/adapters/claude/hooks/semantic-daemon-client.js', () => ({
   scheduleSessionSummary: vi.fn().mockResolvedValue(undefined)
