@@ -214,7 +214,7 @@ describe('CLAUDE_MEMORY_RETRIEVAL_QUERY_SANITIZER_EXPERIMENT', () => {
   it.each([['unset', undefined], ['1', '1'], ['false', 'false']])(
     'keeps every query byte-identical when the flag is %s',
     (_label, value) => {
-      if (value !== undefined) vi.stubEnv('CLAUDE_MEMORY_RETRIEVAL_QUERY_SANITIZER_EXPERIMENT', value);
+      vi.stubEnv('CLAUDE_MEMORY_RETRIEVAL_QUERY_SANITIZER_EXPERIMENT', value);
       for (const key of Object.keys(inputs) as Array<keyof typeof inputs>) {
         const query = buildRetrievalQuery(inputs[key]);
         expect(Buffer.from(query).equals(Buffer.from(legacyQueries[key]))).toBe(true);

@@ -39,7 +39,10 @@ const MIN_QUERY_LENGTH = 10;
 const MAX_PRESERVED_IDENTIFIERS = 8;
 const MAX_IDENTIFIER_LENGTH = 200;
 
-const SENTENCE_BOUNDARY = /(?<=[.!?。！？])\s+/;
+// ASCII punctuation ends a sentence only before whitespace; full-width
+// punctuation ends one even without it. The closing-quote run is bounded so
+// the lookbehind stays constant-time on a pasted run of quotes.
+const SENTENCE_BOUNDARY = /(?<=[.!?]["'”’)\]]{0,3})\s+|(?<=[。！？]["'”’)\]]{0,3})\s*/;
 const QUESTION_END = /[?？]["'”’)\]]*$/;
 const KOREAN_INTENT_END = /(?:까요?|나요|가요|냐|니|줘요?|주세요|주십시오|부탁(?:해요?|합니다|드립니다|드려요))[.!~…\s]*$/;
 // Leading brackets/quotes and trailing punctuation or Korean particles
@@ -89,10 +92,10 @@ function withIdentifiers(
   return { query: [kept, ...dropped].join(' '), method };
 }
 
-/** Whitespace tokens only, so cost stays linear on a pasted blob. */
+/** Whitespace/comma tokens only, so cost stays linear on a pasted blob. */
 function identifiers(text: string): string[] {
   return text
-    .split(/\s+/)
+    .split(/[\s,;]+|(?=#\d)/)
     .filter((token) => token.length <= MAX_IDENTIFIER_LENGTH)
     .map((token) => token.replace(IDENTIFIER_EDGES, ''))
     .filter((token) => IDENTIFIER.test(token));

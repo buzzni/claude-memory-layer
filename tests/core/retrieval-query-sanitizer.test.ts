@@ -132,6 +132,41 @@ describe('sanitizeRetrievalQuery', () => {
     expect(performance.now() - started).toBeLessThan(200);
   });
 
+  it('stays fast on a long run of closing quotes after punctuation', () => {
+    const query = `。${'"'.repeat(30_000)}x\n.${'"'.repeat(30_000)} x\n이 덤프는 어디서 생겼나요?`;
+
+    const started = performance.now();
+    const result = sanitizeRetrievalQuery(query);
+
+    expect(result.query).toBe('이 덤프는 어디서 생겼나요?');
+    expect(performance.now() - started).toBeLessThan(200);
+  });
+
+  it('keeps identifiers joined by commas, semicolons, or slashes between references', () => {
+    const query = `Compare src/a.ts,src/b.ts;src/c.ts and #122/#123.\n${logLines(8)}\n이 변경이 회귀를 만들었나요?`;
+
+    expect(sanitizeRetrievalQuery(query).query)
+      .toBe('이 변경이 회귀를 만들었나요? src/a.ts src/b.ts src/c.ts #122 #123');
+  });
+
+  it('appends at most eight identifiers, in order of first appearance', () => {
+    const query = `#1 #2 #3 #4 #5 #6 #7 #8 #999\n${logLines(8)}\n이 변경이 회귀를 만들었나요?`;
+
+    expect(sanitizeRetrievalQuery(query).query).toBe('이 변경이 회귀를 만들었나요? #1 #2 #3 #4 #5 #6 #7 #8');
+  });
+
+  it('splits after a question mark followed by a closing quote', () => {
+    const query = `${logLines(8)}\n"Why does caching fail?" ${'The remaining log is irrelevant. '.repeat(20)}`;
+
+    expect(sanitizeRetrievalQuery(query)).toEqual({ query: '"Why does caching fail?"', method: 'question' });
+  });
+
+  it('splits after full-width punctuation without following whitespace', () => {
+    const query = `${logLines(8)}\n캐시는 왜 다시 생성되나요？${'참고 로그가 이어집니다。'.repeat(30)}`;
+
+    expect(sanitizeRetrievalQuery(query)).toEqual({ query: '캐시는 왜 다시 생성되나요？', method: 'question' });
+  });
+
   it('does not split paths or version numbers into sentences', () => {
     const query = `${logLines(8)}\nscripts/guard-release-artifact.cjs 는 v2.4.17 에서 왜 실패했나요?`;
 
