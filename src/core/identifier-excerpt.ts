@@ -73,11 +73,14 @@ export function identifierWindowStart(text: string, budget: number): number {
   if (text.length <= budget) return 0;
   const spans = findIdentifiers(text);
   let best = 0;
-  let bestCount = distinctIn(spans, 0, budget);
+  let bestCount = distinctIn(spans, 0, 0, budget);
+  // Candidate starts only move forward, so the first span inside the window does too.
+  let first = 0;
   for (const span of spans) {
     const start = sentenceStartBefore(text, span.start, budget);
     if (start <= best) continue;
-    const count = distinctIn(spans, start, start + budget);
+    while (spans[first].start < start) first += 1;
+    const count = distinctIn(spans, first, start, start + budget);
     if (count > bestCount) {
       best = start;
       bestCount = count;
@@ -94,11 +97,10 @@ export function keepCodeBlockIdentifiers(text: string): string {
   });
 }
 
-function distinctIn(spans: IdentifierSpan[], from: number, to: number): number {
+function distinctIn(spans: IdentifierSpan[], first: number, from: number, to: number): number {
   const seen = new Set<string>();
-  for (const span of spans) {
-    if (span.start >= to) break;
-    if (span.start >= from && span.end <= to) seen.add(span.value);
+  for (let i = first; i < spans.length && spans[i].start < to; i += 1) {
+    if (spans[i].start >= from && spans[i].end <= to) seen.add(spans[i].value);
   }
   return seen.size;
 }
