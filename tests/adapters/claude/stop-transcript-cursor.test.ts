@@ -69,6 +69,13 @@ describe('Stop transcript cursor', () => {
     expect(texts(read())).toEqual(['before tool', 'after tool']);
   });
 
+  it('does not start the current turn at a meta entry Claude Code inserted mid-turn', () => {
+    const meta = `${JSON.stringify({ type: 'user', isMeta: true, message: { content: 'Stop hook feedback' } })}\n`;
+    writeFileSync(transcriptPath, promptLine('request') + assistantLine('before feedback') + meta + assistantLine('after feedback'));
+
+    expect(texts(read())).toEqual(['before feedback', 'after feedback']);
+  });
+
   it('reads only what was appended after the committed cursor', () => {
     writeFileSync(transcriptPath, assistantLine('one'));
     read().commit();

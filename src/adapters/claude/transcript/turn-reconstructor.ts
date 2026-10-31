@@ -20,10 +20,11 @@ function isTextContentBlock(value: unknown): value is { type: string; text: stri
 
 /**
  * A user entry that opens a turn: string content or text blocks, not a tool
- * result (the rule the session history importer classifies prompts by).
+ * result (the rule the session history importer classifies prompts by), and
+ * not a meta entry Claude Code inserts itself, such as hook feedback.
  */
 export function isUserPromptEntry(entry: ClaudeTranscriptEntry): boolean {
-  if (entry.type !== 'user') return false;
+  if (entry.type !== 'user' || entry.isMeta === true) return false;
   const content = entry.message?.content;
   if (typeof content === 'string') return true;
   return Array.isArray(content)
