@@ -151,7 +151,10 @@ export function selectEvidencePreview(content: string, query: string, maxChars: 
     .map((term) => lowered.indexOf(term.toLowerCase()))
     .find((index) => index >= 0);
   if (anchor === undefined) return content.slice(0, maxChars) + '...';
-  const start = Math.max(0, anchor - 80);
+  return evidencePreviewAt(content, Math.max(0, anchor - 80), maxChars);
+}
+
+function evidencePreviewAt(content: string, start: number, maxChars: number): string {
   const end = Math.min(content.length, start + maxChars);
   return `${start > 0 ? '...' : ''}${content.slice(start, end)}${end < content.length ? '...' : ''}`;
 }

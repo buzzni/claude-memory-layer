@@ -30,8 +30,13 @@ const REFERENCE_PRIVACY_CONFIG: Config['privacy'] = {
   }
 };
 
+/** Redaction applied to any memory text before it is excerpted into a prompt. */
+export function redactReferenceText(content: string): string {
+  return applyPrivacyFilter(content, REFERENCE_PRIVACY_CONFIG).content;
+}
+
 function safeText(content: string): string {
-  return applyPrivacyFilter(content, REFERENCE_PRIVACY_CONFIG).content
+  return redactReferenceText(content)
     .replace(/```[\s\S]*?```/g, '[code]')
     .replace(/\s+/g, ' ')
     .trim();
@@ -86,7 +91,10 @@ export function memoryReferenceSummary(content: string, query = '', maxChars = 1
     .find((index) => index >= 0);
   if (anchor === undefined) return truncateAtBoundary(normalized, maxChars);
 
-  const start = Math.max(0, anchor - Math.floor(maxChars * 0.3));
+  return excerptAt(normalized, Math.max(0, anchor - Math.floor(maxChars * 0.3)), maxChars);
+}
+
+function excerptAt(normalized: string, start: number, maxChars: number): string {
   const slice = normalized.slice(start, start + maxChars);
   return `${start > 0 ? '...' : ''}${truncateAtBoundary(slice, maxChars)}${start + maxChars < normalized.length && !slice.endsWith('...') ? '...' : ''}`;
 }
