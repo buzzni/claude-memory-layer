@@ -117,10 +117,7 @@ function normalizeAbsoluteFtsScores(results: RankedKeywordResult[]): Array<{ eve
   // Score each hit from its own bm25 magnitude so a lone weak match no longer
   // inherits 1.0 from being first. x/(x+k) never reaches 1 and keeps order
   // across the heavy tail of long prompts.
-  return results.map((r) => {
-    const magnitude = Math.max(0, -r.rank);
-    return { event: r.event, score: magnitude / (magnitude + FTS_ABSOLUTE_HALF_SCORE_RANK) };
-  });
+  return results.map((r) => ({ event: r.event, score: -r.rank / (-r.rank + FTS_ABSOLUTE_HALF_SCORE_RANK) }));
 }
 
 /**
@@ -264,7 +261,10 @@ export class MemoryQueryService {
     });
     if (results.length === 0) return [];
 
-    const normalize = absoluteFtsScoreEnabled() ? normalizeAbsoluteFtsScores : normalizeRelativeFtsScores;
+    // bm25 ranks are always negative; the store's LIKE fallback reports 0 and
+    // has no magnitude to score, so it keeps the list-relative scores.
+    const hasBm25Ranks = results.every((r) => r.rank < 0);
+    const normalize = absoluteFtsScoreEnabled() && hasBm25Ranks ? normalizeAbsoluteFtsScores : normalizeRelativeFtsScores;
     return normalize(results)
       .filter((r) => !options?.minScore || r.score >= options.minScore);
   }

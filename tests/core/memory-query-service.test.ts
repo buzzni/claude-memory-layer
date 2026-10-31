@@ -266,9 +266,25 @@ describe('MemoryQueryService', () => {
     it('applies minScore to the absolute scores', async () => {
       vi.stubEnv('CLAUDE_MEMORY_FTS_ABSOLUTE_SCORE_EXPERIMENT', 'true');
       // List-relative scoring would keep the first weak hit at 1.0.
-      const { service } = serviceReturning([-3.56, -3.1, 0]);
+      const { service } = serviceReturning([-3.56, -3.1]);
 
       await expect(service.keywordSearch('query', { minScore: 0.4 })).resolves.toEqual([]);
+    });
+
+    it('maps bm25 magnitude to x/(x+15)', async () => {
+      vi.stubEnv('CLAUDE_MEMORY_FTS_ABSOLUTE_SCORE_EXPERIMENT', 'true');
+      const results = await serviceReturning([-45, -15, -10, -6]).service.keywordSearch('query');
+
+      // 0.4 is the hook's default minScore, 0.3 its fallback floor.
+      expect(results.map((r) => r.score)).toEqual([0.75, 0.5, 0.4, 6 / 21]);
+    });
+
+    it('keeps list-relative scores for LIKE fallback rows without bm25', async () => {
+      vi.stubEnv('CLAUDE_MEMORY_FTS_ABSOLUTE_SCORE_EXPERIMENT', 'true');
+      // SQLiteEventStore returns rank 0 when the FTS table is unavailable.
+      const { service } = serviceReturning([0, 0]);
+
+      await expect(service.keywordSearch('query', { minScore: 0.4 })).resolves.toMatchObject([{ score: 1 }, { score: 1 }]);
     });
   });
 });
