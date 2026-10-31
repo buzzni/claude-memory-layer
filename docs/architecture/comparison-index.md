@@ -20,6 +20,7 @@ This index gathers the comparison/architecture notes used to guide the claude-me
 - [Architecture Comparison And Recommendations](../../docs/ARCHITECTURE_COMPARISON_AND_RECOMMENDATIONS.md)
 - [Mcp Memory Service Comparative Review](../../docs/MCP_MEMORY_SERVICE_COMPARATIVE_REVIEW.md)
 - [MemPalace Targeted Improvement Plan](mempalace-targeted-improvement-plan.md)
+- [MemPalace Benchmarking Candidates (2026-10-31)](mempalace-benchmarking-2026-10-31.md)
 - [Memory Layer Manifest](memory-layer-manifest.md)
 - [Source Adapter Contract](source-adapter-contract.md)
 - [Memsearch Project Structure Analysis](../../docs/MEMSEARCH_PROJECT_STRUCTURE_ANALYSIS.md)
