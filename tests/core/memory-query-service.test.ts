@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { MemoryQueryService } from '../../src/core/engine/memory-query-service.js';
 import type { MemoryEvent } from '../../src/core/types.js';
@@ -190,5 +190,101 @@ describe('MemoryQueryService', () => {
       { event: strongest, score: 1 },
       { event: middle, score: 0.5 }
     ]);
+  });
+
+  it('keeps the list-relative FTS scores byte-for-byte', async () => {
+    // Golden output of the list-relative normalization. A single weak hit
+    // scores 1 here; that is the current contract, not an endorsement.
+    const golden: Record<string, { ranks: number[]; scores: string }> = {
+      mixed: {
+        ranks: [-176.67, -41.71, -13.67, -3.56, -0.000001],
+        scores: '[1,0.23608988077256976,0.07737589334564943,0.020150557650707834,0]'
+      },
+      tied: { ranks: [-3.56, -3.56], scores: '[1,1]' },
+      single: { ranks: [-3.56], scores: '[1]' },
+      zero: { ranks: [0], scores: '[1]' }
+    };
+
+    for (const { ranks, scores } of Object.values(golden)) {
+      const service = new MemoryQueryService(vi.fn(async () => {}), {
+        keywordSearch: vi.fn(async () => ranks.map((rank) => ({ event: event(), rank }))),
+        getSessionEvents: vi.fn(async () => []),
+        getRecentEvents: vi.fn(async () => [])
+      });
+      const results = await service.keywordSearch('query');
+      expect(JSON.stringify(results.map((r) => r.score))).toBe(scores);
+    }
+  });
+
+  describe('with CLAUDE_MEMORY_FTS_ABSOLUTE_SCORE_EXPERIMENT', () => {
+    afterEach(() => { vi.unstubAllEnvs(); });
+
+    function serviceReturning(ranks: number[]) {
+      const events = ranks.map((_, index) => event({ id: `${index}`.padStart(8, '0') + '-1111-4111-8111-111111111111' }));
+      const service = new MemoryQueryService(vi.fn(async () => {}), {
+        keywordSearch: vi.fn(async () => ranks.map((rank, index) => ({ event: events[index], rank }))),
+        getSessionEvents: vi.fn(async () => []),
+        getRecentEvents: vi.fn(async () => [])
+      });
+      return { service, events };
+    }
+
+    it('ignores values other than true', async () => {
+      vi.stubEnv('CLAUDE_MEMORY_FTS_ABSOLUTE_SCORE_EXPERIMENT', '1');
+      const { service } = serviceReturning([-3.56]);
+
+      await expect(service.keywordSearch('query')).resolves.toMatchObject([{ score: 1 }]);
+    });
+
+    it('does not give a lone weak match the top score', async () => {
+      vi.stubEnv('CLAUDE_MEMORY_FTS_ABSOLUTE_SCORE_EXPERIMENT', 'true');
+      // One common token matched: bm25 stays in single digits on real stores.
+      const { service } = serviceReturning([-3.56]);
+
+      const [result] = await service.keywordSearch('query');
+      expect(result.score).toBeLessThan(0.3);
+    });
+
+    it('scores identifier matches high', async () => {
+      vi.stubEnv('CLAUDE_MEMORY_FTS_ABSOLUTE_SCORE_EXPERIMENT', 'true');
+      const { service } = serviceReturning([-66.58]);
+
+      const [result] = await service.keywordSearch('query');
+      expect(result.score).toBeGreaterThanOrEqual(0.8);
+      expect(result.score).toBeLessThan(1);
+    });
+
+    it('scores a rank the same regardless of the other results', async () => {
+      vi.stubEnv('CLAUDE_MEMORY_FTS_ABSOLUTE_SCORE_EXPERIMENT', 'true');
+      const alone = await serviceReturning([-13.67]).service.keywordSearch('query');
+      const withStronger = await serviceReturning([-176.67, -13.67]).service.keywordSearch('query');
+
+      expect(withStronger[1].score).toBe(alone[0].score);
+      expect(withStronger[0].score).toBeGreaterThan(withStronger[1].score);
+    });
+
+    it('applies minScore to the absolute scores', async () => {
+      vi.stubEnv('CLAUDE_MEMORY_FTS_ABSOLUTE_SCORE_EXPERIMENT', 'true');
+      // List-relative scoring would keep the first weak hit at 1.0.
+      const { service } = serviceReturning([-3.56, -3.1]);
+
+      await expect(service.keywordSearch('query', { minScore: 0.4 })).resolves.toEqual([]);
+    });
+
+    it('maps bm25 magnitude to x/(x+15)', async () => {
+      vi.stubEnv('CLAUDE_MEMORY_FTS_ABSOLUTE_SCORE_EXPERIMENT', 'true');
+      const results = await serviceReturning([-45, -15, -10, -6]).service.keywordSearch('query');
+
+      // 0.4 is the hook's default minScore, 0.3 its fallback floor.
+      expect(results.map((r) => r.score)).toEqual([0.75, 0.5, 0.4, 6 / 21]);
+    });
+
+    it('keeps list-relative scores for LIKE fallback rows without bm25', async () => {
+      vi.stubEnv('CLAUDE_MEMORY_FTS_ABSOLUTE_SCORE_EXPERIMENT', 'true');
+      // SQLiteEventStore returns rank 0 when the FTS table is unavailable.
+      const { service } = serviceReturning([0, 0]);
+
+      await expect(service.keywordSearch('query', { minScore: 0.4 })).resolves.toMatchObject([{ score: 1 }, { score: 1 }]);
+    });
   });
 });

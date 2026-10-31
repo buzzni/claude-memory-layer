@@ -234,6 +234,7 @@ touch <workspace-root>/.claude-memory-root
   - `CLAUDE_MEMORY_SEMANTIC_DAEMON_IDLE_MS` (기본 `600000`, semantic daemon 유휴 종료 시간)
   - `CLAUDE_MEMORY_MIN_SCORE` (기본 0.4)
   - `CLAUDE_MEMORY_FALLBACK_MIN_SCORE` (기본 0.3, 결과 0건일 때 재시도)
+  - `CLAUDE_MEMORY_FTS_ABSOLUTE_SCORE_EXPERIMENT` (기본 꺼짐, `true`면 FTS 점수를 결과 목록 내 상대값 대신 bm25 절대 척도 `x/(x+15)`로 계산. 흔한 토큰 하나만 맞은 결과가 1.0을 받지 않음)
 
 ---
 

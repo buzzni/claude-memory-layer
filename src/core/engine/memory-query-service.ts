@@ -92,6 +92,34 @@ interface MemoryQueryServiceDeps {
   graduation: { getStats(): Promise<Array<{ level: string; count: number }>> };
 }
 
+function normalizeRelativeFtsScores(results: RankedKeywordResult[]): Array<{ event: MemoryEvent; score: number }> {
+  // FTS5/BM25 ranks are ordered ascending: the smallest value is the best.
+  // Normalize best->1 and worst->0. The previous formula inverted this and
+  // filtered exact matches while retaining the weakest tail results.
+  const bestRank = Math.min(...results.map((r) => r.rank));
+  const worstRank = Math.max(...results.map((r) => r.rank));
+  const rankRange = worstRank - bestRank;
+
+  return results.map((r) => ({
+    event: r.event,
+    score: rankRange === 0 ? 1 : 1 - (r.rank - bestRank) / rankRange
+  }));
+}
+
+// bm25 magnitude that maps to 0.5. Calibrated on hook query traces from three
+// project stores (4k-14k events): single common-token hits sit at p50 3.6-5.5,
+// identifier hits at p50 26-177. See the PR that introduced the experiment.
+const FTS_ABSOLUTE_HALF_SCORE_RANK = 15;
+
+const absoluteFtsScoreEnabled = () => process.env.CLAUDE_MEMORY_FTS_ABSOLUTE_SCORE_EXPERIMENT === 'true';
+
+function normalizeAbsoluteFtsScores(results: RankedKeywordResult[]): Array<{ event: MemoryEvent; score: number }> {
+  // Score each hit from its own bm25 magnitude so a lone weak match no longer
+  // inherits 1.0 from being first. x/(x+k) never reaches 1 and keeps order
+  // across the heavy tail of long prompts.
+  return results.map((r) => ({ event: r.event, score: -r.rank / (-r.rank + FTS_ABSOLUTE_HALF_SCORE_RANK) }));
+}
+
 /**
  * Thin-core query service for lightweight read and maintenance paths.
  *
@@ -233,18 +261,11 @@ export class MemoryQueryService {
     });
     if (results.length === 0) return [];
 
-    // FTS5/BM25 ranks are ordered ascending: the smallest value is the best.
-    // Normalize best->1 and worst->0. The previous formula inverted this and
-    // filtered exact matches while retaining the weakest tail results.
-    const bestRank = Math.min(...results.map((r) => r.rank));
-    const worstRank = Math.max(...results.map((r) => r.rank));
-    const rankRange = worstRank - bestRank;
-
-    return results
-      .map((r) => ({
-        event: r.event,
-        score: rankRange === 0 ? 1 : 1 - (r.rank - bestRank) / rankRange
-      }))
+    // bm25 ranks are always negative; the store's LIKE fallback reports 0 and
+    // has no magnitude to score, so it keeps the list-relative scores.
+    const hasBm25Ranks = results.every((r) => r.rank < 0);
+    const normalize = absoluteFtsScoreEnabled() && hasBm25Ranks ? normalizeAbsoluteFtsScores : normalizeRelativeFtsScores;
+    return normalize(results)
       .filter((r) => !options?.minScore || r.score >= options.minScore);
   }
 
