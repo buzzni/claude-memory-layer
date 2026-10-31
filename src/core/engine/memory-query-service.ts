@@ -106,6 +106,23 @@ function normalizeRelativeFtsScores(results: RankedKeywordResult[]): Array<{ eve
   }));
 }
 
+// bm25 magnitude that maps to 0.5. Calibrated on hook query traces from three
+// project stores (4k-14k events): single common-token hits sit at p50 3.6-5.5,
+// identifier hits at p50 26-177. See the PR that introduced the experiment.
+const FTS_ABSOLUTE_HALF_SCORE_RANK = 15;
+
+const absoluteFtsScoreEnabled = () => process.env.CLAUDE_MEMORY_FTS_ABSOLUTE_SCORE_EXPERIMENT === 'true';
+
+function normalizeAbsoluteFtsScores(results: RankedKeywordResult[]): Array<{ event: MemoryEvent; score: number }> {
+  // Score each hit from its own bm25 magnitude so a lone weak match no longer
+  // inherits 1.0 from being first. x/(x+k) never reaches 1 and keeps order
+  // across the heavy tail of long prompts.
+  return results.map((r) => {
+    const magnitude = Math.max(0, -r.rank);
+    return { event: r.event, score: magnitude / (magnitude + FTS_ABSOLUTE_HALF_SCORE_RANK) };
+  });
+}
+
 /**
  * Thin-core query service for lightweight read and maintenance paths.
  *
@@ -247,7 +264,8 @@ export class MemoryQueryService {
     });
     if (results.length === 0) return [];
 
-    return normalizeRelativeFtsScores(results)
+    const normalize = absoluteFtsScoreEnabled() ? normalizeAbsoluteFtsScores : normalizeRelativeFtsScores;
+    return normalize(results)
       .filter((r) => !options?.minScore || r.score >= options.minScore);
   }
 

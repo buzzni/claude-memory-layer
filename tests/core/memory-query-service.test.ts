@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { MemoryQueryService } from '../../src/core/engine/memory-query-service.js';
 import type { MemoryEvent } from '../../src/core/types.js';
@@ -214,5 +214,61 @@ describe('MemoryQueryService', () => {
       const results = await service.keywordSearch('query');
       expect(JSON.stringify(results.map((r) => r.score))).toBe(scores);
     }
+  });
+
+  describe('with CLAUDE_MEMORY_FTS_ABSOLUTE_SCORE_EXPERIMENT', () => {
+    afterEach(() => { vi.unstubAllEnvs(); });
+
+    function serviceReturning(ranks: number[]) {
+      const events = ranks.map((_, index) => event({ id: `${index}`.padStart(8, '0') + '-1111-4111-8111-111111111111' }));
+      const service = new MemoryQueryService(vi.fn(async () => {}), {
+        keywordSearch: vi.fn(async () => ranks.map((rank, index) => ({ event: events[index], rank }))),
+        getSessionEvents: vi.fn(async () => []),
+        getRecentEvents: vi.fn(async () => [])
+      });
+      return { service, events };
+    }
+
+    it('ignores values other than true', async () => {
+      vi.stubEnv('CLAUDE_MEMORY_FTS_ABSOLUTE_SCORE_EXPERIMENT', '1');
+      const { service } = serviceReturning([-3.56]);
+
+      await expect(service.keywordSearch('query')).resolves.toMatchObject([{ score: 1 }]);
+    });
+
+    it('does not give a lone weak match the top score', async () => {
+      vi.stubEnv('CLAUDE_MEMORY_FTS_ABSOLUTE_SCORE_EXPERIMENT', 'true');
+      // One common token matched: bm25 stays in single digits on real stores.
+      const { service } = serviceReturning([-3.56]);
+
+      const [result] = await service.keywordSearch('query');
+      expect(result.score).toBeLessThan(0.3);
+    });
+
+    it('scores identifier matches high', async () => {
+      vi.stubEnv('CLAUDE_MEMORY_FTS_ABSOLUTE_SCORE_EXPERIMENT', 'true');
+      const { service } = serviceReturning([-66.58]);
+
+      const [result] = await service.keywordSearch('query');
+      expect(result.score).toBeGreaterThanOrEqual(0.8);
+      expect(result.score).toBeLessThan(1);
+    });
+
+    it('scores a rank the same regardless of the other results', async () => {
+      vi.stubEnv('CLAUDE_MEMORY_FTS_ABSOLUTE_SCORE_EXPERIMENT', 'true');
+      const alone = await serviceReturning([-13.67]).service.keywordSearch('query');
+      const withStronger = await serviceReturning([-176.67, -13.67]).service.keywordSearch('query');
+
+      expect(withStronger[1].score).toBe(alone[0].score);
+      expect(withStronger[0].score).toBeGreaterThan(withStronger[1].score);
+    });
+
+    it('applies minScore to the absolute scores', async () => {
+      vi.stubEnv('CLAUDE_MEMORY_FTS_ABSOLUTE_SCORE_EXPERIMENT', 'true');
+      // List-relative scoring would keep the first weak hit at 1.0.
+      const { service } = serviceReturning([-3.56, -3.1, 0]);
+
+      await expect(service.keywordSearch('query', { minScore: 0.4 })).resolves.toEqual([]);
+    });
   });
 });
