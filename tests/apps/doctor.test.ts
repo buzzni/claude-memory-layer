@@ -322,8 +322,10 @@ describe('checkMcpClientConfig', () => {
     };
     const current = install('v22', '2.4.17');
     const old = install('v20', '2.3.0');
-    const expected = { command: '/opt/node/bin/node', args: [current.entry] };
-    return { current, old, expected };
+    const node = join(root, 'v22', 'bin', 'node');
+    writeFileSync(node, '');
+    const expected = { command: node, args: [current.entry] };
+    return { current, old, expected, node };
   }
 
   const read = (servers: Array<{ name: string; command: string; args?: string[]; scope?: 'user' | 'local' }>, client: 'claude-code' | 'codex' | 'claude-desktop' = 'claude-code') => ({
@@ -333,11 +335,11 @@ describe('checkMcpClientConfig', () => {
   });
 
   it('passes when the registered command resolves into the running package', () => {
-    const { current, expected } = fakeInstalls();
+    const { current, expected, node } = fakeInstalls();
     const result = checkMcpClientConfig(
       read([
         { name: 'claude-memory-layer', scope: 'user', command: current.bin },
-        { name: 'code-memory', scope: 'local', command: '/opt/node/bin/node', args: [current.entry] }
+        { name: 'code-memory', scope: 'local', command: node, args: [current.entry] }
       ]),
       current.packageRoot,
       expected
@@ -358,7 +360,7 @@ describe('checkMcpClientConfig', () => {
     expect(result.status).toBe('warn');
     expect(result.detail).toContain('PATH name "claude-memory-layer-mcp"');
     expect(result.fix).toBe(
-      `claude mcp remove claude-memory-layer -s user && claude mcp add claude-memory-layer -s user -- '/opt/node/bin/node' '${current.entry}'`
+      `claude mcp remove claude-memory-layer -s user && claude mcp add claude-memory-layer -s user -- '${expected.command}' '${current.entry}'`
     );
   });
 
@@ -374,7 +376,7 @@ describe('checkMcpClientConfig', () => {
     expect(result.detail).toContain(`another install (v2.3.0 at ${old.packageRoot})`);
     expect(result.detail).toContain('this CLI is v2.4.17');
     expect(result.fix).toBe(
-      `codex mcp remove claude-memory-layer && codex mcp add claude-memory-layer -- '/opt/node/bin/node' '${current.entry}'`
+      `codex mcp remove claude-memory-layer && codex mcp add claude-memory-layer -- '${expected.command}' '${current.entry}'`
     );
   });
 
@@ -387,7 +389,32 @@ describe('checkMcpClientConfig', () => {
     );
 
     expect(result).toMatchObject({ name: 'mcp:claude-desktop', status: 'fail' });
-    expect(result.fix).toBe('claude-memory-layer mcp install');
+    // Through the running install, not whichever claude-memory-layer PATH picks.
+    expect(result.fix).toBe(`'${expected.command}' '${join(current.packageRoot, 'dist', 'cli', 'index.js')}' mcp install`);
+  });
+
+  it('warns when the script is current but node comes from PATH', () => {
+    const { current, expected } = fakeInstalls();
+    const result = checkMcpClientConfig(
+      read([{ name: 'claude-memory-layer', command: 'node', args: [current.entry] }], 'codex'),
+      current.packageRoot,
+      expected
+    );
+
+    expect(result.status).toBe('warn');
+    expect(result.detail).toContain('node from PATH');
+  });
+
+  it('fails when the registered node executable does not exist', () => {
+    const { current, expected } = fakeInstalls();
+    const result = checkMcpClientConfig(
+      read([{ name: 'claude-memory-layer', command: '/gone/bin/node', args: [current.entry] }], 'codex'),
+      current.packageRoot,
+      expected
+    );
+
+    expect(result.status).toBe('fail');
+    expect(result.detail).toContain('/gone/bin/node, which does not exist');
   });
 
   it('passes without a fix when this server is not registered', () => {
@@ -398,6 +425,7 @@ describe('checkMcpClientConfig', () => {
   it('warns when the config cannot be parsed', () => {
     const { current, expected } = fakeInstalls();
     const result = checkMcpClientConfig({ ...read([]), error: 'Unexpected token' }, current.packageRoot, expected);
+    expect(result.detail).toContain('Could not read');
     expect(result.status).toBe('warn');
     expect(result.detail).toContain('Unexpected token');
   });

@@ -248,6 +248,7 @@ type McpTargetStatus =
   | { kind: 'not-absolute'; target: string }
   | { kind: 'missing-target'; target: string }
   | { kind: 'other-install'; resolvedPath: string; packageRoot?: string; version?: string }
+  | { kind: 'node-from-path' }
   | { kind: 'unverifiable' };
 
 /** Nearest ancestor package.json naming this package, e.g. another global install. */
@@ -275,9 +276,8 @@ function inspectMcpTarget(
   deps: Required<McpClientCheckDeps>
 ): McpTargetStatus {
   // `node <script>` runs the script; anything else is the binary itself.
-  const target = /^node(?:\.exe)?$/i.test(path.basename(server.command))
-    ? server.args.find((arg) => !arg.startsWith('-'))
-    : server.command;
+  const runsNode = /^node(?:\.exe)?$/i.test(path.basename(server.command));
+  const target = runsNode ? server.args.find((arg) => !arg.startsWith('-')) : server.command;
   if (!target) return { kind: 'unverifiable' };
   if (!path.isAbsolute(target)) return { kind: 'not-absolute', target };
   if (!deps.existsImpl(target)) return { kind: 'missing-target', target };
@@ -291,8 +291,16 @@ function inspectMcpTarget(
   };
   const resolvedPath = canonicalPath(target);
   const root = canonicalPath(packageRoot);
-  if (resolvedPath.startsWith(root + path.sep)) return { kind: 'current' };
-  return { kind: 'other-install', resolvedPath, ...findClaudeMemoryPackage(resolvedPath, deps.readFileImpl) };
+  if (!resolvedPath.startsWith(root + path.sep)) {
+    return { kind: 'other-install', resolvedPath, ...findClaudeMemoryPackage(resolvedPath, deps.readFileImpl) };
+  }
+  if (runsNode) {
+    // A Node other than the one this package was installed with can fail to
+    // load its native modules (better-sqlite3), so the runtime is pinned too.
+    if (!path.isAbsolute(server.command)) return { kind: 'node-from-path' };
+    if (!deps.existsImpl(server.command)) return { kind: 'missing-target', target: server.command };
+  }
+  return { kind: 'current' };
 }
 
 function quoteShellWord(word: string): string {
@@ -307,9 +315,11 @@ function mcpClientFix(
   const name = quoteShellWord(server.name);
   const invocation = [expected.command, ...expected.args].map(shellQuotePathForNode).join(' ');
   if (read.client === 'claude-desktop') {
-    return server.name === 'claude-memory-layer'
-      ? 'claude-memory-layer mcp install'
-      : `claude-memory-layer mcp install --server-name ${name}`;
+    // Run this install's CLI (<dist>/cli/index.js next to <dist>/mcp/index.js)
+    // rather than whichever `claude-memory-layer` comes first on PATH.
+    const cliPath = path.join(path.dirname(path.dirname(expected.args[0])), 'cli', 'index.js');
+    const install = `${shellQuotePathForNode(expected.command)} ${shellQuotePathForNode(cliPath)} mcp install`;
+    return server.name === 'claude-memory-layer' ? install : `${install} --server-name ${name}`;
   }
   if (read.client === 'codex') {
     return `codex mcp remove ${name} && codex mcp add ${name} -- ${invocation}`;
@@ -348,7 +358,7 @@ export function checkMcpClientConfig(
     return {
       name,
       status: 'warn',
-      detail: `Could not parse ${read.configPath}: ${read.error}`,
+      detail: `Could not read ${read.configPath}: ${read.error}`,
       fix: `Check the syntax of ${read.configPath}.`
     };
   }
@@ -366,6 +376,8 @@ export function checkMcpClientConfig(
     if (status.kind === 'current') continue;
     if (status.kind === 'not-absolute') {
       problems.push(`${label} uses PATH name "${status.target}", which can resolve to a different install than this CLI`);
+    } else if (status.kind === 'node-from-path') {
+      problems.push(`${label} runs this install with node from PATH ("${server.command}"), which may not be the Node it was installed with`);
     } else if (status.kind === 'missing-target') {
       missing = true;
       problems.push(`${label} points to ${status.target}, which does not exist`);

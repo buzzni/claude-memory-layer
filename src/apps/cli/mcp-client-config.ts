@@ -70,16 +70,11 @@ function readConfig(
   configPath: string,
   parse: (text: string) => RegisteredMcpServer[]
 ): McpClientConfigRead {
-  let text: string;
   try {
-    text = fs.readFileSync(configPath, 'utf8');
-  } catch {
-    return { client, configPath, servers: [] };
-  }
-  if (!text.trim()) return { client, configPath, servers: [] };
-  try {
-    return { client, configPath, servers: parse(text) };
+    const text = fs.readFileSync(configPath, 'utf8');
+    return { client, configPath, servers: text.trim() ? parse(text) : [] };
   } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { client, configPath, servers: [] };
     return { client, configPath, servers: [], error: error instanceof Error ? error.message : String(error) };
   }
 }
@@ -115,27 +110,47 @@ function tomlStrings(value: string): string[] {
   });
 }
 
+function stripTomlComment(line: string): string {
+  let quote: string | null = null;
+  for (let index = 0; index < line.length; index++) {
+    const char = line[index];
+    if (quote) {
+      if (char === '\\' && quote === '"') index++;
+      else if (char === quote) quote = null;
+    } else if (char === '"' || char === "'") {
+      quote = char;
+    } else if (char === '#') {
+      return line.slice(0, index);
+    }
+  }
+  return line;
+}
+
 /**
  * Just enough TOML to read `command` and `args` from `[mcp_servers.<name>]`
- * tables, which is the shape `codex mcp add` writes. Inline-table forms are
- * not recognized and read as no servers.
+ * tables, which is the shape `codex mcp add` writes. Other ways of declaring
+ * MCP servers (an `[mcp_servers]` table of inline tables, dotted keys) throw
+ * instead of reading as "not registered".
  */
 export function parseCodexMcpServers(toml: string): Array<{ name: string; command: string; args: string[] }> {
   const servers: Array<{ name: string; command?: string; args: string[] }> = [];
   let current: (typeof servers)[number] | null = null;
   let pendingArgs: string | null = null;
 
-  for (const line of toml.split(/\r?\n/)) {
+  for (const line of toml.split(/\r?\n/).map(stripTomlComment)) {
     if (pendingArgs !== null && current) {
       pendingArgs += `\n${line}`;
-      if (/\]\s*(?:#.*)?$/.test(line.trim())) {
+      if (/\]$/.test(line.trim())) {
         current.args = tomlStrings(pendingArgs);
         pendingArgs = null;
       }
       continue;
     }
+    if (/^\s*(?:\[\s*mcp_servers\s*\]|mcp_servers\s*[.=])/.test(line)) {
+      throw new Error('declares MCP servers in a form this check cannot read; expected [mcp_servers.<name>] tables');
+    }
     if (line.trim().startsWith('[')) {
-      const table = /^\s*\[\s*mcp_servers\.(?:"((?:[^"\\]|\\.)*)"|'([^']*)'|([A-Za-z0-9_-]+))\s*\]\s*(?:#.*)?$/.exec(line);
+      const table = /^\s*\[\s*mcp_servers\.(?:"((?:[^"\\]|\\.)*)"|'([^']*)'|([A-Za-z0-9_-]+))\s*\]\s*$/.exec(line);
       current = table ? { name: table[1] ?? table[2] ?? table[3], args: [] } : null;
       if (current) servers.push(current);
       continue;
@@ -148,7 +163,7 @@ export function parseCodexMcpServers(toml: string): Array<{ name: string; comman
     }
     const args = /^\s*args\s*=\s*(\[.*)$/.exec(line);
     if (args) {
-      if (/\]\s*(?:#.*)?$/.test(args[1].trim())) current.args = tomlStrings(args[1]);
+      if (/\]$/.test(args[1].trim())) current.args = tomlStrings(args[1]);
       else pendingArgs = args[1];
     }
   }

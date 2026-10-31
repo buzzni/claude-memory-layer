@@ -87,6 +87,29 @@ describe('readMcpClientConfigs', () => {
     expect(reads[1]).toEqual({ client: 'claude-desktop', configPath: join(home, '.config', 'claude', 'claude_desktop_config.json'), servers: [] });
     expect(reads[2]).toEqual({ client: 'codex', configPath: join(home, '.codex', 'config.toml'), servers: [] });
   });
+
+  it('reports an error, not an empty registration, when a config exists but cannot be read', () => {
+    const home = tempHome();
+    mkdirSync(join(home, '.claude.json'));
+
+    const [claudeCode] = readMcpClientConfigs({ homeDir: home, cwd: '/work', platform: 'linux', env: {} });
+
+    expect(claudeCode).toMatchObject({ servers: [], error: expect.stringContaining('EISDIR') });
+  });
+
+  it('reports an error when Codex declares MCP servers in a form it cannot read', () => {
+    const home = tempHome();
+    writeFile(join(home, '.codex', 'config.toml'), [
+      '[projects."/Users/me/claude-memory-layer"]',
+      'trust_level = "trusted"',
+      '[mcp_servers]',
+      'claude-memory-layer = { command = "claude-memory-layer-mcp" }'
+    ].join('\n'));
+
+    const codex = readMcpClientConfigs({ homeDir: home, cwd: '/work', platform: 'linux', env: {} })[2];
+
+    expect(codex).toMatchObject({ servers: [], error: expect.stringContaining('[mcp_servers.<name>]') });
+  });
 });
 
 describe('parseCodexMcpServers', () => {
@@ -94,8 +117,8 @@ describe('parseCodexMcpServers', () => {
     const servers = parseCodexMcpServers([
       '[mcp_servers."claude-memory-layer"]',
       "command = 'C:\\node\\node.exe' # comment",
-      'args = [',
-      '  "/opt/cml/dist/mcp/index.js",',
+      'args = [ # "not-an-arg"',
+      '  "/opt/cml/dist/mcp/index.js", # "nor-this"',
       "  '--x',",
       ']',
       '[mcp_servers."claude-memory-layer".env]',
