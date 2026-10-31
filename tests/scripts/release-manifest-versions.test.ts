@@ -63,6 +63,9 @@ function run(root: string, command: string, args: string[]) {
     encoding: 'utf8',
     env: {
       ...process.env,
+      // Keep the developer's git config (commit signing, hooks) out of fixture commits.
+      GIT_CONFIG_GLOBAL: '/dev/null',
+      GIT_CONFIG_NOSYSTEM: '1',
       GIT_AUTHOR_NAME: 'cml-test',
       GIT_AUTHOR_EMAIL: 'cml-test@example.invalid',
       GIT_COMMITTER_NAME: 'cml-test',
