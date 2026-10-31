@@ -4,6 +4,7 @@ import * as path from 'node:path';
 
 import { resolveExistingStore, type ExistingStoreStatus } from '../../core/registry/existing-store.js';
 import { resolveCanonicalRepoIdentity, type RepoIdentityKind } from '../../core/registry/repo-identity.js';
+import { isClaudeMemoryMcpServer } from './mcp-client-config.js';
 
 export type ProjectBootstrapCheckId =
   | 'canonical_identity'
@@ -154,16 +155,6 @@ function findCommandStrings(value: unknown): string[] {
 
 function hasClaudeMemoryMcp(value: unknown): boolean {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-  return Object.entries(value as Record<string, unknown>).some(([serverName, server]) => {
-    if (!server || typeof server !== 'object' || Array.isArray(server)) return false;
-    const record = server as Record<string, unknown>;
-    const command = typeof record.command === 'string' ? record.command : '';
-    const args = Array.isArray(record.args)
-      ? record.args.filter((item): item is string => typeof item === 'string')
-      : [];
-    const invocation = [command, ...args].join(' ').replace(/\\/g, '/');
-    if (/claude-memory-layer/i.test(invocation)) return true;
-    return /memory/i.test(serverName)
-      && /(?:^|[\s/])(?:\.\/)?(?:dist|src)\/(?:extensions\/)?mcp\/index\.(?:js|ts)(?:\s|$)/i.test(invocation);
-  });
+  return Object.entries(value as Record<string, unknown>)
+    .some(([serverName, server]) => isClaudeMemoryMcpServer(serverName, server));
 }
