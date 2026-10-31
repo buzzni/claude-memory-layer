@@ -72,7 +72,36 @@ export interface ProcessProjectEmbeddingsDeps {
   createWorkerLock?: (lockPath: string) => MongoSyncProcessWorkerLock;
 }
 
+export interface RawMongoSyncTargetOptions {
+  project?: string;
+  mongoUri?: string;
+  mongoDb?: string;
+  mongoProject?: string;
+}
+
+export interface MongoSyncTarget {
+  projectPath: string;
+  uri?: string;
+  dbName?: string;
+  projectKey: string;
+}
+
 const DEFAULT_PROCESS_INTERVAL_MS = 120_000;
+
+/** Flags win over env; the remote project key defaults to the project directory name. */
+export function resolveMongoSyncTarget(
+  options: RawMongoSyncTargetOptions,
+  env: NodeJS.ProcessEnv = process.env,
+  cwd: string = process.cwd()
+): MongoSyncTarget {
+  const projectPath = options.project || cwd;
+  return {
+    projectPath,
+    uri: options.mongoUri || env.CLAUDE_MEMORY_MONGO_URI,
+    dbName: options.mongoDb || env.CLAUDE_MEMORY_MONGO_DB,
+    projectKey: options.mongoProject || env.CLAUDE_MEMORY_MONGO_PROJECT || path.basename(projectPath)
+  };
+}
 
 export function resolveMongoSyncProcessOptions(
   options: RawMongoSyncProcessOptions,
