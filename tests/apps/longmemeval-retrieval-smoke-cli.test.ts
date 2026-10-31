@@ -5,8 +5,10 @@ import * as path from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
+import { tsxArgs, tsxCommand } from '../helpers/tsx-process.js';
+
 function runLongMemEvalSmokeCli(args: string[], env: Record<string, string> = {}) {
-  return spawnSync('npx', ['tsx', 'scripts/longmemeval-retrieval-smoke.ts', ...args], {
+  return spawnSync(tsxCommand, tsxArgs('scripts/longmemeval-retrieval-smoke.ts', ...args), {
     cwd: process.cwd(),
     env: { ...process.env, ...env },
     encoding: 'utf8'

@@ -5,8 +5,10 @@ import { spawnSync } from 'node:child_process';
 
 import { describe, expect, it } from 'vitest';
 
+import { tsxArgs, tsxCommand } from '../helpers/tsx-process.js';
+
 function runCli(args: string[]) {
-  return spawnSync('npx', ['tsx', 'src/apps/cli/index.ts', ...args], {
+  return spawnSync(tsxCommand, tsxArgs('src/apps/cli/index.ts', ...args), {
     cwd: process.cwd(),
     encoding: 'utf8',
     env: { ...process.env, CLAUDE_MEMORY_DISABLE_VECTOR: '1' },

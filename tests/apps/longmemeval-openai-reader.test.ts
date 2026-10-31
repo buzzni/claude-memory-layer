@@ -4,6 +4,8 @@ import type { AddressInfo } from 'node:net';
 
 import { describe, expect, it } from 'vitest';
 
+import { tsxArgs, tsxCommand } from '../helpers/tsx-process.js';
+
 interface ReaderRunResult {
   status: number | null;
   stdout: string;
@@ -19,7 +21,7 @@ interface MockRequest {
 
 function runReader(input: unknown, env: Record<string, string> = {}): Promise<ReaderRunResult> {
   return new Promise((resolve, reject) => {
-    const child = spawn('npx', ['tsx', 'scripts/longmemeval-openai-reader.ts'], {
+    const child = spawn(tsxCommand, tsxArgs('scripts/longmemeval-openai-reader.ts'), {
       cwd: process.cwd(),
       env: {
         ...process.env,

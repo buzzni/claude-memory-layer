@@ -15,6 +15,7 @@ import {
   type EvalCase,
   type EvalSplit
 } from '../../scripts/eval-split.js';
+import { tsxArgs, tsxCommand } from '../helpers/tsx-process.js';
 
 const ROOT = process.cwd();
 const FIXTURE_DIR = join(ROOT, 'benchmarks/lesson-recall');
@@ -97,7 +98,7 @@ describe('benchmarks/lesson-recall split manifest', () => {
 });
 
 describe('tuning scripts refuse test fixtures', () => {
-  const run = (script: string, args: string[]) => spawnSync(process.execPath, ['--import', 'tsx', join(ROOT, 'scripts', script), ...args], { cwd: ROOT, encoding: 'utf8', timeout: 60_000 });
+  const run = (script: string, args: string[]) => spawnSync(tsxCommand, tsxArgs(join(ROOT, 'scripts', script), ...args), { cwd: ROOT, encoding: 'utf8', timeout: 60_000 });
   const release = join(FIXTURE_DIR, 'release-v2-independent.json');
 
   it('evaluate-lesson-hybrid.ts stops before loading a model', () => {

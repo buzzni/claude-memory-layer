@@ -11,6 +11,7 @@ import { FacetRepository } from '../../src/core/operations/facet-repository.js';
 import { LeaseRepository } from '../../src/core/operations/lease-repository.js';
 import { hashProjectPath } from '../../src/core/registry/project-path.js';
 import { SQLiteEventStore } from '../../src/core/sqlite-event-store.js';
+import { tsxArgs, tsxCommand } from '../helpers/tsx-process.js';
 
 const require = createRequire(import.meta.url);
 const Database = require('better-sqlite3') as typeof import('better-sqlite3');
@@ -44,7 +45,7 @@ async function openStore(fixture: CliFixture): Promise<SQLiteEventStore> {
 }
 
 function runCli(fixture: CliFixture, args: string[]) {
-  return spawnSync('npx', ['tsx', 'src/apps/cli/index.ts', ...args], {
+  return spawnSync(tsxCommand, tsxArgs('src/apps/cli/index.ts', ...args), {
     cwd: process.cwd(),
     env: { ...process.env, HOME: fixture.home },
     encoding: 'utf8'
@@ -545,7 +546,7 @@ describe('memory operations CLI commands', () => {
     rmSync(fixture.home, { recursive: true, force: true });
     const home = mkdtempSync(path.join(tmpdir(), 'cml-operations-cli-help-home-'));
     try {
-      const result = spawnSync('npx', ['tsx', 'src/apps/cli/index.ts', '--help'], {
+      const result = spawnSync(tsxCommand, tsxArgs('src/apps/cli/index.ts', '--help'), {
         cwd: process.cwd(),
         env: { ...process.env, HOME: home },
         encoding: 'utf8'
