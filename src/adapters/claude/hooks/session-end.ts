@@ -75,10 +75,18 @@ function defaultWorkerPath(): string {
   return path.join(path.dirname(nodeUrl.fileURLToPath(import.meta.url)), 'session-end-worker.js');
 }
 
+/**
+ * The worker also needs the session-end work next to it; without either file
+ * (a partial or older install) spawning it would only delay the hook's own run.
+ */
+export function sessionEndWorkerInstalled(workerPath: string): boolean {
+  return fs.existsSync(workerPath) && fs.existsSync(path.join(path.dirname(workerPath), 'session-end-handler.js'));
+}
+
 const realDeps: ClaudeSessionEndHookDeps = {
   spawnWorker: spawn,
   workerPath: defaultWorkerPath(),
-  workerExists: fs.existsSync,
+  workerExists: sessionEndWorkerInstalled,
   ackTimeoutMs: WORKER_ACK_TIMEOUT_MS,
   runInline: runSessionEndInline,
   getRegistrationId: (sessionId) => getSessionProject(sessionId)?.registrationId ?? null,

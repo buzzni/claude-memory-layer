@@ -7,7 +7,8 @@ import * as path from 'node:path';
 
 import {
   normalizeClaudeSessionEndJob,
-  runClaudeSessionEnd
+  runClaudeSessionEnd,
+  sessionEndWorkerInstalled
 } from '../../src/adapters/claude/hooks/session-end.js';
 import {
   SESSION_END_WORKER_ACK,
@@ -195,6 +196,14 @@ describe('Claude SessionEnd hook hand-off', () => {
       writeFileSync(file, source, 'utf8');
       return file;
     }
+
+    it('counts the worker as installed only with the session-end work next to it', () => {
+      const worker = workerScript('');
+      expect(sessionEndWorkerInstalled(worker)).toBe(false);
+      writeFileSync(path.join(dir, 'session-end-handler.js'), '', 'utf8');
+      expect(sessionEndWorkerInstalled(worker)).toBe(true);
+      expect(sessionEndWorkerInstalled(path.join(dir, 'missing-worker.js'))).toBe(false);
+    });
 
     it('ends the session itself when the worker dies right after it starts', async () => {
       const { deps: hookDeps, runInline } = deps(new FakeWorker(), {
