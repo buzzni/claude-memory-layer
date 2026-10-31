@@ -3,8 +3,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { isClaudeLocalCommandArtifact } from '../../src/core/harness-boilerplate.js';
 import {
-  isClaudeLocalCommandArtifact,
   isWorthStoringPrompt,
   SessionHistoryImporter,
   type ImportResult

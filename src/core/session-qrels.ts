@@ -1,6 +1,8 @@
 import { readdir, stat } from 'node:fs/promises';
 import * as path from 'node:path';
 
+import { isClaudeLocalCommandArtifact } from './harness-boilerplate.js';
+
 export interface SessionQrelsMemory {
   id: string;
   content: string;
@@ -343,14 +345,6 @@ function isWorthBenchmarkingPrompt(content: string): boolean {
   if (trimmed.startsWith('/')) return false;
   if (trimmed.length < 15) return false;
   return /[a-zA-Z가-힣]{2,}/.test(trimmed);
-}
-
-function isClaudeLocalCommandArtifact(content: string): boolean {
-  return (
-    /^<local-command-(stdout|stderr)>/.test(content) ||
-    /^<command-(name|message)>/.test(content) ||
-    (content.includes('<command-name>') && content.includes('<local-command-stdout>'))
-  );
 }
 
 function nextSessionCounter(counters: Map<string, number>, sessionId: string): number {

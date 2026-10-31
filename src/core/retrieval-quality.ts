@@ -6,12 +6,7 @@
  * only filter candidate retrieval results before context assembly.
  */
 
-const COMMAND_ARTIFACT_PATTERNS = [
-  /<\/?(?:local-command-(?:stdout|stderr)|command-(?:name|message))\b/i,
-  /<command-name>[\s\S]*?<\/command-name>/i,
-  /<local-command-stdout>[\s\S]*?<\/local-command-stdout>/i,
-  /<local-command-stderr>[\s\S]*?<\/local-command-stderr>/i
-];
+import { containsCommandArtifact } from './harness-boilerplate.js';
 
 const LOW_SIGNAL_CONTEXT_PATTERNS = [
   /<environment_context\b[\s\S]*<\/environment_context>/i,
@@ -186,21 +181,11 @@ const LOW_INFORMATION_QUERY_TERMS = new Set([
 ]);
 
 export function isCommandArtifactQuery(query: string): boolean {
-  const trimmed = query.trim();
-  if (!trimmed) return false;
-  const normalized = trimmed.toLowerCase();
-  if (normalized.includes('local-command-stdout') || normalized.includes('local-command-stderr')) return true;
-  if (normalized.includes('command-name') || normalized.includes('command-message')) return true;
-  return COMMAND_ARTIFACT_PATTERNS.some((pattern) => pattern.test(trimmed));
+  return containsCommandArtifact(query);
 }
 
 export function isCommandArtifactContent(content: string): boolean {
-  const trimmed = content.trim();
-  if (!trimmed) return false;
-  const normalized = trimmed.toLowerCase();
-  if (normalized.includes('local-command-stdout') || normalized.includes('local-command-stderr')) return true;
-  if (normalized.includes('command-name') || normalized.includes('command-message')) return true;
-  return COMMAND_ARTIFACT_PATTERNS.some((pattern) => pattern.test(trimmed));
+  return containsCommandArtifact(content);
 }
 
 export function isLowSignalContextContent(content: string): boolean {

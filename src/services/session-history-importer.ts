@@ -15,6 +15,7 @@ import { MemoryService } from './memory-service.js';
 import { registerTerminalSession } from '../core/registry/session-registry.js';
 import { mergeAgentResponseBlocks, truncateAgentResponse } from './turn-buffering.js';
 import { planPromptStorage, promptClassifierMetadata } from '../core/prompt-normalizer.js';
+import { isClaudeLocalCommandArtifact } from '../core/harness-boilerplate.js';
 import type { TurnTrigger } from '../core/turn-state.js';
 
 export type ProgressEvent =
@@ -69,15 +70,6 @@ export interface ClaudeMessage {
  * Filter trivial user inputs that aren't worth storing.
  * Mirrors the shouldStorePrompt() logic from user-prompt-submit.ts.
  */
-export function isClaudeLocalCommandArtifact(content: string): boolean {
-  const trimmed = content.trim();
-  return (
-    /^<local-command-(stdout|stderr)>/.test(trimmed) ||
-    /^<command-(name|message)>/.test(trimmed) ||
-    (trimmed.includes('<command-name>') && trimmed.includes('<local-command-stdout>'))
-  );
-}
-
 export function isWorthStoringPrompt(content: string): boolean {
   const trimmed = content.trim();
   if (isClaudeLocalCommandArtifact(trimmed)) return false;
