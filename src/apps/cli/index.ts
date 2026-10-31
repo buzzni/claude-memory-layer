@@ -69,10 +69,12 @@ import {
   formatDisclosureSource,
   formatPlainSearchResults
 } from './retrieval-disclosure-output.js';
-import { installMcpServer } from './mcp-install.js';
+import { getDefaultMcpServerEntry, installMcpServer } from './mcp-install.js';
+import { readMcpClientConfigs } from './mcp-client-config.js';
 import {
   checkEmbeddingBackend,
   checkHooksInstalled,
+  checkMcpClientConfig,
   checkNodeVersion,
   checkPathConsistency,
   checkPluginFiles,
@@ -1127,12 +1129,18 @@ program
  */
 program
   .command('doctor')
-  .description('Diagnose the environment: Node version, embedding backend, PATH conflicts, hooks, store access')
+  .description('Diagnose the environment: Node version, embedding backend, PATH conflicts, hooks, MCP client configs, store access')
   .action(async () => {
     const pluginPath = getPluginPath();
     const packageRoot = path.dirname(pluginPath);
     const settings = loadClaudeSettings();
     const projectStorePath = getProjectStoragePath(process.cwd());
+    let mcpServerEntry: { command: string; args: string[] } | null = null;
+    try {
+      mcpServerEntry = getDefaultMcpServerEntry(pluginPath);
+    } catch {
+      // Without a built entrypoint there is no invocation to suggest; checkPluginFiles reports the broken install.
+    }
 
     const checks: DoctorCheckResult[] = [
       checkNodeVersion(process.version, readEnginesNodeRange(packageRoot)),
@@ -1141,6 +1149,8 @@ program
       checkEmbeddingBackend(packageRoot, await loadEmbeddingBackendAvailabilityCheck(packageRoot)),
       checkPathConsistency('claude-memory-layer', process.env.PATH ?? ''),
       checkPathConsistency('claude-memory-layer-mcp', process.env.PATH ?? ''),
+      ...readMcpClientConfigs({ cwd: process.cwd() })
+        .map((read) => checkMcpClientConfig(read, packageRoot, mcpServerEntry)),
       checkProjectStoreAccess(projectStorePath)
     ];
 
