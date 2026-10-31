@@ -21,8 +21,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import { readTranscriptRange } from './transcript-reader.js';
-import type { ClaudeTranscriptEntry } from './transcript-reader.js';
+import { readTranscriptRange, type ClaudeTranscriptEntry } from './transcript-reader.js';
 import { extractAssistantTextMessages, isUserPromptEntry, type AssistantTextMessage } from './turn-reconstructor.js';
 
 /** Upper bound for one Stop; a larger backlog keeps only its newest bytes. */
