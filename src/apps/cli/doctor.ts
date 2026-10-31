@@ -147,6 +147,11 @@ export function checkHooksInstalled(
   return { name: 'hooks', status: 'pass', detail: 'all hooks installed' };
 }
 
+/** The exports doctor uses from scripts/postinstall-embedding-backend.cjs. */
+export interface EmbeddingBackendScript {
+  isEmbeddingBackendAvailable: (rootDir: string) => boolean;
+}
+
 export function checkEmbeddingBackend(
   packageRoot: string,
   isAvailableImpl: ((rootDir: string) => boolean) | null
@@ -252,7 +257,7 @@ type McpTargetStatus =
   | { kind: 'unverifiable' };
 
 /** Nearest ancestor package.json naming this package, e.g. another global install. */
-function findClaudeMemoryPackage(
+export function findClaudeMemoryPackage(
   filePath: string,
   readFileImpl: (p: string) => string
 ): { packageRoot: string; version?: string } | undefined {
@@ -405,6 +410,20 @@ export function checkMcpClientConfig(
   };
 }
 
+/** `target` itself when it exists, otherwise its nearest existing ancestor. */
+export function findNearestExistingPath(
+  target: string,
+  existsImpl: (p: string) => boolean = fs.existsSync
+): string {
+  let cursor = target;
+  let parent = path.dirname(cursor);
+  while (!existsImpl(cursor) && parent !== cursor) {
+    cursor = parent;
+    parent = path.dirname(cursor);
+  }
+  return cursor;
+}
+
 /**
  * Non-mutating: never creates the project store as a side effect of checking
  * it. Walks up to the nearest existing ancestor and checks that directory is
@@ -417,15 +436,8 @@ export function checkProjectStoreAccess(
     accessImpl?: (p: string, mode: number) => void;
   } = {}
 ): DoctorCheckResult {
-  const existsImpl = deps.existsImpl ?? fs.existsSync;
   const accessImpl = deps.accessImpl ?? fs.accessSync;
-
-  let cursor = storePath;
-  let parent = path.dirname(cursor);
-  while (!existsImpl(cursor) && parent !== cursor) {
-    cursor = parent;
-    parent = path.dirname(cursor);
-  }
+  const cursor = findNearestExistingPath(storePath, deps.existsImpl);
 
   try {
     accessImpl(cursor, fs.constants.W_OK);
