@@ -1,10 +1,28 @@
 # 후보 합집합 + 후보 풀 BM25 재채점 + 레인 공통 척도 (T4) — 설계
 
-> **Status**: 설계 승인 대기 (구현 없음)
+> **Status**: §8(#119 해결, 측정 기반)만 구현. §2~§7(합집합, 재채점, 공통 척도, 임계값, 데몬 프로토콜)은 **보류 — 측정 결과를 보고 다시 결정**
 > **Created**: 2026-10-31
 > **근거**: `docs/architecture/mempalace-benchmarking-2026-10-31.md` 1번 항목
 > **선행**: #121 (`CLAUDE_MEMORY_FTS_ABSOLUTE_SCORE_EXPERIMENT`), #125 (`CLAUDE_MEMORY_RETRIEVAL_QUERY_SANITIZER_EXPERIMENT`), 이슈 #119
 > **참고 구현**: `mempalace/searcher/ranking.py:_hybrid_rank` (170-235), `:85-104`, `searcher/sqlite_bm25.py:_merge_bm25_union_candidates` (`candidate_strategy="union"`)
+
+## 결정 (2026-11-01)
+
+사용자 결정으로 이번 작업은 **측정 기반만 먼저** 만든다.
+
+- **진행 (승인됨).** §12-5, 즉 #119 해결이다.
+  - `selectHookInjection` 추출 (동작 바이트 동일, golden 테스트로 고정)
+  - store 사본 반사실 replay 도구와 CI fixture 모드
+  - store 사본 3개에서 현재 동작, #121, #125, 둘 다 켬을 비교한 집계
+- **보류 — 측정 결과를 보고 다시 결정.**
+  - 후보 합집합 (§2)
+  - 후보 풀 BM25 재채점 (§3.1)
+  - 레인 공통 척도와 가중치 (§3.2, §3.3)
+  - 임계값 통일 (§4)
+  - 데몬 프로토콜 확장 (§2.2, §6)
+- **보류 근거.** §1.3의 Spearman 표다. 어휘(풀 BM25)와 벡터 중 어느 쪽이 grounding을 더 잘 구분하는지가 store마다 뒤집힌다(A·C 대 B). 그래서 결합 방식과 가중치를 정할 근거가 아직 없다. 훅 경로 replay로 먼저 측정한 뒤 다시 결정한다.
+
+아래 §2~§7은 보류된 원안을 기록으로 남긴 것이다.
 
 목표 지표는 `content_overlap_score`(grounding) 하나다. 주입 건수나 후보 수는 보조 관측값으로만 쓰고, 목표로 삼지 않는다.
 
@@ -104,7 +122,7 @@ A에서는 점수와 overlap의 관계가 거꾸로이고, B와 C에서는 약�
      - 쿼리 기준 정규화(`s/ideal`)는 top1 p50이 0.29~0.37로 퍼져 있어 임계값을 둘 수 있는 척도다.
 5. **어휘 혼입.** `content_overlap_score`는 스니펫 토큰 겹침이다. 그래서 쿼리 term을 그대로 되풀이하는 응답에서는 쿼리와 어휘가 겹치는 기억이 유리하다. §8에서 쿼리 term을 제거한 보조 지표로 이 효과를 분리한다.
 
-## 2. 후보 합집합
+## 2. 후보 합집합 — 보류
 
 ### 2.1 retriever (데몬, MCP, 서버 공통)
 
@@ -154,7 +172,7 @@ A에서는 점수와 overlap의 관계가 거꾸로이고, B와 C에서는 약�
    - 데몬이 타임아웃되거나 실패했다.
    - 응답에 `vectorScores`가 없다. 이는 구버전 데몬이라는 뜻이다.
 
-## 3. 후보 풀 BM25 재채점과 공통 척도
+## 3. 후보 풀 BM25 재채점과 공통 척도 — 보류
 
 순수 함수 모듈 `src/core/hybrid-lane-scoring.ts`를 새로 만든다. retriever와 훅이 같은 함수를 쓴다. 어댑터에서 import하지 않으므로 core 경계를 지킨다.
 
@@ -195,7 +213,7 @@ A에서는 점수와 overlap의 관계가 거꾸로이고, B와 C에서는 약�
   - 이런 후보는 `hybrid = lex`로 가중치를 재정규화한다. REF는 `distance=None`일 때 벡터 기여를 0으로 둔다. 그러면 위의 두 부류가 구조적으로 불이익을 받는다. 최신 이벤트는 continuation 질문의 핵심 근거라서 그 불이익을 피했다.
   - 이 선택의 리스크는 어휘 점수만으로 상위에 오르는 경우다. replay에서 `vectorKnown=false` 비율과 그 후보들의 overlap을 따로 보고한다.
 
-## 4. 기존 임계값 재보정
+## 4. 기존 임계값 재보정 — 보류
 
 | 임계값 | 현재 | 플래그 켜짐 |
 |---|---|---|
@@ -213,7 +231,7 @@ A에서는 점수와 overlap의 관계가 거꾸로이고, B와 C에서는 약�
 3. 이렇게 하면 첫 비교에서는 "주입 양"을 고정한 채 "무엇을 주입하는가"만 바뀐다. 두 변수를 한 번에 바꾸지 않기 위해서다.
 4. 그다음 임계값 grid(초기값 ±0.05, ±0.1)를 grounding으로 비교한다. 주입 건수는 목표가 아니라 보고값이다.
 
-## 5. 훅 지연 예산
+## 5. 훅 지연 예산 — 보류
 
 ### 5.1 실측 (A store 사본, 로컬, 쿼리 181개, 데몬 상주 가정)
 
@@ -243,7 +261,7 @@ B와 C는 두 측정을 동시에 돌려 CPU 경합이 있었다. 그래서 아�
 - **상한.** `SEMANTIC_TIMEOUT_MS`(2,000 ms)는 바꾸지 않는다. 초과하면 §2.2-7 열화로 그 프롬프트만 기존 병합으로 처리한다.
 - **텔레메트리.** 플래그가 켜졌을 때만 `retrieval_diagnostics_json`에 `hybridTimings: { fts, embed, vector, scoreIds, rescore }`(ms)를 남긴다. 꺼져 있을 때 trace 바이트가 바뀌지 않게 하려는 것이다.
 
-## 6. 플래그 설계와 조합
+## 6. 플래그 설계와 조합 — 보류
 
 - **이름.** `CLAUDE_MEMORY_HYBRID_LANE_SCORING_EXPERIMENT`. `=== 'true'`일 때만 켜지고, 호출 시점에 읽는다. 기존 `_EXPERIMENT` 관례(#121, #125, `CLAUDE_MEMORY_LESSON_HYBRID_EXPERIMENT`)와 같다.
 - **env를 읽는 곳.** 어댑터 두 곳뿐이다.
@@ -265,7 +283,7 @@ B와 C는 두 측정을 동시에 돌려 CPU 경합이 있었다. 그래서 아�
   - 구 데몬: 새 요청 필드를 무시하므로 응답에 `vectorScores`가 없고, 훅이 열화 경로로 처리한다.
   - 새 데몬: 필드가 없는 구 요청에는 기존 응답을 그대로 돌려준다. 이 경우도 응답 바이트가 같음을 테스트로 고정한다.
 
-## 7. 플래그 꺼짐 = 바이트 동일 (2단계 테스트 계획)
+## 7. 플래그 꺼짐 = 바이트 동일 (2단계 테스트 계획) — 보류
 
 - **훅.** 다음 세 경우에 대해, 플래그 미설정·`'1'`·`'false'`일 때 stdout과 `recordQueryTrace`/`recordRetrieval` 호출 인자가 기존과 **Buffer 단위로 같아야** 한다. #125의 `claude-hook-adherence` 테스트와 같은 방식이다.
   - 레인 셋(semantic, keyword, graduated)이 겹치는 fixture
@@ -277,26 +295,39 @@ B와 C는 두 측정을 동시에 돌려 CPU 경합이 있었다. 그래서 아�
 
 ## 8. 효과 측정: #119 해결
 
-### 8.1 훅 경로 replay (#119의 핵심)
+### 8.1 훅 경로 replay (#119의 핵심) — 구현됨
 
-1. **구조 변경.** `main()`에서 "레인 수집 → 병합 → seed/episode → 선택"을 `selectHookInjection(deps, input)`으로 추출한다.
-   - `deps`에는 `memoryService`와 `retrieveSemantic`이 들어가고, `input`에는 `retrievalQuery`, `minScore`, `policy` 등이 들어간다.
-   - stdin 읽기, 저장, 텔레메트리 기록은 `main()`에 남긴다.
-   - 동작 변경 없이 별도 커밋으로 한다.
-2. **`scripts/replay-hook-grounding.ts` (신규, 로컬 전용).**
-   - **입력.** store 사본 디렉터리(`events.sqlite`와 `vectors/`)와 trace 표본 크기를 받는다.
-   - **trace 재생.** `delivery_client='claude-hook'`인 user_prompt trace마다 다음을 수행한다.
-     - **쿼리.** 같은 세션에서 이전 user_prompt와 직전 agent_response를 복원한 뒤, 훅의 `buildRetrievalQuery`로 쿼리를 만든다. #125 경로도 함께 재현된다.
-     - **선택.** 같은 `selectHookInjection`을 시각 경계가 있는 store 래퍼로 실행한다.
-       - 래퍼는 FTS, graduated, 벡터를 4배로 과다 조회한 뒤 `timestamp < asOf`로 거른다.
-       - 과다 조회가 모자랐던 비율도 보고한다.
-       - semantic 레인은 데몬 대신 같은 프로세스의 retriever로 실행한다.
-     - **채점.** 선택된 기억의 실제 주입 텍스트(`memoryEvidencePreview`)를, 그 턴의 실제 agent_response와 `computeMemoryUsageEvidence`로 비교해 `content_overlap_score`를 계산한다. 비교 범위는 다음 user_prompt 전까지다. 함수는 운영 평가기와 같은 것을 쓴다.
-   - **arm.** baseline, #121, #125, hybrid(wv 0/0.2/0.4/0.6/0.8 × 임계값 grid × L 3종), hybrid+#125, hybrid+#121+#125.
-   - **출력.** 집계값만 낸다. 원문, 쿼리, id는 출력하지 않는다.
-3. **fixture 모드.** #119의 원래 제안이다. golden fixture를 실제 `SQLiteEventStore`(FTS5)에 적재하고, 같은 `selectHookInjection`에 결정적 stub embedder를 붙여 돌린다.
-   - grounding 지표는 아니다. 플래그를 켰을 때와 껐을 때 모두 훅 경로가 깨지지 않는지 보는 CI 회귀 가드다.
-   - #125가 요청한 200자 초과 fixture 3종(질문+로그, 요청 뒤 로그, 스펙형)도 추가한다.
+1. **구조 변경.** `main()`에서 "레인 수집 → 병합 → episode → 선택"을 `selectHookInjection(deps, input)`으로 추출했다.
+   - `deps`는 `memoryService`(5개 메서드)와 `retrieveSemantic`이다. `main()`은 데몬을, replay는 프로세스 내 retriever를 넘긴다.
+   - stdin 읽기, 쿼리 생성, 저장, 텔레메트리 기록은 `main()`에 남겼다.
+   - 추출 전에 golden 테스트(`tests/adapters/claude-hook-injection-selection-golden.test.ts`)로 stdout과 레인·텔레메트리 호출 인자를 고정했다. 추출 후에도 바이트 단위로 같다.
+2. **`src/adapters/claude/hooks/hook-grounding-replay.ts`와 `scripts/replay-hook-grounding.ts`.**
+   - **입력.** store 사본 디렉터리(`events.sqlite`, semantic 레인용 `vectors/`)다. 읽기 전용으로 연다.
+   - **turn 재구성.** `delivery_client='claude-hook'`, `presentation_mode='evidence'`인 user_prompt trace를 읽는다.
+     - 프롬프트: trace의 `raw_query_text`(저장된 redact 본문)
+     - adherence turn과 reason: 훅이 검색 직후 저장한 user_prompt 이벤트의 `metadata.adherence`. 저장되지 않은 짧은 프롬프트는 `shouldRunAdherenceCheck`로 재구성한다.
+     - 이전 프롬프트와 직전 응답 500자(2시간 이내)
+     - 이것으로 훅의 `buildRetrievalQuery`를 다시 실행한다. #125도 이 경로에서 재현된다.
+   - **시각 경계.** 각 trace 시각 이후의 이벤트는 레인에서 보이지 않는다.
+     - FTS 레인(keyword, graduated): 원시 rank 행을 "그 시각 이후 이벤트 수"만큼 더 받아 거른다. 그러면 처음 `limit`개가 당시 훅이 받은 목록과 정확히 같다. 정규화는 실제 `MemoryQueryService`가 한다. #121 경로도 그대로 재현된다. 프로덕션 SQL은 고치지 않았다.
+     - episode 확장(`getEventsByTurn`, `expandDisclosure`)도 같은 시각으로 거른다.
+     - lesson: trace 시각 이후에 만들어진 lesson은 제외한다.
+     - semantic: 데몬과 같은 옵션으로 프로세스 안에서 retriever를 돌리고, 4배로 과다 조회한 뒤 거른다. 근사값이다.
+   - **채점.** 선택된 기억의 주입 발췌(`memoryEvidencePreview`)를 그 세션의 이후 agent_response 전체와 `computeMemoryUsageEvidence`로 비교한다. 운영 평가기(`evaluateRetrievalRows`)와 같은 함수, 같은 비교 범위다.
+   - **arm.** current, #121 켬, #125 켬, 둘 다 켬이다. 플래그는 호출 시점에 읽히므로 같은 프로세스에서 env를 바꿔 가며 돌리고, 끝나면 원래 값으로 되돌린다.
+   - **출력.** 집계값만 낸다. 원문, 쿼리, id는 출력하지 않는다. 출력에 반사실 편향 문단을 항상 포함한다.
+   - **충실도 지표.** current arm이 당시 기록된 쿼리와 선택을 얼마나 재현하는지 함께 보고한다.
+3. **fixture 모드.** `benchmarks/replay/hook-grounding-fixture-v1.json`을 실제 `SQLiteEventStore`(FTS5)에 적재한 뒤, store 모드와 같은 경로로 돌린다. 임베더는 쓰지 않는다(semantic off).
+   - 다음 7개 turn이 들어 있다. 정상 회수, 긴 프롬프트 3종(로그 뒤 질문, 요청 뒤 로그, 스펙형), trace 이후에 쓰인 답변 함정, 그 답변을 이후에 회수하는 turn, 당시 주입이 없던 turn.
+   - 테스트(`tests/adapters/hook-grounding-replay.test.ts`)가 확인하는 것:
+     - 쿼리 재구성 100%
+     - 미래 이벤트와 미래 lesson 차단 (대조군 포함)
+     - arm별 플래그 효과
+     - 플래그 원복
+     - store 무변경
+     - 보고서에 원문과 id가 없음
+     - 보고서 snapshot
+   - 실행: `npm run eval:hook-replay`
 
 ### 8.2 지표와 판정
 
@@ -310,8 +341,8 @@ B와 C는 두 측정을 동시에 돌려 CPU 경합이 있었다. 그래서 아�
   - 지연 (§5)
 - **편향 통제.**
   1. **baseline 유리 편향.** 실제 응답은 baseline 주입을 보고 쓰였으므로 baseline이 고른 기억이 유리하다. 그래서 baseline이 아무것도 주입하지 않은 trace만 따로 떼어 보고한다. 이 부분집합에는 이 편향이 없다.
-  2. **어휘 혼입.** 쿼리 term을 스니펫에서 제거한 뒤 다시 계산한 overlap을 같이 보고한다. 이 값이 나빠지면 어휘 점수가 "쿼리 되풀이"만 고르고 있다는 뜻으로 본다.
-  3. trace 단위 paired bootstrap으로 95% CI를 구한다 (1,000회).
+  2. **어휘 혼입.** 쿼리 term을 스니펫에서 제거한 뒤 다시 계산한 overlap을 같이 보고한다. 이 값이 나빠지면 어휘 점수가 "쿼리 되풀이"만 고르고 있다는 뜻으로 본다. **(이번 범위에는 미구현. 보류 항목을 다시 결정할 때 추가한다.)**
+  3. trace 단위 bootstrap으로 기억당 평균 overlap의 95% CI를 구한다 (1,000회, 고정 seed).
 - **기본값 켜기를 제안할 수 있는 조건.** 아래를 모두 만족해야 한다.
   - store 3개 중 2개 이상에서 1차 지표 두 개가 모두 개선되고, CI가 0을 넘는다.
   - CI를 넘어 악화된 store가 없다.
@@ -320,7 +351,7 @@ B와 C는 두 측정을 동시에 돌려 CPU 경합이 있었다. 그래서 아�
   - 이 조건을 통과해도 바로 기본값으로 켜지 않는다. 다음 단계로 진행한다.
 - **실사용 확인.** 플래그를 켠 기간의 trace에 `scoringMode`를 기록하고, `scripts/measure-injection-grounding.mjs`를 `scoringMode`별로 나눠 비교한다. 행이 30개 이상인 창만 판정한다.
 
-## 9. 구현 순서 (승인 후, Tidy First)
+## 9. 구현 순서 (원안) — 1·6만 이번에 구현, 나머지 보류
 
 1. `refactor(hooks)`: `selectHookInjection` 추출 (§8.1-1). 훅 golden 테스트 선행.
 2. `refactor(core)`: 한국어 조사 규칙을 core로 이동. 정책 모듈은 import로 교체.
@@ -345,7 +376,7 @@ B와 C는 두 측정을 동시에 돌려 CPU 경합이 있었다. 그래서 아�
 - **FTS 지연 꼬리.** p90 605 ms, 최대 36 s다. 긴 쿼리의 OR 접두 매칭 때문이며 플래그와 무관한 기존 문제다. #136으로 남겼다.
 - **graduated 레인의 고유 점수.** `scoreGraduatedEvidence`의 앵커와 엔티티 거부 게이트(`null`)는 풀에 들어갈지 판단하는 입장 필터로만 유지한다. 점수는 hybrid로 바꾼다. 레벨 사전 가중치는 이미 `graduatedEvidenceBonus`로 가산되고 있어, `scoreGraduatedEvidence`의 `levelPrior`까지 쓰면 이중 반영이 되기 때문이다.
 
-## 12. 승인 요청 사항
+## 12. 승인 요청 사항 — 5만 승인, 나머지 보류
 
 1. 가중치를 오프라인 표본으로 정하지 않는 방향. 구현에는 자리표시 값 wv=0.5를 두고, replay grid `{0, 0.2, 0.4, 0.6, 0.8}`에서 **최악의 store 기준 규칙**으로 확정한다. 규칙을 만족하는 값이 없으면 기본값을 켜는 후보에서 탈락한다.
 2. 정규화를 REF의 `s/max`가 아닌 **쿼리 기준 `s/ideal`, 상위 12 term**으로 하는 것
