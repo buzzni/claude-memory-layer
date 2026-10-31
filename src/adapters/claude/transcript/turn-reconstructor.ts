@@ -2,6 +2,8 @@ import { readTranscriptTailEntries, type ClaudeTranscriptEntry, type ReadTranscr
 
 export interface AssistantTextMessage {
   text: string;
+  /** When Claude wrote the entry to the transcript, as recorded there (ISO). */
+  timestamp?: string;
 }
 
 export interface SessionSummaryEvent {
@@ -32,7 +34,10 @@ export function extractAssistantTextMessages(entries: ClaudeTranscriptEntry[]): 
       .filter(Boolean);
 
     if (textParts.length > 0) {
-      messages.push({ text: textParts.join('\n') });
+      messages.push({
+        text: textParts.join('\n'),
+        ...(typeof entry.timestamp === 'string' ? { timestamp: entry.timestamp } : {})
+      });
     }
   }
 

@@ -70,6 +70,22 @@ describe('Claude turn reconstructor', () => {
     expect(messages).toEqual([{ text: 'first\nsecond' }]);
   });
 
+  it('keeps each assistant entry at its own transcript timestamp', () => {
+    const messages = extractAssistantTextMessages([
+      { type: 'user', timestamp: '2026-10-01T09:00:00.000Z', message: { content: 'question' } },
+      { type: 'assistant', timestamp: '2026-10-01T09:00:05.000Z', message: { content: [{ type: 'text', text: 'looking' }] } },
+      { type: 'assistant', timestamp: '2026-10-01T09:00:06.000Z', message: { content: [{ type: 'tool_use', id: 'tool-1' }] } },
+      { type: 'assistant', timestamp: '2026-10-01T09:03:40.000Z', message: { content: [{ type: 'text', text: 'done' }] } },
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'untimed' }] } }
+    ]);
+
+    expect(messages).toEqual([
+      { text: 'looking', timestamp: '2026-10-01T09:00:05.000Z' },
+      { text: 'done', timestamp: '2026-10-01T09:03:40.000Z' },
+      { text: 'untimed' }
+    ]);
+  });
+
   it('reads assistant text messages from a transcript file', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'cml-transcript-'));
     const transcriptPath = join(dir, 'transcript.jsonl');
