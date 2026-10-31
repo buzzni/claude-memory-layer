@@ -234,7 +234,11 @@ describe('mongo-sync audit runner', () => {
     await store.close();
     try {
       const outcome = await runMongoSyncAudit(
-        { project: '/repo/app', mongoUri: 'mongodb://user:secret@mongo.example:27017/', mongoDb: 'cml' },
+        {
+          project: '/repo/app',
+          mongoUri: 'mongodb://user:secret@mongo.example:27017/?tlsCertificateKeyFilePassword=keysecret',
+          mongoDb: 'cml'
+        },
         {
           env: {},
           getProjectStoragePath: () => storagePath,
@@ -245,7 +249,7 @@ describe('mongo-sync audit runner', () => {
       expect(outcome.status).toBe('fail');
       expect(outcome.detail).toContain('mongodb://user:***@mongo.example:27017/');
       expect(outcome.detail).toContain('ECONNREFUSED');
-      expect(JSON.stringify(outcome)).not.toContain('secret');
+      expect(JSON.stringify(outcome)).not.toMatch(/secret/);
       expect(mongoSyncAuditExitCode(outcome)).toBe(1);
     } finally {
       fs.rmSync(storagePath, { recursive: true, force: true });

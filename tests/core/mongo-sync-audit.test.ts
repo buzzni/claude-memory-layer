@@ -18,20 +18,24 @@ type Doc = Record<string, unknown> & { seq: number; eventId: string };
 type Filter = Record<string, unknown>;
 
 const INSERTED_AT = new Date('2026-10-30T00:00:00.000Z');
+/** setCursors records the previous pull at 2026-10-31T00:00Z, so its late-insert window opens 30 minutes before. */
+const INSIDE_PULL_WINDOW = new Date('2026-10-30T23:45:00.000Z');
 
-function remoteDoc(seq: number, instanceId: string, hostname: string, eventId = `event-${seq}`): Doc {
+function remoteDoc(seq: number, instanceId: string, hostname: string, insertedAt = new Date(INSERTED_AT.getTime() + seq * 1000)): Doc {
+  const eventId = `event-${seq}`;
   return {
     _id: `team:${eventId}`,
     projectKey: 'team',
     seq,
     eventId,
-    insertedAt: new Date(INSERTED_AT.getTime() + seq * 1000),
+    insertedAt,
     source: { hostname, instanceId }
   };
 }
 
-function localEvent(eventId: string): MemoryEvent {
+function localEvent(eventId: string, metadata?: Record<string, unknown>): MemoryEvent {
   return {
+    ...(metadata ? { metadata } : {}),
     id: eventId,
     eventType: 'user_prompt',
     sessionId: `session-${eventId}`,
@@ -166,6 +170,7 @@ describe('auditMongoSync', () => {
       mongoTotal: 6,
       missing: 3,
       lostBelowPullCursor: 2,
+      recoverableByNextPull: 0,
       notYetPulled: 1,
       pullCursor: 5
     });
@@ -201,5 +206,35 @@ describe('auditMongoSync', () => {
       pendingPush: 1
     });
     expect(report.oldestGap).toBeUndefined();
+  });
+
+  it('counts a missing document the next pull will still re-read as recoverable, not lost', async () => {
+    await store.importEvents([localEvent('event-1'), localEvent('event-3')]);
+    await setCursors(2, 3);
+    const { collection } = fakeCollection([
+      remoteDoc(1, 'run-a', 'machine-a'),
+      remoteDoc(2, 'run-b', 'machine-b', INSIDE_PULL_WINDOW),
+      remoteDoc(3, 'run-a', 'machine-a')
+    ]);
+
+    const report = await auditMongoSync(store, collection, { projectKey: 'team' });
+
+    expect(report).toMatchObject({ status: 'warn', missing: 1, lostBelowPullCursor: 0, recoverableByNextPull: 1 });
+    expect(report.oldestGap).toMatchObject({ fromSeq: 2, toSeq: 2, count: 1 });
+  });
+
+  it('treats quarantined local events as present and never as pending push', async () => {
+    const quarantine = { quarantine: { status: 'active' } };
+    await store.importEvents([
+      localEvent('event-1'),
+      localEvent('event-2', quarantine),
+      localEvent('quarantined-unpushed', quarantine)
+    ]);
+    await setCursors(1, 2);
+    const { collection } = fakeCollection([remoteDoc(1, 'run-a', 'machine-a'), remoteDoc(2, 'run-a', 'machine-a')]);
+
+    const report = await auditMongoSync(store, collection, { projectKey: 'team' });
+
+    expect(report).toMatchObject({ status: 'pass', localTotal: 3, missing: 0, localOnly: 0, pendingPush: 0 });
   });
 });

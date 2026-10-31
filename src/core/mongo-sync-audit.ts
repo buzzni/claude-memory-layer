@@ -23,7 +23,11 @@ export interface MongoAuditCollection {
 
 export interface MongoAuditLocalStore {
   getSyncPosition(targetName: string): Promise<{ lastEventId: string | null; lastTimestamp: string | null }>;
-  getEventsSinceRowid(lastRowid: number, limit: number): Promise<Array<{ rowid: number; event: MemoryEvent }>>;
+  getEventsSinceRowid(
+    lastRowid: number,
+    limit: number,
+    options?: { includeQuarantined?: boolean }
+  ): Promise<Array<{ rowid: number; event: MemoryEvent }>>;
 }
 
 export interface MongoSyncInstanceAudit {
@@ -55,9 +59,12 @@ export interface MongoSyncAuditReport {
   localTotal: number;
   /** Mongo documents whose eventId is not in the local store. */
   missing: number;
+  /** Missing below the pull cursor and inserted before the next pull's late-insert window: no pull will read them. */
   lostBelowPullCursor: number;
+  /** Missing below the pull cursor but inside the late-insert window, so the next pull still reads them. */
+  recoverableByNextPull: number;
   notYetPulled: number;
-  /** Local events Mongo does not have; pendingPush of them are past the push cursor. */
+  /** Unquarantined local events Mongo does not have (push skips quarantined ones); pendingPush are past the push cursor. */
   localOnly: number;
   pendingPush: number;
   pushCursor: number;
@@ -66,7 +73,7 @@ export interface MongoSyncAuditReport {
   pullWindowStart: Date | null;
   /** Filled only when documents are missing; sorted by first seq. */
   instances: MongoSyncInstanceAudit[];
-  /** The oldest run of consecutive missing documents below the pull cursor. */
+  /** The oldest run of consecutive missing documents below the pull cursor (lost or still recoverable). */
   oldestGap?: MongoSyncGap;
 }
 
@@ -104,6 +111,11 @@ function instanceGroupPipeline(match: Record<string, unknown>): Record<string, u
   ];
 }
 
+function isQuarantined(event: MemoryEvent): boolean {
+  const quarantine = (event.metadata as { quarantine?: { status?: unknown } } | undefined)?.quarantine;
+  return quarantine?.status === 'active';
+}
+
 /** Number of values in the sorted array that are <= bound. */
 function countAtMost(sorted: number[], bound: number): number {
   let lo = 0;
@@ -130,32 +142,38 @@ export async function auditMongoSync(
     ? new Date(previousPullAt.getTime() - LATE_INSERT_WINDOW_MS)
     : null;
 
-  const countInMongo = async (ids: string[]): Promise<number> =>
-    ids.length === 0 ? 0 : remote.countDocuments({ projectKey, eventId: { $in: ids } }, { hint: EVENT_ID_INDEX });
+  const countInMongo = async (ids: string[], extra: Record<string, unknown> = {}): Promise<number> =>
+    ids.length === 0 ? 0 : remote.countDocuments({ projectKey, eventId: { $in: ids }, ...extra }, { hint: EVENT_ID_INDEX });
 
-  // Same rows push reads (quarantined events are never pushed), split at the push cursor.
+  // Presence counts quarantined rows too (one synced before it was quarantined is still here); local-only and pending
+  // push follow push, which never sends quarantined rows.
   const idPages: string[][] = [];
   let localTotal = 0;
   let matched = 0;
+  let localOnly = 0;
   let pendingPush = 0;
   let lastRowid = 0;
   while (true) {
-    const batch = await local.getEventsSinceRowid(lastRowid, LOCAL_PAGE_SIZE);
+    const batch = await local.getEventsSinceRowid(lastRowid, LOCAL_PAGE_SIZE, { includeQuarantined: true });
     if (batch.length === 0) break;
-    const pushed = batch.filter((item) => item.rowid <= pushCursor).map((item) => item.event.id);
-    const unpushed = batch.filter((item) => item.rowid > pushCursor).map((item) => item.event.id);
+    const ids = (items: typeof batch) => items.map((item) => item.event.id);
+    const quarantined = batch.filter((item) => isQuarantined(item.event));
+    const pushable = batch.filter((item) => !isQuarantined(item.event));
+    const pushed = ids(pushable.filter((item) => item.rowid <= pushCursor));
+    const unpushed = ids(pushable.filter((item) => item.rowid > pushCursor));
+    const pushedFound = await countInMongo(pushed);
     const unpushedFound = await countInMongo(unpushed);
-    matched += await countInMongo(pushed) + unpushedFound;
+    matched += pushedFound + unpushedFound + await countInMongo(ids(quarantined));
+    localOnly += pushable.length - pushedFound - unpushedFound;
     pendingPush += unpushed.length - unpushedFound;
-    idPages.push(batch.map((item) => item.event.id));
+    idPages.push(ids(batch));
     localTotal += batch.length;
     lastRowid = batch[batch.length - 1].rowid;
     if (batch.length < LOCAL_PAGE_SIZE) break;
   }
 
   const mongoTotal = await remote.countDocuments({ projectKey });
-  const missing = mongoTotal - matched;
-  const localOnly = localTotal - matched;
+  const missing = Math.max(0, mongoTotal - matched);
   const report: MongoSyncAuditReport = {
     status: localOnly > 0 ? 'warn' : 'pass',
     projectKey,
@@ -163,6 +181,7 @@ export async function auditMongoSync(
     localTotal,
     missing,
     lostBelowPullCursor: 0,
+    recoverableByNextPull: 0,
     notYetPulled: 0,
     localOnly,
     pendingPush,
@@ -171,11 +190,19 @@ export async function auditMongoSync(
     pullWindowStart,
     instances: []
   };
-  if (missing <= 0) return report;
+  if (missing === 0) return report;
 
+  // Mongo is counted before the local seqs are looked up, so a sync running meanwhile can only understate a loss.
+  const belowCursor = { seq: { $lte: pullCursor } };
+  const inWindow = pullWindowStart ? { ...belowCursor, insertedAt: { $gte: pullWindowStart } } : null;
+  const mongoBelow = await remote.countDocuments({ projectKey, ...belowCursor });
+  const mongoAbove = await remote.countDocuments({ projectKey, seq: { $gt: pullCursor } });
+  const mongoInWindow = inWindow ? await remote.countDocuments({ projectKey, ...inWindow }) : 0;
   const groups = await remote.aggregate(instanceGroupPipeline({ projectKey })).toArray() as InstanceGroupRow[];
+
   const localByInstance = new Map<string | null, number>();
   const localSeqs: number[] = [];
+  let localInWindow = 0;
   for (const ids of idPages) {
     const rows = await remote.aggregate([
       { $match: { projectKey, eventId: { $in: ids } } },
@@ -185,6 +212,7 @@ export async function auditMongoSync(
       localByInstance.set(row._id, (localByInstance.get(row._id) ?? 0) + row.seqs.length);
       localSeqs.push(...row.seqs);
     }
+    if (inWindow && mongoInWindow > 0) localInWindow += await countInMongo(ids, inWindow);
   }
   localSeqs.sort((a, b) => a - b);
 
@@ -196,7 +224,7 @@ export async function auditMongoSync(
         hostname: group.hostname,
         mongo: group.count,
         local: localCount,
-        missing: group.count - localCount,
+        missing: Math.max(0, group.count - localCount),
         firstSeq: group.firstSeq,
         lastSeq: group.lastSeq,
         firstInsertedAt: group.firstInsertedAt,
@@ -205,14 +233,12 @@ export async function auditMongoSync(
     })
     .sort((a, b) => a.firstSeq - b.firstSeq);
 
-  // Counted on each side of the cursor separately, so a push landing above it during the audit cannot mask a loss.
   const localBelow = countAtMost(localSeqs, pullCursor);
-  const mongoBelow = await remote.countDocuments({ projectKey, seq: { $lte: pullCursor } });
-  const mongoAbove = await remote.countDocuments({ projectKey, seq: { $gt: pullCursor } });
-  report.lostBelowPullCursor = mongoBelow - localBelow;
-  report.notYetPulled = mongoAbove - (localSeqs.length - localBelow);
+  report.recoverableByNextPull = Math.max(0, mongoInWindow - localInWindow);
+  report.lostBelowPullCursor = Math.max(0, mongoBelow - localBelow - report.recoverableByNextPull);
+  report.notYetPulled = Math.max(0, mongoAbove - (localSeqs.length - localBelow));
   report.status = report.lostBelowPullCursor > 0 ? 'fail' : 'warn';
-  if (report.lostBelowPullCursor > 0) {
+  if (mongoBelow > localBelow) {
     report.oldestGap = await findOldestGap(remote, projectKey, localSeqs, pullCursor);
   }
   return report;

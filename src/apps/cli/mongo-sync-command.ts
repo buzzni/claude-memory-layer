@@ -273,6 +273,7 @@ function summarizeAudit(report: MongoSyncAuditReport): string {
   if (report.status === 'pass') return `all ${report.mongoTotal} Mongo documents are in the local store`;
   const parts: string[] = [];
   if (report.lostBelowPullCursor > 0) parts.push(`${report.lostBelowPullCursor} below the pull cursor that no pull will read`);
+  if (report.recoverableByNextPull > 0) parts.push(`${report.recoverableByNextPull} the next pull will still re-read`);
   if (report.notYetPulled > 0) parts.push(`${report.notYetPulled} not pulled yet`);
   if (report.localOnly > 0) parts.push(`${report.localOnly} local events not in Mongo (${report.pendingPush} pending push)`);
   return parts.join('; ');
@@ -305,12 +306,14 @@ export async function runMongoSyncAudit(
   let store: SQLiteEventStore | undefined;
   let connection: MongoAuditConnection | undefined;
   try {
-    store = new SQLiteEventStore(dbPath, { readonly: true });
+    // A snapshot copy, so even the WAL sidecars of the live store are left untouched.
+    store = new SQLiteEventStore(dbPath, { readonly: true, snapshot: true });
     connection = await (deps.connect ?? connectMongoForAudit)(uri, dbName);
     const report = await auditMongoSync(store, connection.collection, { projectKey });
     return { status: report.status, projectKey, detail: summarizeAudit(report), report };
   } catch (error) {
-    const safeUri = redactMongoUri(uri);
+    // Query options can carry secrets too (e.g. tlsCertificateKeyFilePassword); host and db are enough to act on.
+    const safeUri = redactMongoUri(uri).split('?')[0];
     const message = (error instanceof Error ? error.message : String(error)).split(uri).join(safeUri);
     return { status: 'fail', projectKey, detail: `Mongo sync audit failed (${safeUri}, db=${dbName}): ${message}` };
   } finally {
@@ -355,14 +358,14 @@ export function formatMongoSyncAuditOutcome(outcome: MongoSyncAuditOutcome, json
   if (gap) {
     lines.push(
       '',
-      `  Oldest gap below the pull cursor: seq ${gap.fromSeq}-${gap.toSeq}, ${gap.count} document(s),`
+      `  Oldest missing range below the pull cursor: seq ${gap.fromSeq}-${gap.toSeq}, ${gap.count} document(s),`
         + ` inserted ${new Date(gap.firstInsertedAt).toISOString()} .. ${new Date(gap.lastInsertedAt).toISOString()}`,
       ...gap.instances.map((instance) => `    from ${formatInstance(instance.instanceId, instance.hostname)}: ${instance.count}`)
     );
   }
 
   const fixes: string[] = [];
-  if (report.notYetPulled > 0) fixes.push('claude-memory-layer mongo-sync --direction pull');
+  if (report.notYetPulled > 0 || report.recoverableByNextPull > 0) fixes.push('claude-memory-layer mongo-sync --direction pull');
   if (report.pendingPush > 0) fixes.push('claude-memory-layer mongo-sync --direction push');
   if (fixes.length > 0) lines.push('', `  Fix: ${fixes.join('  /  ')}`);
   if (report.lostBelowPullCursor > 0) {
