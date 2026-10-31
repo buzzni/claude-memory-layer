@@ -235,6 +235,25 @@ describe('Stop hook transcript cursor', () => {
     expect(storedContents()).toEqual(['opening answer', ...turn.texts].sort());
   });
 
+  it('keeps the turn a failed message belongs to for the Stop that retries it', async () => {
+    writeFileSync(transcriptPath, jsonl([assistantText('opening answer')]), 'utf8');
+    await runStop();
+    const answer = longText('notification reply');
+    appendTurn([assistantText(answer)]);
+    const turnState = await import('../../src/core/turn-state.js');
+    turnState.writeTurnState(SESSION, 'turn-notification', 'task_notification');
+    const memoryService = await import('../../src/services/memory-service.js');
+    const service = memoryService.getLightweightMemoryServiceForProject(root);
+    vi.spyOn(service, 'storeAgentResponse').mockResolvedValueOnce({ success: false, error: 'database is locked' });
+
+    await runStop();
+    await runStop();
+
+    const row = readResponses().find((stored) => stored.content === answer)!;
+    expect(JSON.parse(row.metadata)).toMatchObject({ turnId: 'turn-notification', turnTrigger: 'task_notification' });
+    expect(turnState.readTurnStateDetails(SESSION)).toBeNull();
+  });
+
   it('stores each message once and leaves the cursor at the end when two Stops run at the same time', async () => {
     writeFileSync(transcriptPath, jsonl([assistantText('opening answer')]), 'utf8');
     await runStop();

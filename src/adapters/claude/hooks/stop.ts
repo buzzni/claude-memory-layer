@@ -103,8 +103,9 @@ export async function main(): Promise<string> {
       writeLastAssistantSnippet(input.session_id, lastMessage);
     }
 
-    // Clean up turn state file after processing
-    clearTurnState(input.session_id);
+    // Clean up turn state file after processing; keep it while a message
+    // awaits retry so the retrying Stop stores it under the same turn.
+    if (allStored) clearTurnState(input.session_id);
 
     // Evaluate helpfulness of retrieved memories for this session
     try {
