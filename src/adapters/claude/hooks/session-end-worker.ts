@@ -13,7 +13,6 @@ import {
   getSessionProject,
   markSessionTerminalIfCurrent
 } from '../../../core/registry/session-registry.js';
-import { readStdin } from './hook-runtime.js';
 import { reconcileSessionTranscript, type ReconcileMemoryService } from './session-end-reconcile.js';
 import type { ClaudeSessionEndJob } from './session-end.js';
 
@@ -92,18 +91,6 @@ export async function handleClaudeSessionEnd(
       if (process.env.CLAUDE_MEMORY_DEBUG) {
         console.error('Memory session terminal marker failed:', error);
       }
-    }
-  }
-}
-
-export async function main(): Promise<void> {
-  try {
-    const job = JSON.parse(await readStdin()) as ClaudeSessionEndJob;
-    if (!job.sessionId) return;
-    await handleClaudeSessionEnd(job);
-  } catch (error) {
-    if (process.env.CLAUDE_MEMORY_DEBUG) {
-      console.error('Session end worker error:', error);
     }
   }
 }

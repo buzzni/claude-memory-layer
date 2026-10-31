@@ -4,7 +4,10 @@
  *
  * Claude Code waits for SessionEnd hooks while it shuts down, and reading a
  * long transcript again takes seconds, so the hook only records the job and
- * returns; session-end-worker.ts does the work.
+ * returns; session-end-worker.ts does the work. The worker acknowledges the
+ * job on stdout before it does anything; a worker that is missing, fails to
+ * start, cannot take the job or exits first never does any of it, so the hook
+ * then runs the session-end bookkeeping itself, as it did before the worker.
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -17,6 +20,10 @@ import { getSessionProject } from '../../../core/registry/session-registry.js';
 import { readTurnStateDetails } from '../../../core/turn-state.js';
 import { readStdin } from './hook-runtime.js';
 import type { SessionEndSnapshot } from './session-end-reconcile.js';
+import { SESSION_END_WORKER_ACK, type SessionEndHandler } from './session-end-handoff.js';
+
+/** A worker slower than this to acknowledge (a loaded machine) is left to run. */
+const WORKER_ACK_TIMEOUT_MS = 1_000;
 
 export interface ClaudeSessionEndJob {
   sessionId: string;
@@ -36,16 +43,32 @@ export interface SessionEndCapture {
   now: () => Date;
 }
 
+type SessionEndWorkerProcess = Pick<ChildProcess, 'stdin' | 'stdout' | 'exitCode' | 'on' | 'kill' | 'unref'>;
+
 export interface ClaudeSessionEndHookDeps extends SessionEndCapture {
   spawnWorker: (
     executable: string,
     args: string[],
     options: {
       detached: boolean;
-      stdio: ['pipe', 'ignore', 'ignore'];
+      stdio: ['pipe', 'pipe', 'ignore'];
     }
-  ) => Pick<ChildProcess, 'stdin' | 'unref'>;
+  ) => SessionEndWorkerProcess;
   workerPath: string;
+  workerExists: (workerPath: string) => boolean;
+  ackTimeoutMs: number;
+  /** The session-end bookkeeping, run in the hook when no worker took the job. */
+  runInline: SessionEndHandler;
+}
+
+/**
+ * Bundled into the hook, so the hook alone can still end a session whatever
+ * else is missing from the install. Evaluated only when the worker did not
+ * take the job.
+ */
+async function runSessionEndInline(job: ClaudeSessionEndJob): Promise<void> {
+  const { handleClaudeSessionEnd } = await import('./session-end-worker.js');
+  await handleClaudeSessionEnd(job);
 }
 
 function defaultWorkerPath(): string {
@@ -55,6 +78,9 @@ function defaultWorkerPath(): string {
 const realDeps: ClaudeSessionEndHookDeps = {
   spawnWorker: spawn,
   workerPath: defaultWorkerPath(),
+  workerExists: fs.existsSync,
+  ackTimeoutMs: WORKER_ACK_TIMEOUT_MS,
+  runInline: runSessionEndInline,
   getRegistrationId: (sessionId) => getSessionProject(sessionId)?.registrationId ?? null,
   getOpenTurn: readTurnStateDetails,
   getTranscriptBytes: (transcriptPath) => {
@@ -91,30 +117,74 @@ export function normalizeClaudeSessionEndJob(
   return job;
 }
 
-export function launchClaudeSessionEndWorker(
+/**
+ * Give the job to a detached worker. Resolves true once the worker holds it
+ * (or is still starting when the wait ends), false when it never got it.
+ */
+function handOffToWorker(job: ClaudeSessionEndJob, deps: ClaudeSessionEndHookDeps): Promise<boolean> {
+  if (!deps.workerExists(deps.workerPath)) return Promise.resolve(false);
+
+  let child: SessionEndWorkerProcess;
+  try {
+    child = deps.spawnWorker(process.execPath, [deps.workerPath], {
+      detached: process.platform !== 'win32',
+      stdio: ['pipe', 'pipe', 'ignore']
+    });
+  } catch {
+    return Promise.resolve(false);
+  }
+
+  return new Promise((resolve) => {
+    let settled = false;
+    let output = '';
+    const settle = (handedOff: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.stdout?.destroy();
+      // A worker that never acknowledged has done nothing; stop it so the
+      // hook's own run is the only one.
+      if (!handedOff && child.exitCode === null) {
+        try {
+          child.kill();
+        } catch {
+          // Already gone.
+        }
+      }
+      child.unref();
+      resolve(handedOff);
+    };
+    const timer = setTimeout(() => settle(true), deps.ackTimeoutMs);
+
+    child.on('error', () => settle(false));
+    child.on('exit', () => settle(false));
+    child.stdout?.on('data', (chunk: Buffer | string) => {
+      output += chunk.toString();
+      if (output.includes(SESSION_END_WORKER_ACK)) settle(true);
+    });
+    child.stdin?.on('error', () => settle(false));
+    child.stdin?.end(JSON.stringify(job));
+  });
+}
+
+export async function runClaudeSessionEnd(
   input: SessionEndInput,
   deps: ClaudeSessionEndHookDeps = realDeps
-): boolean {
+): Promise<void> {
   const job = normalizeClaudeSessionEndJob(input, deps);
-  if (!job) return false;
+  if (!job) return;
+  if (await handOffToWorker(job, deps)) return;
 
-  const child = deps.spawnWorker(process.execPath, [deps.workerPath], {
-    detached: process.platform !== 'win32',
-    stdio: ['pipe', 'ignore', 'ignore']
-  });
-  child.stdin?.on('error', () => {
-    // Claude Code must not fail its shutdown when a detached worker exits early.
-  });
-  child.stdin?.end(JSON.stringify(job));
-  child.unref();
-  return true;
+  // The transcript reconcile is left out: it can take seconds, which Claude
+  // Code does not wait for at shutdown.
+  await deps.runInline({ sessionId: job.sessionId, registrationId: job.registrationId });
 }
 
 export async function main(): Promise<string> {
   try {
     // Read input from stdin (parse inside try so malformed JSON still emits a safe envelope)
     const input: SessionEndInput = JSON.parse(await readStdin());
-    launchClaudeSessionEndWorker(input);
+    await runClaudeSessionEnd(input);
   } catch (error) {
     if (process.env.CLAUDE_MEMORY_DEBUG) {
       console.error('Memory hook error:', error);
