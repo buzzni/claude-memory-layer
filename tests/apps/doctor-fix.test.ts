@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -178,6 +178,53 @@ describe('repairEmbeddingBackend', () => {
     expect(runPostinstall).toHaveBeenCalledTimes(1);
   });
 
+  it('declines while a recent unparseable lock may still be initializing', async () => {
+    const { script, runPostinstall } = fakeScript({ available: false, repairs: true });
+    const context = makeContext(script);
+    writeFileSync(join(context.memoryRoot, 'vector-worker.lock'), '');
+
+    await expectDeclined(context, runPostinstall, join(context.memoryRoot, 'vector-worker.lock'));
+  });
+
+  it('declines when the store locks cannot be scanned', async () => {
+    const { script, runPostinstall } = fakeScript({ available: false, repairs: true });
+    const context = makeContext(script);
+    // A file where the projects directory should be: readdir fails with ENOTDIR.
+    writeFileSync(join(context.memoryRoot, 'projects'), '');
+
+    await expectDeclined(context, runPostinstall, 'Could not scan');
+  });
+
+  it('declines when an existing backend manifest is not writable', async () => {
+    const { script, runPostinstall } = fakeScript({ available: false, repairs: true });
+    const context = makeContext(script, {
+      deps: {
+        accessImpl: (p: string) => {
+          if (p.endsWith('package.json')) throw Object.assign(new Error('EACCES'), { code: 'EACCES' });
+        }
+      }
+    });
+    const backendDir = realScript.getManagedBackendDir(context.packageRoot);
+    mkdirSync(join(backendDir, 'node_modules'), { recursive: true });
+    writeFileSync(join(backendDir, 'package.json'), '{}');
+
+    await expectDeclined(context, runPostinstall, join(backendDir, 'package.json'));
+  });
+
+  it('declines while another doctor --fix holds the repair lock, and releases its own', async () => {
+    const { script, runPostinstall } = fakeScript({ available: false, repairs: true });
+    const context = makeContext(script);
+    const repairLock = `${realScript.getManagedBackendDir(context.packageRoot)}.repair.lock`;
+    writeFileSync(repairLock, JSON.stringify({ pid: process.pid, ownerId: 'other-doctor', acquiredAt: new Date().toISOString() }));
+
+    await expectDeclined(context, runPostinstall, 'Another doctor --fix');
+
+    rmSync(repairLock);
+    const result = await repairEmbeddingBackend(failingCheck(context), context);
+    expect(result.outcome).toEqual({ kind: 'repaired' });
+    expect(readdirSync(join(context.packageRoot, 'node_modules'))).not.toContain(basename(repairLock));
+  });
+
   it('declines while the semantic daemon is listening', async () => {
     const { script, runPostinstall } = fakeScript({ available: false, repairs: true });
     const probeSocketImpl = vi.fn(async () => true);
@@ -202,7 +249,7 @@ describe('repairEmbeddingBackend', () => {
     await expectDeclined(context, runPostinstall, 'offline');
     expect(execFileSyncImpl).toHaveBeenCalledWith(
       expect.stringMatching(/^npm(\.cmd)?$/),
-      ['config', 'get', 'offline'],
+      ['config', 'get', 'offline', '--prefix', realScript.getManagedBackendDir(context.packageRoot)],
       expect.objectContaining({ cwd: context.packageRoot })
     );
     // Same env the install would run with: inherited location settings stripped.
@@ -289,7 +336,19 @@ describe('runDoctor', () => {
 
     const result = await runDoctor(checks, { fix: false, repairEmbeddingBackend: repair });
 
-    expect(result.output).toBe(formatDoctorReport(checks));
+    // Literal pre-change output, so a change to the shared formatter or the
+    // wiring cannot slip extra text into a plain `doctor` run.
+    expect(result.output).toBe([
+      '',
+      'Claude Memory Layer Doctor',
+      '',
+      '  node:              ✅  v22.0.0',
+      '  embedding-backend: ❌  Required embedding backend is not installed — semantic/vector search will not work',
+      '                     Fix: ONNXRUNTIME_NODE_INSTALL_CUDA=skip npm install -g claude-memory-layer@latest',
+      '',
+      '  1 check(s) failed. See above for fix suggestions.',
+      ''
+    ].join('\n'));
     expect(result.exitCode).toBe(doctorExitCode(checks));
     expect(result.exitCode).toBe(1);
     expect(repair).not.toHaveBeenCalled();

@@ -84,23 +84,24 @@ async function probeUnixSocket(socketPath: string): Promise<boolean> {
   });
 }
 
-/** Worker locks sit at the top of the memory root and of each project store. */
-function findStoreLockFiles(memoryRoot: string): string[] {
-  const lockFilesIn = (dir: string): string[] => {
+/**
+ * Worker locks sit at the top of the memory root and of each project store.
+ * A directory that exists but cannot be listed is returned as unscanned, so
+ * the caller can decline instead of assuming no worker holds a lock there.
+ */
+function findStoreLockFiles(memoryRoot: string): { lockFiles: string[]; unscanned: string[] } {
+  const unscanned: string[] = [];
+  const list = (dir: string): string[] => {
     try {
-      return fs.readdirSync(dir).filter((entry) => entry.endsWith('.lock')).map((entry) => path.join(dir, entry));
-    } catch {
+      return fs.readdirSync(dir).map((entry) => path.join(dir, entry));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') unscanned.push(dir);
       return [];
     }
   };
-  const projectsDir = path.join(memoryRoot, 'projects');
-  let projectDirs: string[] = [];
-  try {
-    projectDirs = fs.readdirSync(projectsDir).map((entry) => path.join(projectsDir, entry));
-  } catch {
-    // no project stores yet
-  }
-  return [memoryRoot, ...projectDirs].flatMap(lockFilesIn);
+  const storeDirs = [memoryRoot, ...list(path.join(memoryRoot, 'projects'))];
+  const lockFiles = storeDirs.flatMap((dir) => list(dir).filter((entry) => entry.endsWith('.lock')));
+  return { lockFiles, unscanned };
 }
 
 /**
@@ -131,22 +132,30 @@ async function findRepairBlockers(
     reasons.push(`The running CLI belongs to ${context.runningPackageRoot}, but the checked backend is under ${context.packageRoot}.`);
   }
 
-  const installTarget = findNearestExistingPath(path.join(script.getManagedBackendDir(context.packageRoot), 'node_modules'));
-  try {
-    (deps.accessImpl ?? fs.accessSync)(installTarget, fs.constants.W_OK);
-  } catch {
-    reasons.push(`${installTarget} is not writable by this user.`);
+  // npm rewrites the manifest and lockfile and installs under node_modules;
+  // files deeper in the existing dependency tree are not walked.
+  const backendDir = script.getManagedBackendDir(context.packageRoot);
+  const writeTargets = [
+    findNearestExistingPath(path.join(backendDir, 'node_modules')),
+    ...['package.json', 'package-lock.json'].map((file) => path.join(backendDir, file)).filter((file) => fs.existsSync(file))
+  ];
+  for (const target of writeTargets) {
+    try {
+      (deps.accessImpl ?? fs.accessSync)(target, fs.constants.W_OK);
+    } catch {
+      reasons.push(`${target} is not writable by this user.`);
+    }
   }
 
   if (script.isSkipRequested(env)) {
     reasons.push('CLAUDE_MEMORY_LAYER_SKIP_EMBEDDING_POSTINSTALL (or the postinstall repair guard) is set, which disables the backend download.');
   }
-  // Asked of npm with the env the install will run with, so .npmrc layers
-  // and npm_config_* variables are both accounted for.
+  // Asked of npm with the env and prefix the install will run with, so every
+  // .npmrc layer and npm_config_* variable is accounted for.
   const execFileSyncImpl = deps.execFileSyncImpl
     ?? ((command: string, args: string[], options: NpmQueryOptions) => execFileSync(command, args, options));
   try {
-    const offline = execFileSyncImpl(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['config', 'get', 'offline'], {
+    const offline = execFileSyncImpl(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['config', 'get', 'offline', '--prefix', backendDir], {
       cwd: context.packageRoot,
       env: script.createRepairEnv(env),
       encoding: 'utf8',
@@ -159,10 +168,12 @@ async function findRepairBlockers(
 
   // Reinstalling replaces native modules (onnxruntime, sharp) under a process
   // that may have them loaded.
-  const isProcessRunning = deps.isProcessRunning;
-  for (const lockPath of findStoreLockFiles(context.memoryRoot)) {
-    const holderPid = new WorkerLock(lockPath, isProcessRunning ? { isProcessRunning } : {}).liveHolderPid();
-    if (holderPid !== null) reasons.push(`${lockPath} is held by running process ${holderPid}.`);
+  const lockOptions = deps.isProcessRunning ? { isProcessRunning: deps.isProcessRunning } : {};
+  const { lockFiles, unscanned } = findStoreLockFiles(context.memoryRoot);
+  for (const dir of unscanned) reasons.push(`Could not scan ${dir} for worker locks.`);
+  for (const lockPath of lockFiles) {
+    const holder = new WorkerLock(lockPath, lockOptions).busyHolder();
+    if (holder) reasons.push(`${lockPath} is held by ${holder.pid ? `running process ${holder.pid}` : 'a worker that is still starting'}.`);
   }
   if (await (deps.probeSocketImpl ?? probeUnixSocket)(context.semanticSocketPath)) {
     reasons.push(`The semantic daemon is listening on ${context.semanticSocketPath}; wait for it to exit after its idle timeout.`);
@@ -203,12 +214,31 @@ export async function repairEmbeddingBackend(
     return { outcome: { kind: 'declined', reasons, manualCommand }, check };
   }
 
-  script.runPostinstall({ rootDir: context.packageRoot, env: context.env ?? process.env });
-  const recheck = checkEmbeddingBackend(context.packageRoot, script.isEmbeddingBackendAvailable);
-  return {
-    outcome: recheck.status === 'pass' ? { kind: 'repaired' } : { kind: 'failed', manualCommand },
-    check: recheck
-  };
+  // Two concurrent `doctor --fix` runs would both pass the checks above and
+  // run npm into the same prefix; the second one declines here instead.
+  const repairLock = new WorkerLock(`${script.getManagedBackendDir(context.packageRoot)}.repair.lock`);
+  let lockResult: ReturnType<WorkerLock['acquire']>;
+  try {
+    lockResult = repairLock.acquire();
+  } catch (error) {
+    const reason = `Could not take the repair lock: ${error instanceof Error ? error.message : String(error)}`;
+    return { outcome: { kind: 'declined', reasons: [reason], manualCommand }, check };
+  }
+  if (!lockResult.acquired) {
+    const reason = `Another doctor --fix (pid ${lockResult.holderPid ?? 'unknown'}) is already repairing this backend.`;
+    return { outcome: { kind: 'declined', reasons: [reason], manualCommand }, check };
+  }
+
+  try {
+    script.runPostinstall({ rootDir: context.packageRoot, env: context.env ?? process.env });
+    const recheck = checkEmbeddingBackend(context.packageRoot, script.isEmbeddingBackendAvailable);
+    return {
+      outcome: recheck.status === 'pass' ? { kind: 'repaired' } : { kind: 'failed', manualCommand },
+      check: recheck
+    };
+  } finally {
+    repairLock.release();
+  }
 }
 
 export function formatEmbeddingBackendRepair(outcome: EmbeddingBackendRepairOutcome): string {
