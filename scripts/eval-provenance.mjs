@@ -157,7 +157,7 @@ export function formatProvenanceLines(provenance) {
   const lines = [`- Provenance: ${commit} · claude-memory-layer ${provenance.packageVersion} · generated ${provenance.generatedAt}`];
   for (const fixture of provenance.fixtures) {
     const split = fixture.split ? `split ${fixture.split}` : `splits.json ${fixture.manifest}`;
-    lines.push(`- Fixture: \`${fixture.ref}\` sha256 ${fixture.sha256.slice(0, 12)} (${split})`);
+    lines.push(`- Fixture file: \`${fixture.ref}\` sha256 ${fixture.sha256.slice(0, 12)} (${split})`);
   }
   if (provenance.store) {
     const { rowsAtStart, rowsAtEnd, inputRows, window } = provenance.store;

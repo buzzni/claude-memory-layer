@@ -13,13 +13,16 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
+import Database from 'better-sqlite3';
 import {
   buildFixtureStore,
   formatReplayReport,
+  loadReplayTurns,
   runHookGroundingReplay,
   type HookReplayFixture,
   type ReplayReport
 } from '../src/adapters/claude/hooks/hook-grounding-replay.js';
+import { buildProvenance, countRows, warnProvenance, withProvenanceHeader } from './eval-provenance.mjs';
 
 interface ParsedArgs {
   fixturePath?: string;
@@ -72,42 +75,82 @@ function parseArgs(argv: string[]): ParsedArgs {
   return args;
 }
 
+/** Row counts of the tables the replay reads, plus the replayed traces' time span at the start. */
+function snapshotStore(storagePath: string, limit?: number) {
+  const db = new Database(path.join(storagePath, 'events.sqlite'), { readonly: true, fileMustExist: true });
+  try {
+    const turns = loadReplayTurns(db, limit);
+    return {
+      rows: countRows(db, ['events', 'retrieval_traces']) as Record<string, number | null>,
+      inputRows: turns.length,
+      window: { from: turns[0]?.asOf.toISOString() ?? null, to: turns.at(-1)?.asOf.toISOString() ?? null }
+    };
+  } finally {
+    db.close();
+  }
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
+  const env = { ...process.env };
   let report: ReplayReport;
+  let start: ReturnType<typeof snapshotStore>;
+  let end: ReturnType<typeof snapshotStore>;
+  let storagePath: string;
+  let semantic: 'retriever' | 'off';
   if (args.fixturePath) {
     const fixture = JSON.parse(readFileSync(args.fixturePath, 'utf8')) as HookReplayFixture;
-    const storagePath = mkdtempSync(path.join(tmpdir(), 'cml-hook-replay-'));
+    storagePath = mkdtempSync(path.join(tmpdir(), 'cml-hook-replay-'));
+    semantic = args.semantic ?? 'off';
     try {
       await buildFixtureStore(fixture, storagePath);
+      start = snapshotStore(storagePath, args.limit);
       report = await runHookGroundingReplay({
         storagePath,
         projectHash: fixture.projectHash,
-        semantic: args.semantic ?? 'off',
+        semantic,
         limit: args.limit,
         storeLabel: fixture.name
       });
+      end = snapshotStore(storagePath, args.limit);
     } finally {
       rmSync(storagePath, { recursive: true, force: true });
     }
   } else {
-    const storagePath = path.resolve(args.storePath!);
+    storagePath = path.resolve(args.storePath!);
     if (!existsSync(path.join(storagePath, 'events.sqlite'))) {
       throw new CliError(`no events.sqlite in ${storagePath}`);
     }
+    semantic = args.semantic ?? (existsSync(path.join(storagePath, 'vectors')) ? 'retriever' : 'off');
+    start = snapshotStore(storagePath, args.limit);
     report = await runHookGroundingReplay({
       storagePath,
       projectHash: args.projectHash ?? path.basename(storagePath),
-      semantic: args.semantic ?? (existsSync(path.join(storagePath, 'vectors')) ? 'retriever' : 'off'),
+      semantic,
       limit: args.limit,
       storeLabel: args.label
     });
+    end = snapshotStore(storagePath, args.limit);
   }
+  const provenance = buildProvenance({
+    fixtures: args.fixturePath ? [args.fixturePath] : [],
+    store: {
+      // A fixture store is a throwaway temp copy; only a real store copy gets a (hashed) location.
+      ...(args.storePath ? { ref: storagePath } : {}),
+      rowsAtStart: start.rows,
+      rowsAtEnd: end.rows,
+      inputRows: start.inputRows,
+      window: start.window
+    },
+    flags: { semantic, limit: args.limit },
+    env
+  });
+  warnProvenance(provenance);
   // Per-turn results carry event ids, so JSON keeps the aggregates only.
   const withoutResults = (key: string, value: unknown) => (key === 'results' ? undefined : value);
   process.stdout.write(args.format === 'json'
-    ? `${JSON.stringify(report, withoutResults, 2)}\n`
-    : `${formatReplayReport(report)}\n`);
+    ? `${JSON.stringify({ ...report, provenance }, withoutResults, 2)}\n`
+    : `${withProvenanceHeader(formatReplayReport(report), provenance)}\n`);
 }
 
 // Success lets the event loop drain instead of calling process.exit: exiting

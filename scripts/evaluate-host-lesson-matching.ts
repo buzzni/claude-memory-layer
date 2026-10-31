@@ -28,6 +28,7 @@ import { fileURLToPath } from 'node:url';
 import { normalizeUserPrompt } from '../src/core/prompt-normalizer.js';
 import type { MemoryLesson } from '../src/core/types.js';
 import { findSplitOverlaps, type EvalSplit } from './eval-split.js';
+import { buildProvenance, countRows, warnProvenance } from './eval-provenance.mjs';
 
 const PROMPT_KEY_CHARS = 1_500;
 const LESSON_BLOCK_MARKERS = ['## Project lessons that may apply', 'These are reference notes from earlier verified work', '[lesson:'];
@@ -357,6 +358,8 @@ async function main(): Promise<void> {
   const { getDefaultEmbedder } = await import('../src/extensions/vector/embedder.js');
 
   const db = new Database(store, { readonly: true, fileMustExist: true });
+  const storeTables = ['events', 'memory_lessons'];
+  const rowsAtStart = countRows(db, storeTables);
   const projectHashes = (db.prepare('SELECT DISTINCT project_hash AS h FROM memory_lessons').all() as Array<{ h: string }>).map((row) => row.h);
   if (projectHashes.length !== 1) throw new Error(`expected one lesson project in the store, found ${projectHashes.length}`);
   // Every lesson, including disabled ones: a consolidated (disabled) lesson's
@@ -532,6 +535,15 @@ async function main(): Promise<void> {
       } : {})
     };
   }
+  const provenance = buildProvenance({
+    fixtures: [labelsPath, arg('canonical-map'), arg('catalog-overlay')].filter((file): file is string => Boolean(file)),
+    store: { ref: store, rowsAtStart, rowsAtEnd: countRows(db, storeTables), inputRows: rows.length, window: { since, until, splitAt } },
+    // The pool a prompt sees is the catalog up to its timestamp, so the catalog size is its upper bound.
+    retrieval: { topK, candidatePool: lessons.length },
+    flags: { topK, hubShare }
+  });
+  warnProvenance(provenance);
+  report.provenance = provenance;
   writeFileSync(out!, `${JSON.stringify(report, null, 2)}\n`);
   process.stdout.write(`${JSON.stringify(report.prompts)}\n`);
 }
