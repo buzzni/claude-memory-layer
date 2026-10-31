@@ -69,11 +69,6 @@ function parseArgs(argv: string[]): ParsedArgs {
   return args;
 }
 
-/** JSON output keeps the aggregates and drops per-turn results, which carry event ids. */
-function aggregateOnly(report: ReplayReport) {
-  return { ...report, arms: report.arms.map(({ results: _results, ...arm }) => arm) };
-}
-
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   let report: ReplayReport;
@@ -104,12 +99,17 @@ async function main(): Promise<void> {
       limit: args.limit
     });
   }
+  // Per-turn results carry event ids, so JSON keeps the aggregates only.
+  const withoutResults = (key: string, value: unknown) => (key === 'results' ? undefined : value);
   process.stdout.write(args.format === 'json'
-    ? `${JSON.stringify(aggregateOnly(report), null, 2)}\n`
+    ? `${JSON.stringify(report, withoutResults, 2)}\n`
     : `${formatReplayReport(report)}\n`);
 }
 
-main().then(() => process.exit(0)).catch((error) => {
+// Success lets the event loop drain instead of calling process.exit: exiting
+// while the native embedding runtime is loaded aborts with
+// "libc++abi: mutex lock failed" (exit 134).
+main().catch((error) => {
   process.stderr.write(`${error instanceof CliError ? error.message : error?.stack ?? error}\n`);
   process.exit(error instanceof CliError ? 2 : 1);
 });
