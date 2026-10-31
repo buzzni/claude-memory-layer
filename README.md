@@ -639,6 +639,8 @@ claude-memory-layer mongo-sync --watch --interval 30000 --process-after-sync --p
 
 서버마다 프로젝트 경로가 달라도 됩니다. Pull된 이벤트는 이 서버의 프로젝트(`--project` 경로의 hash)로 다시 귀속되어 project-scoped 검색에 나오며, 원래 서버의 project scope와 hostname은 `metadata.mongoSync`에 남습니다. 같은 프로젝트를 모으려면 모든 서버에서 `--mongo-project`(또는 `CLAUDE_MEMORY_MONGO_PROJECT`)를 같은 값으로 지정하세요. 기본값은 경로의 마지막 폴더 이름입니다.
 
+여러 서버가 동시에 push하면 seq를 먼저 예약한 서버의 문서가 늦게 들어올 수 있어, pull은 직전 pull보다 30분 앞부터 들어온 문서를 커서 아래까지 다시 읽습니다(이미 가진 이벤트는 건너뜀). 서버 간 시계 차이도 이 범위 안이어야 합니다.
+
 ### memU-inspired Retrieval 사용 예시
 
 아래 예시는 SDK/서비스 레벨에서 `retrieveMemories()` 호출 시 적용되는 옵션입니다.
