@@ -165,7 +165,9 @@ function handOffToWorker(job: ClaudeSessionEndJob, deps: ClaudeSessionEndHookDep
     const timer = setTimeout(() => settle(true), deps.ackTimeoutMs);
 
     child.on('error', () => settle(false));
-    child.on('exit', () => settle(false));
+    // 'close', not 'exit': an acknowledgement still buffered in the pipe when
+    // the worker exits is delivered before it.
+    child.on('close', () => settle(false));
     child.stdout?.on('data', (chunk: Buffer | string) => {
       output += chunk.toString();
       if (output.includes(SESSION_END_WORKER_ACK)) settle(true);

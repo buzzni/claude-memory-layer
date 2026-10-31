@@ -166,9 +166,24 @@ describe('Claude SessionEnd hook hand-off', () => {
     const run = runClaudeSessionEnd(validInput, hookDeps);
     worker.exitCode = 1;
     worker.emit('exit', 1, null);
+    worker.emit('close', 1, null);
     await run;
 
     expect(runInline).toHaveBeenCalledWith(inlineJob);
+  });
+
+  it('counts an acknowledgement still buffered when the worker exits as a hand-off', async () => {
+    const worker = new FakeWorker();
+    const { deps: hookDeps, runInline } = deps(worker);
+
+    const run = runClaudeSessionEnd(validInput, hookDeps);
+    worker.exitCode = 0;
+    worker.emit('exit', 0, null);
+    worker.stdout.emit('data', Buffer.from(`${SESSION_END_WORKER_ACK}\n`));
+    worker.emit('close', 0, null);
+    await run;
+
+    expect(runInline).not.toHaveBeenCalled();
   });
 
   it('leaves a worker that is slow to acknowledge running instead of doing its work twice', async () => {
