@@ -14,8 +14,7 @@
  * skipped; only the missing ones are stored.
  */
 
-import type { MemoryEvent } from '../../../core/types.js';
-import type { AppendResult } from '../../../core/types.js';
+import type { AppendResult, MemoryEvent } from '../../../core/types.js';
 import { readTurnStateDetails } from '../../../core/turn-state.js';
 import { readTranscriptTurns } from '../transcript/transcript-turns.js';
 import { isStorableAgentResponse, normalizeAgentResponse, readMinAgentResponseLength } from './agent-response-normalization.js';
