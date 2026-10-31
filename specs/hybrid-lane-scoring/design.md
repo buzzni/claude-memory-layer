@@ -305,17 +305,22 @@ B와 C는 두 측정을 동시에 돌려 CPU 경합이 있었다. 그래서 아�
    - **입력.** store 사본 디렉터리(`events.sqlite`, semantic 레인용 `vectors/`)다. 읽기 전용으로 연다.
    - **turn 재구성.** `delivery_client='claude-hook'`, `presentation_mode='evidence'`인 user_prompt trace를 읽는다.
      - 프롬프트: trace의 `raw_query_text`(저장된 redact 본문)
-     - adherence turn과 reason: 훅이 검색 직후 저장한 user_prompt 이벤트의 `metadata.adherence`. 저장되지 않은 짧은 프롬프트는 `shouldRunAdherenceCheck`로 재구성한다.
+     - adherence turn과 reason: 훅이 검색 직후 저장한 user_prompt 이벤트의 `metadata.adherence`.
+       - 너무 짧아 저장되지 않은 프롬프트는 직전에 저장된 프롬프트의 turn+1로 추정하고, reason은 `shouldRunAdherenceCheck`로 재구성한다.
+       - 추정한 turn 수를 보고서에 적는다.
      - 이전 프롬프트와 직전 응답 500자(2시간 이내)
+       - 자동 알림에 대한 응답(`turnTrigger`가 `user`가 아님)은 제외한다. Stop이 그 응답으로는 발췌를 갱신하지 않기 때문이다.
      - 이것으로 훅의 `buildRetrievalQuery`를 다시 실행한다. #125도 이 경로에서 재현된다.
    - **시각 경계.** 각 trace 시각 이후의 이벤트는 레인에서 보이지 않는다.
      - FTS 레인(keyword, graduated): 원시 rank 행을 "그 시각 이후 이벤트 수"만큼 더 받아 거른다. 그러면 처음 `limit`개가 당시 훅이 받은 목록과 정확히 같다. 정규화는 실제 `MemoryQueryService`가 한다. #121 경로도 그대로 재현된다. 프로덕션 SQL은 고치지 않았다.
      - episode 확장(`getEventsByTurn`, `expandDisclosure`)도 같은 시각으로 거른다.
      - lesson: trace 시각 이후에 만들어진 lesson은 제외한다.
-     - semantic: 데몬과 같은 옵션으로 프로세스 안에서 retriever를 돌리고, 4배로 과다 조회한 뒤 거른다. 근사값이다.
-   - **채점.** 선택된 기억의 주입 발췌(`memoryEvidencePreview`)를 그 세션의 이후 agent_response 전체와 `computeMemoryUsageEvidence`로 비교한다. 운영 평가기(`evaluateRetrievalRows`)와 같은 함수, 같은 비교 범위다.
+     - semantic: 데몬과 같은 옵션으로 프로세스 안에서 retriever를 돌린다. 호출하는 동안 retriever의 이벤트 store와 벡터 store를 같은 시각 경계 래퍼로 바꿔 끼운다. 그래서 폴백과 순위 결정도 미래 이벤트를 보지 못한다. 최종 결과를 한 번 더 거르는 검사는 남겨 두고 그 건수를 보고한다(0이어야 한다).
+   - **채점.** 선택된 기억의 주입 발췌(`memoryEvidencePreview`)를 그 세션의 이후 agent_response 전체와 `computeMemoryUsageEvidence`로 비교한다. 운영 평가기(`evaluateRetrievalRows`)와 같은 함수다.
+     - 기준 시각은 검색 직후 저장된 프롬프트 이벤트의 시각이다. 평가기의 `delivered_at` 바로 전 시점이다.
+     - 프롬프트가 저장되지 않았으면 trace 시각 +1초를 쓴다. trace 시각은 초 단위라, 같은 초 안의 이전 응답이 섞이지 않게 하려는 것이다.
    - **arm.** current, #121 켬, #125 켬, 둘 다 켬이다. 플래그는 호출 시점에 읽히므로 같은 프로세스에서 env를 바꿔 가며 돌리고, 끝나면 원래 값으로 되돌린다.
-   - **출력.** 집계값만 낸다. 원문, 쿼리, id는 출력하지 않는다. 출력에 반사실 편향 문단을 항상 포함한다.
+   - **출력.** 집계값만 낸다. 원문, 쿼리, id, 프로젝트 hash는 출력하지 않는다(`--label`로 이름을 붙인다). markdown과 JSON 모두 반사실 편향과 근사 항목을 포함한다.
    - **충실도 지표.** current arm이 당시 기록된 쿼리와 선택을 얼마나 재현하는지 함께 보고한다.
 3. **fixture 모드.** `benchmarks/replay/hook-grounding-fixture-v1.json`을 실제 `SQLiteEventStore`(FTS5)에 적재한 뒤, store 모드와 같은 경로로 돌린다. 임베더는 쓰지 않는다(semantic off).
    - 다음 7개 turn이 들어 있다. 정상 회수, 긴 프롬프트 3종(로그 뒤 질문, 요청 뒤 로그, 스펙형), trace 이후에 쓰인 답변 함정, 그 답변을 이후에 회수하는 turn, 당시 주입이 없던 turn.
