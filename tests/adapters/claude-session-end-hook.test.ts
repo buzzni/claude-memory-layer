@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { handleClaudeSessionEnd } from '../../src/adapters/claude/hooks/session-end.js';
+import { handleClaudeSessionEnd } from '../../src/adapters/claude/hooks/session-end-worker.js';
 
 describe('Claude SessionEnd hook', () => {
   it('marks the session terminal even when deferred embedding processing fails', async () => {
