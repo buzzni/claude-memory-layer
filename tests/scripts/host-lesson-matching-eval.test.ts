@@ -239,6 +239,10 @@ describe('splitLabeledPrompts', () => {
     expect(() => splitLabeledPrompts([early, late], { k1: { split: 'dev' }, k2: {} }, SPLIT_AT)).toThrow(/without a dev\/test split.*k2/);
   });
 
+  it('refuses an untagged label even when this run does not select its prompt', () => {
+    expect(() => splitLabeledPrompts([early], { k1: { split: 'dev' }, unused: {} }, SPLIT_AT)).toThrow(/without a dev\/test split.*unused/);
+  });
+
   it('refuses a label whose split disagrees with --split-at', () => {
     expect(() => splitLabeledPrompts([early], { k1: { split: 'test' } }, SPLIT_AT)).toThrow(/disagree with --split-at.*k1/);
   });

@@ -67,7 +67,8 @@ const splitAtSide = (prompt: PreparedPrompt, splitAt: string): EvalSplit => (pro
  */
 export function splitLabeledPrompts(prompts: readonly PreparedPrompt[], labels: Readonly<Record<string, { split?: unknown }>>, splitAt: string) {
   const list = (keys: string[]) => [...new Set(keys)].slice(0, 5).join(', ');
-  const untagged = prompts.filter((prompt) => labels[prompt.key].split !== 'dev' && labels[prompt.key].split !== 'test').map((prompt) => prompt.key);
+  // The whole label set is tagged, including labels this window does not select.
+  const untagged = Object.keys(labels).filter((key) => labels[key].split !== 'dev' && labels[key].split !== 'test');
   if (untagged.length) throw new Error(`labels without a dev/test split: ${list(untagged)}`);
   const misplaced = prompts.filter((prompt) => labels[prompt.key].split !== splitAtSide(prompt, splitAt)).map((prompt) => prompt.key);
   if (misplaced.length) throw new Error(`label splits disagree with --split-at ${splitAt}: ${list(misplaced)}`);

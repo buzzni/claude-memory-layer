@@ -38,6 +38,9 @@ describe('findSplitOverlaps', () => {
   it('reports a normalized prompt present in both splits under different ids', () => {
     expect(findSplitOverlaps({ dev, test: [{ id: 'b', query: 'Remove  credentials from LOGS' }] })).toEqual(['a', 'b']);
   });
+  it('compares a precomputed prompt hash like the prompt it came from', () => {
+    expect(findSplitOverlaps({ dev, test: [{ id: 'b', promptHash: promptHash('remove credentials from logs') }] })).toEqual(['a', 'b']);
+  });
   it('accepts disjoint splits', () => {
     expect(findSplitOverlaps({ dev, test: [{ id: 'b', query: 'rotate the signing key' }] })).toEqual([]);
   });
@@ -82,11 +85,13 @@ describe('benchmarks/lesson-recall split manifest', () => {
 
   it('keeps dev and test cases disjoint by case id and normalized prompt', () => {
     const cases: Record<EvalSplit, EvalCase[]> = { dev: [], test: [] };
-    for (const fixture of manifest.fixtures.filter((entry) => !entry.external)) {
-      cases[fixture.split].push(...(JSON.parse(readFileSync(join(FIXTURE_DIR, fixture.file), 'utf8')) as { cases: EvalCase[] }).cases);
+    // External fixtures carry case ids and prompt hashes instead of their text.
+    for (const fixture of manifest.fixtures) {
+      cases[fixture.split].push(...(fixture.external?.cases ?? (JSON.parse(readFileSync(join(FIXTURE_DIR, fixture.file), 'utf8')) as { cases: EvalCase[] }).cases));
     }
     expect(cases.dev.length).toBeGreaterThan(0);
     expect(cases.test.length).toBeGreaterThan(0);
+    expect(manifest.fixtures.filter((fixture) => fixture.external).every((fixture) => fixture.external!.cases.length > 0)).toBe(true);
     expect(findSplitOverlaps(cases)).toEqual([]);
   });
 });

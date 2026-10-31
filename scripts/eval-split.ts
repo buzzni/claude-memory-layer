@@ -12,10 +12,11 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export type EvalSplit = 'dev' | 'test';
-export interface EvalCase { id: string; query: string }
+/** A case by its prompt text, or by the prompt hash when the text stays outside this repository. */
+export type EvalCase = { id: string; query: string } | { id: string; promptHash: string };
 export interface SplitManifest {
   version: 1;
-  fixtures: Array<{ file: string; sha256: string; split: EvalSplit; external?: boolean; basis: string }>;
+  fixtures: Array<{ file: string; sha256: string; split: EvalSplit; external?: { cases: Array<{ id: string; promptHash: string }> }; basis: string }>;
 }
 
 const MANIFEST_PATH = fileURLToPath(new URL('../benchmarks/lesson-recall/splits.json', import.meta.url));
@@ -32,11 +33,12 @@ export function promptHash(text: string): string {
 
 /** Ids of cases that sit in both splits, matched by case id or by normalized prompt. */
 export function findSplitOverlaps(cases: Record<EvalSplit, readonly EvalCase[]>): string[] {
+  const hashOf = (item: EvalCase) => ('promptHash' in item ? item.promptHash : promptHash(item.query));
   const devIds = new Set(cases.dev.map((item) => item.id));
-  const devByPrompt = new Map(cases.dev.map((item) => [promptHash(item.query), item.id]));
+  const devByPrompt = new Map(cases.dev.map((item) => [hashOf(item), item.id]));
   const overlapping = new Set<string>();
   for (const item of cases.test) {
-    const devTwin = devByPrompt.get(promptHash(item.query));
+    const devTwin = devByPrompt.get(hashOf(item));
     if (devIds.has(item.id)) overlapping.add(item.id);
     if (devTwin !== undefined) { overlapping.add(devTwin); overlapping.add(item.id); }
   }
