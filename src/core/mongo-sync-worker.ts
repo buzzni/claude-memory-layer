@@ -113,6 +113,9 @@ function localizePulledMetadata(
   return metadata;
 }
 
+/** How far before the previous pull a late insert below the cursor is still picked up (concurrent pushers, clock skew). */
+const LATE_INSERT_WINDOW_MS = 30 * 60 * 1000;
+
 function parseIntOrZero(value: string | null | undefined): number {
   if (!value) return 0;
   const n = parseInt(value, 10);
@@ -268,6 +271,7 @@ export class MongoSyncWorker {
       await this.events.createIndex({ projectKey: 1, seq: 1 }, { unique: true });
       await this.events.createIndex({ projectKey: 1, eventId: 1 }, { unique: true });
       await this.events.createIndex({ projectKey: 1, dedupeKey: 1 });
+      await this.events.createIndex({ projectKey: 1, insertedAt: 1 });
     } catch (err) {
       console.warn('[MongoSyncWorker] Failed to ensure indexes (continuing):', err);
     }
@@ -370,13 +374,36 @@ export class MongoSyncWorker {
     return pushed;
   }
 
+  /**
+   * A pusher reserves its seq range before it inserts, so a document can appear below a cursor that another machine's
+   * faster insert already moved past. Each pull therefore re-reads what was inserted shortly before the previous pull
+   * started — import skips the events it already has — and then reads past the cursor as before. The window also
+   * absorbs clock differences between machines (insertedAt is the pusher's clock).
+   */
   private async pullEvents(): Promise<number> {
     if (!this.events) throw new Error('Mongo not connected');
 
     const position = await this.sqliteStore.getSyncPosition(this.pullTargetName());
     let lastSeq = parseIntOrZero(position.lastEventId);
+    const startedAt = new Date();
+    const previousPullAt = position.lastTimestamp ? new Date(position.lastTimestamp) : null;
 
     let pulled = 0;
+
+    if (lastSeq > 0 && previousPullAt && !Number.isNaN(previousPullAt.getTime())) {
+      const since = new Date(previousPullAt.getTime() - LATE_INSERT_WINDOW_MS);
+      let afterSeq = 0;
+      while (true) {
+        const docs = await this.events.find(
+          { projectKey: this.config.projectKey, seq: { $gt: afterSeq, $lte: lastSeq }, insertedAt: { $gte: since } },
+          { sort: { seq: 1 }, limit: this.config.batchSize }
+        ).toArray();
+        if (docs.length === 0) break;
+        pulled += await this.importPulled(docs);
+        afterSeq = docs[docs.length - 1].seq;
+        if (docs.length < this.config.batchSize) break;
+      }
+    }
 
     while (true) {
       const docs = await this.events.find(
@@ -386,30 +413,30 @@ export class MongoSyncWorker {
 
       if (docs.length === 0) break;
 
-      const events: MemoryEvent[] = docs.map((d) => ({
-        id: d.eventId,
-        eventType: d.eventType as any,
-        sessionId: d.sessionId,
-        timestamp: d.timestamp instanceof Date ? d.timestamp : new Date(d.timestamp),
-        content: d.content,
-        canonicalKey: d.canonicalKey,
-        dedupeKey: d.dedupeKey,
-        metadata: this.config.localProject ? localizePulledMetadata(d, this.config.localProject) : d.metadata ?? undefined
-      }));
-
-      const result = await this.sqliteStore.importEvents(events);
-      pulled += result.inserted;
+      pulled += await this.importPulled(docs);
 
       lastSeq = docs[docs.length - 1].seq;
-      await this.sqliteStore.updateSyncPosition(
-        this.pullTargetName(),
-        String(lastSeq),
-        new Date().toISOString()
-      );
+      await this.sqliteStore.updateSyncPosition(this.pullTargetName(), String(lastSeq), startedAt.toISOString());
 
       if (docs.length < this.config.batchSize) break;
     }
 
+    // The next pull's re-read window starts from this pull, even when it found nothing new.
+    await this.sqliteStore.updateSyncPosition(this.pullTargetName(), String(lastSeq), startedAt.toISOString());
     return pulled;
+  }
+
+  private async importPulled(docs: RemoteEventDoc[]): Promise<number> {
+    const events: MemoryEvent[] = docs.map((d) => ({
+      id: d.eventId,
+      eventType: d.eventType as any,
+      sessionId: d.sessionId,
+      timestamp: d.timestamp instanceof Date ? d.timestamp : new Date(d.timestamp),
+      content: d.content,
+      canonicalKey: d.canonicalKey,
+      dedupeKey: d.dedupeKey,
+      metadata: this.config.localProject ? localizePulledMetadata(d, this.config.localProject) : d.metadata ?? undefined
+    }));
+    return (await this.sqliteStore.importEvents(events)).inserted;
   }
 }
