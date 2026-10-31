@@ -98,7 +98,7 @@ describe('Retriever strategy/scope', () => {
   it('returns no memories for command-artifact queries instead of semantic false positives', async () => {
     const retriever = new Retriever(fakeEventStore as any, fakeVectorStore as any, fakeEmbedder as any, new Matcher());
 
-    const out = await retriever.retrieve('local-command-stdout command-name opus', {
+    const out = await retriever.retrieve('<command-name>/model</command-name>\n<local-command-stdout>opus</local-command-stdout>', {
       strategy: 'deep',
       topK: 5,
       minScore: 0.1,
@@ -107,6 +107,18 @@ describe('Retriever strategy/scope', () => {
 
     expect(out.memories).toEqual([]);
     expect(out.fallbackTrace).toContain('guard:command-artifact-query');
+  });
+
+  it('keeps retrieving for queries that mention a command-artifact tag mid-body', async () => {
+    const retriever = new Retriever(fakeEventStore as any, fakeVectorStore as any, fakeEmbedder as any, new Matcher());
+
+    const out = await retriever.retrieve('아침 브리핑 선호를 기억하는지, command-name 태그 얘기와 별개로 알려줘', {
+      strategy: 'fast',
+      topK: 2,
+      includeSessionContext: false
+    });
+
+    expect(out.fallbackTrace).not.toContain('guard:command-artifact-query');
   });
 
   it('filters technical identifier queries when candidates have no exact technical overlap', async () => {

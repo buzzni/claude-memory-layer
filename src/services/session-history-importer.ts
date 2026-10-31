@@ -15,7 +15,7 @@ import { MemoryService } from './memory-service.js';
 import { registerTerminalSession } from '../core/registry/session-registry.js';
 import { mergeAgentResponseBlocks, truncateAgentResponse } from './turn-buffering.js';
 import { planPromptStorage, promptClassifierMetadata } from '../core/prompt-normalizer.js';
-import { isClaudeLocalCommandArtifact } from '../core/harness-boilerplate.js';
+import { isHarnessBoilerplate } from '../core/harness-boilerplate.js';
 import type { TurnTrigger } from '../core/turn-state.js';
 
 export type ProgressEvent =
@@ -72,7 +72,7 @@ export interface ClaudeMessage {
  */
 export function isWorthStoringPrompt(content: string): boolean {
   const trimmed = content.trim();
-  if (isClaudeLocalCommandArtifact(trimmed)) return false;
+  if (isHarnessBoilerplate(trimmed)) return false;
   if (trimmed.startsWith('/')) return false;
   if (trimmed.length < 15) return false;
   if (!/[a-zA-Z가-힣]{2,}/.test(trimmed)) return false;

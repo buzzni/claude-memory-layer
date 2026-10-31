@@ -6,7 +6,7 @@
  * only filter candidate retrieval results before context assembly.
  */
 
-import { containsCommandArtifact } from './harness-boilerplate.js';
+import { isHarnessBoilerplate } from './harness-boilerplate.js';
 
 const LOW_SIGNAL_CONTEXT_PATTERNS = [
   /<environment_context\b[\s\S]*<\/environment_context>/i,
@@ -181,11 +181,11 @@ const LOW_INFORMATION_QUERY_TERMS = new Set([
 ]);
 
 export function isCommandArtifactQuery(query: string): boolean {
-  return containsCommandArtifact(query);
+  return isHarnessBoilerplate(query);
 }
 
 export function isCommandArtifactContent(content: string): boolean {
-  return containsCommandArtifact(content);
+  return isHarnessBoilerplate(content);
 }
 
 export function isLowSignalContextContent(content: string): boolean {
