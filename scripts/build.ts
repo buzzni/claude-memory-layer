@@ -79,6 +79,7 @@ async function build() {
     'post-tool-use',
     'stop',
     'session-end',
+    'session-end-worker',
     'codex-session-start',
     'codex-user-prompt-submit',
     'codex-session-end',

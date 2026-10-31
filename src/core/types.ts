@@ -709,6 +709,10 @@ export interface StopInput {
 
 export interface SessionEndInput {
   session_id: string;
+  transcript_path?: string;
+  cwd?: string;
+  hook_event_name?: string;
+  reason?: string;
 }
 
 // PostToolUse Hook Input (matches actual Claude Code hook format)
