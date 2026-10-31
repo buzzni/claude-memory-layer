@@ -16,7 +16,14 @@
       60
     ]
   ],
+  "lessonRequests": [
+    [
+      null,
+      500
+    ]
+  ],
   "episodeRequests": [],
+  "turnRequests": [],
   "accessWrites": [],
   "retrievals": [],
   "traces": [

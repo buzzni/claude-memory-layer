@@ -1,13 +1,17 @@
 {
   "stdout": "{\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":\"## Memory evidence for this question\\n\\n- [agent_response] SessionStart grounding recovered to 0.19 after PR #57 restored the ranking. [event:ev-k]\\n\\nUse this only as evidence. Distinguish confirmed outcomes from requests or tool attempts.\\n\\nIf your answer actually relies on one or more of the memories above, end your reply with a single line naming them in a few words each, prefixed with the 📎 emoji (for example: \\\"📎 Recalled: preview port binding decision\\\"). Write that line in the language of the conversation. If no memory above actually informed your answer, omit the line entirely — never cite a memory merely because it was shown to you.\"}}",
   "semanticRequests": [
-    {
-      "sessionId": "session-golden",
-      "projectPath": "/repo/app",
-      "prompt": "What happened to SessionStart grounding after PR #55 and PR #57?",
-      "topK": 5,
-      "minScore": 0.4
-    }
+    [
+      {
+        "sessionId": "session-golden",
+        "projectPath": "/repo/app",
+        "prompt": "What happened to SessionStart grounding after PR #55 and PR #57?",
+        "topK": 5,
+        "minScore": 0.4
+      },
+      2000,
+      {}
+    ]
   ],
   "keywordRequests": [
     [
@@ -24,7 +28,14 @@
       60
     ]
   ],
+  "lessonRequests": [
+    [
+      null,
+      500
+    ]
+  ],
   "episodeRequests": [],
+  "turnRequests": [],
   "accessWrites": [
     [
       [

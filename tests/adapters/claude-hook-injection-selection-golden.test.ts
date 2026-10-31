@@ -85,10 +85,12 @@ async function runHook(prompt: string): Promise<unknown> {
   const stdout = await main({ persistPrompt: false, maintenance: false });
   return stable({
     stdout,
-    semanticRequests: daemon.retrieveSemanticMemories.mock.calls.map((call) => call[0]),
+    semanticRequests: daemon.retrieveSemanticMemories.mock.calls,
     keywordRequests: service.keywordSearch.mock.calls,
     graduatedRequests: service.searchGraduatedEvidence.mock.calls,
+    lessonRequests: service.listProjectLessonInjections.mock.calls,
     episodeRequests: service.expandDisclosure.mock.calls,
+    turnRequests: service.getEventsByTurn.mock.calls,
     accessWrites: service.incrementMemoryAccess.mock.calls,
     retrievals: service.recordRetrieval.mock.calls,
     traces: service.recordQueryTrace.mock.calls
