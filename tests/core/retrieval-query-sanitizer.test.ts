@@ -144,6 +144,12 @@ describe('sanitizeRetrievalQuery', () => {
     expect(sanitizeRetrievalQuery(query).query).toBe('#119 는 왜 아직 열려 있나요?');
   });
 
+  it('keeps an identifier that is only a prefix of one the sentence contains', () => {
+    const query = `#12 메모\n${logLines(8)}\n#122 는 왜 아직 열려 있나요?`;
+
+    expect(sanitizeRetrievalQuery(query).query).toBe('#122 는 왜 아직 열려 있나요? #12');
+  });
+
   it('does not treat plain hex-free words or bare numbers as commit SHAs', () => {
     const query = `facade 1234567 deadline 메모\n${logLines(8)}\n마감 시각은 어디서 정하나요?`;
 

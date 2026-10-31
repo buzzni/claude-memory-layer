@@ -11,7 +11,8 @@
  *    a Korean question or request ending (`…까`, `…나요`, `…해줘`, `…주세요`).
  *    Korean asks without `?` as often as with it, but a pasted Korean log or
  *    UI message can end the same way, so an explicit `?` wins.
- * 3. tail_sentence: the last sentence of at least 10 chars.
+ * 3. tail_sentence: the last sentence of at least 10 chars that is not a lone
+ *    markup tag (`</task>`).
  * 4. tail_truncation: the last 250 chars.
  *
  * Sentences split only at punctuation followed by whitespace, so paths and
@@ -36,11 +37,11 @@ const SAFE_QUERY_LENGTH = 200;
 const MAX_QUERY_LENGTH = 250;
 const MIN_QUERY_LENGTH = 10;
 const MAX_PRESERVED_IDENTIFIERS = 8;
+const MAX_IDENTIFIER_LENGTH = 200;
 
 const SENTENCE_BOUNDARY = /(?<=[.!?。！？])\s+/;
 const QUESTION_END = /[?？]["'”’)\]]*$/;
 const KOREAN_INTENT_END = /(?:까요?|나요|가요|냐|니|줘요?|주세요|주십시오|부탁(?:해요?|합니다|드립니다|드려요))[.!~…\s]*$/;
-const MAX_IDENTIFIER_LENGTH = 200;
 // Leading brackets/quotes and trailing punctuation or Korean particles
 // (`src/a.ts를`, `#122에서`) are not part of the identifier.
 const IDENTIFIER_EDGES = /^[^\w~@./#]+|[^\w~@-]+$/g;
@@ -70,7 +71,7 @@ export function sanitizeRetrievalQuery(text: string): SanitizedRetrievalQuery {
   if (question) return withIdentifiers(trimmed, question, 'question');
   const koreanIntent = lastMatching(KOREAN_INTENT_END);
   if (koreanIntent) return withIdentifiers(trimmed, koreanIntent, 'korean_intent');
-  const lastSentence = sentences.pop();
+  const lastSentence = sentences.at(-1);
   if (lastSentence) return withIdentifiers(trimmed, lastSentence, 'tail_sentence');
   return withIdentifiers(trimmed, trimmed, 'tail_truncation');
 }
@@ -81,8 +82,9 @@ function withIdentifiers(
   method: RetrievalQuerySanitizeMethod
 ): SanitizedRetrievalQuery {
   const kept = candidate.length > MAX_QUERY_LENGTH ? tail(candidate) : candidate;
+  const present = new Set(identifiers(kept));
   const dropped = [...new Set(identifiers(original))]
-    .filter((identifier) => !kept.includes(identifier))
+    .filter((identifier) => !present.has(identifier))
     .slice(0, MAX_PRESERVED_IDENTIFIERS);
   return { query: [kept, ...dropped].join(' '), method };
 }
