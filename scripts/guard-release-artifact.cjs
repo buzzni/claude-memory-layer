@@ -8,6 +8,7 @@
  * Usage:
  *   node scripts/guard-release-artifact.cjs self-dependency
  *   node scripts/guard-release-artifact.cjs provenance
+ *   node scripts/guard-release-artifact.cjs manifest-versions
  *   node scripts/guard-release-artifact.cjs tarball <npm-pack-dry-run-json>
  *
  * Exits non-zero and prints what failed; prints a JSON summary on success.
@@ -15,6 +16,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { VERSION_MANIFESTS } = require('./sync-manifest-versions.cjs');
 
 const ROOT = path.resolve(__dirname, '..');
 
@@ -91,6 +93,29 @@ function guardProvenance() {
 }
 
 /**
+ * Shipped manifests carry their own version, and nothing kept them in step
+ * with package.json: .claude-plugin/plugin.json sat at 1.0.0 through every
+ * 2.x release. scripts/sync-manifest-versions.cjs rewrites them on
+ * `npm version`; this catches a release where that did not happen.
+ */
+function guardManifestVersions() {
+  const { version } = readPackageJson();
+  const mismatches = VERSION_MANIFESTS.flatMap((manifest) => {
+    const manifestPath = path.join(ROOT, manifest);
+    if (!fs.existsSync(manifestPath)) return [`${manifest} is missing`];
+    const manifestVersion = JSON.parse(fs.readFileSync(manifestPath, 'utf8')).version;
+    return manifestVersion === version
+      ? []
+      : [`${manifest} has version ${JSON.stringify(manifestVersion)}, package.json has ${JSON.stringify(version)}`];
+  });
+  if (mismatches.length) {
+    fail(`manifest versions disagree with package.json (run node scripts/sync-manifest-versions.cjs):\n  ${mismatches.join('\n  ')}`);
+  }
+
+  console.log(JSON.stringify({ check: 'manifest-versions', version, manifests: VERSION_MANIFESTS, ok: true }));
+}
+
+/**
  * Files that must never reach the registry: sources and tests (the package
  * ships `dist/` only), and any local state that a developer machine
  * accumulates — stores, caches, evaluation qrels, stray tarballs.
@@ -129,9 +154,12 @@ switch (command) {
   case 'provenance':
     guardProvenance();
     break;
+  case 'manifest-versions':
+    guardManifestVersions();
+    break;
   case 'tarball':
     guardTarball(rest[0]);
     break;
   default:
-    fail('usage: guard-release-artifact.cjs <self-dependency|tarball> [args]');
+    fail('usage: guard-release-artifact.cjs <self-dependency|provenance|manifest-versions|tarball> [args]');
 }

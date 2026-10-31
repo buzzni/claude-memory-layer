@@ -96,6 +96,11 @@ jobs:
       - name: Guard provenance repository match
         run: node scripts/guard-release-artifact.cjs provenance
 
+      # The tag check above only compares against package.json; this extends it
+      # to the shipped plugin manifest, which npm version does not touch itself.
+      - name: Guard manifest versions
+        run: node scripts/guard-release-artifact.cjs manifest-versions
+
       - name: Audit production dependencies
         run: npm audit --omit=dev
 
