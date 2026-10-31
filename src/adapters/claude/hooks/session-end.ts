@@ -67,8 +67,8 @@ export interface ClaudeSessionEndHookDeps extends SessionEndCapture {
  * take the job.
  */
 async function runSessionEndInline(job: ClaudeSessionEndJob): Promise<void> {
-  const { handleClaudeSessionEnd } = await import('./session-end-worker.js');
-  await handleClaudeSessionEnd(job);
+  const { endClaudeSession } = await import('./session-end-bookkeeping.js');
+  await endClaudeSession(job);
 }
 
 function defaultWorkerPath(): string {
