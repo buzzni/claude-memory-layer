@@ -5,7 +5,7 @@ import { join, relative, resolve } from 'path';
 import { rankCuratedLessons } from '../src/extensions/mcp/lesson-ranking.js';
 import type { MemoryLesson } from '../src/core/types.js';
 import { guardFixtureRead } from './eval-split.js';
-import { buildProvenance, warnProvenance } from './eval-provenance.mjs';
+import { buildProvenance, pathRef, warnProvenance } from './eval-provenance.mjs';
 
 const finalReport = process.argv.includes('--final-report');
 const [fixturePath, cacheDir, mode] = process.argv.slice(2).filter((arg) => arg !== '--final-report');
@@ -34,8 +34,9 @@ transformers.env.allowLocalModels = true;
 const fixture = JSON.parse(readFileSync(fixturePath, 'utf8')) as { lessons: Array<Record<string, unknown>>; cases: Array<{ id: string; query: string; expected: string[]; category: string }> };
 const provenance = buildProvenance({
   fixtures: [fixturePath],
+  // Raw cosine top-3 over every lesson: a catalog of three or fewer is returned whole.
   retrieval: { topK: 3, candidatePool: fixture.lessons.length },
-  flags: { mode, finalReport, cacheDir }
+  flags: { mode, finalReport, cacheDir: pathRef(cacheDir) }
 });
 warnProvenance(provenance);
 const text = (lesson: Record<string, unknown>) => [lesson.name, lesson.trigger, ...(lesson.steps as string[]), ...(lesson.failureModes as string[])].filter(Boolean).join('\n');

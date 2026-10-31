@@ -168,7 +168,16 @@ function main() {
   const rowsAtStart = snapshotStores();
   const totals = collect(windows);
   const provenance = buildProvenance({
-    store: { rowsAtStart, rowsAtEnd: snapshotStores(), window: windows.map(({ from, to }) => ({ from, to })) },
+    store: {
+      rowsAtStart,
+      rowsAtEnd: snapshotStores(),
+      // Scored rows each window read, summed over every source.
+      inputRows: Object.fromEntries(windows.map(({ label }) => [
+        label,
+        [...totals.values()].reduce((sum, perWindow) => sum + (perWindow.get(label)?.scored ?? 0), 0)
+      ])),
+      window: windows.map(({ from, to }) => ({ from, to }))
+    },
     flags: { windows: options.windows, since: options.since, baseline: options.baseline }
   });
   console.log(`${formatProvenanceLines(provenance).join('\n')}\n`);

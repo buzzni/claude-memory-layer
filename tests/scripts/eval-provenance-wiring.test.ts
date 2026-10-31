@@ -83,7 +83,10 @@ describe('replay-hook-grounding provenance', () => {
     expect(report.provenance.store).toMatchObject({ inputRows: 8, corpusChanged: false });
     expect(report.provenance.store.rowsAtStart).toEqual(report.provenance.store.rowsAtEnd);
     expect(report.provenance.store.window.from <= report.provenance.store.window.to).toBe(true);
-    expect(report.provenance.flags).toEqual({ semantic: 'off' });
+    expect(Object.keys(report.provenance.store.rowsAtStart)).toEqual(['events', 'retrieval_traces', 'memory_lessons']);
+    const projectHash = JSON.parse(readFileSync(fixture, 'utf8')).projectHash;
+    expect(report.provenance.flags).toEqual({ semantic: 'off', projectHash: sha256(Buffer.from(projectHash)).slice(0, 16) });
+    expect(JSON.stringify(report.provenance)).not.toContain(projectHash);
     expectNoPaths(JSON.stringify(report.provenance), tmpdir());
   });
 });
@@ -101,7 +104,7 @@ describe('measure-injection-grounding provenance', () => {
     const header = result.stdout.split('\n\n')[0];
 
     expect(header).toMatch(/^- Provenance: git [0-9a-f]{12}/);
-    expect(header).toContain('- Store rows: start {"stores":1,"memory_helpfulness":2,"scored":1}, end {"stores":1,"memory_helpfulness":2,"scored":1}');
+    expect(header).toContain('- Store rows: start {"stores":1,"memory_helpfulness":2,"scored":1}, end {"stores":1,"memory_helpfulness":2,"scored":1}, input rows {"before 2026-09-01":0,"since 2026-09-01":1}');
     expect(header).not.toContain('corpus changed');
     expect(result.stdout).toContain('session_start');
     expectNoPaths(header, root, 'abc123');

@@ -113,6 +113,11 @@ describe('path exposure', () => {
     expect(provenance.flags.cwdRelative).toBe('out/report.json');
   });
 
+  it('resolves a relative store location before deciding it is inside the repository', () => {
+    const provenance = buildProvenance({ store: { ref: '../private-copy/events.sqlite', rowsAtStart: {}, rowsAtEnd: {} } });
+    expect(provenance.store.ref).toMatch(/^outside-repo:[0-9a-f]{16}$/);
+  });
+
   it('sanitizes settings recursively', () => {
     expect(sanitizeSettings({ a: { b: ['/abs/path', 'plain'] }, n: 1, off: undefined })).toEqual({
       a: { b: [expect.stringMatching(/^outside-repo:/), 'plain'] },
@@ -189,5 +194,10 @@ describe('markdown header', () => {
     expect(withHeader.endsWith('\n- Existing: 1\n')).toBe(true);
     expect(withHeader).toContain('corpus changed');
     expect(withHeader).toContain('saturated');
+  });
+
+  it('prints per-window input row counts', () => {
+    const provenance = buildProvenance({ store: { rowsAtStart: {}, rowsAtEnd: {}, inputRows: { 'all time': 4 } } });
+    expect(formatProvenanceLines(provenance).join('\n')).toContain('input rows {"all time":4}');
   });
 });

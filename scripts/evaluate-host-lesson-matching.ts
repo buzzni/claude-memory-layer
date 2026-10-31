@@ -538,8 +538,8 @@ async function main(): Promise<void> {
   const provenance = buildProvenance({
     fixtures: [labelsPath, arg('canonical-map'), arg('catalog-overlay')].filter((file): file is string => Boolean(file)),
     store: { ref: store, rowsAtStart, rowsAtEnd: countRows(db, storeTables), inputRows: rows.length, window: { since, until, splitAt } },
-    // The pool a prompt sees is the catalog up to its timestamp, so the catalog size is its upper bound.
-    retrieval: { topK, candidatePool: lessons.length },
+    // A prompt only sees lessons created before it, so the smallest pool among scored prompts decides saturation.
+    retrieval: { topK, candidatePool: Math.min(lessons.length, ...[...rowsBySplit.calibration, ...rowsBySplit.heldout].map((row) => available(row.prompt).length)) },
     flags: { topK, hubShare }
   });
   warnProvenance(provenance);

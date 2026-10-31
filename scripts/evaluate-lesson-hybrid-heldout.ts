@@ -54,7 +54,8 @@ async function main(): Promise<void> {
   await warmHybridLessonCache(lessons, embedder);
   const hybrid = await measure(async (query) => rankCuratedLessonsHybrid(lessons, query, 3, embedder));
   const gate = lessonRecallGate(hybrid);
-  const provenance = buildProvenance({ fixtures: [fixturePath], retrieval: { topK: 3, candidatePool: lessons.length }, flags: { finalReport, cacheDir } });
+  // No saturation check: hybrid selection is gated, so top-3 never returns the whole catalog by default.
+  const provenance = buildProvenance({ fixtures: [fixturePath], flags: { finalReport, cacheDir } });
   warnProvenance(provenance);
   const result = { gate, gateScope: 'ranking-only; installed-runtime, scope-safety and cold-turn gates remain separate', fixture: resolve(fixturePath), cacheDir, remoteModels: false, status: hybridLessonStatus(), lexical, hybrid, note: 'Common-function evaluation; Gate is frozen from independent calibration-v3 only and not tuned here.', provenance };
   mkdirSync(dirname(outputPath), { recursive: true }); writeFileSync(outputPath, `${JSON.stringify(result, null, 2)}\n`); process.stdout.write(`${JSON.stringify(result)}\n`);

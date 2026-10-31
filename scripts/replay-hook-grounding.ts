@@ -22,7 +22,7 @@ import {
   type HookGroundingReplayOptions,
   type HookReplayFixture
 } from '../src/adapters/claude/hooks/hook-grounding-replay.js';
-import { buildProvenance, countRows, warnProvenance, withProvenanceHeader } from './eval-provenance.mjs';
+import { buildProvenance, countRows, shortHash, warnProvenance, withProvenanceHeader } from './eval-provenance.mjs';
 
 interface ParsedArgs {
   fixturePath?: string;
@@ -76,7 +76,7 @@ function parseArgs(argv: string[]): ParsedArgs {
 }
 
 /** Tables the replay reads; their row counts are compared before and after the run. */
-const STORE_TABLES = ['events', 'retrieval_traces'];
+const STORE_TABLES = ['events', 'retrieval_traces', 'memory_lessons'];
 
 function readStore<T>(storagePath: string, read: (db: Database.Database) => T): T {
   const db = new Database(path.join(storagePath, 'events.sqlite'), { readonly: true, fileMustExist: true });
@@ -111,15 +111,17 @@ async function main(): Promise<void> {
   const env = { ...process.env };
   let run: Awaited<ReturnType<typeof replayWithSnapshots>>;
   let semantic: 'retriever' | 'off';
+  let projectHash: string;
   if (args.fixturePath) {
     const fixture = JSON.parse(readFileSync(args.fixturePath, 'utf8')) as HookReplayFixture;
     const storagePath = mkdtempSync(path.join(tmpdir(), 'cml-hook-replay-'));
     semantic = args.semantic ?? 'off';
     try {
       await buildFixtureStore(fixture, storagePath);
+      projectHash = fixture.projectHash;
       run = await replayWithSnapshots({
         storagePath,
-        projectHash: fixture.projectHash,
+        projectHash,
         semantic,
         limit: args.limit,
         storeLabel: fixture.name
@@ -133,9 +135,10 @@ async function main(): Promise<void> {
       throw new CliError(`no events.sqlite in ${storagePath}`);
     }
     semantic = args.semantic ?? (existsSync(path.join(storagePath, 'vectors')) ? 'retriever' : 'off');
+    projectHash = args.projectHash ?? path.basename(storagePath);
     run = await replayWithSnapshots({
       storagePath,
-      projectHash: args.projectHash ?? path.basename(storagePath),
+      projectHash,
       semantic,
       limit: args.limit,
       storeLabel: args.label
@@ -145,7 +148,8 @@ async function main(): Promise<void> {
   const provenance = buildProvenance({
     fixtures: args.fixturePath ? [args.fixturePath] : [],
     store: run.store,
-    flags: { semantic, limit: args.limit },
+    // Hashed like the report title avoids it: the scope is comparable, the project is not named.
+    flags: { semantic, limit: args.limit, projectHash: shortHash(projectHash) },
     env
   });
   warnProvenance(provenance);

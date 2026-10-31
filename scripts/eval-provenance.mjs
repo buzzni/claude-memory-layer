@@ -23,6 +23,9 @@ const CREDENTIAL_ENV = /(PASSWORD|SECRET|TOKEN|KEY|URI|URL)$/;
 
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 
+/** 16-hex digest for identifiers that should be comparable across runs but not readable. */
+export const shortHash = (value) => sha256(value).slice(0, 16);
+
 function git(args) {
   try {
     return execFileSync('git', args, { cwd: REPO_ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
@@ -37,12 +40,12 @@ export function pathRef(value) {
   const absolute = path.resolve(expanded);
   const relative = path.relative(REPO_ROOT, absolute);
   if (relative && !relative.startsWith('..') && !path.isAbsolute(relative)) return relative.split(path.sep).join('/');
-  return `outside-repo:${sha256(absolute).slice(0, 16)}`;
+  return `outside-repo:${shortHash(absolute)}`;
 }
 
 function sanitizeString(value) {
   if (path.isAbsolute(value) || value === '~' || value.startsWith('~/')) return pathRef(value);
-  if (value.includes(homedir()) || value.includes(REPO_ROOT)) return `redacted:${sha256(value).slice(0, 16)}`;
+  if (value.includes(homedir()) || value.includes(REPO_ROOT)) return `redacted:${shortHash(value)}`;
   return value;
 }
 
@@ -106,7 +109,7 @@ export function topKSaturation(topK, candidatePool) {
  * @param {{
  *   generatedAt?: string,
  *   fixtures?: string[],
- *   store?: { ref?: string, rowsAtStart: Record<string, number | null>, rowsAtEnd: Record<string, number | null>, inputRows?: number, window?: Record<string, unknown> },
+ *   store?: { ref?: string, rowsAtStart: Record<string, number | null>, rowsAtEnd: Record<string, number | null>, inputRows?: number | Record<string, number>, window?: unknown },
  *   retrieval?: { topK: number, candidatePool: number },
  *   flags?: Record<string, unknown>,
  *   env?: Record<string, string | undefined>
@@ -128,7 +131,9 @@ export function buildProvenance(input = {}) {
   };
   if (input.store) {
     const changed = corpusChanged(input.store.rowsAtStart, input.store.rowsAtEnd);
-    provenance.store = { ...sanitizeSettings(input.store), corpusChanged: changed };
+    const { ref, ...store } = input.store;
+    // ref may be relative to the caller's cwd, so it always goes through pathRef.
+    provenance.store = { ...(ref ? { ref: pathRef(ref) } : {}), ...sanitizeSettings(store), corpusChanged: changed };
     if (changed) {
       warnings.push(`store corpus changed during the run (rows ${JSON.stringify(input.store.rowsAtStart)} -> ${JSON.stringify(input.store.rowsAtEnd)}); the result may mix two store states`);
     }
@@ -161,7 +166,7 @@ export function formatProvenanceLines(provenance) {
   }
   if (provenance.store) {
     const { rowsAtStart, rowsAtEnd, inputRows, window } = provenance.store;
-    const input = inputRows === undefined ? '' : `, input rows ${inputRows}`;
+    const input = inputRows === undefined ? '' : `, input rows ${typeof inputRows === 'object' ? JSON.stringify(inputRows) : inputRows}`;
     const span = window ? `, window ${JSON.stringify(window)}` : '';
     const changed = provenance.store.corpusChanged ? ' — corpus changed during the run' : '';
     lines.push(`- Store rows: start ${JSON.stringify(rowsAtStart)}, end ${JSON.stringify(rowsAtEnd)}${input}${span}${changed}`);
