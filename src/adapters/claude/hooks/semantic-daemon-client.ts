@@ -15,7 +15,7 @@ interface SemanticRequest {
   minScore: number;
 }
 
-interface SemanticMemory {
+export interface SemanticMemory {
   type: string;
   content: string;
   id?: string;

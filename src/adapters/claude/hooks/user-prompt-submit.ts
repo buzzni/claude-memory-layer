@@ -20,7 +20,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { getLightweightMemoryServiceForProject } from '../../../services/memory-service.js';
 import { writeTurnState, readLastAssistantSnippet } from '../../../core/turn-state.js';
-import { retrieveSemanticMemories, scheduleSemanticGraduation } from './semantic-daemon-client.js';
+import { retrieveSemanticMemories, scheduleSemanticGraduation, type SemanticMemory } from './semantic-daemon-client.js';
 import { readStdin, readNumberEnv } from './hook-runtime.js';
 import { reportRecallDiagnostic } from './recall-diagnostics.js';
 import {
@@ -203,7 +203,7 @@ export interface UserPromptSubmitMainOptions {
 }
 
 async function expandEpisodeEvidence(
-  memoryService: ReturnType<typeof getLightweightMemoryServiceForProject>,
+  memoryService: Pick<HookSelectionMemoryService, 'expandDisclosure' | 'getEventsByTurn'>,
   seeds: HookMemoryCandidate[]
 ): Promise<HookMemoryCandidate[]> {
   const expanded: HookMemoryCandidate[] = [];
@@ -510,6 +510,258 @@ export function buildHookOutcomeDiagnostics(counts: HookRetrievalLaneCounts): Re
   };
 }
 
+export type HookSelectionMemoryService = Pick<
+  ReturnType<typeof getLightweightMemoryServiceForProject>,
+  'searchGraduatedEvidence' | 'listProjectLessonInjections' | 'keywordSearch' | 'expandDisclosure' | 'getEventsByTurn'
+>;
+
+export interface HookSelectionDeps {
+  memoryService: HookSelectionMemoryService;
+  /** Semantic lane; main() routes it through the daemon, the replay through an in-process retriever. */
+  retrieveSemantic: (request: { prompt: string; topK: number; minScore: number }) => Promise<SemanticMemory[]>;
+}
+
+export interface HookSelectionInput {
+  prompt: string;
+  retrievalQuery: string;
+  actorId?: string;
+}
+
+export interface HookSelection {
+  minScore: number;
+  mergedMemories: HookMemoryCandidate[];
+  injectableMemories: HookMemoryCandidate[];
+  semanticCandidateCount: number;
+  keywordCandidateCount: number;
+  graduatedCandidateCount: number;
+  lessonCandidateCount: number;
+  thresholdFilteredCount: number;
+}
+
+/**
+ * Lane collection, merge, episode expansion, and injection selection for one
+ * prompt. main() and the hook-path grounding replay share it, so the replay
+ * measures exactly what the hook injects (#119).
+ */
+export async function selectHookInjection(
+  deps: HookSelectionDeps,
+  input: HookSelectionInput
+): Promise<HookSelection> {
+  const { prompt, retrievalQuery } = input;
+  const minScore = getDynamicMinScore(prompt);
+  let mergedMemories: HookMemoryCandidate[] = [];
+  const episodeSeedCandidates: HookMemoryCandidate[] = [];
+  // Lane counters feed the honest outcome reason for an empty selection
+  // instead of the old runtime_error default (specs R2).
+  let semanticCandidateCount = 0;
+  let keywordCandidateCount = 0;
+  let graduatedCandidateCount = 0;
+  let lessonCandidateCount = 0;
+  let thresholdFilteredCount = 0;
+
+  const canUseSemantic = RETRIEVAL_MODE === 'semantic' || RETRIEVAL_MODE === 'hybrid';
+  if (canUseSemantic) {
+    try {
+      const semanticMemories = await deps.retrieveSemantic({
+        prompt: retrievalQuery,
+        topK: MAX_MEMORIES,
+        minScore
+      });
+      mergedMemories = semanticMemories.map((memory) => ({
+        ...memory,
+        source: 'semantic' as const
+      })).filter((memory) => !isExcludedEvaluationSession(memory.sessionId));
+      semanticCandidateCount = mergedMemories.length;
+    } catch {
+      // Semantic retrieval is best-effort; fallback below handles the rest
+    }
+  }
+
+  // Promotion is useful only if it changes recall. Add a bounded L1+
+  // answer lane, but score by lexical/entity coverage before applying the
+  // small level/access prior. Prompts and tool output never enter this lane.
+  const graduated = await deps.memoryService.searchGraduatedEvidence(
+    retrievalQuery,
+    Math.max(50, MAX_CANDIDATES * 4)
+  );
+  const graduatedRanks = graduated.map((result) => result.rank);
+  const bestGraduatedRank = graduatedRanks.length > 0 ? Math.min(...graduatedRanks) : 0;
+  const worstGraduatedRank = graduatedRanks.length > 0 ? Math.max(...graduatedRanks) : 0;
+  const graduatedRankRange = worstGraduatedRank - bestGraduatedRank || 1;
+  const existingGraduatedById = new Map(
+    mergedMemories
+      .map((memory, index) => [memory.id, index] as const)
+      .filter((entry): entry is [string, number] => Boolean(entry[0]))
+  );
+  const scoredGraduated = graduated
+    .map((result) => {
+      const candidate: HookMemoryCandidate = {
+        type: result.event.eventType,
+        content: result.event.content,
+        id: result.event.id,
+        sessionId: result.event.sessionId,
+        source: 'graduated',
+        memoryLevel: result.level,
+        accessCount: result.accessCount,
+        retrievalRankScore: (worstGraduatedRank - result.rank) / graduatedRankRange
+      };
+      return { candidate, score: scoreGraduatedEvidence(retrievalQuery, candidate) };
+    })
+    .filter((item): item is { candidate: HookMemoryCandidate; score: number } => item.score !== null)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, MAX_CANDIDATES);
+  graduatedCandidateCount = scoredGraduated.length;
+  for (const { candidate, score } of scoredGraduated) {
+    const existingIndex = candidate.id ? existingGraduatedById.get(candidate.id) : undefined;
+    if (existingIndex !== undefined) {
+      // A raw vector score and a graduated lexical score are not on the
+      // same calibration scale. Once an event is L1+, use the stricter
+      // graduated score so a broad semantic hit cannot hide exact evidence.
+      mergedMemories[existingIndex] = { ...mergedMemories[existingIndex], ...candidate, score };
+      continue;
+    }
+    if (mergedMemories.length >= MAX_CANDIDATES) continue;
+    mergedMemories.push({ ...candidate, score });
+    if (candidate.id) existingGraduatedById.set(candidate.id, mergedMemories.length - 1);
+  }
+
+  // Curated lesson lane. Lessons are not events, so no other lane can ever
+  // surface them; without this the lesson feature is write-only.
+  if (shouldNativeInjectLessons()) { try {
+    const lessons = await deps.memoryService.listProjectLessonInjections(
+      resolveCanonicalMemoryActorId(input.actorId),
+      LESSON_SCAN_LIMIT
+    );
+    for (const { value: lesson, injectionMode } of lessons) {
+      const injectedLesson = lessonForInjection(lesson, injectionMode);
+      const candidate = scoreLessonEvidence(retrievalQuery, {
+        lessonId: String(injectedLesson.lessonId ?? ''),
+        name: String(injectedLesson.name ?? ''),
+        trigger: injectedLesson.trigger ? String(injectedLesson.trigger) : undefined,
+        steps: Array.isArray(injectedLesson.steps) ? injectedLesson.steps.map(String) : [],
+        failureModes: Array.isArray(injectedLesson.failureModes) ? injectedLesson.failureModes.map(String) : [],
+        scope: injectedLesson.scope,
+        validation: injectedLesson.validation,
+        reconsiderWhen: injectedLesson.reconsiderWhen,
+        validVersions: injectedLesson.validVersions,
+        confidence: Number(injectedLesson.confidence ?? 0)
+      });
+      if (candidate) {
+        mergedMemories.push(candidate);
+        lessonCandidateCount += 1;
+      }
+    }
+  } catch { /* lesson lane is supplementary */ } }
+
+  const shouldUseKeywordFallback =
+    RETRIEVAL_MODE === 'keyword' ||
+    RETRIEVAL_MODE === 'hybrid' ||
+    mergedMemories.length === 0;
+
+  if (shouldUseKeywordFallback) {
+    let usedFallbackFloor = false;
+    const allKeywordResults = await deps.memoryService.keywordSearch(retrievalQuery, {
+      topK: MAX_EPISODE_SEED_CANDIDATES,
+      // Episode seeding intentionally accepts tool_observation matches:
+      // a tool call from the same turn is often the strongest anchor for
+      // finding that turn's answer (selectHookEpisodeSeeds handles the
+      // type-aware ranking). This opt-in preserves that behavior now that
+      // keywordSearch excludes tool_observation by default.
+      includeToolObservations: true
+    });
+    keywordCandidateCount = allKeywordResults.length;
+    let results = allKeywordResults.filter((result) => result.score >= minScore);
+    thresholdFilteredCount = allKeywordResults.length - results.length;
+
+    // recall rescue: if nothing found at tuned threshold, retry with fallback floor
+    if (results.length === 0 && FALLBACK_MIN_SCORE < minScore) {
+      usedFallbackFloor = true;
+      results = allKeywordResults.filter((result) => result.score >= FALLBACK_MIN_SCORE);
+      thresholdFilteredCount = allKeywordResults.length - results.length;
+    }
+
+    for (const result of allKeywordResults) {
+      episodeSeedCandidates.push({
+        type: result.event.eventType,
+        content: result.event.content,
+        id: result.event.id,
+        sessionId: result.event.sessionId,
+        score: result.score,
+        source: 'keyword',
+        fallback: result.score < minScore
+      });
+    }
+
+    const existingById = new Map(
+      mergedMemories
+        .map((memory, index) => [memory.id, index] as const)
+        .filter((entry): entry is [string, number] => Boolean(entry[0]))
+    );
+    for (const r of results) {
+      const keywordCandidate: HookMemoryCandidate = {
+        type: r.event.eventType,
+        content: r.event.content,
+        id: r.event.id,
+        sessionId: r.event.sessionId,
+        score: r.score,
+        source: 'keyword',
+        fallback: usedFallbackFloor
+      };
+      const existingIndex = existingById.get(r.event.id);
+      if (existingIndex !== undefined) {
+        const existing = mergedMemories[existingIndex];
+        // Semantic and FTS scores have different calibration. An exact
+        // keyword prompt must not keep a weaker semantic score merely
+        // because it entered the merged list first; that suppresses the
+        // same-turn episode bridge for otherwise exact recall queries.
+        if ((existing?.score ?? 0) < r.score) {
+          mergedMemories[existingIndex] = {
+            ...existing,
+            score: r.score,
+            source: 'keyword',
+            fallback: usedFallbackFloor
+          };
+        }
+        continue;
+      }
+      mergedMemories.push(keywordCandidate);
+      existingById.set(r.event.id, mergedMemories.length - 1);
+      // Keep a bounded second lane instead of letting semantic/graduated
+      // candidates fill the entire pool before exact FTS prompts arrive.
+      if (mergedMemories.length >= MAX_CANDIDATES * 2) break;
+    }
+  }
+
+  const injectionPolicy = getHookInjectionPolicy();
+  const episodeSeedPool = Array.from(new Map(
+    [...mergedMemories, ...episodeSeedCandidates]
+      .filter((candidate): candidate is HookMemoryCandidate & { id: string } => Boolean(candidate.id))
+      .map((candidate) => [candidate.id, candidate])
+  ).values());
+  const episodeSeeds = selectHookEpisodeSeeds(episodeSeedPool, injectionPolicy, retrievalQuery);
+  const episodeEvidence = await expandEpisodeEvidence(deps.memoryService, episodeSeeds);
+  const injectableMemories = reserveLessonSlot(
+    filterHookInjectableMemories(
+      [...mergedMemories, ...episodeEvidence],
+      injectionPolicy,
+      retrievalQuery
+    ),
+    mergedMemories,
+    injectionPolicy
+  );
+
+  return {
+    minScore,
+    mergedMemories,
+    injectableMemories,
+    semanticCandidateCount,
+    keywordCandidateCount,
+    graduatedCandidateCount,
+    lessonCandidateCount,
+    thresholdFilteredCount
+  };
+}
+
 export async function main(options: UserPromptSubmitMainOptions = {}): Promise<string> {
   let stage: 'input' | 'service' | 'retrieval' = 'input';
   try {
@@ -570,17 +822,6 @@ export async function main(options: UserPromptSubmitMainOptions = {}): Promise<s
     // Search strategy: turn-1 always enforce adherence check,
     // then adaptively enforce on write-intent/continuation/decision/code/topic-shift/interval
     if (ENABLE_SEARCH && shouldRunMemorySearch(prompt, adherenceDecision)) {
-      const minScore = getDynamicMinScore(prompt);
-      let mergedMemories: HookMemoryCandidate[] = [];
-      const episodeSeedCandidates: HookMemoryCandidate[] = [];
-      // Lane counters feed the honest outcome reason for an empty selection
-      // instead of the old runtime_error default (specs R2).
-      let semanticCandidateCount = 0;
-      let keywordCandidateCount = 0;
-      let graduatedCandidateCount = 0;
-      let lessonCandidateCount = 0;
-      let thresholdFilteredCount = 0;
-
       // On turn 2+, enrich ambiguous follow-up retrieval with the previous user prompt
       // and assistant response so short prompts ("그거 고쳐줘") resolve correctly.
       const lastSnippet = currentTurn > 1 ? readLastAssistantSnippet(input.session_id) : null;
@@ -593,201 +834,25 @@ export async function main(options: UserPromptSubmitMainOptions = {}): Promise<s
       });
       const queryRewriteKind = getRetrievalQueryRewriteKind(prompt, retrievalQuery);
 
-      const canUseSemantic = RETRIEVAL_MODE === 'semantic' || RETRIEVAL_MODE === 'hybrid';
-      if (canUseSemantic) {
-        try {
-          const semanticMemories = await retrieveSemanticMemories(
-            {
-              sessionId: input.session_id,
-              projectPath: input.cwd,
-              prompt: retrievalQuery,
-              topK: MAX_MEMORIES,
-              minScore
-            },
+      const {
+        minScore,
+        mergedMemories,
+        injectableMemories,
+        semanticCandidateCount,
+        keywordCandidateCount,
+        graduatedCandidateCount,
+        lessonCandidateCount,
+        thresholdFilteredCount
+      } = await selectHookInjection(
+        {
+          memoryService,
+          retrieveSemantic: (request) => retrieveSemanticMemories(
+            { sessionId: input.session_id, projectPath: input.cwd, ...request },
             SEMANTIC_TIMEOUT_MS,
             { allowDaemonStart: options.allowDaemonStart }
-          );
-          mergedMemories = semanticMemories.map((memory) => ({
-            ...memory,
-            source: 'semantic' as const
-          })).filter((memory) => !isExcludedEvaluationSession(memory.sessionId));
-          semanticCandidateCount = mergedMemories.length;
-        } catch {
-          // Semantic retrieval is best-effort; fallback below handles the rest
-        }
-      }
-
-      // Promotion is useful only if it changes recall. Add a bounded L1+
-      // answer lane, but score by lexical/entity coverage before applying the
-      // small level/access prior. Prompts and tool output never enter this lane.
-      const graduated = await memoryService.searchGraduatedEvidence(
-        retrievalQuery,
-        Math.max(50, MAX_CANDIDATES * 4)
-      );
-      const graduatedRanks = graduated.map((result) => result.rank);
-      const bestGraduatedRank = graduatedRanks.length > 0 ? Math.min(...graduatedRanks) : 0;
-      const worstGraduatedRank = graduatedRanks.length > 0 ? Math.max(...graduatedRanks) : 0;
-      const graduatedRankRange = worstGraduatedRank - bestGraduatedRank || 1;
-      const existingGraduatedById = new Map(
-        mergedMemories
-          .map((memory, index) => [memory.id, index] as const)
-          .filter((entry): entry is [string, number] => Boolean(entry[0]))
-      );
-      const scoredGraduated = graduated
-        .map((result) => {
-          const candidate: HookMemoryCandidate = {
-            type: result.event.eventType,
-            content: result.event.content,
-            id: result.event.id,
-            sessionId: result.event.sessionId,
-            source: 'graduated',
-            memoryLevel: result.level,
-            accessCount: result.accessCount,
-            retrievalRankScore: (worstGraduatedRank - result.rank) / graduatedRankRange
-          };
-          return { candidate, score: scoreGraduatedEvidence(retrievalQuery, candidate) };
-        })
-        .filter((item): item is { candidate: HookMemoryCandidate; score: number } => item.score !== null)
-        .sort((a, b) => b.score - a.score)
-        .slice(0, MAX_CANDIDATES);
-      graduatedCandidateCount = scoredGraduated.length;
-      for (const { candidate, score } of scoredGraduated) {
-        const existingIndex = candidate.id ? existingGraduatedById.get(candidate.id) : undefined;
-        if (existingIndex !== undefined) {
-          // A raw vector score and a graduated lexical score are not on the
-          // same calibration scale. Once an event is L1+, use the stricter
-          // graduated score so a broad semantic hit cannot hide exact evidence.
-          mergedMemories[existingIndex] = { ...mergedMemories[existingIndex], ...candidate, score };
-          continue;
-        }
-        if (mergedMemories.length >= MAX_CANDIDATES) continue;
-        mergedMemories.push({ ...candidate, score });
-        if (candidate.id) existingGraduatedById.set(candidate.id, mergedMemories.length - 1);
-      }
-
-      // Curated lesson lane. Lessons are not events, so no other lane can ever
-      // surface them; without this the lesson feature is write-only.
-      if (shouldNativeInjectLessons()) { try {
-        const lessons = await memoryService.listProjectLessonInjections(
-          resolveCanonicalMemoryActorId(input.actor_id),
-          LESSON_SCAN_LIMIT
-        );
-        for (const { value: lesson, injectionMode } of lessons) {
-          const injectedLesson = lessonForInjection(lesson, injectionMode);
-          const candidate = scoreLessonEvidence(retrievalQuery, {
-            lessonId: String(injectedLesson.lessonId ?? ''),
-            name: String(injectedLesson.name ?? ''),
-            trigger: injectedLesson.trigger ? String(injectedLesson.trigger) : undefined,
-            steps: Array.isArray(injectedLesson.steps) ? injectedLesson.steps.map(String) : [],
-            failureModes: Array.isArray(injectedLesson.failureModes) ? injectedLesson.failureModes.map(String) : [],
-            scope: injectedLesson.scope,
-            validation: injectedLesson.validation,
-            reconsiderWhen: injectedLesson.reconsiderWhen,
-            validVersions: injectedLesson.validVersions,
-            confidence: Number(injectedLesson.confidence ?? 0)
-          });
-          if (candidate) {
-            mergedMemories.push(candidate);
-            lessonCandidateCount += 1;
-          }
-        }
-      } catch { /* lesson lane is supplementary */ } }
-
-      const shouldUseKeywordFallback =
-        RETRIEVAL_MODE === 'keyword' ||
-        RETRIEVAL_MODE === 'hybrid' ||
-        mergedMemories.length === 0;
-
-      if (shouldUseKeywordFallback) {
-        let usedFallbackFloor = false;
-        const allKeywordResults = await memoryService.keywordSearch(retrievalQuery, {
-          topK: MAX_EPISODE_SEED_CANDIDATES,
-          // Episode seeding intentionally accepts tool_observation matches:
-          // a tool call from the same turn is often the strongest anchor for
-          // finding that turn's answer (selectHookEpisodeSeeds handles the
-          // type-aware ranking). This opt-in preserves that behavior now that
-          // keywordSearch excludes tool_observation by default.
-          includeToolObservations: true
-        });
-        keywordCandidateCount = allKeywordResults.length;
-        let results = allKeywordResults.filter((result) => result.score >= minScore);
-        thresholdFilteredCount = allKeywordResults.length - results.length;
-
-        // recall rescue: if nothing found at tuned threshold, retry with fallback floor
-        if (results.length === 0 && FALLBACK_MIN_SCORE < minScore) {
-          usedFallbackFloor = true;
-          results = allKeywordResults.filter((result) => result.score >= FALLBACK_MIN_SCORE);
-          thresholdFilteredCount = allKeywordResults.length - results.length;
-        }
-
-        for (const result of allKeywordResults) {
-          episodeSeedCandidates.push({
-            type: result.event.eventType,
-            content: result.event.content,
-            id: result.event.id,
-            sessionId: result.event.sessionId,
-            score: result.score,
-            source: 'keyword',
-            fallback: result.score < minScore
-          });
-        }
-
-        const existingById = new Map(
-          mergedMemories
-            .map((memory, index) => [memory.id, index] as const)
-            .filter((entry): entry is [string, number] => Boolean(entry[0]))
-        );
-        for (const r of results) {
-          const keywordCandidate: HookMemoryCandidate = {
-            type: r.event.eventType,
-            content: r.event.content,
-            id: r.event.id,
-            sessionId: r.event.sessionId,
-            score: r.score,
-            source: 'keyword',
-            fallback: usedFallbackFloor
-          };
-          const existingIndex = existingById.get(r.event.id);
-          if (existingIndex !== undefined) {
-            const existing = mergedMemories[existingIndex];
-            // Semantic and FTS scores have different calibration. An exact
-            // keyword prompt must not keep a weaker semantic score merely
-            // because it entered the merged list first; that suppresses the
-            // same-turn episode bridge for otherwise exact recall queries.
-            if ((existing?.score ?? 0) < r.score) {
-              mergedMemories[existingIndex] = {
-                ...existing,
-                score: r.score,
-                source: 'keyword',
-                fallback: usedFallbackFloor
-              };
-            }
-            continue;
-          }
-          mergedMemories.push(keywordCandidate);
-          existingById.set(r.event.id, mergedMemories.length - 1);
-          // Keep a bounded second lane instead of letting semantic/graduated
-          // candidates fill the entire pool before exact FTS prompts arrive.
-          if (mergedMemories.length >= MAX_CANDIDATES * 2) break;
-        }
-      }
-
-      const injectionPolicy = getHookInjectionPolicy();
-      const episodeSeedPool = Array.from(new Map(
-        [...mergedMemories, ...episodeSeedCandidates]
-          .filter((candidate): candidate is HookMemoryCandidate & { id: string } => Boolean(candidate.id))
-          .map((candidate) => [candidate.id, candidate])
-      ).values());
-      const episodeSeeds = selectHookEpisodeSeeds(episodeSeedPool, injectionPolicy, retrievalQuery);
-      const episodeEvidence = await expandEpisodeEvidence(memoryService, episodeSeeds);
-      const injectableMemories = reserveLessonSlot(
-        filterHookInjectableMemories(
-          [...mergedMemories, ...episodeEvidence],
-          injectionPolicy,
-          retrievalQuery
-        ),
-        mergedMemories,
-        injectionPolicy
+          )
+        },
+        { prompt, retrievalQuery, actorId: input.actor_id }
       );
 
       // One trace id shared by the query trace and every helpfulness row it
