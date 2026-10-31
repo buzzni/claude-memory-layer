@@ -1,0 +1,77 @@
+{
+  "stdout": "{\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\"}}",
+  "semanticRequests": [],
+  "keywordRequests": [
+    [
+      "Why does the vector outbox drain stall with a held worker lock?",
+      {
+        "topK": 50,
+        "includeToolObservations": true
+      }
+    ]
+  ],
+  "graduatedRequests": [
+    [
+      "Why does the vector outbox drain stall with a held worker lock?",
+      60
+    ]
+  ],
+  "episodeRequests": [],
+  "accessWrites": [],
+  "retrievals": [],
+  "traces": [
+    [
+      {
+        "traceId": "<trace-id>",
+        "sessionId": "session-golden",
+        "queryText": "Why does the vector outbox drain stall with a held worker lock?",
+        "rawQueryText": "Why does the vector outbox drain stall with a held worker lock?",
+        "queryRewriteKind": "none",
+        "strategy": "keyword",
+        "candidateEventIds": [
+          "ev-a",
+          "ev-b"
+        ],
+        "selectedEventIds": [],
+        "items": [
+          {
+            "kind": "event",
+            "id": "ev-a",
+            "rank": 0,
+            "score": 0.36,
+            "selected": false,
+            "contentHash": null
+          },
+          {
+            "kind": "event",
+            "id": "ev-b",
+            "rank": 1,
+            "score": 0.33,
+            "selected": false,
+            "contentHash": null
+          }
+        ],
+        "confidence": "none",
+        "presentationMode": "evidence",
+        "triggerType": "user_prompt",
+        "deliveryClient": "claude-hook",
+        "requestId": "claude-hook:session-golden:<turn-id>",
+        "outcomeDiagnostics": {
+          "outcomeReason": "no_project_events",
+          "laneCandidateCounts": {
+            "vector": 0,
+            "keyword": 3,
+            "summary": 0
+          },
+          "filteredCounts": {
+            "threshold": 1,
+            "quality": 2
+          },
+          "topScore": 0.36,
+          "threshold": 0.4,
+          "freshnessState": "unknown"
+        }
+      }
+    ]
+  ]
+}

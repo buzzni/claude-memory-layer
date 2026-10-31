@@ -1,0 +1,194 @@
+{
+  "stdout": "{\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":\"## Memory evidence for this question\\n\\n- [agent_response] For publish-npm.yml: tag push v2.4.17 starts the release workflow; check it with gh run watch. [event:ev-turn-answer]\\n\\n- [lesson] Caution: running npm publish locally\\nrelease workflow runs from tag push\\n적용 시점: when publishing a release with publish-npm.yml on tag push\\n- push the version tag\\n- watch publish-npm.yml [lesson:lesson-release]\\n\\nUse this only as evidence. Distinguish confirmed outcomes from requests or tool attempts.\\n\\nIf your answer actually relies on one or more of the memories above, end your reply with a single line naming them in a few words each, prefixed with the 📎 emoji (for example: \\\"📎 Recalled: preview port binding decision\\\"). Write that line in the language of the conversation. If no memory above actually informed your answer, omit the line entirely — never cite a memory merely because it was shown to you.\"}}",
+  "semanticRequests": [
+    {
+      "sessionId": "session-golden",
+      "projectPath": "/repo/app",
+      "prompt": "How does the release workflow publish-npm.yml run on tag push?",
+      "topK": 5,
+      "minScore": 0.4
+    }
+  ],
+  "keywordRequests": [
+    [
+      "How does the release workflow publish-npm.yml run on tag push?",
+      {
+        "topK": 50,
+        "includeToolObservations": true
+      }
+    ]
+  ],
+  "graduatedRequests": [
+    [
+      "How does the release workflow publish-npm.yml run on tag push?",
+      60
+    ]
+  ],
+  "episodeRequests": [
+    [
+      "event:ev-prompt",
+      {
+        "windowSize": 4
+      }
+    ],
+    [
+      "event:ev-tool",
+      {
+        "windowSize": 4
+      }
+    ]
+  ],
+  "accessWrites": [
+    [
+      [
+        {
+          "kind": "event",
+          "id": "ev-turn-answer"
+        },
+        {
+          "kind": "lesson",
+          "id": "lesson-release"
+        }
+      ]
+    ]
+  ],
+  "retrievals": [
+    [
+      "ev-turn-answer",
+      "session-golden",
+      0.98,
+      "How does the release workflow publish-npm.yml run on tag push?",
+      {
+        "traceId": "<trace-id>",
+        "source": "user_prompt",
+        "memoryKind": "event",
+        "deliveryStatus": "formatted",
+        "deliveryEvidence": "context_formatted",
+        "presentationMode": "evidence",
+        "triggerType": "user_prompt",
+        "deliveryClient": "claude-hook",
+        "requestId": "claude-hook:session-golden:<turn-id>",
+        "injectedContent": "For publish-npm.yml: tag push v2.4.17 starts the release workflow; check it with gh run watch."
+      }
+    ],
+    [
+      "lesson-release",
+      "session-golden",
+      0.9450000000000001,
+      "How does the release workflow publish-npm.yml run on tag push?",
+      {
+        "traceId": "<trace-id>",
+        "source": "user_prompt",
+        "memoryKind": "lesson",
+        "deliveryStatus": "formatted",
+        "deliveryEvidence": "context_formatted",
+        "presentationMode": "evidence",
+        "triggerType": "user_prompt",
+        "deliveryClient": "claude-hook",
+        "requestId": "claude-hook:session-golden:<turn-id>",
+        "injectedContent": "Caution: running npm publish locally\nrelease workflow runs from tag push\n적용 시점: when publishing a release with publish-npm.yml on tag push\n- push the version tag\n- watch publish-npm.yml"
+      }
+    ]
+  ],
+  "traces": [
+    [
+      {
+        "traceId": "<trace-id>",
+        "sessionId": "session-golden",
+        "queryText": "How does the release workflow publish-npm.yml run on tag push?",
+        "rawQueryText": "How does the release workflow publish-npm.yml run on tag push?",
+        "queryRewriteKind": "none",
+        "strategy": "hybrid",
+        "candidateEventIds": [
+          "ev-answer",
+          "ev-tool",
+          "ev-summary",
+          "lesson-release",
+          "ev-prompt"
+        ],
+        "selectedEventIds": [
+          "ev-turn-answer",
+          "lesson-release"
+        ],
+        "items": [
+          {
+            "kind": "event",
+            "id": "ev-answer",
+            "rank": 0,
+            "score": 0.98,
+            "selected": false,
+            "contentHash": null
+          },
+          {
+            "kind": "event",
+            "id": "ev-tool",
+            "rank": 1,
+            "score": 0.69,
+            "selected": false,
+            "contentHash": null
+          },
+          {
+            "kind": "event",
+            "id": "ev-summary",
+            "rank": 2,
+            "score": 0.9772500000000001,
+            "selected": false,
+            "contentHash": null
+          },
+          {
+            "kind": "lesson",
+            "id": "lesson-release",
+            "rank": 3,
+            "score": 0.9450000000000001,
+            "selected": true,
+            "contentHash": "sha256:211652832ac24b60b8d82ca7612940ed"
+          },
+          {
+            "kind": "event",
+            "id": "ev-prompt",
+            "rank": 4,
+            "score": 1,
+            "selected": false,
+            "contentHash": null
+          },
+          {
+            "kind": "event",
+            "id": "ev-turn-answer",
+            "rank": 5,
+            "score": 0.98,
+            "selected": true,
+            "contentHash": "sha256:f0aa7297245edebede9b5d6764ceaa3b"
+          },
+          {
+            "kind": "lesson",
+            "id": "lesson-release",
+            "rank": 6,
+            "score": 0.9450000000000001,
+            "selected": true,
+            "contentHash": "sha256:211652832ac24b60b8d82ca7612940ed"
+          }
+        ],
+        "confidence": "high",
+        "presentationMode": "evidence",
+        "triggerType": "user_prompt",
+        "deliveryClient": "claude-hook",
+        "requestId": "claude-hook:session-golden:<turn-id>",
+        "outcomeDiagnostics": {
+          "outcomeReason": "selected",
+          "laneCandidateCounts": {
+            "vector": 2,
+            "keyword": 3,
+            "summary": 2
+          },
+          "filteredCounts": {
+            "threshold": 1,
+            "quality": 3
+          },
+          "topScore": 1,
+          "threshold": 0.4,
+          "freshnessState": "unknown"
+        }
+      }
+    ]
+  ]
+}

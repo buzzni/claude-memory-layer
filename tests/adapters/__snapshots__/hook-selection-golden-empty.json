@@ -1,0 +1,65 @@
+{
+  "stdout": "{\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\"}}",
+  "semanticRequests": [
+    {
+      "sessionId": "session-golden",
+      "projectPath": "/repo/app",
+      "prompt": "Explain the deployment approval workflow for the mobile app.",
+      "topK": 5,
+      "minScore": 0.4
+    }
+  ],
+  "keywordRequests": [
+    [
+      "Explain the deployment approval workflow for the mobile app.",
+      {
+        "topK": 50,
+        "includeToolObservations": true
+      }
+    ]
+  ],
+  "graduatedRequests": [
+    [
+      "Explain the deployment approval workflow for the mobile app.",
+      60
+    ]
+  ],
+  "episodeRequests": [],
+  "accessWrites": [],
+  "retrievals": [],
+  "traces": [
+    [
+      {
+        "traceId": "<trace-id>",
+        "sessionId": "session-golden",
+        "queryText": "Explain the deployment approval workflow for the mobile app.",
+        "rawQueryText": "Explain the deployment approval workflow for the mobile app.",
+        "queryRewriteKind": "none",
+        "strategy": "hybrid",
+        "candidateEventIds": [],
+        "selectedEventIds": [],
+        "items": [],
+        "confidence": "none",
+        "presentationMode": "evidence",
+        "triggerType": "user_prompt",
+        "deliveryClient": "claude-hook",
+        "requestId": "claude-hook:session-golden:<turn-id>",
+        "outcomeDiagnostics": {
+          "outcomeReason": "no_project_events",
+          "laneCandidateCounts": {
+            "vector": 0,
+            "keyword": 0,
+            "summary": 0
+          },
+          "filteredCounts": {
+            "threshold": 0,
+            "quality": 0
+          },
+          "topScore": null,
+          "threshold": 0.4,
+          "freshnessState": "unknown"
+        }
+      }
+    ]
+  ]
+}
