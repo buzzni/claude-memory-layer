@@ -18,6 +18,7 @@ import {
   preparePrompts,
   promptKey,
   scoreSelections,
+  splitLabeledPrompts,
   wilson
 } from '../../scripts/evaluate-host-lesson-matching.js';
 
@@ -219,5 +220,35 @@ describe('judgedAfterOverlay', () => {
   it('drops judgments on absorbed lessons, so a runbook is judged only directly or through an applicable lesson', () => {
     // a was judged and did not apply: that says nothing about the runbook, which also holds b's rules.
     expect(judgedAfterOverlay(['a', 'c', 'rb'], { a: 'rb-1', b: 'rb-1' })).toEqual(['c', 'rb']);
+  });
+});
+
+describe('splitLabeledPrompts', () => {
+  const SPLIT_AT = '2026-10-10T00:00:00.000Z';
+  const prompt = (key: string, text: string, timestamp: string) => ({ key, text, timestamp, sessionId: 's' });
+  const early = prompt('k1', 'PR conflict 해결해줘', '2026-10-05T00:00:00.000Z');
+  const late = prompt('k2', 'pin 올려줘', '2026-10-12T00:00:00.000Z');
+
+  it('places each labeled prompt in the split its label declares', () => {
+    const result = splitLabeledPrompts([early, late], { k1: { split: 'dev' }, k2: { split: 'test' } }, SPLIT_AT);
+    expect(result.calibration.map((p) => p.key)).toEqual(['k1']);
+    expect(result.heldout.map((p) => p.key)).toEqual(['k2']);
+  });
+
+  it('refuses a label without a dev/test split tag', () => {
+    expect(() => splitLabeledPrompts([early, late], { k1: { split: 'dev' }, k2: {} }, SPLIT_AT)).toThrow(/without a dev\/test split.*k2/);
+  });
+
+  it('refuses an untagged label even when this run does not select its prompt', () => {
+    expect(() => splitLabeledPrompts([early], { k1: { split: 'dev' }, unused: {} }, SPLIT_AT)).toThrow(/without a dev\/test split.*unused/);
+  });
+
+  it('refuses a label whose split disagrees with --split-at', () => {
+    expect(() => splitLabeledPrompts([early], { k1: { split: 'test' } }, SPLIT_AT)).toThrow(/disagree with --split-at.*k1/);
+  });
+
+  it('refuses the same normalized prompt in both splits', () => {
+    const again = prompt('k3', 'PR  CONFLICT 해결해줘', '2026-10-15T00:00:00.000Z');
+    expect(() => splitLabeledPrompts([early, again], { k1: { split: 'dev' }, k3: { split: 'test' } }, SPLIT_AT)).toThrow(/both dev and test.*k1.*k3/);
   });
 });

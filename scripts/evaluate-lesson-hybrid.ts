@@ -4,15 +4,18 @@ import { createHash } from 'crypto';
 import { join, relative, resolve } from 'path';
 import { rankCuratedLessons } from '../src/extensions/mcp/lesson-ranking.js';
 import type { MemoryLesson } from '../src/core/types.js';
+import { guardFixtureRead } from './eval-split.js';
 
-const [fixturePath, cacheDir, mode] = process.argv.slice(2);
+const finalReport = process.argv.includes('--final-report');
+const [fixturePath, cacheDir, mode] = process.argv.slice(2).filter((arg) => arg !== '--final-report');
 if (!fixturePath || !cacheDir || !existsSync(cacheDir)) {
-  throw new Error('usage: tsx scripts/evaluate-lesson-hybrid.ts <fixture.json> <existing-cache-dir> [--download-model|--e5-prefix-v2|--calibrate-e5]');
+  throw new Error('usage: tsx scripts/evaluate-lesson-hybrid.ts <fixture.json> <existing-cache-dir> [--download-model|--e5-prefix-v2|--calibrate-e5] [--final-report]');
 }
 if (mode !== undefined && mode !== '--download-model' && mode !== '--e5-prefix-v2' && mode !== '--calibrate-e5') throw new Error(`unknown mode: ${mode}`);
 
 const prefixed = mode === '--e5-prefix-v2' || mode === '--calibrate-e5';
-if (mode === '--calibrate-e5' && !/calibration/i.test(fixturePath)) throw new Error('Calibration requires a separate calibration fixture, never held-out data');
+// Calibration only ever reads dev fixtures; test fixtures need --final-report.
+guardFixtureRead(fixturePath, { finalReport, calibrating: mode === '--calibrate-e5' });
 
 const { Embedder, normalizeTransformersNamespace, resolveTransformersModuleSpecifier } = await import('../src/extensions/vector/embedder.js');
 const { HYBRID_LESSON_GATE, isSemanticRescueEligible } = await import('../src/extensions/mcp/hybrid-lesson-ranking.js');

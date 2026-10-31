@@ -14,9 +14,10 @@
  *   ... --catalog-overlay <overlay.json>   # CatalogOverlay: score the catalog as if runbooks had absorbed lessons
  *   ... --emit-unlabeled <sheet.json>   # labeled prompts' candidates no label judged yet (label them, then rerun)
  *
- * Label file: {"version":1,"labels":{"<promptKey>":{"applies":[lessonId],"judged":[lessonId],"kinds"?:{"<lessonId>":"first-turn"|"event"}}}}
+ * Label file: {"version":1,"labels":{"<promptKey>":{"split":"dev"|"test","applies":[lessonId],"judged":[lessonId],"kinds"?:{"<lessonId>":"first-turn"|"event"}}}}
  * `judged` is every lesson the labeler saw for that prompt; a selection outside
- * judged ∪ applies is counted as unlabeled, never as wrong.
+ * judged ∪ applies is counted as unlabeled, never as wrong. `split` is copied
+ * from the sheet; it must agree with --split-at, and no prompt may sit in both.
  */
 
 import { createHash } from 'node:crypto';
@@ -26,6 +27,7 @@ import { fileURLToPath } from 'node:url';
 
 import { normalizeUserPrompt } from '../src/core/prompt-normalizer.js';
 import type { MemoryLesson } from '../src/core/types.js';
+import { findSplitOverlaps, type EvalSplit } from './eval-split.js';
 
 const PROMPT_KEY_CHARS = 1_500;
 const LESSON_BLOCK_MARKERS = ['## Project lessons that may apply', 'These are reference notes from earlier verified work', '[lesson:'];
@@ -55,6 +57,25 @@ export function preparePrompts(rows: readonly PromptRow[], options: { minChars?:
     prompts.push({ key: promptKey(text), text, timestamp: row.timestamp, sessionId: row.sessionId });
   }
   return { prompts, droppedAutomated, droppedDuplicates, leftoverMarkers };
+}
+
+const splitAtSide = (prompt: PreparedPrompt, splitAt: string): EvalSplit => (prompt.timestamp < splitAt ? 'dev' : 'test');
+
+/**
+ * Split labeled prompts by the split each label carries. A missing tag, a tag
+ * that disagrees with --split-at, or a prompt on both sides refuses the run.
+ */
+export function splitLabeledPrompts(prompts: readonly PreparedPrompt[], labels: Readonly<Record<string, { split?: unknown }>>, splitAt: string) {
+  const list = (keys: string[]) => [...new Set(keys)].slice(0, 5).join(', ');
+  // The whole label set is tagged, including labels this window does not select.
+  const untagged = Object.keys(labels).filter((key) => labels[key].split !== 'dev' && labels[key].split !== 'test');
+  if (untagged.length) throw new Error(`labels without a dev/test split: ${list(untagged)}`);
+  const misplaced = prompts.filter((prompt) => labels[prompt.key].split !== splitAtSide(prompt, splitAt)).map((prompt) => prompt.key);
+  if (misplaced.length) throw new Error(`label splits disagree with --split-at ${splitAt}: ${list(misplaced)}`);
+  const bySplit = { dev: prompts.filter((prompt) => labels[prompt.key].split === 'dev'), test: prompts.filter((prompt) => labels[prompt.key].split === 'test') };
+  const overlapping = findSplitOverlaps({ dev: bySplit.dev.map((p) => ({ id: p.key, query: p.text })), test: bySplit.test.map((p) => ({ id: p.key, query: p.text })) });
+  if (overlapping.length) throw new Error(`prompts in both dev and test: ${list(overlapping)}`);
+  return { calibration: bySplit.dev, heldout: bySplit.test };
 }
 
 export interface Ratio { k: number; n: number }
@@ -392,7 +413,7 @@ async function main(): Promise<void> {
     for (const prompt of sample) {
       const pool = available(prompt);
       const candidates = [...new Set([...(await rankEmbedding(prompt, pool)).slice(0, 6), ...rankCuratedLessons(pool, prompt.text, 3).map((l) => l.lessonId)])];
-      items.push({ key: prompt.key, timestamp: prompt.timestamp, prompt: prompt.text.slice(0, PROMPT_KEY_CHARS),
+      items.push({ key: prompt.key, timestamp: prompt.timestamp, split: splitAtSide(prompt, splitAt!), prompt: prompt.text.slice(0, PROMPT_KEY_CHARS),
         candidates: candidates.map((id) => ({ lessonId: id, name: byId.get(id)!.name, trigger: byId.get(id)!.trigger })) });
     }
     writeFileSync(sheet, `${JSON.stringify(items, null, 1)}\n`);
@@ -401,16 +422,17 @@ async function main(): Promise<void> {
   }
 
   if (!labelsPath) throw new Error('--labels is required with --out');
-  const labelFile = JSON.parse(readFileSync(labelsPath, 'utf8')) as { version: number; labels: Record<string, { applies: string[]; judged: string[]; kinds?: Record<string, LessonKind> }> };
+  const labelFile = JSON.parse(readFileSync(labelsPath, 'utf8')) as { version: number; labels: Record<string, { split?: EvalSplit; applies: string[]; judged: string[]; kinds?: Record<string, LessonKind> }> };
   const canon = (ids: readonly string[]) => canonicalIds(ids, canonicalMap);
   // Runbooks too: a label on a runbook id passes the same time filter.
   const created = new Map([...allLessons, ...lessons].map((lesson) => [lesson.lessonId, lesson.createdAt.toISOString()]));
   const labeledPrompts = prepared.prompts.filter((prompt) => labelFile.labels[prompt.key]);
+  const labeledBySplit = splitLabeledPrompts(labeledPrompts, labelFile.labels, splitAt!);
   let futureLabelPairs = 0; let recentPairs = 0;
   // `prompt` stays in memory for --emit-unlabeled; it never reaches the report.
   type Row = { prompt: PreparedPrompt; sessionId: string; applies: string[]; labeled: string[]; kinds: Record<string, LessonKind>; lexical: string[]; rankedRaw: string[]; ranked: string[] };
   const rowsBySplit: Record<'calibration' | 'heldout', Row[]> = { calibration: [], heldout: [] };
-  for (const prompt of labeledPrompts) {
+  for (const split of ['calibration', 'heldout'] as const) for (const prompt of labeledBySplit[split]) {
     const label = labelFile.labels[prompt.key];
     const applies = label.applies.filter((id) => {
       const at = created.get(id);
@@ -422,7 +444,7 @@ async function main(): Promise<void> {
     const ranked = await rankEmbedding(prompt, pool);
     // Twins must agree on a kind; a runbook spans its lessons' moments (absorbKinds).
     const kinds = absorbKinds(mergeKinds(label.kinds ?? {}, applies, twinMap), absorbedBy);
-    rowsBySplit[prompt.timestamp < splitAt! ? 'calibration' : 'heldout'].push({
+    rowsBySplit[split].push({
       prompt, sessionId: prompt.sessionId, applies: canon(applies), labeled: canon(judgedAfterOverlay(label.judged, absorbedBy)), kinds,
       lexical: canon(rankCuratedLessons(pool, prompt.text, 3).map((lesson) => lesson.lessonId)),
       // Raw ids, so per-lesson filters (own session) run before twins collapse.
@@ -450,7 +472,7 @@ async function main(): Promise<void> {
       // Every selection the report scores: lexical, fixed top-5 (top-1/3 are its prefixes) and each reduction.
       const unjudged = unlabeledCandidates([row.lexical, row.ranked.slice(0, Math.max(5, topK)), ...Object.values(reductions).map((keep) => reduce(row, keep))], row);
       if (unjudged.length === 0) continue;
-      items.push({ key: row.prompt.key, timestamp: row.prompt.timestamp, prompt: row.prompt.text.slice(0, PROMPT_KEY_CHARS),
+      items.push({ key: row.prompt.key, timestamp: row.prompt.timestamp, split: splitAtSide(row.prompt, splitAt!), prompt: row.prompt.text.slice(0, PROMPT_KEY_CHARS),
         candidates: unjudged.map((id) => ({ lessonId: id, name: lessonById.get(id)!.name, trigger: lessonById.get(id)!.trigger })) });
     }
     writeFileSync(arg('emit-unlabeled')!, `${JSON.stringify(items, null, 1)}\n`);
