@@ -358,12 +358,14 @@ claude-memory-layer project scope-audit --days 7
 
 ### 5) MCP/다른 agent에 연결
 
-Claude Desktop은 CLI로 자동 등록할 수 있습니다. GUI 앱에서 shell `PATH`가 다를 수 있으면 stdio binary의 절대 경로를 command로 넣는 방식이 더 견고합니다.
+Claude Desktop은 CLI로 자동 등록할 수 있습니다. 기본값으로 지금 실행 중인 node와 이 설치본의 MCP 진입점(`dist/mcp/index.js`) 절대 경로를 기록하므로, GUI 앱의 `PATH`나 nvm 구버전 설치에 영향을 받지 않습니다.
 
 ```bash
-claude-memory-layer mcp install --command "$(command -v claude-memory-layer-mcp)"
+claude-memory-layer mcp install
 # Claude Desktop 재시작
 ```
+
+`claude-memory-layer doctor`는 Claude Code(`~/.claude.json`), Claude Desktop, Codex(`~/.codex/config.toml`) 설정에 적힌 MCP command가 지금 CLI와 같은 설치본을 가리키는지 읽기 전용으로 확인하고, PATH 이름이거나 다른 설치를 가리키면 고치는 명령을 함께 보여 줍니다.
 
 Codex/Hermes 등 MCP client에도 전역 설치된 stdio binary를 등록하면 됩니다.
 
@@ -779,12 +781,14 @@ claude-memory-layer mcp install
 {
   "mcpServers": {
     "claude-memory-layer": {
-      "command": "claude-memory-layer-mcp",
-      "args": []
+      "command": "/absolute/path/to/node",
+      "args": ["/absolute/path/to/claude-memory-layer/dist/mcp/index.js"]
     }
   }
 }
 ```
+
+`--command`를 주면 그 값을 그대로 기록합니다.
 
 옵션:
 

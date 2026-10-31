@@ -1,8 +1,12 @@
-import { describe, expect, it } from 'vitest';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   checkEmbeddingBackend,
   checkHooksInstalled,
+  checkMcpClientConfig,
   checkNodeVersion,
   checkPathConsistency,
   checkPluginFiles,
@@ -293,5 +297,136 @@ describe('formatDoctorReport and doctorExitCode', () => {
     expect(formatDoctorReport([failing])).toContain('1 check(s) failed');
     expect(formatDoctorReport([passing])).toContain('All checks passed');
     expect(formatDoctorReport([passing, warning])).toContain('1 warning(s)');
+  });
+});
+
+describe('checkMcpClientConfig', () => {
+  const tempDirs: string[] = [];
+  afterEach(() => {
+    for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** Two global installs side by side, each with a bin symlink, like nvm versions. */
+  function fakeInstalls() {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'cml-doctor-mcp-')));
+    tempDirs.push(root);
+    const install = (prefix: string, version: string) => {
+      const packageRoot = join(root, prefix, 'lib', 'node_modules', 'claude-memory-layer');
+      mkdirSync(join(packageRoot, 'dist', 'mcp'), { recursive: true });
+      writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({ name: 'claude-memory-layer', version }));
+      writeFileSync(join(packageRoot, 'dist', 'mcp', 'index.js'), '');
+      const bin = join(root, prefix, 'bin', 'claude-memory-layer-mcp');
+      mkdirSync(join(root, prefix, 'bin'), { recursive: true });
+      symlinkSync(join(packageRoot, 'dist', 'mcp', 'index.js'), bin);
+      return { packageRoot, bin, entry: join(packageRoot, 'dist', 'mcp', 'index.js') };
+    };
+    const current = install('v22', '2.4.17');
+    const old = install('v20', '2.3.0');
+    const node = join(root, 'v22', 'bin', 'node');
+    writeFileSync(node, '');
+    const expected = { command: node, args: [current.entry] };
+    return { current, old, expected, node };
+  }
+
+  const read = (servers: Array<{ name: string; command: string; args?: string[]; scope?: 'user' | 'local' }>, client: 'claude-code' | 'codex' | 'claude-desktop' = 'claude-code') => ({
+    client,
+    configPath: `/home/me/${client}.json`,
+    servers: servers.map((server) => ({ args: [], ...server }))
+  });
+
+  it('passes when the registered command resolves into the running package', () => {
+    const { current, expected, node } = fakeInstalls();
+    const result = checkMcpClientConfig(
+      read([
+        { name: 'claude-memory-layer', scope: 'user', command: current.bin },
+        { name: 'code-memory', scope: 'local', command: node, args: [current.entry] }
+      ]),
+      current.packageRoot,
+      expected
+    );
+
+    expect(result).toMatchObject({ name: 'mcp:claude-code', status: 'pass' });
+    expect(result.fix).toBeUndefined();
+  });
+
+  it('warns when the command is a bare PATH name, with a command that pins this install', () => {
+    const { current, expected } = fakeInstalls();
+    const result = checkMcpClientConfig(
+      read([{ name: 'claude-memory-layer', scope: 'user', command: 'claude-memory-layer-mcp' }]),
+      current.packageRoot,
+      expected
+    );
+
+    expect(result.status).toBe('warn');
+    expect(result.detail).toContain('PATH name "claude-memory-layer-mcp"');
+    expect(result.fix).toBe(
+      `claude mcp remove claude-memory-layer -s user && claude mcp add claude-memory-layer -s user -- '${expected.command}' '${current.entry}'`
+    );
+  });
+
+  it('warns when the command resolves into a different install, naming both versions', () => {
+    const { current, old, expected } = fakeInstalls();
+    const result = checkMcpClientConfig(
+      read([{ name: 'claude-memory-layer', command: old.bin }], 'codex'),
+      current.packageRoot,
+      expected
+    );
+
+    expect(result).toMatchObject({ name: 'mcp:codex', status: 'warn' });
+    expect(result.detail).toContain(`another install (v2.3.0 at ${old.packageRoot})`);
+    expect(result.detail).toContain('this CLI is v2.4.17');
+    expect(result.fix).toBe(
+      `codex mcp remove claude-memory-layer && codex mcp add claude-memory-layer -- '${expected.command}' '${current.entry}'`
+    );
+  });
+
+  it('fails when the registered target does not exist', () => {
+    const { current, expected } = fakeInstalls();
+    const result = checkMcpClientConfig(
+      read([{ name: 'claude-memory-layer', command: '/gone/bin/claude-memory-layer-mcp' }], 'claude-desktop'),
+      current.packageRoot,
+      expected
+    );
+
+    expect(result).toMatchObject({ name: 'mcp:claude-desktop', status: 'fail' });
+    // Through the running install, not whichever claude-memory-layer PATH picks.
+    expect(result.fix).toBe(`'${expected.command}' '${join(current.packageRoot, 'dist', 'cli', 'index.js')}' mcp install`);
+  });
+
+  it('warns when the script is current but node comes from PATH', () => {
+    const { current, expected } = fakeInstalls();
+    const result = checkMcpClientConfig(
+      read([{ name: 'claude-memory-layer', command: 'node', args: [current.entry] }], 'codex'),
+      current.packageRoot,
+      expected
+    );
+
+    expect(result.status).toBe('warn');
+    expect(result.detail).toContain('node from PATH');
+  });
+
+  it('fails when the registered node executable does not exist', () => {
+    const { current, expected } = fakeInstalls();
+    const result = checkMcpClientConfig(
+      read([{ name: 'claude-memory-layer', command: '/gone/bin/node', args: [current.entry] }], 'codex'),
+      current.packageRoot,
+      expected
+    );
+
+    expect(result.status).toBe('fail');
+    expect(result.detail).toContain('/gone/bin/node, which does not exist');
+  });
+
+  it('passes without a fix when this server is not registered', () => {
+    const { current, expected } = fakeInstalls();
+    expect(checkMcpClientConfig(read([]), current.packageRoot, expected)).toMatchObject({ status: 'pass' });
+  });
+
+  it('warns when the config cannot be parsed', () => {
+    const { current, expected } = fakeInstalls();
+    const result = checkMcpClientConfig({ ...read([]), error: 'Unexpected token' }, current.packageRoot, expected);
+    expect(result.detail).toContain('Could not read');
+    expect(result.status).toBe('warn');
+    expect(result.detail).toContain('Unexpected token');
   });
 });

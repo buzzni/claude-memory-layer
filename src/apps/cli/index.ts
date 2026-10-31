@@ -69,10 +69,12 @@ import {
   formatDisclosureSource,
   formatPlainSearchResults
 } from './retrieval-disclosure-output.js';
-import { installMcpServer } from './mcp-install.js';
+import { getDefaultMcpServerEntry, installMcpServer } from './mcp-install.js';
+import { readMcpClientConfigs } from './mcp-client-config.js';
 import {
   checkEmbeddingBackend,
   checkHooksInstalled,
+  checkMcpClientConfig,
   checkNodeVersion,
   checkPathConsistency,
   checkPluginFiles,
@@ -1127,12 +1129,18 @@ program
  */
 program
   .command('doctor')
-  .description('Diagnose the environment: Node version, embedding backend, PATH conflicts, hooks, store access')
+  .description('Diagnose the environment: Node version, embedding backend, PATH conflicts, hooks, MCP client configs, store access')
   .action(async () => {
     const pluginPath = getPluginPath();
     const packageRoot = path.dirname(pluginPath);
     const settings = loadClaudeSettings();
     const projectStorePath = getProjectStoragePath(process.cwd());
+    let mcpServerEntry: { command: string; args: string[] } | null = null;
+    try {
+      mcpServerEntry = getDefaultMcpServerEntry(pluginPath);
+    } catch {
+      // Without a built entrypoint there is no invocation to suggest; checkPluginFiles reports the broken install.
+    }
 
     const checks: DoctorCheckResult[] = [
       checkNodeVersion(process.version, readEnginesNodeRange(packageRoot)),
@@ -1141,6 +1149,8 @@ program
       checkEmbeddingBackend(packageRoot, await loadEmbeddingBackendAvailabilityCheck(packageRoot)),
       checkPathConsistency('claude-memory-layer', process.env.PATH ?? ''),
       checkPathConsistency('claude-memory-layer-mcp', process.env.PATH ?? ''),
+      ...readMcpClientConfigs({ cwd: process.cwd() })
+        .map((read) => checkMcpClientConfig(read, packageRoot, mcpServerEntry)),
       checkProjectStoreAccess(projectStorePath)
     ];
 
@@ -3786,16 +3796,17 @@ mcpCmd
   .description('Install claude-memory-layer MCP server into Claude Desktop config')
   .option('-c, --config-path <path>', 'Claude Desktop config path')
   .option('-n, --server-name <name>', 'MCP server name', 'claude-memory-layer')
-  .option('--command <command>', 'MCP server command', 'claude-memory-layer-mcp')
+  .option('--command <command>', 'MCP server command (default: this node + absolute path to this install\'s MCP entrypoint)')
   .option('--arg <arg...>', 'Arguments for the MCP server command')
   .option('--dry-run', 'Print the updated config without writing it')
-  .action((options: { configPath?: string; serverName: string; command: string; arg?: string[]; dryRun?: boolean }) => {
+  .action((options: { configPath?: string; serverName: string; command?: string; arg?: string[]; dryRun?: boolean }) => {
     try {
       const { configPath, config } = installMcpServer({
         configPath: options.configPath,
         serverName: options.serverName,
         command: options.command,
         args: options.arg ?? [],
+        pluginPath: getPluginPath(),
         dryRun: options.dryRun ?? false
       });
 
@@ -3807,6 +3818,8 @@ mcpCmd
 
       console.log(`\n✅ Installed MCP server '${options.serverName}' into Claude Desktop config.`);
       console.log(`   Config: ${configPath}`);
+      const entry = config.mcpServers?.[options.serverName];
+      console.log(`   Command: ${[entry?.command, ...(entry?.args ?? [])].join(' ')}`);
       console.log('   Restart Claude Desktop to load the new MCP server.\n');
     } catch (error) {
       console.error('MCP install failed:', error);

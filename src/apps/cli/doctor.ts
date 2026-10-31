@@ -20,9 +20,11 @@ import {
   inspectPluginHookTargets,
   PLUGIN_HOOKS,
   REQUIRED_HOOK_FILES,
+  shellQuotePathForNode,
   type ClaudeSettingsWithHooks,
   type PluginHookName
 } from './claude-settings-hooks.js';
+import type { McpClientConfigRead, RegisteredMcpServer } from './mcp-client-config.js';
 
 export type DoctorStatus = 'pass' | 'warn' | 'fail';
 
@@ -238,6 +240,168 @@ export function checkPathConsistency(
       + installs.map((install) => install.resolvedPath).join(', '),
     fix: `Remove the stale install, or reorder PATH so the intended one (usually the first entry above) wins. `
       + `An MCP client and your shell can pick different ones silently.`
+  };
+}
+
+type McpTargetStatus =
+  | { kind: 'current' }
+  | { kind: 'not-absolute'; target: string }
+  | { kind: 'missing-target'; target: string }
+  | { kind: 'other-install'; resolvedPath: string; packageRoot?: string; version?: string }
+  | { kind: 'node-from-path' }
+  | { kind: 'unverifiable' };
+
+/** Nearest ancestor package.json naming this package, e.g. another global install. */
+function findClaudeMemoryPackage(
+  filePath: string,
+  readFileImpl: (p: string) => string
+): { packageRoot: string; version?: string } | undefined {
+  let dir = path.dirname(filePath);
+  while (true) {
+    try {
+      const manifest = JSON.parse(readFileImpl(path.join(dir, 'package.json'))) as { name?: string; version?: string };
+      if (manifest.name === 'claude-memory-layer') return { packageRoot: dir, version: manifest.version };
+    } catch {
+      // no manifest here; keep walking up
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) return undefined;
+    dir = parent;
+  }
+}
+
+function inspectMcpTarget(
+  server: RegisteredMcpServer,
+  packageRoot: string,
+  deps: Required<McpClientCheckDeps>
+): McpTargetStatus {
+  // `node <script>` runs the script; anything else is the binary itself.
+  const runsNode = /^node(?:\.exe)?$/i.test(path.basename(server.command));
+  const target = runsNode ? server.args.find((arg) => !arg.startsWith('-')) : server.command;
+  if (!target) return { kind: 'unverifiable' };
+  if (!path.isAbsolute(target)) return { kind: 'not-absolute', target };
+  if (!deps.existsImpl(target)) return { kind: 'missing-target', target };
+
+  const canonicalPath = (filePath: string): string => {
+    try {
+      return deps.realpathImpl(filePath);
+    } catch {
+      return path.resolve(filePath);
+    }
+  };
+  const resolvedPath = canonicalPath(target);
+  const root = canonicalPath(packageRoot);
+  if (!resolvedPath.startsWith(root + path.sep)) {
+    return { kind: 'other-install', resolvedPath, ...findClaudeMemoryPackage(resolvedPath, deps.readFileImpl) };
+  }
+  if (runsNode) {
+    // A Node other than the one this package was installed with can fail to
+    // load its native modules (better-sqlite3), so the runtime is pinned too.
+    if (!path.isAbsolute(server.command)) return { kind: 'node-from-path' };
+    if (!deps.existsImpl(server.command)) return { kind: 'missing-target', target: server.command };
+  }
+  return { kind: 'current' };
+}
+
+function quoteShellWord(word: string): string {
+  return /^[\w.@%+=:,/-]+$/.test(word) ? word : shellQuotePathForNode(word);
+}
+
+function mcpClientFix(
+  read: McpClientConfigRead,
+  server: RegisteredMcpServer,
+  expected: { command: string; args: string[] }
+): string {
+  const name = quoteShellWord(server.name);
+  const invocation = [expected.command, ...expected.args].map(shellQuotePathForNode).join(' ');
+  if (read.client === 'claude-desktop') {
+    // Run this install's CLI (<dist>/cli/index.js next to <dist>/mcp/index.js)
+    // rather than whichever `claude-memory-layer` comes first on PATH.
+    const cliPath = path.join(path.dirname(path.dirname(expected.args[0])), 'cli', 'index.js');
+    const install = `${shellQuotePathForNode(expected.command)} ${shellQuotePathForNode(cliPath)} mcp install`;
+    return server.name === 'claude-memory-layer' ? install : `${install} --server-name ${name}`;
+  }
+  if (read.client === 'codex') {
+    return `codex mcp remove ${name} && codex mcp add ${name} -- ${invocation}`;
+  }
+  const scope = server.scope ?? 'user';
+  return `claude mcp remove ${name} -s ${scope} && claude mcp add ${name} -s ${scope} -- ${invocation}`;
+}
+
+interface McpClientCheckDeps {
+  existsImpl?: (p: string) => boolean;
+  realpathImpl?: (p: string) => string;
+  readFileImpl?: (p: string) => string;
+}
+
+/**
+ * `checkPathConsistency` only sees PATH; an MCP client launches whatever its
+ * own config names. Resolves each registered command of this server to a
+ * real file and compares it against the running CLI's package root, so a
+ * config still pinned to an old nvm install (or relying on PATH order) is
+ * flagged even when the shell's PATH looks clean. Reads only.
+ */
+export function checkMcpClientConfig(
+  read: McpClientConfigRead,
+  packageRoot: string,
+  expected: { command: string; args: string[] } | null,
+  deps: McpClientCheckDeps = {}
+): DoctorCheckResult {
+  const resolvedDeps: Required<McpClientCheckDeps> = {
+    existsImpl: deps.existsImpl ?? fs.existsSync,
+    realpathImpl: deps.realpathImpl ?? fs.realpathSync,
+    readFileImpl: deps.readFileImpl ?? ((p) => fs.readFileSync(p, 'utf8'))
+  };
+  const name = `mcp:${read.client}`;
+
+  if (read.error) {
+    return {
+      name,
+      status: 'warn',
+      detail: `Could not read ${read.configPath}: ${read.error}`,
+      fix: `Check the syntax of ${read.configPath}.`
+    };
+  }
+  if (read.servers.length === 0) {
+    return { name, status: 'pass', detail: `not registered in ${read.configPath}` };
+  }
+
+  const currentVersion = findClaudeMemoryPackage(path.join(packageRoot, 'package.json'), resolvedDeps.readFileImpl)?.version;
+  const problems: string[] = [];
+  const fixes: string[] = [];
+  let missing = false;
+  for (const server of read.servers) {
+    const label = server.scope ? `${server.name} (${server.scope})` : server.name;
+    const status = inspectMcpTarget(server, packageRoot, resolvedDeps);
+    if (status.kind === 'current') continue;
+    if (status.kind === 'not-absolute') {
+      problems.push(`${label} uses PATH name "${status.target}", which can resolve to a different install than this CLI`);
+    } else if (status.kind === 'node-from-path') {
+      problems.push(`${label} runs this install with node from PATH ("${server.command}"), which may not be the Node it was installed with`);
+    } else if (status.kind === 'missing-target') {
+      missing = true;
+      problems.push(`${label} points to ${status.target}, which does not exist`);
+    } else if (status.kind === 'other-install') {
+      const where = status.packageRoot
+        ? `another install (v${status.version ?? '?'} at ${status.packageRoot})`
+        : `${status.resolvedPath}, outside this CLI's package`;
+      problems.push(`${label} runs ${where}; this CLI is v${currentVersion ?? '?'} at ${packageRoot}`);
+    } else {
+      problems.push(`${label} runs "${[server.command, ...server.args].join(' ')}", which could not be verified`);
+    }
+    if (expected) fixes.push(mcpClientFix(read, server, expected));
+  }
+
+  if (problems.length === 0) {
+    return { name, status: 'pass', detail: `${read.servers.map((server) => server.name).join(', ')} → ${packageRoot}` };
+  }
+  return {
+    name,
+    status: missing ? 'fail' : 'warn',
+    detail: `${read.configPath}: ${problems.join('; ')}`,
+    fix: fixes.length > 0
+      ? fixes.join('; ')
+      : 'Reinstall: npm install -g claude-memory-layer@latest, then re-register the MCP server'
   };
 }
 
