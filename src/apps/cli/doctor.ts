@@ -147,9 +147,17 @@ export function checkHooksInstalled(
   return { name: 'hooks', status: 'pass', detail: 'all hooks installed' };
 }
 
-/** The exports doctor uses from scripts/postinstall-embedding-backend.cjs. */
+/**
+ * The exports doctor uses from scripts/postinstall-embedding-backend.cjs.
+ * Only the healthcheck is required; `doctor --fix` declines when the rest
+ * are missing rather than guessing at an older script's behaviour.
+ */
 export interface EmbeddingBackendScript {
   isEmbeddingBackendAvailable: (rootDir: string) => boolean;
+  runPostinstall?: (options: { rootDir?: string; env?: NodeJS.ProcessEnv }) => { attempted: boolean; success?: boolean };
+  getManagedBackendDir?: (rootDir: string) => string;
+  isSkipRequested?: (env: NodeJS.ProcessEnv) => boolean;
+  createRepairEnv?: (env: NodeJS.ProcessEnv) => NodeJS.ProcessEnv;
 }
 
 export function checkEmbeddingBackend(

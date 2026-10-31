@@ -106,6 +106,12 @@ export class WorkerLock {
     }
   }
 
+  /** Read-only: the pid of a running process that holds this lock, if any. */
+  liveHolderPid(): number | null {
+    const existing = this.readPayload();
+    return existing && this.isProcessRunning(existing.pid) ? existing.pid : null;
+  }
+
   release(): boolean {
     if (!this.acquired || !existsSync(this.lockPath)) return false;
 

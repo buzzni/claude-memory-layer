@@ -50,6 +50,8 @@ claude-memory-layer status
 
 # 설치 후 뭔가 이상하면 환경 진단 (Node 버전, embedding backend, PATH 중복 설치, 훅, 스토어 쓰기 권한)
 claude-memory-layer doctor
+# embedding backend 점검이 실패하면 안전할 때만 재설치하고, 아니면 거절 사유와 수동 명령을 출력
+claude-memory-layer doctor --fix
 
 # Codex에서도 자동 컨텍스트 적재/불러오기를 사용할 때
 claude-memory-layer codex hooks install

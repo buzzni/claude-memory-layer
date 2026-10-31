@@ -218,4 +218,22 @@ describe('WorkerLock', () => {
     expect(owner.release()).toBe(true);
     expect(existsSync(lockPath)).toBe(false);
   });
+
+  it('reports a live holder without touching the lock file', () => {
+    const dir = makeTempDir('cml-worker-lock-holder-');
+    const lockPath = path.join(dir, 'vector-worker.lock');
+    const running = new Set([777]);
+    const isProcessRunning = (pid: number) => running.has(pid);
+
+    expect(new WorkerLock(lockPath, { isProcessRunning }).liveHolderPid()).toBeNull();
+
+    writeFileSync(lockPath, JSON.stringify({ pid: 777, ownerId: 'other', acquiredAt: '2026-10-31T00:00:00.000Z' }));
+    const before = readFileSync(lockPath, 'utf8');
+    expect(new WorkerLock(lockPath, { isProcessRunning }).liveHolderPid()).toBe(777);
+
+    running.clear();
+    expect(new WorkerLock(lockPath, { isProcessRunning }).liveHolderPid()).toBeNull();
+    // A stale lock is only reported, never recovered: that is acquire()'s job.
+    expect(readFileSync(lockPath, 'utf8')).toBe(before);
+  });
 });

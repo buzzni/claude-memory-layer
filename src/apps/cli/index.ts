@@ -79,11 +79,11 @@ import {
   checkPathConsistency,
   checkPluginFiles,
   checkProjectStoreAccess,
-  doctorExitCode,
-  formatDoctorReport,
+  findClaudeMemoryPackage,
   type DoctorCheckResult,
   type EmbeddingBackendScript
 } from './doctor.js';
+import { repairEmbeddingBackend, runDoctor } from './doctor-fix.js';
 import {
   inspectPluginHookTargets,
   mergePluginHooksIntoSettings,
@@ -1129,7 +1129,8 @@ program
 program
   .command('doctor')
   .description('Diagnose the environment: Node version, embedding backend, PATH conflicts, hooks, MCP client configs, store access')
-  .action(async () => {
+  .option('--fix', 'Repair the managed embedding backend when its check fails and repairing is safe; other checks stay report-only')
+  .action(async (options: { fix?: boolean }) => {
     const pluginPath = getPluginPath();
     const packageRoot = path.dirname(pluginPath);
     const settings = loadClaudeSettings();
@@ -1155,8 +1156,19 @@ program
       checkProjectStoreAccess(projectStorePath)
     ];
 
-    console.log(formatDoctorReport(checks));
-    process.exitCode = doctorExitCode(checks);
+    const memoryRoot = path.join(os.homedir(), '.claude-code', 'memory');
+    const { output, exitCode } = await runDoctor(checks, {
+      fix: options.fix === true,
+      repairEmbeddingBackend: (check) => repairEmbeddingBackend(check, {
+        packageRoot,
+        runningPackageRoot: findClaudeMemoryPackage(__filename, (p) => fs.readFileSync(p, 'utf-8'))?.packageRoot,
+        script: embeddingBackendScript,
+        memoryRoot,
+        semanticSocketPath: process.env.CLAUDE_MEMORY_SEMANTIC_SOCKET || path.join(memoryRoot, 'semantic-daemon.sock')
+      })
+    });
+    console.log(output);
+    process.exitCode = exitCode;
   });
 
 /**
