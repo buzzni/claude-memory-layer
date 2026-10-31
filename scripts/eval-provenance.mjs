@@ -179,5 +179,6 @@ export function withProvenanceHeader(markdown, provenance) {
   const lines = formatProvenanceLines(provenance).join('\n');
   const newline = markdown.indexOf('\n');
   if (!markdown.startsWith('#') || newline < 0) return `${lines}\n\n${markdown}`;
-  return `${markdown.slice(0, newline)}\n\n${lines}\n${markdown.slice(newline)}`;
+  const rest = markdown.slice(newline + 1);
+  return `${markdown.slice(0, newline)}\n\n${lines}\n${rest.startsWith('\n') ? '' : '\n'}${rest}`;
 }

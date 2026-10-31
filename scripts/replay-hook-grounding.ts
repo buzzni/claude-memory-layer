@@ -19,8 +19,8 @@ import {
   formatReplayReport,
   loadReplayTurns,
   runHookGroundingReplay,
-  type HookReplayFixture,
-  type ReplayReport
+  type HookGroundingReplayOptions,
+  type HookReplayFixture
 } from '../src/adapters/claude/hooks/hook-grounding-replay.js';
 import { buildProvenance, countRows, warnProvenance, withProvenanceHeader } from './eval-provenance.mjs';
 
@@ -75,73 +75,76 @@ function parseArgs(argv: string[]): ParsedArgs {
   return args;
 }
 
-/** Row counts of the tables the replay reads, plus the replayed traces' time span at the start. */
-function snapshotStore(storagePath: string, limit?: number) {
+/** Tables the replay reads; their row counts are compared before and after the run. */
+const STORE_TABLES = ['events', 'retrieval_traces'];
+
+function readStore<T>(storagePath: string, read: (db: Database.Database) => T): T {
   const db = new Database(path.join(storagePath, 'events.sqlite'), { readonly: true, fileMustExist: true });
   try {
-    const turns = loadReplayTurns(db, limit);
-    return {
-      rows: countRows(db, ['events', 'retrieval_traces']) as Record<string, number | null>,
-      inputRows: turns.length,
-      window: { from: turns[0]?.asOf.toISOString() ?? null, to: turns.at(-1)?.asOf.toISOString() ?? null }
-    };
+    return read(db);
   } finally {
     db.close();
   }
 }
 
+/**
+ * Replay with store row counts taken before and after, and the replayed traces' time span.
+ * Only a real store copy passes storeRef; a fixture store is a throwaway temp dir.
+ */
+async function replayWithSnapshots(options: HookGroundingReplayOptions, storeRef?: string) {
+  const start = readStore(options.storagePath, (db) => ({ rows: countRows(db, STORE_TABLES), turns: loadReplayTurns(db, options.limit) }));
+  const report = await runHookGroundingReplay(options);
+  return {
+    report,
+    store: {
+      ...(storeRef ? { ref: storeRef } : {}),
+      rowsAtStart: start.rows,
+      rowsAtEnd: readStore(options.storagePath, (db) => countRows(db, STORE_TABLES)),
+      inputRows: start.turns.length,
+      window: { from: start.turns[0]?.asOf.toISOString() ?? null, to: start.turns.at(-1)?.asOf.toISOString() ?? null }
+    }
+  };
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const env = { ...process.env };
-  let report: ReplayReport;
-  let start: ReturnType<typeof snapshotStore>;
-  let end: ReturnType<typeof snapshotStore>;
-  let storagePath: string;
+  let run: Awaited<ReturnType<typeof replayWithSnapshots>>;
   let semantic: 'retriever' | 'off';
   if (args.fixturePath) {
     const fixture = JSON.parse(readFileSync(args.fixturePath, 'utf8')) as HookReplayFixture;
-    storagePath = mkdtempSync(path.join(tmpdir(), 'cml-hook-replay-'));
+    const storagePath = mkdtempSync(path.join(tmpdir(), 'cml-hook-replay-'));
     semantic = args.semantic ?? 'off';
     try {
       await buildFixtureStore(fixture, storagePath);
-      start = snapshotStore(storagePath, args.limit);
-      report = await runHookGroundingReplay({
+      run = await replayWithSnapshots({
         storagePath,
         projectHash: fixture.projectHash,
         semantic,
         limit: args.limit,
         storeLabel: fixture.name
       });
-      end = snapshotStore(storagePath, args.limit);
     } finally {
       rmSync(storagePath, { recursive: true, force: true });
     }
   } else {
-    storagePath = path.resolve(args.storePath!);
+    const storagePath = path.resolve(args.storePath!);
     if (!existsSync(path.join(storagePath, 'events.sqlite'))) {
       throw new CliError(`no events.sqlite in ${storagePath}`);
     }
     semantic = args.semantic ?? (existsSync(path.join(storagePath, 'vectors')) ? 'retriever' : 'off');
-    start = snapshotStore(storagePath, args.limit);
-    report = await runHookGroundingReplay({
+    run = await replayWithSnapshots({
       storagePath,
       projectHash: args.projectHash ?? path.basename(storagePath),
       semantic,
       limit: args.limit,
       storeLabel: args.label
-    });
-    end = snapshotStore(storagePath, args.limit);
+    }, storagePath);
   }
+  const { report } = run;
   const provenance = buildProvenance({
     fixtures: args.fixturePath ? [args.fixturePath] : [],
-    store: {
-      // A fixture store is a throwaway temp copy; only a real store copy gets a (hashed) location.
-      ...(args.storePath ? { ref: storagePath } : {}),
-      rowsAtStart: start.rows,
-      rowsAtEnd: end.rows,
-      inputRows: start.inputRows,
-      window: start.window
-    },
+    store: run.store,
     flags: { semantic, limit: args.limit },
     env
   });
