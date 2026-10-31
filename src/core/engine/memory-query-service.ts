@@ -92,6 +92,20 @@ interface MemoryQueryServiceDeps {
   graduation: { getStats(): Promise<Array<{ level: string; count: number }>> };
 }
 
+function normalizeRelativeFtsScores(results: RankedKeywordResult[]): Array<{ event: MemoryEvent; score: number }> {
+  // FTS5/BM25 ranks are ordered ascending: the smallest value is the best.
+  // Normalize best->1 and worst->0. The previous formula inverted this and
+  // filtered exact matches while retaining the weakest tail results.
+  const bestRank = Math.min(...results.map((r) => r.rank));
+  const worstRank = Math.max(...results.map((r) => r.rank));
+  const rankRange = worstRank - bestRank;
+
+  return results.map((r) => ({
+    event: r.event,
+    score: rankRange === 0 ? 1 : 1 - (r.rank - bestRank) / rankRange
+  }));
+}
+
 /**
  * Thin-core query service for lightweight read and maintenance paths.
  *
@@ -233,18 +247,7 @@ export class MemoryQueryService {
     });
     if (results.length === 0) return [];
 
-    // FTS5/BM25 ranks are ordered ascending: the smallest value is the best.
-    // Normalize best->1 and worst->0. The previous formula inverted this and
-    // filtered exact matches while retaining the weakest tail results.
-    const bestRank = Math.min(...results.map((r) => r.rank));
-    const worstRank = Math.max(...results.map((r) => r.rank));
-    const rankRange = worstRank - bestRank;
-
-    return results
-      .map((r) => ({
-        event: r.event,
-        score: rankRange === 0 ? 1 : 1 - (r.rank - bestRank) / rankRange
-      }))
+    return normalizeRelativeFtsScores(results)
       .filter((r) => !options?.minScore || r.score >= options.minScore);
   }
 

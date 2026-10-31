@@ -191,4 +191,28 @@ describe('MemoryQueryService', () => {
       { event: middle, score: 0.5 }
     ]);
   });
+
+  it('keeps the list-relative FTS scores byte-for-byte', async () => {
+    // Golden output of the list-relative normalization. A single weak hit
+    // scores 1 here; that is the current contract, not an endorsement.
+    const golden: Record<string, { ranks: number[]; scores: string }> = {
+      mixed: {
+        ranks: [-176.67, -41.71, -13.67, -3.56, -0.000001],
+        scores: '[1,0.23608988077256976,0.07737589334564943,0.020150557650707834,0]'
+      },
+      tied: { ranks: [-3.56, -3.56], scores: '[1,1]' },
+      single: { ranks: [-3.56], scores: '[1]' },
+      zero: { ranks: [0], scores: '[1]' }
+    };
+
+    for (const { ranks, scores } of Object.values(golden)) {
+      const service = new MemoryQueryService(vi.fn(async () => {}), {
+        keywordSearch: vi.fn(async () => ranks.map((rank) => ({ event: event(), rank }))),
+        getSessionEvents: vi.fn(async () => []),
+        getRecentEvents: vi.fn(async () => [])
+      });
+      const results = await service.keywordSearch('query');
+      expect(JSON.stringify(results.map((r) => r.score))).toBe(scores);
+    }
+  });
 });
