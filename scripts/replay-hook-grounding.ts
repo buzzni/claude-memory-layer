@@ -3,11 +3,12 @@
  * Hook-path grounding replay (#119).
  *
  *   npm run eval:hook-replay
- *   tsx scripts/replay-hook-grounding.ts --store /tmp/copy/projects/<hash> [--limit 120] [--semantic off]
+ *   tsx scripts/replay-hook-grounding.ts --store /tmp/copy/projects/<hash> [--label A] [--limit 120] [--semantic off]
  *
  * --store must point at a COPY of a project store (`sqlite3 events.sqlite ".backup ..."`,
  * plus `vectors/` for the semantic lane). The copy is opened read-only. Output is
- * aggregate-only: no prompt, memory, or response text and no ids.
+ * aggregate-only: no prompt, memory, or response text and no ids. The report is
+ * titled with --label (default "store copy"), never the project hash.
  */
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -24,6 +25,7 @@ interface ParsedArgs {
   fixturePath?: string;
   storePath?: string;
   projectHash?: string;
+  label?: string;
   limit?: number;
   semantic?: 'retriever' | 'off';
   format: 'markdown' | 'json';
@@ -48,6 +50,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     if (arg === '--fixture') args.fixturePath = value();
     else if (arg === '--store') args.storePath = value();
     else if (arg === '--project-hash') args.projectHash = value();
+    else if (arg === '--label') args.label = value();
     else if (arg === '--limit') {
       args.limit = Number(value());
       if (!Number.isInteger(args.limit) || args.limit < 1) throw new CliError('--limit must be a positive integer');
@@ -96,7 +99,8 @@ async function main(): Promise<void> {
       storagePath,
       projectHash: args.projectHash ?? path.basename(storagePath),
       semantic: args.semantic ?? (existsSync(path.join(storagePath, 'vectors')) ? 'retriever' : 'off'),
-      limit: args.limit
+      limit: args.limit,
+      storeLabel: args.label
     });
   }
   // Per-turn results carry event ids, so JSON keeps the aggregates only.

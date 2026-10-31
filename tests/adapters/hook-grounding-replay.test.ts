@@ -1,14 +1,18 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 
+import type { MemoryEvent } from '../../src/core/types.js';
+import type { VectorStore } from '../../src/core/vector-store.js';
 import {
   buildFixtureStore,
   DEFAULT_REPLAY_ARMS,
   formatReplayReport,
   runHookGroundingReplay,
+  timeBoundEventStore,
+  timeBoundVectorStore,
   type HookReplayFixture,
   type ReplayReport
 } from '../../src/adapters/claude/hooks/hook-grounding-replay.js';
@@ -84,6 +88,16 @@ describe('hook-path grounding replay (fixture mode)', () => {
     expect(query('current', 'trace-r2')).toMatch(/^Previous user: How do I publish a release/);
   });
 
+  it('keeps the previous human turn snippet across a reply to an automated notification', () => {
+    expect(query('current', 'trace-r2')).toContain('Previous assistant: Push the version tag');
+    expect(query('current', 'trace-r2')).not.toContain('nightly cache warmup');
+  });
+
+  it('infers the turn of a prompt too short to be stored from the previous stored turn', () => {
+    expect(report.adherenceReconstructedTurns).toBe(1);
+    expect(query('current', 'trace-r2b')).toMatch(/^Previous user: Why does the vector outbox drain stall/);
+  });
+
   it('never lets a lane see an answer written after the trace', () => {
     const laterAnswer = ids.get('r5-answer')!;
     for (const arm of report.arms) {
@@ -116,7 +130,8 @@ describe('hook-path grounding replay (fixture mode)', () => {
     process.env.CLAUDE_MEMORY_FTS_ABSOLUTE_SCORE_EXPERIMENT = 'false';
     delete process.env.CLAUDE_MEMORY_RETRIEVAL_QUERY_SANITIZER_EXPERIMENT;
     try {
-      await runHookGroundingReplay({ storagePath, projectHash: fixture.projectHash, semantic: 'off', limit: 1 });
+      const unlabeled = await runHookGroundingReplay({ storagePath, projectHash: fixture.projectHash, semantic: 'off', limit: 1 });
+      expect(unlabeled.storeLabel).toBe('store copy');
       expect(process.env.CLAUDE_MEMORY_FTS_ABSOLUTE_SCORE_EXPERIMENT).toBe('false');
       expect('CLAUDE_MEMORY_RETRIEVAL_QUERY_SANITIZER_EXPERIMENT' in process.env).toBe(false);
     } finally {
@@ -130,6 +145,8 @@ describe('hook-path grounding replay (fixture mode)', () => {
 
   it('reports aggregates with the counterfactual bias stated, and no content or ids', async () => {
     const markdown = formatReplayReport(report);
+    // The structured report carries the same caveats, so JSON output states them too.
+    expect(report.caveats.some((note) => note.startsWith('**Counterfactual bias.**'))).toBe(true);
     expect(markdown).toContain('**Counterfactual bias.**');
     expect(markdown).toContain('## Historically uninjected turns');
     for (const id of ids.values()) expect(markdown).not.toContain(id);
@@ -160,4 +177,43 @@ describe('lesson time bound', () => {
     expect(await run('2026-10-01T10:02:00.000Z')).not.toContain(lessonId);
     expect(await run('2026-09-30T00:00:00.000Z')).toContain(lessonId);
   }, 60_000);
+});
+
+describe('time-bound stores', () => {
+  const asOf = new Date('2026-10-01T10:00:00.000Z');
+  const at = (iso: string) => ({ timestamp: iso });
+
+  it('over-fetches vector search by the later-event count and keeps the earlier hits in order', async () => {
+    const search = vi.fn().mockResolvedValue([
+      at('2026-10-01T11:00:00.000Z'),
+      at('2026-09-01T00:00:00.000Z'),
+      at('2026-10-01T10:00:00.000Z'),
+      at('2026-09-02T00:00:00.000Z'),
+      at('2026-09-03T00:00:00.000Z')
+    ]);
+    const bounded = timeBoundVectorStore({ search } as unknown as VectorStore, asOf, 3);
+    const results = await bounded.search([0.1], { limit: 2, minScore: 0.5 });
+    expect(search).toHaveBeenCalledWith([0.1], { limit: 5, minScore: 0.5 });
+    expect(results.map((result) => result.timestamp)).toEqual(['2026-09-01T00:00:00.000Z', '2026-09-02T00:00:00.000Z']);
+  });
+
+  it('hides later events from recency, point, session, and keyword reads', async () => {
+    const event = (id: string, iso: string) => ({ id, timestamp: new Date(iso) }) as MemoryEvent;
+    const later = event('later', '2026-10-01T10:00:01.000Z');
+    const earlier = event('earlier', '2026-09-30T00:00:00.000Z');
+    const store = {
+      getRecentEvents: vi.fn().mockResolvedValue([later, earlier]),
+      getEvent: vi.fn(async (id: string) => (id === 'later' ? later : earlier)),
+      getSessionEvents: vi.fn().mockResolvedValue([earlier, later]),
+      keywordSearch: vi.fn().mockResolvedValue([{ event: later, rank: -9 }, { event: earlier, rank: -3 }])
+    };
+    const bounded = timeBoundEventStore(store as never, asOf, 1) as unknown as typeof store;
+
+    expect(await bounded.getRecentEvents(1)).toEqual([earlier]);
+    expect(store.getRecentEvents).toHaveBeenCalledWith(2, undefined);
+    expect(await bounded.getEvent('later')).toBeNull();
+    expect(await bounded.getSessionEvents('s')).toEqual([earlier]);
+    expect(await bounded.keywordSearch('q', 1)).toEqual([{ event: earlier, rank: -3 }]);
+    expect(store.keywordSearch).toHaveBeenCalledWith('q', 2, undefined);
+  });
 });

@@ -10,8 +10,9 @@
  * retrieval experiment flags so their effect is measured on the hook path.
  *
  * The store copy is opened read-only. Events at or after each trace's time are
- * hidden from the lanes: FTS rows are over-fetched by the number of later
- * events and filtered, so the list the hook normalizes is the one it saw then.
+ * hidden from every lane, including the semantic retriever: reads are
+ * over-fetched by the number of later events and filtered, so each list is the
+ * one the hook saw then.
  */
 import Database from 'better-sqlite3';
 import * as path from 'path';
@@ -21,6 +22,7 @@ import { MemoryQueryService } from '../../../core/engine/memory-query-service.js
 import { computeMemoryUsageEvidence, type ResponseDocument } from '../../../core/usefulness-evidence.js';
 import type { MemoryEvent } from '../../../core/types.js';
 import type { RetrievalDisclosureExpansion } from '../../../core/engine/retrieval-disclosure-service.js';
+import type { VectorStore } from '../../../core/vector-store.js';
 import { MemoryService } from '../../../services/memory-service.js';
 import { DISABLED_SHARED_STORE_CONFIG } from '../../../services/memory-service-config.js';
 import type { SemanticMemory } from './semantic-daemon-client.js';
@@ -66,9 +68,11 @@ export interface ReplayTurn {
   prompt: string;
   currentTurn: number;
   adherenceDecision: AdherenceDecision;
+  /** True when no stored adherence metadata covered this turn and it was inferred. */
+  adherenceReconstructed: boolean;
   previousUserPrompt: string | null;
   lastAssistantSnippet: string | null;
-  /** Agent responses in the session after asOf: the evaluator's comparison set. */
+  /** Agent responses in the session after delivery: the evaluator's comparison set. */
   responses: ResponseDocument[];
   historicalQueryText: string;
   historicalSelectedIds: string[];
@@ -115,8 +119,11 @@ export interface ReplayReport {
   turns: number;
   queryReproducedRate: number | null;
   selectionReproducedRate: number | null;
+  adherenceReconstructedTurns: number;
+  /** Safety net for the time bound; anything but 0 means a later event leaked. */
   semanticDroppedAsFuture: number;
   arms: ReplayArmReport[];
+  caveats: string[];
 }
 
 export interface HookGroundingReplayOptions {
@@ -200,9 +207,12 @@ export function loadReplayTurns(db: Database.Database, limit?: number): ReplayTu
   const priorPromptCount = db.prepare(`
     SELECT count(*) AS n FROM events WHERE session_id = ? AND event_type = 'user_prompt' AND timestamp < ?
   `);
+  // Stop keeps the previous human turn's snippet across replies to automated
+  // notifications, so those replies are not the snippet the hook read.
   const lastResponse = db.prepare(`
     SELECT id, content, timestamp, metadata FROM events
     WHERE session_id = ? AND event_type = 'agent_response' AND timestamp < ?
+      AND coalesce(json_extract(metadata, '$.turnTrigger'), 'user') = 'user'
     ORDER BY timestamp DESC LIMIT 1
   `);
   const laterResponses = db.prepare(`
@@ -219,8 +229,11 @@ export function loadReplayTurns(db: Database.Database, limit?: number): ReplayTu
     const stored = promptEvent.get(sessionId, prompt, asOfIso) as EventRow | undefined;
     const previous = previousPrompt.get(sessionId, asOfIso) as EventRow | undefined;
     const adherence = parseAdherence(stored?.metadata ?? null);
+    // Prompts too short to be stored still advance the hook's turn count, so
+    // the previous stored prompt's own turn is a closer floor than a row count.
+    const previousTurn = parseAdherence(previous?.metadata ?? null)?.turn;
     const currentTurn = adherence?.turn
-      ?? (priorPromptCount.get(sessionId, asOfIso) as { n: number }).n + 1;
+      ?? (previousTurn !== undefined ? previousTurn + 1 : (priorPromptCount.get(sessionId, asOfIso) as { n: number }).n + 1);
     const adherenceDecision: AdherenceDecision = adherence
       ? { run: true, reason: adherence.reason }
       : shouldRunAdherenceCheck(currentTurn, prompt, {
@@ -231,6 +244,10 @@ export function loadReplayTurns(db: Database.Database, limit?: number): ReplayTu
           updatedAt: asOfIso
         });
     const last = lastResponse.get(sessionId, asOfIso) as EventRow | undefined;
+    // The evaluator compares responses after delivery. The prompt row is stored
+    // after retrieval and before the envelope is written; without it, skip the
+    // trace's whole second so an earlier response in that second is not counted.
+    const responsesAfter = stored?.timestamp ?? new Date(asOf.getTime() + 1000).toISOString();
     const lastAssistantSnippet = last && asOf.getTime() - new Date(last.timestamp).getTime() <= LAST_SNIPPET_MAX_AGE_MS
       ? last.content.slice(0, LAST_SNIPPET_CHARS)
       : null;
@@ -241,9 +258,10 @@ export function loadReplayTurns(db: Database.Database, limit?: number): ReplayTu
       prompt,
       currentTurn,
       adherenceDecision,
+      adherenceReconstructed: !adherence,
       previousUserPrompt: previous?.content ?? null,
       lastAssistantSnippet,
-      responses: (laterResponses.all(sessionId, asOfIso) as EventRow[]).map((row) => ({ id: row.id, content: row.content })),
+      responses: (laterResponses.all(sessionId, responsesAfter) as EventRow[]).map((row) => ({ id: row.id, content: row.content })),
       historicalQueryText: trace.query_text,
       historicalSelectedIds: parseIds(trace.selected_event_ids)
     };
@@ -254,24 +272,65 @@ function before(asOf: Date) {
   return (event: MemoryEvent) => event.timestamp.getTime() < asOf.getTime();
 }
 
+type EventReader = Partial<Pick<SQLiteEventStore,
+  'keywordSearch' | 'searchGraduatedEvidence' | 'getEventsByTurn' | 'getEvent' | 'getEvents' | 'getRecentEvents' | 'getSessionEvents'
+>>;
+
 /**
- * A query store that hides events at or after asOf. Over-fetching by the
- * number of later events guarantees the first `limit` visible rows are the
- * ones the hook would have received, before MemoryQueryService normalizes them.
+ * An event store that hides events at or after asOf. Ranked and recency reads
+ * are over-fetched by the number of later events, which guarantees the first
+ * `limit` visible rows are the ones the hook would have received.
  */
-function timeBoundQueryStore(store: SQLiteEventStore, asOf: Date, laterEventCount: number): SQLiteEventStore {
+export function timeBoundEventStore<T extends EventReader>(store: T, asOf: Date, laterEventCount: number): T {
   const visible = before(asOf);
-  const bounded = Object.create(store) as SQLiteEventStore;
-  bounded.keywordSearch = async (query, limit = 10, options) =>
-    (await store.keywordSearch(query, limit + laterEventCount, options))
-      .filter((row) => visible(row.event))
-      .slice(0, limit);
-  bounded.searchGraduatedEvidence = async (query, limit = 10) =>
-    (await store.searchGraduatedEvidence(query, limit + laterEventCount))
-      .filter((row) => visible(row.event))
-      .slice(0, limit);
-  bounded.getEventsByTurn = async (turnId) => (await store.getEventsByTurn(turnId)).filter(visible);
+  const bounded = Object.create(store) as T;
+  const reader: EventReader = bounded;
+  if (store.keywordSearch) {
+    reader.keywordSearch = async (query, limit = 10, options) =>
+      (await store.keywordSearch!(query, limit + laterEventCount, options))
+        .filter((row) => visible(row.event))
+        .slice(0, limit);
+  }
+  if (store.searchGraduatedEvidence) {
+    reader.searchGraduatedEvidence = async (query, limit = 10) =>
+      (await store.searchGraduatedEvidence!(query, limit + laterEventCount))
+        .filter((row) => visible(row.event))
+        .slice(0, limit);
+  }
+  if (store.getRecentEvents) {
+    reader.getRecentEvents = async (limit = 100, options) =>
+      (await store.getRecentEvents!(limit + laterEventCount, options)).filter(visible).slice(0, limit);
+  }
+  if (store.getEvent) {
+    reader.getEvent = async (id, options) => {
+      const event = await store.getEvent!(id, options);
+      return event && visible(event) ? event : null;
+    };
+  }
+  if (store.getEvents) reader.getEvents = async (ids, options) => (await store.getEvents!(ids, options)).filter(visible);
+  if (store.getSessionEvents) {
+    reader.getSessionEvents = async (sessionId, options) => (await store.getSessionEvents!(sessionId, options)).filter(visible);
+  }
+  if (store.getEventsByTurn) reader.getEventsByTurn = async (turnId) => (await store.getEventsByTurn!(turnId)).filter(visible);
   return bounded;
+}
+
+export function timeBoundVectorStore(vectorStore: VectorStore, asOf: Date, laterEventCount: number): VectorStore {
+  const bounded = Object.create(vectorStore) as VectorStore;
+  bounded.search = async (queryVector, options = {}) => {
+    const limit = options.limit ?? 5;
+    return (await vectorStore.search(queryVector, { ...options, limit: limit + laterEventCount }))
+      .filter((result) => new Date(result.timestamp).getTime() < asOf.getTime())
+      .slice(0, limit);
+  };
+  return bounded;
+}
+
+/** The service's retriever, whose stores are swapped per turn. */
+function retrieverStores(service: MemoryService): { eventStore: EventReader; vectorStore: VectorStore } {
+  return (service as unknown as {
+    retrievalOrchestrator: { deps: { retriever: { eventStore: EventReader; vectorStore: VectorStore } } };
+  }).retrievalOrchestrator.deps.retriever;
 }
 
 function boundExpansion(expansion: RetrievalDisclosureExpansion | null, asOf: Date): RetrievalDisclosureExpansion | null {
@@ -300,7 +359,7 @@ function selectionDeps(sources: ReplaySources, turn: ReplayTurn, stats: { semant
   const asOfIso = turn.asOf.toISOString();
   const laterEventCount = (sources.db.prepare('SELECT count(*) AS n FROM events WHERE timestamp >= ?')
     .get(asOfIso) as { n: number }).n;
-  const store = timeBoundQueryStore(sources.store, turn.asOf, laterEventCount);
+  const store = timeBoundEventStore(sources.store, turn.asOf, laterEventCount);
   const queryService = new MemoryQueryService(() => store.initialize(), store);
   const memoryService = {
     keywordSearch: (query, options) => queryService.keywordSearch(query, options),
@@ -320,20 +379,30 @@ function selectionDeps(sources: ReplaySources, turn: ReplayTurn, stats: { semant
     const key = `${turn.traceId}\u0000${request.prompt}`;
     let cached = sources.semanticCache.get(key);
     if (!cached) {
-      // Same options as the daemon. Results are over-fetched and filtered
-      // afterwards, because the retriever cannot hide later events itself.
-      const result = await sources.service.retrieveMemories(request.prompt, {
-        topK: request.topK * 4,
-        minScore: request.minScore,
-        sessionId: turn.sessionId,
-        intentRewrite: true,
-        adaptiveRerank: true,
-        projectScopeMode: 'strict',
-        recordTrace: false
-      });
+      // Same options as the daemon, with the retriever's own stores bounded
+      // for the call so fallback and ranking never see a later event.
+      const retriever = retrieverStores(sources.service);
+      const original = { eventStore: retriever.eventStore, vectorStore: retriever.vectorStore };
+      retriever.eventStore = timeBoundEventStore(original.eventStore, turn.asOf, laterEventCount);
+      retriever.vectorStore = timeBoundVectorStore(original.vectorStore, turn.asOf, laterEventCount);
+      let result: Awaited<ReturnType<MemoryService['retrieveMemories']>>;
+      try {
+        result = await sources.service.retrieveMemories(request.prompt, {
+          topK: request.topK,
+          minScore: request.minScore,
+          sessionId: turn.sessionId,
+          intentRewrite: true,
+          adaptiveRerank: true,
+          projectScopeMode: 'strict',
+          recordTrace: false
+        });
+      } finally {
+        retriever.eventStore = original.eventStore;
+        retriever.vectorStore = original.vectorStore;
+      }
       const visible = result.memories.filter((memory) => before(turn.asOf)(memory.event));
       cached = {
-        memories: visible.slice(0, request.topK).map((memory) => ({
+        memories: visible.map((memory) => ({
           type: memory.event.eventType,
           content: memory.event.content,
           id: memory.event.id,
@@ -504,7 +573,7 @@ export async function runHookGroundingReplay(options: HookGroundingReplayOptions
     const baselineIsCurrent = arms[0].flags[FTS_ABSOLUTE_FLAG] === undefined
       && arms[0].flags[QUERY_SANITIZER_FLAG] === undefined;
     return {
-      storeLabel: options.storeLabel ?? path.basename(options.storagePath),
+      storeLabel: options.storeLabel ?? 'store copy',
       semantic: options.semantic,
       turns: turns.length,
       queryReproducedRate: baselineIsCurrent && turns.length > 0
@@ -513,8 +582,10 @@ export async function runHookGroundingReplay(options: HookGroundingReplayOptions
       selectionReproducedRate: baselineIsCurrent && turns.length > 0
         ? turns.filter((turn, i) => sameIds(current[i].injections.map((injection) => injection.id), turn.historicalSelectedIds)).length / turns.length
         : null,
+      adherenceReconstructedTurns: turns.filter((turn) => turn.adherenceReconstructed).length,
       semanticDroppedAsFuture: current.reduce((sum, result) => sum + result.semanticDroppedAsFuture, 0),
-      arms: reports
+      arms: reports,
+      caveats: REPLAY_CAVEATS
     };
   } finally {
     db.close();
@@ -604,9 +675,9 @@ export async function buildFixtureStore(fixture: HookReplayFixture, storagePath:
   return idByKey;
 }
 
-const BIAS_NOTE = [
+const REPLAY_CAVEATS = [
   '**Counterfactual bias.** The responses scored here were written after the hook injected its *historical* selection, so the agent could copy from those memories and not from others. Overlap therefore favors whatever the historical selection contained: the `current` arm is advantaged and a changed arm is understated. The "historically uninjected" rows (turns where the hook injected nothing at the time) carry no such bias and are the fairer comparison.',
-  '**Other approximations.** FTS bm25 statistics, memory levels, and lesson revisions are those of the store copy, not of each trace time. The semantic lane runs in-process with the daemon options, over-fetched and filtered to earlier events. Prompts are the redacted stored text. Lexical overlap also rewards responses that merely repeat query terms.'
+  '**Other approximations.** FTS bm25 statistics, memory levels, lesson revisions, and the adaptive rerank weights are those of the store copy, not of each trace time. The semantic lane runs in-process with the daemon options instead of through the daemon. Prompts are the redacted stored text. Lexical overlap also rewards responses that merely repeat query terms.'
 ];
 
 function fmt(value: number | null, digits = 3): string {
@@ -631,7 +702,8 @@ export function formatReplayReport(report: ReplayReport): string {
     '',
     `- Turns replayed: ${report.turns} (semantic lane: ${report.semantic})`,
     `- Fidelity of \`current\` vs. the recorded trace: query reproduced ${pct(report.queryReproducedRate)}, selection reproduced ${pct(report.selectionReproducedRate)}`,
-    `- Semantic results hidden as later than the trace: ${report.semanticDroppedAsFuture}`,
+    `- Turns whose adherence was inferred (prompt not stored): ${report.adherenceReconstructedTurns}`,
+    `- Semantic results later than the trace (time-bound check, expected 0): ${report.semanticDroppedAsFuture}`,
     '',
     '## All turns',
     '',
@@ -651,7 +723,7 @@ export function formatReplayReport(report: ReplayReport): string {
     '|---|---:|---:|',
     ...report.arms.map((arm) => `| ${arm.arm} | ${arm.queryChangedVsCurrent} | ${arm.selectionChangedVsCurrent} |`),
     '',
-    ...BIAS_NOTE.flatMap((note) => [note, ''])
+    ...report.caveats.flatMap((note) => [note, ''])
   ];
   return lines.join('\n');
 }
