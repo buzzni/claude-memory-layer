@@ -67,7 +67,7 @@ describe('Claude turn reconstructor', () => {
       { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'tool-2' }] } }
     ]);
 
-    expect(messages).toEqual(['first\nsecond']);
+    expect(messages).toEqual([{ text: 'first\nsecond' }]);
   });
 
   it('reads assistant text messages from a transcript file', async () => {
@@ -79,7 +79,7 @@ describe('Claude turn reconstructor', () => {
       'utf8'
     );
 
-    await expect(extractAssistantMessages(transcriptPath)).resolves.toEqual(['final answer']);
+    await expect(extractAssistantMessages(transcriptPath)).resolves.toEqual([{ text: 'final answer' }]);
   });
 
   it('generates deterministic summaries from session events', () => {

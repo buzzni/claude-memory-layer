@@ -1,5 +1,9 @@
 import { readTranscriptTailEntries, type ClaudeTranscriptEntry, type ReadTranscriptTailOptions } from './transcript-reader.js';
 
+export interface AssistantTextMessage {
+  text: string;
+}
+
 export interface SessionSummaryEvent {
   eventType?: string;
   content?: string;
@@ -13,8 +17,8 @@ function isTextContentBlock(value: unknown): value is { type: string; text: stri
 }
 
 /** Extract assistant text messages from parsed Claude transcript entries. */
-export function extractAssistantTextMessages(entries: ClaudeTranscriptEntry[]): string[] {
-  const messages: string[] = [];
+export function extractAssistantTextMessages(entries: ClaudeTranscriptEntry[]): AssistantTextMessage[] {
+  const messages: AssistantTextMessage[] = [];
 
   for (const entry of entries) {
     if (entry.type !== 'assistant') continue;
@@ -28,7 +32,7 @@ export function extractAssistantTextMessages(entries: ClaudeTranscriptEntry[]): 
       .filter(Boolean);
 
     if (textParts.length > 0) {
-      messages.push(textParts.join('\n'));
+      messages.push({ text: textParts.join('\n') });
     }
   }
 
@@ -39,7 +43,7 @@ export function extractAssistantTextMessages(entries: ClaudeTranscriptEntry[]): 
 export async function extractAssistantMessages(
   transcriptPath: string,
   options?: ReadTranscriptTailOptions
-): Promise<string[]> {
+): Promise<AssistantTextMessage[]> {
   const entries = await readTranscriptTailEntries(transcriptPath, options);
   return extractAssistantTextMessages(entries);
 }

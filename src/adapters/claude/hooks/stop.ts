@@ -58,7 +58,7 @@ export async function main(): Promise<string> {
 
     // Store each assistant response
     for (let i = 0; i < assistantMessages.length; i++) {
-      const text = assistantMessages[i];
+      const { text } = assistantMessages[i];
       const isLast = i === lastIdx;
 
       // Apply privacy filter
@@ -91,7 +91,7 @@ export async function main(): Promise<string> {
     // (adherence lastPrompt is preserved the same way).
     const isAutomatedTurn = turnTrigger !== undefined && turnTrigger !== 'user';
     if (assistantMessages.length > 0 && !isAutomatedTurn) {
-      const lastMessage = assistantMessages[assistantMessages.length - 1];
+      const lastMessage = assistantMessages[assistantMessages.length - 1].text;
       writeLastAssistantSnippet(input.session_id, lastMessage);
     }
 

@@ -21,7 +21,7 @@ vi.mock('../../src/services/memory-service.js', () => ({
   getLightweightMemoryServiceForProject: () => service
 }));
 vi.mock('../../src/adapters/claude/transcript/turn-reconstructor.js', () => ({
-  extractAssistantMessages: vi.fn(async () => transcript.messages)
+  extractAssistantMessages: vi.fn(async () => transcript.messages.map((text) => ({ text })))
 }));
 vi.mock('../../src/adapters/claude/hooks/semantic-daemon-client.js', () => ({
   scheduleSessionSummary: vi.fn().mockResolvedValue(undefined)
