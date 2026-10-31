@@ -5,6 +5,7 @@ import { rankCuratedLessons } from '../src/extensions/mcp/lesson-ranking.js';
 import { hybridLessonStatus, rankCuratedLessonsHybrid, warmHybridLessonCache } from '../src/extensions/mcp/hybrid-lesson-ranking.js';
 import type { MemoryLesson } from '../src/core/types.js';
 import { normalizeTransformersNamespace, resolveTransformersModuleSpecifier, Embedder } from '../src/extensions/vector/embedder.js';
+import { guardFixtureRead } from './eval-split.js';
 
 
 /** Frozen ranking thresholds; missing observations cannot certify a pass. */
@@ -26,8 +27,11 @@ export function lessonRecallGate(metrics: Record<string, unknown>): { passed: bo
 }
 
 async function main(): Promise<void> {
-  const [fixturePath, outputPath] = process.argv.slice(2);
-  if (!fixturePath || !outputPath) throw new Error('usage: tsx scripts/evaluate-lesson-hybrid-heldout.ts <heldout.json> <result.json>');
+  const finalReport = process.argv.includes('--final-report');
+  const [fixturePath, outputPath] = process.argv.slice(2).filter((arg) => arg !== '--final-report');
+  if (!fixturePath || !outputPath) throw new Error('usage: tsx scripts/evaluate-lesson-hybrid-heldout.ts <fixture.json> <result.json> [--final-report]');
+  // Held-out (test split) data is read only by an explicit final report run.
+  guardFixtureRead(fixturePath, { finalReport });
   const fixture = JSON.parse(readFileSync(fixturePath, 'utf8')) as { lessons: Array<Record<string, unknown>>; cases: Array<{ id: string; query: string; expected: string[]; category?: string }> };
   const cacheDir = resolve('.cache/lesson-hybrid-e5');
   process.env.CLAUDE_MEMORY_LESSON_HYBRID_EXPERIMENT = 'true';

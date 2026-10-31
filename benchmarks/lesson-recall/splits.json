@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "rule": "dev = calibration: thresholds and grids may be chosen on it. test = release/held-out: read only by an explicit --final-report run, never tuned against. Fixtures are matched by SHA-256 so their frozen bytes stay unchanged; an edited fixture has no split until it is registered again.",
+  "fixtures": [
+    {
+      "file": "calibration-v1.json",
+      "sha256": "1e1147b35b5d3b7e14d34d27a20b22ecad77da277dcb9ff18e3f728cb2cb0514",
+      "split": "dev",
+      "basis": "Declares itself calibration-only; froze cosine .82 / margin .03 (specs/lesson-recall-hooks/context.md §13)."
+    },
+    {
+      "file": "calibration-v3-independent.json",
+      "sha256": "e98f3c05833b88b90e1220b21547e3975396c5a49ac7da8ef72145b4d80e1a45",
+      "split": "dev",
+      "basis": "Approved R3 calibration; the --calibrate-e5 grid froze cosine .829 / margin .026 on it (context.md §15)."
+    },
+    {
+      "file": "release-v1-independent.json",
+      "sha256": "78e9218fade59f709c36e1d0e2baa2a3f4afd9f7166a7f36f4801d7c8881011c",
+      "split": "test",
+      "basis": "Independent release fixture frozen before evaluation and already measured; exploratory, labels must not be tuned (context.md §9)."
+    },
+    {
+      "file": "release-v2-independent.json",
+      "sha256": "c9cf7ceab43ab4b5ae61c07d8312d070b7d670346c3601073dd4460a0e314b4c",
+      "split": "test",
+      "basis": "Independent release fixture frozen before evaluation and measured; kept as a regression set, no tuning (context.md §10)."
+    },
+    {
+      "file": "recall-evaluation.json",
+      "sha256": "0cc4f898bd908428ab39f6762d95db59630edfe50142ce310c9cb2a2f7244576",
+      "split": "test",
+      "external": true,
+      "basis": "Original 60/40 held-out fixture kept outside this repository (Desktop specs/lesson-learning-reliability); the results/heldout-*.json runs read it."
+    }
+  ]
+}
