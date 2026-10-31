@@ -162,7 +162,7 @@ describe('replay fixture evaluator', () => {
         },
         {
           queryId: 'q-command-artifact-no-match',
-          query: 'local-command-stdout command-name opus',
+          query: '<command-name>/model</command-name>\n<local-command-stdout>opus</local-command-stdout>',
           expectation: 'no_match',
           expectedIds: [],
           expectedRelevance: {},

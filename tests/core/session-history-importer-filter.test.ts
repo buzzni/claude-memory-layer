@@ -3,8 +3,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { isHarnessBoilerplate } from '../../src/core/harness-boilerplate.js';
 import {
-  isClaudeLocalCommandArtifact,
   isWorthStoringPrompt,
   SessionHistoryImporter,
   type ImportResult
@@ -40,7 +40,7 @@ describe('session history importer prompt filtering', () => {
   it('drops Claude local-command artifacts that dilute retrieval quality', () => {
     const artifact = `<command-name>/model</command-name>\n<local-command-stdout>Using model opus</local-command-stdout>`;
 
-    expect(isClaudeLocalCommandArtifact(artifact)).toBe(true);
+    expect(isHarnessBoilerplate(artifact)).toBe(true);
     expect(isWorthStoringPrompt(artifact)).toBe(false);
   });
 
