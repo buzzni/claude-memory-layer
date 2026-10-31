@@ -14,6 +14,10 @@ function assistantLine(text: string): string {
   return `${JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text }] } })}\n`;
 }
 
+function promptLine(text: string): string {
+  return `${JSON.stringify({ type: 'user', message: { content: text } })}\n`;
+}
+
 function toolResultLine(bytes: number): string {
   return `${JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', content: 'x'.repeat(bytes) }] } })}\n`;
 }
@@ -44,6 +48,25 @@ afterEach(() => {
 describe('Stop transcript cursor', () => {
   it('returns nothing for a missing transcript', () => {
     expect(texts(read())).toEqual([]);
+  });
+
+  it('reads the whole current turn but no earlier turn when the session has no cursor', () => {
+    writeFileSync(transcriptPath, [
+      promptLine('earlier request'),
+      assistantLine('earlier answer'),
+      promptLine('current request'),
+      assistantLine('current first'),
+      toolResultLine(300 * 1024),
+      assistantLine('current final')
+    ].join(''));
+
+    expect(texts(read())).toEqual(['current first', 'current final']);
+  });
+
+  it('treats a tool result as part of the turn, not as a new prompt', () => {
+    writeFileSync(transcriptPath, promptLine('request') + assistantLine('before tool') + toolResultLine(10) + assistantLine('after tool'));
+
+    expect(texts(read())).toEqual(['before tool', 'after tool']);
   });
 
   it('reads only what was appended after the committed cursor', () => {
@@ -94,7 +117,7 @@ describe('Stop transcript cursor', () => {
     expect(cursorOffset()).toBe(statSync(transcriptPath).size);
   });
 
-  it('falls back to the tail when a new, longer file replaces the transcript at the same path', () => {
+  it('falls back to the current turn when a new, longer file replaces the transcript at the same path', () => {
     writeFileSync(transcriptPath, assistantLine('old one') + assistantLine('old two'));
     read().commit();
 
@@ -104,13 +127,13 @@ describe('Stop transcript cursor', () => {
     expect(texts(read())).toEqual(['new one', 'new two', 'new three']);
   });
 
-  it('falls back to the tail when the transcript is shorter than the cursor', () => {
+  it('falls back to the current turn when the transcript is shorter than the cursor', () => {
     writeFileSync(transcriptPath, assistantLine('one') + assistantLine('two') + assistantLine('three'));
     read().commit();
 
-    writeFileSync(transcriptPath, assistantLine('compacted'));
+    writeFileSync(transcriptPath, promptLine('summary of the compacted conversation') + assistantLine('compacted'));
 
-    expect(texts(read({ tailBytes: 1024 }))).toEqual(['compacted']);
+    expect(texts(read())).toEqual(['compacted']);
   });
 
   it('does not move the cursor back when an older concurrent Stop commits last', () => {
@@ -134,7 +157,7 @@ describe('Stop transcript cursor', () => {
     read().commit();
     writeFileSync(transcriptPath, assistantLine('short'));
 
-    read({ tailBytes: 1024 }).commit();
+    read().commit();
 
     expect(cursorOffset()).toBe(statSync(transcriptPath).size);
   });

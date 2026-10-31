@@ -11,7 +11,9 @@
  * The cursor is an optimisation over the store's dedupe key, not a guarantee
  * against duplicates: re-reading a range stores nothing new. That is what
  * makes every fallback safe — a missing, stale or contended cursor only
- * means some bytes are read again.
+ * means some bytes are read again. Without a usable cursor (first Stop of a
+ * session, or a truncated, compacted or replaced transcript) Stop reads the
+ * current turn only, so earlier turns are not attributed to this one.
  */
 
 import { createHash, randomUUID } from 'crypto';
@@ -20,10 +22,9 @@ import * as os from 'os';
 import * as path from 'path';
 
 import { readTranscriptRange } from './transcript-reader.js';
-import { extractAssistantTextMessages, type AssistantTextMessage } from './turn-reconstructor.js';
+import type { ClaudeTranscriptEntry } from './transcript-reader.js';
+import { extractAssistantTextMessages, isUserPromptEntry, type AssistantTextMessage } from './turn-reconstructor.js';
 
-/** Scanned when the session has no usable cursor; the window Stop always used. */
-const TAIL_BYTES = 200 * 1024;
 /** Upper bound for one Stop; a larger backlog keeps only its newest bytes. */
 const MAX_READ_BYTES = 8 * 1024 * 1024;
 /** Bytes before the offset whose hash ties a cursor to the transcript it was taken from. */
@@ -39,7 +40,6 @@ interface StopCursor {
 }
 
 export interface StopTranscriptReadOptions {
-  tailBytes?: number;
   maxReadBytes?: number;
 }
 
@@ -91,7 +91,7 @@ function isCursorValid(cursor: StopCursor, transcriptPath: string, size: number)
   }
 }
 
-/** Drop cursors of sessions not seen for two weeks; a resumed one restarts from the tail. */
+/** Drop cursors of sessions not seen for two weeks; a resumed one restarts from its current turn. */
 function pruneStaleCursors(): void {
   try {
     const now = Date.now();
@@ -107,6 +107,18 @@ function pruneStaleCursors(): void {
   } catch {
     // Non-critical
   }
+}
+
+/**
+ * Without a cursor, earlier turns were already handled by the Stops before
+ * this one (or by the tail-window Stop of an older version), so only the
+ * current turn is read: the entries after its prompt.
+ */
+function currentTurnEntries(entries: ClaudeTranscriptEntry[]): ClaudeTranscriptEntry[] {
+  for (let i = entries.length - 1; i >= 0; i--) {
+    if (isUserPromptEntry(entries[i])) return entries.slice(i + 1);
+  }
+  return entries;
 }
 
 /**
@@ -129,7 +141,7 @@ function writeCursor(cursor: StopCursor): void {
     fs.writeFileSync(tempPath, JSON.stringify(cursor));
     fs.renameSync(tempPath, filePath);
   } catch (error) {
-    // Non-critical: the next Stop re-reads from the previous cursor or the tail.
+    // Non-critical: the next Stop re-reads from the previous cursor or the current turn.
     if (process.env.CLAUDE_MEMORY_DEBUG) {
       console.error('Failed to write stop transcript cursor:', error);
     }
@@ -138,14 +150,13 @@ function writeCursor(cursor: StopCursor): void {
 
 /**
  * Read the assistant messages appended to the transcript since this session's
- * last committed Stop. Without a usable cursor it reads the tail window.
+ * last committed Stop. Without a usable cursor it reads the current turn.
  */
 export function readUnprocessedAssistantMessages(
   sessionId: string,
   transcriptPath: string,
   options: StopTranscriptReadOptions = {}
 ): StopTranscriptBatch {
-  const tailBytes = options.tailBytes ?? TAIL_BYTES;
   const maxReadBytes = options.maxReadBytes ?? MAX_READ_BYTES;
 
   try {
@@ -155,10 +166,11 @@ export function readUnprocessedAssistantMessages(
     const previous = readCursor(sessionId);
     if (!previous) pruneStaleCursors();
 
-    const start = previous && isCursorValid(previous, transcriptPath, size)
-      ? Math.max(previous.offset, size - maxReadBytes)
-      : Math.max(0, size - tailBytes);
-    const { entries, endOffset } = readTranscriptRange(transcriptPath, start, size);
+    const resume = previous !== null && isCursorValid(previous, transcriptPath, size);
+    const start = Math.max(resume ? previous.offset : 0, size - maxReadBytes);
+    const range = readTranscriptRange(transcriptPath, start, size);
+    const entries = resume ? range.entries : currentTurnEntries(range.entries);
+    const { endOffset } = range;
     // Anchor what was read now, so a file replaced before commit cannot be mistaken for it.
     const cursor: StopCursor = {
       sessionId,

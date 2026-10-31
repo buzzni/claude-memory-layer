@@ -184,21 +184,22 @@ describe('Stop hook transcript cursor', () => {
     expect(first.filter((row) => authoredAt.has(row.content))).toHaveLength(turn.texts.length);
   });
 
-  it('starts from the 200KB tail on the first Stop of a session and reads only new turns afterwards', async () => {
-    const turn = largeTurn('uncursored');
-    writeFileSync(transcriptPath, jsonl(turn.entries), 'utf8');
+  it('reads the whole current turn on the first Stop of a session but no earlier turn', async () => {
+    const earlier = largeTurn('earlier');
+    const current = largeTurn('current');
+    writeFileSync(transcriptPath, jsonl([...earlier.entries, ...current.entries]), 'utf8');
 
     await runStop();
 
-    // Without a cursor only the tail is scanned, as before.
-    expect(storedContents()).toEqual([turn.texts[2]]);
+    // Earlier turns belong to the Stops that already ran for them.
+    expect(storedContents()).toEqual([...current.texts].sort());
     expect(existsSync(cursorPath())).toBe(true);
 
-    const next = largeTurn('cursored');
+    const next = largeTurn('next');
     appendTurn(next.entries);
     await runStop();
 
-    expect(storedContents()).toEqual([turn.texts[2], ...next.texts].sort());
+    expect(storedContents()).toEqual([...current.texts, ...next.texts].sort());
   });
 
   it('resets the cursor without duplicates when the transcript is replaced by a shorter one', async () => {
