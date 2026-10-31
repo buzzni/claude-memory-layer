@@ -212,8 +212,12 @@ import {
 } from '../../core/productivity-health-report.js';
 import {
   createMongoSyncPostProcessor,
+  formatMongoSyncAuditOutcome,
+  mongoSyncAuditExitCode,
   resolveMongoSyncProcessOptions,
-  resolveMongoSyncTarget
+  resolveMongoSyncTarget,
+  runMongoSyncAudit,
+  type RawMongoSyncTargetOptions
 } from './mongo-sync-command.js';
 import { WorkerLock } from '../../core/worker-lock.js';
 import {
@@ -2672,7 +2676,7 @@ cleanupCommand
 /**
  * Mongo Sync command - sync local SQLite events with a shared MongoDB database (optional)
  */
-program
+const mongoSyncCommand = program
   .command('mongo-sync')
   .description('Sync events with MongoDB for multi-server collaboration (optional)')
   .option('-p, --project <path>', 'Project path (defaults to cwd)')
@@ -2784,6 +2788,21 @@ program
       console.error('[mongo-sync] Failed:', error);
       process.exit(1);
     }
+  });
+
+/**
+ * Mongo sync audit - read-only per-instanceId comparison of the local store with MongoDB.
+ * Takes the parent's -p/--mongo-uri/--mongo-db/--mongo-project so it checks exactly what mongo-sync syncs.
+ */
+mongoSyncCommand
+  .command('audit')
+  .description('Compare local events with MongoDB per source instance and report documents a pull missed (read-only; uses mongo-sync -p/--mongo-uri/--mongo-db/--mongo-project)')
+  .option('--json', 'Output as JSON')
+  .action(async function (this: Command) {
+    const options = this.optsWithGlobals<RawMongoSyncTargetOptions & { json?: boolean }>();
+    const outcome = await runMongoSyncAudit(options);
+    console.log(formatMongoSyncAuditOutcome(outcome, options.json === true));
+    process.exitCode = mongoSyncAuditExitCode(outcome);
   });
 
 /**

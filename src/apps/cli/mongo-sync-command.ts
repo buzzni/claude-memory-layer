@@ -1,5 +1,15 @@
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 
+import { MongoClient } from 'mongodb';
+
+import {
+  auditMongoSync,
+  type MongoAuditCollection,
+  type MongoSyncAuditReport
+} from '../../core/mongo-sync-audit.js';
+import { redactMongoUri } from '../../core/mongo-sync-config.js';
+import { SQLiteEventStore } from '../../core/sqlite-event-store.js';
 import {
   getProjectStoragePath as defaultGetProjectStoragePath,
   hashProjectPath as defaultHashProjectPath
@@ -86,7 +96,28 @@ export interface MongoSyncTarget {
   projectKey: string;
 }
 
+export interface MongoAuditConnection {
+  collection: MongoAuditCollection;
+  close(): Promise<void>;
+}
+
+export interface MongoSyncAuditDeps {
+  env?: NodeJS.ProcessEnv;
+  cwd?: string;
+  getProjectStoragePath?: (projectPath: string) => string;
+  connect?: (uri: string, dbName: string) => Promise<MongoAuditConnection>;
+}
+
+export interface MongoSyncAuditOutcome {
+  status: 'pass' | 'warn' | 'fail' | 'skip';
+  projectKey: string;
+  detail: string;
+  report?: MongoSyncAuditReport;
+}
+
 const DEFAULT_PROCESS_INTERVAL_MS = 120_000;
+const ORIGIN_CURSOR_ISSUE_URL = 'https://github.com/buzzni/claude-memory-layer/issues/142';
+const MAX_LISTED_INSTANCES = 20;
 
 /** Flags win over env; the remote project key defaults to the project directory name. */
 export function resolveMongoSyncTarget(
@@ -225,4 +256,116 @@ function parsePositiveIntegerOption(raw: string, flagName: string): number {
     throw new Error(`${flagName} must be a positive integer number of milliseconds`);
   }
   return parsed;
+}
+
+async function connectMongoForAudit(uri: string, dbName: string): Promise<MongoAuditConnection> {
+  const client = new MongoClient(uri, { appName: 'claude-memory-layer', serverSelectionTimeoutMS: 5000 });
+  try {
+    await client.connect();
+  } catch (error) {
+    await client.close().catch(() => undefined);
+    throw error;
+  }
+  return { collection: client.db(dbName).collection('cml_events'), close: () => client.close() };
+}
+
+function summarizeAudit(report: MongoSyncAuditReport): string {
+  if (report.status === 'pass') return `all ${report.mongoTotal} Mongo documents are in the local store`;
+  const parts: string[] = [];
+  if (report.lostBelowPullCursor > 0) parts.push(`${report.lostBelowPullCursor} below the pull cursor that no pull will read`);
+  if (report.notYetPulled > 0) parts.push(`${report.notYetPulled} not pulled yet`);
+  if (report.localOnly > 0) parts.push(`${report.localOnly} local events not in Mongo (${report.pendingPush} pending push)`);
+  return parts.join('; ');
+}
+
+/**
+ * Read-only: opens the local store read-only and sends Mongo only counts and grouped aggregations. Without a Mongo
+ * configuration or a local store there is nothing to compare, so the audit reports skip instead of failing.
+ */
+export async function runMongoSyncAudit(
+  options: RawMongoSyncTargetOptions,
+  deps: MongoSyncAuditDeps = {}
+): Promise<MongoSyncAuditOutcome> {
+  const target = resolveMongoSyncTarget(options, deps.env ?? process.env, deps.cwd ?? process.cwd());
+  const { projectKey, uri, dbName } = target;
+  if (!uri || !dbName) {
+    return {
+      status: 'skip',
+      projectKey,
+      detail: 'Mongo sync is not configured (--mongo-uri/--mongo-db or CLAUDE_MEMORY_MONGO_URI/CLAUDE_MEMORY_MONGO_DB)'
+    };
+  }
+
+  const getProjectStoragePath = deps.getProjectStoragePath ?? defaultGetProjectStoragePath;
+  const dbPath = path.join(getProjectStoragePath(target.projectPath), 'events.sqlite');
+  if (!fs.existsSync(dbPath)) {
+    return { status: 'skip', projectKey, detail: `no local store at ${dbPath}` };
+  }
+
+  const store = new SQLiteEventStore(dbPath, { readonly: true });
+  let connection: MongoAuditConnection | undefined;
+  try {
+    connection = await (deps.connect ?? connectMongoForAudit)(uri, dbName);
+    const report = await auditMongoSync(store, connection.collection, { projectKey });
+    return { status: report.status, projectKey, detail: summarizeAudit(report), report };
+  } catch (error) {
+    const safeUri = redactMongoUri(uri);
+    const message = (error instanceof Error ? error.message : String(error)).split(uri).join(safeUri);
+    return { status: 'fail', projectKey, detail: `Mongo audit failed (${safeUri}, db=${dbName}): ${message}` };
+  } finally {
+    await connection?.close().catch(() => undefined);
+    await store.close();
+  }
+}
+
+export function mongoSyncAuditExitCode(outcome: MongoSyncAuditOutcome): number {
+  return outcome.status === 'fail' ? 1 : 0;
+}
+
+function formatInstance(instanceId: string | null, hostname: string | null): string {
+  return `${instanceId ?? '(no instanceId)'} (${hostname ?? 'unknown host'})`;
+}
+
+export function formatMongoSyncAuditOutcome(outcome: MongoSyncAuditOutcome, json: boolean): string {
+  if (json) return JSON.stringify(outcome, null, 2);
+
+  const icon = { pass: '✅', warn: '⚠️ ', fail: '❌', skip: '⏭️ ' }[outcome.status];
+  const lines = ['', `Mongo sync audit (project=${outcome.projectKey})`, '', `  ${icon} ${outcome.status}: ${outcome.detail}`];
+  const report = outcome.report;
+  if (!report) return [...lines, ''].join('\n');
+
+  lines.push(
+    `  Mongo documents: ${report.mongoTotal}  local events: ${report.localTotal}  missing locally: ${report.missing}`,
+    `  Cursors: push rowid=${report.pushCursor}  pull seq=${report.pullCursor}`
+      + (report.pullWindowStart ? `  (next pull re-reads inserts since ${report.pullWindowStart.toISOString()})` : '')
+  );
+
+  const gaps = report.instances.filter((instance) => instance.missing > 0);
+  if (gaps.length > 0) {
+    lines.push('', `  Instances with missing documents (${gaps.length} of ${report.instances.length}):`);
+    for (const instance of gaps.slice(0, MAX_LISTED_INSTANCES)) {
+      lines.push(`    ${formatInstance(instance.instanceId, instance.hostname)}  mongo=${instance.mongo} local=${instance.local}`
+        + ` missing=${instance.missing}  seq ${instance.firstSeq}-${instance.lastSeq}`);
+    }
+    if (gaps.length > MAX_LISTED_INSTANCES) lines.push(`    ... and ${gaps.length - MAX_LISTED_INSTANCES} more (--json lists all)`);
+  }
+
+  const gap = report.oldestGap;
+  if (gap) {
+    lines.push(
+      '',
+      `  Oldest gap below the pull cursor: seq ${gap.fromSeq}-${gap.toSeq}, ${gap.count} document(s),`
+        + ` inserted ${new Date(gap.firstInsertedAt).toISOString()} .. ${new Date(gap.lastInsertedAt).toISOString()}`,
+      ...gap.instances.map((instance) => `    from ${formatInstance(instance.instanceId, instance.hostname)}: ${instance.count}`)
+    );
+  }
+
+  const fixes: string[] = [];
+  if (report.notYetPulled > 0) fixes.push('claude-memory-layer mongo-sync --direction pull');
+  if (report.pendingPush > 0) fixes.push('claude-memory-layer mongo-sync --direction push');
+  if (fixes.length > 0) lines.push('', `  Fix: ${fixes.join('  /  ')}`);
+  if (report.lostBelowPullCursor > 0) {
+    lines.push(`  No repair command for documents below the pull cursor yet; root fix: ${ORIGIN_CURSOR_ISSUE_URL}`);
+  }
+  return [...lines, ''].join('\n');
 }
