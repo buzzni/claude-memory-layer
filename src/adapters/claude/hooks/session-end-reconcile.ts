@@ -15,13 +15,27 @@
  */
 
 import type { AppendResult, MemoryEvent } from '../../../core/types.js';
-import { readTurnStateDetails } from '../../../core/turn-state.js';
+import type { TurnTrigger } from '../../../core/turn-state.js';
 import { readTranscriptTurns } from '../transcript/transcript-turns.js';
 import { isStorableAgentResponse, normalizeAgentResponse, readMinAgentResponseLength } from './agent-response-normalization.js';
 
 export interface ReconcileMemoryService {
   getSessionHistory(sessionId: string): Promise<MemoryEvent[]>;
   storeAgentResponse(sessionId: string, content: string, metadata?: Record<string, unknown>): Promise<AppendResult>;
+}
+
+/**
+ * The session as it was at SessionEnd. The worker runs later, and a session
+ * resumed in between appends to the same transcript and opens new turns;
+ * what it writes belongs to that session's own Stops.
+ */
+export interface SessionEndSnapshot {
+  /** Transcript size at SessionEnd; later bytes are not read. */
+  transcriptBytes: number;
+  /** When the session ended; the last turn's events end here. */
+  endedAt: string;
+  /** The turn still open at SessionEnd, if no successful Stop cleared it. */
+  openTurn: { turnId: string; turnTrigger?: TurnTrigger } | null;
 }
 
 export interface SessionTranscriptReconcileResult {
@@ -66,10 +80,11 @@ function turnIdAt(marks: TurnMark[], start: number, end: number, at: number): st
 export async function reconcileSessionTranscript(
   memoryService: ReconcileMemoryService,
   sessionId: string,
-  transcriptPath: string
+  transcriptPath: string,
+  snapshot: SessionEndSnapshot
 ): Promise<SessionTranscriptReconcileResult> {
   const result: SessionTranscriptReconcileResult = { recovered: 0, alreadyStored: 0, failed: 0 };
-  const turns = await readTranscriptTurns(transcriptPath, sessionId);
+  const turns = await readTranscriptTurns(transcriptPath, sessionId, { endOffset: snapshot.transcriptBytes });
   if (!turns.some((turn) => turn.messages.length > 0)) return result;
 
   const events = await memoryService.getSessionHistory(sessionId);
@@ -77,13 +92,13 @@ export async function reconcileSessionTranscript(
     events.filter((event) => event.eventType === 'agent_response').map((event) => event.content)
   );
   const marks = turnMarks(events);
-  const openTurn = readTurnStateDetails(sessionId);
+  const endedAt = parseTime(snapshot.endedAt) ?? Infinity;
   const minResponseLength = readMinAgentResponseLength();
 
   for (let t = 0; t < turns.length; t++) {
     const turn = turns[t];
     const start = parseTime(turn.startedAt) ?? -Infinity;
-    const end = parseTime(turns[t + 1]?.startedAt) ?? Infinity;
+    const end = parseTime(turns[t + 1]?.startedAt) ?? endedAt;
     const isLastTurn = t === turns.length - 1;
 
     for (let i = 0; i < turn.messages.length; i++) {
@@ -99,7 +114,7 @@ export async function reconcileSessionTranscript(
       // The turn the session ended in may have left no event yet; its turn
       // state is still open because no successful Stop cleared it.
       const turnId = turnIdAt(marks, start, end, parseTime(timestamp) ?? end)
-        ?? (isLastTurn ? openTurn?.turnId : undefined);
+        ?? (isLastTurn ? snapshot.openTurn?.turnId : undefined);
       const stored = await memoryService.storeAgentResponse(sessionId, content, {
         privacy,
         ...(timestamp ? { originalTimestamp: timestamp } : {}),

@@ -15,21 +15,37 @@ const validInput: SessionEndInput = {
 };
 
 describe('Claude SessionEnd hook', () => {
-  it('captures the registration current at SessionEnd in the job it hands off', () => {
-    expect(normalizeClaudeSessionEndJob(validInput, () => 'registration-1')).toEqual({
+  const atSessionEnd = {
+    getRegistrationId: () => 'registration-1',
+    getOpenTurn: () => ({ turnId: 'turn-open', turnTrigger: 'task_notification' as const }),
+    getTranscriptBytes: () => 4096,
+    now: () => new Date('2026-10-31T12:00:00.000Z')
+  };
+
+  it('captures the state at SessionEnd in the job it hands off, so a resume cannot change it', () => {
+    expect(normalizeClaudeSessionEndJob(validInput, atSessionEnd)).toEqual({
       sessionId: 'session-1',
       registrationId: 'registration-1',
       transcriptPath: '/tmp/claude/session-1.jsonl',
-      projectPath: '/repo/project'
+      projectPath: '/repo/project',
+      snapshot: {
+        transcriptBytes: 4096,
+        endedAt: '2026-10-31T12:00:00.000Z',
+        openTurn: { turnId: 'turn-open', turnTrigger: 'task_notification' }
+      }
     });
   });
 
   it('still ends a session without a transcript or with a relative project scope, but does not reconcile it', () => {
-    expect(normalizeClaudeSessionEndJob({ session_id: 'session-1' }, () => null))
-      .toEqual({ sessionId: 'session-1', registrationId: null });
-    expect(normalizeClaudeSessionEndJob({ ...validInput, cwd: 'relative/project' }, () => null))
-      .toEqual({ sessionId: 'session-1', registrationId: null });
-    expect(normalizeClaudeSessionEndJob({ ...validInput, session_id: '' }, () => null)).toBeNull();
+    expect(normalizeClaudeSessionEndJob({ session_id: 'session-1' }, atSessionEnd))
+      .toEqual({ sessionId: 'session-1', registrationId: 'registration-1' });
+    expect(normalizeClaudeSessionEndJob({ ...validInput, cwd: 'relative/project' }, atSessionEnd))
+      .toEqual({ sessionId: 'session-1', registrationId: 'registration-1' });
+    expect(normalizeClaudeSessionEndJob({ ...validInput, transcript_path: '/missing.jsonl' }, {
+      ...atSessionEnd,
+      getTranscriptBytes: () => null
+    })).toEqual({ sessionId: 'session-1', registrationId: 'registration-1' });
+    expect(normalizeClaudeSessionEndJob({ ...validInput, session_id: '' }, atSessionEnd)).toBeNull();
   });
 
   it('hands work to a detached worker and closes the payload pipe', () => {
@@ -39,9 +55,9 @@ describe('Claude SessionEnd hook', () => {
     const spawnWorker = vi.fn(() => ({ stdin: { on, end }, unref }));
 
     const launched = launchClaudeSessionEndWorker(validInput, {
+      ...atSessionEnd,
       spawnWorker: spawnWorker as never,
-      workerPath: '/plugin/hooks/session-end-worker.js',
-      getRegistrationId: () => 'registration-1'
+      workerPath: '/plugin/hooks/session-end-worker.js'
     });
 
     expect(launched).toBe(true);
@@ -54,12 +70,7 @@ describe('Claude SessionEnd hook', () => {
       }
     );
     expect(on).toHaveBeenCalledWith('error', expect.any(Function));
-    expect(JSON.parse(end.mock.calls[0][0])).toEqual({
-      sessionId: 'session-1',
-      registrationId: 'registration-1',
-      transcriptPath: '/tmp/claude/session-1.jsonl',
-      projectPath: '/repo/project'
-    });
+    expect(JSON.parse(end.mock.calls[0][0])).toEqual(normalizeClaudeSessionEndJob(validInput, atSessionEnd));
     expect(unref).toHaveBeenCalledTimes(1);
   });
 });
@@ -73,6 +84,8 @@ describe('Claude SessionEnd worker', () => {
       processPendingEmbeddings: vi.fn(async () => undefined)
     };
   }
+
+  const snapshot = { transcriptBytes: 4096, endedAt: '2026-10-31T12:00:00.000Z', openTurn: null };
 
   it('reconciles the transcript in the project store before evaluating the session', async () => {
     const order: string[] = [];
@@ -88,7 +101,8 @@ describe('Claude SessionEnd worker', () => {
       sessionId: 'session-1',
       registrationId: null,
       transcriptPath: '/tmp/claude/session-1.jsonl',
-      projectPath: '/repo/project'
+      projectPath: '/repo/project',
+      snapshot
     }, {
       getMemoryService: () => memoryService as never,
       getProjectMemoryService: (projectPath) => {
@@ -99,7 +113,7 @@ describe('Claude SessionEnd worker', () => {
       markTerminal: vi.fn()
     });
 
-    expect(reconcile).toHaveBeenCalledWith(projectService, 'session-1', '/tmp/claude/session-1.jsonl');
+    expect(reconcile).toHaveBeenCalledWith(projectService, 'session-1', '/tmp/claude/session-1.jsonl', snapshot);
     expect(order).toEqual(['reconcile', 'evaluate']);
   });
 
@@ -110,7 +124,8 @@ describe('Claude SessionEnd worker', () => {
       sessionId: 'session-1',
       registrationId: null,
       transcriptPath: '/tmp/claude/session-1.jsonl',
-      projectPath: '/repo/project'
+      projectPath: '/repo/project',
+      snapshot
     }, {
       getMemoryService: () => memoryService as never,
       getProjectMemoryService: () => ({}) as never,
@@ -159,5 +174,18 @@ describe('Claude SessionEnd worker', () => {
     });
 
     expect(terminal).toBe(false);
+  });
+
+  it('leaves ending and evaluating a session resumed while the worker ran to that session', async () => {
+    const memoryService = bookkeepingService();
+
+    await handleClaudeSessionEnd({ sessionId: 'resumed-session', registrationId: 'registration-before-resume' }, {
+      getMemoryService: () => memoryService as never,
+      getRegistrationId: () => 'registration-after-resume',
+      markTerminal: vi.fn()
+    });
+
+    expect(memoryService.endSession).not.toHaveBeenCalled();
+    expect(memoryService.evaluateSessionHelpfulness).not.toHaveBeenCalled();
   });
 });

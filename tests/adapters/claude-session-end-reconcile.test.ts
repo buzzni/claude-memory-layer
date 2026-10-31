@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { appendFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 
@@ -88,9 +88,19 @@ async function runStop(): Promise<void> {
   vi.mocked(runtime.readStdin).mockRestore();
 }
 
-async function reconcile() {
+/** What the SessionEnd hook captures before it detaches the worker. */
+async function snapshotAtSessionEnd() {
+  const turnState = await import('../../src/core/turn-state.js');
+  return {
+    transcriptBytes: statSync(transcriptPath).size,
+    endedAt: tick(),
+    openTurn: turnState.readTurnStateDetails(SESSION)
+  };
+}
+
+async function reconcile(snapshot?: Awaited<ReturnType<typeof snapshotAtSessionEnd>>) {
   const { reconcileSessionTranscript } = await import('../../src/adapters/claude/hooks/session-end-reconcile.js');
-  return reconcileSessionTranscript(await service(), SESSION, transcriptPath);
+  return reconcileSessionTranscript(await service(), SESSION, transcriptPath, snapshot ?? await snapshotAtSessionEnd());
 }
 
 interface StoredResponse {
@@ -234,6 +244,19 @@ describe('SessionEnd transcript reconcile', () => {
 
     expect(result.recovered).toBe(1);
     expect(metadataOf('ended mid-turn')).toMatchObject({ turnId: 'turn-open', turnTrigger: 'task_notification' });
+  });
+
+  it('leaves what a session resumed after SessionEnd writes to that session', async () => {
+    await submitPrompt('<task-notification>\n<task-id>abc</task-id>\n</task-notification>', 'turn-ending');
+    answer('ended mid-turn');
+    const snapshot = await snapshotAtSessionEnd();
+    // Resumed before the worker read anything: a new turn and its prompt.
+    await submitPrompt('resumed request', 'turn-resumed');
+    answer(longText('resumed answer'));
+
+    expect(await reconcile(snapshot)).toMatchObject({ recovered: 1 });
+    expect(metadataOf('ended mid-turn')).toMatchObject({ turnId: 'turn-ending' });
+    expect(readResponses().map((row) => row.content)).not.toContain(longText('resumed answer'));
   });
 
   it('is a no-op the second time', async () => {

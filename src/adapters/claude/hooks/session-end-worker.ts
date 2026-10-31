@@ -9,7 +9,10 @@ import {
   getLightweightMemoryService,
   getLightweightMemoryServiceForProject
 } from '../../../services/memory-service.js';
-import { markSessionTerminalIfCurrent } from '../../../core/registry/session-registry.js';
+import {
+  getSessionProject,
+  markSessionTerminalIfCurrent
+} from '../../../core/registry/session-registry.js';
 import { readStdin } from './hook-runtime.js';
 import { reconcileSessionTranscript, type ReconcileMemoryService } from './session-end-reconcile.js';
 import type { ClaudeSessionEndJob } from './session-end.js';
@@ -20,6 +23,7 @@ export interface ClaudeSessionEndDeps {
   getMemoryService?: (sessionId: string) => SessionEndMemoryService;
   getProjectMemoryService?: (projectPath: string) => ReconcileMemoryService;
   reconcile?: typeof reconcileSessionTranscript;
+  getRegistrationId?: (sessionId: string) => string | null;
   markTerminal?: (sessionId: string, registrationId: string | null) => void;
 }
 
@@ -31,10 +35,15 @@ export async function handleClaudeSessionEnd(
   try {
     // First, so the helpfulness evaluation below sees every response. The
     // project store is the one Stop writes to (it is keyed by cwd as well).
-    if (job.transcriptPath && job.projectPath) {
+    if (job.transcriptPath && job.projectPath && job.snapshot) {
       try {
         const projectService = (deps.getProjectMemoryService ?? getLightweightMemoryServiceForProject)(job.projectPath);
-        const result = await (deps.reconcile ?? reconcileSessionTranscript)(projectService, sessionId, job.transcriptPath);
+        const result = await (deps.reconcile ?? reconcileSessionTranscript)(
+          projectService,
+          sessionId,
+          job.transcriptPath,
+          job.snapshot
+        );
         if (process.env.CLAUDE_MEMORY_DEBUG) {
           console.error('Session end transcript reconcile:', result);
         }
@@ -44,6 +53,12 @@ export async function handleClaudeSessionEnd(
         }
       }
     }
+
+    // A session resumed while the worker ran is registered again under a new
+    // id and is live; its own SessionEnd ends and evaluates it.
+    const currentRegistrationId = (deps.getRegistrationId
+      ?? ((id: string) => getSessionProject(id)?.registrationId ?? null))(sessionId);
+    if (currentRegistrationId !== null && currentRegistrationId !== registrationId) return;
 
     // Use lightweight service (SQLite only, no embedder/vector - FAST!)
     const memoryService = (deps.getMemoryService ?? getLightweightMemoryService)(sessionId);

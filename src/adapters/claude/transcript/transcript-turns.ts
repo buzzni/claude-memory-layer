@@ -6,6 +6,11 @@ import type { TurnTrigger } from '../../../core/turn-state.js';
 import type { ClaudeTranscriptEntry } from './transcript-reader.js';
 import { extractAssistantTextMessages, isUserPromptEntry, type AssistantTextMessage } from './turn-reconstructor.js';
 
+export interface ReadTranscriptTurnsOptions {
+  /** Read only bytes before this offset; a record it cuts is skipped. */
+  endOffset?: number;
+}
+
 export interface TranscriptTurn {
   /** When the prompt that opened the turn was written; absent for text before the first prompt. */
   startedAt?: string;
@@ -32,12 +37,21 @@ function promptText(entry: ClaudeTranscriptEntry): string {
  * Entries recorded under another session id (history a resumed or forked
  * session copied in) belong to that session and are skipped.
  */
-export async function readTranscriptTurns(transcriptPath: string, sessionId: string): Promise<TranscriptTurn[]> {
+export async function readTranscriptTurns(
+  transcriptPath: string,
+  sessionId: string,
+  options: ReadTranscriptTurnsOptions = {}
+): Promise<TranscriptTurn[]> {
   if (!fs.existsSync(transcriptPath)) return [];
+  if (options.endOffset !== undefined && options.endOffset <= 0) return [];
 
   const turns: TranscriptTurn[] = [];
   let current: TranscriptTurn | null = null;
-  const rl = readline.createInterface({ input: fs.createReadStream(transcriptPath, { encoding: 'utf8' }), crlfDelay: Infinity });
+  const input = fs.createReadStream(transcriptPath, {
+    encoding: 'utf8',
+    ...(options.endOffset !== undefined ? { end: options.endOffset - 1 } : {})
+  });
+  const rl = readline.createInterface({ input, crlfDelay: Infinity });
 
   for await (const line of rl) {
     let entry: ClaudeTranscriptEntry;

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 
@@ -83,6 +83,17 @@ describe('readTranscriptTurns', () => {
     expect(await readTranscriptTurns(transcriptPath, SESSION)).toEqual([
       { startedAt: 't1', trigger: 'user', messages: [{ text: 'answer', timestamp: 't4' }] }
     ]);
+  });
+
+  it('reads only up to an end offset and skips the record it cuts', async () => {
+    write([prompt('request', 't1'), assistant('kept answer', 't2'), assistant('written later', 't3')]);
+    const lines = readFileSync(transcriptPath, 'utf8').split('\n');
+    const cutInsideThird = lines[0].length + 1 + lines[1].length + 1 + 10;
+
+    expect(await readTranscriptTurns(transcriptPath, SESSION, { endOffset: cutInsideThird })).toEqual([
+      { startedAt: 't1', trigger: 'user', messages: [{ text: 'kept answer', timestamp: 't2' }] }
+    ]);
+    expect(await readTranscriptTurns(transcriptPath, SESSION, { endOffset: 0 })).toEqual([]);
   });
 
   it('returns no turns for a missing transcript', async () => {
