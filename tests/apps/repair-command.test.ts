@@ -8,6 +8,7 @@ import {
   formatLegacyProjectScopeRepairResult,
   resolveLegacyProjectScopeRepairOptions
 } from '../../src/apps/cli/repair-command.js';
+import { tsxArgs, tsxCommand } from '../helpers/tsx-process.js';
 
 describe('legacy project scope repair CLI helpers', () => {
   it('defaults to dry-run repair using the current project path', () => {
@@ -68,7 +69,7 @@ describe('legacy project scope repair CLI helpers', () => {
   it('does not create missing hash-only project storage during dry-run', () => {
     const home = mkdtempSync(path.join(tmpdir(), 'cml-repair-cli-home-'));
     try {
-      const result = spawnSync('npx', ['tsx', 'src/apps/cli/index.ts', 'repair', 'legacy-project-scope', '--project-hash', 'deadbeef'], {
+      const result = spawnSync(tsxCommand, tsxArgs('src/apps/cli/index.ts', 'repair', 'legacy-project-scope', '--project-hash', 'deadbeef'), {
         cwd: process.cwd(),
         env: { ...process.env, HOME: home },
         encoding: 'utf8'

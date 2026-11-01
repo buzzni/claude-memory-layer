@@ -12,6 +12,7 @@ import {
 import { FacetRepository } from '../../src/core/operations/facet-repository.js';
 import { hashProjectPath } from '../../src/core/registry/project-path.js';
 import { SQLiteEventStore } from '../../src/core/sqlite-event-store.js';
+import { tsxArgs, tsxCommand } from '../helpers/tsx-process.js';
 
 const require = createRequire(import.meta.url);
 const Database = require('better-sqlite3') as typeof import('better-sqlite3');
@@ -104,8 +105,7 @@ describe('retention audit CLI command', () => {
       });
       await store.close();
 
-      const result = spawnSync('npx', [
-        'tsx',
+      const result = spawnSync(tsxCommand, tsxArgs(
         'src/apps/cli/index.ts',
         'retention',
         'audit',
@@ -115,7 +115,7 @@ describe('retention audit CLI command', () => {
         '--limit',
         '10',
         '--json'
-      ], {
+      ), {
         cwd: process.cwd(),
         env: { ...process.env, HOME: home },
         encoding: 'utf8'

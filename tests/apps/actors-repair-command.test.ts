@@ -4,13 +4,14 @@ import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
+import { tsxArgs, tsxCommand } from '../helpers/tsx-process.js';
+
 describe('actors repair CLI', () => {
   it('dry-runs missing project storage without creating memory directories', () => {
     const home = mkdtempSync(path.join(tmpdir(), 'cml-actors-repair-home-'));
     const project = mkdtempSync(path.join(tmpdir(), 'cml-actors-repair-project-'));
     try {
-      const result = spawnSync('npx', [
-        'tsx',
+      const result = spawnSync(tsxCommand, tsxArgs(
         'src/apps/cli/index.ts',
         'actors',
         'repair',
@@ -18,7 +19,7 @@ describe('actors repair CLI', () => {
         project,
         '--dry-run',
         '--json'
-      ], {
+      ), {
         cwd: process.cwd(),
         env: { ...process.env, HOME: home },
         encoding: 'utf8'
@@ -45,8 +46,7 @@ describe('actors repair CLI', () => {
     const home = mkdtempSync(path.join(tmpdir(), 'cml-actors-repair-home-'));
     const project = mkdtempSync(path.join(tmpdir(), 'cml-actors-repair-project-'));
     try {
-      const result = spawnSync('npx', [
-        'tsx',
+      const result = spawnSync(tsxCommand, tsxArgs(
         'src/apps/cli/index.ts',
         'actors',
         'repair',
@@ -54,7 +54,7 @@ describe('actors repair CLI', () => {
         project,
         '--apply',
         '--dry-run'
-      ], {
+      ), {
         cwd: process.cwd(),
         env: { ...process.env, HOME: home },
         encoding: 'utf8'

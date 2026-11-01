@@ -5,6 +5,8 @@ import * as path from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
+import { tsxArgs, tsxCommand } from '../helpers/tsx-process.js';
+
 interface CliRunResult {
   status: number | null;
   stdout: string;
@@ -13,7 +15,7 @@ interface CliRunResult {
 
 function runJudge(args: string[], env: Record<string, string> = {}): Promise<CliRunResult> {
   return new Promise((resolve, reject) => {
-    const child = spawn('npx', ['tsx', 'scripts/longmemeval-codex-judge.ts', ...args], {
+    const child = spawn(tsxCommand, tsxArgs('scripts/longmemeval-codex-judge.ts', ...args), {
       cwd: process.cwd(),
       env: {
         ...process.env,

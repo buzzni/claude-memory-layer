@@ -43,8 +43,19 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      # `npm run test:run` runs the serial `cli` project (vitest.config.ts)
+      # after `unit`. Here both projects run at once instead, so the single
+      # `cli` worker uses the core that `unit`'s workers leave free.
       - name: Test
-        run: npm run test:run
+        run: |
+          npm run test:run -- --project cli > cli-tests.log 2>&1 &
+          cli_pid=$!
+          unit_status=0
+          npm run test:run -- --project unit || unit_status=$?
+          cli_status=0
+          wait "$cli_pid" || cli_status=$?
+          cat cli-tests.log
+          exit $(( unit_status || cli_status ))
 
       - name: Build
         run: npm run build

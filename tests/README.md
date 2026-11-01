@@ -21,3 +21,14 @@ npm test -- --run tests/adapters/claude
 npm test -- --run tests/extensions
 npm test -- --run tests/apps
 ```
+
+`vitest run` covers two projects (see `vitest.config.ts`). `cli` holds the
+load-sensitive files — every file that launches a TypeScript entry point
+through `tests/helpers/tsx-process.ts`, plus files marked `@load-sensitive`
+with a reason — and runs them one at a time after `unit` finishes, with a 60s
+per-test timeout. Run one project with:
+
+```bash
+npm test -- --run --project unit
+npm test -- --run --project cli
+```

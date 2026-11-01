@@ -5,6 +5,8 @@ import * as path from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
+import { tsxArgs, tsxCommand } from '../helpers/tsx-process.js';
+
 function writeFixture(name: string, fixture: unknown): string {
   const dir = mkdtempSync(path.join(tmpdir(), 'cml-replay-cli-'));
   const fixturePath = path.join(dir, `${name}.json`);
@@ -13,7 +15,7 @@ function writeFixture(name: string, fixture: unknown): string {
 }
 
 function runReplayCli(args: string[]) {
-  return spawnSync('npx', ['tsx', 'scripts/replay-retrieval-benchmark.ts', ...args], {
+  return spawnSync(tsxCommand, tsxArgs('scripts/replay-retrieval-benchmark.ts', ...args), {
     cwd: process.cwd(),
     encoding: 'utf8'
   });

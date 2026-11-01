@@ -1,3 +1,5 @@
+// @load-sensitive: 'is wired to sqlite append flow' reads a fire-and-forget
+// mirror write after a fixed 50ms wait, which a loaded machine overruns.
 import { describe, it, expect } from 'vitest';
 import * as os from 'os';
 import * as path from 'path';

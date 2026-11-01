@@ -5,6 +5,8 @@ import * as path from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
+import { tsxArgs, tsxCommand } from '../helpers/tsx-process.js';
+
 function writeReviewQueue(name: string, reviewQueue: unknown): string {
   const dir = mkdtempSync(path.join(tmpdir(), 'cml-review-promo-'));
   const reviewQueuePath = path.join(dir, `${name}.json`);
@@ -13,7 +15,7 @@ function writeReviewQueue(name: string, reviewQueue: unknown): string {
 }
 
 function runPromotionCli(args: string[]) {
-  return spawnSync('npx', ['tsx', 'scripts/promote-retrieval-review-queue.ts', ...args], {
+  return spawnSync(tsxCommand, tsxArgs('scripts/promote-retrieval-review-queue.ts', ...args), {
     cwd: process.cwd(),
     encoding: 'utf8'
   });

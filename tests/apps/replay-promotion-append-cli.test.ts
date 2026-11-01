@@ -5,6 +5,8 @@ import * as path from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
+import { tsxArgs, tsxCommand } from '../helpers/tsx-process.js';
+
 function tempDir(): string {
   return mkdtempSync(path.join(tmpdir(), 'cml-replay-promotion-append-'));
 }
@@ -78,7 +80,7 @@ function promotionPlan(queryPatch: Record<string, unknown> = {}, candidatePatch:
 }
 
 function runAppendCli(args: string[]) {
-  return spawnSync('npx', ['tsx', 'scripts/validate-replay-promotion-candidates.ts', ...args], {
+  return spawnSync(tsxCommand, tsxArgs('scripts/validate-replay-promotion-candidates.ts', ...args), {
     cwd: process.cwd(),
     encoding: 'utf8'
   });

@@ -5,8 +5,10 @@ import { spawnSync } from 'node:child_process';
 
 import { describe, expect, it } from 'vitest';
 
+import { tsxArgs, tsxCommand } from '../helpers/tsx-process.js';
+
 function runScanCli(args: string[]) {
-  return spawnSync('npx', ['tsx', 'scripts/scan-public-output-privacy.ts', ...args], {
+  return spawnSync(tsxCommand, tsxArgs('scripts/scan-public-output-privacy.ts', ...args), {
     cwd: process.cwd(),
     encoding: 'utf8'
   });
