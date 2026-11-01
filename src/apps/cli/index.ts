@@ -212,7 +212,12 @@ import {
 } from '../../core/productivity-health-report.js';
 import {
   createMongoSyncPostProcessor,
-  resolveMongoSyncProcessOptions
+  formatMongoSyncAuditOutcome,
+  mongoSyncAuditExitCode,
+  resolveMongoSyncProcessOptions,
+  resolveMongoSyncTarget,
+  runMongoSyncAudit,
+  type RawMongoSyncTargetOptions
 } from './mongo-sync-command.js';
 import { WorkerLock } from '../../core/worker-lock.js';
 import {
@@ -2671,7 +2676,7 @@ cleanupCommand
 /**
  * Mongo Sync command - sync local SQLite events with a shared MongoDB database (optional)
  */
-program
+const mongoSyncCommand = program
   .command('mongo-sync')
   .description('Sync events with MongoDB for multi-server collaboration (optional)')
   .option('-p, --project <path>', 'Project path (defaults to cwd)')
@@ -2686,10 +2691,7 @@ program
   .option('--process-interval <ms>', 'Minimum ms between process runs when --process-after-sync is enabled', '120000')
   .option('--process-lock-path <path>', 'Override process-after-sync lock path (advanced)')
   .action(async (options) => {
-    const projectPath = options.project || process.cwd();
-    const mongoUri = options.mongoUri || process.env.CLAUDE_MEMORY_MONGO_URI;
-    const mongoDb = options.mongoDb || process.env.CLAUDE_MEMORY_MONGO_DB;
-    const projectKey = options.mongoProject || process.env.CLAUDE_MEMORY_MONGO_PROJECT || path.basename(projectPath);
+    const { projectPath, uri: mongoUri, dbName: mongoDb, projectKey } = resolveMongoSyncTarget(options);
     const direction = String(options.direction || 'both').toLowerCase() as MongoSyncDirection;
 
     if (!mongoUri || !mongoDb) {
@@ -2786,6 +2788,21 @@ program
       console.error('[mongo-sync] Failed:', error);
       process.exit(1);
     }
+  });
+
+/**
+ * Mongo sync audit - read-only per-instanceId comparison of the local store with MongoDB.
+ * Takes the parent's -p/--mongo-uri/--mongo-db/--mongo-project so it checks exactly what mongo-sync syncs.
+ */
+mongoSyncCommand
+  .command('audit')
+  .description('Compare local events with MongoDB per source instance and report documents a pull missed (read-only; uses mongo-sync -p/--mongo-uri/--mongo-db/--mongo-project)')
+  .option('--json', 'Output as JSON')
+  .action(async function (this: Command) {
+    const options = this.optsWithGlobals<RawMongoSyncTargetOptions & { json?: boolean }>();
+    const outcome = await runMongoSyncAudit(options);
+    console.log(formatMongoSyncAuditOutcome(outcome, options.json === true));
+    process.exitCode = mongoSyncAuditExitCode(outcome);
   });
 
 /**

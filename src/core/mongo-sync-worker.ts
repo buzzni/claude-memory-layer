@@ -114,9 +114,19 @@ function localizePulledMetadata(
 }
 
 /** How far before the previous pull a late insert below the cursor is still picked up (concurrent pushers, clock skew). */
-const LATE_INSERT_WINDOW_MS = 30 * 60 * 1000;
+export const LATE_INSERT_WINDOW_MS = 30 * 60 * 1000;
 
-function parseIntOrZero(value: string | null | undefined): number {
+/** sync_positions row holding the last local rowid pushed for a project key. */
+export function mongoPushCursorTarget(projectKey: string): string {
+  return `mongo_push_events_rowid:${projectKey}`;
+}
+
+/** sync_positions row holding the last Mongo seq pulled (and when that pull started) for a project key. */
+export function mongoPullCursorTarget(projectKey: string): string {
+  return `mongo_pull_events_seq:${projectKey}`;
+}
+
+export function parseIntOrZero(value: string | null | undefined): number {
   if (!value) return 0;
   const n = parseInt(value, 10);
   return Number.isFinite(n) ? n : 0;
@@ -303,11 +313,11 @@ export class MongoSyncWorker {
   }
 
   private pushTargetName(): string {
-    return `mongo_push_events_rowid:${this.config.projectKey}`;
+    return mongoPushCursorTarget(this.config.projectKey);
   }
 
   private pullTargetName(): string {
-    return `mongo_pull_events_seq:${this.config.projectKey}`;
+    return mongoPullCursorTarget(this.config.projectKey);
   }
 
   private async pushEvents(): Promise<number> {

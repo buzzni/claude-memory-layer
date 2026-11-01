@@ -1,10 +1,17 @@
 import { describe, expect, it, vi } from 'vitest';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 
 import {
   createMongoSyncPostProcessor,
+  formatMongoSyncAuditOutcome,
+  mongoSyncAuditExitCode,
   processProjectEmbeddingsOnce,
-  resolveMongoSyncProcessOptions
+  resolveMongoSyncProcessOptions,
+  runMongoSyncAudit
 } from '../../src/apps/cli/mongo-sync-command.js';
+import { SQLiteEventStore } from '../../src/core/sqlite-event-store.js';
 
 describe('mongo-sync process-after-sync options', () => {
   it('resolves disabled defaults and strict process interval settings', () => {
@@ -207,3 +214,45 @@ function makeService(processed: number) {
     shutdown: vi.fn(async () => undefined)
   };
 }
+
+describe('mongo-sync audit runner', () => {
+  it('skips quietly without connecting when Mongo sync is not configured', async () => {
+    const connect = vi.fn();
+
+    const outcome = await runMongoSyncAudit({ project: '/repo/app' }, { env: {}, connect });
+
+    expect(outcome).toMatchObject({ status: 'skip', projectKey: 'app' });
+    expect(mongoSyncAuditExitCode(outcome)).toBe(0);
+    expect(formatMongoSyncAuditOutcome(outcome, false)).toContain('skip');
+    expect(connect).not.toHaveBeenCalled();
+  });
+
+  it('reports a connection failure without leaking the password in the URI', async () => {
+    const storagePath = fs.mkdtempSync(path.join(os.tmpdir(), 'cml-mongo-audit-cli-'));
+    const store = new SQLiteEventStore(path.join(storagePath, 'events.sqlite'));
+    await store.initialize();
+    await store.close();
+    try {
+      const outcome = await runMongoSyncAudit(
+        {
+          project: '/repo/app',
+          mongoUri: 'mongodb://user:secret@mongo.example:27017/?tlsCertificateKeyFilePassword=keysecret',
+          mongoDb: 'cml'
+        },
+        {
+          env: {},
+          getProjectStoragePath: () => storagePath,
+          connect: async () => { throw new Error('connect ECONNREFUSED'); }
+        }
+      );
+
+      expect(outcome.status).toBe('fail');
+      expect(outcome.detail).toContain('mongodb://user:***@mongo.example:27017/');
+      expect(outcome.detail).toContain('ECONNREFUSED');
+      expect(JSON.stringify(outcome)).not.toMatch(/secret/);
+      expect(mongoSyncAuditExitCode(outcome)).toBe(1);
+    } finally {
+      fs.rmSync(storagePath, { recursive: true, force: true });
+    }
+  });
+});
