@@ -7,6 +7,8 @@ import * as path from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { tsxArgs, tsxCommand } from '../helpers/tsx-process.js';
+
 const ROOT = process.cwd();
 const sha256 = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
 const tempDirs: string[] = [];
@@ -43,7 +45,7 @@ describe('replay-retrieval-benchmark provenance', () => {
 
   it('adds a provenance block to the JSON report without touching the existing fields', () => {
     const fixturePath = writeFixture();
-    const result = run('npx', ['tsx', 'scripts/replay-retrieval-benchmark.ts', '--fixture', fixturePath, '--format', 'json']);
+    const result = run(tsxCommand, tsxArgs('scripts/replay-retrieval-benchmark.ts', '--fixture', fixturePath, '--format', 'json'));
     expect(result.status).toBe(0);
     const report = JSON.parse(result.stdout);
 
@@ -60,7 +62,7 @@ describe('replay-retrieval-benchmark provenance', () => {
   });
 
   it('adds provenance header lines under the markdown title', () => {
-    const result = run('npx', ['tsx', 'scripts/replay-retrieval-benchmark.ts', '--fixture', writeFixture(), '--format', 'markdown', '--top-k', '1']);
+    const result = run(tsxCommand, tsxArgs('scripts/replay-retrieval-benchmark.ts', '--fixture', writeFixture(), '--format', 'markdown', '--top-k', '1'));
     expect(result.status).toBe(0);
     const lines = result.stdout.split('\n');
 
@@ -74,7 +76,7 @@ describe('replay-retrieval-benchmark provenance', () => {
 describe('replay-hook-grounding provenance', () => {
   it('records the fixture hash and unchanged store row counts', () => {
     const fixture = 'benchmarks/replay/hook-grounding-fixture-v1.json';
-    const result = run('npx', ['tsx', 'scripts/replay-hook-grounding.ts', '--fixture', fixture, '--format', 'json']);
+    const result = run(tsxCommand, tsxArgs('scripts/replay-hook-grounding.ts', '--fixture', fixture, '--format', 'json'));
     expect(result.status).toBe(0);
     const report = JSON.parse(result.stdout);
 
