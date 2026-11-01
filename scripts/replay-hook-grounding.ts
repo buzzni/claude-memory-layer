@@ -13,13 +13,16 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
+import Database from 'better-sqlite3';
 import {
   buildFixtureStore,
   formatReplayReport,
+  loadReplayTurns,
   runHookGroundingReplay,
-  type HookReplayFixture,
-  type ReplayReport
+  type HookGroundingReplayOptions,
+  type HookReplayFixture
 } from '../src/adapters/claude/hooks/hook-grounding-replay.js';
+import { buildProvenance, countRows, shortHash, warnProvenance, withProvenanceHeader } from './eval-provenance.mjs';
 
 interface ParsedArgs {
   fixturePath?: string;
@@ -72,18 +75,54 @@ function parseArgs(argv: string[]): ParsedArgs {
   return args;
 }
 
+/** Tables the replay reads; their row counts are compared before and after the run. */
+const STORE_TABLES = ['events', 'retrieval_traces', 'memory_lessons'];
+
+function readStore<T>(storagePath: string, read: (db: Database.Database) => T): T {
+  const db = new Database(path.join(storagePath, 'events.sqlite'), { readonly: true, fileMustExist: true });
+  try {
+    return read(db);
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * Replay with store row counts taken before and after, and the replayed traces' time span.
+ * Only a real store copy passes storeRef; a fixture store is a throwaway temp dir.
+ */
+async function replayWithSnapshots(options: HookGroundingReplayOptions, storeRef?: string) {
+  const start = readStore(options.storagePath, (db) => ({ rows: countRows(db, STORE_TABLES), turns: loadReplayTurns(db, options.limit) }));
+  const report = await runHookGroundingReplay(options);
+  return {
+    report,
+    store: {
+      ...(storeRef ? { ref: storeRef } : {}),
+      rowsAtStart: start.rows,
+      rowsAtEnd: readStore(options.storagePath, (db) => countRows(db, STORE_TABLES)),
+      inputRows: start.turns.length,
+      window: { from: start.turns[0]?.asOf.toISOString() ?? null, to: start.turns.at(-1)?.asOf.toISOString() ?? null }
+    }
+  };
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
-  let report: ReplayReport;
+  const env = { ...process.env };
+  let run: Awaited<ReturnType<typeof replayWithSnapshots>>;
+  let semantic: 'retriever' | 'off';
+  let projectHash: string;
   if (args.fixturePath) {
     const fixture = JSON.parse(readFileSync(args.fixturePath, 'utf8')) as HookReplayFixture;
     const storagePath = mkdtempSync(path.join(tmpdir(), 'cml-hook-replay-'));
+    semantic = args.semantic ?? 'off';
     try {
       await buildFixtureStore(fixture, storagePath);
-      report = await runHookGroundingReplay({
+      projectHash = fixture.projectHash;
+      run = await replayWithSnapshots({
         storagePath,
-        projectHash: fixture.projectHash,
-        semantic: args.semantic ?? 'off',
+        projectHash,
+        semantic,
         limit: args.limit,
         storeLabel: fixture.name
       });
@@ -95,19 +134,30 @@ async function main(): Promise<void> {
     if (!existsSync(path.join(storagePath, 'events.sqlite'))) {
       throw new CliError(`no events.sqlite in ${storagePath}`);
     }
-    report = await runHookGroundingReplay({
+    semantic = args.semantic ?? (existsSync(path.join(storagePath, 'vectors')) ? 'retriever' : 'off');
+    projectHash = args.projectHash ?? path.basename(storagePath);
+    run = await replayWithSnapshots({
       storagePath,
-      projectHash: args.projectHash ?? path.basename(storagePath),
-      semantic: args.semantic ?? (existsSync(path.join(storagePath, 'vectors')) ? 'retriever' : 'off'),
+      projectHash,
+      semantic,
       limit: args.limit,
       storeLabel: args.label
-    });
+    }, storagePath);
   }
+  const { report } = run;
+  const provenance = buildProvenance({
+    fixtures: args.fixturePath ? [args.fixturePath] : [],
+    store: run.store,
+    // Hashed like the report title avoids it: the scope is comparable, the project is not named.
+    flags: { semantic, limit: args.limit, projectHash: shortHash(projectHash) },
+    env
+  });
+  warnProvenance(provenance);
   // Per-turn results carry event ids, so JSON keeps the aggregates only.
   const withoutResults = (key: string, value: unknown) => (key === 'results' ? undefined : value);
   process.stdout.write(args.format === 'json'
-    ? `${JSON.stringify(report, withoutResults, 2)}\n`
-    : `${formatReplayReport(report)}\n`);
+    ? `${JSON.stringify({ ...report, provenance }, withoutResults, 2)}\n`
+    : `${withProvenanceHeader(formatReplayReport(report), provenance)}\n`);
 }
 
 // Success lets the event loop drain instead of calling process.exit: exiting

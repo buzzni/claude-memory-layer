@@ -504,7 +504,7 @@ function groupPairsByCategory(pairs: ReplayMetricPair[]): Map<string, ReplayMetr
   return groups;
 }
 
-function determineTopK(fixture: ReplayEvaluationFixture, optionTopK?: number): number {
+export function determineTopK(fixture: ReplayEvaluationFixture, optionTopK?: number): number {
   return Math.max(1, optionTopK ?? 0, ...fixture.ks.map((k) => Math.floor(k)).filter((k) => k > 0));
 }
 

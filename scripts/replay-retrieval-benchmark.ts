@@ -2,12 +2,14 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import {
+  determineTopK,
   evaluateReplayFixture,
   formatReplayEvaluationMarkdown,
   type ReplayEvaluationFixture,
   type ReplayEvaluationReport
 } from '../src/core/replay-evaluator.js';
 import type { RetrievalStrategy } from '../src/core/retriever.js';
+import { buildProvenance, warnProvenance, withProvenanceHeader } from './eval-provenance.mjs';
 
 interface ReplayThresholds {
   minQueryYieldRate?: number;
@@ -64,9 +66,22 @@ async function main(argv: string[]): Promise<void> {
       ...(options.minScore !== undefined ? { minScore: options.minScore } : {})
     }
   });
+  const provenance = buildProvenance({
+    generatedAt: report.generatedAt,
+    fixtures: [options.fixturePath],
+    retrieval: { topK: determineTopK(fixture, options.topK), candidatePool: fixture.memories.length },
+    flags: {
+      includePerQuery: options.includePerQuery,
+      strategy: options.strategy,
+      topK: options.topK,
+      minScore: options.minScore,
+      thresholds: options.thresholds
+    }
+  });
+  warnProvenance(provenance);
   const output = options.format === 'markdown'
-    ? formatReplayEvaluationMarkdown(report, { qrelsPath: options.fixturePath })
-    : `${JSON.stringify(report, null, 2)}\n`;
+    ? withProvenanceHeader(formatReplayEvaluationMarkdown(report, { qrelsPath: options.fixturePath }), provenance)
+    : `${JSON.stringify({ ...report, provenance }, null, 2)}\n`;
 
   if (options.outPath) {
     await writeFile(options.outPath, output, 'utf8');

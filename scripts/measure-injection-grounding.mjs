@@ -22,6 +22,8 @@ import path from 'node:path';
 
 import Database from 'better-sqlite3';
 
+import { buildProvenance, formatProvenanceLines, warnProvenance } from './eval-provenance.mjs';
+
 const PROJECTS_ROOT = process.env.CLAUDE_MEMORY_PROJECTS_ROOT
   || path.join(os.homedir(), '.claude-code', 'memory', 'projects');
 
@@ -69,6 +71,31 @@ function storeFiles() {
     .filter((dir) => !dir.includes('.bak') && !dir.includes('.merged-'))
     .map((dir) => ({ dir, file: path.join(PROJECTS_ROOT, dir, 'events.sqlite') }))
     .filter((entry) => fs.existsSync(entry.file));
+}
+
+/**
+ * Store count and helpfulness row counts summed over every store. Taken before
+ * and after collection: a scored row that lands mid-run marks the corpus changed.
+ */
+function snapshotStores() {
+  const rows = { stores: 0, memory_helpfulness: 0, scored: 0 };
+  for (const { file } of storeFiles()) {
+    rows.stores += 1;
+    let db;
+    try {
+      db = new Database(file, { readonly: true });
+      const counts = db.prepare(
+        'SELECT COUNT(*) AS total, COUNT(content_overlap_score) AS scored FROM memory_helpfulness'
+      ).get();
+      rows.memory_helpfulness += counts.total;
+      rows.scored += counts.scored;
+    } catch {
+      // unreadable or predates the table; collect() skips it the same way
+    } finally {
+      db?.close();
+    }
+  }
+  return rows;
 }
 
 function collect(windows) {
@@ -138,7 +165,24 @@ function main() {
     windows = [{ label: 'all time', from: null, to: null }];
   }
 
+  const rowsAtStart = snapshotStores();
   const totals = collect(windows);
+  const provenance = buildProvenance({
+    store: {
+      rowsAtStart,
+      rowsAtEnd: snapshotStores(),
+      // Scored rows each window read, summed over every source.
+      inputRows: Object.fromEntries(windows.map(({ label }) => [
+        label,
+        [...totals.values()].reduce((sum, perWindow) => sum + (perWindow.get(label)?.scored ?? 0), 0)
+      ])),
+      window: windows.map(({ from, to }) => ({ from, to }))
+    },
+    flags: { windows: options.windows, since: options.since, baseline: options.baseline }
+  });
+  console.log(`${formatProvenanceLines(provenance).join('\n')}\n`);
+  warnProvenance(provenance);
+
   if (totals.size === 0) {
     console.log(`No scored injections found under ${PROJECTS_ROOT}`);
     return;
