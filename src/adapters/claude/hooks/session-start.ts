@@ -566,11 +566,17 @@ export async function main(options: SessionStartMainOptions = {}): Promise<strin
     // tool_observation alone is ~84% of events and session_summary about 2% —
     // so an unfiltered window either misses summaries entirely or has to load
     // thousands of large tool payloads to reach them.
-    const recentEvents = process.env.CLAUDE_MEMORY_EVAL_DISABLE_SESSION_CONTEXT === 'true'
+    const scannedEvents = process.env.CLAUDE_MEMORY_EVAL_DISABLE_SESSION_CONTEXT === 'true'
       ? []
       : await memoryService.getRecentEvents(SESSION_START_SCAN_WINDOW, {
         eventTypes: SESSION_START_TIERS
       });
+    // A resumed session reloads its own transcript, so its events are already
+    // in context. After a compaction the transcript is only a summary, so they
+    // stay eligible there. CLAUDE_MEMORY_INJECT_SAME_SESSION=true keeps them.
+    const recentEvents = input.source === 'resume' && process.env.CLAUDE_MEMORY_INJECT_SAME_SESSION !== 'true'
+      ? scannedEvents.filter((event) => event.sessionId !== input.session_id)
+      : scannedEvents;
 
     const injectedEvents = selectSessionStartMemories(recentEvents, SESSION_START_MAX_MEMORIES);
 

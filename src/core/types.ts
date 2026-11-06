@@ -673,6 +673,8 @@ export interface SessionStartInput {
   session_id: string;
   cwd: string;
   actor_id?: string;
+  /** Why the host started the session: 'startup', 'resume', 'clear' or 'compact'. */
+  source?: string;
 }
 
 export interface SessionStartOutput {
