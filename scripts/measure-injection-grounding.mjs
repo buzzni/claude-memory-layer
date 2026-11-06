@@ -11,6 +11,12 @@
  *   node scripts/measure-injection-grounding.mjs
  *   node scripts/measure-injection-grounding.mjs --since 2026-08-08 --baseline 0.081
  *   node scripts/measure-injection-grounding.mjs --window 2026-08-06..2026-08-07 --window 2026-08-08..
+ *   node scripts/measure-injection-grounding.mjs --since 2026-10-01 --by-origin
+ *
+ * --by-origin splits each window by where the injected memory came from, since
+ * not all overlap is memory grounding: an answer injected back into the session
+ * that wrote it is still in context, and an answer that already reused an
+ * earlier injection can carry that memory's text forward.
  *
  * Rows whose score has not been computed yet are excluded rather than counted
  * as zero: helpfulness is measured a while after the injection, so counting
@@ -34,7 +40,7 @@ const DEFAULT_BASELINE = 0.081;
 const MIN_SAMPLE = 30;
 
 function parseArgs(argv) {
-  const result = { windows: [], baseline: DEFAULT_BASELINE, since: null };
+  const result = { windows: [], baseline: DEFAULT_BASELINE, since: null, byOrigin: false };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--window' && i + 1 < argv.length) result.windows.push(argv[i += 1]);
@@ -43,6 +49,7 @@ function parseArgs(argv) {
     else if (arg.startsWith('--baseline=')) result.baseline = Number(arg.slice('--baseline='.length));
     else if (arg === '--since' && i + 1 < argv.length) result.since = argv[i += 1];
     else if (arg.startsWith('--since=')) result.since = arg.slice('--since='.length);
+    else if (arg === '--by-origin') result.byOrigin = true;
   }
   return result;
 }
@@ -145,6 +152,78 @@ function collect(windows) {
   return totals;
 }
 
+/**
+ * Where an injected memory came from, checked in this order:
+ *   same-session  — its event was written in the session it was injected into
+ *   derived       — its event is an answer that matched an earlier injection
+ *   cross-session — everything else, including memories that are not events
+ */
+const ORIGINS = ['same-session', 'derived', 'cross-session'];
+
+function collectOrigins(windows) {
+  // source -> window label -> origin -> totals
+  const totals = new Map();
+
+  for (const { file } of storeFiles()) {
+    let db;
+    try {
+      db = new Database(file, { readonly: true });
+    } catch {
+      continue;
+    }
+
+    try {
+      const derived = new Set();
+      const evidenceRows = db.prepare(
+        `SELECT evidence_json FROM memory_helpfulness
+         WHERE content_overlap_score > 0 AND evidence_json IS NOT NULL`
+      ).all();
+      for (const { evidence_json: evidence } of evidenceRows) {
+        try {
+          for (const match of JSON.parse(evidence)) derived.add(match.responseEventId);
+        } catch {
+          // malformed evidence names no response
+        }
+      }
+
+      for (const window of windows) {
+        const clauses = ['h.content_overlap_score IS NOT NULL'];
+        const params = [];
+        if (window.from) { clauses.push('h.created_at >= ?'); params.push(window.from); }
+        if (window.to) { clauses.push('h.created_at < ?'); params.push(window.to); }
+
+        const rows = db.prepare(
+          `SELECT h.source, h.event_id, h.content_overlap_score AS score,
+                  e.session_id = h.session_id AS same_session
+           FROM memory_helpfulness h LEFT JOIN events e ON e.id = h.event_id
+           WHERE ${clauses.join(' AND ')}`
+        ).all(...params);
+
+        for (const row of rows) {
+          const origin = row.same_session ? 'same-session'
+            : derived.has(row.event_id) ? 'derived'
+              : 'cross-session';
+          const source = row.source || '(unknown)';
+          if (!totals.has(source)) totals.set(source, new Map());
+          const perWindow = totals.get(source);
+          if (!perWindow.has(window.label)) perWindow.set(window.label, new Map());
+          const perOrigin = perWindow.get(window.label);
+          const acc = perOrigin.get(origin) || { scored: 0, total: 0 };
+          acc.scored += 1;
+          acc.total += row.score;
+          perOrigin.set(origin, acc);
+        }
+      }
+    } catch {
+      // store predates the columns or the events table; collect() skips it the same way
+    } finally {
+      db.close();
+    }
+  }
+
+  return totals;
+}
+
 function main() {
   const options = parseArgs(process.argv.slice(2));
 
@@ -167,6 +246,7 @@ function main() {
 
   const rowsAtStart = snapshotStores();
   const totals = collect(windows);
+  const origins = options.byOrigin ? collectOrigins(windows) : null;
   const provenance = buildProvenance({
     store: {
       rowsAtStart,
@@ -178,7 +258,7 @@ function main() {
       ])),
       window: windows.map(({ from, to }) => ({ from, to }))
     },
-    flags: { windows: options.windows, since: options.since, baseline: options.baseline }
+    flags: { windows: options.windows, since: options.since, baseline: options.baseline, byOrigin: options.byOrigin }
   });
   console.log(`${formatProvenanceLines(provenance).join('\n')}\n`);
   warnProvenance(provenance);
@@ -205,6 +285,17 @@ function main() {
         `  ${window.label.padEnd(24)} avg ${avg.toFixed(4)}`
         + `  grounded ${grounded.toFixed(1)}%  n=${acc.scored}${note}`
       );
+      const perOrigin = origins?.get(source)?.get(window.label);
+      for (const origin of perOrigin ? ORIGINS : []) {
+        const part = perOrigin.get(origin);
+        if (!part) continue;
+        const rowShare = (100 * part.scored) / acc.scored;
+        const overlapShare = acc.total > 0 ? (100 * part.total) / acc.total : 0;
+        console.log(
+          `    ${origin.padEnd(22)} avg ${(part.total / part.scored).toFixed(4)}  n=${part.scored}`
+          + `  (${rowShare.toFixed(1)}% of rows, ${overlapShare.toFixed(1)}% of overlap)`
+        );
+      }
     }
     console.log();
   }
