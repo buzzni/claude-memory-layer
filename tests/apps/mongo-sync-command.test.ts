@@ -242,7 +242,8 @@ describe('mongo-sync audit runner', () => {
         {
           env: {},
           getProjectStoragePath: () => storagePath,
-          connect: async () => { throw new Error('connect ECONNREFUSED'); }
+          // Shaped like the driver's network error: the errno code is a structured field, not just message text.
+          connect: async () => { throw Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }); }
         }
       );
 
