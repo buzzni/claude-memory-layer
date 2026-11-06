@@ -4,7 +4,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 
 import { loadSessionRegistry } from '../registry/session-registry.js';
-import { createSQLiteDatabase, sqliteClose, sqliteGet } from '../sqlite-wrapper.js';
+import { createSQLiteDatabase, sqliteAll, sqliteClose, sqliteGet } from '../sqlite-wrapper.js';
 
 export type StoreCleanupClassification = 'temp' | 'unattributed';
 
@@ -39,6 +39,7 @@ export function previewStoreCleanup(options: StoreCleanupPreviewOptions): StoreC
   assertOwnedDirectoryIfPresent(memoryRoot);
   const nowMs = (options.now ?? new Date()).getTime();
   const minimumAgeMs = options.minimumAgeMs ?? 30 * DAY_MS;
+  const tempRoots = resolveTempRoots();
   const registry = loadSessionRegistry({ homeDir });
   const activeHashes = new Set(Object.values(registry.sessions)
     .filter((entry) => !entry.terminal)
@@ -65,8 +66,9 @@ export function previewStoreCleanup(options: StoreCleanupPreviewOptions): StoreC
   for (const entry of directProjectStores(path.join(memoryRoot, 'projects'))) {
     report.scanned += 1;
     const reasons: string[] = [];
-    const registeredPaths = pathsByHash.get(entry.projectHash) ?? [];
-    const latestEventAt = readLatestEventAt(path.join(entry.storePath, 'events.sqlite'), memoryRoot);
+    const snapshot = readStoreSnapshot(path.join(entry.storePath, 'events.sqlite'), memoryRoot);
+    const registeredPaths = [...(pathsByHash.get(entry.projectHash) ?? []), ...snapshot.sessionPaths];
+    const latestEventAt = snapshot.latestEventAt;
     const oldEnough = latestEventAt !== null && nowMs - latestEventAt >= minimumAgeMs;
     const liveLock = ['vector-worker.lock', 'summary-worker.lock', 'retention-lifecycle.lock']
       .some((name) => fs.existsSync(path.join(entry.storePath, name)));
@@ -80,7 +82,7 @@ export function previewStoreCleanup(options: StoreCleanupPreviewOptions): StoreC
       matches = registeredPaths.length === 0;
       if (matches) reasons.push('no_identity_attribution');
     } else {
-      const tempRootSignal = registeredPaths.some((projectPath) => isInside(projectPath, os.tmpdir()));
+      const tempRootSignal = registeredPaths.some((projectPath) => tempRoots.some((root) => isInside(projectPath, root)));
       const fixtureSignal = registeredPaths.some((projectPath) => /(?:^|[-_.\/])(test|tests|fixture|e2e|tmp|temp)(?:$|[-_.\/])/i.test(projectPath));
       const inactiveSignal = !activeHashes.has(entry.projectHash);
       const signalCount = Number(tempRootSignal) + Number(fixtureSignal) + Number(inactiveSignal) + Number(oldEnough);
@@ -88,7 +90,7 @@ export function previewStoreCleanup(options: StoreCleanupPreviewOptions): StoreC
       if (fixtureSignal) reasons.push('fixture_identity');
       if (inactiveSignal) reasons.push('no_active_registry_reference');
       if (oldEnough) reasons.push('outside_retention');
-      matches = registeredPaths.length > 0 && signalCount >= 2;
+      matches = (tempRootSignal || fixtureSignal) && signalCount >= 2;
     }
 
     const protectedStore = activeHashes.has(entry.projectHash) || liveLock || !oldEnough;
@@ -130,8 +132,14 @@ function assertOwnedDirectoryIfPresent(directory: string): void {
   }
 }
 
-function readLatestEventAt(dbPath: string, memoryRoot: string): number | null {
-  if (!fs.existsSync(dbPath) || fs.lstatSync(dbPath).isSymbolicLink()) return null;
+interface StoreSnapshot {
+  latestEventAt: number | null;
+  sessionPaths: string[];
+}
+
+function readStoreSnapshot(dbPath: string, memoryRoot: string): StoreSnapshot {
+  const unknown: StoreSnapshot = { latestEventAt: null, sessionPaths: [] };
+  if (!fs.existsSync(dbPath) || fs.lstatSync(dbPath).isSymbolicLink()) return unknown;
   let db;
   try {
     db = createSQLiteDatabase(dbPath, {
@@ -141,10 +149,15 @@ function readLatestEventAt(dbPath: string, memoryRoot: string): number | null {
       walMode: false
     });
     const row = sqliteGet<{ timestamp: string | null }>(db, 'SELECT MAX(timestamp) AS timestamp FROM events');
+    const sessionPaths = sqliteAll<{ project_path: string }>(
+      db,
+      'SELECT DISTINCT project_path FROM sessions WHERE project_path IS NOT NULL'
+    ).map((session) => session.project_path);
+    if (row?.timestamp === null) return { latestEventAt: fs.statSync(dbPath).mtimeMs, sessionPaths };
     const parsed = Date.parse(row?.timestamp ?? '');
-    return Number.isFinite(parsed) ? parsed : null;
+    return { latestEventAt: Number.isFinite(parsed) ? parsed : null, sessionPaths };
   } catch {
-    return null;
+    return unknown;
   } finally {
     if (db) sqliteClose(db);
   }
@@ -170,6 +183,15 @@ function directoryBytes(directory: string): number {
     }
   }
   return total;
+}
+
+function resolveTempRoots(): string[] {
+  const tmpDir = os.tmpdir();
+  try {
+    return Array.from(new Set([tmpDir, fs.realpathSync(tmpDir)]));
+  } catch {
+    return [tmpDir];
+  }
 }
 
 function isInside(candidate: string, parent: string): boolean {
