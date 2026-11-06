@@ -18,6 +18,7 @@ import type { Collection, Db } from 'mongodb';
 
 import type { MemoryEvent } from './types.js';
 import { SQLiteEventStore } from './sqlite-event-store.js';
+import { redactMongoUri } from './mongo-sync-config.js';
 
 export type MongoSyncDirection = 'push' | 'pull' | 'both';
 
@@ -68,23 +69,6 @@ interface RemoteEventDoc {
     hostname?: string;
     instanceId?: string;
   };
-}
-
-function redactMongoUri(uri: string): string {
-  // mongodb://user:pass@host:port/  -> mongodb://user:***@host:port/
-  // mongodb+srv://user:pass@host/  -> mongodb+srv://user:***@host/
-  const schemeIdx = uri.indexOf('://');
-  if (schemeIdx === -1) return uri;
-  const atIdx = uri.indexOf('@', schemeIdx + 3);
-  if (atIdx === -1) return uri;
-
-  const creds = uri.slice(schemeIdx + 3, atIdx); // user:pass
-  const colonIdx = creds.indexOf(':');
-  if (colonIdx === -1) return uri;
-
-  const prefix = uri.slice(0, schemeIdx + 3 + colonIdx + 1);
-  const suffix = uri.slice(atIdx);
-  return `${prefix}***${suffix}`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
