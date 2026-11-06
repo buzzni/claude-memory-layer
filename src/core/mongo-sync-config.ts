@@ -160,7 +160,8 @@ export function redactMongoUri(uri: string): string {
 export function redactMongoSecrets(text: string, uri: string): string {
   let result = text.split(uri).join(redactMongoUri(uri));
   for (const secret of mongoUriSecrets(uri)) {
-    result = result.split(secret).join('***');
+    // Whole tokens only: a password `host` must not turn `localhost` into `local***`.
+    result = result.replace(new RegExp(`(?<![A-Za-z0-9])${escapeRegExp(secret)}(?![A-Za-z0-9])`, 'g'), '***');
   }
   return result;
 }
@@ -188,17 +189,16 @@ function redactQueryValues(uri: string): string {
 function passwordRange(uri: string): { start: number; end: number } | null {
   const schemeIdx = uri.indexOf('://');
   if (schemeIdx === -1) return null;
-  const atIdx = uri.indexOf('@', schemeIdx + 3);
-  if (atIdx === -1) return null;
+  // The last @ before the query ends the credentials: an unescaped @ in the password must not split it.
+  const queryIdx = uri.indexOf('?', schemeIdx + 3);
+  const atIdx = uri.lastIndexOf('@', queryIdx === -1 ? uri.length : queryIdx);
+  if (atIdx < schemeIdx + 3) return null;
 
   const creds = uri.slice(schemeIdx + 3, atIdx); // user:pass
   const colonIdx = creds.indexOf(':');
   if (colonIdx === -1) return null;
   return { start: schemeIdx + 3 + colonIdx + 1, end: atIdx };
 }
-
-// Short values such as `1` or `rs0` would blank out unrelated text, and are not plausible secrets.
-const MIN_SECRET_LENGTH = 4;
 
 function mongoUriSecrets(uri: string): string[] {
   const raw: string[] = [];
@@ -216,12 +216,19 @@ function mongoUriSecrets(uri: string): string[] {
   const secrets = new Set<string>();
   for (const value of raw) {
     secrets.add(value);
-    try {
-      secrets.add(decodeURIComponent(value));
-    } catch {
-      // Malformed escapes: the raw form is still covered.
+    // The driver decodes query values form-style, so `+` comes back as a space.
+    for (const candidate of [value, value.replace(/\+/g, ' ')]) {
+      try {
+        secrets.add(decodeURIComponent(candidate));
+      } catch {
+        // Malformed escapes: the raw form is still covered.
+      }
     }
   }
   // Longest first, so a secret that contains another is replaced whole.
-  return [...secrets].filter((value) => value.length >= MIN_SECRET_LENGTH).sort((a, b) => b.length - a.length);
+  return [...secrets].filter((value) => value.length > 0).sort((a, b) => b.length - a.length);
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }

@@ -52,6 +52,29 @@ describe('redactMongoSecrets', () => {
     const encoded = 'mongodb://u:p%40ss1@127.0.0.1:1/';
     expect(redactMongoSecrets('login p@ss1 failed', encoded)).not.toContain('p@ss1');
   });
+
+  it('masks the whole password when it contains an unescaped @', () => {
+    const malformed = 'mongodb://u:prefix@tail@/?tlsCertificateKeyFilePassword=keysecret';
+    expect(redactMongoUri(malformed)).toBe('mongodb://u:***@/?tlsCertificateKeyFilePassword=***');
+    expect(redactMongoSecrets(`TypeError: Invalid URL: ${malformed}`, malformed)).not.toMatch(/prefix|tail|keysecret/);
+  });
+
+  it('removes short secrets the driver echoes on their own', () => {
+    // The driver reports an invalid option value as "got: abc"; a short password must not survive that.
+    const uri = 'mongodb://u:abc@localhost/?maxPoolSize=abc';
+    expect(redactMongoSecrets('Expected maxPoolSize to be stringified int value, got: abc', uri)).not.toContain('abc');
+  });
+
+  it('catches query values in the form the driver decodes them (+ as space)', () => {
+    const uri = 'mongodb://localhost/?maxPoolSize=foo+bar';
+    expect(redactMongoSecrets('Expected maxPoolSize to be stringified int value, got: foo bar', uri))
+      .not.toContain('foo bar');
+  });
+
+  it('does not touch a secret-like substring inside a longer word', () => {
+    expect(redactMongoSecrets('connection to localhost refused', 'mongodb://u:host@localhost/'))
+      .toBe('connection to localhost refused');
+  });
 });
 
 describe('MongoSyncWorker connection failure', () => {
