@@ -6,7 +6,9 @@
  * Note: This may include credentials in plaintext (MongoDB URI). Treat accordingly.
  */
 
+import * as dns from 'dns';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 
 import type { MongoSyncDirection } from './mongo-sync-worker.js';
@@ -199,82 +201,52 @@ export function redactMongoUri(uri: string): string {
   return `${parts.scheme}${creds}${parts.hosts}${parts.path}${query}`;
 }
 
-// Errors the driver raises while parsing the string. Their text quotes the string or its pieces in decoded,
-// lowercased or split forms, so none of it is printed.
-const PARSE_ERROR_NAMES = new Set(['MongoParseError', 'MongoInvalidArgumentError', 'MongoAPIError', 'TypeError']);
+// Errors the driver raises while parsing the string or its options. They get a hint instead of their text.
+const PARSE_ERROR_NAMES = new Set([
+  'MongoParseError',
+  'MongoInvalidArgumentError',
+  'MongoAPIError',
+  'MongoRuntimeError',
+  'MongoMissingCredentialsError',
+  'TypeError',
+  'URIError'
+]);
+const PARSE_HINT = 'connection string could not be parsed; percent-encode special characters in the password and check option names';
+
+// OS errno codes plus the resolver's (ENOTFOUND, EAI_AGAIN, ...), which are not errno values.
+const ERRNO_CODES = new Set([
+  ...Object.keys(os.constants.errno),
+  ...(Object.values(dns) as unknown[]).filter((value): value is string => typeof value === 'string' && /^E[A-Z_]+$/.test(value)),
+  'EAI_AGAIN'
+]);
+const FIXED_PHRASES = ['authentication failed', 'timed out'];
 
 /**
- * The reason to print for a failed connection to `uri`. Parse failures, and any failure on a string that cannot be
- * split unambiguously, are reduced to the error name; other errors (network, auth) keep their text with the
- * connection string and its secrets removed.
+ * The reason to print for a failed connection to `uri`. The driver's text is never printed: it quotes the connection
+ * string, or pieces of it decoded, lowercased, normalized or split, in more forms than can be scrubbed. Instead the
+ * reason is the error name plus facts from fixed vocabularies (errno codes, the server's code name, fixed phrases).
+ * The hosts are already in the redacted URI printed next to it.
  */
 export function describeMongoConnectionError(error: unknown, uri: string): string {
   const name = error instanceof Error ? error.name : 'Error';
-  const parts = splitMongoUri(uri);
-  if (!parts || PARSE_ERROR_NAMES.has(name)) {
-    return `${name}: connection string could not be parsed; percent-encode special characters in the password and check option names`;
-  }
-  const text = error instanceof Error ? `${name}: ${error.message}` : String(error);
-  return removeSecrets(text.split(uri).join(redactMongoUri(uri)), mongoUriSecrets(parts));
+  if (!splitMongoUri(uri) || PARSE_ERROR_NAMES.has(name)) return `${name}: ${PARSE_HINT}`;
+  const facts = connectionErrorFacts(error);
+  return facts.length > 0 ? `${name} (${facts.join(', ')})` : name;
 }
 
-// Options whose values are secrets. Other values (maxPoolSize=1, replicaSet=rs0) stay readable in network errors.
-const SECRET_OPTION_PATTERN = /pass|secret|token|key|cred|auth/i;
-
-function mongoUriSecrets(parts: MongoUriParts): string[] {
-  const raw: string[] = [];
-  if (parts.password) raw.push(parts.password);
-  for (const pair of parts.query?.split('&') ?? []) {
-    const eqIdx = pair.indexOf('=');
-    if (eqIdx === -1) continue;
-    if (SECRET_OPTION_PATTERN.test(decodeLoosely(pair.slice(0, eqIdx)))) raw.push(pair.slice(eqIdx + 1));
-  }
-
-  const secrets = new Set<string>();
-  for (const value of raw) {
-    // Raw, percent-decoded and form-decoded (+ as space), whole and split into the KEY:value components the driver
-    // reports one at a time.
-    for (const form of [value, decodeLoosely(value), decodeLoosely(value.replace(/\+/g, ' '))]) {
-      secrets.add(form);
-      for (const component of form.split(/[,:]/)) secrets.add(component);
+function connectionErrorFacts(error: unknown): string[] {
+  const facts = new Set<string>();
+  let current: unknown = error;
+  for (let depth = 0; depth < 5 && current instanceof Error; depth++) {
+    const { code, codeName } = current as { code?: unknown; codeName?: unknown };
+    if (typeof code === 'string' && ERRNO_CODES.has(code)) facts.add(code);
+    if (typeof codeName === 'string' && /^[A-Za-z]+$/.test(codeName)) facts.add(codeName);
+    for (const word of current.message.match(/\bE[A-Z0-9_]+\b/g) ?? []) {
+      if (ERRNO_CODES.has(word)) facts.add(word);
     }
+    const lower = current.message.toLowerCase();
+    for (const phrase of FIXED_PHRASES) if (lower.includes(phrase)) facts.add(phrase);
+    current = (current as { cause?: unknown }).cause;
   }
-  // Longest first, so a secret that contains another is replaced whole.
-  return [...secrets].filter((value) => value.length > 0).sort((a, b) => b.length - a.length);
-}
-
-/** decodeURIComponent that keeps going past malformed escapes, the way the driver's decoder does (U+FFFD). */
-function decodeLoosely(value: string): string {
-  try {
-    return decodeURIComponent(value);
-  } catch {
-    return value.replace(/(%[0-9a-f]{2})+/gi, (run) => {
-      try {
-        return decodeURIComponent(run);
-      } catch {
-        return '�';
-      }
-    });
-  }
-}
-
-/** Case-insensitive, no regex: a secret can be any length, and the driver lowercases option names. */
-function removeSecrets(text: string, secrets: string[]): string {
-  let result = text;
-  for (const secret of secrets) {
-    if (secret.toLowerCase().length !== secret.length || result.toLowerCase().length !== result.length) {
-      // Case folding changed the length (e.g. U+0130), so indices would not line up: replace exact forms instead.
-      for (const form of [secret, secret.toLowerCase(), secret.toUpperCase()]) result = result.split(form).join('***');
-      continue;
-    }
-    const needle = secret.toLowerCase();
-    let lower = result.toLowerCase();
-    let idx = lower.indexOf(needle);
-    while (idx !== -1) {
-      result = `${result.slice(0, idx)}***${result.slice(idx + secret.length)}`;
-      lower = result.toLowerCase();
-      idx = lower.indexOf(needle, idx + 3);
-    }
-  }
-  return result;
+  return [...facts];
 }
