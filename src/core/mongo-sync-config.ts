@@ -219,13 +219,12 @@ const ERRNO_CODES = new Set([
   ...(Object.values(dns) as unknown[]).filter((value): value is string => typeof value === 'string' && /^E[A-Z_]+$/.test(value)),
   'EAI_AGAIN'
 ]);
-const FIXED_PHRASES = ['authentication failed', 'timed out'];
-
 /**
  * The reason to print for a failed connection to `uri`. The driver's text is never printed: it quotes the connection
  * string, or pieces of it decoded, lowercased, normalized or split, in more forms than can be scrubbed. Instead the
- * reason is the error name plus facts from fixed vocabularies (errno codes, the server's code name, fixed phrases).
- * The hosts are already in the redacted URI printed next to it.
+ * reason is the error name plus structured codes along the `cause` chain (errno and resolver codes, the server's code
+ * name). Nothing is read from message text, where an option value can look like a code. The hosts are already in the
+ * redacted URI printed next to it.
  */
 export function describeMongoConnectionError(error: unknown, uri: string): string {
   const name = error instanceof Error ? error.name : 'Error';
@@ -241,11 +240,6 @@ function connectionErrorFacts(error: unknown): string[] {
     const { code, codeName } = current as { code?: unknown; codeName?: unknown };
     if (typeof code === 'string' && ERRNO_CODES.has(code)) facts.add(code);
     if (typeof codeName === 'string' && /^[A-Za-z]+$/.test(codeName)) facts.add(codeName);
-    for (const word of current.message.match(/\bE[A-Z0-9_]+\b/g) ?? []) {
-      if (ERRNO_CODES.has(word)) facts.add(word);
-    }
-    const lower = current.message.toLowerCase();
-    for (const phrase of FIXED_PHRASES) if (lower.includes(phrase)) facts.add(phrase);
     current = (current as { cause?: unknown }).cause;
   }
   return [...facts];

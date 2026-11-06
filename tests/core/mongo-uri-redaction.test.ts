@@ -84,11 +84,21 @@ describe('describeMongoConnectionError', () => {
 
   it('reports a network error by name and errno code, not by its text', () => {
     const uri = 'mongodb://u:pa55word@127.0.0.1:1/?maxPoolSize=1';
-    const reason = describeMongoConnectionError(
+    const cause = Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:1'), { code: 'ECONNREFUSED' });
+    const error = Object.assign(
       namedError('MongoServerSelectionError', `connect ECONNREFUSED 127.0.0.1:1 for ${uri} (PA55WORD)`),
-      uri
+      { cause }
     );
-    expect(reason).toBe('MongoServerSelectionError (ECONNREFUSED)');
+    expect(describeMongoConnectionError(error, uri)).toBe('MongoServerSelectionError (ECONNREFUSED)');
+  });
+
+  it('takes nothing from message text, even words that look like codes or phrases', () => {
+    // An option value of EACCES or "timed out" reaches the driver's text; only the structured code may be printed.
+    const uri = 'mongodb://u:pw@localhost/?tls=true&tlsCertificateKeyFile=EACCES';
+    const error = Object.assign(namedError('Error', "ENOENT: no such file, open 'EACCES' (timed out, authentication failed)"), {
+      code: 'ENOENT'
+    });
+    expect(describeMongoConnectionError(error, uri)).toBe('Error (ENOENT)');
   });
 
   it('prints no option value the driver normalized into its own text', () => {
@@ -98,11 +108,14 @@ describe('describeMongoConnectionError', () => {
     expect(describeMongoConnectionError(error, uri)).toBe('Error (ENOENT)');
   });
 
-  it('keeps the server code name and fixed phrases of an auth failure or timeout', () => {
-    const auth = Object.assign(namedError('MongoServerError', 'Authentication failed.'), { codeName: 'AuthenticationFailed' });
-    expect(describeMongoConnectionError(auth, 'mongodb://u:p@h/')).toBe('MongoServerError (AuthenticationFailed, authentication failed)');
+  it('keeps the server code name of an auth failure and ignores numeric codes', () => {
+    const auth = Object.assign(namedError('MongoServerError', 'Authentication failed.'), {
+      code: 18,
+      codeName: 'AuthenticationFailed'
+    });
+    expect(describeMongoConnectionError(auth, 'mongodb://u:p@h/')).toBe('MongoServerError (AuthenticationFailed)');
     const timeout = namedError('MongoServerSelectionError', 'Server selection timed out after 5000 ms');
-    expect(describeMongoConnectionError(timeout, 'mongodb://h/')).toBe('MongoServerSelectionError (timed out)');
+    expect(describeMongoConnectionError(timeout, 'mongodb://h/')).toBe('MongoServerSelectionError');
   });
 
   it('reads errno codes from the error chain', () => {
