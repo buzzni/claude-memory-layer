@@ -8,7 +8,7 @@ import {
   type MongoAuditCollection,
   type MongoSyncAuditReport
 } from '../../core/mongo-sync-audit.js';
-import { redactMongoUri } from '../../core/mongo-sync-config.js';
+import { redactMongoSecrets, redactMongoUri } from '../../core/mongo-sync-config.js';
 import { SQLiteEventStore } from '../../core/sqlite-event-store.js';
 import {
   getProjectStoragePath as defaultGetProjectStoragePath,
@@ -314,7 +314,7 @@ export async function runMongoSyncAudit(
   } catch (error) {
     // Query options can carry secrets too (e.g. tlsCertificateKeyFilePassword); host and db are enough to act on.
     const safeUri = redactMongoUri(uri).split('?')[0];
-    const message = (error instanceof Error ? error.message : String(error)).split(uri).join(safeUri);
+    const message = redactMongoSecrets(error instanceof Error ? error.message : String(error), uri);
     return { status: 'fail', projectKey, detail: `Mongo sync audit failed (${safeUri}, db=${dbName}): ${message}` };
   } finally {
     await connection?.close().catch(() => undefined);

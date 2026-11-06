@@ -149,16 +149,79 @@ export function removeMongoSyncConfig(storagePath: string): boolean {
 export function redactMongoUri(uri: string): string {
   // mongodb://user:pass@host:port/  -> mongodb://user:***@host:port/
   // mongodb+srv://user:pass@host/  -> mongodb+srv://user:***@host/
+  // ?tlsCertificateKeyFilePassword=s&replicaSet=rs0 -> ?tlsCertificateKeyFilePassword=***&replicaSet=***
+  return redactQueryValues(redactPassword(uri));
+}
+
+/**
+ * Removes the secrets of `uri` from `text`. The driver quotes the whole connection string in its own errors, and a
+ * secret can also surface on its own (percent-encoded or decoded), so every form of each one is replaced.
+ */
+export function redactMongoSecrets(text: string, uri: string): string {
+  let result = text.split(uri).join(redactMongoUri(uri));
+  for (const secret of mongoUriSecrets(uri)) {
+    result = result.split(secret).join('***');
+  }
+  return result;
+}
+
+function redactPassword(uri: string): string {
+  const range = passwordRange(uri);
+  if (!range) return uri;
+  return `${uri.slice(0, range.start)}***${uri.slice(range.end)}`;
+}
+
+function redactQueryValues(uri: string): string {
+  const queryIdx = uri.indexOf('?');
+  if (queryIdx === -1) return uri;
+  const query = uri
+    .slice(queryIdx + 1)
+    .split('&')
+    .map((pair) => {
+      const eqIdx = pair.indexOf('=');
+      return eqIdx === -1 ? pair : `${pair.slice(0, eqIdx)}=***`;
+    })
+    .join('&');
+  return `${uri.slice(0, queryIdx + 1)}${query}`;
+}
+
+function passwordRange(uri: string): { start: number; end: number } | null {
   const schemeIdx = uri.indexOf('://');
-  if (schemeIdx === -1) return uri;
+  if (schemeIdx === -1) return null;
   const atIdx = uri.indexOf('@', schemeIdx + 3);
-  if (atIdx === -1) return uri;
+  if (atIdx === -1) return null;
 
   const creds = uri.slice(schemeIdx + 3, atIdx); // user:pass
   const colonIdx = creds.indexOf(':');
-  if (colonIdx === -1) return uri;
+  if (colonIdx === -1) return null;
+  return { start: schemeIdx + 3 + colonIdx + 1, end: atIdx };
+}
 
-  const prefix = uri.slice(0, schemeIdx + 3 + colonIdx + 1);
-  const suffix = uri.slice(atIdx);
-  return `${prefix}***${suffix}`;
+// Short values such as `1` or `rs0` would blank out unrelated text, and are not plausible secrets.
+const MIN_SECRET_LENGTH = 4;
+
+function mongoUriSecrets(uri: string): string[] {
+  const raw: string[] = [];
+  const range = passwordRange(uri);
+  if (range) raw.push(uri.slice(range.start, range.end));
+
+  const queryIdx = uri.indexOf('?');
+  if (queryIdx !== -1) {
+    for (const pair of uri.slice(queryIdx + 1).split('&')) {
+      const eqIdx = pair.indexOf('=');
+      if (eqIdx !== -1) raw.push(pair.slice(eqIdx + 1));
+    }
+  }
+
+  const secrets = new Set<string>();
+  for (const value of raw) {
+    secrets.add(value);
+    try {
+      secrets.add(decodeURIComponent(value));
+    } catch {
+      // Malformed escapes: the raw form is still covered.
+    }
+  }
+  // Longest first, so a secret that contains another is replaced whole.
+  return [...secrets].filter((value) => value.length >= MIN_SECRET_LENGTH).sort((a, b) => b.length - a.length);
 }
