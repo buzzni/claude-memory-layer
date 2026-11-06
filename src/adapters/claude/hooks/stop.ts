@@ -17,6 +17,7 @@ import { readTurnStateDetails, clearTurnState, writeLastAssistantSnippet } from 
 import type { StopInput } from '../../../core/types.js';
 import { readUnprocessedAssistantMessages } from '../transcript/stop-transcript-cursor.js';
 import { readStdin } from './hook-runtime.js';
+import { recordStopPayloadDiagnostic } from './stop-payload-diagnostics.js';
 import { isStorableAgentResponse, normalizeAgentResponse, readMinAgentResponseLength } from './agent-response-normalization.js';
 import { scheduleSessionSummary } from './semantic-daemon-client.js';
 import { isLlmSummaryEnabled } from '../../llm/session-summary-llm.js';
@@ -41,6 +42,7 @@ export async function main(): Promise<string> {
     // Read the assistant messages appended since this session's previous Stop
     const transcriptBatch = readUnprocessedAssistantMessages(input.session_id, input.transcript_path);
     const assistantMessages = transcriptBatch.messages;
+    recordStopPayloadDiagnostic(input.last_assistant_message, assistantMessages);
 
     const minResponseLength = readMinAgentResponseLength();
     const lastIdx = assistantMessages.length - 1;
