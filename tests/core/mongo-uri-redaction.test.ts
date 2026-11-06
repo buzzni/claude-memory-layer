@@ -66,14 +66,27 @@ describe('redactMongoSecrets', () => {
   });
 
   it('catches query values in the form the driver decodes them (+ as space)', () => {
-    const uri = 'mongodb://localhost/?maxPoolSize=foo+bar';
-    expect(redactMongoSecrets('Expected maxPoolSize to be stringified int value, got: foo bar', uri))
-      .not.toContain('foo bar');
+    const uri = 'mongodb://localhost/?tlsCertificateKeyFilePassword=foo+bar';
+    expect(redactMongoSecrets('could not decrypt key with passphrase "foo bar"', uri)).not.toContain('foo bar');
   });
 
-  it('does not touch a secret-like substring inside a longer word', () => {
-    expect(redactMongoSecrets('connection to localhost refused', 'mongodb://u:host@localhost/'))
-      .toBe('connection to localhost refused');
+  it('masks the whole password when it contains an unescaped ?', () => {
+    const malformed = 'mongodb://u:prefix?tail@localhost/';
+    expect(redactMongoUri(malformed)).not.toMatch(/prefix|tail/);
+    expect(redactMongoSecrets(`TypeError: Invalid URL: ${malformed}`, malformed)).not.toMatch(/prefix|tail/);
+  });
+
+  it('removes a password the driver folds into a lowercased option name', () => {
+    // The driver reports `?secretSuffix=1` as "option secretsuffix is not supported".
+    const uri = 'mongodb://u:Secret@localhost/?secretSuffix=1';
+    expect(redactMongoSecrets('MongoParseError: option secretsuffix is not supported', uri)).not.toMatch(/secret/i);
+    expect(redactMongoUri(uri)).not.toMatch(/secret/i);
+  });
+
+  it('keeps values of non-secret options readable in free text', () => {
+    const uri = 'mongodb://u:pa55word@127.0.0.1:27017/?maxPoolSize=1&replicaSet=rs0';
+    expect(redactMongoSecrets('connect ECONNREFUSED 127.0.0.1:27017 (replica set rs0)', uri))
+      .toBe('connect ECONNREFUSED 127.0.0.1:27017 (replica set rs0)');
   });
 });
 

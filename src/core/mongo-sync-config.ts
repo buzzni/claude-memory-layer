@@ -150,18 +150,25 @@ export function redactMongoUri(uri: string): string {
   // mongodb://user:pass@host:port/  -> mongodb://user:***@host:port/
   // mongodb+srv://user:pass@host/  -> mongodb+srv://user:***@host/
   // ?tlsCertificateKeyFilePassword=s&replicaSet=rs0 -> ?tlsCertificateKeyFilePassword=***&replicaSet=***
-  return redactQueryValues(redactPassword(uri));
+  // A secret can also sit inside what stays visible, e.g. an option name that contains the password. The password and
+  // values are already masked here, so this pass skips 1-2 char secrets that would only shred the option names.
+  const visibleSecrets = mongoUriSecrets(uri).filter((secret) => secret.length >= 3);
+  return removeSecrets(redactQueryValues(redactPassword(uri)), visibleSecrets);
 }
 
 /**
  * Removes the secrets of `uri` from `text`. The driver quotes the whole connection string in its own errors, and a
- * secret can also surface on its own (percent-encoded or decoded), so every form of each one is replaced.
+ * secret can also surface on its own (percent-encoded or decoded, or lowercased inside an option name), so every form
+ * of each one is replaced, case-insensitively and even inside longer words: over-redacting an error beats leaking.
  */
 export function redactMongoSecrets(text: string, uri: string): string {
-  let result = text.split(uri).join(redactMongoUri(uri));
-  for (const secret of mongoUriSecrets(uri)) {
-    // Whole tokens only: a password `host` must not turn `localhost` into `local***`.
-    result = result.replace(new RegExp(`(?<![A-Za-z0-9])${escapeRegExp(secret)}(?![A-Za-z0-9])`, 'g'), '***');
+  return removeSecrets(text.split(uri).join(redactMongoUri(uri)), mongoUriSecrets(uri));
+}
+
+function removeSecrets(text: string, secrets: string[]): string {
+  let result = text;
+  for (const secret of secrets) {
+    result = result.replace(new RegExp(escapeRegExp(secret), 'gi'), '***');
   }
   return result;
 }
@@ -189,9 +196,9 @@ function redactQueryValues(uri: string): string {
 function passwordRange(uri: string): { start: number; end: number } | null {
   const schemeIdx = uri.indexOf('://');
   if (schemeIdx === -1) return null;
-  // The last @ before the query ends the credentials: an unescaped @ in the password must not split it.
-  const queryIdx = uri.indexOf('?', schemeIdx + 3);
-  const atIdx = uri.lastIndexOf('@', queryIdx === -1 ? uri.length : queryIdx);
+  // The last @ ends the credentials, so an unescaped @, ? or / in the password cannot cut it short. An @ in the
+  // query only widens the masked span.
+  const atIdx = uri.lastIndexOf('@');
   if (atIdx < schemeIdx + 3) return null;
 
   const creds = uri.slice(schemeIdx + 3, atIdx); // user:pass
@@ -200,16 +207,20 @@ function passwordRange(uri: string): { start: number; end: number } | null {
   return { start: schemeIdx + 3 + colonIdx + 1, end: atIdx };
 }
 
+// Options whose values are secrets. Other values (maxPoolSize=1, replicaSet=rs0) stay readable in free text; the
+// connection string itself still shows none of them.
+const SECRET_OPTION_PATTERN = /pass|secret|token|key|cred|auth/i;
+
 function mongoUriSecrets(uri: string): string[] {
   const raw: string[] = [];
   const range = passwordRange(uri);
   if (range) raw.push(uri.slice(range.start, range.end));
 
-  const queryIdx = uri.indexOf('?');
+  const queryIdx = uri.indexOf('?', range ? range.end : 0);
   if (queryIdx !== -1) {
     for (const pair of uri.slice(queryIdx + 1).split('&')) {
       const eqIdx = pair.indexOf('=');
-      if (eqIdx !== -1) raw.push(pair.slice(eqIdx + 1));
+      if (eqIdx !== -1 && SECRET_OPTION_PATTERN.test(pair.slice(0, eqIdx))) raw.push(pair.slice(eqIdx + 1));
     }
   }
 
