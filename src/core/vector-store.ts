@@ -263,27 +263,42 @@ export class VectorStore {
   }
 
   /**
-   * Delete many events from every event table in bounded IN-list chunks. A retention purge can
-   * carry 100k+ ids; one Lance delete per id would create as many table versions, while one
-   * predicate per chunk keeps the version churn proportional to the chunk count.
+   * Delete every event vector older than `before` (optionally of one event type) from the
+   * legacy and event_vectors_* tables with a single predicate per table, so a retention purge
+   * of 100k events costs one Lance commit per table instead of one per event. Idempotent:
+   * re-running after a partial failure removes whatever is still there. A concurrent append
+   * by the embedding worker surfaces as a commit conflict; the table is reopened and retried
+   * the same way `writeExistingRowsWithRetry` does.
    */
-  async deleteEventsEverywhere(eventIds: readonly string[]): Promise<void> {
-    if (eventIds.length === 0) return;
+  async deleteEventsBefore(before: Date, eventType?: string): Promise<void> {
     this.assertWritable();
     await this.initialize();
     if (!this.db) return;
 
+    const predicate = [
+      `\`timestamp\` < ${toLanceSqlString(before.toISOString())}`,
+      ...(eventType === undefined ? [] : [`\`eventType\` = ${toLanceSqlString(eventType)}`])
+    ].join(' AND ');
     const tableNames = await this.db.tableNames();
     const targetTables = tableNames.filter(
       (name) => name === this.defaultTableName || name.startsWith('event_vectors_')
     );
 
     for (const tableName of targetTables) {
-      const table = await this.getExistingTable(tableName);
+      let table = await this.getExistingTable(tableName);
       if (!table) continue;
-      for (let offset = 0; offset < eventIds.length; offset += DELETE_CHUNK_SIZE) {
-        const chunk = eventIds.slice(offset, offset + DELETE_CHUNK_SIZE);
-        await table.delete(`\`eventId\` IN (${chunk.map(toLanceSqlString).join(', ')})`);
+      for (let attempt = 1; attempt <= MAX_LANCE_COMMIT_ATTEMPTS; attempt++) {
+        try {
+          await table.delete(predicate);
+          break;
+        } catch (error) {
+          if (!isLanceCommitConflict(error) || attempt === MAX_LANCE_COMMIT_ATTEMPTS) {
+            throw error;
+          }
+          this.tableCache.delete(tableName);
+          await delay(LANCE_COMMIT_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1));
+          table = await this.openTable(tableName);
+        }
       }
     }
   }
@@ -802,8 +817,6 @@ function slugifyTablePart(value: string): string {
     .replace(/^_+|_+$/g, '')
     .toLowerCase() || 'default';
 }
-
-const DELETE_CHUNK_SIZE = 500;
 
 function toLanceSqlString(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;

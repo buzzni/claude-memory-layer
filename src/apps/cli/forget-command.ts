@@ -27,7 +27,7 @@ export interface ForgetBeforeReport extends ForgetBeforeOptions {
 }
 
 export interface ForgetBeforeDeps {
-  vectorStore?: { deleteEventsEverywhere(eventIds: readonly string[]): Promise<void> };
+  vectorStore?: { deleteEventsBefore(before: Date, eventType?: string): Promise<void> };
 }
 
 const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
@@ -100,7 +100,7 @@ export async function runForgetBefore(
     let vectorsDeleted = 0;
     const vectorStore = deps.vectorStore ?? new VectorStore(path.join(storagePath, 'vectors'));
     try {
-      await vectorStore.deleteEventsEverywhere(eventIds);
+      await vectorStore.deleteEventsBefore(options.before, options.eventType);
       vectorsDeleted = eventIds.length;
     } catch (error) {
       warnings.push(`vector deletion failed; orphaned vectors remain: ${error instanceof Error ? error.message : String(error)}`);
@@ -118,7 +118,9 @@ export async function runForgetBefore(
 
     let vacuumed = false;
     try {
+      // VACUUM rewrites the database through the WAL; the checkpoint hands the space back.
       store.getDatabase().exec('VACUUM');
+      store.getDatabase().exec('PRAGMA wal_checkpoint(TRUNCATE)');
       vacuumed = true;
     } catch (error) {
       warnings.push(`VACUUM skipped; file space is reclaimed on a later vacuum: ${error instanceof Error ? error.message : String(error)}`);

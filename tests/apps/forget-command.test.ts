@@ -91,14 +91,14 @@ describe('runForgetBefore', () => {
     const storagePath = tempStoragePath();
     const ids = await seedStore(storagePath);
     const files = seedMirror(storagePath);
-    const deletedVectorIds: string[] = [];
+    const vectorDeletes: Array<[Date, string | undefined]> = [];
 
     const report = await runForgetBefore(storagePath, {
       before: new Date('2026-02-01T00:00:00.000Z'), eventType: 'tool_observation', apply: false
-    }, { vectorStore: { deleteEventsEverywhere: async (eventIds) => { deletedVectorIds.push(...eventIds); } } });
+    }, { vectorStore: { deleteEventsBefore: async (before, eventType) => { vectorDeletes.push([before, eventType]); } } });
 
     expect(report).toMatchObject({ apply: false, rows: 1, contentBytes: Buffer.byteLength('old tool output'), mirrorFiles: [files.oldTool], applied: null });
-    expect(deletedVectorIds).toEqual([]);
+    expect(vectorDeletes).toEqual([]);
     expect(existsSync(files.oldTool)).toBe(true);
     const store = new SQLiteEventStore(path.join(storagePath, 'events.sqlite'));
     await store.initialize();
@@ -110,14 +110,14 @@ describe('runForgetBefore', () => {
     const storagePath = tempStoragePath();
     const ids = await seedStore(storagePath);
     const files = seedMirror(storagePath);
-    const deletedVectorIds: string[] = [];
+    const vectorDeletes: Array<[Date, string | undefined]> = [];
 
     const report = await runForgetBefore(storagePath, {
       before: new Date('2026-02-01T00:00:00.000Z'), eventType: 'tool_observation', apply: true
-    }, { vectorStore: { deleteEventsEverywhere: async (eventIds) => { deletedVectorIds.push(...eventIds); } } });
+    }, { vectorStore: { deleteEventsBefore: async (before, eventType) => { vectorDeletes.push([before, eventType]); } } });
 
     expect(report.applied).toMatchObject({ deleted: 1, vectorsDeleted: 1, mirrorFilesRemoved: 1 });
-    expect(deletedVectorIds).toEqual([ids.oldTool]);
+    expect(vectorDeletes).toEqual([[new Date('2026-02-01T00:00:00.000Z'), 'tool_observation']]);
     expect(existsSync(files.oldTool)).toBe(false);
     expect(existsSync(files.newTool)).toBe(true);
     expect(existsSync(files.oldPrompt)).toBe(true);
