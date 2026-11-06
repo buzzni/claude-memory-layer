@@ -146,100 +146,135 @@ export function removeMongoSyncConfig(storagePath: string): boolean {
   return true;
 }
 
-export function redactMongoUri(uri: string): string {
-  // mongodb://user:pass@host:port/  -> mongodb://user:***@host:port/
-  // mongodb+srv://user:pass@host/  -> mongodb+srv://user:***@host/
-  // ?tlsCertificateKeyFilePassword=s&replicaSet=rs0 -> ?tlsCertificateKeyFilePassword=***&replicaSet=***
-  // A secret can also sit inside what stays visible, e.g. an option name that contains the password. The password and
-  // values are already masked here, so this pass skips 1-2 char secrets that would only shred the option names.
-  const visibleSecrets = mongoUriSecrets(uri).filter((secret) => secret.length >= 3);
-  return removeSecrets(redactQueryValues(redactPassword(uri)), visibleSecrets);
+const UNPARSEABLE_URI = '<unparseable MongoDB connection string>';
+
+interface MongoUriParts {
+  scheme: string;
+  username: string | null;
+  password: string | null;
+  hosts: string;
+  path: string;
+  query: string | null;
 }
 
 /**
- * Removes the secrets of `uri` from `text`. The driver quotes the whole connection string in its own errors, and a
- * secret can also surface on its own (percent-encoded or decoded, or lowercased inside an option name), so every form
- * of each one is replaced, case-insensitively and even inside longer words: over-redacting an error beats leaking.
+ * Splits a connection string only when its structure is unambiguous. A well-formed string percent-encodes `@`, `/`,
+ * `?` and `:` inside credentials, so any `@` outside the authority means a password the driver will also reject, and
+ * guessing its end would show part of it.
  */
-export function redactMongoSecrets(text: string, uri: string): string {
-  return removeSecrets(text.split(uri).join(redactMongoUri(uri)), mongoUriSecrets(uri));
+function splitMongoUri(uri: string): MongoUriParts | null {
+  const match = /^([a-z][a-z0-9+.-]*:\/\/)(.*)$/is.exec(uri);
+  if (!match) return null;
+  const [, scheme, rest] = match;
+
+  const authorityEnd = rest.search(/[/?]/);
+  const authority = authorityEnd === -1 ? rest : rest.slice(0, authorityEnd);
+  const remainder = authorityEnd === -1 ? '' : rest.slice(authorityEnd);
+  if (remainder.includes('@') || authority.indexOf('@') !== authority.lastIndexOf('@')) return null;
+
+  const atIdx = authority.indexOf('@');
+  const creds = atIdx === -1 ? null : authority.slice(0, atIdx);
+  const hosts = authority.slice(atIdx + 1);
+  if (!hosts) return null;
+
+  const colonIdx = creds?.indexOf(':') ?? -1;
+  const queryIdx = remainder.indexOf('?');
+  return {
+    scheme,
+    username: creds === null ? null : colonIdx === -1 ? creds : creds.slice(0, colonIdx),
+    password: creds === null || colonIdx === -1 ? null : creds.slice(colonIdx + 1),
+    hosts,
+    path: queryIdx === -1 ? remainder : remainder.slice(0, queryIdx),
+    query: queryIdx === -1 ? null : remainder.slice(queryIdx + 1)
+  };
 }
 
-function removeSecrets(text: string, secrets: string[]): string {
-  let result = text;
-  for (const secret of secrets) {
-    result = result.replace(new RegExp(escapeRegExp(secret), 'gi'), '***');
+export function redactMongoUri(uri: string): string {
+  // mongodb://user:pass@host:port/db?opts  -> mongodb://user:***@host:port/db?***
+  // Option names are hidden too: they can contain the password, and values like tlsCertificateKeyFilePassword are secrets.
+  const parts = splitMongoUri(uri);
+  if (!parts) return UNPARSEABLE_URI;
+  const creds = parts.username === null ? '' : parts.password === null ? `${parts.username}@` : `${parts.username}:***@`;
+  const query = parts.query === null ? '' : '?***';
+  return `${parts.scheme}${creds}${parts.hosts}${parts.path}${query}`;
+}
+
+// Errors the driver raises while parsing the string. Their text quotes the string or its pieces in decoded,
+// lowercased or split forms, so none of it is printed.
+const PARSE_ERROR_NAMES = new Set(['MongoParseError', 'MongoInvalidArgumentError', 'MongoAPIError', 'TypeError']);
+
+/**
+ * The reason to print for a failed connection to `uri`. Parse failures, and any failure on a string that cannot be
+ * split unambiguously, are reduced to the error name; other errors (network, auth) keep their text with the
+ * connection string and its secrets removed.
+ */
+export function describeMongoConnectionError(error: unknown, uri: string): string {
+  const name = error instanceof Error ? error.name : 'Error';
+  const parts = splitMongoUri(uri);
+  if (!parts || PARSE_ERROR_NAMES.has(name)) {
+    return `${name}: connection string could not be parsed; percent-encode special characters in the password and check option names`;
   }
-  return result;
+  const text = error instanceof Error ? `${name}: ${error.message}` : String(error);
+  return removeSecrets(text.split(uri).join(redactMongoUri(uri)), mongoUriSecrets(parts));
 }
 
-function redactPassword(uri: string): string {
-  const range = passwordRange(uri);
-  if (!range) return uri;
-  return `${uri.slice(0, range.start)}***${uri.slice(range.end)}`;
-}
-
-function redactQueryValues(uri: string): string {
-  const queryIdx = uri.indexOf('?');
-  if (queryIdx === -1) return uri;
-  const query = uri
-    .slice(queryIdx + 1)
-    .split('&')
-    .map((pair) => {
-      const eqIdx = pair.indexOf('=');
-      return eqIdx === -1 ? pair : `${pair.slice(0, eqIdx)}=***`;
-    })
-    .join('&');
-  return `${uri.slice(0, queryIdx + 1)}${query}`;
-}
-
-function passwordRange(uri: string): { start: number; end: number } | null {
-  const schemeIdx = uri.indexOf('://');
-  if (schemeIdx === -1) return null;
-  // The last @ ends the credentials, so an unescaped @, ? or / in the password cannot cut it short. An @ in the
-  // query only widens the masked span.
-  const atIdx = uri.lastIndexOf('@');
-  if (atIdx < schemeIdx + 3) return null;
-
-  const creds = uri.slice(schemeIdx + 3, atIdx); // user:pass
-  const colonIdx = creds.indexOf(':');
-  if (colonIdx === -1) return null;
-  return { start: schemeIdx + 3 + colonIdx + 1, end: atIdx };
-}
-
-// Options whose values are secrets. Other values (maxPoolSize=1, replicaSet=rs0) stay readable in free text; the
-// connection string itself still shows none of them.
+// Options whose values are secrets. Other values (maxPoolSize=1, replicaSet=rs0) stay readable in network errors.
 const SECRET_OPTION_PATTERN = /pass|secret|token|key|cred|auth/i;
 
-function mongoUriSecrets(uri: string): string[] {
+function mongoUriSecrets(parts: MongoUriParts): string[] {
   const raw: string[] = [];
-  const range = passwordRange(uri);
-  if (range) raw.push(uri.slice(range.start, range.end));
-
-  const queryIdx = uri.indexOf('?', range ? range.end : 0);
-  if (queryIdx !== -1) {
-    for (const pair of uri.slice(queryIdx + 1).split('&')) {
-      const eqIdx = pair.indexOf('=');
-      if (eqIdx !== -1 && SECRET_OPTION_PATTERN.test(pair.slice(0, eqIdx))) raw.push(pair.slice(eqIdx + 1));
-    }
+  if (parts.password) raw.push(parts.password);
+  for (const pair of parts.query?.split('&') ?? []) {
+    const eqIdx = pair.indexOf('=');
+    if (eqIdx === -1) continue;
+    if (SECRET_OPTION_PATTERN.test(decodeLoosely(pair.slice(0, eqIdx)))) raw.push(pair.slice(eqIdx + 1));
   }
 
   const secrets = new Set<string>();
   for (const value of raw) {
-    secrets.add(value);
-    // The driver decodes query values form-style, so `+` comes back as a space.
-    for (const candidate of [value, value.replace(/\+/g, ' ')]) {
-      try {
-        secrets.add(decodeURIComponent(candidate));
-      } catch {
-        // Malformed escapes: the raw form is still covered.
-      }
+    // Raw, percent-decoded and form-decoded (+ as space), whole and split into the KEY:value components the driver
+    // reports one at a time.
+    for (const form of [value, decodeLoosely(value), decodeLoosely(value.replace(/\+/g, ' '))]) {
+      secrets.add(form);
+      for (const component of form.split(/[,:]/)) secrets.add(component);
     }
   }
   // Longest first, so a secret that contains another is replaced whole.
   return [...secrets].filter((value) => value.length > 0).sort((a, b) => b.length - a.length);
 }
 
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/** decodeURIComponent that keeps going past malformed escapes, the way the driver's decoder does (U+FFFD). */
+function decodeLoosely(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value.replace(/(%[0-9a-f]{2})+/gi, (run) => {
+      try {
+        return decodeURIComponent(run);
+      } catch {
+        return '�';
+      }
+    });
+  }
+}
+
+/** Case-insensitive, no regex: a secret can be any length, and the driver lowercases option names. */
+function removeSecrets(text: string, secrets: string[]): string {
+  let result = text;
+  for (const secret of secrets) {
+    if (secret.toLowerCase().length !== secret.length || result.toLowerCase().length !== result.length) {
+      // Case folding changed the length (e.g. U+0130), so indices would not line up: replace exact forms instead.
+      for (const form of [secret, secret.toLowerCase(), secret.toUpperCase()]) result = result.split(form).join('***');
+      continue;
+    }
+    const needle = secret.toLowerCase();
+    let lower = result.toLowerCase();
+    let idx = lower.indexOf(needle);
+    while (idx !== -1) {
+      result = `${result.slice(0, idx)}***${result.slice(idx + secret.length)}`;
+      lower = result.toLowerCase();
+      idx = lower.indexOf(needle, idx + 3);
+    }
+  }
+  return result;
 }

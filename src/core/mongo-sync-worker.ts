@@ -18,7 +18,7 @@ import type { Collection, Db } from 'mongodb';
 
 import type { MemoryEvent } from './types.js';
 import { SQLiteEventStore } from './sqlite-event-store.js';
-import { redactMongoSecrets, redactMongoUri } from './mongo-sync-config.js';
+import { describeMongoConnectionError, redactMongoUri } from './mongo-sync-config.js';
 
 export type MongoSyncDirection = 'push' | 'pull' | 'both';
 
@@ -240,7 +240,7 @@ export class MongoSyncWorker {
     } catch (err) {
       // Avoid leaking credentials in logs; the driver's own message quotes the whole connection string.
       const safeUri = redactMongoUri(this.config.uri);
-      const reason = redactMongoSecrets(String(err), this.config.uri);
+      const reason = describeMongoConnectionError(err, this.config.uri);
       throw new Error(`MongoDB connection failed (${safeUri}, db=${this.config.dbName}): ${reason}`);
     }
   }
