@@ -10,9 +10,9 @@
 | arm | turns (with responses) | turns injected | memories scored | mean overlap | 95% CI | grounded memories | turns with a grounded memory |
 |---|---:|---:|---:|---:|---|---:|---:|
 | current | 8 | 6 | 6 | 0.632 | 0.377–0.835 | 83.3% | 83.3% |
-| fts-absolute (#121) | 8 | 4 | 5 | 0.618 | 0.235–0.852 | 80.0% | 75.0% |
+| fts-absolute (#121) | 8 | 4 | 4 | 0.575 | 0.193–0.855 | 75.0% | 75.0% |
 | query-sanitizer (#125) | 8 | 7 | 7 | 0.684 | 0.456–0.869 | 85.7% | 85.7% |
-| #121 + #125 | 8 | 4 | 5 | 0.618 | 0.235–0.852 | 80.0% | 75.0% |
+| #121 + #125 | 8 | 4 | 4 | 0.575 | 0.193–0.855 | 75.0% | 75.0% |
 
 ## Historically uninjected turns
 
@@ -28,9 +28,9 @@
 | arm | query changed | selection changed |
 |---|---:|---:|
 | current | 0 | 0 |
-| fts-absolute (#121) | 0 | 3 |
+| fts-absolute (#121) | 0 | 2 |
 | query-sanitizer (#125) | 3 | 1 |
-| #121 + #125 | 3 | 3 |
+| #121 + #125 | 3 | 2 |
 
 **Counterfactual bias.** The responses scored here were written after the hook injected its *historical* selection, so the agent could copy from those memories and not from others. Overlap therefore favors whatever the historical selection contained: the `current` arm is advantaged and a changed arm is understated. The "historically uninjected" rows (turns where the hook injected nothing at the time) carry no such bias and are the fairer comparison.
 

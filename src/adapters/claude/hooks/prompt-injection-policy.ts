@@ -196,7 +196,12 @@ function rankHookCandidates(
     .sort((a, b) => {
       const scoreDelta = b.effectiveScore - a.effectiveScore;
       return scoreDelta || a.index - b.index;
-    });
+    })
+    // Episode expansion can re-add an answer a lane already merged (#139). Keep the best-ranked copy, so an
+    // episode-linked bonus survives and the duplicate neither takes a slot nor shapes the score cliff.
+    .filter(({ candidate }, position, ranked) =>
+      !candidate.id || ranked.findIndex((entry) => entry.candidate.id === candidate.id) === position
+    );
 }
 
 function applyScoreCliff(

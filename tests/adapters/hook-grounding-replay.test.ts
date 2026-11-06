@@ -77,6 +77,17 @@ afterAll(() => {
 });
 
 describe('hook-path grounding replay (fixture mode)', () => {
+  it('never injects the same memory twice in one prompt (#139)', () => {
+    // Episode expansion re-added an answer the lanes had already merged; trace-r6 did so under the absolute FTS arm.
+    for (const arm of report.arms) {
+      for (const result of arm.results) {
+        const injected = result.injections.map((injection) => injection.id);
+        expect({ arm: arm.arm, traceId: result.traceId, injected })
+          .toEqual({ arm: arm.arm, traceId: result.traceId, injected: [...new Set(injected)] });
+      }
+    }
+  });
+
   it('replays every hook trace under each flag arm', () => {
     expect(report.turns).toBe(fixture.traces.length);
     expect(report.arms.map((arm) => arm.arm)).toEqual(DEFAULT_REPLAY_ARMS.map((arm) => arm.name));
