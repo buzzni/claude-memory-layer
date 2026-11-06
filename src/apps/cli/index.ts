@@ -231,6 +231,11 @@ import {
   runEphemeralCleanupCommand,
   runStoreCleanupPreviewCommand
 } from './cleanup-command.js';
+import {
+  formatForgetBeforeReport,
+  resolveForgetBeforeOptions,
+  runForgetBefore
+} from './forget-command.js';
 
 // ============================================================
 // Hook Installation Utilities
@@ -1506,11 +1511,25 @@ program
   .command('forget [eventId]')
   .description('Remove memories from storage')
   .option('--session <id>', 'Forget all events from a session')
-  .option('--before <date>', 'Forget events before date (YYYY-MM-DD)')
+  .option('--before <date>', 'Forget events before date (YYYY-MM-DD); dry-run unless --confirm')
+  .option('--type <eventType>', 'With --before: only this event type (e.g. tool_observation)')
   .option('--confirm', 'Skip confirmation')
   .option('-p, --project <path>', 'Project path (defaults to cwd)')
   .action(async (eventId: string | undefined, options) => {
     const projectPath = options.project || process.cwd();
+
+    if (options.before && !eventId && !options.session) {
+      try {
+        const forgetOptions = resolveForgetBeforeOptions(options);
+        const report = await runForgetBefore(getProjectStoragePath(projectPath), forgetOptions);
+        console.log(formatForgetBeforeReport(report));
+      } catch (error) {
+        console.error(`Forget failed: ${error instanceof Error ? error.message : String(error)}`);
+        process.exit(1);
+      }
+      return;
+    }
+
     const service = getMemoryServiceForProject(projectPath);
 
     try {

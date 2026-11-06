@@ -193,6 +193,36 @@ describe('VectorStore V2 upsert', () => {
     expect(taskTable.delete).not.toHaveBeenCalled();
   });
 
+  it('deleteEventsEverywhere deletes ids in bounded IN-list chunks from every event table', async () => {
+    mocks.db.tableNames.mockResolvedValue(['conversations', 'event_vectors_v1', 'task_title_vectors_v1']);
+    const legacyTable = mocks.makeTable('conversations');
+    const eventTableV1 = mocks.makeTable('event_vectors_v1');
+    const taskTable = mocks.makeTable('task_title_vectors_v1');
+    const store = new VectorStore('/tmp/cml-vectors');
+    const ids = Array.from({ length: 501 }, (_, i) => `event-${i}`);
+    ids[0] = "event-'0";
+
+    await store.deleteEventsEverywhere(ids);
+
+    expect(legacyTable.delete).toHaveBeenCalledTimes(2);
+    expect(eventTableV1.delete).toHaveBeenCalledTimes(2);
+    expect(taskTable.delete).not.toHaveBeenCalled();
+    const first = legacyTable.delete.mock.calls[0][0] as string;
+    expect(first.startsWith("`eventId` IN ('event-''0', 'event-1',")).toBe(true);
+    expect(first.split(',').length).toBe(500);
+    expect(legacyTable.delete.mock.calls[1][0]).toBe("`eventId` IN ('event-500')");
+  });
+
+  it('deleteEventsEverywhere with no ids touches nothing', async () => {
+    mocks.db.tableNames.mockResolvedValue(['conversations']);
+    const legacyTable = mocks.makeTable('conversations');
+    const store = new VectorStore('/tmp/cml-vectors');
+
+    await store.deleteEventsEverywhere([]);
+
+    expect(legacyTable.delete).not.toHaveBeenCalled();
+  });
+
   it('deleteEventEverywhere is a no-op when no matching tables exist', async () => {
     mocks.db.tableNames.mockResolvedValue(['task_title_vectors_v1']);
     const taskTable = mocks.makeTable('task_title_vectors_v1');

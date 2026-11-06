@@ -263,6 +263,32 @@ export class VectorStore {
   }
 
   /**
+   * Delete many events from every event table in bounded IN-list chunks. A retention purge can
+   * carry 100k+ ids; one Lance delete per id would create as many table versions, while one
+   * predicate per chunk keeps the version churn proportional to the chunk count.
+   */
+  async deleteEventsEverywhere(eventIds: readonly string[]): Promise<void> {
+    if (eventIds.length === 0) return;
+    this.assertWritable();
+    await this.initialize();
+    if (!this.db) return;
+
+    const tableNames = await this.db.tableNames();
+    const targetTables = tableNames.filter(
+      (name) => name === this.defaultTableName || name.startsWith('event_vectors_')
+    );
+
+    for (const tableName of targetTables) {
+      const table = await this.getExistingTable(tableName);
+      if (!table) continue;
+      for (let offset = 0; offset < eventIds.length; offset += DELETE_CHUNK_SIZE) {
+        const chunk = eventIds.slice(offset, offset + DELETE_CHUNK_SIZE);
+        await table.delete(`\`eventId\` IN (${chunk.map(toLanceSqlString).join(', ')})`);
+      }
+    }
+  }
+
+  /**
    * Get total count of vectors in the legacy conversations table.
    */
   async count(): Promise<number> {
@@ -776,6 +802,8 @@ function slugifyTablePart(value: string): string {
     .replace(/^_+|_+$/g, '')
     .toLowerCase() || 'default';
 }
+
+const DELETE_CHUNK_SIZE = 500;
 
 function toLanceSqlString(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
