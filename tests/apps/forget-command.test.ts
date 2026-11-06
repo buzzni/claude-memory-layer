@@ -116,7 +116,7 @@ describe('runForgetBefore', () => {
       before: new Date('2026-02-01T00:00:00.000Z'), eventType: 'tool_observation', apply: true
     }, { vectorStore: { deleteEventsBefore: async (before, eventType) => { vectorDeletes.push([before, eventType]); } } });
 
-    expect(report.applied).toMatchObject({ deleted: 1, vectorsDeleted: 1, mirrorFilesRemoved: 1 });
+    expect(report.applied).toMatchObject({ deleted: 1, vectorsPurged: true, mirrorFilesRemoved: 1 });
     expect(vectorDeletes).toEqual([[new Date('2026-02-01T00:00:00.000Z'), 'tool_observation']]);
     expect(existsSync(files.oldTool)).toBe(false);
     expect(existsSync(files.newTool)).toBe(true);
@@ -146,7 +146,7 @@ describe('formatForgetBeforeReport', () => {
     expect(dry).toContain('tool_observation');
     expect(dry).toContain('3');
     expect(dry).toContain('--confirm');
-    const applied = formatForgetBeforeReport({ ...base, apply: true, applied: { deleted: 3, vectorsDeleted: 3, mirrorFilesRemoved: 1, vacuumed: true } });
+    const applied = formatForgetBeforeReport({ ...base, apply: true, applied: { deleted: 3, vectorsPurged: true, mirrorFilesRemoved: 1, vacuumed: true } });
     expect(applied).toContain('deleted 3');
     expect(applied).not.toContain('--confirm');
   });

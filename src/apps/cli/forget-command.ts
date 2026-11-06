@@ -13,7 +13,7 @@ export interface ForgetBeforeOptions {
 
 export interface ForgetBeforeApplied {
   deleted: number;
-  vectorsDeleted: number;
+  vectorsPurged: boolean;
   mirrorFilesRemoved: number;
   vacuumed: boolean;
 }
@@ -95,13 +95,13 @@ export async function runForgetBefore(
     }
 
     const warnings: string[] = [];
-    const { deleted, eventIds } = await store.deleteEventsBefore(options.before, options.eventType);
+    const { deleted } = await store.deleteEventsBefore(options.before, options.eventType);
 
-    let vectorsDeleted = 0;
+    let vectorsPurged = false;
     const vectorStore = deps.vectorStore ?? new VectorStore(path.join(storagePath, 'vectors'));
     try {
       await vectorStore.deleteEventsBefore(options.before, options.eventType);
-      vectorsDeleted = eventIds.length;
+      vectorsPurged = true;
     } catch (error) {
       warnings.push(`vector deletion failed; orphaned vectors remain: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -131,7 +131,7 @@ export async function runForgetBefore(
       rows,
       contentBytes,
       mirrorFiles,
-      applied: { deleted, vectorsDeleted, mirrorFilesRemoved, vacuumed },
+      applied: { deleted, vectorsPurged, mirrorFilesRemoved, vacuumed },
       ...(warnings.length > 0 ? { warnings } : {})
     };
   } finally {
@@ -150,7 +150,7 @@ export function formatForgetBeforeReport(report: ForgetBeforeReport): string {
   ];
   if (report.applied) {
     lines.push(
-      `Events deleted ${report.applied.deleted}; vectors deleted ${report.applied.vectorsDeleted}; mirror files removed ${report.applied.mirrorFilesRemoved}`,
+      `Events deleted ${report.applied.deleted}; vectors purged by cutoff: ${report.applied.vectorsPurged ? 'yes' : 'no'}; mirror files removed ${report.applied.mirrorFilesRemoved}`,
       `VACUUM: ${report.applied.vacuumed ? 'done' : 'skipped'}`
     );
   } else {
