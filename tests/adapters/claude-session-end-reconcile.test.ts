@@ -1,3 +1,5 @@
+// @load-sensitive: calls the SessionEnd hook in-process against a real sqlite store;
+// the first call loads the service graph and overruns 15s at load average >200.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { appendFileSync, mkdtempSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
