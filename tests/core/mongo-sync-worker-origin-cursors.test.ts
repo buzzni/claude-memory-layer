@@ -71,6 +71,63 @@ describe('MongoSyncWorker per-origin pull cursors', () => {
     return result.eventId;
   }
 
+  it('loses nothing when a pusher stalls more than 30 minutes between reserving and inserting its seqs', async () => {
+    const a = await machine('a');
+    const b = await machine('b');
+    const c = await machine('c');
+    const stalled = createGate();
+    const aEvent = await remember(a.store, 'from a');
+    await remember(b.store, 'from b');
+
+    // A reserves its seqs at T0 and then sleeps (laptop lid closed) before its bulkWrite reaches Mongo.
+    const aPush = worker(a, 'push', { beforeBulkWrite: stalled.wait }).syncNow();
+    await stalled.reached;
+
+    vi.setSystemTime(minutes(1));
+    expect(await worker(b, 'push').syncNow()).toEqual({ pushed: 1, pulled: 0 });
+
+    const puller = worker(c, 'pull');
+    vi.setSystemTime(minutes(2));
+    expect(await puller.syncNow()).toEqual({ pushed: 0, pulled: 1 });
+    vi.setSystemTime(minutes(35));
+    expect(await puller.syncNow()).toEqual({ pushed: 0, pulled: 0 });
+
+    vi.setSystemTime(minutes(40));
+    stalled.release();
+    expect(await aPush).toEqual({ pushed: 1, pulled: 0 });
+
+    vi.setSystemTime(minutes(41));
+    expect(await puller.syncNow()).toEqual({ pushed: 0, pulled: 1 });
+    expect(await c.store.getEvent(aEvent)).not.toBeNull();
+  });
+
+  it('loses nothing when the pusher clock is more than 30 minutes behind the puller', async () => {
+    const a = await machine('a');
+    const b = await machine('b');
+    const c = await machine('c');
+    const slowInsert = createGate();
+    const aEvent = await remember(a.store, 'from a');
+    await remember(b.store, 'from b');
+
+    // A's clock runs 40 minutes behind; its insert lands just after B's, which C has already pulled past.
+    vi.setSystemTime(minutes(-40));
+    const aPush = worker(a, 'push', { beforeBulkWrite: slowInsert.wait }).syncNow();
+    await slowInsert.reached;
+
+    vi.setSystemTime(minutes(0));
+    expect(await worker(b, 'push').syncNow()).toEqual({ pushed: 1, pulled: 0 });
+    const puller = worker(c, 'pull');
+    expect(await puller.syncNow()).toEqual({ pushed: 0, pulled: 1 });
+
+    vi.setSystemTime(minutes(-40));
+    slowInsert.release();
+    expect(await aPush).toEqual({ pushed: 1, pulled: 0 });
+
+    vi.setSystemTime(minutes(1));
+    expect(await puller.syncNow()).toEqual({ pushed: 0, pulled: 1 });
+    expect(await c.store.getEvent(aEvent)).not.toBeNull();
+  });
+
   it('keeps one origin id per store across worker restarts', async () => {
     const a = await machine('a');
     await remember(a.store, 'first');
@@ -125,5 +182,46 @@ describe('MongoSyncWorker per-origin pull cursors', () => {
       'events:team',
       `events:team:${mongo.events.docs[0].source.instanceId}`
     ]);
+  });
+
+  it('still pulls documents from pushers on older versions, including one inserted late below the cursor', async () => {
+    const c = await machine('c');
+    const puller = worker(c, 'pull');
+    mongo.insertLegacyDoc('team', 2, minutes(0));
+    expect(await puller.syncNow()).toEqual({ pushed: 0, pulled: 1 });
+
+    vi.setSystemTime(minutes(1));
+    mongo.insertLegacyDoc('team', 1, minutes(0));
+    expect(await puller.syncNow()).toEqual({ pushed: 0, pulled: 1 });
+    expect(await c.store.getEvent('legacy-1')).not.toBeNull();
+  });
+
+  it('re-pulls everything once at cutover, recovering a document the global cursor had skipped', async () => {
+    const c = await machine('c');
+    // Before the upgrade: pulled through seq 5 an hour ago, but seq 3 came in late and outside the window.
+    for (const seq of [1, 2, 3, 4, 5]) mongo.insertLegacyDoc('team', seq, minutes(-120));
+    await c.store.importEvents(mongo.events.docs.filter((doc) => doc.seq !== 3).map((doc) => ({
+      id: doc.eventId,
+      eventType: doc.eventType,
+      sessionId: doc.sessionId,
+      timestamp: doc.timestamp,
+      content: doc.content,
+      canonicalKey: doc.canonicalKey,
+      dedupeKey: doc.dedupeKey
+    })));
+    await c.store.updateSyncPosition(mongoPullCursorTarget('team'), '5', minutes(-60).toISOString());
+    const audit = () => auditMongoSync(c.store, mongo.events as unknown as MongoAuditCollection, { projectKey: 'team' });
+    expect(await audit()).toMatchObject({ status: 'fail', lostBelowPullCursor: 1 });
+
+    const puller = worker(c, 'pull');
+    expect(await puller.syncNow()).toEqual({ pushed: 0, pulled: 1 });
+    expect(await c.store.getEvent('legacy-3')).not.toBeNull();
+    expect(await audit()).toMatchObject({ status: 'pass', missing: 0, lostBelowPullCursor: 0 });
+
+    // The reset runs once per store and project key: the next pull reads nothing it already has.
+    mongo.events.returned = 0;
+    vi.setSystemTime(minutes(1));
+    expect(await worker(c, 'pull').syncNow()).toEqual({ pushed: 0, pulled: 0 });
+    expect(mongo.events.returned).toBe(0);
   });
 });

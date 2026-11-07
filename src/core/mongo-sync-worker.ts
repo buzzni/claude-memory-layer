@@ -5,7 +5,7 @@
  * Design goals:
  * - Optional and decoupled (doesn't affect default local-only flow)
  * - Idempotent (safe to retry)
- * - Incremental push (SQLite rowid) and incremental pull (Mongo seq per project)
+ * - Incremental push (SQLite rowid) and incremental pull (one Mongo originSeq cursor per pushing store)
  *
  * NOTE:
  * - We only sync immutable L0 events (events table). Derived tables can be rebuilt.
@@ -129,9 +129,25 @@ export function mongoPushCursorTarget(projectKey: string): string {
   return `mongo_push_events_rowid:${projectKey}`;
 }
 
-/** sync_positions row holding the last Mongo seq pulled (and when that pull started) for a project key. */
+/**
+ * sync_positions row holding the last project-wide Mongo seq pulled (and when that pull started) for a project key.
+ * Since per-origin cursors it covers only documents without originSeq, i.e. from pushers on older versions.
+ */
 export function mongoPullCursorTarget(projectKey: string): string {
   return `mongo_pull_events_seq:${projectKey}`;
+}
+
+/** sync_positions row holding the last originSeq pulled from one origin for a project key. */
+export function mongoPullOriginCursorTarget(projectKey: string, origin: string): string {
+  return `mongo_pull_events_origin:${projectKey}:${origin}`;
+}
+
+/**
+ * sync_positions row marking that the project-wide pull cursor was reset once when this store moved to per-origin
+ * cursors, so every document already in Mongo is read again a single time.
+ */
+export function mongoPullCutoverTarget(projectKey: string): string {
+  return `mongo_pull_origin_cutover:${projectKey}`;
 }
 
 export function parseIntOrZero(value: string | null | undefined): number {
@@ -460,18 +476,77 @@ export class MongoSyncWorker {
   }
 
   /**
-   * A pusher reserves its seq range before it inserts, so a document can appear below a cursor that another machine's
-   * faster insert already moved past. Each pull therefore re-reads what was inserted shortly before the previous pull
-   * started — import skips the events it already has — and then reads past the cursor as before. The window also
-   * absorbs clock differences between machines (insertedAt is the pusher's clock).
+   * Delivery is decided by cursors only; event timestamps stay for display and merge order.
+   *
+   * Each origin is read past its own originSeq cursor. Within an origin seqs are reserved and inserted one batch
+   * after another under the push lock, so nothing can land below an origin's cursor, and no clocks are compared.
+   * This store's own origin is skipped. Documents without originSeq (pushers on older versions) still go through the
+   * project-wide seq cursor and its late-insert window, so a mixed-version fleet loses nothing it did not lose before.
    */
   private async pullEvents(): Promise<number> {
+    await this.cutOverToOriginCursors();
+    return (await this.pullLegacyEvents()) + (await this.pullOriginEvents());
+  }
+
+  /**
+   * Documents pushed before per-origin cursors carry no originSeq, and the global cursor may have skipped some of them
+   * for good. Resetting it once re-reads everything; import skips what this store already has (by id and dedupeKey).
+   * The reset is written before the marker, so a crash in between only repeats the reset.
+   */
+  private async cutOverToOriginCursors(): Promise<void> {
+    const marker = mongoPullCutoverTarget(this.config.projectKey);
+    if ((await this.sqliteStore.getSyncPosition(marker)).lastEventId) return;
+    await this.sqliteStore.updateSyncPosition(this.pullTargetName(), '0', '');
+    await this.sqliteStore.updateSyncPosition(marker, '1', new Date().toISOString());
+  }
+
+  private async pullOriginEvents(): Promise<number> {
+    if (!this.events || !this.origins) throw new Error('Mongo not connected');
+
+    const self = await this.resolveOriginId();
+    const origins = await this.origins.find({ projectKey: this.config.projectKey }).toArray();
+    let pulled = 0;
+
+    for (const { origin, maxOriginSeq } of origins) {
+      if (origin === self) continue;
+      const target = mongoPullOriginCursorTarget(this.config.projectKey, origin);
+      let cursor = parseIntOrZero((await this.sqliteStore.getSyncPosition(target)).lastEventId);
+
+      while (cursor < maxOriginSeq) {
+        const docs = await this.events.find(
+          { projectKey: this.config.projectKey, 'source.instanceId': origin, originSeq: { $exists: true, $gt: cursor } },
+          { sort: { originSeq: 1 }, limit: this.config.batchSize }
+        ).toArray();
+        if (docs.length === 0) break;
+
+        pulled += await this.importPulled(docs);
+        cursor = docs[docs.length - 1].originSeq ?? cursor;
+        await this.sqliteStore.updateSyncPosition(target, String(cursor), new Date().toISOString());
+        if (docs.length < this.config.batchSize) break;
+      }
+    }
+
+    return pulled;
+  }
+
+  /**
+   * Documents without originSeq: an older pusher reserves its seq range before it inserts, so a document can appear
+   * below a cursor that another machine's faster insert already moved past. Each pull therefore re-reads what was
+   * inserted shortly before the previous pull started — import skips the events it already has — and then reads past
+   * the cursor as before. The window also absorbs clock differences between machines (insertedAt is the pusher's
+   * clock), but only up to LATE_INSERT_WINDOW_MS; that residual risk goes away once every pusher is upgraded.
+   *
+   * Reading past the cursor fetches only seqs first, so documents that per-origin cursors read are not transferred
+   * twice, yet the cursor still moves past them and the query never rescans them.
+   */
+  private async pullLegacyEvents(): Promise<number> {
     if (!this.events) throw new Error('Mongo not connected');
 
     const position = await this.sqliteStore.getSyncPosition(this.pullTargetName());
     let lastSeq = parseIntOrZero(position.lastEventId);
     const startedAt = new Date();
     const previousPullAt = position.lastTimestamp ? new Date(position.lastTimestamp) : null;
+    const legacy = { originSeq: { $exists: false } };
 
     let pulled = 0;
 
@@ -480,7 +555,7 @@ export class MongoSyncWorker {
       let afterSeq = 0;
       while (true) {
         const docs = await this.events.find(
-          { projectKey: this.config.projectKey, seq: { $gt: afterSeq, $lte: lastSeq }, insertedAt: { $gte: since } },
+          { projectKey: this.config.projectKey, seq: { $gt: afterSeq, $lte: lastSeq }, insertedAt: { $gte: since }, ...legacy },
           { sort: { seq: 1 }, limit: this.config.batchSize }
         ).toArray();
         if (docs.length === 0) break;
@@ -491,19 +566,26 @@ export class MongoSyncWorker {
     }
 
     while (true) {
-      const docs = await this.events.find(
+      const seqs = await this.events.find(
         { projectKey: this.config.projectKey, seq: { $gt: lastSeq } },
-        { sort: { seq: 1 }, limit: this.config.batchSize }
+        { sort: { seq: 1 }, limit: this.config.batchSize, projection: { _id: 1, seq: 1, originSeq: 1 } }
       ).toArray();
 
-      if (docs.length === 0) break;
+      if (seqs.length === 0) break;
 
-      pulled += await this.importPulled(docs);
+      const legacyIds = seqs.filter((doc) => doc.originSeq === undefined).map((doc) => doc._id);
+      if (legacyIds.length > 0) {
+        const docs = await this.events.find(
+          { projectKey: this.config.projectKey, _id: { $in: legacyIds } },
+          { sort: { seq: 1 } }
+        ).toArray();
+        pulled += await this.importPulled(docs);
+      }
 
-      lastSeq = docs[docs.length - 1].seq;
+      lastSeq = seqs[seqs.length - 1].seq;
       await this.sqliteStore.updateSyncPosition(this.pullTargetName(), String(lastSeq), startedAt.toISOString());
 
-      if (docs.length < this.config.batchSize) break;
+      if (seqs.length < this.config.batchSize) break;
     }
 
     // The next pull's re-read window starts from this pull, even when it found nothing new.
