@@ -38,6 +38,8 @@ export interface ClaudeSessionEndJob {
 /** Reads of the state at SessionEnd; a session resumed while the worker runs changes all of them. */
 export interface SessionEndCapture {
   getRegistrationId: (sessionId: string) => string | null;
+  /** The project SessionStart registered for this session, or null when it never was. */
+  getRegisteredProjectPath: (sessionId: string) => string | null;
   getOpenTurn: (sessionId: string) => SessionEndSnapshot['openTurn'];
   getTranscriptBytes: (transcriptPath: string) => number | null;
   now: () => Date;
@@ -90,6 +92,7 @@ const realDeps: ClaudeSessionEndHookDeps = {
   ackTimeoutMs: WORKER_ACK_TIMEOUT_MS,
   runInline: runSessionEndInline,
   getRegistrationId: (sessionId) => getSessionProject(sessionId)?.registrationId ?? null,
+  getRegisteredProjectPath: (sessionId) => getSessionProject(sessionId)?.projectPath ?? null,
   getOpenTurn: readTurnStateDetails,
   getTranscriptBytes: (transcriptPath) => {
     try {
@@ -110,7 +113,11 @@ export function normalizeClaudeSessionEndJob(
 
   const job: ClaudeSessionEndJob = { sessionId, registrationId: capture.getRegistrationId(sessionId) };
   const transcriptPath = typeof input.transcript_path === 'string' ? input.transcript_path.trim() : '';
-  const projectPath = typeof input.cwd === 'string' ? input.cwd.trim() : '';
+  // The session's events live in the project SessionStart registered. A session that `cd`s into
+  // another repository ends with that directory as cwd; reconciling there would replay the whole
+  // transcript into a foreign store. cwd remains the fallback for a session that was never registered.
+  const registeredProjectPath = capture.getRegisteredProjectPath(sessionId)?.trim() ?? '';
+  const projectPath = registeredProjectPath || (typeof input.cwd === 'string' ? input.cwd.trim() : '');
   if (!transcriptPath || !projectPath || !path.isAbsolute(projectPath)) return job;
 
   const transcriptBytes = capture.getTranscriptBytes(transcriptPath);
