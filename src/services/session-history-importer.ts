@@ -16,6 +16,7 @@ import { registerTerminalSession } from '../core/registry/session-registry.js';
 import { mergeAgentResponseBlocks, truncateAgentResponse } from './turn-buffering.js';
 import { planPromptStorage, promptClassifierMetadata } from '../core/prompt-normalizer.js';
 import { isHarnessBoilerplate } from '../core/harness-boilerplate.js';
+import { reconcileSessionTranscript } from '../adapters/claude/hooks/session-end-reconcile.js';
 import type { TurnTrigger } from '../core/turn-state.js';
 
 export type ProgressEvent =
@@ -294,6 +295,20 @@ export class SessionHistoryImporter {
     // Start session in memory
     await this.memoryService.startSession(sessionId, options.projectPath);
 
+    // The hooks (Stop, SessionEnd reconcile) store a session's responses one
+    // message each, normalized their own way; a merged copy of a turn matches
+    // none of their rows and would be stored a second time. A session they
+    // stored any response of has its responses stored the way the SessionEnd
+    // reconcile does instead. Every row this importer stores carries
+    // importedFrom; the hooks' rows never do.
+    const hooksStoredResponses = (await this.memoryService.getSessionHistory(sessionId)).some(
+      (event) => event.eventType === 'agent_response' && typeof event.metadata?.importedFrom !== 'string'
+    );
+    // How much of the transcript the responses are read from: all of it, or
+    // as far as the limit let the prompt pass read.
+    let transcriptBytes = fs.statSync(filePath).size;
+    let consumedBytes = 0;
+
     // Read and parse JSONL file
     const fileStream = fs.createReadStream(filePath);
     const rl = readline.createInterface({
@@ -346,11 +361,21 @@ export class SessionHistoryImporter {
 
     try {
     for await (const line of rl) {
-      if (lineCount >= limit) break;
+      if (lineCount >= limit) {
+        transcriptBytes = consumedBytes;
+        break;
+      }
+      // Claude writes the transcript with \n line endings.
+      consumedBytes += Buffer.byteLength(line) + 1;
 
       try {
         const entry = JSON.parse(line) as ClaudeMessage;
         result.totalMessages++;
+
+        // History a resumed or forked session copied in belongs to the
+        // session it was recorded under; the reconcile skips its responses,
+        // so its prompts are skipped too.
+        if (hooksStoredResponses && typeof entry.sessionId === 'string' && entry.sessionId !== sessionId) continue;
 
         const msgClass = classifyEntry(entry);
 
@@ -416,7 +441,7 @@ export class SessionHistoryImporter {
             result.importedPrompts++;
           }
           lineCount++;
-        } else if (msgClass === 'agent_text') {
+        } else if (msgClass === 'agent_text' && !hooksStoredResponses) {
           // Buffer text instead of storing immediately
           const content = this.extractContent(entry);
           if (content) {
@@ -450,6 +475,22 @@ export class SessionHistoryImporter {
       // Always release the file descriptor, even if storing a record threw.
       rl.close();
       fileStream.close();
+    }
+
+    // After the prompts, so a turn from before the hooks were installed is
+    // assigned the turn of the prompt just imported for it. The session may
+    // still be running, so which message ends a turn is left to the hooks.
+    if (hooksStoredResponses) {
+      const reconciled = await reconcileSessionTranscript(
+        this.memoryService,
+        sessionId,
+        filePath,
+        { transcriptBytes, endedAt: new Date().toISOString(), openTurn: null },
+        { provenance: { importedFrom: filePath }, keepLastMessage: false }
+      );
+      result.importedResponses += reconciled.recovered;
+      result.skippedDuplicates += reconciled.alreadyStored;
+      if (reconciled.failed > 0) result.errors.push(`Failed to store ${reconciled.failed} responses from ${filePath}`);
     }
 
     // End session

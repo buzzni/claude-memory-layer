@@ -38,6 +38,16 @@ export interface SessionEndSnapshot {
   openTurn: { turnId: string; turnTrigger?: TurnTrigger } | null;
 }
 
+export interface SessionTranscriptReconcileOptions {
+  /** Marks where a stored message came from. */
+  provenance?: Record<string, unknown>;
+  /**
+   * Keep a turn's last message however short, as Stop does. Off when the
+   * session may still be running: a message last for now may not stay last.
+   */
+  keepLastMessage?: boolean;
+}
+
 export interface SessionTranscriptReconcileResult {
   recovered: number;
   alreadyStored: number;
@@ -81,7 +91,8 @@ export async function reconcileSessionTranscript(
   memoryService: ReconcileMemoryService,
   sessionId: string,
   transcriptPath: string,
-  snapshot: SessionEndSnapshot
+  snapshot: SessionEndSnapshot,
+  { provenance = { recoveredAtSessionEnd: true }, keepLastMessage = true }: SessionTranscriptReconcileOptions = {}
 ): Promise<SessionTranscriptReconcileResult> {
   const result: SessionTranscriptReconcileResult = { recovered: 0, alreadyStored: 0, failed: 0 };
   const turns = await readTranscriptTurns(transcriptPath, sessionId, { endOffset: snapshot.transcriptBytes });
@@ -105,7 +116,8 @@ export async function reconcileSessionTranscript(
       const { text, timestamp } = turn.messages[i];
       // Stop runs once per turn, so its last-message exception is per turn here.
       const { content, privacy } = normalizeAgentResponse(text);
-      if (!isStorableAgentResponse(content, i === turn.messages.length - 1, minResponseLength)) continue;
+      const isLast = keepLastMessage && i === turn.messages.length - 1;
+      if (!isStorableAgentResponse(content, isLast, minResponseLength)) continue;
       if (storedContents.has(content)) {
         result.alreadyStored++;
         continue;
@@ -120,7 +132,7 @@ export async function reconcileSessionTranscript(
         ...(timestamp ? { originalTimestamp: timestamp } : {}),
         ...(turnId ? { turnId } : {}),
         ...(turn.trigger !== 'user' ? { turnTrigger: turn.trigger } : {}),
-        recoveredAtSessionEnd: true
+        ...provenance
       });
       if (!stored.success) {
         result.failed++;
