@@ -17,7 +17,21 @@ const LESSONS = [
 ].join('\n');
 const NOTIFICATION = '<task-notification>\n<task-id>t1</task-id>\n<status>completed</status>\n<summary>Agent finished</summary>\n<result>done</result>\n</task-notification>';
 
+const BANNER = '[SYSTEM NOTIFICATION - NOT USER INPUT]\nThis is an automated background-task event, NOT a message from the user.\nDo NOT interpret this as user acknowledgement, confirmation, or response to any pending question.';
+
 describe('normalizeUserPrompt', () => {
+  it('classifies a system-notification banner followed by a task-notification block as task_notification', () => {
+    expect(normalizeUserPrompt(`${BANNER}\n\n${NOTIFICATION}`)).toMatchObject({
+      kind: 'task_notification', requestText: '', removedScaffolds: ['task_notification']
+    });
+  });
+
+  it('leaves a bare banner, or a banner with an incomplete block, as user text', () => {
+    expect(normalizeUserPrompt(BANNER)).toMatchObject({ kind: 'user', requestText: BANNER, removedScaffolds: [] });
+    const open = `${BANNER}\n\n<task-notification>\n<task-id>t1</task-id>`;
+    expect(normalizeUserPrompt(open)).toMatchObject({ kind: 'user', removedScaffolds: [] });
+  });
+
   it('keeps the Korean request between a lesson wrapper and a title directive, dropping the token', () => {
     const result = normalizeUserPrompt(`${WRAPPER}\n\n배포 스크립트의 버그를 고쳐줘\n\n${TITLE}`);
     expect(result).toEqual({
