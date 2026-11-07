@@ -99,11 +99,11 @@ async function runStop(): Promise<void> {
   vi.mocked(runtime.readStdin).mockRestore();
 }
 
-async function importSession() {
+async function importSession(options: { limit?: number } = {}) {
   // The import runs after the transcript was written.
   tick();
   const { SessionHistoryImporter } = await import('../../src/services/session-history-importer.js');
-  return new SessionHistoryImporter(await service()).importSessionFile(transcriptPath);
+  return new SessionHistoryImporter(await service()).importSessionFile(transcriptPath, options);
 }
 
 async function responses() {
@@ -242,6 +242,24 @@ describe('Claude session import after the hooks stored the session', () => {
     expect(first).toMatchObject({ importedResponses: 1, errors: [] });
     const recovered = (await responses()).find((row) => row.content.startsWith('turn B analysis'));
     expect(recovered?.metadata).toMatchObject({ turnId: 'turn-B', importedFrom: transcriptPath });
+  });
+});
+
+describe('Claude session import of a hook-stored session, bounds', () => {
+  it('stores no response past where the limit stopped the prompt pass', async () => {
+    await submitPrompt('please fix the release workflow guard', 'turn-1');
+    answer(longText('hooked answer'));
+    await runStop();
+    prompt('now audit the vector store please');
+    answer(longText('unseen answer two'));
+    prompt('and then check the outbox please');
+    answer(longText('unseen answer three'));
+    const afterHooks = await contents();
+
+    const result = await importSession({ limit: 1 });
+
+    expect(result).toMatchObject({ importedResponses: 0, errors: [] });
+    expect(await contents()).toEqual(afterHooks);
   });
 });
 

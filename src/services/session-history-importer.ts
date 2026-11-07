@@ -304,7 +304,10 @@ export class SessionHistoryImporter {
     const hooksStoredResponses = (await this.memoryService.getSessionHistory(sessionId)).some(
       (event) => event.eventType === 'agent_response' && typeof event.metadata?.importedFrom !== 'string'
     );
-    const transcriptBytes = fs.statSync(filePath).size;
+    // How much of the transcript the responses are read from: all of it, or
+    // as far as the limit let the prompt pass read.
+    let transcriptBytes = fs.statSync(filePath).size;
+    let consumedBytes = 0;
 
     // Read and parse JSONL file
     const fileStream = fs.createReadStream(filePath);
@@ -358,7 +361,12 @@ export class SessionHistoryImporter {
 
     try {
     for await (const line of rl) {
-      if (lineCount >= limit) break;
+      if (lineCount >= limit) {
+        transcriptBytes = consumedBytes;
+        break;
+      }
+      // Claude writes the transcript with \n line endings.
+      consumedBytes += Buffer.byteLength(line) + 1;
 
       try {
         const entry = JSON.parse(line) as ClaudeMessage;
