@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import * as path from 'node:path';
 
@@ -66,5 +66,12 @@ describe('evaluation outputs keep paths out of result fields', () => {
     const qrels = outside.stdout.split('\n').find((line) => line.startsWith('- Qrels:'));
     expect(qrels).toMatch(/^- Qrels: `outside-repo:[0-9a-f]{16}`$/);
     expect(hasLocalPath(outside.stdout)).toBe(false);
+  });
+});
+
+describe('committed lesson-recall results', () => {
+  const dir = path.join(ROOT, 'benchmarks', 'lesson-recall', 'results');
+  it.each(readdirSync(dir).filter((file) => file.endsWith('.json')))('%s holds no absolute or home path', (file) => {
+    expect(readFileSync(path.join(dir, file), 'utf8')).not.toMatch(/\/(?:Users|home|private)\/|[A-Za-z]:\\Users\\/);
   });
 });

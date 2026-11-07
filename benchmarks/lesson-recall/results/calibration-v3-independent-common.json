@@ -1,6 +1,6 @@
 {
-  "fixture": "/Users/justin/workspace/aplus-dev-studio-desktop/.aplus/worktrees/mqze6311dopi/witty-whale-avza/.aplus/checkouts/claude-memory-layer/benchmarks/lesson-recall/calibration-v3-independent.json",
-  "cacheDir": "/Users/justin/workspace/aplus-dev-studio-desktop/.aplus/worktrees/mqze6311dopi/witty-whale-avza/.aplus/checkouts/claude-memory-layer/.cache/lesson-hybrid-e5",
+  "fixture": "benchmarks/lesson-recall/calibration-v3-independent.json",
+  "cacheDir": ".cache/lesson-hybrid-e5",
   "remoteModels": false,
   "status": "ready",
   "lexical": {

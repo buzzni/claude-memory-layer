@@ -1,5 +1,5 @@
 {
-  "fixture": "/Users/justin/workspace/aplus-dev-studio-desktop/.aplus/worktrees/mqze6311dopi/witty-whale-avza/.aplus/checkouts/claude-memory-layer/benchmarks/lesson-recall/calibration-v1.json",
+  "fixture": "benchmarks/lesson-recall/calibration-v1.json",
   "status": "ready",
   "lexical": {
     "recallAt1": 0,
