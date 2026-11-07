@@ -44,6 +44,8 @@ interface NpmQueryOptions {
   env: NodeJS.ProcessEnv;
   encoding: 'utf8';
   stdio: ['ignore', 'pipe', 'ignore'];
+  /** Set only for the Windows cmd.exe fallback; absent everywhere else. */
+  shell?: true;
 }
 
 export interface EmbeddingBackendRepairContext {
@@ -60,6 +62,8 @@ export interface EmbeddingBackendRepairContext {
     accessImpl?: (p: string, mode: number) => void;
     realpathImpl?: (p: string) => string;
     execFileSyncImpl?: (command: string, args: string[], options: NpmQueryOptions) => string;
+    platform?: NodeJS.Platform;
+    existsSyncImpl?: (p: string) => boolean;
     isProcessRunning?: (pid: number) => boolean;
     probeSocketImpl?: (socketPath: string) => Promise<boolean>;
   };
@@ -155,11 +159,18 @@ async function findRepairBlockers(
   const execFileSyncImpl = deps.execFileSyncImpl
     ?? ((command: string, args: string[], options: NpmQueryOptions) => execFileSync(command, args, options));
   try {
-    const offline = execFileSyncImpl(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['config', 'get', 'offline', '--prefix', backendDir], {
+    const npm = script.createNpmInvocation({
+      args: ['config', 'get', 'offline', '--prefix', backendDir],
+      platform: deps.platform ?? process.platform,
+      env,
+      ...(deps.existsSyncImpl ? { existsSyncImpl: deps.existsSyncImpl } : {})
+    });
+    const offline = execFileSyncImpl(npm.command, npm.args, {
       cwd: context.packageRoot,
       env: script.createRepairEnv(env),
       encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore']
+      stdio: ['ignore', 'pipe', 'ignore'],
+      ...(npm.shell ? { shell: true as const } : {})
     });
     if (offline.trim() === 'true') reasons.push('npm is configured offline (npm config get offline = true), so the backend cannot be downloaded.');
   } catch (error) {
@@ -186,7 +197,8 @@ function hasRepairEntrypoints(script: EmbeddingBackendScript): script is Require
   return typeof script.runPostinstall === 'function'
     && typeof script.getManagedBackendDir === 'function'
     && typeof script.isSkipRequested === 'function'
-    && typeof script.createRepairEnv === 'function';
+    && typeof script.createRepairEnv === 'function'
+    && typeof script.createNpmInvocation === 'function';
 }
 
 /** Idempotent: a passing check is returned untouched without inspecting anything. */

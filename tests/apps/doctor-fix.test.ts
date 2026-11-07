@@ -45,7 +45,8 @@ function fakeScript(options: { available: boolean; repairs?: boolean }) {
     runPostinstall,
     getManagedBackendDir: realScript.getManagedBackendDir,
     isSkipRequested: realScript.isSkipRequested,
-    createRepairEnv: realScript.createRepairEnv
+    createRepairEnv: realScript.createRepairEnv,
+    createNpmInvocation: realScript.createNpmInvocation
   };
   return { script, runPostinstall };
 }
@@ -255,6 +256,47 @@ describe('repairEmbeddingBackend', () => {
     // Same env the install would run with: inherited location settings stripped.
     const options = execFileSyncImpl.mock.calls[0]?.[2] as unknown as { env: NodeJS.ProcessEnv };
     expect(options.env.npm_config_global).toBeUndefined();
+  });
+
+  describe('npm query per platform', () => {
+    // Windows cannot spawn npm.cmd without a shell (CVE-2024-27980), and a
+    // shell joins arguments with bare spaces, so the backend path is quoted.
+    async function queryFor(platform: NodeJS.Platform, env: NodeJS.ProcessEnv, backendRoot: string) {
+      const { script } = fakeScript({ available: false, repairs: true });
+      const execFileSyncImpl = vi.fn(() => 'false\n');
+      const context = makeContext(script, { env, deps: { platform, execFileSyncImpl, existsSyncImpl: () => true } });
+      context.packageRoot = join(context.packageRoot, backendRoot);
+      context.runningPackageRoot = context.packageRoot;
+      mkdirSync(join(context.packageRoot, 'node_modules'), { recursive: true });
+      await repairEmbeddingBackend(failingCheck(context), context);
+      expect(execFileSyncImpl).toHaveBeenCalledTimes(1);
+      return {
+        call: execFileSyncImpl.mock.calls[0] as unknown as [string, string[], Record<string, unknown>],
+        backendDir: realScript.getManagedBackendDir(context.packageRoot)
+      };
+    }
+    const NPM_CLI = 'C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npm-cli.js';
+
+    it('keeps `npm` with no shell on POSIX', async () => {
+      const { call, backendDir } = await queryFor('linux', { npm_execpath: NPM_CLI }, 'my pkg');
+      expect(call[0]).toBe('npm');
+      expect(call[1]).toEqual(['config', 'get', 'offline', '--prefix', backendDir]);
+      expect(call[2]).not.toHaveProperty('shell');
+    });
+
+    it('runs node + npm-cli.js without a shell on Windows when npm_execpath is usable', async () => {
+      const { call, backendDir } = await queryFor('win32', { npm_execpath: NPM_CLI }, 'my pkg');
+      expect(call[0]).toBe(process.execPath);
+      expect(call[1]).toEqual([NPM_CLI, 'config', 'get', 'offline', '--prefix', backendDir]);
+      expect(call[2]).not.toHaveProperty('shell');
+    });
+
+    it('goes through a shell with a quoted backend path on Windows without npm_execpath', async () => {
+      const { call, backendDir } = await queryFor('win32', {}, 'my pkg');
+      expect(call[0]).toBe('npm.cmd');
+      expect(call[1]).toEqual(['config', 'get', 'offline', '--prefix', `"${backendDir}"`]);
+      expect(call[2]).toMatchObject({ shell: true });
+    });
   });
 
   it('declines when npm cannot be run', async () => {

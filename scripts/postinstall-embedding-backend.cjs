@@ -162,6 +162,40 @@ function createNpmInstallArgs(rootDir = process.cwd()) {
   ];
 }
 
+// cmd.exe expands %VAR% even inside double quotes and cannot carry a literal
+// quote or newline in one argument, so such values are refused, never mangled.
+function quoteForWindowsShell(arg) {
+  if (/["%\r\n]/.test(arg)) {
+    throw new Error(`Argument cannot be passed safely through cmd.exe: ${arg}`);
+  }
+  if (/^[A-Za-z0-9_\-.:\\/=@+,]+$/.test(arg)) return arg;
+  // A backslash run right before the closing quote would escape it.
+  return `"${arg.replace(/\\+$/, (run) => run + run)}"`;
+}
+
+/**
+ * How to run npm with `args`. Node 18.20.2+/20.12.2+ (CVE-2024-27980) throws
+ * EINVAL when a .cmd/.bat is spawned without a shell, so on Windows prefer
+ * node + npm-cli.js (no shell at all) and otherwise go through the shell with
+ * every argument quoted ahead of time, because Node joins shell arguments with
+ * plain spaces. POSIX keeps the plain `npm` spawn.
+ */
+function createNpmInvocation({
+  args,
+  platform = process.platform,
+  env = process.env,
+  execPath = process.execPath,
+  existsSyncImpl = fs.existsSync
+}) {
+  if (platform !== 'win32') return { command: 'npm', args };
+
+  const npmExecPath = env.npm_execpath;
+  if (npmExecPath && path.win32.basename(npmExecPath) === 'npm-cli.js' && existsSyncImpl(npmExecPath)) {
+    return { command: execPath, args: [npmExecPath, ...args] };
+  }
+  return { command: 'npm.cmd', args: args.map(quoteForWindowsShell), shell: true };
+}
+
 function runPostinstall({
   rootDir = process.cwd(),
   env = process.env,
@@ -170,6 +204,7 @@ function runPostinstall({
   execFileSyncImpl = execFileSync,
   isEmbeddingBackendAvailableImpl = isEmbeddingBackendAvailable,
   spawnSyncImpl = spawnSync,
+  existsSyncImpl = fs.existsSync,
   log = console.log,
   warn = console.warn
 } = {}) {
@@ -190,12 +225,18 @@ function runPostinstall({
     return { attempted: true, success: false, cudaMajor, transformersAvailable, skipRequested };
   }
 
-  const npmCommand = platform === 'win32' ? 'npm.cmd' : 'npm';
-  const result = spawnSyncImpl(npmCommand, createNpmInstallArgs(rootDir), {
-    cwd: rootDir,
-    env: createRepairEnv(env),
-    stdio: 'inherit'
-  });
+  let result;
+  try {
+    const npm = createNpmInvocation({ args: createNpmInstallArgs(rootDir), platform, env, existsSyncImpl });
+    result = spawnSyncImpl(npm.command, npm.args, {
+      cwd: rootDir,
+      env: createRepairEnv(env),
+      stdio: 'inherit',
+      ...(npm.shell ? { shell: true } : {})
+    });
+  } catch (error) {
+    result = { error: error instanceof Error ? error : new Error(String(error)) };
+  }
 
   // A zero exit only says npm ran, not that the backend is usable — an install
   // that lands in the wrong layout still exits 0. Re-run the health check so a
@@ -235,5 +276,6 @@ module.exports = {
   shouldAttemptAutoInstall,
   createRepairEnv,
   createNpmInstallArgs,
+  createNpmInvocation,
   runPostinstall
 };
