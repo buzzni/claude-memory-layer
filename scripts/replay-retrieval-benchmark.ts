@@ -9,7 +9,7 @@ import {
   type ReplayEvaluationReport
 } from '../src/core/replay-evaluator.js';
 import type { RetrievalStrategy } from '../src/core/retriever.js';
-import { buildProvenance, warnProvenance, withProvenanceHeader } from './eval-provenance.mjs';
+import { buildProvenance, pathRef, warnProvenance, withProvenanceHeader } from './eval-provenance.mjs';
 
 interface ReplayThresholds {
   minQueryYieldRate?: number;
@@ -80,7 +80,7 @@ async function main(argv: string[]): Promise<void> {
   });
   warnProvenance(provenance);
   const output = options.format === 'markdown'
-    ? withProvenanceHeader(formatReplayEvaluationMarkdown(report, { qrelsPath: options.fixturePath }), provenance)
+    ? withProvenanceHeader(formatReplayEvaluationMarkdown(report, { qrelsPath: pathRef(options.fixturePath) }), provenance)
     : `${JSON.stringify({ ...report, provenance }, null, 2)}\n`;
 
   if (options.outPath) {
