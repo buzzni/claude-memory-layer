@@ -8,7 +8,9 @@
  * ~/.claude-code/memory/session-end-pending/, and the next worker that does
  * load the work retries it. Every outcome appends a record to
  * ~/.claude-code/memory/session-end-diagnostics.jsonl, which `doctor` points
- * to. Uses only node built-ins: the worker loads this before it has acked.
+ * to. Both stay bounded while loading keeps failing: saving drops old and
+ * excess jobs, and the diagnostics file rotates. Uses only node built-ins:
+ * the worker loads this before it has acked.
  */
 
 import * as fs from 'node:fs';
@@ -22,6 +24,10 @@ import type { ClaudeSessionEndJob } from './session-end.js';
 export const SESSION_END_RETRY_MAX_ATTEMPTS = 3;
 /** A session that ended longer ago than this is dropped instead of ended. */
 export const SESSION_END_RETRY_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+/** Jobs kept at most; while loading keeps failing, the oldest are dropped first. */
+export const SESSION_END_PENDING_MAX_JOBS = 50;
+/** The diagnostics file is moved to `.1` (replacing the previous one) at this size. */
+export const SESSION_END_DIAGNOSTICS_MAX_BYTES = 1024 * 1024;
 /** A retry claim this old belongs to a worker that died mid-retry. */
 const STALE_CLAIM_MS = 60 * 60 * 1000;
 const CLAIM_SUFFIX = '.claimed';
@@ -66,7 +72,13 @@ function recordDiagnostic(options: SessionEndPendingOptions, record: Record<stri
   try {
     const at = (options.now ?? (() => new Date()))().toISOString();
     fs.mkdirSync(memoryDir(options), { recursive: true });
-    fs.appendFileSync(getSessionEndDiagnosticsPath(options), `${JSON.stringify({ version: 1, at, ...record })}\n`);
+    const file = getSessionEndDiagnosticsPath(options);
+    try {
+      if (fs.statSync(file).size >= SESSION_END_DIAGNOSTICS_MAX_BYTES) fs.renameSync(file, `${file}.1`);
+    } catch {
+      // No file yet.
+    }
+    fs.appendFileSync(file, `${JSON.stringify({ version: 1, at, ...record })}\n`);
   } catch {
     // Diagnostics must never affect session end.
   }
@@ -118,6 +130,41 @@ export function savePendingSessionEndJob(
     // Nowhere to keep it; the diagnostic below still records the loss.
   }
   recordDiagnostic(options, { event: 'handler_load_failed', error: lastError });
+  prunePendingSessionEndJobs(options);
+}
+
+/**
+ * Retries run only in a worker whose work loaded, so while loading keeps
+ * failing nothing else bounds the kept jobs. Claimed jobs are left to the
+ * worker retrying them.
+ */
+function prunePendingSessionEndJobs(options: SessionEndPendingOptions): void {
+  const dir = getSessionEndPendingDir(options);
+  const now = (options.now ?? (() => new Date()))().getTime();
+  const kept = readDir(dir)
+    .filter((name) => name.endsWith('.json'))
+    .map((name) => ({ file: path.join(dir, name), record: readRecord(path.join(dir, name)) }))
+    .sort((a, b) => (b.record?.failedAt ?? '').localeCompare(a.record?.failedAt ?? ''));
+  const dropped = { expired: 0, limit: 0 };
+  let retained = 0;
+  for (const { file, record } of kept) {
+    const reason = !record || now - Date.parse(record.failedAt) > SESSION_END_RETRY_MAX_AGE_MS
+      ? 'expired'
+      : retained < SESSION_END_PENDING_MAX_JOBS ? null : 'limit';
+    if (!reason) {
+      retained += 1;
+      continue;
+    }
+    try {
+      fs.rmSync(file, { force: true });
+      dropped[reason] += 1;
+    } catch {
+      // Left for the next save.
+    }
+  }
+  for (const reason of ['expired', 'limit'] as const) {
+    if (dropped[reason] > 0) recordDiagnostic(options, { event: 'pending_pruned', reason, count: dropped[reason] });
+  }
 }
 
 /** Jobs waiting for a retry, including ones a worker is retrying right now. */

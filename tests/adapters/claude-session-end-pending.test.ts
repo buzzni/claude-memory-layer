@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 
 import {
+  SESSION_END_DIAGNOSTICS_MAX_BYTES,
+  SESSION_END_PENDING_MAX_JOBS,
   SESSION_END_RETRY_MAX_ATTEMPTS,
   SESSION_END_RETRY_MAX_AGE_MS,
   getSessionEndDiagnosticsPath,
@@ -159,6 +161,42 @@ describe('pending SessionEnd jobs', () => {
     expect(runs).toBe(1);
     expect(await second).toEqual({ completed: 0, failed: 0, abandoned: 0 });
     expect(await first).toEqual({ completed: 1, failed: 0, abandoned: 0 });
+  });
+
+  it('drops kept jobs past the age cap when saving, while loading keeps failing', () => {
+    savePendingSessionEndJob(job, new Error('boom'), at('2026-11-07T01:00:00.000Z'));
+    const later = new Date(Date.parse('2026-11-07T01:00:00.000Z') + SESSION_END_RETRY_MAX_AGE_MS + 1).toISOString();
+
+    savePendingSessionEndJob({ ...job, sessionId: 'session-2' }, new Error('boom'), at(later));
+
+    expect(listPendingSessionEndJobs({ homeDir }).map((pending) => pending.job.sessionId)).toEqual(['session-2']);
+    expect(diagnostics().at(-1)).toMatchObject({ event: 'pending_pruned', reason: 'expired' });
+  });
+
+  it('keeps only the newest jobs when saving', () => {
+    for (let index = 0; index <= SESSION_END_PENDING_MAX_JOBS; index += 1) {
+      const minute = String(index % 60).padStart(2, '0');
+      const hour = String(Math.floor(index / 60)).padStart(2, '0');
+      savePendingSessionEndJob({ ...job, sessionId: `session-${index}` }, new Error('boom'),
+        at(`2026-11-07T${hour}:${minute}:00.000Z`));
+    }
+
+    const kept = listPendingSessionEndJobs({ homeDir }).map((pending) => pending.job.sessionId);
+    expect(kept).toHaveLength(SESSION_END_PENDING_MAX_JOBS);
+    expect(kept).not.toContain('session-0');
+    expect(kept).toContain(`session-${SESSION_END_PENDING_MAX_JOBS}`);
+    expect(diagnostics().at(-1)).toMatchObject({ event: 'pending_pruned', reason: 'limit' });
+  });
+
+  it('rotates the diagnostics file once it reaches its size cap', () => {
+    const diagnosticsPath = getSessionEndDiagnosticsPath({ homeDir });
+    savePendingSessionEndJob(job, new Error('boom'), { homeDir });
+    writeFileSync(diagnosticsPath, 'x'.repeat(SESSION_END_DIAGNOSTICS_MAX_BYTES));
+
+    savePendingSessionEndJob(job, new Error('boom'), { homeDir });
+
+    expect(readFileSync(`${diagnosticsPath}.1`, 'utf8')).toHaveLength(SESSION_END_DIAGNOSTICS_MAX_BYTES);
+    expect(diagnostics()).toEqual([expect.objectContaining({ event: 'handler_load_failed' })]);
   });
 
   it('never throws when the store cannot be written', () => {
