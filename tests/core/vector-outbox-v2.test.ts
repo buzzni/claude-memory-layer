@@ -466,6 +466,26 @@ describe('automatic vector_outbox enqueue boundaries', () => {
     }
   });
 
+  it('does not enqueue events by default, since search reads only the embedding_outbox vectors', async () => {
+    const dbPath = createTempDbPath();
+    const store = new SQLiteEventStore(dbPath);
+
+    try {
+      await store.initialize();
+      const result = await store.append({
+        eventType: 'agent_response',
+        sessionId: 'session-default-outbox',
+        timestamp: new Date('2026-05-25T00:04:30.000Z'),
+        content: 'default outbox content'
+      });
+
+      expect(result).toMatchObject({ success: true, isDuplicate: false });
+      expect(readOutboxRows(store.getDatabase() as Database.Database)).toEqual([]);
+    } finally {
+      await store.close();
+    }
+  });
+
   it('leaves writers backwards-compatible when vector enqueue is explicitly disabled', async () => {
     const dbPath = createTempDbPath();
     const store = new SQLiteEventStore(dbPath, { vectorOutbox: false });

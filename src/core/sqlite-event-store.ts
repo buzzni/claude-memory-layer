@@ -380,7 +380,10 @@ export class SQLiteEventStore {
   }
 
   private createVectorOutbox(option: SQLiteEventStoreOptions['vectorOutbox']): VectorOutbox | null {
-    if (this.readOnly || option === false) return null;
+    // Opt-in: search reads only the conversations table that embedding_outbox
+    // feeds, so a default V2 job embedded every event a second time into an
+    // event_vectors_* table nothing queries.
+    if (this.readOnly || option === undefined || option === false) return null;
     if (option instanceof VectorOutbox) return option;
     return new VectorOutbox(this.db, option ?? {});
   }
