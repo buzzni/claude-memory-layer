@@ -28,6 +28,7 @@ import {
 } from '../../core/registry/project-path.js';
 import { loadSessionRegistry, type SessionRegistry } from '../../core/registry/session-registry.js';
 import { summarizeTypedSelections } from '../../core/retrieval-trace-ledger.js';
+import { readSessionSummaryCoverage, type SessionSummaryCoverage } from '../../core/session-summary-coverage.js';
 import {
   auditLessonUsage,
   type LessonQualitySummary,
@@ -103,6 +104,8 @@ export interface MemoryAuditStoreReport {
    * raw error is never printed.
    */
   lessonAuditError: 'computation_failed' | null;
+  /** Null when the store could not be read or the computation failed. */
+  sessionSummaryCoverage: SessionSummaryCoverage | null;
 }
 
 export interface MemoryAuditReport {
@@ -326,7 +329,8 @@ function auditOneStore(
     promptQuality: null,
     lessonUsage: null,
     lessonQuality: null,
-    lessonAuditError: null
+    lessonAuditError: null,
+    sessionSummaryCoverage: null
   };
 
   let db: SQLiteDatabase | undefined;
@@ -489,6 +493,12 @@ function auditOneStore(
       base.lessonAuditError = 'computation_failed';
     }
 
+    try {
+      base.sessionSummaryCoverage = readSessionSummaryCoverage(db, { since: options.since, until: options.until });
+    } catch {
+      base.sessionSummaryCoverage = null;
+    }
+
     const hasTraceRows = base.schemaCapability.retrievalTraces && Number(sqliteGet<{ count: number }>(
       db,
       'SELECT COUNT(*) AS count FROM retrieval_traces'
@@ -646,6 +656,7 @@ export function formatMemoryAuditMarkdown(report: MemoryAuditReport): string {
   }
   lines.push('', 'Importer cursor: unknown; observed source timestamps above are not importer progress or backlog measurements.');
   lines.push(...formatLessonUsageMarkdown(report.stores));
+  lines.push(...formatSessionSummaryCoverageMarkdown(report.stores));
   if (suggestions.length > 0) {
     lines.push('', '## Suggestions (no action taken)', '');
     for (const store of suggestions) lines.push(`- \`${store.storeHash}\`: ${store.mergeSuggestion}`);
@@ -755,6 +766,27 @@ function formatLessonUsageMarkdown(stores: MemoryAuditStoreReport[]): string[] {
     lines.push(`| ${store.storeHash} | ${quality.total} (${quality.active}/${quality.disabled}) | ${quality.otherScopeRows} | `
       + `${quality.evidence.noRefs} / ${quality.evidence.localRefsFound} / ${quality.evidence.refsUnresolvedHere} | ${quality.withSessionRefs} | `
       + `${quality.withValidation} | ${quality.withReconsiderWhen} | ${quality.recentlySelectedUnique} |`);
+  }
+  return lines;
+}
+
+function formatSessionSummaryCoverageMarkdown(stores: MemoryAuditStoreReport[]): string[] {
+  const lines: string[] = [
+    '', '## Session summary coverage', '',
+    'Eligible = sessions with at least 3 events and 2 user_prompt/agent_response events (the floor for generating a summary; summary events themselves are not counted). '
+    + 'Sessions are counted by the window their first event falls in; Latest summary is the newest session_summary inside the window.', '',
+    '| Store | Sessions started | Eligible | With summary | LLM-generated | Latest summary |',
+    '|---|---:|---:|---:|---:|---:|'
+  ];
+  for (const store of stores) {
+    const coverage = store.sessionSummaryCoverage;
+    if (!coverage) {
+      const gap = store.state === 'read' || store.state === 'empty' ? 'error' : sectionGap(store);
+      lines.push(`| ${store.storeHash} | ${gap} | | | | |`);
+      continue;
+    }
+    lines.push(`| ${store.storeHash} | ${coverage.sessionsStarted} | ${coverage.eligible} | ${coverage.withSummary} | `
+      + `${coverage.llmGenerated} | ${coverage.latestSummaryAt ?? '-'} |`);
   }
   return lines;
 }
