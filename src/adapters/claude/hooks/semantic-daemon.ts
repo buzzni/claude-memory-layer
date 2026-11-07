@@ -8,9 +8,16 @@ import { getSessionProject } from '../../../core/registry/session-registry.js';
 import { WorkerLock } from '../../../core/worker-lock.js';
 import { readNumberEnv } from './hook-runtime.js';
 import { AutoGraduationScheduler, isAutoGraduationEnabled } from './semantic-daemon-graduation.js';
-import { generateLlmSessionSummary, isLlmSummaryEnabled } from '../../llm/session-summary-llm.js';
+import {
+  generateLlmSessionSummary,
+  getSummaryModel,
+  getSummaryProviderName,
+  isLlmSummaryEnabled
+} from '../../llm/session-summary-llm.js';
+import { CliProviderError } from '../../llm/cli-provider.js';
 import { disposeDefaultEmbedder } from '../../../core/embedder.js';
 import {
+  getRuntimeResourceTelemetry,
   markRuntimeProcessStopped,
   registerRuntimeProcess,
   type RuntimeModelReleaseReason
@@ -232,6 +239,11 @@ async function runSessionSummaryWithWriterLock(sessionId: string): Promise<void>
   const lockResult = writerLock.acquire();
   if (!lockResult.acquired) return;
 
+  // The ingest service also returns false without calling the provider
+  // (already summarized, too few events); only real provider attempts count.
+  let providerCalled = false;
+  const provider = getSummaryProviderName();
+  const model = getSummaryModel(process.env, provider);
   const service = new MemoryService({
     storagePath,
     projectHash: projectInfo?.projectHash,
@@ -239,13 +251,31 @@ async function runSessionSummaryWithWriterLock(sessionId: string): Promise<void>
     readOnly: false,
     analyticsEnabled: false,
     sharedStoreConfig: DISABLED_SHARED_STORE_CONFIG,
-    llmSummaryGenerator: (events) => generateLlmSessionSummary(events)
+    llmSummaryGenerator: (events) => {
+      providerCalled = true;
+      return generateLlmSessionSummary(events);
+    }
   });
 
   try {
     await service.initialize();
-    await service.generateLlmSessionSummary(sessionId);
+    const stored = await service.generateLlmSessionSummary(sessionId);
+    if (providerCalled) {
+      getRuntimeResourceTelemetry().recordSummaryOutcome({
+        provider,
+        model,
+        outcome: stored ? 'stored' : 'empty'
+      });
+    }
   } catch (error) {
+    if (providerCalled) {
+      getRuntimeResourceTelemetry().recordSummaryOutcome({
+        provider,
+        model,
+        outcome: 'failure',
+        errorCode: error instanceof CliProviderError ? error.code : undefined
+      });
+    }
     if (process.env.CLAUDE_MEMORY_DEBUG) {
       console.error('[semantic-daemon] session summary failed:', error);
     }
