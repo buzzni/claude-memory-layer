@@ -447,7 +447,8 @@ async function replayTurn(sources: ReplaySources, turn: ReplayTurn): Promise<Rep
   });
   const selection = await selectHookInjection(selectionDeps(sources, turn, stats), {
     prompt: turn.prompt,
-    retrievalQuery
+    retrievalQuery,
+    sessionId: turn.sessionId
   });
   const injections = selection.injectableMemories
     .filter((memory): memory is typeof memory & { id: string } => Boolean(memory.id))

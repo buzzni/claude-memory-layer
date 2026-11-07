@@ -91,6 +91,17 @@ function isExcludedEvaluationSession(sessionId: string | undefined): boolean {
   return prefixes.some((prefix) => sessionId.startsWith(prefix));
 }
 
+/**
+ * An event written earlier in the prompt's own session is still in the agent's
+ * context, so injecting it again repeats what the agent already knows and takes
+ * a slot from a memory of another session. CLAUDE_MEMORY_INJECT_SAME_SESSION=true
+ * restores the old behavior; read per call so replay arms can toggle it.
+ */
+function isCurrentSessionEvent(eventSessionId: string | undefined, currentSessionId: string | undefined): boolean {
+  if (!currentSessionId || process.env.CLAUDE_MEMORY_INJECT_SAME_SESSION === 'true') return false;
+  return eventSessionId === currentSessionId;
+}
+
 export interface AdherenceState {
   sessionId: string;
   turnCount: number;
@@ -525,6 +536,8 @@ export interface HookSelectionInput {
   prompt: string;
   retrievalQuery: string;
   actorId?: string;
+  /** The prompt's own session; its events are not injected back into it. */
+  sessionId?: string;
 }
 
 export interface HookSelection {
@@ -570,7 +583,8 @@ export async function selectHookInjection(
       mergedMemories = semanticMemories.map((memory) => ({
         ...memory,
         source: 'semantic' as const
-      })).filter((memory) => !isExcludedEvaluationSession(memory.sessionId));
+      })).filter((memory) => !isExcludedEvaluationSession(memory.sessionId)
+        && !isCurrentSessionEvent(memory.sessionId, input.sessionId));
       semanticCandidateCount = mergedMemories.length;
     } catch {
       // Semantic retrieval is best-effort; fallback below handles the rest
@@ -580,10 +594,10 @@ export async function selectHookInjection(
   // Promotion is useful only if it changes recall. Add a bounded L1+
   // answer lane, but score by lexical/entity coverage before applying the
   // small level/access prior. Prompts and tool output never enter this lane.
-  const graduated = await deps.memoryService.searchGraduatedEvidence(
+  const graduated = (await deps.memoryService.searchGraduatedEvidence(
     retrievalQuery,
     Math.max(50, MAX_CANDIDATES * 4)
-  );
+  )).filter((result) => !isCurrentSessionEvent(result.event.sessionId, input.sessionId));
   const graduatedRanks = graduated.map((result) => result.rank);
   const bestGraduatedRank = graduatedRanks.length > 0 ? Math.min(...graduatedRanks) : 0;
   const worstGraduatedRank = graduatedRanks.length > 0 ? Math.max(...graduatedRanks) : 0;
@@ -660,7 +674,7 @@ export async function selectHookInjection(
 
   if (shouldUseKeywordFallback) {
     let usedFallbackFloor = false;
-    const allKeywordResults = await deps.memoryService.keywordSearch(retrievalQuery, {
+    const allKeywordResults = (await deps.memoryService.keywordSearch(retrievalQuery, {
       topK: MAX_EPISODE_SEED_CANDIDATES,
       // Episode seeding intentionally accepts tool_observation matches:
       // a tool call from the same turn is often the strongest anchor for
@@ -668,7 +682,7 @@ export async function selectHookInjection(
       // type-aware ranking). This opt-in preserves that behavior now that
       // keywordSearch excludes tool_observation by default.
       includeToolObservations: true
-    });
+    })).filter((result) => !isCurrentSessionEvent(result.event.sessionId, input.sessionId));
     keywordCandidateCount = allKeywordResults.length;
     let results = allKeywordResults.filter((result) => result.score >= minScore);
     thresholdFilteredCount = allKeywordResults.length - results.length;
@@ -852,7 +866,7 @@ export async function main(options: UserPromptSubmitMainOptions = {}): Promise<s
             { allowDaemonStart: options.allowDaemonStart }
           )
         },
-        { prompt, retrievalQuery, actorId: input.actor_id }
+        { prompt, retrievalQuery, actorId: input.actor_id, sessionId: input.session_id }
       );
 
       // One trace id shared by the query trace and every helpfulness row it
