@@ -337,7 +337,7 @@ describe('Claude SessionEnd worker hand-off', () => {
     expect(store.retryPendingJobs).not.toHaveBeenCalled();
   });
 
-  it('retries the jobs earlier workers kept even when this job fails', async () => {
+  it('leaves the jobs earlier workers kept alone when this job fails, so a broken store does not use up their retries', async () => {
     const store = pendingStore();
     const handle = vi.fn(async () => { throw new Error('database is locked'); });
 
@@ -349,7 +349,8 @@ describe('Claude SessionEnd worker hand-off', () => {
       loadHandler: async () => handle
     });
 
-    expect(store.retryPendingJobs).toHaveBeenCalledWith(handle);
+    expect(handle).toHaveBeenCalled();
+    expect(store.retryPendingJobs).not.toHaveBeenCalled();
     expect(store.savePendingJob).not.toHaveBeenCalled();
   });
 
