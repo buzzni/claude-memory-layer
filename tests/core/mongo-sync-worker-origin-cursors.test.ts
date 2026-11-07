@@ -163,7 +163,10 @@ describe('MongoSyncWorker per-origin pull cursors', () => {
     const held = new WorkerLock(path.join(a.dir, 'mongo-sync-push.lock'), { pid: process.pid });
     expect(held.acquire().acquired).toBe(true);
 
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     expect(await worker(a, 'push').syncNow()).toEqual({ pushed: 0, pulled: 0 });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(`pid ${process.pid}`));
+    warn.mockRestore();
     held.release();
     expect(await worker(a, 'push').syncNow()).toEqual({ pushed: 1, pulled: 0 });
   });

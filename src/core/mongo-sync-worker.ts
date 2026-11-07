@@ -384,7 +384,12 @@ export class MongoSyncWorker {
     const lock = new WorkerLock(
       this.config.pushLockPath ?? path.join(os.tmpdir(), 'claude-memory-layer', `mongo-sync-push-${origin}.lock`)
     );
-    if (!lock.acquire().acquired) return 0;
+    const acquired = lock.acquire();
+    if (!acquired.acquired) {
+      const holder = acquired.holderPid === null ? 'unknown pid' : `pid ${acquired.holderPid}`;
+      console.warn(`[MongoSyncWorker] Skipping push: another process (${holder}) holds ${acquired.lockPath}`);
+      return 0;
+    }
     try {
       return await this.pushEventsLocked(origin);
     } finally {
