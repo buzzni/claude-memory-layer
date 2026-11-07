@@ -81,7 +81,9 @@ export async function reconcileSessionTranscript(
   memoryService: ReconcileMemoryService,
   sessionId: string,
   transcriptPath: string,
-  snapshot: SessionEndSnapshot
+  snapshot: SessionEndSnapshot,
+  /** Marks where a stored message came from. */
+  provenance: Record<string, unknown> = { recoveredAtSessionEnd: true }
 ): Promise<SessionTranscriptReconcileResult> {
   const result: SessionTranscriptReconcileResult = { recovered: 0, alreadyStored: 0, failed: 0 };
   const turns = await readTranscriptTurns(transcriptPath, sessionId, { endOffset: snapshot.transcriptBytes });
@@ -120,7 +122,7 @@ export async function reconcileSessionTranscript(
         ...(timestamp ? { originalTimestamp: timestamp } : {}),
         ...(turnId ? { turnId } : {}),
         ...(turn.trigger !== 'user' ? { turnTrigger: turn.trigger } : {}),
-        recoveredAtSessionEnd: true
+        ...provenance
       });
       if (!stored.success) {
         result.failed++;
