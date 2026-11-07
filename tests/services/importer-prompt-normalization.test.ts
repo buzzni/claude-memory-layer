@@ -110,6 +110,29 @@ describe('importer prompt normalization', () => {
     expect((await sessionEvents(service, memorySessionId)).prompts.map((event) => event.content)).toEqual([request]);
   });
 
+  it('Claude: a banner-wrapped notification in an explicit subagent transcript opens a task_notification turn', async () => {
+    const service = realService();
+    const file = join(tempDir(), 'agent-banner.jsonl');
+    const banner = '[SYSTEM NOTIFICATION - NOT USER INPUT]\nThis is an automated background-task event, NOT a message from the user.';
+    const flags = { isMeta: true, isSidechain: true };
+    const user = (content: string, extra = {}) => ({ type: 'user', timestamp: '2026-10-01T00:00:00.000Z', message: { role: 'user', content }, ...extra });
+    const assistant = (text: string) => ({ type: 'assistant', timestamp: '2026-10-01T00:00:01.000Z', message: { role: 'assistant', content: [{ type: 'text', text }] } });
+    writeJsonl(file, [
+      user(REQUEST),
+      assistant(LONG_REPLY('first answer')),
+      user(`${banner}\n\n${NOTIFICATION}`, flags),
+      assistant(LONG_REPLY('notification reply'))
+    ]);
+
+    await new SessionHistoryImporter(service).importSessionFile(file);
+    const { prompts, responses } = await sessionEvents(service, 'agent-banner');
+    expect(prompts).toHaveLength(1);
+    const answer = responses.find((event) => event.content.startsWith('first answer'))!;
+    const reply = responses.find((event) => event.content.startsWith('notification reply'))!;
+    expect(reply.metadata?.turnId).not.toBe(answer.metadata?.turnId);
+    expect(reply.metadata?.turnTrigger).toBe('task_notification');
+  });
+
   it('Claude: stores the normalized redacted request, splits notification turns, and is idempotent', async () => {
     const service = realService();
     const file = join(tempDir(), 'claude-session.jsonl');
