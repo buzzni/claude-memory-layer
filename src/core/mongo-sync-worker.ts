@@ -56,10 +56,23 @@ interface CounterDoc {
   seq: number;
 }
 
+/** One row per (project key, origin): lists the origins a pull reads and the highest originSeq each has reserved. */
+interface OriginDoc {
+  _id: string;
+  projectKey: string;
+  origin: string;
+  maxOriginSeq: number;
+  hostname?: string;
+  updatedAt?: Date;
+}
+
 interface RemoteEventDoc {
   _id: string;
   projectKey: string;
+  /** Project-wide seq. Older versions pull by it alone, so every pusher still assigns it. */
   seq: number;
+  /** Seq within source.instanceId, assigned by versions with per-origin pull cursors; absent on older pushers' docs. */
+  originSeq?: number;
   eventId: string;
   eventType: string;
   sessionId: string;
@@ -138,6 +151,7 @@ export class MongoSyncWorker {
   private db: Db | null = null;
   private counters: Collection<CounterDoc> | null = null;
   private events: Collection<RemoteEventDoc> | null = null;
+  private origins: Collection<OriginDoc> | null = null;
   private indexesEnsured = false;
 
   private stats: MongoSyncStats = {
@@ -250,7 +264,7 @@ export class MongoSyncWorker {
   }
 
   private async ensureConnected(): Promise<void> {
-    if (this.client && this.db && this.counters && this.events) return;
+    if (this.client && this.db && this.counters && this.events && this.origins) return;
 
     try {
       this.client = new MongoClient(this.config.uri, {
@@ -261,6 +275,7 @@ export class MongoSyncWorker {
       this.db = this.client.db(this.config.dbName);
       this.counters = this.db.collection<CounterDoc>('cml_counters');
       this.events = this.db.collection<RemoteEventDoc>('cml_events');
+      this.origins = this.db.collection<OriginDoc>('cml_origins');
     } catch (err) {
       // Avoid leaking credentials in logs; the driver's own message quotes the whole connection string.
       const safeUri = redactMongoUri(this.config.uri);
@@ -277,13 +292,14 @@ export class MongoSyncWorker {
       this.db = null;
       this.counters = null;
       this.events = null;
+      this.origins = null;
       this.indexesEnsured = false;
     }
   }
 
   private async ensureIndexes(): Promise<void> {
     if (this.indexesEnsured) return;
-    if (!this.events || !this.counters) throw new Error('Mongo not connected');
+    if (!this.events || !this.counters || !this.origins) throw new Error('Mongo not connected');
 
     // Best-effort: if the user lacks index privileges, sync can still work (slower)
     try {
@@ -291,6 +307,12 @@ export class MongoSyncWorker {
       await this.events.createIndex({ projectKey: 1, eventId: 1 }, { unique: true });
       await this.events.createIndex({ projectKey: 1, dedupeKey: 1 });
       await this.events.createIndex({ projectKey: 1, insertedAt: 1 });
+      // Partial: documents from older pushers have no originSeq and would all collide on a missing key.
+      await this.events.createIndex(
+        { projectKey: 1, 'source.instanceId': 1, originSeq: 1 },
+        { unique: true, partialFilterExpression: { originSeq: { $exists: true } } }
+      );
+      await this.origins.createIndex({ projectKey: 1 });
     } catch (err) {
       console.warn('[MongoSyncWorker] Failed to ensure indexes (continuing):', err);
     }
@@ -298,15 +320,14 @@ export class MongoSyncWorker {
     this.indexesEnsured = true;
   }
 
-  private counterKey(kind: 'events'): string {
-    return `${kind}:${this.config.projectKey}`;
+  private counterKey(origin?: string): string {
+    return origin ? `events:${this.config.projectKey}:${origin}` : `events:${this.config.projectKey}`;
   }
 
-  private async allocateSeqRange(kind: 'events', count: number): Promise<number> {
+  private async allocateSeqRange(key: string, count: number): Promise<number> {
     if (!this.counters) throw new Error('Mongo not connected');
     if (count <= 0) return 1;
 
-    const key = this.counterKey(kind);
     const doc = await this.counters.findOneAndUpdate(
       { _id: key },
       { $inc: { seq: count } },
@@ -346,8 +367,16 @@ export class MongoSyncWorker {
     }
   }
 
+  /**
+   * Pushes only events Mongo does not have yet. Pulled events also get local rowids past the push cursor; pushing them
+   * again would spend this origin's seqs on another origin's documents (the upsert leaves the document unchanged).
+   *
+   * Per batch: reserve the project seq and this origin's seq, raise the origin's maxOriginSeq in cml_origins, then
+   * insert in order. Raising maxOriginSeq first keeps pullers asking for this origin until the insert lands, however
+   * long it stalls; the ordered insert makes each origin's documents visible as a prefix of its seqs.
+   */
   private async pushEventsLocked(origin: string): Promise<number> {
-    if (!this.events) throw new Error('Mongo not connected');
+    if (!this.events || !this.origins) throw new Error('Mongo not connected');
 
     const position = await this.sqliteStore.getSyncPosition(this.pushTargetName());
     let lastRowid = parseIntOrZero(position.lastEventId);
@@ -358,42 +387,62 @@ export class MongoSyncWorker {
       const batch = await this.sqliteStore.getEventsSinceRowid(lastRowid, this.config.batchSize);
       if (batch.length === 0) break;
 
-      const startSeq = await this.allocateSeqRange('events', batch.length);
-      const now = new Date();
-      const hostname = os.hostname();
+      const docId = (eventId: string) => `${this.config.projectKey}:${eventId}`;
+      const inMongo = new Set((await this.events.find(
+        { _id: { $in: batch.map((item) => docId(item.event.id)) } },
+        { projection: { _id: 1 } }
+      ).toArray()).map((doc) => doc._id));
+      const fresh = batch.filter((item) => !inMongo.has(docId(item.event.id)));
 
-      const ops = batch.map((item, idx) => {
-        const event = item.event as unknown as MemoryEvent;
-        const seq = startSeq + idx;
-        const docId = `${this.config.projectKey}:${event.id}`;
+      if (fresh.length > 0) {
+        const startSeq = await this.allocateSeqRange(this.counterKey(), fresh.length);
+        const startOriginSeq = await this.allocateSeqRange(this.counterKey(origin), fresh.length);
+        const now = new Date();
+        const hostname = os.hostname();
 
-        return {
-          updateOne: {
-            filter: { _id: docId },
-            update: {
-              $setOnInsert: {
-                _id: docId,
-                projectKey: this.config.projectKey,
-                seq,
-                eventId: event.id,
-                eventType: event.eventType,
-                sessionId: event.sessionId,
-                timestamp: event.timestamp,
-                content: event.content,
-                canonicalKey: event.canonicalKey,
-                dedupeKey: event.dedupeKey,
-                metadata: event.metadata ?? null,
-                insertedAt: now,
-                updatedAt: now,
-                source: { hostname, instanceId: origin }
-              }
-            },
-            upsert: true
-          }
-        };
-      });
+        await this.origins.updateOne(
+          { _id: `${this.config.projectKey}:${origin}` },
+          {
+            $setOnInsert: { projectKey: this.config.projectKey, origin },
+            $set: { hostname, updatedAt: now },
+            $max: { maxOriginSeq: startOriginSeq + fresh.length - 1 }
+          },
+          { upsert: true }
+        );
 
-      await this.events.bulkWrite(ops, { ordered: false });
+        const ops = fresh.map((item, idx) => {
+          const event = item.event as unknown as MemoryEvent;
+          const id = docId(event.id);
+
+          return {
+            updateOne: {
+              filter: { _id: id },
+              update: {
+                $setOnInsert: {
+                  _id: id,
+                  projectKey: this.config.projectKey,
+                  seq: startSeq + idx,
+                  originSeq: startOriginSeq + idx,
+                  eventId: event.id,
+                  eventType: event.eventType,
+                  sessionId: event.sessionId,
+                  timestamp: event.timestamp,
+                  content: event.content,
+                  canonicalKey: event.canonicalKey,
+                  dedupeKey: event.dedupeKey,
+                  metadata: event.metadata ?? null,
+                  insertedAt: now,
+                  updatedAt: now,
+                  source: { hostname, instanceId: origin }
+                }
+              },
+              upsert: true
+            }
+          };
+        });
+
+        await this.events.bulkWrite(ops, { ordered: true });
+      }
 
       const last = batch[batch.length - 1];
       lastRowid = last.rowid;
@@ -403,7 +452,7 @@ export class MongoSyncWorker {
         last.event.timestamp.toISOString()
       );
 
-      pushed += batch.length;
+      pushed += fresh.length;
       if (batch.length < this.config.batchSize) break;
     }
 

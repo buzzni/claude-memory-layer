@@ -93,4 +93,37 @@ describe('MongoSyncWorker per-origin pull cursors', () => {
     held.release();
     expect(await worker(a, 'push').syncNow()).toEqual({ pushed: 1, pulled: 0 });
   });
+
+  it('numbers the documents of one origin consecutively and records the latest in cml_origins', async () => {
+    const a = await machine('a');
+    await remember(a.store, 'first');
+    await worker(a, 'push').syncNow();
+    await remember(a.store, 'second');
+    await worker(a, 'push').syncNow();
+
+    const docs = mongo.events.docs;
+    expect(docs.map((doc) => doc.originSeq)).toEqual([1, 2]);
+    // The global seq stays, so pullers on older versions keep reading new documents.
+    expect(docs.map((doc) => doc.seq)).toEqual([1, 2]);
+    expect(mongo.origins.docs).toEqual([
+      expect.objectContaining({ projectKey: 'team', origin: docs[0].source.instanceId, maxOriginSeq: 2 })
+    ]);
+  });
+
+  it('never pushes pulled events back under its own origin', async () => {
+    const a = await machine('a');
+    const c = await machine('c');
+    await remember(a.store, 'from a');
+    await worker(a, 'push').syncNow();
+
+    const both = worker(c, 'both');
+    expect(await both.syncNow()).toEqual({ pushed: 0, pulled: 1 });
+    expect(await both.syncNow()).toEqual({ pushed: 0, pulled: 0 });
+
+    expect(mongo.events.docs).toHaveLength(1);
+    expect(mongo.counters.docs.map((doc) => doc._id).sort()).toEqual([
+      'events:team',
+      `events:team:${mongo.events.docs[0].source.instanceId}`
+    ]);
+  });
 });
