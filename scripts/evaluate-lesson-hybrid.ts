@@ -5,7 +5,7 @@ import { join, relative, resolve } from 'path';
 import { rankCuratedLessons } from '../src/extensions/mcp/lesson-ranking.js';
 import type { MemoryLesson } from '../src/core/types.js';
 import { guardFixtureRead } from './eval-split.js';
-import { buildProvenance, pathRef, warnProvenance } from './eval-provenance.mjs';
+import { buildProvenance, pathRef, redactPaths, warnProvenance } from './eval-provenance.mjs';
 
 const finalReport = process.argv.includes('--final-report');
 const [fixturePath, cacheDir, mode] = process.argv.slice(2).filter((arg) => arg !== '--final-report');
@@ -134,6 +134,6 @@ try {
   process.stdout.write(`${JSON.stringify({ outcome: 'raw_cosine_retrieval_measured', calibratedGate: mode === '--calibrate-e5' ? calibrateGate(rankings) : undefined, model, modelDownloadedForDiagnostic: mode === '--download-model', cacheDir: pathRef(cacheDir), embedderInputContract: { query: prefixed ? 'query: prefix' : 'no query prefix', document: prefixed ? 'passage: prefix' : 'no passage prefix', pooling: 'mean', normalize: true, truncation: true, maxLength: 512 }, ...artifact, positives, negatives, cosineRecallAt3: hits / positives, cosinePrecisionAt3: relevant / selected, cosineNegativeFalseInjection: falseInjection / negatives, frozenSemanticRescueGate: HYBRID_LESSON_GATE, gatedRecallAt1: gatedHits / positives, gatedNegativeFalseInjection: gatedFalse / negatives, gated, rankings, failures, provenance }, null, 2)}\n`);
   await embedder.dispose('manual');
 } catch (error) {
-  process.stdout.write(`${JSON.stringify({ outcome: 'local_model_unavailable', cacheDir: pathRef(cacheDir), detail: error instanceof Error ? error.message.split('\n')[0] : String(error), provenance }, null, 2)}\n`);
+  process.stdout.write(`${JSON.stringify({ outcome: 'local_model_unavailable', cacheDir: pathRef(cacheDir), detail: redactPaths(error instanceof Error ? error.message.split('\n')[0] : String(error)), provenance }, null, 2)}\n`);
   process.exitCode = 2;
 }

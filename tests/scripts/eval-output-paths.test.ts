@@ -29,8 +29,7 @@ describe('evaluation outputs keep paths out of result fields', () => {
     const cache = tempDir();
     const result = run(['scripts/evaluate-lesson-hybrid.ts', 'benchmarks/lesson-recall/calibration-v1.json', cache]);
     expect(result.status).toBe(2);
-    // detail is the loader's own error text, outside this contract.
-    const { provenance, detail: _detail, ...output } = JSON.parse(result.stdout.slice(result.stdout.indexOf('{')));
+    const { provenance, ...output } = JSON.parse(result.stdout.slice(result.stdout.indexOf('{')));
 
     expect(output.outcome).toBe('local_model_unavailable');
     expect(output.cacheDir).toMatch(/^outside-repo:[0-9a-f]{16}$/);
