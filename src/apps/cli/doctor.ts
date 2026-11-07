@@ -158,6 +158,12 @@ export interface EmbeddingBackendScript {
   getManagedBackendDir?: (rootDir: string) => string;
   isSkipRequested?: (env: NodeJS.ProcessEnv) => boolean;
   createRepairEnv?: (env: NodeJS.ProcessEnv) => NodeJS.ProcessEnv;
+  createNpmInvocation?: (options: {
+    args: string[];
+    platform?: NodeJS.Platform;
+    env?: NodeJS.ProcessEnv;
+    existsSyncImpl?: (filePath: string) => boolean;
+  }) => { command: string; args: string[]; shell?: true };
 }
 
 export function checkEmbeddingBackend(

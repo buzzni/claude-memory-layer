@@ -11,6 +11,7 @@ type SpawnCall = {
   cmd: string;
   args: string[];
   env: NodeJS.ProcessEnv;
+  shell?: boolean;
 };
 
 type ExecFileSyncLike = (cmd: string, args: string[], options?: unknown) => string | Buffer;
@@ -33,6 +34,13 @@ type PostinstallEmbeddingBackend = {
   }): boolean;
   createRepairEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv;
   createNpmInstallArgs(rootDir?: string): string[];
+  createNpmInvocation(input: {
+    args: string[];
+    platform?: NodeJS.Platform;
+    env?: NodeJS.ProcessEnv;
+    execPath?: string;
+    existsSyncImpl?: (filePath: string) => boolean;
+  }): { command: string; args: string[]; shell?: true };
   runPostinstall(input?: {
     rootDir?: string;
     env?: NodeJS.ProcessEnv;
@@ -40,7 +48,8 @@ type PostinstallEmbeddingBackend = {
     arch?: string;
     execFileSyncImpl?: ExecFileSyncLike;
     isEmbeddingBackendAvailableImpl?: (rootDir: string, execFileSyncImpl: ExecFileSyncLike) => boolean;
-    spawnSyncImpl?: (cmd: string, args: string[], options: { env: NodeJS.ProcessEnv }) => { status: number };
+    existsSyncImpl?: (filePath: string) => boolean;
+    spawnSyncImpl?: (cmd: string, args: string[], options: { env: NodeJS.ProcessEnv; shell?: boolean }) => { status: number };
     log?: () => void;
     warn?: () => void;
   }): { attempted: boolean; success?: boolean; cudaMajor: number | null; transformersAvailable: boolean; skipRequested: boolean };
@@ -291,5 +300,178 @@ describe('embedding backend postinstall repair', () => {
     } finally {
       rmSync(rootDir, { recursive: true, force: true });
     }
+  });
+
+  describe('npm invocation on Windows', () => {
+    // Node 18.20.2+/20.12.2+ (CVE-2024-27980) throws EINVAL when a .cmd/.bat is
+    // spawned without a shell, so Windows never gets a bare `npm.cmd` spawn.
+    const NPM_CLI = 'C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npm-cli.js';
+    const NODE_EXE = 'C:\\Program Files\\nodejs\\node.exe';
+    const args = ['install', '--prefix', 'C:\\Users\\Jane Doe\\backend dir', '--omit=dev'];
+
+    it('keeps the plain npm command on POSIX, even when npm_execpath is set', () => {
+      const postinstall = loadPostinstallModule();
+      for (const platform of ['linux', 'darwin'] as const) {
+        expect(postinstall.createNpmInvocation({
+          args,
+          platform,
+          env: { npm_execpath: '/usr/lib/node_modules/npm/bin/npm-cli.js' },
+          existsSyncImpl: () => true
+        })).toEqual({ command: 'npm', args });
+      }
+    });
+
+    it('runs npm-cli.js with the current node on Windows, without a shell', () => {
+      const postinstall = loadPostinstallModule();
+      expect(postinstall.createNpmInvocation({
+        args,
+        platform: 'win32',
+        env: { npm_execpath: NPM_CLI },
+        execPath: NODE_EXE,
+        existsSyncImpl: (file) => file === NPM_CLI
+      })).toEqual({ command: NODE_EXE, args: [NPM_CLI, ...args] });
+    });
+
+    it('falls back to a quoted shell command when npm_execpath is missing', () => {
+      const postinstall = loadPostinstallModule();
+      expect(postinstall.createNpmInvocation({
+        args,
+        platform: 'win32',
+        env: {},
+        execPath: NODE_EXE,
+        existsSyncImpl: () => true
+      })).toEqual({
+        // One pre-built command line and no args: on Node 24+ args plus
+        // shell:true is DEP0190, and Node sends the same string either way.
+        command: 'npm.cmd install --prefix "C:\\Users\\Jane Doe\\backend dir" --omit=dev',
+        args: [],
+        shell: true
+      });
+    });
+
+    it('does not trust an npm_execpath that is another package manager or does not exist', () => {
+      const postinstall = loadPostinstallModule();
+      const shellFallback = {
+        command: 'npm.cmd install --prefix "C:\\Users\\Jane Doe\\backend dir" --omit=dev',
+        args: [],
+        shell: true
+      };
+      expect(postinstall.createNpmInvocation({
+        args,
+        platform: 'win32',
+        env: { npm_execpath: 'C:\\Users\\Jane Doe\\AppData\\Roaming\\npm\\node_modules\\pnpm\\bin\\pnpm.cjs' },
+        execPath: NODE_EXE,
+        existsSyncImpl: () => true
+      })).toEqual(shellFallback);
+      expect(postinstall.createNpmInvocation({
+        args,
+        platform: 'win32',
+        env: { npm_execpath: NPM_CLI },
+        execPath: NODE_EXE,
+        existsSyncImpl: () => false
+      })).toEqual(shellFallback);
+    });
+
+    it('quotes only the shell-fallback arguments that need it', () => {
+      const postinstall = loadPostinstallModule();
+      const invocation = postinstall.createNpmInvocation({
+        args: ['config', 'get', 'offline', '--prefix', 'C:\\a&b\\x', 'C:\\plain\\dir', 'C:\\trail dir\\'],
+        platform: 'win32',
+        env: {}
+      });
+      expect(invocation.args).toEqual([]);
+      expect(invocation.command).toBe(
+        'npm.cmd config get offline --prefix "C:\\a&b\\x" C:\\plain\\dir "C:\\trail dir\\\\"'
+      );
+    });
+
+    it('refuses to build a shell command from an argument cmd.exe would expand or split', () => {
+      const postinstall = loadPostinstallModule();
+      for (const bad of ['C:\\50%\\dir', 'C:\\say "hi"\\dir', 'C:\\a\nb']) {
+        expect(() => postinstall.createNpmInvocation({ args: ['--prefix', bad], platform: 'win32', env: {} })).toThrow(/cannot be passed safely/);
+      }
+      // Without the shell nothing is interpreted, so the same path is fine.
+      expect(postinstall.createNpmInvocation({
+        args: ['--prefix', 'C:\\50%\\dir'],
+        platform: 'win32',
+        env: { npm_execpath: NPM_CLI },
+        execPath: NODE_EXE,
+        existsSyncImpl: () => true
+      }).args).toEqual([NPM_CLI, '--prefix', 'C:\\50%\\dir']);
+    });
+
+    function runOnWindows(env: NodeJS.ProcessEnv, existsSyncImpl: (file: string) => boolean) {
+      const postinstall = loadPostinstallModule();
+      const rootDir = mkdtempSync(join(tmpdir(), 'cml postinstall win '));
+      const calls: SpawnCall[] = [];
+      try {
+        writeFileSync(join(rootDir, 'package.json'), JSON.stringify({ name: 'claude-memory-layer-install-root' }));
+        const result = postinstall.runPostinstall({
+          rootDir,
+          env,
+          platform: 'win32',
+          arch: 'x64',
+          execFileSyncImpl: () => '',
+          isEmbeddingBackendAvailableImpl: () => calls.length > 0,
+          existsSyncImpl,
+          spawnSyncImpl: (cmd, spawnArgs, options) => {
+            calls.push({ cmd, args: spawnArgs, env: options.env, shell: options.shell });
+            return { status: 0 };
+          },
+          log: () => undefined,
+          warn: () => undefined
+        });
+        return { result, calls, installArgs: postinstall.createNpmInstallArgs(rootDir) };
+      } finally {
+        rmSync(rootDir, { recursive: true, force: true });
+      }
+    }
+
+    it('spawns node + npm-cli.js with no shell option when npm_execpath is usable', () => {
+      const { result, calls, installArgs } = runOnWindows({ npm_execpath: NPM_CLI }, () => true);
+      expect(result).toMatchObject({ attempted: true, success: true });
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.cmd).toBe(process.execPath);
+      expect(calls[0]?.args).toEqual([NPM_CLI, ...installArgs]);
+      expect(calls[0]?.shell).toBeUndefined();
+    });
+
+    it('spawns npm.cmd through a shell with the backend path quoted otherwise', () => {
+      const { result, calls, installArgs } = runOnWindows({}, () => false);
+      expect(result).toMatchObject({ attempted: true, success: true });
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.shell).toBe(true);
+      // No args alongside the shell (DEP0190); the temp root has spaces, so
+      // every path-bearing argument is quoted inside the command line.
+      expect(calls[0]?.args).toEqual([]);
+      expect(calls[0]?.cmd).toBe(['npm.cmd', ...installArgs.map((arg) => (/\s/.test(arg) ? `"${arg}"` : arg))].join(' '));
+      expect(calls[0]?.cmd).toContain('"');
+    });
+
+    it('reports a path it cannot quote as a failed repair instead of throwing', () => {
+      const postinstall = loadPostinstallModule();
+      const rootDir = mkdtempSync(join(tmpdir(), 'cml-postinstall-pct-%x-'));
+      const warnings: string[] = [];
+      try {
+        writeFileSync(join(rootDir, 'package.json'), JSON.stringify({ name: 'claude-memory-layer-install-root' }));
+        const result = postinstall.runPostinstall({
+          rootDir,
+          env: {},
+          platform: 'win32',
+          arch: 'x64',
+          execFileSyncImpl: () => '',
+          isEmbeddingBackendAvailableImpl: () => false,
+          spawnSyncImpl: () => {
+            throw new Error('must not spawn');
+          },
+          log: () => undefined,
+          warn: ((message: string) => warnings.push(message)) as () => void
+        });
+        expect(result).toMatchObject({ attempted: true, success: false });
+        expect(warnings.join('\n')).toContain('cannot be passed safely');
+      } finally {
+        rmSync(rootDir, { recursive: true, force: true });
+      }
+    });
   });
 });
