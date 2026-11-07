@@ -220,7 +220,7 @@ function stripLeadingScaffold(text: string): { kind: PromptScaffoldKind; rest: s
     // notification; a bare banner stays what it is today.
     const blank = text.indexOf('\n\n');
     if (blank < 0 || blank > MAX_WRAPPER_LENGTH) return null;
-    const next = stripLeadingScaffold(text.slice(blank + 2));
+    const next = stripLeadingScaffold(trimPromptBoundary(text.slice(blank + 2)));
     return next?.kind === 'task_notification' ? next : null;
   }
   if (text.startsWith(TASK_NOTIFICATION_OPEN)) {
