@@ -160,6 +160,13 @@ export async function retryPendingSessionEndJobs(
     } catch {
       continue;
     }
+    try {
+      // A rename keeps the saved file's mtime; the claim's age starts now.
+      const claimedAt = new Date();
+      fs.utimesSync(claimed, claimedAt, claimedAt);
+    } catch {
+      // Gone already; reading it below fails and drops it.
+    }
     const abandon = (reason: string) => {
       fs.rmSync(claimed, { force: true });
       summary.abandoned += 1;

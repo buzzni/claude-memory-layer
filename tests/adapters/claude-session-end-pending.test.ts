@@ -121,6 +121,28 @@ describe('pending SessionEnd jobs', () => {
     expect(existsSync(claimed)).toBe(false);
   });
 
+  it('does not let a second worker take over a job saved long ago that the first has just claimed', async () => {
+    savePendingSessionEndJob(job, new Error('boom'), at('2026-11-07T01:00:00.000Z'));
+    const dir = getSessionEndPendingDir({ homeDir });
+    const [file] = readdirSync(dir);
+    // Saved two hours ago; a rename keeps this mtime on the claim.
+    const longAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    utimesSync(path.join(dir, file), longAgo, longAgo);
+    const releases: Array<() => void> = [];
+    const handle = vi.fn(() => new Promise<void>((resolve) => { releases.push(resolve); }));
+
+    const first = retryPendingSessionEndJobs(handle, { homeDir });
+    await vi.waitFor(() => expect(handle).toHaveBeenCalledTimes(1));
+    const second = retryPendingSessionEndJobs(handle, { homeDir });
+    await new Promise((resolve) => setImmediate(resolve));
+    const runs = handle.mock.calls.length;
+    releases.forEach((release) => release());
+
+    expect(runs).toBe(1);
+    expect(await second).toEqual({ completed: 0, failed: 0, abandoned: 0 });
+    expect(await first).toEqual({ completed: 1, failed: 0, abandoned: 0 });
+  });
+
   it('never throws when the store cannot be written', () => {
     writeFileSync(path.join(homeDir, '.claude-code'), 'not a directory');
 
