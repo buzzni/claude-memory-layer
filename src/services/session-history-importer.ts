@@ -16,6 +16,7 @@ import { registerTerminalSession } from '../core/registry/session-registry.js';
 import { mergeAgentResponseBlocks, truncateAgentResponse } from './turn-buffering.js';
 import { planPromptStorage, promptClassifierMetadata } from '../core/prompt-normalizer.js';
 import { isHarnessBoilerplate } from '../core/harness-boilerplate.js';
+import { reconcileSessionTranscript } from '../adapters/claude/hooks/session-end-reconcile.js';
 import type { TurnTrigger } from '../core/turn-state.js';
 
 export type ProgressEvent =
@@ -294,6 +295,17 @@ export class SessionHistoryImporter {
     // Start session in memory
     await this.memoryService.startSession(sessionId, options.projectPath);
 
+    // The hooks (Stop, SessionEnd reconcile) store a session's responses one
+    // message each, normalized their own way; a merged copy of a turn matches
+    // none of their rows and would be stored a second time. A session they
+    // stored any response of has its responses stored the way the SessionEnd
+    // reconcile does instead. Every row this importer stores carries
+    // importedFrom; the hooks' rows never do.
+    const hooksStoredResponses = (await this.memoryService.getSessionHistory(sessionId)).some(
+      (event) => event.eventType === 'agent_response' && typeof event.metadata?.importedFrom !== 'string'
+    );
+    const transcriptBytes = fs.statSync(filePath).size;
+
     // Read and parse JSONL file
     const fileStream = fs.createReadStream(filePath);
     const rl = readline.createInterface({
@@ -416,7 +428,7 @@ export class SessionHistoryImporter {
             result.importedPrompts++;
           }
           lineCount++;
-        } else if (msgClass === 'agent_text') {
+        } else if (msgClass === 'agent_text' && !hooksStoredResponses) {
           // Buffer text instead of storing immediately
           const content = this.extractContent(entry);
           if (content) {
@@ -450,6 +462,21 @@ export class SessionHistoryImporter {
       // Always release the file descriptor, even if storing a record threw.
       rl.close();
       fileStream.close();
+    }
+
+    // After the prompts, so a turn from before the hooks were installed is
+    // assigned the turn of the prompt just imported for it.
+    if (hooksStoredResponses) {
+      const reconciled = await reconcileSessionTranscript(
+        this.memoryService,
+        sessionId,
+        filePath,
+        { transcriptBytes, endedAt: new Date().toISOString(), openTurn: null },
+        { importedFrom: filePath }
+      );
+      result.importedResponses += reconciled.recovered;
+      result.skippedDuplicates += reconciled.alreadyStored;
+      if (reconciled.failed > 0) result.errors.push(`Failed to store ${reconciled.failed} responses from ${filePath}`);
     }
 
     // End session

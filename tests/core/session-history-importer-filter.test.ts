@@ -106,6 +106,7 @@ describe('session history importer prompt filtering', () => {
     const importer = new SessionHistoryImporter({
       deleteSessionEvents: vi.fn(async () => { calls.push('delete'); return 2; }),
       startSession: vi.fn(async () => { calls.push('start'); }),
+      getSessionHistory: vi.fn(async () => []),
       storeUserPrompt: vi.fn(async () => ({ success: true, isDuplicate: false, eventId: 'e1' })),
       storeAgentResponse: vi.fn(async () => ({ success: true, isDuplicate: false, eventId: 'e2' })),
       endSession: vi.fn(async () => {}),
