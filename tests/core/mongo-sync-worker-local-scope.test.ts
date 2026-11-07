@@ -10,6 +10,7 @@ import * as path from 'path';
 
 import { MongoSyncWorker } from '../../src/core/mongo-sync-worker.js';
 import { SQLiteEventStore } from '../../src/core/sqlite-event-store.js';
+import { connectFakeMongo, FakeMongo } from '../helpers/fake-mongo.js';
 
 function remoteDoc(seq: number, metadata: Record<string, unknown> | null) {
   return {
@@ -32,16 +33,9 @@ function remoteDoc(seq: number, metadata: Record<string, unknown> | null) {
 
 /** Stands in for the connected Mongo collections so `syncNow` runs its real pull loop against SQLite. */
 function connectFake(worker: MongoSyncWorker, docs: ReturnType<typeof remoteDoc>[]): void {
-  const fake = worker as unknown as Record<string, unknown>;
-  fake.client = {};
-  fake.db = {};
-  fake.counters = {};
-  fake.events = {
-    createIndex: async () => undefined,
-    find: (filter: { seq: { $gt: number } }) => ({
-      toArray: async () => docs.filter((doc) => doc.seq > filter.seq.$gt)
-    })
-  };
+  const mongo = new FakeMongo();
+  mongo.events.docs = docs;
+  connectFakeMongo(worker, mongo);
 }
 
 describe('MongoSyncWorker pull re-homes events to the local project', () => {

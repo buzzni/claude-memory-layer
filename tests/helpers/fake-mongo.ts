@@ -49,7 +49,7 @@ function project(doc: Doc, projection: Record<string, number> | undefined): Doc 
 }
 
 class FakeCollection {
-  readonly docs: Doc[] = [];
+  docs: Doc[] = [];
   /** Documents handed back by find, so a test can tell an idle pull from one that re-read everything. */
   returned = 0;
 
