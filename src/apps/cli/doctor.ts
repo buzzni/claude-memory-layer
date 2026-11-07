@@ -12,8 +12,10 @@
  * filesystem, PATH, or Node process.
  */
 
+import { spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
+import { pathToFileURL } from 'url';
 
 import {
   hasHook,
@@ -25,6 +27,7 @@ import {
   type PluginHookName
 } from './claude-settings-hooks.js';
 import type { McpClientConfigRead, RegisteredMcpServer } from './mcp-client-config.js';
+import type { PendingSessionEndJob } from '../../adapters/claude/hooks/session-end-pending.js';
 
 export type DoctorStatus = 'pass' | 'warn' | 'fail';
 
@@ -96,6 +99,65 @@ export function checkPluginFiles(
     };
   }
   return { name: 'plugin-files', status: 'pass', detail: pluginPath };
+}
+
+/** Imports `file` in a separate Node process; the error message when it throws, else null. */
+function importInChildProcess(file: string): string | null {
+  const result = spawnSync(process.execPath, [
+    '--input-type=module',
+    '-e',
+    'try { await import(process.argv[1]); } catch (error) { console.error(error?.message ?? String(error)); process.exit(1); }',
+    pathToFileURL(file).href
+  ], { encoding: 'utf8', timeout: 30_000, stdio: ['ignore', 'ignore', 'pipe'] });
+  if (result.error) return result.error.message;
+  if (result.status === 0) return null;
+  return result.stderr.trim().split('\n')[0] || `exited with status ${result.status}`;
+}
+
+/**
+ * The session-end worker acknowledges its job once session-end-handler.js
+ * exists and imports it afterwards, so a handler that exists but fails to
+ * import loses the session's end processing (it is kept for a retry, see
+ * checkSessionEndPendingJobs). Only this file is imported: it is a library,
+ * while the other hook files run their hook (and read stdin) when imported.
+ * It runs in a child process so another install's modules never load here.
+ */
+export function checkSessionEndHandlerLoads(
+  pluginPath: string,
+  deps: {
+    existsImpl?: (p: string) => boolean;
+    importImpl?: (file: string) => string | null;
+  } = {}
+): DoctorCheckResult {
+  const handler = path.join(pluginPath, 'hooks', 'session-end-handler.js');
+  if (!(deps.existsImpl ?? fs.existsSync)(handler)) {
+    return { name: 'session-end-handler', status: 'warn', detail: `${handler} not found; see plugin-files` };
+  }
+  const error = (deps.importImpl ?? importInChildProcess)(handler);
+  if (error) {
+    return {
+      name: 'session-end-handler',
+      status: 'fail',
+      detail: `${handler} fails to load, so sessions are not ended: ${error}`,
+      fix: 'Reinstall: npm install -g claude-memory-layer@latest'
+    };
+  }
+  return { name: 'session-end-handler', status: 'pass', detail: 'loads' };
+}
+
+export function checkSessionEndPendingJobs(pending: PendingSessionEndJob[]): DoctorCheckResult {
+  if (pending.length === 0) {
+    return { name: 'session-end-jobs', status: 'pass', detail: 'no session-end work waiting for a retry' };
+  }
+  const byFailure = [...pending].sort((a, b) => a.failedAt.localeCompare(b.failedAt));
+  return {
+    name: 'session-end-jobs',
+    status: 'warn',
+    detail: `${pending.length} session(s) not ended because the session-end work failed to load `
+      + `(oldest ${byFailure[0].failedAt}); last error: ${byFailure[byFailure.length - 1].lastError}`,
+    fix: 'Fix the install (see session-end-handler); kept jobs are retried at the next session end. '
+      + 'History: ~/.claude-code/memory/session-end-diagnostics.jsonl'
+  };
 }
 
 export function checkHooksInstalled(

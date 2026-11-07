@@ -21,6 +21,10 @@ export interface ClaudeSessionEndWorkerDeps {
   handlerAvailable: () => boolean;
   acknowledge: () => void;
   loadHandler: () => Promise<SessionEndHandler>;
+  /** Keeps a job the worker acknowledged but could not load the work for; the hook has already left. */
+  savePendingJob: (job: ClaudeSessionEndJob, error: unknown) => void;
+  /** Ends the sessions earlier workers kept, now that the work has loaded. */
+  retryPendingJobs: (handle: SessionEndHandler) => Promise<void>;
 }
 
 export async function runClaudeSessionEndWorker(deps: ClaudeSessionEndWorkerDeps): Promise<void> {
@@ -28,8 +32,18 @@ export async function runClaudeSessionEndWorker(deps: ClaudeSessionEndWorkerDeps
     const job = JSON.parse(await deps.readJob()) as ClaudeSessionEndJob;
     if (!job.sessionId || !deps.handlerAvailable()) return;
     deps.acknowledge();
-    const handle = await deps.loadHandler();
-    await handle(job);
+    let handle: SessionEndHandler;
+    try {
+      handle = await deps.loadHandler();
+    } catch (error) {
+      deps.savePendingJob(job, error);
+      throw error;
+    }
+    try {
+      await handle(job);
+    } finally {
+      await deps.retryPendingJobs(handle);
+    }
   } catch (error) {
     if (process.env.CLAUDE_MEMORY_DEBUG) {
       console.error('Session end worker error:', error);

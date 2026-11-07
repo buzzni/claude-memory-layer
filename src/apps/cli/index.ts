@@ -79,11 +79,14 @@ import {
   checkPathConsistency,
   checkPluginFiles,
   checkProjectStoreAccess,
+  checkSessionEndHandlerLoads,
+  checkSessionEndPendingJobs,
   findClaudeMemoryPackage,
   type DoctorCheckResult,
   type EmbeddingBackendScript
 } from './doctor.js';
 import { repairEmbeddingBackend, runDoctor } from './doctor-fix.js';
+import { listPendingSessionEndJobs } from '../../adapters/claude/hooks/session-end-pending.js';
 import {
   inspectPluginHookTargets,
   mergePluginHooksIntoSettings,
@@ -1138,7 +1141,7 @@ program
  */
 program
   .command('doctor')
-  .description('Diagnose the environment: Node version, embedding backend, PATH conflicts, hooks, MCP client configs, store access')
+  .description('Diagnose the environment: Node version, embedding backend, PATH conflicts, hooks, session-end work, MCP client configs, store access')
   .option('--fix', 'Repair the managed embedding backend when its check fails and repairing is safe; other checks stay report-only')
   .action(async (options: { fix?: boolean }) => {
     const pluginPath = getPluginPath();
@@ -1157,7 +1160,9 @@ program
     const checks: DoctorCheckResult[] = [
       checkNodeVersion(process.version, readEnginesNodeRange(packageRoot)),
       checkPluginFiles(pluginPath),
+      checkSessionEndHandlerLoads(pluginPath),
       checkHooksInstalled(settings, pluginPath),
+      checkSessionEndPendingJobs(listPendingSessionEndJobs()),
       checkEmbeddingBackend(packageRoot, embeddingBackendScript?.isEmbeddingBackendAvailable ?? null),
       checkPathConsistency('claude-memory-layer', process.env.PATH ?? ''),
       checkPathConsistency('claude-memory-layer-mcp', process.env.PATH ?? ''),
