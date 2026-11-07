@@ -11,9 +11,9 @@ import * as path from 'path';
 
 import { MongoSyncWorker } from '../../src/core/mongo-sync-worker.js';
 import { SQLiteEventStore } from '../../src/core/sqlite-event-store.js';
+import { connectFakeMongo, FakeMongo } from '../helpers/fake-mongo.js';
 
 type Doc = ReturnType<typeof remoteDoc>;
-type Range = { $gt?: number; $lte?: number; $gte?: Date };
 
 function remoteDoc(seq: number, insertedAt: Date) {
   return {
@@ -34,30 +34,11 @@ function remoteDoc(seq: number, insertedAt: Date) {
   };
 }
 
-function inRange(value: number | Date, range: Range | undefined): boolean {
-  if (!range) return true;
-  const v = value instanceof Date ? value.getTime() : value;
-  if (range.$gt !== undefined && !(v > range.$gt)) return false;
-  if (range.$lte !== undefined && !(v <= range.$lte)) return false;
-  if (range.$gte !== undefined && !(v >= range.$gte.getTime())) return false;
-  return true;
-}
-
-/** Stands in for the Mongo collections with the filters pull uses: projectKey, seq ranges and insertedAt. */
+/** Pull runs against the shared fake collections; `docs` stays the live document list so a test can add to it. */
 function connectFake(worker: MongoSyncWorker, docs: Doc[]): void {
-  const fake = worker as unknown as Record<string, unknown>;
-  fake.client = {};
-  fake.db = {};
-  fake.counters = {};
-  fake.events = {
-    createIndex: async () => undefined,
-    find: (filter: { projectKey: string; seq?: Range; insertedAt?: Range }, options: { limit: number }) => ({
-      toArray: async () => docs
-        .filter((doc) => doc.projectKey === filter.projectKey && inRange(doc.seq, filter.seq) && inRange(doc.insertedAt, filter.insertedAt))
-        .sort((a, b) => a.seq - b.seq)
-        .slice(0, options.limit)
-    })
-  };
+  const mongo = new FakeMongo();
+  mongo.events.docs = docs;
+  connectFakeMongo(worker, mongo);
 }
 
 describe('MongoSyncWorker pull picks up documents another machine inserted late', () => {

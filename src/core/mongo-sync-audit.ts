@@ -3,18 +3,28 @@
  * Read-only check that the local store holds every document the shared Mongo collection has for a project key,
  * broken down by the pusher's source.instanceId.
  *
- * Pull reads past a single seq cursor and re-reads only a 30-minute window below it, comparing the puller's clock with
- * the pusher's insertedAt. A pusher that stalls between reserving and inserting its seq range, or clock skew beyond
- * the window, leaves documents below the cursor that no later pull reads. This audit makes that loss visible.
+ * Pull reads documents with an originSeq past one cursor per origin, so nothing lands below those cursors. Documents
+ * without originSeq (pushers on versions before per-origin cursors) still go through a single seq cursor that
+ * re-reads only a 30-minute window below it, comparing the puller's clock with the pusher's insertedAt; a pusher that
+ * stalls between reserving and inserting its seq range, or clock skew beyond the window, leaves such documents below
+ * the cursor where no later pull reads them. This audit makes that loss visible.
  *
  * Cost: the common no-gap case sends only countDocuments on { projectKey } and { projectKey, eventId: { $in } },
  * which the sync worker's indexes answer without fetching documents. Only when counts differ does it group by
- * instanceId (an index-bounded fetch of the project's documents, never a collection scan) and bisect seq ranges with
- * index-only counts.
+ * instanceId (an index-bounded fetch of the project's documents, never a collection scan) and bisect seq ranges;
+ * telling documents with and without originSeq apart then fetches them from the { projectKey, seq } index range.
  */
 
 import type { MemoryEvent } from './types.js';
-import { LATE_INSERT_WINDOW_MS, mongoPullCursorTarget, mongoPushCursorTarget, parseIntOrZero } from './mongo-sync-worker.js';
+import { machineFingerprint } from './machine-id.js';
+import {
+  LATE_INSERT_WINDOW_MS,
+  MONGO_ORIGIN_ID_TARGET,
+  mongoPullCursorTarget,
+  mongoPullOriginCursorTarget,
+  mongoPushCursorTarget,
+  parseIntOrZero
+} from './mongo-sync-worker.js';
 
 export interface MongoAuditCollection {
   countDocuments(filter: Record<string, unknown>, options?: { hint?: Record<string, number> }): Promise<number>;
@@ -59,7 +69,10 @@ export interface MongoSyncAuditReport {
   localTotal: number;
   /** Mongo documents whose eventId is not in the local store. */
   missing: number;
-  /** Missing below the pull cursor and inserted before the next pull's late-insert window: no pull will read them. */
+  /**
+   * Missing documents no pull will read: without originSeq, below the pull cursor and inserted before the next pull's
+   * late-insert window; with originSeq, at or below their origin's cursor, or from this store's own origin.
+   */
   lostBelowPullCursor: number;
   /** Missing below the pull cursor but inside the late-insert window, so the next pull still reads them. */
   recoverableByNextPull: number;
@@ -68,12 +81,13 @@ export interface MongoSyncAuditReport {
   localOnly: number;
   pendingPush: number;
   pushCursor: number;
+  /** The project-wide seq cursor, which since per-origin cursors covers only documents without originSeq. */
   pullCursor: number;
   /** The late-insert window of the next pull re-reads documents below the cursor inserted at or after this time. */
   pullWindowStart: Date | null;
   /** Filled only when documents are missing; sorted by first seq. */
   instances: MongoSyncInstanceAudit[];
-  /** The oldest run of consecutive missing documents below the pull cursor (lost or still recoverable). */
+  /** The oldest run of consecutive missing documents without originSeq below the pull cursor (lost or recoverable). */
   oldestGap?: MongoSyncGap;
 }
 
@@ -93,6 +107,8 @@ const LOCAL_PAGE_SIZE = 1000;
  * (it returns early matches during plan trials) and then fetch every document of the project per page.
  */
 const EVENT_ID_INDEX = { projectKey: 1, eventId: 1 };
+const LEGACY = { originSeq: { $exists: false } };
+const HAS_ORIGIN_SEQ = { originSeq: { $exists: true } };
 
 function instanceGroupPipeline(match: Record<string, unknown>): Record<string, unknown>[] {
   return [
@@ -193,15 +209,20 @@ export async function auditMongoSync(
   if (missing === 0) return report;
 
   // Mongo is counted before the local seqs are looked up, so a sync running meanwhile can only understate a loss.
-  const belowCursor = { seq: { $lte: pullCursor } };
+  const belowCursor = { seq: { $lte: pullCursor }, ...LEGACY };
   const inWindow = pullWindowStart ? { ...belowCursor, insertedAt: { $gte: pullWindowStart } } : null;
   const mongoBelow = await remote.countDocuments({ projectKey, ...belowCursor });
-  const mongoAbove = await remote.countDocuments({ projectKey, seq: { $gt: pullCursor } });
+  const mongoAbove = await remote.countDocuments({ projectKey, seq: { $gt: pullCursor }, ...LEGACY });
   const mongoInWindow = inWindow ? await remote.countDocuments({ projectKey, ...inWindow }) : 0;
   const groups = await remote.aggregate(instanceGroupPipeline({ projectKey })).toArray() as InstanceGroupRow[];
+  const originGroups = await remote.aggregate([
+    { $match: { projectKey, ...HAS_ORIGIN_SEQ } },
+    { $group: { _id: '$source.instanceId', count: { $sum: 1 } } }
+  ]).toArray() as Array<{ _id: string | null; count: number }>;
 
   const localByInstance = new Map<string | null, number>();
   const localSeqs: number[] = [];
+  const localOriginSeqs = new Map<string | null, number[]>();
   let localInWindow = 0;
   for (const ids of idPages) {
     const rows = await remote.aggregate([
@@ -210,7 +231,18 @@ export async function auditMongoSync(
     ], { hint: EVENT_ID_INDEX }).toArray() as Array<{ _id: string | null; seqs: number[] }>;
     for (const row of rows) {
       localByInstance.set(row._id, (localByInstance.get(row._id) ?? 0) + row.seqs.length);
-      localSeqs.push(...row.seqs);
+    }
+    const legacyRows = await remote.aggregate([
+      { $match: { projectKey, eventId: { $in: ids }, ...LEGACY } },
+      { $group: { _id: null, seqs: { $push: '$seq' } } }
+    ], { hint: EVENT_ID_INDEX }).toArray() as Array<{ seqs: number[] }>;
+    for (const row of legacyRows) localSeqs.push(...row.seqs);
+    if (originGroups.length > 0) {
+      const originRows = await remote.aggregate([
+        { $match: { projectKey, eventId: { $in: ids }, ...HAS_ORIGIN_SEQ } },
+        { $group: { _id: '$source.instanceId', originSeqs: { $push: '$originSeq' } } }
+      ], { hint: EVENT_ID_INDEX }).toArray() as Array<{ _id: string | null; originSeqs: number[] }>;
+      for (const row of originRows) localOriginSeqs.set(row._id, [...(localOriginSeqs.get(row._id) ?? []), ...row.originSeqs]);
     }
     if (inWindow && mongoInWindow > 0) localInWindow += await countInMongo(ids, inWindow);
   }
@@ -237,6 +269,28 @@ export async function auditMongoSync(
   report.recoverableByNextPull = Math.max(0, mongoInWindow - localInWindow);
   report.lostBelowPullCursor = Math.max(0, mongoBelow - localBelow - report.recoverableByNextPull);
   report.notYetPulled = Math.max(0, mongoAbove - (localSeqs.length - localBelow));
+
+  // Pull skips this store's own origin, so whatever of it is missing (e.g. a store restored from a backup) is lost.
+  // A store copied from another machine is not that origin any more: its next sync mints its own and reads the old.
+  const ownPosition = await local.getSyncPosition(MONGO_ORIGIN_ID_TARGET);
+  const ownOrigin = ownPosition.lastTimestamp === machineFingerprint() ? ownPosition.lastEventId : null;
+  for (const group of originGroups) {
+    const localOrigin = (localOriginSeqs.get(group._id) ?? []).sort((a, b) => a - b);
+    if (group._id === null || group._id === ownOrigin) {
+      report.lostBelowPullCursor += Math.max(0, group.count - localOrigin.length);
+      continue;
+    }
+    const cursor = parseIntOrZero((await local.getSyncPosition(mongoPullOriginCursorTarget(projectKey, group._id))).lastEventId);
+    const mongoBelowOrigin = await remote.countDocuments({
+      projectKey,
+      'source.instanceId': group._id,
+      originSeq: { $exists: true, $lte: cursor }
+    });
+    const localBelowOrigin = countAtMost(localOrigin, cursor);
+    report.lostBelowPullCursor += Math.max(0, mongoBelowOrigin - localBelowOrigin);
+    report.notYetPulled += Math.max(0, group.count - mongoBelowOrigin - (localOrigin.length - localBelowOrigin));
+  }
+
   report.status = report.lostBelowPullCursor > 0 ? 'fail' : 'warn';
   if (mongoBelow > localBelow) {
     report.oldestGap = await findOldestGap(remote, projectKey, localSeqs, pullCursor);
@@ -245,6 +299,7 @@ export async function auditMongoSync(
 }
 
 /**
+ * Both sides count only documents without originSeq.
  * Local seqs are a subset of Mongo's, so a range holds a missing document exactly when Mongo counts more documents in
  * it than the local store has. Bisecting on that finds the oldest missing seq with index-only counts; the gap then
  * runs up to the next seq the local store has.
@@ -256,7 +311,7 @@ async function findOldestGap(
   pullCursor: number
 ): Promise<MongoSyncGap | undefined> {
   const hasMissing = async (from: number, to: number): Promise<boolean> => {
-    const mongoCount = await remote.countDocuments({ projectKey, seq: { $gte: from, $lte: to } });
+    const mongoCount = await remote.countDocuments({ projectKey, seq: { $gte: from, $lte: to }, ...LEGACY });
     return mongoCount > countAtMost(localSeqs, to) - countAtMost(localSeqs, from - 1);
   };
 
@@ -271,7 +326,7 @@ async function findOldestGap(
   const nextLocalIndex = countAtMost(localSeqs, lo);
   const end = nextLocalIndex < localSeqs.length ? Math.min(localSeqs[nextLocalIndex] - 1, pullCursor) : pullCursor;
   const rows = await remote.aggregate(
-    instanceGroupPipeline({ projectKey, seq: { $gte: lo, $lte: end } })
+    instanceGroupPipeline({ projectKey, seq: { $gte: lo, $lte: end }, ...LEGACY })
   ).toArray() as InstanceGroupRow[];
   if (rows.length === 0) return undefined;
 
