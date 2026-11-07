@@ -62,22 +62,6 @@ describe('readTranscriptTurns', () => {
     expect(turn.trigger).toBe('task_notification');
   });
 
-  it('opens a task_notification turn for a system-notification banner wrapping a notification', async () => {
-    const banner = '[SYSTEM NOTIFICATION - NOT USER INPUT]\nThis is an automated background-task event, NOT a message from the user.';
-    write([
-      prompt('first request', 't1'),
-      assistant('first answer', 't2'),
-      prompt(`${banner}\n\n<task-notification>\n<task-id>abc</task-id>\n</task-notification>`, 't3'),
-      assistant('notification reply', 't4')
-    ]);
-
-    const turns = await readTranscriptTurns(transcriptPath, SESSION);
-    expect(turns.map((turn) => [turn.trigger, turn.messages.map((m) => m.text)])).toEqual([
-      ['user', ['first answer']],
-      ['task_notification', ['notification reply']]
-    ]);
-  });
-
   it('keeps text written before the first prompt as a turn without a start', async () => {
     write([assistant('resumed answer', 't1'), prompt('request', 't2')]);
 

@@ -26,6 +26,10 @@ describe('normalizeUserPrompt', () => {
     });
   });
 
+  it('tolerates extra blank lines between the banner and the envelope', () => {
+    expect(normalizeUserPrompt(`${BANNER}\n\n\n  \n${NOTIFICATION}`).kind).toBe('task_notification');
+  });
+
   it('leaves a bare banner, or a banner with an incomplete block, as user text', () => {
     expect(normalizeUserPrompt(BANNER)).toMatchObject({ kind: 'user', requestText: BANNER, removedScaffolds: [] });
     const open = `${BANNER}\n\n<task-notification>\n<task-id>t1</task-id>`;
