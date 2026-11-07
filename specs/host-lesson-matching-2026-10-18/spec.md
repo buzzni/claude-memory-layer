@@ -220,7 +220,11 @@ hermes-agent는 턴마다 검색하지 않는다. 작업 종류 단위의 작은
   가리키게 한다. 흡수 교훈은 revision으로 고정하고 삭제하지 않는다. `lesson revert-consolidation`이
   되돌린다. 미리보기는 저장소를 읽기만 한다. 흡수 교훈을 다시 켜면(host 토글·upsert) runbook에서 떨어진다.
 - runbook = 다른 교훈이 `absorbed_into`로 가리키는 교훈. 별도 표시 컬럼은 없다.
-- 인덱스: `CLAUDE_MEMORY_LESSON_OWNER=host`일 때 Claude SessionStart가 runbook만 나열한다
+- 인덱스: `CLAUDE_MEMORY_LESSON_OWNER=host`일 때 Claude SessionStart가 runbook만 나열한다.
+  2026-11-07부터는 native 경로도 프로젝트에 runbook이 하나라도 있으면 runbook 인덱스(200자 trigger,
+  runbook 지시문·라벨)를 쓴다. 전체 교훈 목록은 아직 통합하지 않은 프로젝트에서만 나온다
+  (10/18~11/07 실측: 전체 목록은 e9894ad9 583회 노출·1회 열람, 73c3b2b0 76회·0회, runbook 인덱스는
+  Desktop 168세션 중 51세션 열람).
   (Hermes 수준 지시문, trigger 200자). runbook이 없는 프로젝트는 지금처럼 비어 있고, Codex 경로는 없다.
   `LESSON_HOST_CAPABILITIES.sessionStartRunbookIndex`로 알린다. 끄려면 launch에
   `CLAUDE_MEMORY_SESSION_START_LESSON_BUDGET=0`.
