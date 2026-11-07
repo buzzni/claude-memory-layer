@@ -238,8 +238,9 @@ export interface SummaryProviderFacts {
   enabled: boolean;
   /** Raw CLAUDE_MEMORY_SUMMARY_MODE, shown when summaries are disabled. */
   mode: string | undefined;
+  /** Provider summaries actually use: the running daemon's when it reports one, else the shell env's. */
   provider: CliProviderName;
-  /** Provider resolved from the environment doctor runs in (what a restarted daemon would use). */
+  /** Provider the shell env doctor runs in resolves to; settings.json env reaches hook-spawned daemons but not this shell. */
   envProvider: CliProviderName;
   binaryFound: boolean;
   auth: SummaryAuthProbe;
@@ -281,9 +282,6 @@ export function checkSummaryProvider(facts: SummaryProviderFacts): DoctorCheckRe
         `daemon summary attempts all failed (stored=${daemon.stored} empty=${daemon.empty} failures=${daemon.failures}, last error: ${daemon.lastFailureCode ?? 'unknown'})`
       );
     }
-    if (daemon.provider && daemon.provider !== facts.envProvider) {
-      warnings.push(`daemon runs provider ${daemon.provider}, env now says ${facts.envProvider}; restart the daemon`);
-    }
   }
   if (warnings.length > 0) return { name, status: 'warn', detail: warnings.join(' | ') };
 
@@ -293,6 +291,7 @@ export function checkSummaryProvider(facts: SummaryProviderFacts): DoctorCheckRe
       name,
       status: 'pass',
       detail: `provider=${reporting.provider} model=${reporting.model} stored=${reporting.stored} empty=${reporting.empty} failures=${reporting.failures}`
+        + (reporting.provider && reporting.provider !== facts.envProvider ? ` (shell env would start ${facts.envProvider})` : '')
     };
   }
   return {
@@ -392,24 +391,26 @@ function probeSummaryAuth(
 
 export function gatherSummaryProviderFacts(deps: SummaryProviderFactsDeps = {}): SummaryProviderFacts {
   const env = deps.env ?? process.env;
-  const provider = getSummaryProviderName(env);
+  const envProvider = getSummaryProviderName(env);
   const enabled = isLlmSummaryEnabled(env);
   const facts: SummaryProviderFacts = {
     enabled,
     mode: env.CLAUDE_MEMORY_SUMMARY_MODE,
-    provider,
-    envProvider: provider,
+    provider: envProvider,
+    envProvider,
     binaryFound: false,
     auth: { state: 'unknown', reason: 'not checked' },
     daemons: []
   };
   if (!enabled) return facts;
 
-  facts.binaryFound = (deps.findBinary ?? binaryOnPath)(provider, env.PATH ?? '');
-  if (facts.binaryFound) {
-    facts.auth = probeSummaryAuth(provider, env, deps.runProbe ?? runSummaryAuthProbe);
-  }
   facts.daemons = (deps.readDaemons ?? readRunningSummaryDaemons)();
+  const daemonProvider = facts.daemons.find((daemon) => daemon?.provider)?.provider;
+  if (daemonProvider === 'claude' || daemonProvider === 'codex') facts.provider = daemonProvider;
+  facts.binaryFound = (deps.findBinary ?? binaryOnPath)(facts.provider, env.PATH ?? '');
+  if (facts.binaryFound) {
+    facts.auth = probeSummaryAuth(facts.provider, env, deps.runProbe ?? runSummaryAuthProbe);
+  }
   return facts;
 }
 

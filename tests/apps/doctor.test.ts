@@ -557,10 +557,12 @@ describe('checkSummaryProvider', () => {
     expect(checkSummaryProvider({ ...base, daemons: [daemon({ failures: 2, lastFailureCode: 'timeout' })] }).status).toBe('pass');
   });
 
-  it('warns to restart when the daemon runs a different provider than the env now says', () => {
-    const result = checkSummaryProvider({ ...base, provider: 'codex', envProvider: 'codex', daemons: [daemon()] });
-    expect(result.status).toBe('warn');
-    expect(result.detail).toContain('daemon runs provider claude, env now says codex; restart the daemon');
+  it('passes and notes the shell env when the daemon runs a different provider than the shell would start', () => {
+    // settings.json env reaches hook-spawned daemons but not the terminal doctor runs in,
+    // so a mismatch is expected on hosted machines and must not warn.
+    const result = checkSummaryProvider({ ...base, provider: 'claude', envProvider: 'codex', daemons: [daemon()] });
+    expect(result.status).toBe('pass');
+    expect(result.detail).toBe('provider=claude model=claude-haiku-4-5 stored=3 empty=1 failures=0 (shell env would start codex)');
   });
 
   it('passes with the daemon counters', () => {
@@ -622,6 +624,18 @@ describe('gatherSummaryProviderFacts', () => {
     }).auth;
     expect(auth({ status: null, stdout: '', error: 'ETIMEDOUT' })).toEqual({ state: 'unknown', reason: 'ETIMEDOUT' });
     expect(auth({ status: 0, stdout: 'not json' }).state).toBe('unknown');
+  });
+
+  it('probes the provider the running daemon reports, not the one the shell env resolves', () => {
+    let seen: string | undefined;
+    const facts = gatherSummaryProviderFacts({
+      env: {},
+      findBinary: (command) => { seen = command; return true; },
+      runProbe: () => ({ status: 0, stdout: 'Logged in' }),
+      readDaemons: () => [{ provider: 'codex', model: null, stored: 1, empty: 0, failures: 0, lastFailureCode: null }]
+    });
+    expect(seen).toBe('codex');
+    expect(facts).toMatchObject({ provider: 'codex', envProvider: 'claude', auth: { state: 'logged-in' } });
   });
 
   it('does not probe auth when the binary is missing', () => {
