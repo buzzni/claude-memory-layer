@@ -341,8 +341,10 @@ describe('embedding backend postinstall repair', () => {
         execPath: NODE_EXE,
         existsSyncImpl: () => true
       })).toEqual({
-        command: 'npm.cmd',
-        args: ['install', '--prefix', '"C:\\Users\\Jane Doe\\backend dir"', '--omit=dev'],
+        // One pre-built command line and no args: on Node 24+ args plus
+        // shell:true is DEP0190, and Node sends the same string either way.
+        command: 'npm.cmd install --prefix "C:\\Users\\Jane Doe\\backend dir" --omit=dev',
+        args: [],
         shell: true
       });
     });
@@ -350,8 +352,8 @@ describe('embedding backend postinstall repair', () => {
     it('does not trust an npm_execpath that is another package manager or does not exist', () => {
       const postinstall = loadPostinstallModule();
       const shellFallback = {
-        command: 'npm.cmd',
-        args: ['install', '--prefix', '"C:\\Users\\Jane Doe\\backend dir"', '--omit=dev'],
+        command: 'npm.cmd install --prefix "C:\\Users\\Jane Doe\\backend dir" --omit=dev',
+        args: [],
         shell: true
       };
       expect(postinstall.createNpmInvocation({
@@ -377,9 +379,10 @@ describe('embedding backend postinstall repair', () => {
         platform: 'win32',
         env: {}
       });
-      expect(invocation.args).toEqual([
-        'config', 'get', 'offline', '--prefix', '"C:\\a&b\\x"', 'C:\\plain\\dir', '"C:\\trail dir\\\\"'
-      ]);
+      expect(invocation.args).toEqual([]);
+      expect(invocation.command).toBe(
+        'npm.cmd config get offline --prefix "C:\\a&b\\x" C:\\plain\\dir "C:\\trail dir\\\\"'
+      );
     });
 
     it('refuses to build a shell command from an argument cmd.exe would expand or split', () => {
@@ -437,11 +440,12 @@ describe('embedding backend postinstall repair', () => {
       const { result, calls, installArgs } = runOnWindows({}, () => false);
       expect(result).toMatchObject({ attempted: true, success: true });
       expect(calls).toHaveLength(1);
-      expect(calls[0]?.cmd).toBe('npm.cmd');
       expect(calls[0]?.shell).toBe(true);
-      // The temp root has spaces; every path-bearing argument arrives quoted.
-      expect(calls[0]?.args).toEqual(installArgs.map((arg) => (/\s/.test(arg) ? `"${arg}"` : arg)));
-      expect(calls[0]?.args.some((arg) => arg.startsWith('"'))).toBe(true);
+      // No args alongside the shell (DEP0190); the temp root has spaces, so
+      // every path-bearing argument is quoted inside the command line.
+      expect(calls[0]?.args).toEqual([]);
+      expect(calls[0]?.cmd).toBe(['npm.cmd', ...installArgs.map((arg) => (/\s/.test(arg) ? `"${arg}"` : arg))].join(' '));
+      expect(calls[0]?.cmd).toContain('"');
     });
 
     it('reports a path it cannot quote as a failed repair instead of throwing', () => {

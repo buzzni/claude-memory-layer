@@ -293,8 +293,8 @@ describe('repairEmbeddingBackend', () => {
 
     it('goes through a shell with a quoted backend path on Windows without npm_execpath', async () => {
       const { call, backendDir } = await queryFor('win32', {}, 'my pkg');
-      expect(call[0]).toBe('npm.cmd');
-      expect(call[1]).toEqual(['config', 'get', 'offline', '--prefix', `"${backendDir}"`]);
+      expect(call[0]).toBe(`npm.cmd config get offline --prefix "${backendDir}"`);
+      expect(call[1]).toEqual([]);
       expect(call[2]).toMatchObject({ shell: true });
     });
   });

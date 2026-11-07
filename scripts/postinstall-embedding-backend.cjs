@@ -193,7 +193,9 @@ function createNpmInvocation({
   if (npmExecPath && path.win32.basename(npmExecPath) === 'npm-cli.js' && existsSyncImpl(npmExecPath)) {
     return { command: execPath, args: [npmExecPath, ...args] };
   }
-  return { command: 'npm.cmd', args: args.map(quoteForWindowsShell), shell: true };
+  // Built here, with no args: Node 24+ warns (DEP0190) when args accompany
+  // shell:true, and it hands cmd.exe this same joined string either way.
+  return { command: ['npm.cmd', ...args.map(quoteForWindowsShell)].join(' '), args: [], shell: true };
 }
 
 function runPostinstall({
