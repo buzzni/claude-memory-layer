@@ -261,6 +261,20 @@ describe('Claude session import of a hook-stored session, bounds', () => {
     expect(result).toMatchObject({ importedResponses: 0, errors: [] });
     expect(await contents()).toEqual(afterHooks);
   });
+
+  it('leaves a short message that is only last for now to the hooks of a live session', async () => {
+    await submitPrompt('please fix the release workflow guard', 'turn-1');
+    answer(longText('hooked answer'));
+    await runStop();
+    await submitPrompt('now audit the vector store please', 'turn-2');
+    answer('Let me check the store first.');
+    const afterHooks = await contents();
+
+    const result = await importSession();
+
+    expect(result).toMatchObject({ importedResponses: 0, errors: [] });
+    expect(await contents()).toEqual(afterHooks);
+  });
 });
 
 describe('Claude session import of a session the hooks never saw', () => {

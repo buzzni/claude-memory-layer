@@ -41,6 +41,11 @@ export interface SessionEndSnapshot {
 export interface SessionTranscriptReconcileOptions {
   /** Marks where a stored message came from. */
   provenance?: Record<string, unknown>;
+  /**
+   * Keep a turn's last message however short, as Stop does. Off when the
+   * session may still be running: a message last for now may not stay last.
+   */
+  keepLastMessage?: boolean;
 }
 
 export interface SessionTranscriptReconcileResult {
@@ -87,7 +92,7 @@ export async function reconcileSessionTranscript(
   sessionId: string,
   transcriptPath: string,
   snapshot: SessionEndSnapshot,
-  { provenance = { recoveredAtSessionEnd: true } }: SessionTranscriptReconcileOptions = {}
+  { provenance = { recoveredAtSessionEnd: true }, keepLastMessage = true }: SessionTranscriptReconcileOptions = {}
 ): Promise<SessionTranscriptReconcileResult> {
   const result: SessionTranscriptReconcileResult = { recovered: 0, alreadyStored: 0, failed: 0 };
   const turns = await readTranscriptTurns(transcriptPath, sessionId, { endOffset: snapshot.transcriptBytes });
@@ -111,7 +116,8 @@ export async function reconcileSessionTranscript(
       const { text, timestamp } = turn.messages[i];
       // Stop runs once per turn, so its last-message exception is per turn here.
       const { content, privacy } = normalizeAgentResponse(text);
-      if (!isStorableAgentResponse(content, i === turn.messages.length - 1, minResponseLength)) continue;
+      const isLast = keepLastMessage && i === turn.messages.length - 1;
+      if (!isStorableAgentResponse(content, isLast, minResponseLength)) continue;
       if (storedContents.has(content)) {
         result.alreadyStored++;
         continue;

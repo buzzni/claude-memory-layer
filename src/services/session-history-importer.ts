@@ -473,14 +473,15 @@ export class SessionHistoryImporter {
     }
 
     // After the prompts, so a turn from before the hooks were installed is
-    // assigned the turn of the prompt just imported for it.
+    // assigned the turn of the prompt just imported for it. The session may
+    // still be running, so which message ends a turn is left to the hooks.
     if (hooksStoredResponses) {
       const reconciled = await reconcileSessionTranscript(
         this.memoryService,
         sessionId,
         filePath,
         { transcriptBytes, endedAt: new Date().toISOString(), openTurn: null },
-        { provenance: { importedFrom: filePath } }
+        { provenance: { importedFrom: filePath }, keepLastMessage: false }
       );
       result.importedResponses += reconciled.recovered;
       result.skippedDuplicates += reconciled.alreadyStored;
