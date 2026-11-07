@@ -472,7 +472,7 @@ export class SessionHistoryImporter {
         sessionId,
         filePath,
         { transcriptBytes, endedAt: new Date().toISOString(), openTurn: null },
-        { importedFrom: filePath }
+        { provenance: { importedFrom: filePath } }
       );
       result.importedResponses += reconciled.recovered;
       result.skippedDuplicates += reconciled.alreadyStored;

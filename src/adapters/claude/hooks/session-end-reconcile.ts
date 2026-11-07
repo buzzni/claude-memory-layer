@@ -38,6 +38,11 @@ export interface SessionEndSnapshot {
   openTurn: { turnId: string; turnTrigger?: TurnTrigger } | null;
 }
 
+export interface SessionTranscriptReconcileOptions {
+  /** Marks where a stored message came from. */
+  provenance?: Record<string, unknown>;
+}
+
 export interface SessionTranscriptReconcileResult {
   recovered: number;
   alreadyStored: number;
@@ -82,8 +87,7 @@ export async function reconcileSessionTranscript(
   sessionId: string,
   transcriptPath: string,
   snapshot: SessionEndSnapshot,
-  /** Marks where a stored message came from. */
-  provenance: Record<string, unknown> = { recoveredAtSessionEnd: true }
+  { provenance = { recoveredAtSessionEnd: true } }: SessionTranscriptReconcileOptions = {}
 ): Promise<SessionTranscriptReconcileResult> {
   const result: SessionTranscriptReconcileResult = { recovered: 0, alreadyStored: 0, failed: 0 };
   const turns = await readTranscriptTurns(transcriptPath, sessionId, { endOffset: snapshot.transcriptBytes });
