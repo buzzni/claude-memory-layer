@@ -372,6 +372,11 @@ export class SessionHistoryImporter {
         const entry = JSON.parse(line) as ClaudeMessage;
         result.totalMessages++;
 
+        // History a resumed or forked session copied in belongs to the
+        // session it was recorded under; the reconcile skips its responses,
+        // so its prompts are skipped too.
+        if (hooksStoredResponses && typeof entry.sessionId === 'string' && entry.sessionId !== sessionId) continue;
+
         const msgClass = classifyEntry(entry);
 
         if (msgClass === 'user_prompt') {

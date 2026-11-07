@@ -275,6 +275,20 @@ describe('Claude session import of a hook-stored session, bounds', () => {
     expect(result).toMatchObject({ importedResponses: 0, errors: [] });
     expect(await contents()).toEqual(afterHooks);
   });
+
+  it('does not store a prompt the transcript copied in from another session', async () => {
+    append({ sessionId: 'parent-session', type: 'user', timestamp: tick(), message: { role: 'user', content: 'please explain the parent session plan' } });
+    append({ sessionId: 'parent-session', type: 'assistant', timestamp: tick(), message: { role: 'assistant', content: [{ type: 'text', text: longText('parent answer') }] } });
+    await submitPrompt('please fix the release workflow guard', 'turn-1');
+    answer(longText('hooked answer'));
+    await runStop();
+
+    const result = await importSession();
+
+    expect(result).toMatchObject({ importedPrompts: 0, importedResponses: 0, errors: [] });
+    const prompts = (await (await service()).getSessionHistory(SESSION)).filter((event) => event.eventType === 'user_prompt');
+    expect(prompts.map((event) => event.content)).toEqual(['please fix the release workflow guard']);
+  });
 });
 
 describe('Claude session import of a session the hooks never saw', () => {
