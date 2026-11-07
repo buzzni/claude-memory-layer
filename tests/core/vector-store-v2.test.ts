@@ -193,6 +193,48 @@ describe('VectorStore V2 upsert', () => {
     expect(taskTable.delete).not.toHaveBeenCalled();
   });
 
+  it('deleteEventsBefore deletes by timestamp (and type) predicate from every event table', async () => {
+    mocks.db.tableNames.mockResolvedValue(['conversations', 'event_vectors_v1', 'task_title_vectors_v1']);
+    const legacyTable = mocks.makeTable('conversations');
+    const eventTableV1 = mocks.makeTable('event_vectors_v1');
+    const taskTable = mocks.makeTable('task_title_vectors_v1');
+    const store = new VectorStore('/tmp/cml-vectors');
+
+    await store.deleteEventsBefore(new Date('2026-10-08T00:00:00.000Z'), "tool_obs'ervation");
+
+    const predicate = "`timestamp` < '2026-10-08T00:00:00.000Z' AND `eventType` = 'tool_obs''ervation'";
+    expect(legacyTable.delete).toHaveBeenCalledWith(predicate);
+    expect(eventTableV1.delete).toHaveBeenCalledWith(predicate);
+    expect(taskTable.delete).not.toHaveBeenCalled();
+
+    await store.deleteEventsBefore(new Date('2026-10-08T00:00:00.000Z'));
+    expect(legacyTable.delete).toHaveBeenLastCalledWith("`timestamp` < '2026-10-08T00:00:00.000Z'");
+  });
+
+  it('deleteEventsBefore reopens the table and retries after a Lance commit conflict', async () => {
+    mocks.db.tableNames.mockResolvedValue(['event_vectors_v1']);
+    const eventTableV1 = mocks.makeTable('event_vectors_v1');
+    const conflict = new Error('Commit conflict for version 7: There was a concurrent commit that conflicts with this one and it cannot be automatically resolved. Please rerun the operation off the latest version of the table.');
+    eventTableV1.delete.mockRejectedValueOnce(conflict).mockResolvedValueOnce(undefined);
+    const store = new VectorStore('/tmp/cml-vectors');
+    mocks.db.openTable.mockClear();
+
+    await store.deleteEventsBefore(new Date('2026-10-08T00:00:00.000Z'), 'tool_observation');
+
+    expect(eventTableV1.delete).toHaveBeenCalledTimes(2);
+    expect(mocks.db.openTable).toHaveBeenCalledTimes(2);
+  });
+
+  it('deleteEventsBefore rethrows a non-conflict error without retrying', async () => {
+    mocks.db.tableNames.mockResolvedValue(['event_vectors_v1']);
+    const eventTableV1 = mocks.makeTable('event_vectors_v1');
+    eventTableV1.delete.mockRejectedValueOnce(new Error('disk full'));
+    const store = new VectorStore('/tmp/cml-vectors');
+
+    await expect(store.deleteEventsBefore(new Date('2026-10-08T00:00:00.000Z'))).rejects.toThrow('disk full');
+    expect(eventTableV1.delete).toHaveBeenCalledTimes(1);
+  });
+
   it('deleteEventEverywhere is a no-op when no matching tables exist', async () => {
     mocks.db.tableNames.mockResolvedValue(['task_title_vectors_v1']);
     const taskTable = mocks.makeTable('task_title_vectors_v1');

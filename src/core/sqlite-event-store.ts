@@ -5429,6 +5429,55 @@ export class SQLiteEventStore {
   }
 
   /**
+   * Count events older than `before` (optionally of one event type) without touching them.
+   * Returns the row count and the UTF-8 byte size of their content so a caller can show a
+   * retention plan before deleting anything.
+   */
+  async countEventsBefore(before: Date, eventType?: string): Promise<{ rows: number; contentBytes: number }> {
+    await this.initialize();
+    const { where, params } = eventsBeforeFilter(before, eventType);
+    const row = sqliteGet<{ rows: number; content_bytes: number | null }>(
+      this.db,
+      `SELECT COUNT(*) AS rows, COALESCE(SUM(LENGTH(CAST(content AS BLOB))), 0) AS content_bytes FROM events WHERE ${where}`,
+      params
+    );
+    return { rows: row?.rows ?? 0, contentBytes: row?.content_bytes ?? 0 };
+  }
+
+  /**
+   * Delete events older than `before` (optionally of one event type) and everything keyed to them.
+   *
+   * Same trigger-drop -> delete -> FTS-rebuild sequence as `deleteSessionEvents`, for the same
+   * reason. Related tables are cleaned through a subquery instead of an id list so a large
+   * purge never hits the SQL variable limit. Vectors live in LanceDB and are not touched here;
+   * callers pass the returned ids (or the same cutoff) to the VectorStore.
+   */
+  async deleteEventsBefore(before: Date, eventType?: string): Promise<{ deleted: number; eventIds: string[] }> {
+    await this.initialize();
+    const { where, params } = eventsBeforeFilter(before, eventType);
+    const eventIds = sqliteAll<{ id: string }>(this.db, `SELECT id FROM events WHERE ${where}`, params)
+      .map((row) => row.id);
+    if (eventIds.length === 0) return { deleted: 0, eventIds };
+
+    const relatedTables = ['event_dedup', 'memory_levels', 'embedding_queue', 'embedding_outbox', 'vector_outbox', 'event_citations']
+      .filter((table) => this.hasTable(table) && this.hasTableColumn(table, 'event_id'));
+
+    const runDelete = this.db.transaction((): number => {
+      for (const triggerName of ['events_fts_delete', 'events_fts_update', 'events_fts_insert']) {
+        sqliteRun(this.db, `DROP TRIGGER IF EXISTS ${triggerName}`);
+      }
+      for (const table of relatedTables) {
+        sqliteRun(this.db, `DELETE FROM ${table} WHERE event_id IN (SELECT id FROM events WHERE ${where})`, params);
+      }
+      const result = sqliteRun(this.db, `DELETE FROM events WHERE ${where}`, params);
+      this.recreateEventsFtsTable();
+      return result.changes || 0;
+    });
+
+    return { deleted: runDelete(), eventIds };
+  }
+
+  /**
    * Convert database row to MemoryEvent
    */
   private rowToEvent(row: Record<string, unknown>): MemoryEvent {
@@ -5457,4 +5506,10 @@ export class SQLiteEventStore {
 
     return event;
   }
+}
+
+function eventsBeforeFilter(before: Date, eventType?: string): { where: string; params: unknown[] } {
+  const where = eventType === undefined ? 'timestamp < ?' : 'timestamp < ? AND event_type = ?';
+  const params = eventType === undefined ? [toSQLiteTimestamp(before)] : [toSQLiteTimestamp(before), eventType];
+  return { where, params };
 }
