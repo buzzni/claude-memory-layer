@@ -347,4 +347,48 @@ describe('MongoSyncWorker per-origin pull cursors', () => {
     mongo.origins.docs = [];
     expect(await worker(c, 'pull').syncNow()).toEqual({ pushed: 0, pulled: 1 });
   });
+
+  it('re-numbers the rest of a batch whose insert failed part way, and pull reads past the gap', async () => {
+    const a = await machine('a');
+    const c = await machine('c');
+    const ids: string[] = [];
+    for (const n of [1, 2, 3, 4, 5]) ids.push(await remember(a.store, `event ${n}`));
+
+    // The connection drops after the first two documents of the ordered insert reached Mongo.
+    const partial = worker(a, 'push', {
+      bulkWrite: async (ops, write) => {
+        await write(ops.slice(0, 2));
+        throw new Error('connection reset');
+      }
+    });
+    await expect(partial.syncNow()).rejects.toThrow('connection reset');
+
+    const puller = worker(c, 'pull');
+    expect(await puller.syncNow()).toEqual({ pushed: 0, pulled: 2 });
+
+    expect(await worker(a, 'push').syncNow()).toEqual({ pushed: 3, pulled: 0 });
+    expect(mongo.events.docs.map((doc) => doc.originSeq)).toEqual([1, 2, 6, 7, 8]);
+    expect(await puller.syncNow()).toEqual({ pushed: 0, pulled: 3 });
+    for (const id of ids) expect(await c.store.getEvent(id)).not.toBeNull();
+  });
+
+  it('keeps pulling after a pusher crashed between raising maxOriginSeq and inserting', async () => {
+    const a = await machine('a');
+    const c = await machine('c');
+    const aEvent = await remember(a.store, 'from a');
+
+    const crashed = worker(a, 'push', { beforeBulkWrite: async () => { throw new Error('process killed'); } });
+    await expect(crashed.syncNow()).rejects.toThrow('process killed');
+    expect(mongo.origins.docs).toEqual([expect.objectContaining({ maxOriginSeq: 1 })]);
+    expect(mongo.events.docs).toHaveLength(0);
+
+    // The reserved seq 1 never lands: pull asks for the origin, finds nothing, and does not move its cursor.
+    const puller = worker(c, 'pull');
+    expect(await puller.syncNow()).toEqual({ pushed: 0, pulled: 0 });
+
+    expect(await worker(a, 'push').syncNow()).toEqual({ pushed: 1, pulled: 0 });
+    expect(mongo.events.docs.map((doc) => doc.originSeq)).toEqual([2]);
+    expect(await puller.syncNow()).toEqual({ pushed: 0, pulled: 1 });
+    expect(await c.store.getEvent(aEvent)).not.toBeNull();
+  });
 });

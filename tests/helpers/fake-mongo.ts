@@ -160,7 +160,11 @@ export class FakeMongo {
 export interface FakeMongoHooks {
   /** Awaited before this worker's events bulkWrite: a pusher that already reserved its seqs and then stalls. */
   beforeBulkWrite?: () => Promise<void>;
+  /** Replaces this worker's events bulkWrite; `write` applies ops to the shared fake (e.g. only the first k, then throw). */
+  bulkWrite?: (ops: BulkOps, write: (ops: BulkOps) => Promise<void>) => Promise<void>;
 }
+
+type BulkOps = Parameters<FakeCollection['bulkWrite']>[0];
 
 /** Points a MongoSyncWorker at the shared fake instead of a real connection. */
 export function connectFakeMongo(worker: unknown, mongo: FakeMongo, hooks: FakeMongoHooks = {}): void {
@@ -168,9 +172,10 @@ export function connectFakeMongo(worker: unknown, mongo: FakeMongo, hooks: FakeM
     createIndex: () => mongo.events.createIndex(),
     find: (...args: Parameters<FakeCollection['find']>) => mongo.events.find(...args),
     aggregate: (...args: Parameters<FakeCollection['aggregate']>) => mongo.events.aggregate(...args),
-    bulkWrite: async (ops: Parameters<FakeCollection['bulkWrite']>[0]) => {
+    bulkWrite: async (ops: BulkOps) => {
       await hooks.beforeBulkWrite?.();
-      return mongo.events.bulkWrite(ops);
+      const write = (some: BulkOps) => mongo.events.bulkWrite(some);
+      return hooks.bulkWrite ? hooks.bulkWrite(ops, write) : write(ops);
     }
   };
   Object.assign(worker as Record<string, unknown>, {
