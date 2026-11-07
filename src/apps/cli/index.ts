@@ -2765,7 +2765,8 @@ const mongoSyncCommand = program
       direction,
       batchSize,
       intervalMs,
-      localProject: { hash: hashProjectPath(projectPath), path: projectPath }
+      localProject: { hash: hashProjectPath(projectPath), path: projectPath },
+      pushLockPath: path.join(storagePath, 'mongo-sync-push.lock')
     });
 
     const runOnce = async () => {

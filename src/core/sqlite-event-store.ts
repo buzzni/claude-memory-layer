@@ -2874,6 +2874,26 @@ export class SQLiteEventStore {
   }
 
   /**
+   * Keep the sync position already stored for a target, or store the given one if there is none.
+   * Atomic, so concurrent callers all get the same row.
+   */
+  async getOrCreateSyncPosition(
+    targetName: string,
+    lastEventId: string,
+    lastTimestamp: string
+  ): Promise<{ lastEventId: string | null; lastTimestamp: string | null }> {
+    await this.initialize();
+
+    sqliteRun(
+      this.db,
+      `INSERT OR IGNORE INTO sync_positions (target_name, last_event_id, last_timestamp, updated_at)
+       VALUES (?, ?, ?, datetime('now'))`,
+      [targetName, lastEventId, lastTimestamp]
+    );
+    return this.getSyncPosition(targetName);
+  }
+
+  /**
    * Get config value for endless mode
    */
   async getEndlessConfig(key: string): Promise<unknown | null> {

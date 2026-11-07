@@ -13,12 +13,14 @@
 
 import { randomUUID } from 'crypto';
 import * as os from 'os';
+import * as path from 'path';
 import { MongoClient } from 'mongodb';
 import type { Collection, Db } from 'mongodb';
 
 import type { MemoryEvent } from './types.js';
 import { SQLiteEventStore } from './sqlite-event-store.js';
 import { describeMongoConnectionError, redactMongoUri } from './mongo-sync-config.js';
+import { WorkerLock } from './worker-lock.js';
 
 export type MongoSyncDirection = 'push' | 'pull' | 'both';
 
@@ -29,7 +31,10 @@ export interface MongoSyncWorkerConfig {
   direction?: MongoSyncDirection;
   intervalMs?: number;
   batchSize?: number;
+  /** This store's origin (source.instanceId on pushed documents). Defaults to the id persisted in the store. */
   instanceId?: string;
+  /** Lock that keeps two processes from pushing for the same store at once. Defaults to one per origin in tmpdir. */
+  pushLockPath?: string;
   /**
    * This machine's project. Pulled events carry the scope of the machine that wrote them (its path hash), which
    * project-scoped search here filters out, so pull re-homes them to this project and keeps the origin under
@@ -100,6 +105,12 @@ function localizePulledMetadata(
 /** How far before the previous pull a late insert below the cursor is still picked up (concurrent pushers, clock skew). */
 export const LATE_INSERT_WINDOW_MS = 30 * 60 * 1000;
 
+/**
+ * sync_positions row holding this store's origin id, created once and kept, so every push from the store, across
+ * restarts and project keys, carries the same source.instanceId.
+ */
+export const MONGO_ORIGIN_ID_TARGET = 'mongo_sync_origin_id';
+
 /** sync_positions row holding the last local rowid pushed for a project key. */
 export function mongoPushCursorTarget(projectKey: string): string {
   return `mongo_push_events_rowid:${projectKey}`;
@@ -117,8 +128,9 @@ export function parseIntOrZero(value: string | null | undefined): number {
 }
 
 export class MongoSyncWorker {
-  private readonly config: Required<Omit<MongoSyncWorkerConfig, 'instanceId' | 'localProject'>>
-    & Pick<MongoSyncWorkerConfig, 'localProject'> & { instanceId: string };
+  private readonly config: Required<Omit<MongoSyncWorkerConfig, 'instanceId' | 'localProject' | 'pushLockPath'>>
+    & Pick<MongoSyncWorkerConfig, 'instanceId' | 'localProject' | 'pushLockPath'>;
+  private originId: string | null = null;
   private intervalHandle: NodeJS.Timeout | null = null;
   private running = false;
 
@@ -147,8 +159,9 @@ export class MongoSyncWorker {
       direction: config.direction ?? 'both',
       intervalMs: config.intervalMs ?? 30000,
       batchSize: config.batchSize ?? 500,
-      instanceId: config.instanceId ?? randomUUID(),
-      localProject: config.localProject
+      instanceId: config.instanceId,
+      localProject: config.localProject,
+      pushLockPath: config.pushLockPath
     };
   }
 
@@ -202,6 +215,7 @@ export class MongoSyncWorker {
 
     try {
       await this.sqliteStore.initialize();
+      await this.resolveOriginId();
       await this.ensureConnected();
       await this.ensureIndexes();
 
@@ -223,6 +237,16 @@ export class MongoSyncWorker {
       this.stats.status = 'error';
       throw error;
     }
+  }
+
+  private async resolveOriginId(): Promise<string> {
+    if (this.originId) return this.originId;
+    const stored = this.config.instanceId
+      ?? (await this.sqliteStore.getOrCreateSyncPosition(MONGO_ORIGIN_ID_TARGET, randomUUID(), new Date().toISOString()))
+        .lastEventId;
+    if (!stored) throw new Error('Failed to persist the Mongo sync origin id');
+    this.originId = stored;
+    return stored;
   }
 
   private async ensureConnected(): Promise<void> {
@@ -305,7 +329,24 @@ export class MongoSyncWorker {
     return mongoPullCursorTarget(this.config.projectKey);
   }
 
+  /**
+   * Holds a per-store lock, so documents of one origin are reserved and inserted strictly one batch after another.
+   * Another process already pushing for this store is left to finish; its next tick or ours picks up the rest.
+   */
   private async pushEvents(): Promise<number> {
+    const origin = await this.resolveOriginId();
+    const lock = new WorkerLock(
+      this.config.pushLockPath ?? path.join(os.tmpdir(), 'claude-memory-layer', `mongo-sync-push-${origin}.lock`)
+    );
+    if (!lock.acquire().acquired) return 0;
+    try {
+      return await this.pushEventsLocked(origin);
+    } finally {
+      lock.release();
+    }
+  }
+
+  private async pushEventsLocked(origin: string): Promise<number> {
     if (!this.events) throw new Error('Mongo not connected');
 
     const position = await this.sqliteStore.getSyncPosition(this.pushTargetName());
@@ -344,7 +385,7 @@ export class MongoSyncWorker {
                 metadata: event.metadata ?? null,
                 insertedAt: now,
                 updatedAt: now,
-                source: { hostname, instanceId: this.config.instanceId }
+                source: { hostname, instanceId: origin }
               }
             },
             upsert: true
