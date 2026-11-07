@@ -14,7 +14,7 @@ import { randomUUID } from 'crypto';
 import { MemoryService } from './memory-service.js';
 import { registerTerminalSession } from '../core/registry/session-registry.js';
 import { mergeAgentResponseBlocks, truncateAgentResponse } from './turn-buffering.js';
-import { planPromptStorage, promptClassifierMetadata } from '../core/prompt-normalizer.js';
+import { planPromptStorage, promptClassifierMetadata, redactPromptForStorage } from '../core/prompt-normalizer.js';
 import { isHarnessBoilerplate } from '../core/harness-boilerplate.js';
 import { reconcileSessionTranscript } from '../adapters/claude/hooks/session-end-reconcile.js';
 import type { TurnTrigger } from '../core/turn-state.js';
@@ -301,8 +301,12 @@ export class SessionHistoryImporter {
     // stored any response of has its responses stored the way the SessionEnd
     // reconcile does instead. Every row this importer stores carries
     // importedFrom; the hooks' rows never do.
-    const hooksStoredResponses = (await this.memoryService.getSessionHistory(sessionId)).some(
+    const sessionEvents = await this.memoryService.getSessionHistory(sessionId);
+    const hooksStoredResponses = sessionEvents.some(
       (event) => event.eventType === 'agent_response' && typeof event.metadata?.importedFrom !== 'string'
+    );
+    const storedResponses = new Set(
+      sessionEvents.filter((event) => event.eventType === 'agent_response').map((event) => event.content)
     );
     // How much of the transcript the responses are read from: all of it, or
     // as far as the limit let the prompt pass read.
@@ -337,7 +341,18 @@ export class SessionHistoryImporter {
 
       const merged = mergeAgentResponseBlocks(textBuffer);
       if (!merged) { textBuffer = []; return; }
-      const truncated = truncateAgentResponse(merged);
+      const truncated = truncateAgentResponse(redactPromptForStorage(merged));
+
+      // Earlier imports stored the merged response without the privacy
+      // filter; a re-import must not add the filtered copy beside it. A force
+      // re-import deletes the session first, so it replaces that row.
+      const unfiltered = truncateAgentResponse(merged);
+      if (unfiltered !== truncated && storedResponses.has(unfiltered)) {
+        result.skippedDuplicates++;
+        lineCount++;
+        textBuffer = [];
+        return;
+      }
 
       const appendResult = await this.memoryService.storeAgentResponse(
         sessionId,

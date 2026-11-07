@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 
 import { normalizeAgentResponse } from '../../src/adapters/claude/hooks/agent-response-normalization.js';
-import { mergeAgentResponseBlocks } from '../../src/services/turn-buffering.js';
+import { mergeAgentResponseBlocks, truncateAgentResponse } from '../../src/services/turn-buffering.js';
+import { redactPromptForStorage } from '../../src/core/prompt-normalizer.js';
 import type { MemoryService } from '../../src/services/memory-service.js';
 
 /**
@@ -99,7 +100,7 @@ async function runStop(): Promise<void> {
   vi.mocked(runtime.readStdin).mockRestore();
 }
 
-async function importSession(options: { limit?: number } = {}) {
+async function importSession(options: { limit?: number; force?: boolean } = {}) {
   // The import runs after the transcript was written.
   tick();
   const { SessionHistoryImporter } = await import('../../src/services/session-history-importer.js');
@@ -304,5 +305,38 @@ describe('Claude session import of a session the hooks never saw', () => {
     const second = await importSession();
     expect(second).toMatchObject({ importedPrompts: 0, importedResponses: 0 });
     expect(await contents()).toEqual([mergeAgentResponseBlocks(blocks)]);
+  });
+
+  it('stores the merged response privacy filtered, as the hooks would', async () => {
+    const blocks = [longText('analysis'), longText('Rotate it with password=hunter2 before the deploy')];
+    prompt('please audit the vector store first');
+    blocks.forEach(answer);
+
+    const first = await importSession();
+    expect(first).toMatchObject({ importedResponses: 1, errors: [] });
+    const stored = await contents();
+    expect(stored).toEqual([truncateAgentResponse(redactPromptForStorage(mergeAgentResponseBlocks(blocks)))]);
+    expect(stored.join('\n')).not.toContain('hunter2');
+
+    const second = await importSession();
+    expect(second).toMatchObject({ importedResponses: 0 });
+    expect(await contents()).toEqual(stored);
+  });
+
+  it('adds no filtered copy beside a response an earlier import stored unfiltered, until a force re-import', async () => {
+    const blocks = [longText('analysis'), longText('Rotate it with password=hunter2 before the deploy')];
+    prompt('please audit the vector store first');
+    blocks.forEach(answer);
+    // What the importer stored before it filtered merged responses.
+    const unfiltered = truncateAgentResponse(mergeAgentResponseBlocks(blocks));
+    await (await service()).storeAgentResponse(SESSION, unfiltered, { importedFrom: transcriptPath, turnId: 'old-import-turn' });
+
+    const again = await importSession();
+    expect(again).toMatchObject({ importedResponses: 0, errors: [] });
+    expect(await contents()).toEqual([unfiltered]);
+
+    const forced = await importSession({ force: true });
+    expect(forced).toMatchObject({ importedResponses: 1, errors: [] });
+    expect(await contents()).toEqual([truncateAgentResponse(redactPromptForStorage(mergeAgentResponseBlocks(blocks)))]);
   });
 });
