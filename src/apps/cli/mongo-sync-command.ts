@@ -340,7 +340,7 @@ export function formatMongoSyncAuditOutcome(outcome: MongoSyncAuditOutcome, json
 
   lines.push(
     `  Mongo documents: ${report.mongoTotal}  local events: ${report.localTotal}  missing locally: ${report.missing}`,
-    `  Cursors: push rowid=${report.pushCursor}  pull seq=${report.pullCursor}`
+    `  Cursors: push rowid=${report.pushCursor}  pull seq=${report.pullCursor} (documents without originSeq; others per origin)`
       + (report.pullWindowStart ? `  (next pull re-reads inserts since ${report.pullWindowStart.toISOString()})` : '')
   );
 
@@ -369,7 +369,10 @@ export function formatMongoSyncAuditOutcome(outcome: MongoSyncAuditOutcome, json
   if (report.pendingPush > 0) fixes.push('claude-memory-layer mongo-sync --direction push');
   if (fixes.length > 0) lines.push('', `  Fix: ${fixes.join('  /  ')}`);
   if (report.lostBelowPullCursor > 0) {
-    lines.push(`  No repair command for documents below the pull cursor yet; root fix: ${ORIGIN_CURSOR_ISSUE_URL}`);
+    lines.push(
+      '  No pull re-reads documents below the pull cursor. Ones without originSeq come from a pusher on a version'
+        + ` before per-origin cursors that stalled or has a skewed clock; upgrade it (${ORIGIN_CURSOR_ISSUE_URL}).`
+    );
   }
   return [...lines, ''].join('\n');
 }

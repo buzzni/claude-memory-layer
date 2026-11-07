@@ -224,4 +224,31 @@ describe('MongoSyncWorker per-origin pull cursors', () => {
     expect(await worker(c, 'pull').syncNow()).toEqual({ pushed: 0, pulled: 0 });
     expect(mongo.events.returned).toBe(0);
   });
+
+  it('audits a document of a stalled origin as not pulled yet rather than lost below the cursor', async () => {
+    const a = await machine('a');
+    const b = await machine('b');
+    const c = await machine('c');
+    const stalled = createGate();
+    await remember(a.store, 'from a');
+    await remember(b.store, 'from b');
+
+    const aPush = worker(a, 'push', { beforeBulkWrite: stalled.wait }).syncNow();
+    await stalled.reached;
+    vi.setSystemTime(minutes(1));
+    await worker(b, 'push').syncNow();
+    const puller = worker(c, 'pull');
+    await puller.syncNow();
+    vi.setSystemTime(minutes(40));
+    await puller.syncNow();
+    stalled.release();
+    await aPush;
+
+    const report = await auditMongoSync(c.store, mongo.events as unknown as MongoAuditCollection, { projectKey: 'team' });
+    expect(report).toMatchObject({ status: 'warn', missing: 1, lostBelowPullCursor: 0, notYetPulled: 1 });
+
+    await puller.syncNow();
+    expect(await auditMongoSync(c.store, mongo.events as unknown as MongoAuditCollection, { projectKey: 'team' }))
+      .toMatchObject({ status: 'pass', missing: 0, lostBelowPullCursor: 0 });
+  });
 });

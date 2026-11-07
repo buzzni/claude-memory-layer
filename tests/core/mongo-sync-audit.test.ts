@@ -10,7 +10,12 @@ import * as os from 'os';
 import * as path from 'path';
 
 import { auditMongoSync, type MongoAuditCollection } from '../../src/core/mongo-sync-audit.js';
-import { mongoPullCursorTarget, mongoPushCursorTarget } from '../../src/core/mongo-sync-worker.js';
+import {
+  MONGO_ORIGIN_ID_TARGET,
+  mongoPullCursorTarget,
+  mongoPullOriginCursorTarget,
+  mongoPushCursorTarget
+} from '../../src/core/mongo-sync-worker.js';
 import { SQLiteEventStore } from '../../src/core/sqlite-event-store.js';
 import type { MemoryEvent } from '../../src/core/types.js';
 
@@ -55,6 +60,7 @@ function matches(doc: Doc, filter: Filter): boolean {
     const value = field(doc, key);
     if (typeof condition !== 'object' || condition === null) return value === condition;
     const ops = condition as Record<string, unknown>;
+    if (ops.$exists !== undefined && (value !== undefined) !== ops.$exists) return false;
     if (ops.$in && !(ops.$in as unknown[]).includes(value)) return false;
     if (ops.$gt !== undefined && !((value as number) > (ops.$gt as number))) return false;
     if (ops.$gte !== undefined && !((value as number) >= (ops.$gte as number))) return false;
@@ -236,5 +242,28 @@ describe('auditMongoSync', () => {
     const report = await auditMongoSync(store, collection, { projectKey: 'team' });
 
     expect(report).toMatchObject({ status: 'pass', localTotal: 3, missing: 0, localOnly: 0, pendingPush: 0 });
+  });
+
+  it('classifies documents with originSeq by their origin cursor instead of the project-wide one', async () => {
+    // Global cursor at 6 and every insert far outside the late-insert window: only origin cursors decide.
+    await store.importEvents([localEvent('event-1'), localEvent('event-6')]);
+    await setCursors(0, 6);
+    await store.updateSyncPosition(MONGO_ORIGIN_ID_TARGET, 'origin-self', INSERTED_AT.toISOString());
+    await store.updateSyncPosition(mongoPullOriginCursorTarget('team', 'origin-b'), '2', INSERTED_AT.toISOString());
+    const withOriginSeq = (doc: Doc, originSeq: number) => ({ ...doc, originSeq });
+    const { collection } = fakeCollection([
+      withOriginSeq(remoteDoc(1, 'origin-b', 'machine-b'), 1),
+      withOriginSeq(remoteDoc(2, 'origin-b', 'machine-b'), 2),
+      withOriginSeq(remoteDoc(3, 'origin-b', 'machine-b'), 3),
+      withOriginSeq(remoteDoc(4, 'origin-c', 'machine-c'), 1),
+      withOriginSeq(remoteDoc(5, 'origin-self', 'this-machine'), 1),
+      withOriginSeq(remoteDoc(6, 'origin-b', 'machine-b'), 4)
+    ]);
+
+    const report = await auditMongoSync(store, collection, { projectKey: 'team' });
+
+    // origin-b: seq 2 is at its cursor but missing (lost); 3 is past it. origin-c has no cursor yet. Own origin: lost.
+    expect(report).toMatchObject({ status: 'fail', missing: 4, lostBelowPullCursor: 2, notYetPulled: 2 });
+    expect(report.oldestGap).toBeUndefined();
   });
 });

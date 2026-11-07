@@ -181,6 +181,10 @@
 - **대안**
   - 근본 수정은 기존 문서 백필이 필요하다.
   - 더 싼 대안은 doctor에서 로컬과 Mongo의 `instanceId`별 건수를 대조하는 것이다.
+- **적용 (#142)**
+  - 저장소별 영구 origin id, origin별 `originSeq`, origin별 pull 커서(`cml_origins`)로 바꿨다. 자기 origin과 pull로 받은 이벤트는 push하지 않는다.
+  - 백필 대신 전환 시 전역 커서를 한 번 0으로 되돌려 전체를 다시 당긴다.
+  - `originSeq`가 없는 이전 버전 문서는 전역 커서와 30분 창으로 계속 읽는다. 이 경로의 위험은 모든 머신을 올릴 때까지 남는다.
 
 ### 12. doctor `--fix` (S~M)
 
