@@ -121,6 +121,10 @@ function importInChildProcess(file: string): string | null {
  * checkSessionEndPendingJobs). Only this file is imported: it is a library,
  * while the other hook files run their hook (and read stdin) when imported.
  * It runs in a child process so another install's modules never load here.
+ * A pass is only that: better-sqlite3 loads its binding when a database is
+ * opened, and the check uses this Node and pluginPath, not the node and
+ * target the registered SessionEnd hook runs (the hooks check flags a
+ * different target).
  */
 export function checkSessionEndHandlerLoads(
   pluginPath: string,
@@ -142,7 +146,11 @@ export function checkSessionEndHandlerLoads(
       fix: 'Reinstall: npm install -g claude-memory-layer@latest'
     };
   }
-  return { name: 'session-end-handler', status: 'pass', detail: 'loads' };
+  return {
+    name: 'session-end-handler',
+    status: 'pass',
+    detail: 'module imports; native bindings are checked at first use'
+  };
 }
 
 export function checkSessionEndPendingJobs(pending: PendingSessionEndJob[]): DoctorCheckResult {

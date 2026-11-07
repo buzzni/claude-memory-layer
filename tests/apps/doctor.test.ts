@@ -86,6 +86,8 @@ describe('checkSessionEndHandlerLoads', () => {
   it('passes when the session-end work the worker loads after acknowledging imports cleanly', () => {
     const result = checkSessionEndHandlerLoads(pluginWithHandler('export const handleClaudeSessionEnd = async () => {};'));
     expect(result).toMatchObject({ name: 'session-end-handler', status: 'pass' });
+    // Importing does not open a database, so it cannot vouch for native bindings.
+    expect(result.detail).toContain('native bindings are checked at first use');
   });
 
   it('fails when importing it throws, which the presence check cannot see', () => {
