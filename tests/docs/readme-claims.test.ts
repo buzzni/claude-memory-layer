@@ -68,7 +68,7 @@ function citedCommands(): string[] {
 
 describe('README claims', () => {
   it('cites only npm scripts that exist in package.json', () => {
-    const cited = [...code.matchAll(/npm run ([\w:-]+)/g)].map((m) => m[1]);
+    const cited = [...code.matchAll(/npm run ([\w:-]*\w)/g)].map((m) => m[1]);
     expect(cited.length).toBeGreaterThan(0);
     expect(cited.filter((name) => !(name in pkg.scripts))).toEqual([]);
   });
