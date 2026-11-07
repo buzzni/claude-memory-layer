@@ -194,9 +194,15 @@ export async function retryPendingSessionEndJobs(
         continue;
       }
       try {
-        writeRecord(file, { ...record, attempts, lastError: errorMessage(error) });
+        writeRecord(claimed, { ...record, attempts, lastError: errorMessage(error) });
+        // Linking fails when the session ended again meanwhile and its newer job was kept.
+        fs.linkSync(claimed, file);
         fs.rmSync(claimed, { force: true });
-      } catch {
+      } catch (writeError) {
+        if ((writeError as NodeJS.ErrnoException).code === 'EEXIST') {
+          abandon('superseded');
+          continue;
+        }
         // Left claimed; a later worker takes it over once the claim is stale.
       }
       summary.failed += 1;

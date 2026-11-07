@@ -89,6 +89,24 @@ describe('pending SessionEnd jobs', () => {
     expect(diagnostics().at(-1)).toMatchObject({ event: 'retry_abandoned', reason: 'attempts' });
   });
 
+  it('keeps a newer job for the same session saved while an older one was failing its retry', async () => {
+    savePendingSessionEndJob(job, new Error('boom'), at('2026-11-07T01:00:00.000Z'));
+    const newer = { ...job, registrationId: 'registration-2' };
+    const handle = vi.fn(async () => {
+      // The session was resumed and ended again, and that worker failed to load too.
+      savePendingSessionEndJob(newer, new Error('boom again'), at('2026-11-07T02:00:00.000Z'));
+      throw new Error('still broken');
+    });
+
+    expect(await retryPendingSessionEndJobs(handle, at('2026-11-07T02:00:00.000Z')))
+      .toEqual({ completed: 0, failed: 0, abandoned: 1 });
+
+    expect(listPendingSessionEndJobs({ homeDir })).toEqual([
+      expect.objectContaining({ job: newer, attempts: 0, lastError: 'boom again' })
+    ]);
+    expect(diagnostics().at(-1)).toMatchObject({ event: 'retry_abandoned', reason: 'superseded' });
+  });
+
   it('drops a job too old to be worth ending without running it', async () => {
     savePendingSessionEndJob(job, new Error('boom'), at('2026-11-07T01:00:00.000Z'));
     const handle = vi.fn(async () => {});
