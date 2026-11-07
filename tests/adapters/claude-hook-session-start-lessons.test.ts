@@ -114,11 +114,35 @@ async function listedLessons(): Promise<string[]> {
 describe('SessionStart lesson index order', () => {
   it('rotates lessons by recent listings instead of confidence', async () => {
     fixture.service = createService(async () => new Map([['b', { exposures: 3, engaged: 0 }]]));
+    fixture.service.listProjectRunbookIds.mockResolvedValue([]);
 
     expect(await listedLessons()).toEqual(['middle-lesson', 'old-pinned-lesson', 'newest-lesson']);
     const since = fixture.service.getSessionStartLessonUsage.mock.calls[0][0] as Date;
     expect(Date.now() - since.getTime()).toBeGreaterThan(13 * 24 * 60 * 60 * 1000);
     expect(Date.now() - since.getTime()).toBeLessThan(15 * 24 * 60 * 60 * 1000);
+  });
+
+  // specs/host-lesson-matching-2026-10-18 P1, extended to the native path: once a
+  // project has runbooks, the index is the runbook index everywhere. The full
+  // lesson list only exists while nothing has been consolidated yet.
+  it('lists only runbooks on the native path too once the project has any', async () => {
+    vi.stubEnv('CLAUDE_MEMORY_EVAL_MODE', '');
+    fixture.service = createService(async () => new Map());
+
+    const context = await sessionStartContext();
+    expect(context).toContain('## Project Runbooks');
+    expect(context).not.toContain('## Project Lessons');
+    expect([...context.matchAll(/^- (\S+) — /gm)].map((match) => match[1])).toEqual(['middle-lesson']);
+    expect(fixture.service.recordQueryTrace.mock.calls.map((call) => call[0])).toContainEqual(expect.objectContaining({ queryText: '[session-start] runbook index', strategy: 'session-start-lessons', selectedEventIds: ['c'] }));
+  });
+
+  it('keeps the full lesson index on the native path while the project has no runbooks', async () => {
+    fixture.service = createService(async () => new Map());
+    fixture.service.listProjectRunbookIds.mockResolvedValue([]);
+
+    const context = await sessionStartContext();
+    expect(context).toContain('## Project Lessons');
+    expect([...context.matchAll(/^- (\S+) — /gm)].map((match) => match[1])).toHaveLength(3);
   });
 
   it('lists only runbooks when the host owns per-turn lessons, under their own trace label', async () => {
@@ -155,6 +179,7 @@ describe('SessionStart lesson index order', () => {
 
   it('keeps the index, newest first, when usage cannot be read', async () => {
     fixture.service = createService(() => { throw new Error('usage unavailable'); });
+    fixture.service.listProjectRunbookIds.mockResolvedValue([]);
 
     expect(await listedLessons()).toEqual(['newest-lesson', 'middle-lesson', 'old-pinned-lesson']);
   });
