@@ -30,6 +30,27 @@ export interface RuntimeLatencyAggregate {
   maxMs: number;
 }
 
+export interface RuntimeSummaryTelemetry {
+  provider: string | null;
+  model: string | null;
+  attempts: number;
+  /** A summary event was written. */
+  stored: number;
+  /** The provider answered but nothing durable was stored. */
+  empty: number;
+  /** The provider call threw. */
+  failures: number;
+  lastSuccessAt: string | null;
+  lastFailure: { at: string; code: string } | null;
+}
+
+export interface RuntimeSummaryOutcome {
+  provider: string;
+  model: string | null;
+  outcome: 'stored' | 'empty' | 'failure';
+  errorCode?: string;
+}
+
 export interface RuntimeResourceSnapshot {
   schemaVersion: 1;
   pid: number;
@@ -60,6 +81,8 @@ export interface RuntimeResourceSnapshot {
     cold: RuntimeLatencyAggregate;
     hot: RuntimeLatencyAggregate;
   };
+  /** Absent in snapshots written before summary counters existed. */
+  summary?: RuntimeSummaryTelemetry;
 }
 
 export interface RuntimeResourceTelemetryOptions {
@@ -242,6 +265,35 @@ export class RuntimeResourceTelemetry implements RuntimeRetrievalTelemetry {
     aggregate.maxMs = Math.max(aggregate.maxMs, duration);
     if (!succeeded) aggregate.failedCount += 1;
     this.snapshot.model.lastActivityAt = this.isoNow();
+    this.touchAndPersist();
+  }
+
+  recordSummaryOutcome(input: RuntimeSummaryOutcome): void {
+    const summary = this.snapshot.summary ?? {
+      provider: null,
+      model: null,
+      attempts: 0,
+      stored: 0,
+      empty: 0,
+      failures: 0,
+      lastSuccessAt: null,
+      lastFailure: null
+    };
+    const at = this.isoNow();
+    summary.provider = input.provider;
+    summary.model = input.model;
+    summary.attempts += 1;
+    if (input.outcome === 'stored') {
+      summary.stored += 1;
+      summary.lastSuccessAt = at;
+    } else if (input.outcome === 'empty') {
+      summary.empty += 1;
+      summary.lastSuccessAt = at;
+    } else {
+      summary.failures += 1;
+      summary.lastFailure = { at, code: input.errorCode || 'unknown' };
+    }
+    this.snapshot.summary = summary;
     this.touchAndPersist();
   }
 

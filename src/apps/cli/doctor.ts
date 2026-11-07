@@ -28,6 +28,9 @@ import {
 } from './claude-settings-hooks.js';
 import type { McpClientConfigRead, RegisteredMcpServer } from './mcp-client-config.js';
 import type { PendingSessionEndJob } from '../../adapters/claude/hooks/session-end-pending.js';
+import { buildCliProviderEnv, type CliProviderName } from '../../adapters/llm/cli-provider.js';
+import { getSummaryProviderName, isLlmSummaryEnabled } from '../../adapters/llm/session-summary-llm.js';
+import { defaultRuntimeTelemetryDir, readRuntimeResourceSnapshots } from '../../core/runtime-resource-telemetry.js';
 
 export type DoctorStatus = 'pass' | 'warn' | 'fail';
 
@@ -215,6 +218,200 @@ export function checkHooksInstalled(
     };
   }
   return { name: 'hooks', status: 'pass', detail: 'all hooks installed' };
+}
+
+export type SummaryAuthProbe =
+  | { state: 'logged-in' }
+  | { state: 'logged-out' }
+  | { state: 'unknown'; reason: string };
+
+export interface SummaryDaemonFacts {
+  provider: string | null;
+  model: string | null;
+  stored: number;
+  empty: number;
+  failures: number;
+  lastFailureCode: string | null;
+}
+
+export interface SummaryProviderFacts {
+  enabled: boolean;
+  /** Raw CLAUDE_MEMORY_SUMMARY_MODE, shown when summaries are disabled. */
+  mode: string | undefined;
+  /** Provider summaries actually use: the running daemon's when it reports one, else the shell env's. */
+  provider: CliProviderName;
+  /** Provider the shell env doctor runs in resolves to; settings.json env reaches hook-spawned daemons but not this shell. */
+  envProvider: CliProviderName;
+  binaryFound: boolean;
+  auth: SummaryAuthProbe;
+  /** One entry per running semantic daemon; null when its snapshot has no summary counters. */
+  daemons: Array<SummaryDaemonFacts | null>;
+}
+
+/**
+ * LLM summaries run in a detached daemon and swallow provider errors, so a
+ * logged-out CLI would otherwise stop all summaries without any visible sign.
+ */
+export function checkSummaryProvider(facts: SummaryProviderFacts): DoctorCheckResult {
+  const name = 'summary-provider';
+  if (!facts.enabled) {
+    return { name, status: 'pass', detail: `disabled (CLAUDE_MEMORY_SUMMARY_MODE=${facts.mode})` };
+  }
+  const alternative: CliProviderName = facts.provider === 'claude' ? 'codex' : 'claude';
+  if (!facts.binaryFound) {
+    return {
+      name,
+      status: 'fail',
+      detail: `${facts.provider} CLI was not found on PATH; session summaries cannot be generated`,
+      fix: `Install the ${facts.provider} CLI or set CLAUDE_MEMORY_SUMMARY_PROVIDER=${alternative}`
+    };
+  }
+
+  const warnings: string[] = [];
+  if (facts.auth.state === 'logged-out') {
+    warnings.push(
+      `${facts.provider} CLI is not logged in; summaries will fail silently. Log in or set CLAUDE_MEMORY_SUMMARY_PROVIDER=${alternative}`
+    );
+  } else if (facts.auth.state === 'unknown') {
+    warnings.push(`could not check ${facts.provider} CLI login: ${facts.auth.reason}`);
+  }
+  for (const daemon of facts.daemons) {
+    if (!daemon) continue;
+    if (daemon.failures > 0 && daemon.stored === 0) {
+      warnings.push(
+        `daemon summary attempts all failed (stored=${daemon.stored} empty=${daemon.empty} failures=${daemon.failures}, last error: ${daemon.lastFailureCode ?? 'unknown'})`
+      );
+    }
+  }
+  if (warnings.length > 0) return { name, status: 'warn', detail: warnings.join(' | ') };
+
+  const reporting = facts.daemons.find((daemon): daemon is SummaryDaemonFacts => daemon !== null);
+  if (reporting) {
+    return {
+      name,
+      status: 'pass',
+      detail: `provider=${reporting.provider} model=${reporting.model} stored=${reporting.stored} empty=${reporting.empty} failures=${reporting.failures}`
+        + (reporting.provider && reporting.provider !== facts.envProvider ? ` (shell env would start ${facts.envProvider})` : '')
+    };
+  }
+  return {
+    name,
+    status: 'pass',
+    detail: facts.daemons.length === 0 ? 'no running daemon snapshot' : 'no summary counters yet'
+  };
+}
+
+const SUMMARY_AUTH_PROBE_TIMEOUT_MS = 10_000;
+
+interface SummaryProbeResult {
+  status: number | null;
+  stdout: string;
+  error?: string;
+}
+
+export interface SummaryProviderFactsDeps {
+  env?: NodeJS.ProcessEnv;
+  findBinary?: (command: string, envPath: string) => boolean;
+  runProbe?: (command: string, args: string[], env: NodeJS.ProcessEnv) => SummaryProbeResult;
+  readDaemons?: () => Array<SummaryDaemonFacts | null>;
+}
+
+function binaryOnPath(command: string, envPath: string): boolean {
+  const extensions = process.platform === 'win32' ? ['.exe', '.cmd', '.bat', ''] : [''];
+  for (const dir of envPath.split(path.delimiter).filter(Boolean)) {
+    for (const extension of extensions) {
+      try {
+        fs.accessSync(path.join(dir, `${command}${extension}`), fs.constants.X_OK);
+        return true;
+      } catch {
+        // Not in this directory.
+      }
+    }
+  }
+  return false;
+}
+
+function runSummaryAuthProbe(command: string, args: string[], env: NodeJS.ProcessEnv): SummaryProbeResult {
+  const result = spawnSync(command, args, {
+    encoding: 'utf8',
+    env,
+    timeout: SUMMARY_AUTH_PROBE_TIMEOUT_MS,
+    stdio: ['ignore', 'pipe', 'ignore']
+  });
+  return { status: result.status, stdout: result.stdout ?? '', error: result.error?.message };
+}
+
+function processIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+function readRunningSummaryDaemons(): Array<SummaryDaemonFacts | null> {
+  return readRuntimeResourceSnapshots(defaultRuntimeTelemetryDir())
+    .filter((snapshot) =>
+      snapshot.client === 'semantic-daemon' && snapshot.processState === 'running' && processIsAlive(snapshot.pid))
+    .map((snapshot) => snapshot.summary
+      ? {
+          provider: snapshot.summary.provider,
+          model: snapshot.summary.model,
+          stored: snapshot.summary.stored,
+          empty: snapshot.summary.empty,
+          failures: snapshot.summary.failures,
+          lastFailureCode: snapshot.summary.lastFailure?.code ?? null
+        }
+      : null);
+}
+
+function probeSummaryAuth(
+  provider: CliProviderName,
+  env: NodeJS.ProcessEnv,
+  runProbe: NonNullable<SummaryProviderFactsDeps['runProbe']>
+): SummaryAuthProbe {
+  // No model call: both subcommands only read the local credential state.
+  const args = provider === 'claude' ? ['auth', 'status'] : ['login', 'status'];
+  const result = runProbe(provider, args, buildCliProviderEnv(env));
+  if (result.error) return { state: 'unknown', reason: result.error };
+  if (provider === 'codex') {
+    return result.status === 0 ? { state: 'logged-in' } : { state: 'logged-out' };
+  }
+  try {
+    const parsed = JSON.parse(result.stdout) as { loggedIn?: unknown };
+    if (typeof parsed.loggedIn === 'boolean') {
+      return parsed.loggedIn ? { state: 'logged-in' } : { state: 'logged-out' };
+    }
+  } catch {
+    // Fall through to the unknown result below.
+  }
+  return { state: 'unknown', reason: 'claude auth status did not return JSON with loggedIn' };
+}
+
+export function gatherSummaryProviderFacts(deps: SummaryProviderFactsDeps = {}): SummaryProviderFacts {
+  const env = deps.env ?? process.env;
+  const envProvider = getSummaryProviderName(env);
+  const enabled = isLlmSummaryEnabled(env);
+  const facts: SummaryProviderFacts = {
+    enabled,
+    mode: env.CLAUDE_MEMORY_SUMMARY_MODE,
+    provider: envProvider,
+    envProvider,
+    binaryFound: false,
+    auth: { state: 'unknown', reason: 'not checked' },
+    daemons: []
+  };
+  if (!enabled) return facts;
+
+  facts.daemons = (deps.readDaemons ?? readRunningSummaryDaemons)();
+  const daemonProvider = facts.daemons.find((daemon) => daemon?.provider)?.provider;
+  if (daemonProvider === 'claude' || daemonProvider === 'codex') facts.provider = daemonProvider;
+  facts.binaryFound = (deps.findBinary ?? binaryOnPath)(facts.provider, env.PATH ?? '');
+  if (facts.binaryFound) {
+    facts.auth = probeSummaryAuth(facts.provider, env, deps.runProbe ?? runSummaryAuthProbe);
+  }
+  return facts;
 }
 
 /**
