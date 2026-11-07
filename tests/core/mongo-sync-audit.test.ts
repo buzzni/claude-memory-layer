@@ -9,6 +9,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
+import { machineFingerprint } from '../../src/core/machine-id.js';
 import { auditMongoSync, type MongoAuditCollection } from '../../src/core/mongo-sync-audit.js';
 import {
   MONGO_ORIGIN_ID_TARGET,
@@ -197,7 +198,7 @@ describe('auditMongoSync', () => {
     // Global cursor at 6 and every insert far outside the late-insert window: only origin cursors decide.
     await store.importEvents([localEvent('event-1'), localEvent('event-6')]);
     await setCursors(0, 6);
-    await store.updateSyncPosition(MONGO_ORIGIN_ID_TARGET, 'origin-self', INSERTED_AT.toISOString());
+    await store.updateSyncPosition(MONGO_ORIGIN_ID_TARGET, 'origin-self', machineFingerprint());
     await store.updateSyncPosition(mongoPullOriginCursorTarget('team', 'origin-b'), '2', INSERTED_AT.toISOString());
     const withOriginSeq = (doc: Doc, originSeq: number) => ({ ...doc, originSeq });
     const { collection } = fakeCollection([

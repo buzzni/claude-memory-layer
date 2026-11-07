@@ -2894,6 +2894,26 @@ export class SQLiteEventStore {
   }
 
   /**
+   * Replace a target's sync position only while it still holds the expected lastEventId.
+   * Returns false when another writer changed it first.
+   */
+  async replaceSyncPositionIf(
+    targetName: string,
+    expectedLastEventId: string,
+    lastEventId: string,
+    lastTimestamp: string
+  ): Promise<boolean> {
+    await this.initialize();
+
+    return sqliteRun(
+      this.db,
+      `UPDATE sync_positions SET last_event_id = ?, last_timestamp = ?, updated_at = datetime('now')
+       WHERE target_name = ? AND last_event_id = ?`,
+      [lastEventId, lastTimestamp, targetName, expectedLastEventId]
+    ).changes > 0;
+  }
+
+  /**
    * Get config value for endless mode
    */
   async getEndlessConfig(key: string): Promise<unknown | null> {

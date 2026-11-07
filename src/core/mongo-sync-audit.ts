@@ -16,6 +16,7 @@
  */
 
 import type { MemoryEvent } from './types.js';
+import { machineFingerprint } from './machine-id.js';
 import {
   LATE_INSERT_WINDOW_MS,
   MONGO_ORIGIN_ID_TARGET,
@@ -270,7 +271,9 @@ export async function auditMongoSync(
   report.notYetPulled = Math.max(0, mongoAbove - (localSeqs.length - localBelow));
 
   // Pull skips this store's own origin, so whatever of it is missing (e.g. a store restored from a backup) is lost.
-  const ownOrigin = (await local.getSyncPosition(MONGO_ORIGIN_ID_TARGET)).lastEventId;
+  // A store copied from another machine is not that origin any more: its next sync mints its own and reads the old.
+  const ownPosition = await local.getSyncPosition(MONGO_ORIGIN_ID_TARGET);
+  const ownOrigin = ownPosition.lastTimestamp === machineFingerprint() ? ownPosition.lastEventId : null;
   for (const group of originGroups) {
     const localOrigin = (localOriginSeqs.get(group._id) ?? []).sort((a, b) => a - b);
     if (group._id === null || group._id === ownOrigin) {

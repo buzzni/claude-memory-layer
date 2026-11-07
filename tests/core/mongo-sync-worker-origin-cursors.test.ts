@@ -16,6 +16,10 @@ import { SQLiteEventStore } from '../../src/core/sqlite-event-store.js';
 import { WorkerLock } from '../../src/core/worker-lock.js';
 import { connectFakeMongo, createGate, FakeMongo, type FakeMongoHooks } from '../helpers/fake-mongo.js';
 
+/** The machine the next worker resolves its origin on; tests switch it to put two stores on different machines. */
+const host = vi.hoisted(() => ({ machine: 'machine-default' }));
+vi.mock('../../src/core/machine-id.js', () => ({ machineFingerprint: () => host.machine }));
+
 const T0 = new Date('2026-11-01T00:00:00.000Z');
 const minutes = (n: number) => new Date(T0.getTime() + n * 60_000);
 
@@ -28,6 +32,7 @@ describe('MongoSyncWorker per-origin pull cursors', () => {
     tempDirs = [];
     stores = [];
     mongo = new FakeMongo();
+    host.machine = 'machine-default';
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(T0);
   });
@@ -47,6 +52,18 @@ describe('MongoSyncWorker per-origin pull cursors', () => {
     await store.initialize();
     stores.push(store);
     return { store, dir };
+  }
+
+  /** Copies a store directory as a backup restore or a cloned home directory would, onto another machine. */
+  async function copyOf(m: { store: SQLiteEventStore; dir: string }, name: string): Promise<{ store: SQLiteEventStore; dir: string }> {
+    await m.store.close();
+    const copy = fs.mkdtempSync(path.join(os.tmpdir(), `cml-mongo-origin-${name}-`));
+    tempDirs.push(copy);
+    for (const file of fs.readdirSync(m.dir)) fs.copyFileSync(path.join(m.dir, file), path.join(copy, file));
+    m.store = new SQLiteEventStore(path.join(m.dir, 'events.sqlite'));
+    const store = new SQLiteEventStore(path.join(copy, 'events.sqlite'));
+    stores.push(m.store, store);
+    return { store, dir: copy };
   }
 
   function worker(
@@ -248,6 +265,60 @@ describe('MongoSyncWorker per-origin pull cursors', () => {
     expect(report).toMatchObject({ status: 'warn', missing: 1, lostBelowPullCursor: 0, notYetPulled: 1 });
 
     await puller.syncNow();
+    expect(await auditMongoSync(c.store, mongo.events as unknown as MongoAuditCollection, { projectKey: 'team' }))
+      .toMatchObject({ status: 'pass', missing: 0, lostBelowPullCursor: 0 });
+  });
+
+  it('gives a store copied to another machine its own origin, so both keep syncing with each other', async () => {
+    host.machine = 'machine-1';
+    const e1 = await machine('e1');
+    await remember(e1.store, 'before copy');
+    await worker(e1, 'push').syncNow();
+    const e2 = await copyOf(e1, 'e2');
+
+    host.machine = 'machine-2';
+    const e2Event = await remember(e2.store, 'on the copy');
+    expect(await worker(e2, 'both').syncNow()).toEqual({ pushed: 1, pulled: 0 });
+
+    host.machine = 'machine-1';
+    const e1Event = await remember(e1.store, 'on the original');
+    expect(await worker(e1, 'both').syncNow()).toEqual({ pushed: 1, pulled: 1 });
+    expect(await e1.store.getEvent(e2Event)).not.toBeNull();
+
+    // The original keeps its origin; the copy got a new one.
+    const originOf = (eventId: string) => mongo.events.docs.find((doc) => doc.eventId === eventId)?.source.instanceId;
+    expect(originOf(e1Event)).toBe(mongo.events.docs[0].source.instanceId);
+    expect(originOf(e2Event)).not.toBe(originOf(e1Event));
+
+    host.machine = 'machine-2';
+    expect(await worker(e2, 'both').syncNow()).toEqual({ pushed: 0, pulled: 1 });
+    expect(await e2.store.getEvent(e1Event)).not.toBeNull();
+  });
+
+  it('loses nothing when the original and its copy push while a third machine pulls', async () => {
+    host.machine = 'machine-1';
+    const e1 = await machine('e1');
+    const c = await machine('c');
+    await remember(e1.store, 'before copy');
+    await worker(e1, 'push').syncNow();
+    const e2 = await copyOf(e1, 'e2');
+
+    const stalled = createGate();
+    const e1Event = await remember(e1.store, 'on the original');
+    const e1Push = worker(e1, 'push', { beforeBulkWrite: stalled.wait }).syncNow();
+    await stalled.reached;
+
+    host.machine = 'machine-2';
+    await remember(e2.store, 'on the copy');
+    expect(await worker(e2, 'push').syncNow()).toEqual({ pushed: 1, pulled: 0 });
+
+    host.machine = 'machine-3';
+    const puller = worker(c, 'pull');
+    expect(await puller.syncNow()).toEqual({ pushed: 0, pulled: 2 });
+    stalled.release();
+    await e1Push;
+    expect(await puller.syncNow()).toEqual({ pushed: 0, pulled: 1 });
+    expect(await c.store.getEvent(e1Event)).not.toBeNull();
     expect(await auditMongoSync(c.store, mongo.events as unknown as MongoAuditCollection, { projectKey: 'team' }))
       .toMatchObject({ status: 'pass', missing: 0, lostBelowPullCursor: 0 });
   });

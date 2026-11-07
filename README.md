@@ -645,7 +645,7 @@ claude-memory-layer mongo-sync --watch --interval 30000 --process-after-sync --p
 
 서버마다 프로젝트 경로가 달라도 됩니다. Pull된 이벤트는 이 서버의 프로젝트(`--project` 경로의 hash)로 다시 귀속되어 project-scoped 검색에 나오며, 원래 서버의 project scope와 hostname은 `metadata.mongoSync`에 남습니다. 같은 프로젝트를 모으려면 모든 서버에서 `--mongo-project`(또는 `CLAUDE_MEMORY_MONGO_PROJECT`)를 같은 값으로 지정하세요. 기본값은 경로의 마지막 폴더 이름입니다.
 
-Pull 커서는 push한 저장소(origin)마다 따로 둡니다. 각 저장소는 처음 동기화할 때 만든 origin id를 `sync_positions`에 보관하고, push하는 문서마다 그 origin 안에서의 순번(`originSeq`)을 붙입니다. Pull은 origin별로 마지막에 읽은 `originSeq` 다음부터 읽고, 자기 origin은 건너뜁니다. 한 origin의 예약과 삽입은 저장소 단위 락(`mongo-sync-push.lock`) 아래에서 차례로 일어나므로, push가 오래 멈추거나 서버 간 시계가 어긋나도 커서 아래에 문서가 끼어들지 않습니다. Pull로 받은 이벤트는 다시 push하지 않습니다.
+Pull 커서는 push한 저장소(origin)마다 따로 둡니다. 각 저장소는 처음 동기화할 때 만든 origin id를 `sync_positions`에 머신 식별값(OS machine id의 해시)과 함께 보관하고, push하는 문서마다 그 origin 안에서의 순번(`originSeq`)을 붙입니다. Pull은 origin별로 마지막에 읽은 `originSeq` 다음부터 읽고, 자기 origin은 건너뜁니다. 한 origin의 예약과 삽입은 저장소 단위 락(`mongo-sync-push.lock`) 아래에서 차례로 일어나므로, push가 오래 멈추거나 서버 간 시계가 어긋나도 커서 아래에 문서가 끼어들지 않습니다. Pull로 받은 이벤트는 다시 push하지 않습니다. 저장소 폴더를 다른 머신으로 복사하거나 백업에서 복원하면, 그 머신에서는 새 origin id를 만들어 원래 저장소와 서로 계속 주고받습니다.
 
 이전 버전이 push한 문서에는 `originSeq`가 없습니다. 이런 문서는 예전처럼 프로젝트 전체 seq 커서로 읽고, 직전 pull보다 30분 앞부터 들어온 문서를 커서 아래까지 다시 읽습니다. 이 경로에서는 서버 간 시계 차이와 push 지연이 30분 안이어야 합니다. 그래서 모든 서버를 새 버전으로 올리는 것이 좋습니다. 새 버전으로 처음 pull할 때 프로젝트 키마다 한 번 전체를 다시 읽어, 예전 커서가 놓친 문서를 채웁니다(이미 가진 이벤트는 건너뜀). `claude-memory-layer mongo-sync audit`로 놓친 문서가 남았는지 확인할 수 있습니다.
 

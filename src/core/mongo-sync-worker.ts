@@ -19,6 +19,7 @@ import type { Collection, Db } from 'mongodb';
 
 import type { MemoryEvent } from './types.js';
 import { SQLiteEventStore } from './sqlite-event-store.js';
+import { machineFingerprint } from './machine-id.js';
 import { describeMongoConnectionError, redactMongoUri } from './mongo-sync-config.js';
 import { WorkerLock } from './worker-lock.js';
 
@@ -119,8 +120,10 @@ function localizePulledMetadata(
 export const LATE_INSERT_WINDOW_MS = 30 * 60 * 1000;
 
 /**
- * sync_positions row holding this store's origin id, created once and kept, so every push from the store, across
- * restarts and project keys, carries the same source.instanceId.
+ * sync_positions row holding this store's origin id (last_event_id) and the machine it belongs to (last_timestamp
+ * holds machineFingerprint()), created once and kept, so every push from the store, across restarts and project
+ * keys, carries the same source.instanceId. A store copied or restored onto another machine mints a new id there:
+ * two stores pushing under one origin would skip each other's documents as their own and could interleave seqs.
  */
 export const MONGO_ORIGIN_ID_TARGET = 'mongo_sync_origin_id';
 
@@ -271,12 +274,18 @@ export class MongoSyncWorker {
 
   private async resolveOriginId(): Promise<string> {
     if (this.originId) return this.originId;
-    const stored = this.config.instanceId
-      ?? (await this.sqliteStore.getOrCreateSyncPosition(MONGO_ORIGIN_ID_TARGET, randomUUID(), new Date().toISOString()))
-        .lastEventId;
-    if (!stored) throw new Error('Failed to persist the Mongo sync origin id');
-    this.originId = stored;
-    return stored;
+    if (this.config.instanceId) return (this.originId = this.config.instanceId);
+
+    const machine = machineFingerprint();
+    let stored = await this.sqliteStore.getOrCreateSyncPosition(MONGO_ORIGIN_ID_TARGET, randomUUID(), machine);
+    if (stored.lastEventId && stored.lastTimestamp !== machine) {
+      // Conditional, so concurrent processes on this machine all end up with the one id the first of them wrote.
+      await this.sqliteStore.replaceSyncPositionIf(MONGO_ORIGIN_ID_TARGET, stored.lastEventId, randomUUID(), machine);
+      stored = await this.sqliteStore.getSyncPosition(MONGO_ORIGIN_ID_TARGET);
+    }
+    if (!stored.lastEventId) throw new Error('Failed to persist the Mongo sync origin id');
+    this.originId = stored.lastEventId;
+    return this.originId;
   }
 
   private async ensureConnected(): Promise<void> {
