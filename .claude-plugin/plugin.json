@@ -1,7 +1,7 @@
 {
   "name": "claude-memory-layer",
   "description": "Learn from conversations to provide personalized assistance. The more you use it, the smarter it gets.",
-  "version": "2.5.6",
+  "version": "2.5.7",
   "author": {
     "name": "Buzzni"
   },
