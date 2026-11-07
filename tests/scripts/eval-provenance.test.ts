@@ -14,6 +14,7 @@ import {
   formatProvenanceLines,
   pathRef,
   pickEnv,
+  redactPaths,
   sanitizeSettings,
   topKSaturation,
   withProvenanceHeader
@@ -87,6 +88,13 @@ describe('describeFixture', () => {
 });
 
 describe('path exposure', () => {
+  it('replaces each absolute path inside a message and keeps the rest', () => {
+    const message = `file was not found locally at "${path.join(ROOT, 'node_modules', 'm', 'tokenizer.json')}" or ${path.join(homedir(), 'cache', 'x.bin')}, retry (a/b, 5/6)`;
+    const redacted = redactPaths(message);
+
+    expect(redacted).toMatch(/^file was not found locally at "node_modules\/m\/tokenizer.json" or outside-repo:[0-9a-f]{16}, retry \(a\/b, 5\/6\)$/);
+  });
+
   it('keeps repository paths relative and hashes anything outside the repository', () => {
     expect(pathRef(path.join(ROOT, 'scripts/eval-split.ts'))).toBe('scripts/eval-split.ts');
     const outside = pathRef(path.join(homedir(), 'secret-project', 'events.sqlite'));

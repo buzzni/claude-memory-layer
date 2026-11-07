@@ -24,7 +24,8 @@ export type PublicOutputScanOptions = {
 
 export const DEFAULT_PUBLIC_OUTPUT_SCAN_PATHS = [
   'specs/agent-productivity-architecture',
-  'benchmarks/longmemeval/reports'
+  'benchmarks/longmemeval/reports',
+  'benchmarks/lesson-recall/results'
 ];
 
 const DEFAULT_EXTENSIONS = new Set(['.md', '.mdx', '.txt', '.json', '.html', '.htm', '.csv']);

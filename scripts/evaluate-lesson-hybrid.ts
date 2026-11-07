@@ -5,7 +5,7 @@ import { join, relative, resolve } from 'path';
 import { rankCuratedLessons } from '../src/extensions/mcp/lesson-ranking.js';
 import type { MemoryLesson } from '../src/core/types.js';
 import { guardFixtureRead } from './eval-split.js';
-import { buildProvenance, pathRef, warnProvenance } from './eval-provenance.mjs';
+import { buildProvenance, pathRef, redactPaths, warnProvenance } from './eval-provenance.mjs';
 
 const finalReport = process.argv.includes('--final-report');
 const [fixturePath, cacheDir, mode] = process.argv.slice(2).filter((arg) => arg !== '--final-report');
@@ -101,7 +101,7 @@ async function modelArtifact(cache: string, model: string) {
   }
   const config = JSON.parse(readFileSync(join(root, 'config.json'), 'utf8')) as { _commit_hash?: string };
   return {
-    modelDirectory: root,
+    modelDirectory: pathRef(root),
     modelArtifactSha256: digest.digest('hex'),
     modelRevision: config._commit_hash ?? null,
     modelRevisionSource: config._commit_hash ? 'downloaded config metadata' : 'not recorded by the Embedder default download contract'
@@ -131,9 +131,9 @@ try {
   const gated = rankings.map((row) => { const actual = row.actual as Array<{ lessonId: string; score: number }>; const [first, second] = actual; const semantic = Boolean(first && isSemanticRescueEligible(String((fixture.cases.find((item) => item.id === row.id) as { query: string }).query)) && first.score >= HYBRID_LESSON_GATE.absoluteCosine && first.score - (second?.score ?? 0) >= HYBRID_LESSON_GATE.top1Margin); return { id: row.id, selected: semantic ? [first.lessonId] : [] }; });
   const gatedHits = gated.filter((row) => { const expected = fixture.cases.find((item) => item.id === row.id)!.expected; return expected.length > 0 && row.selected.some((id) => expected.includes(id)); }).length;
   const gatedFalse = gated.filter((row) => fixture.cases.find((item) => item.id === row.id)!.expected.length === 0 && row.selected.length > 0).length;
-  process.stdout.write(`${JSON.stringify({ outcome: 'raw_cosine_retrieval_measured', calibratedGate: mode === '--calibrate-e5' ? calibrateGate(rankings) : undefined, model, modelDownloadedForDiagnostic: mode === '--download-model', cacheDir: resolve(cacheDir), embedderInputContract: { query: prefixed ? 'query: prefix' : 'no query prefix', document: prefixed ? 'passage: prefix' : 'no passage prefix', pooling: 'mean', normalize: true, truncation: true, maxLength: 512 }, ...artifact, positives, negatives, cosineRecallAt3: hits / positives, cosinePrecisionAt3: relevant / selected, cosineNegativeFalseInjection: falseInjection / negatives, frozenSemanticRescueGate: HYBRID_LESSON_GATE, gatedRecallAt1: gatedHits / positives, gatedNegativeFalseInjection: gatedFalse / negatives, gated, rankings, failures, provenance }, null, 2)}\n`);
+  process.stdout.write(`${JSON.stringify({ outcome: 'raw_cosine_retrieval_measured', calibratedGate: mode === '--calibrate-e5' ? calibrateGate(rankings) : undefined, model, modelDownloadedForDiagnostic: mode === '--download-model', cacheDir: pathRef(cacheDir), embedderInputContract: { query: prefixed ? 'query: prefix' : 'no query prefix', document: prefixed ? 'passage: prefix' : 'no passage prefix', pooling: 'mean', normalize: true, truncation: true, maxLength: 512 }, ...artifact, positives, negatives, cosineRecallAt3: hits / positives, cosinePrecisionAt3: relevant / selected, cosineNegativeFalseInjection: falseInjection / negatives, frozenSemanticRescueGate: HYBRID_LESSON_GATE, gatedRecallAt1: gatedHits / positives, gatedNegativeFalseInjection: gatedFalse / negatives, gated, rankings, failures, provenance }, null, 2)}\n`);
   await embedder.dispose('manual');
 } catch (error) {
-  process.stdout.write(`${JSON.stringify({ outcome: 'local_model_unavailable', cacheDir: resolve(cacheDir), detail: error instanceof Error ? error.message.split('\n')[0] : String(error), provenance }, null, 2)}\n`);
+  process.stdout.write(`${JSON.stringify({ outcome: 'local_model_unavailable', cacheDir: pathRef(cacheDir), detail: redactPaths(error instanceof Error ? error.message.split('\n')[0] : String(error)), provenance }, null, 2)}\n`);
   process.exitCode = 2;
 }

@@ -14,7 +14,7 @@
   },
   "model": "Xenova/multilingual-e5-small",
   "modelDownloadedForDiagnostic": false,
-  "cacheDir": "/Users/justin/workspace/aplus-dev-studio-desktop/.aplus/worktrees/mqze6311dopi/witty-whale-avza/.aplus/checkouts/claude-memory-layer/.cache/lesson-hybrid-e5",
+  "cacheDir": ".cache/lesson-hybrid-e5",
   "embedderInputContract": {
     "query": "query: prefix",
     "document": "passage: prefix",
@@ -23,7 +23,7 @@
     "truncation": true,
     "maxLength": 512
   },
-  "modelDirectory": "/Users/justin/workspace/aplus-dev-studio-desktop/.aplus/worktrees/mqze6311dopi/witty-whale-avza/.aplus/checkouts/claude-memory-layer/.cache/lesson-hybrid-e5/Xenova/multilingual-e5-small",
+  "modelDirectory": ".cache/lesson-hybrid-e5/Xenova/multilingual-e5-small",
   "modelArtifactSha256": "a89c5cc413885d7c2af5906da0f77f30d2ce4ef4bb11751fc7e22d652373ec4d",
   "modelRevision": null,
   "modelRevisionSource": "not recorded by the Embedder default download contract",

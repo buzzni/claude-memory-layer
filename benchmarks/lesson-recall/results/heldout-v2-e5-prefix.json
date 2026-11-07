@@ -1,6 +1,6 @@
 {
-  "fixture": "/Users/justin/workspace/aplus-dev-studio-desktop/.aplus/worktrees/mqze6311dopi/witty-whale-avza/specs/lesson-learning-reliability/recall-evaluation.json",
-  "cacheDir": "/Users/justin/workspace/aplus-dev-studio-desktop/.aplus/worktrees/mqze6311dopi/witty-whale-avza/.aplus/checkouts/claude-memory-layer/.cache/lesson-hybrid-e5",
+  "fixture": "outside-repo:c72cb76aae13fa3d",
+  "cacheDir": ".cache/lesson-hybrid-e5",
   "remoteModels": false,
   "status": "ready",
   "lexical": {

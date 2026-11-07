@@ -187,3 +187,11 @@ export function withProvenanceHeader(markdown, provenance) {
   const rest = markdown.slice(newline + 1);
   return `${markdown.slice(0, newline)}\n\n${lines}\n${rest.startsWith('\n') ? '' : '\n'}${rest}`;
 }
+
+/** Message text with every absolute path inside it replaced by its pathRef form; the rest is kept. */
+export function redactPaths(text) {
+  return text.replace(/(?<![\w./:~-])(?:\/[^\s"'`<>)\]]+)+/g, (match) => {
+    const trailing = match.match(/[.,;:]+$/)?.[0] ?? '';
+    return `${pathRef(trailing ? match.slice(0, -trailing.length) : match)}${trailing}`;
+  });
+}

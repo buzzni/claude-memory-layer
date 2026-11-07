@@ -1,5 +1,5 @@
 {
-  "fixture": "/Users/justin/workspace/aplus-dev-studio-desktop/.aplus/worktrees/mqze6311dopi/witty-whale-avza/specs/lesson-learning-reliability/recall-evaluation.json",
+  "fixture": "outside-repo:c72cb76aae13fa3d",
   "status": "ready",
   "lexical": {
     "recallAt1": 0.6,
