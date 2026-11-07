@@ -736,7 +736,7 @@ SECRET_TOKEN=abc123
 
 원본 확인:
 ```bash
-claude-memory-layer show mem:a7Bc3x
+claude-memory-layer source mem:a7Bc3x
 ```
 
 ## Endless Mode
