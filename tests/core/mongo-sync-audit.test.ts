@@ -1,7 +1,7 @@
 /**
  * Mongo sync audit: compares the local store with the shared Mongo collection per source.instanceId, so a document a
  * pull skipped (a pusher that stalled past the late-insert window, or clock skew between machines) shows up as a gap
- * instead of silently never arriving. The fake collection evaluates only the read-only operators the audit sends.
+ * instead of silently never arriving. The shared fake Mongo evaluates the read-only operators the audit sends.
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -18,9 +18,9 @@ import {
 } from '../../src/core/mongo-sync-worker.js';
 import { SQLiteEventStore } from '../../src/core/sqlite-event-store.js';
 import type { MemoryEvent } from '../../src/core/types.js';
+import { FakeMongo } from '../helpers/fake-mongo.js';
 
 type Doc = Record<string, unknown> & { seq: number; eventId: string };
-type Filter = Record<string, unknown>;
 
 const INSERTED_AT = new Date('2026-10-30T00:00:00.000Z');
 /** setCursors records the previous pull at 2026-10-31T00:00Z, so its late-insert window opens 30 minutes before. */
@@ -51,62 +51,11 @@ function localEvent(eventId: string, metadata?: Record<string, unknown>): Memory
   };
 }
 
-function field(doc: Record<string, unknown>, fieldPath: string): unknown {
-  return fieldPath.split('.').reduce<unknown>((value, key) => (value as Record<string, unknown> | undefined)?.[key], doc);
-}
-
-function matches(doc: Doc, filter: Filter): boolean {
-  return Object.entries(filter).every(([key, condition]) => {
-    const value = field(doc, key);
-    if (typeof condition !== 'object' || condition === null) return value === condition;
-    const ops = condition as Record<string, unknown>;
-    if (ops.$exists !== undefined && (value !== undefined) !== ops.$exists) return false;
-    if (ops.$in && !(ops.$in as unknown[]).includes(value)) return false;
-    if (ops.$gt !== undefined && !((value as number) > (ops.$gt as number))) return false;
-    if (ops.$gte !== undefined && !((value as number) >= (ops.$gte as number))) return false;
-    if (ops.$lte !== undefined && !((value as number) <= (ops.$lte as number))) return false;
-    return true;
-  });
-}
-
-function accumulate(rows: Doc[], spec: Record<string, unknown>): unknown {
-  const [op, arg] = Object.entries(spec)[0];
-  const values = rows.map((row) => (typeof arg === 'string' ? field(row, arg.slice(1)) : arg));
-  if (op === '$sum') return values.reduce<number>((sum, v) => sum + (v as number), 0);
-  if (op === '$first') return values[0] ?? null;
-  if (op === '$push') return values;
-  const sorted = [...values].sort((a, b) => Number(a) - Number(b));
-  return op === '$min' ? sorted[0] : sorted[sorted.length - 1];
-}
-
-/** Records every query so tests can check the audit never reads documents back, only counts and grouped rows. */
+/** The shared fake records every query, so tests can check the audit never reads documents back. */
 function fakeCollection(docs: Doc[]) {
-  const calls: Array<{ op: 'countDocuments' | 'aggregate'; arg: unknown; options?: unknown }> = [];
-  const collection: MongoAuditCollection = {
-    countDocuments: async (filter, options) => {
-      calls.push({ op: 'countDocuments', arg: filter, options });
-      return docs.filter((doc) => matches(doc, filter)).length;
-    },
-    aggregate: (pipeline, options) => {
-      calls.push({ op: 'aggregate', arg: pipeline, options });
-      return {
-        toArray: async () => {
-          const [{ $match }, { $group }] = pipeline as [{ $match: Filter }, { $group: Record<string, unknown> }];
-          const groups = new Map<unknown, Doc[]>();
-          for (const doc of docs.filter((d) => matches(d, $match))) {
-            const key = field(doc, String($group._id).slice(1)) ?? null;
-            groups.set(key, [...(groups.get(key) ?? []), doc]);
-          }
-          return [...groups].map(([key, rows]) => Object.fromEntries([
-            ['_id', key],
-            ...Object.entries($group).filter(([name]) => name !== '_id')
-              .map(([name, spec]) => [name, accumulate(rows, spec as Record<string, unknown>)])
-          ])) as never[];
-        }
-      };
-    }
-  };
-  return { collection, calls };
+  const mongo = new FakeMongo();
+  mongo.events.docs = docs;
+  return { collection: mongo.events as unknown as MongoAuditCollection, calls: mongo.events.calls };
 }
 
 describe('auditMongoSync', () => {

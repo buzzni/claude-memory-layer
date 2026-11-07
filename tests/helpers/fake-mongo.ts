@@ -52,6 +52,8 @@ class FakeCollection {
   docs: Doc[] = [];
   /** Documents handed back by find, so a test can tell an idle pull from one that re-read everything. */
   returned = 0;
+  /** Read queries the audit sends, so a test can check it only counts and groups, and which index it pins. */
+  readonly calls: Array<{ op: 'countDocuments' | 'aggregate'; arg: unknown; options?: unknown }> = [];
 
   async createIndex(): Promise<string> {
     return 'index';
@@ -70,11 +72,13 @@ class FakeCollection {
     };
   }
 
-  async countDocuments(filter: Filter): Promise<number> {
+  async countDocuments(filter: Filter, options?: unknown): Promise<number> {
+    this.calls.push({ op: 'countDocuments', arg: filter, options });
     return this.docs.filter((doc) => matchesFilter(doc, filter)).length;
   }
 
-  aggregate(pipeline: Record<string, unknown>[]) {
+  aggregate(pipeline: Record<string, unknown>[], options?: unknown) {
+    this.calls.push({ op: 'aggregate', arg: pipeline, options });
     return {
       toArray: async () => {
         const [{ $match }, { $group }] = pipeline as [{ $match: Filter }, { $group: Record<string, unknown> }];
