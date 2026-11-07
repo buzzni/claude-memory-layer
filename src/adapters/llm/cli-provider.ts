@@ -90,6 +90,33 @@ function createScratchCwd(scratchDirName: string): string {
   return dir;
 }
 
+/**
+ * Host-session markers a daemon inherits when a Claude Code hook spawned it.
+ * With these set the child `claude -p` answers "Not logged in" even when a
+ * local credential exists: it expects the hosting session to supply auth, and
+ * hosts (Saycode/happy) never pass their token to child processes. Verified
+ * on a hosted session — dropping exactly these made a local login work.
+ */
+const HOST_SESSION_ENV_KEYS = [
+  'CLAUDECODE',
+  'CLAUDE_CODE_CHILD_SESSION',
+  'CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST',
+  'CLAUDE_CODE_ENTRYPOINT',
+  'CLAUDE_CODE_EXECPATH'
+] as const;
+
+export function buildCliProviderEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...base };
+  for (const key of HOST_SESSION_ENV_KEYS) delete env[key];
+  // Defence in depth: if a child hook ever does run, disable every
+  // derivation mode — not just the caller's own — so a summary child
+  // cannot recurse into lesson extraction or vice versa.
+  env.CLAUDE_MEMORY_SUMMARY_MODE = 'off';
+  env.CLAUDE_MEMORY_LESSON_MODE = 'off';
+  env.CLAUDE_MEMORY_DISABLE_HOOKS = 'true';
+  return env;
+}
+
 export interface RunCliProviderOptions {
   provider: CliProviderName;
   model: string | null;
@@ -111,15 +138,7 @@ export function runCliProvider(options: RunCliProviderOptions): Promise<string> 
       child = spawn(provider, buildCliArgs(provider, model), {
         stdio: ['pipe', 'pipe', 'pipe'],
         cwd: createScratchCwd(scratchDirName),
-        env: {
-          ...process.env,
-          // Defence in depth: if a child hook ever does run, disable every
-          // derivation mode — not just the caller's own — so a summary child
-          // cannot recurse into lesson extraction or vice versa.
-          CLAUDE_MEMORY_SUMMARY_MODE: 'off',
-          CLAUDE_MEMORY_LESSON_MODE: 'off',
-          CLAUDE_MEMORY_DISABLE_HOOKS: 'true'
-        }
+        env: buildCliProviderEnv(process.env)
       });
     } catch (error) {
       reject(classify(String(error)));
