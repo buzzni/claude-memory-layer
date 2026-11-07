@@ -196,7 +196,20 @@ function rankHookCandidates(
     .sort((a, b) => {
       const scoreDelta = b.effectiveScore - a.effectiveScore;
       return scoreDelta || a.index - b.index;
-    });
+    })
+    // Episode expansion can re-add an answer a lane already merged (#139). Keep the best-ranked copy, so an
+    // episode-linked bonus survives and the duplicate neither takes a slot nor shapes the score cliff.
+    .filter(keepFirstPerId());
+}
+
+function keepFirstPerId(): (entry: { candidate: HookMemoryCandidate }) => boolean {
+  const seen = new Set<string>();
+  return ({ candidate }) => {
+    if (!candidate.id) return true;
+    if (seen.has(candidate.id)) return false;
+    seen.add(candidate.id);
+    return true;
+  };
 }
 
 function applyScoreCliff(
