@@ -11,6 +11,8 @@ import {
   checkPathConsistency,
   checkPluginFiles,
   checkProjectStoreAccess,
+  checkSessionEndHandlerLoads,
+  checkSessionEndPendingJobs,
   doctorExitCode,
   findPathInstalls,
   formatDoctorReport,
@@ -64,6 +66,67 @@ describe('checkPluginFiles', () => {
     expect(result.status).toBe('fail');
     expect(result.detail).toContain(REQUIRED_HOOK_FILES[0]);
     expect(result.fix).toContain('npm install');
+  });
+});
+
+describe('checkSessionEndHandlerLoads', () => {
+  let root = '';
+  afterEach(() => {
+    if (root) rmSync(root, { recursive: true, force: true });
+    root = '';
+  });
+
+  function pluginWithHandler(source: string): string {
+    root = mkdtempSync(join(tmpdir(), 'cml-doctor-handler-'));
+    mkdirSync(join(root, 'hooks'));
+    writeFileSync(join(root, 'hooks', 'session-end-handler.js'), source);
+    return root;
+  }
+
+  it('passes when the session-end work the worker loads after acknowledging imports cleanly', () => {
+    const result = checkSessionEndHandlerLoads(pluginWithHandler('export const handleClaudeSessionEnd = async () => {};'));
+    expect(result).toMatchObject({ name: 'session-end-handler', status: 'pass' });
+    // Importing does not open a database, so it cannot vouch for native bindings.
+    expect(result.detail).toContain('native bindings are checked at first use');
+  });
+
+  it('fails when importing it throws, which the presence check cannot see', () => {
+    const result = checkSessionEndHandlerLoads(pluginWithHandler("throw new Error('native module failed to load');"));
+    expect(result.status).toBe('fail');
+    expect(result.detail).toContain('native module failed to load');
+    expect(result.fix).toContain('npm install');
+  });
+
+  it('leaves a missing handler to the plugin-files check', () => {
+    const result = checkSessionEndHandlerLoads('/plugin', { existsImpl: () => false, importImpl: () => 'unreachable' });
+    expect(result.status).toBe('warn');
+    expect(result.detail).toContain('plugin-files');
+  });
+});
+
+describe('checkSessionEndPendingJobs', () => {
+  const pending = (failedAt: string, lastError: string) => ({
+    version: 1 as const,
+    job: { sessionId: 'session-1', registrationId: null },
+    failedAt,
+    attempts: 0,
+    lastError
+  });
+
+  it('passes when no session-end work is waiting for a retry', () => {
+    expect(checkSessionEndPendingJobs([])).toMatchObject({ name: 'session-end-jobs', status: 'pass' });
+  });
+
+  it('warns with the count, the oldest failure and the latest error when sessions were not ended', () => {
+    const result = checkSessionEndPendingJobs([
+      pending('2026-11-06T10:00:00.000Z', 'old error'),
+      pending('2026-11-07T10:00:00.000Z', 'Cannot find module better-sqlite3')
+    ]);
+    expect(result.status).toBe('warn');
+    expect(result.detail).toContain('2 session');
+    expect(result.detail).toContain('2026-11-06T10:00:00.000Z');
+    expect(result.detail).toContain('Cannot find module better-sqlite3');
+    expect(result.fix).toContain('next session end');
   });
 });
 

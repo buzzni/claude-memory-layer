@@ -15,6 +15,11 @@ import {
   runClaudeSessionEndWorker
 } from '../../src/adapters/claude/hooks/session-end-handoff.js';
 import { handleClaudeSessionEnd } from '../../src/adapters/claude/hooks/session-end-worker.js';
+import {
+  listPendingSessionEndJobs,
+  retryPendingSessionEndJobs,
+  savePendingSessionEndJob
+} from '../../src/adapters/claude/hooks/session-end-pending.js';
 import type { SessionEndInput } from '../../src/core/types.js';
 
 const validInput: SessionEndInput = {
@@ -274,28 +279,35 @@ describe('Claude SessionEnd hook hand-off', () => {
 
 describe('Claude SessionEnd worker hand-off', () => {
   const validJob = async () => JSON.stringify({ sessionId: 'session-1', registrationId: null });
+  const pendingStore = () => ({
+    savePendingJob: vi.fn(),
+    retryPendingJobs: vi.fn(async () => {})
+  });
 
   it('acknowledges a job before loading the session-end work, and only a valid one', async () => {
     const order: string[] = [];
     const handle = vi.fn(async () => { order.push('handle'); });
 
     await runClaudeSessionEndWorker({
+      ...pendingStore(),
       readJob: validJob,
       handlerAvailable: () => true,
       acknowledge: () => order.push('ack'),
       loadHandler: async () => {
         order.push('load');
         return handle;
-      }
+      },
+      retryPendingJobs: async () => { order.push('retry'); }
     });
     await runClaudeSessionEndWorker({
+      ...pendingStore(),
       readJob: async () => 'not json',
       handlerAvailable: () => true,
       acknowledge: () => order.push('ack-invalid'),
       loadHandler: async () => handle
     });
 
-    expect(order).toEqual(['ack', 'load', 'handle']);
+    expect(order).toEqual(['ack', 'load', 'handle', 'retry']);
     expect(handle).toHaveBeenCalledWith({ sessionId: 'session-1', registrationId: null });
   });
 
@@ -303,10 +315,74 @@ describe('Claude SessionEnd worker hand-off', () => {
     const acknowledge = vi.fn();
     const loadHandler = vi.fn();
 
-    await runClaudeSessionEndWorker({ readJob: validJob, handlerAvailable: () => false, acknowledge, loadHandler });
+    await runClaudeSessionEndWorker({ ...pendingStore(), readJob: validJob, handlerAvailable: () => false, acknowledge, loadHandler });
 
     expect(acknowledge).not.toHaveBeenCalled();
     expect(loadHandler).not.toHaveBeenCalled();
+  });
+
+  it('keeps the job for a later retry when the session-end work fails to load after the acknowledgement', async () => {
+    const store = pendingStore();
+    const loadError = new Error('Cannot find module better-sqlite3');
+
+    await runClaudeSessionEndWorker({
+      ...store,
+      readJob: validJob,
+      handlerAvailable: () => true,
+      acknowledge: vi.fn(),
+      loadHandler: async () => { throw loadError; }
+    });
+
+    expect(store.savePendingJob).toHaveBeenCalledWith({ sessionId: 'session-1', registrationId: null }, loadError);
+    expect(store.retryPendingJobs).not.toHaveBeenCalled();
+  });
+
+  it('leaves the jobs earlier workers kept alone when this job fails, so a broken store does not use up their retries', async () => {
+    const store = pendingStore();
+    const handle = vi.fn(async () => { throw new Error('database is locked'); });
+
+    await runClaudeSessionEndWorker({
+      ...store,
+      readJob: validJob,
+      handlerAvailable: () => true,
+      acknowledge: vi.fn(),
+      loadHandler: async () => handle
+    });
+
+    expect(handle).toHaveBeenCalled();
+    expect(store.retryPendingJobs).not.toHaveBeenCalled();
+    expect(store.savePendingJob).not.toHaveBeenCalled();
+  });
+
+  describe('as the built worker would run it', () => {
+    let homeDir = '';
+    beforeEach(() => {
+      homeDir = mkdtempSync(path.join(tmpdir(), 'cml-session-end-worker-'));
+    });
+    afterEach(() => {
+      rmSync(homeDir, { recursive: true, force: true });
+    });
+
+    it('ends the session a failed load left behind at the next session end', async () => {
+      const handled: string[] = [];
+      const run = (sessionId: string, loadHandler: () => Promise<(job: { sessionId: string }) => Promise<void>>) =>
+        runClaudeSessionEndWorker({
+          readJob: async () => JSON.stringify({ sessionId, registrationId: null }),
+          handlerAvailable: () => true,
+          acknowledge: () => {},
+          loadHandler,
+          savePendingJob: (job, error) => savePendingSessionEndJob(job, error, { homeDir }),
+          retryPendingJobs: async (handle) => { await retryPendingSessionEndJobs(handle, { homeDir }); }
+        });
+
+      await run('session-1', async () => { throw new SyntaxError('Unexpected end of input'); });
+      expect(listPendingSessionEndJobs({ homeDir }).map((pending) => pending.job.sessionId)).toEqual(['session-1']);
+
+      await run('session-2', async () => async (job) => { handled.push(job.sessionId); });
+
+      expect(handled).toEqual(['session-2', 'session-1']);
+      expect(listPendingSessionEndJobs({ homeDir })).toEqual([]);
+    });
   });
 });
 
