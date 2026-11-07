@@ -25,6 +25,7 @@ export function matchesFilter(doc: Doc, filter: Filter): boolean {
     const v = comparable(value) as number;
     if (ops.$exists !== undefined && (value !== undefined) !== ops.$exists) return false;
     if (ops.$in && !(ops.$in as unknown[]).includes(value)) return false;
+    if (ops.$nin && (ops.$nin as unknown[]).includes(value)) return false;
     if (ops.$gt !== undefined && !(value !== undefined && v > (comparable(ops.$gt) as number))) return false;
     if (ops.$gte !== undefined && !(value !== undefined && v >= (comparable(ops.$gte) as number))) return false;
     if (ops.$lt !== undefined && !(value !== undefined && v < (comparable(ops.$lt) as number))) return false;
@@ -166,6 +167,7 @@ export function connectFakeMongo(worker: unknown, mongo: FakeMongo, hooks: FakeM
   const events = {
     createIndex: () => mongo.events.createIndex(),
     find: (...args: Parameters<FakeCollection['find']>) => mongo.events.find(...args),
+    aggregate: (...args: Parameters<FakeCollection['aggregate']>) => mongo.events.aggregate(...args),
     bulkWrite: async (ops: Parameters<FakeCollection['bulkWrite']>[0]) => {
       await hooks.beforeBulkWrite?.();
       return mongo.events.bulkWrite(ops);

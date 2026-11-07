@@ -322,4 +322,26 @@ describe('MongoSyncWorker per-origin pull cursors', () => {
     expect(await auditMongoSync(c.store, mongo.events as unknown as MongoAuditCollection, { projectKey: 'team' }))
       .toMatchObject({ status: 'pass', missing: 0, lostBelowPullCursor: 0 });
   });
+
+  it('rebuilds origins missing from cml_origins from the documents themselves', async () => {
+    const a = await machine('a');
+    const b = await machine('b');
+    const c = await machine('c');
+    await remember(a.store, 'from a');
+    await remember(b.store, 'from b');
+    await worker(a, 'push').syncNow();
+    await worker(b, 'push').syncNow();
+    const originA = mongo.events.docs[0].source.instanceId;
+
+    // cml_origins lost A's row (dropped collection, restore of cml_events only): A's documents must stay reachable.
+    mongo.origins.docs = mongo.origins.docs.filter((doc) => doc.origin !== originA);
+    expect(await worker(c, 'pull').syncNow()).toEqual({ pushed: 0, pulled: 2 });
+    expect(mongo.origins.docs).toContainEqual(expect.objectContaining({ projectKey: 'team', origin: originA, maxOriginSeq: 1 }));
+
+    mongo.origins.docs = [];
+    await remember(a.store, 'from a again');
+    await worker(a, 'push').syncNow();
+    mongo.origins.docs = [];
+    expect(await worker(c, 'pull').syncNow()).toEqual({ pushed: 0, pulled: 1 });
+  });
 });

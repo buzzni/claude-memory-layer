@@ -513,7 +513,7 @@ export class MongoSyncWorker {
     if (!this.events || !this.origins) throw new Error('Mongo not connected');
 
     const self = await this.resolveOriginId();
-    const origins = await this.origins.find({ projectKey: this.config.projectKey }).toArray();
+    const origins = await this.listOrigins(self);
     let pulled = 0;
 
     for (const { origin, maxOriginSeq } of origins) {
@@ -536,6 +536,44 @@ export class MongoSyncWorker {
     }
 
     return pulled;
+  }
+
+  /**
+   * cml_origins is only an index of cml_events: an origin whose row is gone (dropped collection, partial restore)
+   * would never be read again. One limit-1 query on the per-origin index, skipping the known origins, checks for
+   * such documents; if any exist, origins are derived from the documents and written back (best effort, a puller may
+   * lack write access).
+   */
+  private async listOrigins(self: string): Promise<Array<Pick<OriginDoc, 'origin' | 'maxOriginSeq'>>> {
+    if (!this.events || !this.origins) throw new Error('Mongo not connected');
+
+    const projectKey = this.config.projectKey;
+    const known = await this.origins.find({ projectKey }).toArray();
+    const unknown = await this.events.find(
+      { projectKey, 'source.instanceId': { $nin: [...known.map((row) => row.origin), self] }, originSeq: { $exists: true } },
+      { projection: { _id: 1 }, limit: 1 }
+    ).toArray();
+    if (unknown.length === 0) return known;
+
+    const derived = await this.events.aggregate<{ _id: string | null; maxOriginSeq: number }>([
+      { $match: { projectKey, originSeq: { $exists: true } } },
+      { $group: { _id: '$source.instanceId', maxOriginSeq: { $max: '$originSeq' } } }
+    ]).toArray();
+    const merged = new Map(known.map((row) => [row.origin, row.maxOriginSeq]));
+    for (const { _id: origin, maxOriginSeq } of derived) {
+      if (!origin || (merged.get(origin) ?? 0) >= maxOriginSeq) continue;
+      merged.set(origin, maxOriginSeq);
+      try {
+        await this.origins.updateOne(
+          { _id: `${projectKey}:${origin}` },
+          { $setOnInsert: { projectKey, origin }, $max: { maxOriginSeq } },
+          { upsert: true }
+        );
+      } catch (err) {
+        console.warn(`[MongoSyncWorker] Failed to restore cml_origins row for ${origin} (continuing):`, err);
+      }
+    }
+    return [...merged].map(([origin, maxOriginSeq]) => ({ origin, maxOriginSeq }));
   }
 
   /**
