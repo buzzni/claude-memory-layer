@@ -243,6 +243,7 @@ const SESSION_START_LESSON_USAGE_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
  * delivers single lessons per turn. The Codex path has no runbook index yet.
  */
 export function sessionStartLessonIndexScope(env: NodeJS.ProcessEnv, deliveryClient: string): 'all' | 'runbooks' | 'none' {
+  // 'all' narrows to 'runbooks' at the call site once the project has runbooks.
   if (env.CLAUDE_MEMORY_LESSON_OWNER !== 'host') return 'all';
   return deliveryClient.startsWith('codex') ? 'none' : 'runbooks';
 }
@@ -469,7 +470,7 @@ export async function main(options: SessionStartMainOptions = {}): Promise<strin
 
     // specs/lesson-recall-hooks R1 — lesson index. Bounded like the core lane,
     // never query-scored; the per-turn lane handles relevance for what is cut here.
-    const lessonScope = sessionStartLessonIndexScope(process.env, deliveryClient);
+    let lessonScope = sessionStartLessonIndexScope(process.env, deliveryClient);
     const lessonBudget = lessonScope === 'none' ? 0 : sessionStartLessonBudget();
     if (lessonBudget > 0 && process.env.CLAUDE_MEMORY_EVAL_DISABLE_SESSION_CONTEXT !== 'true') {
       try {
@@ -477,8 +478,11 @@ export async function main(options: SessionStartMainOptions = {}): Promise<strin
           resolveCanonicalMemoryActorId(input.actor_id),
           500
         );
+        const runbookIds = new Set(await memoryService.listProjectRunbookIds());
+        // Once a project has consolidated runbooks, the index is the runbook
+        // index on every path (P1): the full lesson list only measured 0 opens.
+        if (lessonScope === 'all' && runbookIds.size > 0) lessonScope = 'runbooks';
         if (lessonScope === 'runbooks') {
-          const runbookIds = new Set(await memoryService.listProjectRunbookIds());
           injections = injections.filter((item) => runbookIds.has(item.value.lessonId));
         }
         const indexLabel = lessonScope === 'runbooks' ? SESSION_START_RUNBOOK_INDEX_LABEL : '[session-start] lesson index';
@@ -566,11 +570,17 @@ export async function main(options: SessionStartMainOptions = {}): Promise<strin
     // tool_observation alone is ~84% of events and session_summary about 2% —
     // so an unfiltered window either misses summaries entirely or has to load
     // thousands of large tool payloads to reach them.
-    const recentEvents = process.env.CLAUDE_MEMORY_EVAL_DISABLE_SESSION_CONTEXT === 'true'
+    const scannedEvents = process.env.CLAUDE_MEMORY_EVAL_DISABLE_SESSION_CONTEXT === 'true'
       ? []
       : await memoryService.getRecentEvents(SESSION_START_SCAN_WINDOW, {
         eventTypes: SESSION_START_TIERS
       });
+    // A resumed session reloads its own transcript, so its events are already
+    // in context. After a compaction the transcript is only a summary, so they
+    // stay eligible there. CLAUDE_MEMORY_INJECT_SAME_SESSION=true keeps them.
+    const recentEvents = input.source === 'resume' && process.env.CLAUDE_MEMORY_INJECT_SAME_SESSION !== 'true'
+      ? scannedEvents.filter((event) => event.sessionId !== input.session_id)
+      : scannedEvents;
 
     const injectedEvents = selectSessionStartMemories(recentEvents, SESSION_START_MAX_MEMORIES);
 

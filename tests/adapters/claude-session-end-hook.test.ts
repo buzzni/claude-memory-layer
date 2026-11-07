@@ -27,6 +27,7 @@ const validInput: SessionEndInput = {
 describe('Claude SessionEnd hook', () => {
   const atSessionEnd = {
     getRegistrationId: () => 'registration-1',
+    getRegisteredProjectPath: () => null,
     getOpenTurn: () => ({ turnId: 'turn-open', turnTrigger: 'task_notification' as const }),
     getTranscriptBytes: () => 4096,
     now: () => new Date('2026-10-31T12:00:00.000Z')
@@ -44,6 +45,22 @@ describe('Claude SessionEnd hook', () => {
         openTurn: { turnId: 'turn-open', turnTrigger: 'task_notification' }
       }
     });
+  });
+
+  // A session that `cd`s into another repository ends with that directory as cwd. Reconciling
+  // the transcript there would replay the whole conversation into a foreign project store.
+  it('reconciles into the project registered at SessionStart when the session ended in another directory', () => {
+    const job = normalizeClaudeSessionEndJob(
+      { ...validInput, cwd: '/repo/elsewhere' },
+      { ...atSessionEnd, getRegisteredProjectPath: () => '/repo/project' }
+    );
+    expect(job?.projectPath).toBe('/repo/project');
+    expect(job?.transcriptPath).toBe('/tmp/claude/session-1.jsonl');
+  });
+
+  it('falls back to the SessionEnd cwd when the session was never registered', () => {
+    const job = normalizeClaudeSessionEndJob(validInput, { ...atSessionEnd, getRegisteredProjectPath: () => null });
+    expect(job?.projectPath).toBe('/repo/project');
   });
 
   it('still ends a session without a transcript or with a relative project scope, but does not reconcile it', () => {
@@ -72,6 +89,7 @@ class FakeWorker extends EventEmitter {
 describe('Claude SessionEnd hook hand-off', () => {
   const capture = {
     getRegistrationId: () => 'registration-1',
+    getRegisteredProjectPath: () => null,
     getOpenTurn: () => null,
     getTranscriptBytes: () => 4096,
     now: () => new Date('2026-10-31T12:00:00.000Z')

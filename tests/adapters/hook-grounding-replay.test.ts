@@ -110,11 +110,18 @@ describe('hook-path grounding replay (fixture mode)', () => {
   });
 
   it('never lets a lane see an answer written after the trace', () => {
-    const laterAnswer = ids.get('r5-answer')!;
+    // Written in another session, so only the time bound can hide it at r5.
+    const laterAnswer = ids.get('parallel-ledger-answer')!;
     for (const arm of report.arms) {
       expect(injectedIds(arm.arm, 'trace-r5')).not.toContain(laterAnswer);
       // Once it exists, the same answer is recalled for the follow-up question.
       expect(injectedIds(arm.arm, 'trace-r6')).toContain(laterAnswer);
+    }
+  });
+
+  it('does not inject an answer back into the session that wrote it', () => {
+    for (const arm of report.arms) {
+      expect(injectedIds(arm.arm, 'trace-r6')).not.toContain(ids.get('r5-answer'));
     }
   });
 

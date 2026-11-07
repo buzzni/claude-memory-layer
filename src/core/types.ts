@@ -673,6 +673,8 @@ export interface SessionStartInput {
   session_id: string;
   cwd: string;
   actor_id?: string;
+  /** Why the host started the session: 'startup', 'resume', 'clear' or 'compact'. */
+  source?: string;
 }
 
 export interface SessionStartOutput {
@@ -705,6 +707,8 @@ export interface StopInput {
   permission_mode: string;
   hook_event_name: string;
   stop_hook_active: boolean;
+  /** Present on newer Claude Code versions; only measured, not stored. */
+  last_assistant_message?: string;
 }
 
 export interface SessionEndInput {
