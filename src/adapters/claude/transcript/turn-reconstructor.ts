@@ -1,4 +1,4 @@
-import { readTranscriptTailEntries, type ClaudeTranscriptEntry, type ReadTranscriptTailOptions } from './transcript-reader.js';
+import type { ClaudeTranscriptEntry } from './transcript-reader.js';
 
 export interface AssistantTextMessage {
   text: string;
@@ -56,15 +56,6 @@ export function extractAssistantTextMessages(entries: ClaudeTranscriptEntry[]): 
   }
 
   return messages;
-}
-
-/** Read a Claude transcript tail and reconstruct assistant text messages. */
-export async function extractAssistantMessages(
-  transcriptPath: string,
-  options?: ReadTranscriptTailOptions
-): Promise<AssistantTextMessage[]> {
-  const entries = await readTranscriptTailEntries(transcriptPath, options);
-  return extractAssistantTextMessages(entries);
 }
 
 /** Generate a simple deterministic summary from stored session events. */
