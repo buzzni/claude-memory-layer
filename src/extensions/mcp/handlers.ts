@@ -109,6 +109,7 @@ import type {
   PerspectiveObservation,
   PerspectiveObservationLevel
 } from '../../core/types.js';
+import { retrieveSemanticMemories } from '../../adapters/claude/hooks/semantic-daemon-client.js';
 import { extractLessonWithLlm, isLlmLessonExtractionEnabled } from '../../adapters/llm/lesson-extraction-llm.js';
 import { rankCuratedLessonsHybrid } from './hybrid-lesson-ranking.js';
 import { rankCuratedLessons } from './lesson-ranking.js';
@@ -2135,7 +2136,9 @@ async function handleMemSearch(memoryService: MemoryService, args: Record<string
   const sessionId = optionalString(args.sessionId);
   const eventType = eventTypeArg(args.eventType);
 
-  const search = await retrieveMcpMemories(memoryService, query, { topK, fetchTopK, sessionId, eventType });
+  const search = await retrieveMcpMemories(memoryService, query, {
+    topK, fetchTopK, sessionId, eventType, projectPath: optionalString(args.projectPath)
+  });
   await recordMcpExplicitSearchTrace(memoryService, {
     sessionId,
     memories: search.memories,
@@ -2180,6 +2183,8 @@ interface McpMemoryRetrievalOptions {
   sessionId?: string;
   eventType?: EventType;
   retrievalMode?: RetrievalMode;
+  /** Absolute project path; lets a read-only service borrow the semantic daemon's vector lane. */
+  projectPath?: string;
 }
 
 interface McpMemoryRetrievalResult {
@@ -2221,11 +2226,20 @@ async function retrieveMcpMemories(
       ...(options.retrievalMode ? { retrievalMode: options.retrievalMode } : {})
     };
     const result = await memoryService.retrieveMemories(query, retrieveOptions);
+    if (memoryService.capabilities?.canonicalWrites !== false) {
+      return {
+        memories: selectMcpMemoryResults(result.memories, options.topK, options.eventType),
+        diagnostics: result.outcomeDiagnostics
+      };
+    }
+
+    const semantic = await retrieveReadOnlySemanticLane(memoryService, query, { ...options, fetchTopK });
+    const merged = semantic ? mergeSemanticAheadOfLexical(semantic, result.memories, fetchTopK) : result.memories;
     return {
-      memories: selectMcpMemoryResults(result.memories, options.topK, options.eventType),
-      ...(memoryService.capabilities?.canonicalWrites === false
-        ? { warning: 'Read-only retrieval: used lexical search; semantic/vector retrieval and telemetry are disabled.' }
-        : {}),
+      memories: selectMcpMemoryResults(merged, options.topK, options.eventType),
+      warning: semantic
+        ? 'Read-only retrieval: semantic lane served by the semantic daemon; telemetry is disabled.'
+        : 'Read-only retrieval: used lexical search; semantic/vector retrieval and telemetry are disabled.',
       diagnostics: result.outcomeDiagnostics
     };
   } catch (error) {
@@ -2262,6 +2276,65 @@ function selectMcpMemoryResults(memories: ContextPackMemory[], topK: number, eve
     .filter((memory) => !isLowSignalContextContent(memory.event.content || ''))
     .filter((memory) => eventType === undefined || memory.event.eventType === eventType)
     .slice(0, topK);
+}
+
+const READ_ONLY_SEMANTIC_DAEMON_TIMEOUT_MS = 1500;
+const READ_ONLY_SEMANTIC_MIN_SCORE = 0.3;
+
+/**
+ * A read-only service is model-free by contract (#102), so its own retrieval is lexical. The
+ * long-lived semantic daemon already holds the embedding model and serves read-only vector
+ * queries for the hooks; borrow it here without ever starting one. Returns null when the lane
+ * is not applicable or the daemon is unavailable, and the caller keeps the lexical result.
+ * A session-filtered query stays lexical: the daemon treats sessionId as its caller's session,
+ * not as a result filter.
+ */
+async function retrieveReadOnlySemanticLane(
+  memoryService: MemoryService,
+  query: string,
+  options: McpMemoryRetrievalOptions & { fetchTopK: number }
+): Promise<ContextPackMemory[] | null> {
+  if (options.sessionId !== undefined) return null;
+  if (!options.projectPath || !path.isAbsolute(options.projectPath)) return null;
+  let hits;
+  try {
+    hits = await retrieveSemanticMemories(
+      {
+        sessionId: 'mcp-read-only',
+        projectPath: options.projectPath,
+        prompt: query,
+        topK: options.fetchTopK,
+        minScore: READ_ONLY_SEMANTIC_MIN_SCORE
+      },
+      READ_ONLY_SEMANTIC_DAEMON_TIMEOUT_MS,
+      { allowDaemonStart: false }
+    );
+  } catch {
+    return null;
+  }
+  const memories: ContextPackMemory[] = [];
+  for (const hit of hits) {
+    if (!hit.id) continue;
+    const event = await memoryService.getEvent(hit.id);
+    if (event) memories.push({ event, score: hit.score ?? 0 });
+  }
+  return memories;
+}
+
+function mergeSemanticAheadOfLexical(
+  semantic: ContextPackMemory[],
+  lexical: ContextPackMemory[],
+  limit: number
+): ContextPackMemory[] {
+  const seen = new Set<string>();
+  const merged: ContextPackMemory[] = [];
+  for (const memory of [...semantic, ...lexical]) {
+    if (seen.has(memory.event.id)) continue;
+    seen.add(memory.event.id);
+    merged.push(memory);
+    if (merged.length >= limit) break;
+  }
+  return merged;
 }
 
 function basicMcpRetrievalDiagnostics(
@@ -2520,7 +2593,7 @@ async function handleMemContextPack(memoryService: MemoryService, args: Record<s
     })
     : undefined;
 
-  const search = await retrieveMcpMemories(memoryService, query, { topK: retrievalTopK, sessionId, retrievalMode });
+  const search = await retrieveMcpMemories(memoryService, query, { topK: retrievalTopK, sessionId, retrievalMode, projectPath });
   const recentEvents = await memoryService.getRecentEvents(recentLimit);
   const curatedLessons = await loadCuratedLessons(projectPath, requesterActorId, optionalString(args.query), memoryService.capabilities?.canonicalWrites === false);
 
