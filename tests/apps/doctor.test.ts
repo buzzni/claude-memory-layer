@@ -13,6 +13,8 @@ import {
   checkProjectStoreAccess,
   checkSessionEndHandlerLoads,
   checkSessionEndPendingJobs,
+  checkSummaryProvider,
+  gatherSummaryProviderFacts,
   doctorExitCode,
   findPathInstalls,
   formatDoctorReport,
@@ -491,5 +493,158 @@ describe('checkMcpClientConfig', () => {
     expect(result.detail).toContain('Could not read');
     expect(result.status).toBe('warn');
     expect(result.detail).toContain('Unexpected token');
+  });
+});
+
+describe('checkSummaryProvider', () => {
+  const base = {
+    enabled: true,
+    mode: undefined,
+    provider: 'claude' as const,
+    envProvider: 'claude' as const,
+    binaryFound: true,
+    auth: { state: 'logged-in' as const },
+    daemons: []
+  };
+  const daemon = (overrides = {}) => ({
+    provider: 'claude',
+    model: 'claude-haiku-4-5',
+    stored: 3,
+    empty: 1,
+    failures: 0,
+    lastFailureCode: null,
+    ...overrides
+  });
+
+  it('passes with the mode shown when LLM summaries are disabled', () => {
+    expect(checkSummaryProvider({ ...base, enabled: false, mode: 'off' })).toEqual({
+      name: 'summary-provider',
+      status: 'pass',
+      detail: 'disabled (CLAUDE_MEMORY_SUMMARY_MODE=off)'
+    });
+  });
+
+  it('fails when the provider binary is not on PATH and names the env var to change', () => {
+    const result = checkSummaryProvider({ ...base, provider: 'codex', envProvider: 'codex', binaryFound: false });
+    expect(result.status).toBe('fail');
+    expect(result.detail).toContain('codex');
+    expect(result.fix).toContain('CLAUDE_MEMORY_SUMMARY_PROVIDER');
+  });
+
+  it('warns that summaries fail silently when the CLI is not logged in', () => {
+    const result = checkSummaryProvider({ ...base, auth: { state: 'logged-out' } });
+    expect(result).toMatchObject({
+      status: 'warn',
+      detail: 'claude CLI is not logged in; summaries will fail silently. Log in or set CLAUDE_MEMORY_SUMMARY_PROVIDER=codex'
+    });
+  });
+
+  it('warns with the reason, not a failure, when the auth probe cannot decide', () => {
+    const result = checkSummaryProvider({ ...base, auth: { state: 'unknown', reason: 'timed out after 10s' } });
+    expect(result.status).toBe('warn');
+    expect(result.detail).toContain('timed out after 10s');
+  });
+
+  it('warns when a running daemon has only failures, with counts and the last code', () => {
+    const result = checkSummaryProvider({ ...base, daemons: [daemon({ stored: 0, empty: 0, failures: 7, lastFailureCode: 'auth' })] });
+    expect(result.status).toBe('warn');
+    expect(result.detail).toContain('failures=7');
+    expect(result.detail).toContain('stored=0');
+    expect(result.detail).toContain('auth');
+  });
+
+  it('does not warn on failures once the daemon has stored a summary', () => {
+    expect(checkSummaryProvider({ ...base, daemons: [daemon({ failures: 2, lastFailureCode: 'timeout' })] }).status).toBe('pass');
+  });
+
+  it('passes and notes the shell env when the daemon runs a different provider than the shell would start', () => {
+    // settings.json env reaches hook-spawned daemons but not the terminal doctor runs in,
+    // so a mismatch is expected on hosted machines and must not warn.
+    const result = checkSummaryProvider({ ...base, provider: 'claude', envProvider: 'codex', daemons: [daemon()] });
+    expect(result.status).toBe('pass');
+    expect(result.detail).toBe('provider=claude model=claude-haiku-4-5 stored=3 empty=1 failures=0 (shell env would start codex)');
+  });
+
+  it('passes with the daemon counters', () => {
+    expect(checkSummaryProvider({ ...base, daemons: [daemon()] })).toEqual({
+      name: 'summary-provider',
+      status: 'pass',
+      detail: 'provider=claude model=claude-haiku-4-5 stored=3 empty=1 failures=0'
+    });
+  });
+
+  it('passes without counters for a daemon that predates summary telemetry or when none runs', () => {
+    expect(checkSummaryProvider({ ...base, daemons: [] }).detail).toBe('no running daemon snapshot');
+    expect(checkSummaryProvider({ ...base, daemons: [null] }).detail).toBe('no summary counters yet');
+  });
+});
+
+describe('gatherSummaryProviderFacts', () => {
+  const noDaemons = () => [];
+  it('reads the mode and skips every probe when summaries are disabled', () => {
+    const facts = gatherSummaryProviderFacts({
+      env: { CLAUDE_MEMORY_SUMMARY_MODE: 'rule' },
+      findBinary: () => { throw new Error('must not look up the binary'); },
+      runProbe: () => { throw new Error('must not probe'); },
+      readDaemons: noDaemons
+    });
+    expect(facts).toMatchObject({ enabled: false, mode: 'rule' });
+  });
+
+  it('parses claude auth status JSON, including the logged-out exit code', () => {
+    const probe = (loggedIn: boolean) => gatherSummaryProviderFacts({
+      env: {},
+      findBinary: () => true,
+      runProbe: () => ({ status: loggedIn ? 0 : 1, stdout: JSON.stringify({ loggedIn }) }),
+      readDaemons: noDaemons
+    }).auth;
+    expect(probe(true)).toEqual({ state: 'logged-in' });
+    expect(probe(false)).toEqual({ state: 'logged-out' });
+  });
+
+  it('treats codex login status exit code as the answer and probes with the provider env', () => {
+    let seen: { command: string; args: string[]; env: NodeJS.ProcessEnv } | undefined;
+    const facts = gatherSummaryProviderFacts({
+      env: { CLAUDE_MEMORY_SUMMARY_PROVIDER: 'codex', CLAUDECODE: '1' },
+      findBinary: () => true,
+      runProbe: (command, args, env) => { seen = { command, args, env }; return { status: 0, stdout: 'Logged in' }; },
+      readDaemons: noDaemons
+    });
+    expect(facts.auth).toEqual({ state: 'logged-in' });
+    expect(seen).toMatchObject({ command: 'codex', args: ['login', 'status'] });
+    expect(seen?.env.CLAUDECODE).toBeUndefined();
+  });
+
+  it('reports unknown with the reason on probe errors, timeouts and unparseable output', () => {
+    const auth = (result: { status: number | null; stdout: string; error?: string }) => gatherSummaryProviderFacts({
+      env: {},
+      findBinary: () => true,
+      runProbe: () => result,
+      readDaemons: noDaemons
+    }).auth;
+    expect(auth({ status: null, stdout: '', error: 'ETIMEDOUT' })).toEqual({ state: 'unknown', reason: 'ETIMEDOUT' });
+    expect(auth({ status: 0, stdout: 'not json' }).state).toBe('unknown');
+  });
+
+  it('probes the provider the running daemon reports, not the one the shell env resolves', () => {
+    let seen: string | undefined;
+    const facts = gatherSummaryProviderFacts({
+      env: {},
+      findBinary: (command) => { seen = command; return true; },
+      runProbe: () => ({ status: 0, stdout: 'Logged in' }),
+      readDaemons: () => [{ provider: 'codex', model: null, stored: 1, empty: 0, failures: 0, lastFailureCode: null }]
+    });
+    expect(seen).toBe('codex');
+    expect(facts).toMatchObject({ provider: 'codex', envProvider: 'claude', auth: { state: 'logged-in' } });
+  });
+
+  it('does not probe auth when the binary is missing', () => {
+    const facts = gatherSummaryProviderFacts({
+      env: {},
+      findBinary: () => false,
+      runProbe: () => { throw new Error('must not probe'); },
+      readDaemons: noDaemons
+    });
+    expect(facts.binaryFound).toBe(false);
   });
 });

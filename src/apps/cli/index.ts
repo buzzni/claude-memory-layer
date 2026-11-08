@@ -81,7 +81,9 @@ import {
   checkProjectStoreAccess,
   checkSessionEndHandlerLoads,
   checkSessionEndPendingJobs,
+  checkSummaryProvider,
   findClaudeMemoryPackage,
+  gatherSummaryProviderFacts,
   type DoctorCheckResult,
   type EmbeddingBackendScript
 } from './doctor.js';
@@ -1164,6 +1166,7 @@ program
       checkHooksInstalled(settings, pluginPath),
       checkSessionEndPendingJobs(listPendingSessionEndJobs()),
       checkEmbeddingBackend(packageRoot, embeddingBackendScript?.isEmbeddingBackendAvailable ?? null),
+      checkSummaryProvider(gatherSummaryProviderFacts()),
       checkPathConsistency('claude-memory-layer', process.env.PATH ?? ''),
       checkPathConsistency('claude-memory-layer-mcp', process.env.PATH ?? ''),
       ...readMcpClientConfigs({ cwd: process.cwd() })

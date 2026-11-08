@@ -7,7 +7,8 @@ import {
   LEGACY_RUNTIME_VERSION,
   RuntimeResourceTelemetry,
   collectRuntimeResourceReport,
-  opaqueBackendId
+  opaqueBackendId,
+  readRuntimeResourceSnapshots
 } from '../../src/core/runtime-resource-telemetry.js';
 
 const temporaryDirs: string[] = [];
@@ -197,6 +198,67 @@ describe('runtime resource telemetry', () => {
       uninstrumentedProcessCount: 0,
       restartRecommended: true,
       recommendationReasons: ['mixed_runtime_versions']
+    });
+  });
+
+  describe('summary outcomes', () => {
+    it('omits the summary section until a summary outcome is recorded', () => {
+      const telemetry = new RuntimeResourceTelemetry({ persist: false, pid: 101, ppid: 50, version: '2.5.8' });
+      expect(telemetry.getSnapshot().summary).toBeUndefined();
+    });
+
+    it('counts stored, empty and failed attempts with the latest success and failure', () => {
+      const directory = temporaryDir();
+      let now = Date.parse('2026-11-07T00:00:00.000Z');
+      const telemetry = new RuntimeResourceTelemetry({
+        telemetryDir: directory,
+        now: () => now,
+        pid: 101,
+        ppid: 50,
+        version: '2.5.8'
+      });
+      telemetry.registerProcess('semantic-daemon');
+
+      telemetry.recordSummaryOutcome({ provider: 'claude', model: 'claude-haiku-4-5', outcome: 'failure', errorCode: 'auth' });
+      now += 2_000;
+      telemetry.recordSummaryOutcome({ provider: 'claude', model: 'claude-haiku-4-5', outcome: 'failure' });
+      now += 2_000;
+      telemetry.recordSummaryOutcome({ provider: 'claude', model: 'claude-haiku-4-5', outcome: 'empty' });
+      now += 2_000;
+      telemetry.recordSummaryOutcome({ provider: 'claude', model: 'claude-haiku-4-5', outcome: 'stored' });
+
+      expect(telemetry.getSnapshot().summary).toEqual({
+        provider: 'claude',
+        model: 'claude-haiku-4-5',
+        attempts: 4,
+        stored: 1,
+        empty: 1,
+        failures: 2,
+        lastSuccessAt: '2026-11-07T00:00:06.000Z',
+        lastFailure: { at: '2026-11-07T00:00:02.000Z', code: 'unknown' }
+      });
+      const [persisted] = readRuntimeResourceSnapshots(directory, now);
+      expect(persisted.summary?.stored).toBe(1);
+    });
+
+    it('keeps reading and aggregating snapshots written before the summary section existed', () => {
+      const directory = temporaryDir();
+      const legacy = new RuntimeResourceTelemetry({ telemetryDir: directory, pid: 101, ppid: 50, version: '2.5.7' });
+      legacy.registerProcess('semantic-daemon');
+      const current = new RuntimeResourceTelemetry({ persist: false, version: '2.5.7' });
+      current.recordSummaryOutcome({ provider: 'codex', model: null, outcome: 'stored' });
+
+      const [snapshot] = readRuntimeResourceSnapshots(directory);
+      const report = collectRuntimeResourceReport({
+        platform: 'darwin',
+        telemetryDir: directory,
+        localSnapshot: current.getSnapshot(),
+        readProcessTable: () => '101 1 102400 node /safe/dist/adapters/claude/hooks/semantic-daemon.js'
+      });
+
+      expect(snapshot.summary).toBeUndefined();
+      expect(report.observation.processCount).toBe(1);
+      expect(report.processLocal.summary?.stored).toBe(1);
     });
   });
 });
