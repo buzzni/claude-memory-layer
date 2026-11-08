@@ -1,4 +1,5 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 
@@ -180,6 +181,67 @@ describe('createSQLiteReadSnapshot clone isolation', () => {
       } finally {
         snapshot.cleanup();
       }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('createSQLiteReadSnapshot stale snapshot sweep', () => {
+  // cleanup() only runs when the connection is closed. A process that exits
+  // without closing (killed MCP server, crashed hook) used to leave a full
+  // database copy behind for good — 29 copies, 31G in one day on one machine.
+  const deadPid = (): number => spawnSync(process.execPath, ['-e', '']).pid!;
+
+  it('removes snapshots whose owning process has exited and keeps live ones', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'cml-snapshot-sweep-'));
+    try {
+      const source = path.join(dir, 'events.sqlite');
+      writeFileSync(source, Buffer.from('SQLite format 3\0fixture-bytes'));
+      const parent = path.join(dir, 'tmp');
+      mkdirSync(parent);
+      const orphan = path.join(parent, `cml-sqlite-read-${deadPid()}-AbC123`);
+      const live = path.join(parent, `cml-sqlite-read-${process.pid}-XyZ789`);
+      for (const stale of [orphan, live]) {
+        mkdirSync(stale);
+        writeFileSync(path.join(stale, 'events.sqlite'), 'copy');
+      }
+
+      const snapshot = createSQLiteReadSnapshot(source, { snapshotDirectory: parent });
+      try {
+        expect(existsSync(orphan)).toBe(false);
+        expect(existsSync(live)).toBe(true);
+        expect(path.basename(path.dirname(snapshot.databasePath))).toMatch(
+          new RegExp(`^cml-sqlite-read-${process.pid}-`)
+        );
+      } finally {
+        snapshot.cleanup();
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('removes unowned legacy snapshots only once they are a day old', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'cml-snapshot-sweep-legacy-'));
+    try {
+      const source = path.join(dir, 'events.sqlite');
+      writeFileSync(source, Buffer.from('SQLite format 3\0fixture-bytes'));
+      const parent = path.join(dir, 'tmp');
+      mkdirSync(parent);
+      const oldLegacy = path.join(parent, 'cml-sqlite-read-OldAbc');
+      const freshLegacy = path.join(parent, 'cml-sqlite-read-NewAbc');
+      const unrelated = path.join(parent, 'cml-other-OldAbc');
+      for (const legacy of [oldLegacy, freshLegacy, unrelated]) mkdirSync(legacy);
+      const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
+      utimesSync(oldLegacy, twoDaysAgo, twoDaysAgo);
+      utimesSync(unrelated, twoDaysAgo, twoDaysAgo);
+
+      createSQLiteReadSnapshot(source, { snapshotDirectory: parent }).cleanup();
+
+      expect(existsSync(oldLegacy)).toBe(false);
+      expect(existsSync(freshLegacy)).toBe(true);
+      expect(existsSync(unrelated)).toBe(true);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
