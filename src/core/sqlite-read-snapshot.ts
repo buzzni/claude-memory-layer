@@ -31,6 +31,12 @@ export interface SQLiteReadSnapshotOptions {
   canonicalMemoryRoot?: string;
 }
 
+const SNAPSHOT_PREFIX = 'cml-sqlite-read-';
+// `<prefix><owner pid>-<mkdtemp suffix>`; names without a pid predate owner tracking.
+const OWNED_SNAPSHOT_NAME = /^cml-sqlite-read-(\d+)-[A-Za-z0-9]{6}$/;
+const LEGACY_SNAPSHOT_NAME = /^cml-sqlite-read-[A-Za-z0-9]{6}$/;
+const LEGACY_SNAPSHOT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
 export function createSQLiteReadSnapshot(
   sourceDatabasePath: string,
   options: SQLiteReadSnapshotOptions = {}
@@ -62,9 +68,10 @@ export function createSQLiteReadSnapshot(
     }
   }
 
+  sweepStaleSnapshots(realParent);
   let snapshotRoot: string;
   try {
-    snapshotRoot = fs.mkdtempSync(path.join(realParent, 'cml-sqlite-read-'));
+    snapshotRoot = fs.mkdtempSync(path.join(realParent, `${SNAPSHOT_PREFIX}${process.pid}-`));
   } catch {
     throw snapshotError('SQLITE_SNAPSHOT_UNAVAILABLE', 'Temporary snapshot storage is unavailable');
   }
@@ -161,6 +168,45 @@ function isWithin(parent: string, candidate: string): boolean {
 
 function snapshotError(code: string, message: string): NodeJS.ErrnoException {
   return Object.assign(new Error(message), { code });
+}
+
+/**
+ * cleanup() only runs when the connection closes, so a process that exits
+ * without closing (killed MCP server, crashed hook) leaves a full database
+ * copy behind. Remove copies whose owner is gone before making a new one.
+ */
+function sweepStaleSnapshots(parent: string): void {
+  let names: string[];
+  try {
+    names = fs.readdirSync(parent);
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    const owner = OWNED_SNAPSHOT_NAME.exec(name);
+    if (!owner && !LEGACY_SNAPSHOT_NAME.test(name)) continue;
+    const snapshotRoot = path.join(parent, name);
+    try {
+      const stat = fs.lstatSync(snapshotRoot);
+      if (!stat.isDirectory()) continue;
+      const stale = owner
+        ? !isProcessAlive(Number(owner[1]))
+        : Date.now() - stat.mtimeMs > LEGACY_SNAPSHOT_MAX_AGE_MS;
+      if (stale) cleanupSnapshotRoot(snapshotRoot);
+    } catch {
+      // Another process may remove the same entry concurrently.
+    }
+  }
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // EPERM: alive but owned by another user, whose copy is not ours to remove.
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
+  }
 }
 
 function cleanupSnapshotRoot(snapshotRoot: string): void {
