@@ -33,6 +33,7 @@ import {
   memoryEventReferenceItem,
   memoryReferenceSummary
 } from '../../../core/memory-reference-context.js';
+import { singleLineRecallText } from '../../../core/recall-sanitizer.js';
 import type {
   CoreMemoryBlock,
   EventType,
@@ -304,7 +305,7 @@ export function formatLessonIndexContext(
   const triggerChars = runbooks ? SESSION_START_RUNBOOK_TRIGGER_CHARS : SESSION_START_LESSON_TRIGGER_CHARS;
   const items: string[] = [];
   for (const lesson of lessons) {
-    const line = `- ${lesson.name.trim()} — ${clipLessonTrigger(lesson.trigger, triggerChars)}\n`;
+    const line = `- ${singleLineRecallText(lesson.name)} — ${clipLessonTrigger(lesson.trigger, triggerChars)}\n`;
     const candidate = header + items.join('') + line + footer(items.length + 1);
     if (candidate.length > options.budgetChars) break;
     items.push(line);
