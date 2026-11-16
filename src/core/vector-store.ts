@@ -271,14 +271,27 @@ export class VectorStore {
    * the same way `writeExistingRowsWithRetry` does.
    */
   async deleteEventsBefore(before: Date, eventType?: string): Promise<void> {
-    this.assertWritable();
-    await this.initialize();
-    if (!this.db) return;
-
     const predicate = [
       `\`timestamp\` < ${toLanceSqlString(before.toISOString())}`,
       ...(eventType === undefined ? [] : [`\`eventType\` = ${toLanceSqlString(eventType)}`])
     ].join(' AND ');
+    await this.deleteEventVectorsWhere(predicate);
+  }
+
+  /**
+   * Delete every event vector of one session from the legacy and event_vectors_* tables, one
+   * predicate per table like `deleteEventsBefore` (a long session would otherwise cost one
+   * Lance commit per event). Idempotent, so a re-run after a partial failure finishes the job.
+   */
+  async deleteSessionEverywhere(sessionId: string): Promise<void> {
+    await this.deleteEventVectorsWhere(toLanceColumnEquals('sessionId', sessionId));
+  }
+
+  private async deleteEventVectorsWhere(predicate: string): Promise<void> {
+    this.assertWritable();
+    await this.initialize();
+    if (!this.db) return;
+
     const tableNames = await this.db.tableNames();
     const targetTables = tableNames.filter(
       (name) => name === this.defaultTableName || name.startsWith('event_vectors_')

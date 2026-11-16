@@ -235,6 +235,20 @@ describe('VectorStore V2 upsert', () => {
     expect(eventTableV1.delete).toHaveBeenCalledTimes(1);
   });
 
+  it('deleteSessionEverywhere deletes by session predicate from every event table', async () => {
+    mocks.db.tableNames.mockResolvedValue(['conversations', 'event_vectors_v1', 'task_title_vectors_v1']);
+    const legacyTable = mocks.makeTable('conversations');
+    const eventTableV1 = mocks.makeTable('event_vectors_v1');
+    const taskTable = mocks.makeTable('task_title_vectors_v1');
+    const store = new VectorStore('/tmp/cml-vectors');
+
+    await store.deleteSessionEverywhere("sess'ion-1");
+
+    expect(legacyTable.delete).toHaveBeenCalledWith("`sessionId` = 'sess''ion-1'");
+    expect(eventTableV1.delete).toHaveBeenCalledWith("`sessionId` = 'sess''ion-1'");
+    expect(taskTable.delete).not.toHaveBeenCalled();
+  });
+
   it('deleteEventEverywhere is a no-op when no matching tables exist', async () => {
     mocks.db.tableNames.mockResolvedValue(['task_title_vectors_v1']);
     const taskTable = mocks.makeTable('task_title_vectors_v1');
