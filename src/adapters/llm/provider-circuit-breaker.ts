@@ -13,7 +13,9 @@
  * holder, released only by its owner). The probe is claimed inside that lock
  * with an id and a lease as long as the CLI timeout allows the call to run,
  * so concurrent processes send at most one probe, and only the outcome of the
- * current claim moves an open breaker. A closed breaker is read without the
+ * current claim moves an open breaker. Known limit (#217): when two processes
+ * take over a dead holder's lock at the same instant, both can get in, which
+ * can cost one extra probe. A closed breaker is read without the
  * lock and writes nothing on success: the common path is one small read.
  *
  * Invariant: the breaker only ever withholds a call it can justify from a
