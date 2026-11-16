@@ -68,6 +68,7 @@ export const DISABLED_MEMORY_OPERATIONS_CONFIG: MemoryOperationsConfig = {
   graphExpansion: { enabled: false, maxHops: 1 },
   codifyLite: { enabled: false },
   lessons: { enabled: false },
+  preEditCheck: { enabled: false },
   perspectiveMemory: {
     enabled: false,
     deriver: { enabled: false, maxEventsPerBatch: 20, maxObserversPerSession: 5 },

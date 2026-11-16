@@ -1,6 +1,6 @@
 import { sanitizeRecallText } from '../../../core/recall-sanitizer.js';
 
-export type ClaudeContextHookEvent = 'SessionStart' | 'UserPromptSubmit';
+export type ClaudeContextHookEvent = 'SessionStart' | 'UserPromptSubmit' | 'PreToolUse';
 
 export interface ClaudeContextHookOutput {
   hookSpecificOutput: {

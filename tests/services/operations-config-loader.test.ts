@@ -38,6 +38,12 @@ describe('operations config loader', () => {
     // Untouched subfeatures keep their schema defaults (ranking-changing ones stay off).
     expect(config?.graphExpansion.enabled).toBe(false);
     expect(config?.retention.enabled).toBe(false);
+    expect(config?.preEditCheck.enabled).toBe(false);
+  });
+
+  it('reads the pre-edit check switch', () => {
+    useConfigFile(JSON.stringify({ preEditCheck: { enabled: true } }));
+    expect(loadMemoryOperationsConfig()?.preEditCheck.enabled).toBe(true);
   });
 
   it('returns undefined when the file is missing (previous behavior preserved)', () => {
