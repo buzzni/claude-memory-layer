@@ -159,3 +159,65 @@ jobs:
           npm install "$NAME@$VERSION"
           node -e "const p=require('$WORKDIR/node_modules/$NAME/package.json'); console.log(JSON.stringify({name:p.name,version:p.version,bin:p.bin},null,2))"
           ./node_modules/.bin/claude-memory-layer --version
+
+  # A separate job so the write token never reaches the publish job, which runs
+  # npm install scripts.
+  #
+  # It also runs when publish failed, but only on a workflow_dispatch re-run.
+  # Re-running a tag whose version is already on npm stops publish at its
+  # already-published guard — that guard stays fail-closed — and this job is
+  # then the way to create a Release that is still missing. A tag push that
+  # trips the same guard (a reused version) gets no Release.
+  github-release:
+    name: GitHub Release
+    needs: publish
+    if: ${{ !cancelled() && (needs.publish.result == 'success' || github.event_name == 'workflow_dispatch') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # create the Release
+    env:
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+
+    steps:
+      # Full history so the previous tag can be found below.
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      # GitHub otherwise picks the notes' starting point from earlier Releases,
+      # and none exist for the v2.x tags, so the first notes could span the
+      # whole history. The previous v* tag is the real starting point.
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          NAME="$(node -p "require('./package.json').name")"
+          VERSION="$(node -p "require('./package.json').version")"
+          if [ "v$VERSION" != "$TAG" ]; then
+            echo "::error::tag/version mismatch — tag=$TAG package.json=$VERSION"
+            exit 1
+          fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "GitHub Release $TAG already exists; skipping"
+            exit 0
+          fi
+          # A Release only for a version npm actually has. E404 means it was
+          # never published; any other failure is an outage and must not pass
+          # as "nothing to do".
+          if ! NPM_OUTPUT="$(npm view "$NAME@$VERSION" version 2>&1)"; then
+            if printf '%s' "$NPM_OUTPUT" | grep -q E404; then
+              echo "::notice::$NAME@$VERSION is not on npm; not creating a Release"
+              exit 0
+            fi
+            echo "$NPM_OUTPUT"
+            echo "::error::could not check npm for $NAME@$VERSION"
+            exit 1
+          fi
+          PREVIOUS_TAG="$(git describe --tags --abbrev=0 --match 'v*' "$TAG^" 2>/dev/null || true)"
+          gh release create "$TAG" --verify-tag --title "$TAG" --generate-notes \
+            ${PREVIOUS_TAG:+--notes-start-tag "$PREVIOUS_TAG"}

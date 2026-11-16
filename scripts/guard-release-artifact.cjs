@@ -122,15 +122,22 @@ function guardManifestVersions() {
  */
 const FORBIDDEN_IN_TARBALL = /(^|\/)\.claude-memory(\/|$)|(^|\/)graphify-out(\/|$)|cache|qrels|\.db$|\.sqlite|\.tgz$|^tests\/|^src\/|^specs\//;
 
+/**
+ * The MIT license requires its notice to travel with every copy. npm adds a
+ * root LICENSE on its own, so this only fails if the file is deleted or
+ * renamed — which would otherwise ship silently.
+ */
+const REQUIRED_IN_TARBALL = ['LICENSE'];
+
 function guardTarball(packJsonPath) {
   if (!packJsonPath) fail('usage: guard-release-artifact.cjs tarball <npm-pack-dry-run-json>');
   const parsed = JSON.parse(fs.readFileSync(packJsonPath, 'utf8'));
   const data = Array.isArray(parsed) ? parsed[0] : parsed;
   if (!data || !Array.isArray(data.files)) fail(`unrecognised npm pack JSON in ${packJsonPath}`);
 
-  const suspicious = data.files
-    .map((file) => file.path)
-    .filter((filePath) => FORBIDDEN_IN_TARBALL.test(filePath));
+  const paths = data.files.map((file) => file.path);
+  const missing = REQUIRED_IN_TARBALL.filter((required) => !paths.includes(required));
+  const suspicious = paths.filter((filePath) => FORBIDDEN_IN_TARBALL.test(filePath));
 
   console.log(JSON.stringify({
     check: 'tarball',
@@ -140,9 +147,11 @@ function guardTarball(packJsonPath) {
     fileCount: data.files.length,
     packageSize: data.size,
     unpackedSize: data.unpackedSize,
+    missing,
     suspicious
   }, null, 2));
 
+  if (missing.length) fail(`required file(s) missing from the tarball: ${missing.join(', ')}`);
   if (suspicious.length) fail(`${suspicious.length} forbidden file(s) would be published`);
 }
 
