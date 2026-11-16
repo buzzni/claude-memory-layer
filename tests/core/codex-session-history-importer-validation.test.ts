@@ -148,6 +148,35 @@ describe('Codex session validation replay', () => {
     expect(memoryService.evaluateSessionHelpfulness).toHaveBeenCalledWith('session-latest');
   });
 
+  it('force reimport deletes only imported rows, and not at all under a message limit', async () => {
+    const sessionsDir = tempDir();
+    const projectA = join(sessionsDir, 'project-a');
+    const file = join(sessionsDir, 'rollout-2026-05-05T00-10-00-session-force.jsonl');
+    writeJsonl(file, [
+      { type: 'session_meta', payload: { id: 'session-force', cwd: projectA } },
+      { type: 'response_item', timestamp: '2026-05-05T00:10:01.000Z', payload: { type: 'message', role: 'user', content: 'force reimport prompt for the Codex session' } }
+    ]);
+
+    const memoryService = {
+      startSession: vi.fn(async (_sessionId: string, _projectPath?: string) => undefined),
+      endSession: vi.fn(async (_sessionId: string) => undefined),
+      getSessionHistory: vi.fn(async (_sessionId: string) => []),
+      deleteSessionEvents: vi.fn(async (_sessionId: string) => 0),
+      storeUserPrompt: vi.fn(async () => ({ success: true, isDuplicate: false })),
+      storeAgentResponse: vi.fn(async () => ({ success: true, isDuplicate: false }))
+    };
+    const importer = createCodexSessionHistoryImporter(memoryService as never, { sessionsDir });
+
+    const limited = await importer.importSessionFile(file, { force: true, limit: 1 });
+    expect(limited.errors).toEqual([expect.stringContaining('Skipped force reimport (a message limit')]);
+    expect(memoryService.deleteSessionEvents).not.toHaveBeenCalled();
+    expect(memoryService.storeUserPrompt).not.toHaveBeenCalled();
+
+    await importer.importSessionFile(file, { force: true });
+    expect(memoryService.deleteSessionEvents).toHaveBeenCalledWith('session-force', { importedOnly: true });
+    expect(memoryService.storeUserPrompt).toHaveBeenCalledTimes(1);
+  });
+
   it('applies Codex import limit across selected matching sessions', async () => {
     const sessionsDir = tempDir();
     const projectA = join(sessionsDir, 'project-a');

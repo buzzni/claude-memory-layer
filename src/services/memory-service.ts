@@ -833,10 +833,11 @@ export class MemoryService {
   }
 
   /**
-   * Delete all events for a session (for force reimport)
+   * Delete a session's events (for force reimport); `importedOnly` keeps the
+   * rows no importer wrote.
    */
-  async deleteSessionEvents(sessionId: string): Promise<number> {
-    return this.queryService.deleteSessionEvents(sessionId);
+  async deleteSessionEvents(sessionId: string, options?: { importedOnly?: boolean }): Promise<number> {
+    return this.queryService.deleteSessionEvents(sessionId, options);
   }
 
   /** Whether an exact user prompt is stored for this session (append dedupe key). */

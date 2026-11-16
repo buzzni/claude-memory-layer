@@ -109,6 +109,19 @@ describe('SQLiteEventStore replication helpers', () => {
     expect(results.map((result) => result.event.content)).toEqual(['fresh dragonfruit memory']);
   });
 
+  it('deleteSessionEvents with importedOnly keeps the rows no importer wrote', async () => {
+    await storeA.append({ eventType: 'user_prompt', sessionId: 'reimport-me', timestamp: new Date(), content: 'imported apricot prompt', metadata: { importedFrom: '/tmp/session.jsonl' } });
+    await storeA.append({ eventType: 'session_summary', sessionId: 'reimport-me', timestamp: new Date(), content: 'hook written fig summary' });
+    await storeA.append({ eventType: 'user_prompt', sessionId: 'other-session', timestamp: new Date(), content: 'imported cherry prompt', metadata: { importedFrom: '/tmp/other.jsonl' } });
+
+    await expect(storeA.deleteSessionEvents('reimport-me', { importedOnly: true })).resolves.toBe(1);
+
+    expect((await storeA.getSessionEvents('reimport-me')).map((event) => event.content)).toEqual(['hook written fig summary']);
+    expect((await storeA.keywordSearch('fig', 5)).map((result) => result.event.content)).toEqual(['hook written fig summary']);
+    await expect(storeA.keywordSearch('apricot', 5)).resolves.toEqual([]);
+    expect((await storeA.keywordSearch('cherry', 5)).map((result) => result.event.content)).toEqual(['imported cherry prompt']);
+  });
+
   it('supports event updates and deletes on a fresh FTS table before manual rebuild', async () => {
     const appendResult = await storeA.append({
       eventType: 'user_prompt',

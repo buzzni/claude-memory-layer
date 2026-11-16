@@ -5412,15 +5412,21 @@ export class SQLiteEventStore {
   }
 
   /**
-   * Delete all events for a session (for force reimport)
+   * Delete a session's events (for force reimport). With `importedOnly`, only
+   * the rows an importer wrote (`metadata.importedFrom`) are deleted; rows the
+   * hooks or the daemon wrote cannot be recreated from a transcript.
    */
-  async deleteSessionEvents(sessionId: string): Promise<number> {
+  async deleteSessionEvents(sessionId: string, options: { importedOnly?: boolean } = {}): Promise<number> {
     await this.initialize();
+
+    const where = options.importedOnly
+      ? `session_id = ? AND json_type(CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END, '$.importedFrom') = 'text'`
+      : 'session_id = ?';
 
     // Get event IDs first for cascading deletes
     const events = sqliteAll<{ id: string }>(
       this.db,
-      `SELECT id FROM events WHERE session_id = ?`,
+      `SELECT id FROM events WHERE ${where}`,
       [sessionId]
     );
 
@@ -5456,7 +5462,7 @@ export class SQLiteEventStore {
       }
 
       // Delete events.
-      const result = sqliteRun(this.db, `DELETE FROM events WHERE session_id = ?`, [sessionId]);
+      const result = sqliteRun(this.db, `DELETE FROM events WHERE ${where}`, [sessionId]);
 
       // Recreate the FTS table + triggers from the remaining events. A failure
       // here aborts the whole transaction rather than leaving the index desynced

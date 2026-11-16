@@ -630,7 +630,14 @@ export class HermesSessionHistoryImporter {
     const effectiveProjectPath = options.projectPath;
 
     if (options.force) {
-      const deleted = await this.memoryService.deleteSessionEvents(memorySessionId);
+      // A message limit stops the re-import before the end of the session, so
+      // the rows past it would be deleted and never put back.
+      if (Number.isFinite(options.limit ?? Infinity)) {
+        result.errors.push(`Skipped force reimport (a message limit would drop the rows past it; rerun without a limit): ${memorySessionId}`);
+        return result;
+      }
+      // Only the rows an import wrote; the hooks' rows are not in state.db.
+      const deleted = await this.memoryService.deleteSessionEvents(memorySessionId, { importedOnly: true });
       if (options.verbose && deleted > 0) {
         console.log(`  Deleted ${deleted} existing events for session ${memorySessionId}`);
       }
