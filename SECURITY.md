@@ -25,10 +25,13 @@ Claude Memory Layer는 한 사용자의 머신에서 돌아가는 로컬 도구�
 ### 대시보드
 
 - **기본 bind는 localhost**입니다. `dashboard` 명령과 `DASHBOARD_HOST`는 `localhost`, `127.0.0.1`, `0.0.0.0`만 받고, 지정하지 않으면 `127.0.0.1`에 bind합니다.
+- **Host 헤더를 허용 목록으로 검사**합니다(DNS rebinding 방어). localhost에만 bind해도, 공격자 도메인을 127.0.0.1로 다시 해석시키면 브라우저는 그 도메인의 페이지를 대시보드와 같은 출처로 취급합니다. 이때도 브라우저는 `Host`에 공격자 도메인을 보내므로, 서버는 `Host`가 허용 목록에 없는 요청을 모든 경로(`/health`, `/api/auth/*`, 정적 파일 포함)에서 본문 없이 403으로 거절합니다. 이 검사는 비밀번호 검사보다 먼저 돕니다. 문법이 잘못된 `Host`(공백·`@` 포함 등)나 HTTP/1.1 요청의 `Host` 누락은 그보다 앞서 Node HTTP 서버나 어댑터가 400으로 거절하므로, 403은 허용 목록 검사까지 도달한 요청에 해당합니다.
+  - 기본 허용: `localhost`, `127.0.0.1`, `[::1]` + 실제 포트(예: `localhost:37777`). 대소문자와 끝의 점 하나(`localhost.`)는 무시합니다. 포트가 없는 `Host`는 80번 포트로 봅니다. `Host`가 없는 요청도 거절합니다.
+  - 그 밖의 이름이나 주소로 접속하려면 `DASHBOARD_ALLOWED_HOSTS`(쉼표 구분)에 적습니다. `hostname`은 모든 포트, `hostname:port`는 그 포트만 허용합니다. 예: `DASHBOARD_ALLOWED_HOSTS=192.168.0.10:37777,memory.example.com`. 출처 URL(`http://…`) 형식은 받지 않습니다(그런 항목은 무시됩니다).
 - **비밀번호는 선택**입니다. `--password` 또는 `DASHBOARD_PASSWORD`(`CLAUDE_MEMORY_LAYER_DASHBOARD_PASSWORD`)로 켭니다. 켜면 `/health`, `/api/auth/*`를 뺀 모든 경로가 로그인을 요구합니다. 세션 쿠키는 HMAC-SHA256 서명, `HttpOnly`, `SameSite=Lax`이고 기본 30일 뒤 만료됩니다. HTTPS(또는 `X-Forwarded-Proto: https`)로 들어온 요청이면 `Secure`도 붙습니다.
-- **비밀번호가 없으면 API에 인증이 없습니다.** 포트에 닿을 수 있는 모든 것이 저장된 메모리를 읽을 수 있습니다. `0.0.0.0`으로 bind할 때는 반드시 비밀번호를 설정하세요(설정하지 않으면 CLI가 경고합니다).
+- **비밀번호가 없으면 API에 인증이 없습니다.** 포트에 닿을 수 있고 허용된 `Host`를 보내는 모든 것이 저장된 메모리를 읽을 수 있습니다. 로컬의 다른 프로세스나 `curl`은 `Host`를 마음대로 정할 수 있으므로, Host 검사는 브라우저를 통한 공격만 막습니다. `0.0.0.0`으로 bind할 때는 반드시 비밀번호를 설정하세요(설정하지 않으면 CLI가 경고합니다). `0.0.0.0` bind에서도 기본으로는 loopback 이름만 허용하므로, LAN 주소나 호스트 이름으로 접속하려면 `DASHBOARD_ALLOWED_HOSTS`도 설정해야 합니다(설정하지 않으면 서버가 시작할 때 경고합니다).
 - **CORS는 기본적으로 same-origin만** 허용합니다. CORS 헤더를 내보내지 않으므로 브라우저는 다른 출처 페이지가 API 응답을 읽지 못하게 막습니다. `DASHBOARD_ALLOWED_ORIGINS`(쉼표 구분)에 적은 출처에만 CORS를 엽니다.
-- **상태를 바꾸는 API 요청은 Origin을 검사**합니다. `/api/*`에 대한 GET·HEAD·OPTIONS 외 요청에 `Origin` 헤더가 있으면, 서버 자신의 출처나 허용 목록과 일치해야 하고 아니면 403으로 거절합니다. `Origin`이 없는 요청(CLI, curl)은 로컬 사용을 위해 통과시킵니다.
+- **상태를 바꾸는 API 요청은 Origin을 검사**합니다. `/api/*`에 대한 GET·HEAD·OPTIONS 외 요청에 `Origin` 헤더가 있으면, 그 출처가 위 Host 허용 목록의 호스트를 가리키는 `http`/`https` 출처이거나 `DASHBOARD_ALLOWED_ORIGINS`에 있어야 하고, 아니면 403으로 거절합니다. 요청의 `Host` 헤더와는 비교하지 않습니다(rebinding된 페이지는 `Host`와 `Origin`을 함께 공격자 도메인으로 보냅니다). `Origin`이 없는 요청(CLI, curl)은 로컬 사용을 위해 통과시킵니다.
 
 ### 저장 전 마스킹
 

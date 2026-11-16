@@ -125,6 +125,7 @@ These commands remove only hooks and scheduler definitions. Your memory stays in
 - **Some features do send data off the machine.** LLM session summaries are **on by default**, and so is LLM lesson extraction when the `mem-lesson-candidates` MCP tool is called. Both pass conversation content to the local `claude` (or `codex`) CLI, which sends it to its provider under your account. Use `CLAUDE_MEMORY_SUMMARY_MODE=rule` for rule-based summaries and `CLAUDE_MEMORY_LESSON_MODE=off` to stop lesson extraction. Dashboard chat, Mongo sync, intent rewriting and the market-context tool also send data, but only when you use them.
 - Before storing, the hooks replace `<private>…</private>` blocks with `[PRIVATE]` in prompts, responses and tool output, and mask credential patterns as `[REDACTED]`. The filters are pattern-based. Tool input and tool stderr are not covered by `<private>` tags.
 - The dashboard binds to localhost by default. Without a password its API has no authentication, so set `--password` before binding to `0.0.0.0`.
+- The dashboard only answers requests addressed to `localhost`, `127.0.0.1` or `[::1]`. To reach it over the LAN with `0.0.0.0` or through a reverse proxy, also set `DASHBOARD_ALLOWED_HOSTS`.
 
 [SECURITY.md](SECURITY.md) has the full list of what leaves the machine, the masking table and how to report a vulnerability.
 

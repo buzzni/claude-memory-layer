@@ -29,10 +29,21 @@ export interface DashboardAppOptions {
    * cross-origin reads of the API. Falls back to DASHBOARD_ALLOWED_ORIGINS.
    */
   allowedOrigins?: string[];
+  /**
+   * Port the dashboard is served on (default 37777). Requests are answered only
+   * when their Host header names localhost, 127.0.0.1 or [::1] on this port, or
+   * an `allowedHosts` entry.
+   */
+  port?: number;
+  /**
+   * Extra Host-header allow-list for non-loopback binds and reverse proxies:
+   * `hostname` (any port) or `hostname:port`. Falls back to
+   * DASHBOARD_ALLOWED_HOSTS.
+   */
+  allowedHosts?: string[];
 }
 
 export interface DashboardServerOptions extends DashboardAppOptions {
-  port?: number;
   host?: string;
 }
 
@@ -83,11 +94,9 @@ function normalizeServerOptions(portOrOptions?: number | DashboardServerOptions)
   }
 
   return {
+    ...portOrOptions,
     port: portOrOptions?.port ?? 37777,
-    host: portOrOptions?.host ?? 'localhost',
-    password: portOrOptions?.password,
-    cookieMaxAgeSeconds: portOrOptions?.cookieMaxAgeSeconds,
-    now: portOrOptions?.now
+    host: portOrOptions?.host ?? 'localhost'
   };
 }
 
@@ -155,7 +164,9 @@ function verifyDashboardSessionToken(
   return Number.isSafeInteger(issuedAt) && age >= 0 && age <= maxAgeSeconds;
 }
 
-function isDashboardAuthenticated(c: Context, options: Required<DashboardAppOptions>): boolean {
+type DashboardAuthOptions = Required<Pick<DashboardAppOptions, 'password' | 'cookieMaxAgeSeconds' | 'now'>>;
+
+function isDashboardAuthenticated(c: Context, options: DashboardAuthOptions): boolean {
   if (!options.password) return true;
   return verifyDashboardSessionToken(
     getCookie(c, DASHBOARD_SESSION_COOKIE),
@@ -227,13 +238,20 @@ async function readSubmittedPassword(c: Context): Promise<string> {
   return typeof password === 'string' ? password : '';
 }
 
-function createAuthOptions(options: DashboardAppOptions): Required<DashboardAppOptions> {
+function createAuthOptions(options: DashboardAppOptions): DashboardAuthOptions {
   return {
     password: options.password ?? '',
     cookieMaxAgeSeconds: options.cookieMaxAgeSeconds ?? DEFAULT_SESSION_MAX_AGE_SECONDS,
-    now: options.now ?? Date.now,
-    allowedOrigins: options.allowedOrigins ?? []
+    now: options.now ?? Date.now
   };
+}
+
+/** An explicit list option, or else the comma-separated env var of that name. */
+function resolveListOption(explicit: string[] | undefined, envName: string): string[] {
+  if (explicit && explicit.length > 0) return explicit;
+  const raw = process.env[envName];
+  if (!raw) return [];
+  return raw.split(',').map((value) => value.trim()).filter(Boolean);
 }
 
 /**
@@ -242,37 +260,88 @@ function createAuthOptions(options: DashboardAppOptions): Required<DashboardAppO
  * empty result means same-origin only (no CORS headers emitted).
  */
 function resolveAllowedOrigins(explicit?: string[]): string[] {
-  if (explicit && explicit.length > 0) return explicit;
-  const raw = process.env.DASHBOARD_ALLOWED_ORIGINS;
-  if (!raw) return [];
-  return raw.split(',').map((value) => value.trim()).filter(Boolean);
+  return resolveListOption(explicit, 'DASHBOARD_ALLOWED_ORIGINS');
+}
+
+interface HostAuthority {
+  hostname: string;
+  port?: number;
+}
+
+const LOOPBACK_HOSTNAMES = ['localhost', '127.0.0.1', '[::1]'];
+
+// A DNS name or IPv4 address with at most one trailing dot, or a bracketed
+// IPv6 address, then an optional port. Anything else (userinfo, paths, empty
+// ports) is not a Host we serve.
+const HOST_AUTHORITY_PATTERN = /^(\[[0-9a-f:.]+\]|[a-z0-9-]+(?:\.[a-z0-9-]+)*\.?)(?::(\d{1,5}))?$/i;
+const ORIGIN_PATTERN = /^(https?):\/\/([^/]+)$/i;
+
+function parseHostAuthority(value: string): HostAuthority | null {
+  const match = HOST_AUTHORITY_PATTERN.exec(value);
+  if (!match) return null;
+  return {
+    hostname: match[1].toLowerCase().replace(/\.$/, ''),
+    port: match[2] === undefined ? undefined : Number(match[2])
+  };
 }
 
 /**
- * The server's own origin(s): the request URL origin and, when present, the
- * scheme+Host-header origin (covers reverse-proxy setups). Either may match a
- * legitimate same-origin request.
+ * Explicit Host allow-list entries, on top of the loopback names. Malformed
+ * entries can never match a request, so they are dropped.
  */
-function selfOrigins(c: Context): string[] {
-  const origins: string[] = [];
-  try {
-    origins.push(new URL(c.req.url).origin);
-  } catch {
-    // Non-absolute URL; fall through to the host header.
-  }
-  const host = c.req.header('host');
-  if (host) origins.push(`${isSecureRequest(c) ? 'https' : 'http'}://${host}`);
-  return origins;
+function resolveExtraAllowedHosts(explicit?: string[]): HostAuthority[] {
+  return resolveListOption(explicit, 'DASHBOARD_ALLOWED_HOSTS')
+    .map(parseHostAuthority)
+    .filter((entry): entry is HostAuthority => entry !== null);
 }
 
-/** True when a mutating request's Origin is same-origin or explicitly allowed. */
-function isAllowedMutationOrigin(c: Context, origin: string, allowedOrigins: string[]): boolean {
-  return allowedOrigins.includes(origin) || selfOrigins(c).includes(origin);
+function loopbackHosts(port: number): HostAuthority[] {
+  return LOOPBACK_HOSTNAMES.map((hostname) => ({ hostname, port }));
+}
+
+/** True when `value` (a Host header or Origin authority) names an allowed host. */
+function isAllowedHost(value: string | undefined, allowedHosts: HostAuthority[], defaultPort = 80): boolean {
+  const host = value === undefined ? null : parseHostAuthority(value);
+  if (!host) return false;
+  const port = host.port ?? defaultPort;
+  return allowedHosts.some((entry) => entry.hostname === host.hostname && (entry.port === undefined || entry.port === port));
+}
+
+/**
+ * True when a mutating request's Origin is one of the dashboard's own hosts or
+ * an explicitly allowed origin. Compared against the allow-list, never the
+ * request's Host header, which a DNS-rebinding page controls.
+ */
+function isAllowedMutationOrigin(origin: string, allowedOrigins: string[], allowedHosts: HostAuthority[]): boolean {
+  if (allowedOrigins.includes(origin)) return true;
+  const match = ORIGIN_PATTERN.exec(origin);
+  if (!match) return false;
+  return isAllowedHost(match[2], allowedHosts, match[1].toLowerCase() === 'https' ? 443 : 80);
 }
 
 export function createDashboardApp(options: DashboardAppOptions = {}): Hono {
+  const port = options.port ?? 37777;
+  return buildDashboardApp(options, () => port);
+}
+
+/**
+ * `servingPort` is read per request so startServer can report the port the OS
+ * actually assigned when asked to listen on port 0.
+ */
+function buildDashboardApp(options: DashboardAppOptions, servingPort: () => number): Hono {
   const app = new Hono();
   const authOptions = createAuthOptions(options);
+  const extraAllowedHosts = resolveExtraAllowedHosts(options.allowedHosts);
+  const allowedHosts = (): HostAuthority[] => [...loopbackHosts(servingPort()), ...extraAllowedHosts];
+
+  // DNS rebinding guard. Rebinding points an attacker's domain at 127.0.0.1, so
+  // the browser treats the attacker's page as same-origin with the dashboard,
+  // but it still sends the attacker's name as Host. Answer only requests
+  // addressed to an allowed host, on every route, with no body to read.
+  app.use('*', async (c, next) => {
+    if (!isAllowedHost(c.req.header('host'), allowedHosts())) return c.body(null, 403);
+    return next();
+  });
 
   // Middleware
   //
@@ -295,7 +364,7 @@ export function createDashboardApp(options: DashboardAppOptions = {}): Hono {
   // is unauthenticated by default, a malicious page could otherwise drive-by
   // POST to mutating endpoints (recover/backfill/graduation-run/chat). Browsers
   // always attach an Origin header to such cross-origin requests; if present it
-  // must match the server's own origin or an explicit allow-list entry.
+  // must name an allowed host (see above) or an explicitly allowed origin.
   // Non-browser callers (CLI, curl) omit Origin and remain allowed for local use.
   app.use('/api/*', async (c, next) => {
     const method = c.req.method;
@@ -303,7 +372,7 @@ export function createDashboardApp(options: DashboardAppOptions = {}): Hono {
       return next();
     }
     const origin = c.req.header('origin');
-    if (origin && !isAllowedMutationOrigin(c, origin, allowedOrigins)) {
+    if (origin && !isAllowedMutationOrigin(origin, allowedOrigins, allowedHosts())) {
       return c.json({ error: 'Cross-origin request blocked' }, 403);
     }
     return next();
@@ -394,15 +463,21 @@ export function startServer(portOrOptions: number | DashboardServerOptions = 377
 
   const options = normalizeServerOptions(portOrOptions);
   const hostname = normalizeDashboardHost(options.host);
-  const port = options.port;
+  // Port 0 asks the OS for a free port; the Host allow-list follows the real one.
+  let listeningPort = options.port;
 
   serverInstance = serve({
-    fetch: createDashboardApp(options).fetch,
-    port,
+    fetch: buildDashboardApp(options, () => listeningPort).fetch,
+    port: options.port,
     hostname
+  }, (info) => {
+    listeningPort = info.port;
+    console.log(`🧠 Code Memory viewer started at http://${displayHost(hostname)}:${listeningPort}`);
   });
 
-  console.log(`🧠 Code Memory viewer started at http://${displayHost(hostname)}:${port}`);
+  if (hostname === '0.0.0.0' && resolveExtraAllowedHosts(options.allowedHosts).length === 0) {
+    console.warn('⚠️  Only requests addressed to localhost, 127.0.0.1 or [::1] are answered. Set DASHBOARD_ALLOWED_HOSTS to reach the dashboard by another name or address.');
+  }
 
   return serverInstance;
 }

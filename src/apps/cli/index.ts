@@ -4026,7 +4026,7 @@ program
       console.log(`🔌 Bind: ${host}`);
       console.log(`🔐 Password: ${password ? 'enabled' : 'disabled'}`);
       if (host === '0.0.0.0' && !password) {
-        console.log('⚠️  Bound to 0.0.0.0 without --password; anyone on the reachable network can access it.');
+        console.log('⚠️  Bound to 0.0.0.0 without --password; anyone on the reachable network who uses an allowed host name (localhost or DASHBOARD_ALLOWED_HOSTS) can access it.');
       }
       console.log('Press Ctrl+C to stop the server\n');
 
