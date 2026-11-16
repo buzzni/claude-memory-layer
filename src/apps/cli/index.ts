@@ -36,7 +36,7 @@ import { SQLiteEventStore } from '../../core/sqlite-event-store.js';
 import { createSQLiteDatabase, sqliteAll, sqliteClose, sqliteGet, type SQLiteDatabase } from '../../core/sqlite-wrapper.js';
 import { MongoSyncWorker, type MongoSyncDirection } from '../../core/mongo-sync-worker.js';
 import { applyPrivacyFilter, maskSensitiveInput } from '../../core/privacy/filter.js';
-import type { Config } from '../../core/types.js';
+import { EventTypeSchema, type Config } from '../../core/types.js';
 import {
   ActionRepository,
   CheckpointRepository,
@@ -145,6 +145,8 @@ import {
 } from './memory-audit-report.js';
 import { emptyTypedSelectionSummary } from '../../core/retrieval-telemetry.js';
 import { pruneToolObservationVectors } from '../../core/operations/tool-observation-vector-backfill.js';
+import { backfillVectorCoverage } from '../../core/operations/vector-coverage-backfill.js';
+import { formatBackfillVectorsResult, resolveBackfillVectorsOptions } from './backfill-vectors-command.js';
 import {
   formatAutoHealToolObservationVectorsResult,
   resolveAutoHealToolObservationVectorsOptions
@@ -169,7 +171,9 @@ import {
 } from '../../core/external-market-context.js';
 import {
   DEFAULT_EMBEDDING_FALLBACK_MODEL,
-  DEFAULT_EMBEDDING_MODEL
+  DEFAULT_EMBEDDING_MODEL,
+  disposeDefaultEmbedder,
+  getDefaultEmbedder
 } from '../../extensions/vector/embedder.js';
 import {
   formatProcessLockBusy,
@@ -1829,6 +1833,61 @@ repairCommand
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`Prune tool_observation vectors failed: ${message}`);
+      process.exit(1);
+    }
+  });
+
+repairCommand
+  .command('backfill-vectors')
+  .description('Give events that semantic search cannot reach a searchable vector (dry-run by default)')
+  .option('-p, --project <path>', 'Project path (defaults to cwd)')
+  .option('--apply', 'Copy or queue the missing vectors (default is a dry-run preview)')
+  .action(async (options) => {
+    try {
+      const backfillOptions = resolveBackfillVectorsOptions(options);
+      const storagePath = getProjectStoragePath(backfillOptions.projectPath);
+      const dbPath = path.join(storagePath, 'events.sqlite');
+
+      if (!fs.existsSync(dbPath)) {
+        console.log(formatBackfillVectorsResult({
+          dryRun: backfillOptions.dryRun, embeddable: 0, searchable: 0, adopted: 0, queued: 0, alreadyQueued: 0
+        }));
+        return;
+      }
+
+      // The embedding worker appends to the same table and drains the same outbox.
+      const writerLock = new WorkerLock(path.join(storagePath, 'vector-worker.lock'));
+      if (!backfillOptions.dryRun) {
+        const lock = writerLock.acquire();
+        if (!lock.acquired) {
+          console.error(`Another vector worker is running (pid ${lock.holderPid ?? 'unknown'}); try again when it has finished.`);
+          process.exit(1);
+        }
+      }
+
+      const store = new SQLiteEventStore(dbPath, { readonly: backfillOptions.dryRun });
+      const vectorStore = new VectorStore(path.join(storagePath, 'vectors'), { readOnly: backfillOptions.dryRun });
+      try {
+        const result = await backfillVectorCoverage({
+          eventStore: {
+            listEmbeddableEvents: () => store.getRecentEvents(Number.MAX_SAFE_INTEGER, {
+              eventTypes: EventTypeSchema.options.filter((eventType) => eventType !== 'tool_observation')
+            }),
+            listPendingEmbeddingEventIds: () => store.listPendingEmbeddingEventIds(),
+            enqueueForEmbedding: (eventId, content) => store.enqueueForEmbedding(eventId, content)
+          },
+          vectorStore,
+          embedder: getDefaultEmbedder()
+        }, { dryRun: backfillOptions.dryRun });
+        console.log(formatBackfillVectorsResult(result));
+      } finally {
+        await disposeDefaultEmbedder().catch(() => undefined);
+        await store.close().catch(() => undefined);
+        writerLock.release();
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Backfill vectors failed: ${message}`);
       process.exit(1);
     }
   });

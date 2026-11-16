@@ -2034,6 +2034,13 @@ export class SQLiteEventStore {
     return id;
   }
 
+  /** Events already waiting for the embedding worker, in any state (done rows are deleted). */
+  async listPendingEmbeddingEventIds(): Promise<string[]> {
+    await this.initialize();
+    return sqliteAll<{ event_id: string }>(this.db, `SELECT DISTINCT event_id FROM embedding_outbox`)
+      .map((row) => row.event_id);
+  }
+
   /**
    * Get pending outbox items
    */
