@@ -13,7 +13,7 @@
  */
 
 import { isAbsolute } from 'path';
-import { loadMemoryOperationsConfig } from '../../../services/operations-config-loader.js';
+import { excludesUntrustedFromAutoInjection, loadMemoryOperationsConfig } from '../../../services/operations-config-loader.js';
 import { formatClaudeContextHookOutput } from './hook-output.js';
 import { readStdin } from './hook-runtime.js';
 import { buildPreEditContext } from './pre-edit-memory.js';
@@ -54,7 +54,12 @@ export async function main(): Promise<string> {
   if (!filePath || loadMemoryOperationsConfig()?.preEditCheck.enabled !== true) return '';
 
   try {
-    const context = await buildPreEditContext({ cwd: input.cwd, sessionId: input.session_id, filePath });
+    const context = await buildPreEditContext({
+      cwd: input.cwd,
+      sessionId: input.session_id,
+      filePath,
+      excludeUntrustedOrigins: excludesUntrustedFromAutoInjection()
+    });
     return context ? formatClaudeContextHookOutput('PreToolUse', context) : '';
   } catch (error) {
     if (process.env.CLAUDE_MEMORY_DEBUG) console.error('PreToolUse hook error:', error);

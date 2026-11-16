@@ -126,7 +126,10 @@
           },
           "topScore": 1,
           "threshold": 0.4,
-          "freshnessState": "unknown"
+          "freshnessState": "unknown",
+          "injectedByOrigin": {
+            "assistant": 1
+          }
         }
       }
     ]

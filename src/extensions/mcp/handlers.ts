@@ -38,6 +38,7 @@ import {
 } from '../../core/external-market-context.js';
 import { generateCitationId } from '../../core/citation-generator.js';
 import { fenceRecallBlock, sanitizeRecallText } from '../../core/recall-sanitizer.js';
+import { eventOrigin, memoryOriginLabelSuffix, type MemoryOrigin } from '../../core/memory-origin.js';
 import { getProjectStoragePath, hashProjectPath, resolveMemoryRootMarkerPath } from '../../core/registry/project-path.js';
 import { ExistingStoreReadError, withExistingStoreReadSnapshot } from '../../core/registry/existing-store.js';
 import { applyPrivacyFilter, maskSensitiveInput } from '../../core/privacy/filter.js';
@@ -2233,7 +2234,7 @@ async function handleMemSearch(memoryService: MemoryService, args: Record<string
     const preview = sanitizeOperationString(m.event.content, 100);
 
     lines.push(`### ${i + 1}. [mem:${citationId}] (score: ${m.score.toFixed(2)})`);
-    lines.push(`**Type**: ${m.event.eventType} | **Date**: ${date}`);
+    lines.push(`**Type**: ${m.event.eventType}${memoryOriginLabelSuffix(eventOrigin(m.event))} | **Date**: ${date}`);
     lines.push(`> ${preview}`);
     lines.push('');
   }
@@ -2544,7 +2545,7 @@ async function handleMemTimeline(memoryService: MemoryService, args: Record<stri
         : sanitizeOperationString(e.content, 60);
       const citationId = generateCitationId(e.id);
 
-      lines.push(`${marker} ${time} [${citationId}] ${e.eventType}: ${preview}`);
+      lines.push(`${marker} ${time} [${citationId}] ${e.eventType}${memoryOriginLabelSuffix(eventOrigin(e))}: ${preview}`);
     }
 
     lines.push('');
@@ -2584,6 +2585,7 @@ async function handleMemDetails(memoryService: MemoryService, args: Record<strin
     lines.push('');
     lines.push(`**Session**: ${event.sessionId}`);
     lines.push(`**Type**: ${event.eventType}`);
+    lines.push(`**Origin**: ${eventOrigin(event)}`);
     lines.push(`**Date**: ${date}`);
     lines.push('');
     lines.push('**Content**:');
@@ -3093,6 +3095,7 @@ async function handleMemSourceRef(memoryService: MemoryService, args: Record<str
     lines.push(`- Source Type: ${sourceTypeForEvent(event)}`);
     lines.push(`- Session: ${event.sessionId}`);
     lines.push(`- Type: ${event.eventType}`);
+    lines.push(`- Origin: ${eventOrigin(event)}`);
     lines.push(`- Timestamp: ${event.timestamp.toISOString()}`);
 
     const metadataLines = Object.entries(metadata).map(([key, value]) => `  - ${key}: ${formatMetadataValue(value)}`);
@@ -3225,6 +3228,8 @@ interface SessionSummary {
   eventCounts: Record<EventType, number>;
   source: string;
   lastPreview: string;
+  /** Origin of the event lastPreview quotes; its label goes outside the preview. */
+  lastOrigin: MemoryOrigin;
 }
 
 function summarizeSessions(
@@ -3251,6 +3256,7 @@ function summarizeSessions(
         eventCounts: countEventTypes(sorted),
         source: dominantSource(sorted),
         lastPreview: '',
+        lastOrigin: eventOrigin(last),
         lastEvent: last
       };
     })
@@ -3660,7 +3666,7 @@ function appendSourceRefNeighborContext(
     const direction = neighbor.index < targetIndex ? 'before' : 'after';
     const citationId = generateCitationId(neighbor.event.id);
     lines.push(
-      `  - ${direction} [mem:${citationId}] sourceRef=event:${neighbor.event.id} type=${neighbor.event.eventType} timestamp=${neighbor.event.timestamp.toISOString()}`
+      `  - ${direction} [mem:${citationId}] sourceRef=event:${neighbor.event.id} type=${neighbor.event.eventType} origin=${eventOrigin(neighbor.event)} timestamp=${neighbor.event.timestamp.toISOString()}`
     );
     lines.push(`    > ${safeInline(neighbor.event.content, previewChars)}`);
   }
@@ -3675,7 +3681,7 @@ function formatRelevantMemoryLine(
   const citationId = generateCitationId(event.id);
   const previewBudget = formatOptions.compression === 'off' ? 260 : 180;
   return [
-    `${index}. [mem:${citationId}] score=${score.toFixed(2)} type=${event.eventType} date=${event.timestamp.toISOString()} session=${event.sessionId}`,
+    `${index}. [mem:${citationId}] score=${score.toFixed(2)} type=${event.eventType} origin=${eventOrigin(event)} date=${event.timestamp.toISOString()} session=${event.sessionId}`,
     `   source=${sourceForEvent(event)}`,
     `   ${contextPackPreview(event, previewBudget, formatOptions)}`,
     ''
@@ -3690,7 +3696,7 @@ function formatSessionSummary(session: SessionSummary, compact = false): string 
     return [
       `- Session: ${session.sessionId}`,
       `  Events: ${session.events.length}; Source: ${session.source}; Counts: ${countSummary || 'n/a'}`,
-      `  Last: ${session.lastPreview}`,
+      `  Last${memoryOriginLabelSuffix(session.lastOrigin)}: ${session.lastPreview}`,
       ''
     ].join('\n');
   }
@@ -3700,7 +3706,7 @@ function formatSessionSummary(session: SessionSummary, compact = false): string 
     `  Events: ${session.events.length}`,
     `  Source: ${session.source}`,
     `  Counts: ${countSummary || 'n/a'}`,
-    `  Last: ${session.lastPreview}`,
+    `  Last${memoryOriginLabelSuffix(session.lastOrigin)}: ${session.lastPreview}`,
     ''
   ].join('\n');
 }

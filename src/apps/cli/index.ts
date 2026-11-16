@@ -233,6 +233,7 @@ import {
   formatRuntimeResourceReport
 } from './runtime-resource-command.js';
 import { collectRuntimeResourceReport } from '../../core/runtime-resource-telemetry.js';
+import { eventOrigin, memoryOriginLabelSuffix } from '../../core/memory-origin.js';
 import {
   formatEphemeralCleanupReport,
   formatStoreCleanupPreviewReport,
@@ -3774,7 +3775,7 @@ endlessCmd
         const time = event.timestamp.toLocaleTimeString();
         const preview = event.content.slice(0, 80) + (event.content.length > 80 ? '...' : '');
 
-        console.log(`${icon} [${time}] ${event.eventType}`);
+        console.log(`${icon} [${time}] ${event.eventType}${memoryOriginLabelSuffix(eventOrigin(event))}`);
         console.log(`   ${preview}`);
         console.log('');
       }

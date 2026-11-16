@@ -5,6 +5,7 @@ import { tmpdir } from 'os';
 
 import {
   clearMemoryOperationsConfigCache,
+  excludesUntrustedFromAutoInjection,
   loadMemoryOperationsConfig,
   resolveOperationsConfigPath
 } from '../../src/services/operations-config-loader.js';
@@ -68,5 +69,17 @@ describe('operations config loader', () => {
     const second = useConfigFile(JSON.stringify({ codifyLite: { enabled: false } }));
     expect(resolveOperationsConfigPath()).toBe(second);
     expect(loadMemoryOperationsConfig()?.codifyLite.enabled).toBe(false);
+  });
+
+  it('keeps untrusted memories in automatic injection unless sourceTrust opts out', () => {
+    useConfigFile(null);
+    expect(excludesUntrustedFromAutoInjection()).toBe(false);
+
+    useConfigFile(JSON.stringify({ codifyLite: { enabled: true } }));
+    expect(excludesUntrustedFromAutoInjection()).toBe(false);
+
+    // Independent of the top-level `enabled` switch, like the other sub-flags.
+    useConfigFile(JSON.stringify({ sourceTrust: { excludeUntrustedFromAutoInjection: true } }));
+    expect(excludesUntrustedFromAutoInjection()).toBe(true);
   });
 });

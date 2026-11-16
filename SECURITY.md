@@ -33,6 +33,19 @@ Claude Memory Layer는 한 사용자의 머신에서 돌아가는 로컬 도구�
 - **CORS는 기본적으로 same-origin만** 허용합니다. CORS 헤더를 내보내지 않으므로 브라우저는 다른 출처 페이지가 API 응답을 읽지 못하게 막습니다. `DASHBOARD_ALLOWED_ORIGINS`(쉼표 구분)에 적은 출처에만 CORS를 엽니다.
 - **상태를 바꾸는 API 요청은 Origin을 검사**합니다. `/api/*`에 대한 GET·HEAD·OPTIONS 외 요청에 `Origin` 헤더가 있으면, 그 출처가 위 Host 허용 목록의 호스트를 가리키는 `http`/`https` 출처이거나 `DASHBOARD_ALLOWED_ORIGINS`에 있어야 하고, 아니면 403으로 거절합니다. 요청의 `Host` 헤더와는 비교하지 않습니다(rebinding된 페이지는 `Host`와 `Origin`을 함께 공격자 도메인으로 보냅니다). `Origin`이 없는 요청(CLI, curl)은 로컬 사용을 위해 통과시킵니다.
 
+### 회상된 기억의 출처
+
+회상되는 기억에는 도구 출력(파일, 웹 페이지, 명령 결과)처럼 대화 밖에서 들어온 텍스트가 섞여 있습니다. 그런 텍스트에 심어 둔 지시문은 나중에 기억으로 주입되어 에이전트를 움직일 수 있습니다(메모리 오염, OWASP Agentic ASI06). 렌더 시점 sanitizer는 보이지 않는 문자와 래퍼 태그를 지우지만, 평범한 문장으로 쓴 지시는 막지 못합니다. 그래서 회상 출력은 기억의 출처를 함께 보여 줍니다. 도구 출력, 다른 머신에서 온 기억(Mongo sync로 pull한 행), 출처를 알 수 없는 가져오기, 유형을 알 수 없는 기억에는 `low-trust` 라벨이 붙습니다([HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md#source-trust-labels)). `operations.json`의 `sourceTrust.excludeUntrustedFromAutoInjection`을 켜면 도구 출력과 출처 미상 기억은 자동 주입에서 빠집니다. MCP나 CLI로 직접 조회할 때는 결과에서 빠지지 않고 라벨만 붙습니다.
+
+이 머신의 호스트 세션 기록을 사용자가 설정한 경로에서 읽어 들인 것(`claude-memory-layer import`, Codex SessionEnd 훅, Hermes import)은 실시간 캡처와 같은 신뢰로 다룹니다. 그 기록은 이 사용자의 호스트가 이 머신에 쓴 것이고, Codex는 모든 세션을 이 경로로 저장하므로 여기에 라벨을 붙이면 Codex 사용자의 모든 기억에 라벨이 붙어 의미가 없어지기 때문입니다. 대화 속 역할로 분류하므로 그 안의 도구 출력은 여전히 `tool`입니다.
+
+분류는 저장된 행의 실제 열 값(`event_type` 등)에서 출발합니다. metadata는 그 행을 저장한 쪽(도구 출력 포함)이 쓴 값이므로 신뢰를 낮추는 근거로만 쓰고, metadata 때문에 신뢰가 올라가는 경로는 없습니다. 출처를 확인할 수 없으면(저장된 행이 없거나, 유형을 모르거나, metadata·출처 표식을 해석할 수 없으면) `unknown`입니다. 분류는 저장소가 SQLite에서 행을 읽을 때 원본 열로 한 번만 하고, 그 뒤 단계(훅, MCP, CLI)는 그 값을 전달만 합니다. semantic daemon이 보고한 유형·출처는 믿지 않고 저장된 행을 다시 읽어 씁니다. daemon의 보고는 신뢰를 낮출 때만 반영합니다. 편집 전 점검(PreToolUse)의 '실패한 도구 실행' 항목은 도구의 오류 메시지를 그대로 보여 주므로 `tool`로 라벨이 붙고, 플래그를 켜면 빠집니다.
+
+출처는 저장된 유형과 metadata로만 판단하므로 한계가 있습니다.
+- 다른 서버에서 복사해 온 세션 파일을 로컬에서 import하면 로컬 기록과 구분되지 않습니다.
+- 요약과 lesson은 도구 출력의 내용을 다시 옮겨 담을 수 있지만 `derived`로 분류되어 라벨이 붙지 않습니다.
+- Mongo sync pull은 이제 모든 행에 표시를 남깁니다. 그 전에 같은 프로젝트 store끼리 받은 행에는 표시가 없어 다른 머신에서 온 것으로 구분되지 않습니다.
+
 ### 저장 전 마스킹
 
 Claude Code 훅은 저장하기 전에 아래 마스킹을 적용합니다. 어디에 무엇이 적용되는지는 필드마다 다릅니다.

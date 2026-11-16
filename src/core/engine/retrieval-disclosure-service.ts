@@ -11,6 +11,7 @@ import type { RetrievalReason, RetrievalResultEnvelope, RetrievalResultType } fr
 import { sanitizeGovernanceAuditValue } from '../operations/governance-audit.js';
 import type { UnifiedRetrievalResult, MemoryWithContext, RetrievalDebugDetail } from '../retriever.js';
 import type { MemoryEvent, SharedTroubleshootingEntry } from '../types.js';
+import { eventOrigin } from '../memory-origin.js';
 import type { RetrieveMemoriesOptions } from './retrieval-orchestrator.js';
 import type { RecordReferenceNavigationInput } from '../retrieval-telemetry.js';
 
@@ -284,13 +285,17 @@ export class RetrievalDisclosureService {
       reasons,
       sourceRef: toDisclosureResultId(event.id),
       sessionId: event.sessionId,
+      origin: eventOrigin(event),
+      // The row's own columns go last: stored metadata is written by whatever
+      // stored the row, tool output included, and must not pose as its id or
+      // type (src/core/memory-origin.ts).
       metadata: {
+        ...event.metadata,
+        ...extraMetadata,
         eventId: event.id,
         eventType: event.eventType,
         timestamp: event.timestamp.toISOString(),
-        canonicalKey: event.canonicalKey,
-        ...event.metadata,
-        ...extraMetadata
+        canonicalKey: event.canonicalKey
       }
     };
   }

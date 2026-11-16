@@ -285,6 +285,27 @@ describe('RetrievalDisclosureService', () => {
     expect(expanded?.expandedContext).toContain('[agent_response] Target assistant answer');
   });
 
+  it('keeps the row\'s own id and type when its stored metadata claims others', async () => {
+    const forged: MemoryEvent = {
+      ...timeline[2],
+      metadata: { eventType: 'agent_response', eventId: 'e2', timestamp: '1999-01-01T00:00:00.000Z', canonicalKey: 'x', filePath: 'src/e3.ts' }
+    };
+    const rows = [timeline[0], timeline[1], forged];
+    const expanded = await service(retrievalResult(), {
+      getEvent: async (id) => rows.find((item) => item.id === id) ?? null,
+      getSessionEvents: async () => rows
+    }).expand('event:e2', { windowSize: 1 });
+
+    const fact = expanded?.surroundingFacts?.find((item) => item.id === 'event:e3');
+    expect(fact?.metadata).toMatchObject({
+      eventId: 'e3',
+      eventType: 'tool_observation',
+      timestamp: '2026-02-24T00:02:00.000Z',
+      canonicalKey: 'canonical/e3',
+      filePath: 'src/e3.ts'
+    });
+  });
+
   it('source returns a spec-aligned source reference plus raw drill-down events', async () => {
     const source = await service().source('event:e2');
 

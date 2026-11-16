@@ -7,6 +7,7 @@ import {
   memoryReferenceTitle
 } from '../../src/core/memory-reference-context.js';
 import type { MemoryEvent } from '../../src/core/types.js';
+import { asStored } from '../helpers/stored-origin.js';
 
 const EVENT_ID = '11111111-1111-4111-8111-111111111111';
 
@@ -75,4 +76,19 @@ describe('memory reference context', () => {
     expect(memoryReferenceSummary(content)).toContain('[code]');
     expect(memoryReferenceSummary(content)).not.toContain('const secret');
   });
+
+  it('marks a low-trust source document and leaves native and host-import ones unmarked', () => {
+    const imported = formatMemoryReferenceContext([memoryEventReferenceItem(asStored(event({ metadata: { mongoSync: { originHostname: 'machine-b' } } })))], { heading: 'Index' });
+    // The default fixture is a host session import (absolute importedFrom path).
+    const native = formatMemoryReferenceContext([memoryEventReferenceItem(asStored(event()))], { heading: 'Index' });
+    // Never read through the store: nothing vouches for it.
+    const unread = formatMemoryReferenceContext([memoryEventReferenceItem(event())], { heading: 'Index' });
+    const tool = formatMemoryReferenceContext([{ id: EVENT_ID, type: 'tool_observation', content: 'ran tests', origin: 'tool' }], { heading: 'Index' });
+
+    expect(imported).toMatch(/Source document: project memory event \[mem:[^\]]+\] \(agent_response; low-trust: imported\)/);
+    expect(native).toMatch(/Source document: project memory event \[mem:[^\]]+\] \(agent_response\)\n/);
+    expect(tool).toContain('(tool_observation; low-trust: tool output)');
+    expect(unread).toContain('(agent_response; low-trust: unknown origin)');
+  });
 });
+

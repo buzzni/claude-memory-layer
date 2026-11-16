@@ -5,6 +5,15 @@ import type {
 } from '../../core/engine/retrieval-disclosure-service.js';
 import type { RetrievalResultEnvelope } from '../../core/model/retrieval-result.js';
 import type { UnifiedRetrievalResult } from '../../core/retriever.js';
+import { eventOrigin, memoryOriginLabelSuffix } from '../../core/memory-origin.js';
+
+/** The origin the store put on the envelope's row; a shared entry has none and is unknown. */
+function envelopeOriginSuffix(result: RetrievalResultEnvelope): string {
+  return memoryOriginLabelSuffix(eventOrigin(result));
+}
+
+/** Shared cross-project entries carry no row of this store to classify. */
+const SHARED_ORIGIN_SUFFIX = memoryOriginLabelSuffix('unknown');
 
 export function formatPlainSearchResults(result: UnifiedRetrievalResult): string {
   const lines: string[] = [
@@ -20,7 +29,7 @@ export function formatPlainSearchResults(result: UnifiedRetrievalResult): string
   for (const memory of result.memories) {
     const date = memory.event.timestamp.toISOString().split('T')[0];
     lines.push('---');
-    lines.push(`📌 ${memory.event.eventType} (${date})`);
+    lines.push(`📌 ${memory.event.eventType}${memoryOriginLabelSuffix(eventOrigin(memory.event))} (${date})`);
     lines.push(`   Score: ${memory.score.toFixed(3)}`);
     lines.push(`   Session: ${memory.event.sessionId.slice(0, 8)}...`);
     lines.push(`   Content: ${preview(memory.event.content, 200)}`);
@@ -31,7 +40,7 @@ export function formatPlainSearchResults(result: UnifiedRetrievalResult): string
     lines.push('🌐 Shared Memories', '');
     for (const entry of result.sharedMemories) {
       lines.push('---');
-      lines.push(`🌐 ${entry.title}`);
+      lines.push(`🌐${SHARED_ORIGIN_SUFFIX} ${entry.title}`);
       lines.push(`   Source: shared:${entry.entryId}`);
       lines.push(`   Project: ${entry.sourceProjectHash}`);
       lines.push(`   Score: ${entry.confidence.toFixed(3)}`);
@@ -149,7 +158,7 @@ function formatEnvelope(result: RetrievalResultEnvelope, index?: number): string
   const prefix = index ? `${index}. ` : '- ';
   const title = result.title ? ` ${result.title}` : '';
   const lines = [
-    `${prefix}[${result.resultType}]${title}`,
+    `${prefix}[${result.resultType}]${envelopeOriginSuffix(result)}${title}`,
     `   id: ${result.id}`,
     `   score: ${result.score.toFixed(3)}`,
     `   reasons: ${result.reasons.join(', ') || 'n/a'}`,

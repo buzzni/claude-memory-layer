@@ -44,6 +44,7 @@ import {
   type RetrievalOutcomeReason,
   type TypedSelectionSummary
 } from '../../core/retrieval-telemetry.js';
+import { MEMORY_ORIGINS, type MemoryOrigin } from '../../core/memory-origin.js';
 
 export const MEMORY_AUDIT_SCHEMA_VERSION = 'memory-audit-v1';
 
@@ -81,6 +82,11 @@ export interface MemoryAuditStoreReport {
   clients: Array<{ client: string; traces: number }>;
   traces: { window: number; withSelection: number; emptySelection: number };
   outcomeReasons: Array<{ reason: RetrievalOutcomeReason; traces: number }>;
+  /**
+   * Hook-injected memories per origin class (src/core/memory-origin.ts),
+   * summed over the hook traces that recorded it; older traces did not.
+   */
+  injectedByOrigin: { traces: number; counts: Record<MemoryOrigin, number> };
   typedSelections: TypedSelectionSummary;
   evaluation: {
     /** evidence + user_prompt rows with an observed adoption. */
@@ -292,6 +298,31 @@ function windowClause(alias: string, column: string, since?: Date, until?: Date)
   return { sql: clauses.length > 0 ? ` WHERE ${clauses.join(' AND ')}` : '', params };
 }
 
+function emptyOriginCounts(): Record<MemoryOrigin, number> {
+  return Object.fromEntries(MEMORY_ORIGINS.map((origin) => [origin, 0])) as Record<MemoryOrigin, number>;
+}
+
+/** Sums the per-origin counts of hook traces in SQL; no id or text is read. */
+function readInjectedByOrigin(
+  db: SQLiteDatabase,
+  traceWindow: { sql: string; params: unknown[] }
+): MemoryAuditStoreReport['injectedByOrigin'] {
+  const json = `CASE WHEN json_valid(retrieval_diagnostics_json) THEN retrieval_diagnostics_json ELSE '{}' END`;
+  const hookTraces = `trigger_type IN ('user_prompt', 'session_start') AND json_type(${json}, '$.injectedByOrigin') = 'object'`;
+  const row = sqliteGet<Record<string, number | null>>(
+    db,
+    `SELECT COUNT(*) AS traces,
+            ${MEMORY_ORIGINS.map((origin) =>
+              `SUM(MAX(0, CAST(COALESCE(json_extract(${json}, '$.injectedByOrigin.${origin}'), 0) AS INTEGER))) AS "${origin}"`
+            ).join(',\n            ')}
+     FROM retrieval_traces${traceWindow.sql ? `${traceWindow.sql} AND ${hookTraces}` : ` WHERE ${hookTraces}`}`,
+    traceWindow.params
+  );
+  const counts = emptyOriginCounts();
+  for (const origin of MEMORY_ORIGINS) counts[origin] = Number(row?.[origin] ?? 0);
+  return { traces: Number(row?.traces ?? 0), counts };
+}
+
 function auditOneStore(
   store: DiscoveredStore,
   options: { memoryRoot: string; since?: Date; until?: Date; now: Date; alias?: StoreAliasInfo; projectClass?: MemoryAuditProjectClass }
@@ -325,6 +356,7 @@ function auditOneStore(
     clients: [],
     traces: { window: 0, withSelection: 0, emptySelection: 0 },
     outcomeReasons: [],
+    injectedByOrigin: { traces: 0, counts: emptyOriginCounts() },
     typedSelections: emptyTypedSelectionSummary(),
     evaluation: {
       evidencePromptEvaluated: 0,
@@ -393,6 +425,7 @@ function auditOneStore(
       const hasClient = columnExists(db, 'retrieval_traces', 'delivery_client');
       const hasOutcome = columnExists(db, 'retrieval_traces', 'outcome_reason');
       const hasSchemaVersion = columnExists(db, 'retrieval_traces', 'telemetry_schema_version');
+      const hasTrigger = columnExists(db, 'retrieval_traces', 'trigger_type');
 
       const traceTotals = sqliteGet<{ total: number; selected: number }>(
         db,
@@ -440,6 +473,10 @@ function auditOneStore(
           else acc.push({ reason, traces: Number(row.traces) });
           return acc;
         }, []).sort((a, b) => b.traces - a.traces);
+      }
+
+      if (hasTrigger && columnExists(db, 'retrieval_traces', 'retrieval_diagnostics_json')) {
+        base.injectedByOrigin = readInjectedByOrigin(db, traceWindow);
       }
 
       if (hasSchemaVersion) {
@@ -684,6 +721,7 @@ export function formatMemoryAuditMarkdown(report: MemoryAuditReport): string {
     }
   }
   lines.push('', 'Importer cursor: unknown; observed source timestamps above are not importer progress or backlog measurements.');
+  lines.push(...formatInjectedByOriginMarkdown(report.stores));
   lines.push(...formatLessonUsageMarkdown(report.stores));
   lines.push(...formatSessionSummaryCoverageMarkdown(report.stores));
   lines.push(...formatProviderCircuitMarkdown(report.llmProviderCircuit));
@@ -702,6 +740,21 @@ export function formatMemoryAuditMarkdown(report: MemoryAuditReport): string {
   lines.push('', '## Notes', '');
   for (const note of report.notes) lines.push(`- ${note}`);
   return lines.join('\n');
+}
+
+function formatInjectedByOriginMarkdown(stores: MemoryAuditStoreReport[]): string[] {
+  const measured = stores.filter((store) => store.injectedByOrigin.traces > 0);
+  if (measured.length === 0) return [];
+  return [
+    '', '## Hook-injected memories by origin', '',
+    'Counted from hook traces that recorded origins. With operations.json `sourceTrust.excludeUntrustedFromAutoInjection`, '
+      + '`tool` and `unknown` are no longer injected; other memories may take their slots.',
+    '',
+    `| Store | Traces | ${MEMORY_ORIGINS.join(' | ')} |`,
+    `|---|---:|${MEMORY_ORIGINS.map(() => '---:').join('|')}|`,
+    ...measured.map((store) => `| ${store.storeHash} | ${store.injectedByOrigin.traces} | `
+      + `${MEMORY_ORIGINS.map((origin) => store.injectedByOrigin.counts[origin]).join(' | ')} |`)
+  ];
 }
 
 /** Why a lesson/prompt section has no numbers: a computation failure or an unsupported schema. */

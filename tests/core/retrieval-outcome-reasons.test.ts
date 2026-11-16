@@ -181,4 +181,29 @@ describe('honest retrieval outcome reasons (specs R2)', () => {
     expect(legacy?.coverageState).toBe('unknown');
     await store.close();
   });
+
+  it('keeps per-origin injection counts and drops unknown classes and bad counts', async () => {
+    const normalized = normalizeRetrievalOutcomeDiagnostics({
+      outcomeReason: 'selected',
+      filteredCounts: { source_trust: 2 },
+      injectedByOrigin: { tool: 2, assistant: '1', secret: 9, imported: 'x', derived: -3 }
+    });
+    expect(normalized.filteredCounts).toEqual({ source_trust: 2 });
+    expect(normalized.injectedByOrigin).toEqual({ tool: 2, assistant: 1, derived: 0 });
+    expect(normalizeRetrievalOutcomeDiagnostics({ outcomeReason: 'selected' })).not.toHaveProperty('injectedByOrigin');
+
+    const store = new SQLiteEventStore(databasePath());
+    await store.initialize();
+    await store.recordRetrievalTrace({
+      traceId: 'trace-origins',
+      queryText: 'q',
+      candidateEventIds: ['a'],
+      selectedEventIds: ['a'],
+      outcomeDiagnostics: normalized
+    });
+    const [trace] = await store.getRecentRetrievalTraces(1);
+    expect(trace.outcomeDiagnostics.injectedByOrigin).toEqual({ tool: 2, assistant: 1, derived: 0 });
+    await store.close();
+  });
 });
+

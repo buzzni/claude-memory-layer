@@ -48,3 +48,8 @@ export function loadMemoryOperationsConfig(): MemoryOperationsConfig | undefined
 export function clearMemoryOperationsConfigCache(): void {
   cached = null;
 }
+
+/** operations.json `sourceTrust.excludeUntrustedFromAutoInjection`; off when the file is absent or invalid. */
+export function excludesUntrustedFromAutoInjection(): boolean {
+  return loadMemoryOperationsConfig()?.sourceTrust?.excludeUntrustedFromAutoInjection === true;
+}

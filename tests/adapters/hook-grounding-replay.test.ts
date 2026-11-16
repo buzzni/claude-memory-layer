@@ -235,3 +235,46 @@ describe('time-bound stores', () => {
     expect(store.keywordSearch).toHaveBeenCalledWith('q', 2, undefined);
   });
 });
+
+describe('source-trust fixture', () => {
+  const trustFixture = JSON.parse(readFileSync(
+    path.join(__dirname, '../../benchmarks/replay/hook-grounding-source-trust-v1.json'), 'utf8'
+  )) as HookReplayFixture;
+
+  it('shows what the filter removes: tool output next to an answer, a graduated tool row and an unknown-origin row', async () => {
+    const dir = tempDir();
+    const trustIds = await buildFixtureStore(trustFixture, dir);
+    const keyById = new Map([...trustIds].map(([key, id]) => [id, key]));
+    const trustReport = await runHookGroundingReplay({
+      storagePath: dir,
+      projectHash: trustFixture.projectHash,
+      semantic: 'off',
+      arms: [DEFAULT_REPLAY_ARMS[0], DEFAULT_REPLAY_ARMS.find((arm) => arm.excludeUntrustedOrigins)!]
+    });
+    const injected = (armIndex: number) => Object.fromEntries(trustReport.arms[armIndex].results.map((result) => [
+      result.traceId,
+      result.injections.map((injection) => `${keyById.get(injection.id)}:${injection.origin}`).sort()
+    ]));
+
+    expect(injected(0)).toEqual({
+      'trace-a': ['a-answer:assistant', 'a-tool:tool'],
+      'trace-b': ['b-unknown:unknown'],
+      'trace-c': ['c-answer:assistant', 'c-tool:tool'],
+      'trace-d': ['d-answer:assistant']
+    });
+    // Not a subset story only: trace-b loses its injection; nothing trusted replaces it.
+    expect(injected(1)).toEqual({
+      'trace-a': ['a-answer:assistant'],
+      'trace-b': [],
+      'trace-c': ['c-answer:assistant'],
+      'trace-d': ['d-answer:assistant']
+    });
+    // The tool row whose metadata claims agent_response never reaches an injection.
+    for (const arm of trustReport.arms) {
+      for (const result of arm.results) {
+        expect(result.injections.map((injection) => keyById.get(injection.id))).not.toContain('d-forged');
+      }
+    }
+  }, 60_000);
+});
+

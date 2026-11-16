@@ -32,7 +32,7 @@ If you want pulled events to show up in semantic search and context packs right 
 
 ## Project identity across servers
 
-Project paths may differ between servers. Pulled events are re-attributed to this server's project (the hash of the `--project` path), so they appear in project-scoped search; the original server's project scope and hostname are kept in `metadata.mongoSync`. To gather one project, set `--mongo-project` (or `CLAUDE_MEMORY_MONGO_PROJECT`) to the same value on every server.
+Project paths may differ between servers. Pulled events are re-attributed to this server's project (the hash of the `--project` path), so they appear in project-scoped search; the original server's project scope and hostname are kept in `metadata.mongoSync`. Every pulled event gets a `metadata.mongoSync` record, so recall labels it as coming from another machine (`low-trust: imported`, see [HOW_IT_WORKS.md](HOW_IT_WORKS.md#source-trust-labels)). To gather one project, set `--mongo-project` (or `CLAUDE_MEMORY_MONGO_PROJECT`) to the same value on every server.
 
 ## How the pull cursor works
 

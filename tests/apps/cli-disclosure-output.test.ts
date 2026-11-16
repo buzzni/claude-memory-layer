@@ -5,6 +5,8 @@ import {
   formatDisclosureSource,
   formatPlainSearchResults
 } from '../../src/apps/cli/retrieval-disclosure-output.js';
+import type { MemoryEvent } from '../../src/core/types.js';
+import { asStored } from '../helpers/stored-origin.js';
 
 describe('retrieval disclosure CLI output', () => {
   it('formats compact search envelopes with type badges, reasons, and source refs', () => {
@@ -18,7 +20,9 @@ describe('retrieval disclosure CLI output', () => {
           score: 0.91,
           reasons: ['semantic_match', 'tool_followup'],
           sourceRef: 'event:e1',
-          sessionId: 'session-1234567890'
+          sessionId: 'session-1234567890',
+          metadata: { eventId: 'e1', eventType: 'tool_observation' },
+          origin: 'tool'
         }
       ],
       meta: {
@@ -31,7 +35,7 @@ describe('retrieval disclosure CLI output', () => {
 
     expect(out).toContain('🔎 Progressive Search Results');
     expect(out).toContain('Meta: total=1 vector=yes keyword=yes fallback=no');
-    expect(out).toContain('[tool_evidence] Tool evidence');
+    expect(out).toContain('[tool_evidence] [low-trust: tool output] Tool evidence');
     expect(out).toContain('event:e1');
     expect(out).toContain('semantic_match, tool_followup');
     expect(out).toContain('session-');
@@ -209,4 +213,52 @@ describe('retrieval disclosure CLI output', () => {
     expect(out).toContain('Project: project-a');
     expect(out).toContain('Solution: clear cache and retry');
   });
+
+  describe('source-trust labels (CLI reads are labelled, never filtered)', () => {
+    const at = new Date('2026-02-24T00:00:00.000Z');
+    const row = (id: string, eventType: MemoryEvent['eventType'], metadata: Record<string, unknown> = {}): MemoryEvent => asStored({
+      id, sessionId: 'session-1234567890', eventType, content: `${id} content`, canonicalKey: id, dedupeKey: id, timestamp: at, metadata
+    });
+
+    it('labels low-trust rows in plain search output and leaves trusted ones bare', () => {
+      const memories = [
+        row('native', 'agent_response'),
+        row('codex', 'agent_response', { importedFrom: '/home/u/.codex/sessions/a.jsonl' }),
+        row('pulled', 'agent_response', { mongoSync: { originHostname: 'machine-b' } }),
+        row('tool', 'tool_observation')
+      ].map((event) => ({ event, score: 0.9 }));
+      const out = formatPlainSearchResults({
+        memories,
+        matchResult: { match: memories[0], confidence: 'high' },
+        totalTokens: 1,
+        context: '',
+        sharedMemories: []
+      } as never);
+
+      expect(out.match(/📌 agent_response \(2026-02-24\)/g)).toHaveLength(2);
+      expect(out).toContain('📌 agent_response [low-trust: imported] (2026-02-24)');
+      expect(out).toContain('📌 tool_observation [low-trust: tool output] (2026-02-24)');
+    });
+
+    it('labels a disclosure result by the origin the store gave its row, and one without as unknown', () => {
+      const envelope = (id: string, origin?: string, metadata?: Record<string, unknown>) => ({
+        id, resultType: 'source', title: 'T', snippet: 's', score: 1, reasons: [], sourceRef: id,
+        ...(origin ? { origin } : {}), ...(metadata ? { metadata } : {})
+      });
+      const out = formatDisclosureSearch({
+        results: [
+          envelope('event:a', 'assistant'),
+          envelope('event:p', 'imported'),
+          // Metadata that claims a trusted type does not stand in for the store's origin.
+          envelope('shared:x', undefined, { eventType: 'agent_response' })
+        ],
+        meta: { total: 3, usedVector: false, usedKeyword: true, fallbackApplied: false }
+      } as never);
+
+      expect(out).toContain('1. [source] T');
+      expect(out).toContain('2. [source] [low-trust: imported] T');
+      expect(out).toContain('3. [source] [low-trust: unknown origin] T');
+    });
+  });
 });
+

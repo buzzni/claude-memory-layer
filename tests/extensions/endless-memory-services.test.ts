@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { asStored } from '../helpers/stored-origin.js';
 
 import {
   createEndlessMemoryServices,
@@ -12,17 +13,18 @@ import type {
   WorkingSet
 } from '../../src/core/types.js';
 
-function event(id: string): MemoryEvent {
-  return {
+/** As the working set store returns a row: with the origin it computes. */
+function event(id: string, eventType: MemoryEvent['eventType'] = 'agent_response'): MemoryEvent {
+  return asStored({
     id,
     sessionId: 'session-1',
-    eventType: 'agent_response',
+    eventType,
     content: `event ${id}`,
     canonicalKey: `event/${id}`,
     dedupeKey: `session-1:${id}`,
     timestamp: new Date('2026-05-02T00:00:00.000Z'),
     metadata: {}
-  };
+  });
 }
 
 function consolidated(memoryId: string): ConsolidatedMemory {
@@ -55,7 +57,7 @@ function makeHarness(options?: { savedMode?: 'session' | 'endless'; savedConfig?
   if (options?.savedConfig) configValues.config = options.savedConfig;
 
   const workingSet: WorkingSet = {
-    recentEvents: [event('event-1')],
+    recentEvents: [event('event-1'), event('event-2', 'tool_observation')],
     lastActivity: new Date('2026-05-02T00:00:00.000Z'),
     continuityScore: 0.82
   };
@@ -199,6 +201,8 @@ describe('createEndlessMemoryServices', () => {
     expect(formatted).toContain('🔗 Context: seamless (score: 0.91)');
     expect(formatted).toContain('## Recent Context (Working Set)');
     expect(formatted).toContain('[agent_response] event event-1');
+    // Low-trust rows carry the source-trust label outside the text.
+    expect(formatted).toContain('[tool_observation] [low-trust: tool output] event event-2');
     expect(formatted).toContain('## Related Knowledge (Consolidated)');
     expect(formatted).toContain('thin-core: summary memory-1...');
     expect(harness.searches).toEqual([

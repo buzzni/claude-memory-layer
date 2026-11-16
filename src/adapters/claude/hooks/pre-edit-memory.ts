@@ -18,6 +18,16 @@
  * An item shown for a file is not shown again for that file in the same
  * session. Each shown item is reserved by creating an empty marker file
  * exclusively, so concurrent hook runs cannot both show it.
+ *
+ * Source trust (src/core/memory-origin.ts): every item carries the origin of
+ * the row it quotes, and a low-trust one is labelled before any stored text.
+ * A failed tool run quotes the tool's own error message, so it is `tool`, or
+ * `unknown` when its row is not a tool observation (the failure is then read
+ * from content that only claims to be one). Lessons are `derived`; a session
+ * summary is classified from its row. With operations.json
+ * sourceTrust.excludeUntrustedFromAutoInjection, `tool` and `unknown` items
+ * are left out like in every other automatic injection, so failed runs are
+ * not shown: their only content beyond a date is tool output.
  */
 
 import { createHash } from 'crypto';
@@ -26,6 +36,12 @@ import * as path from 'path';
 import Database from 'better-sqlite3';
 import { makeSourceFileKey, normalizeFilePath } from '../../../core/canonical-key.js';
 import { CanonicalMemoryInjectionService } from '../../../core/operations/canonical-memory-injection-service.js';
+import {
+  classifyStoredEvent,
+  isAutoInjectionExcludableOrigin,
+  memoryOriginLabel,
+  type MemoryOrigin
+} from '../../../core/memory-origin.js';
 import { LessonRepository } from '../../../core/operations/lesson-repository.js';
 import { getProjectStoragePath, hashProjectPath } from '../../../core/registry/project-path.js';
 import { sanitizeRecallText, singleLineRecallText } from '../../../core/recall-sanitizer.js';
@@ -85,6 +101,8 @@ export interface PreEditMemoryRequest {
   sessionId: string;
   /** Absolute path of the file about to be edited. */
   filePath: string;
+  /** operations.json sourceTrust: leave out tool and unknown-origin items. */
+  excludeUntrustedOrigins?: boolean;
   now?: Date;
   /** Tests only: smaller windows. */
   scanWindow?: number;
@@ -105,6 +123,8 @@ interface Target {
 interface TouchRow {
   id: string;
   session_id: string;
+  event_type: string;
+  metadata: unknown;
   timestamp: string;
   tool_name: unknown;
   success: unknown;
@@ -115,6 +135,8 @@ interface TouchRow {
 interface Touch {
   id: string;
   sessionId: string;
+  /** `tool`, or `unknown` when the row is not a tool observation or its metadata cannot be read. */
+  origin: MemoryOrigin;
   at: Date;
   toolName: string;
   failed: boolean;
@@ -123,6 +145,7 @@ interface Touch {
 
 interface Item {
   key: string;
+  origin: MemoryOrigin;
   line: string;
 }
 
@@ -194,7 +217,7 @@ function day(date: Date): string {
 
 const TOUCH_COLUMNS = (() => {
   const json = `CASE WHEN json_valid(content) THEN content ELSE '{}' END`;
-  return `id, session_id, timestamp, json_extract(${json}, '$.toolName') AS tool_name,`
+  return `id, session_id, event_type, metadata, timestamp, json_extract(${json}, '$.toolName') AS tool_name,`
     + ` json_extract(${json}, '$.success') AS success,`
     + ` substr(json_extract(${json}, '$.errorMessage'), 1, ${SOURCE_CHARS}) AS error_message,`
     + ` COALESCE(json_extract(${json}, '$.metadata.filePath'), json_extract(${json}, '$.toolInput.file_path'),`
@@ -256,6 +279,7 @@ function readTouches(db: SQLiteDatabase, request: PreEditMemoryRequest, target: 
     touches.set(row.id, {
       id: row.id,
       sessionId: row.session_id,
+      origin: classifyStoredEvent(row.event_type, row.metadata) === 'tool' ? 'tool' : 'unknown',
       at,
       toolName: typeof row.tool_name === 'string' ? row.tool_name : 'tool',
       failed: row.success === 0 || row.success === false,
@@ -266,14 +290,14 @@ function readTouches(db: SQLiteDatabase, request: PreEditMemoryRequest, target: 
 }
 
 /** Each session's latest summary among the newest summaries, in one bounded read. */
-function latestSummaries(db: SQLiteDatabase, request: PreEditMemoryRequest, sessionIds: string[]): Map<string, { at: Date; content: string }> {
-  const summaries = new Map<string, { at: Date; content: string }>();
+function latestSummaries(db: SQLiteDatabase, request: PreEditMemoryRequest, sessionIds: string[]): Map<string, { at: Date; content: string; origin: MemoryOrigin }> {
+  const summaries = new Map<string, { at: Date; content: string; origin: MemoryOrigin }>();
   if (sessionIds.length === 0) return summaries;
   // `+session_id` keeps SQLite from answering through idx_events_session,
   // which would read every event of those sessions.
-  const rows = sqliteAll<{ session_id: string; timestamp: string; content: string }>(
+  const rows = sqliteAll<{ session_id: string; event_type: string; metadata: unknown; timestamp: string; content: string }>(
     db,
-    `SELECT session_id, timestamp, substr(content, 1, ${SOURCE_CHARS}) AS content FROM events
+    `SELECT session_id, event_type, metadata, timestamp, substr(content, 1, ${SOURCE_CHARS}) AS content FROM events
      WHERE rowid IN (
        SELECT rowid FROM events WHERE event_type = 'session_summary' ORDER BY timestamp DESC LIMIT ?
      ) AND +session_id IN (${placeholders(sessionIds.length)}) AND ${notActiveQuarantinedSql()}`,
@@ -283,7 +307,10 @@ function latestSummaries(db: SQLiteDatabase, request: PreEditMemoryRequest, sess
     const at = new Date(row.timestamp);
     if (!sessionIds.includes(row.session_id) || Number.isNaN(at.getTime())) continue;
     const current = summaries.get(row.session_id);
-    if (!current || at > current.at) summaries.set(row.session_id, { at, content: row.content });
+    if (!current || at > current.at) {
+      const origin = classifyStoredEvent(row.event_type, row.metadata);
+      summaries.set(row.session_id, { at, content: row.content, origin });
+    }
   }
   return summaries;
 }
@@ -345,6 +372,7 @@ function collectItems(db: SQLiteDatabase, request: PreEditMemoryRequest, target:
   for (const lesson of lessons.slice(0, MAX_LESSONS)) {
     items.push({
       key: `lesson:${lesson.lessonId}@${lesson.revision}`,
+      origin: 'derived',
       line: `- Lesson "${displayText(lesson.name, target, 80)}": ${displayText(lesson.trigger, target, LESSON_CHARS)}${mark(lesson.updatedAt)}`
     });
   }
@@ -352,6 +380,7 @@ function collectItems(db: SQLiteDatabase, request: PreEditMemoryRequest, target:
     const detail = displayText(failure.errorMessage, target, FAILURE_CHARS);
     items.push({
       key: `failure:${failure.id}`,
+      origin: failure.origin,
       line: `- ${displayText(failure.toolName, target, 40)} on this file failed on ${day(failure.at)}`
         + `${detail ? `: ${detail}` : ''}${mark(failure.at)}`
     });
@@ -371,6 +400,7 @@ function collectItems(db: SQLiteDatabase, request: PreEditMemoryRequest, target:
     sessionItems++;
     items.push({
       key: `session:${sessionId}`,
+      origin: summary.origin,
       line: `- Summary of a session that edited it (${day(summary.at)}): ${text}${mark(summary.at)}`
     });
   }
@@ -433,6 +463,12 @@ class ShownMarkers {
   }
 }
 
+/** The item line with its low-trust label, if any, ahead of all stored text. */
+function labelled(item: Item): string {
+  const label = memoryOriginLabel(item.origin);
+  return label ? `- [${label}] ${item.line.slice(2)}` : item.line;
+}
+
 /**
  * Header plus the items that fit, measured after sanitizing (which can lengthen
  * text) and each reserved before it is added.
@@ -443,7 +479,7 @@ function render(relPath: string, items: Item[], reserve: (item: Item) => boolean
     + '"(file changed since)" marks a note recorded before the file last changed.\n\n');
   let shown = 0;
   for (const item of items) {
-    const next = sanitizeRecallText(`${text}${item.line}\n`);
+    const next = sanitizeRecallText(`${text}${labelled(item)}\n`);
     if (next.length > PRE_EDIT_CONTEXT_BUDGET || !reserve(item)) continue;
     text = next;
     shown++;
@@ -466,7 +502,8 @@ export async function buildPreEditContext(request: PreEditMemoryRequest): Promis
   try {
     const touches = readTouches(db, request, target);
     const lessons = await linkedLessons(db, request, target, new Set(touches.map((touch) => touch.id)));
-    items = collectItems(db, request, target, touches, lessons);
+    items = collectItems(db, request, target, touches, lessons)
+      .filter((item) => !(request.excludeUntrustedOrigins && isAutoInjectionExcludableOrigin(item.origin)));
   } finally {
     db.close();
   }
