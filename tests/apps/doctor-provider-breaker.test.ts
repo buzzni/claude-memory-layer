@@ -19,7 +19,9 @@ const open = (overrides: Partial<ProviderCircuitState> = {}): ProviderCircuitSta
   openedAt: '2026-01-01T00:00:00.000Z',
   nextProbeAt: '2026-01-01T00:05:00.000Z',
   cooldownMs: 300_000,
+  probeClaimId: null,
   probeClaimedAt: null,
+  probeLeaseUntil: null,
   updatedAt: '2026-01-01T00:00:00.000Z',
   ...overrides
 });
@@ -74,7 +76,7 @@ describe('gatherProviderBreakerFacts', () => {
       now: () => now,
       config: { enabled: true, failureThreshold: 1, cooldownMs: 1000, maxCooldownMs: 1000 }
     });
-    breaker.recordFailure('claude', 'provider-auth', { probe: false });
+    breaker.recordFailure('claude', 'provider-auth', { allowed: true, probe: false });
     savePendingSummary('s1', { homeDir, now: () => now });
 
     const facts = gatherProviderBreakerFacts({ env: {}, homeDir, now: () => now });

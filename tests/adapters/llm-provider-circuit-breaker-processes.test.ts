@@ -44,7 +44,7 @@ describe('ProviderCircuitBreaker across processes', () => {
   it('lets exactly one of many concurrent processes probe', async () => {
     const filePath = path.join(dir, 'llm-provider-breaker.json');
     new ProviderCircuitBreaker({ filePath, now: () => START, config: CONFIG })
-      .recordFailure('claude', 'provider-rate-limit', { probe: false });
+      .recordFailure('claude', 'provider-rate-limit', { allowed: true, probe: false });
 
     // Every child loads its modules first, then spins until the go file
     // appears, so the admit calls overlap instead of running one by one.
@@ -57,7 +57,7 @@ describe('ProviderCircuitBreaker across processes', () => {
       `const breaker = new ProviderCircuitBreaker({ filePath, now: () => Number(now), config: ${JSON.stringify(CONFIG)} });`,
       `fs.writeFileSync(goFile + '.' + process.pid, '');`,
       `while (!fs.existsSync(goFile)) { /* spin */ }`,
-      `process.stdout.write(JSON.stringify(breaker.admit('claude')));`
+      `process.stdout.write(JSON.stringify(breaker.admit('claude', 60000)));`
     ].join('\n'));
 
     const runs = Array.from({ length: PROCESSES }, () => runAdmitter(entry, filePath, goFile));
@@ -68,6 +68,6 @@ describe('ProviderCircuitBreaker across processes', () => {
     fs.writeFileSync(goFile, '');
 
     const results = await Promise.all(runs);
-    expect(results.filter((result) => result.allowed)).toEqual([{ allowed: true, probe: true }]);
+    expect(results.filter((result) => result.allowed)).toEqual([{ allowed: true, probe: true, claimId: expect.any(String) }]);
   }, 60_000);
 });

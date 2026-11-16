@@ -176,24 +176,32 @@ describe('runCliProvider circuit breaker', () => {
     expect(breaker.recordFailure).not.toHaveBeenCalled();
   });
 
-  it('records success after a clean exit', async () => {
-    const breaker = stubBreaker({ allowed: true, probe: true });
+  it('asks for a probe lease covering the CLI timeout', async () => {
+    const breaker = stubBreaker({ allowed: false, nextProbeAt: '2026-01-01T00:05:00.000Z' });
+    await run(breaker).catch(() => undefined);
+    expect(breaker.admit).toHaveBeenCalledWith('claude', 1000 + 60_000);
+  });
+
+  it('records success with its admission after a clean exit', async () => {
+    const probe: CircuitAdmission = { allowed: true, probe: true, claimId: 'c1' };
+    const breaker = stubBreaker(probe);
     const child = fakeChild();
     spawnMock.mockReturnValue(child);
     const pending = run(breaker);
     child.emit('close', 0);
     await pending;
-    expect(breaker.recordSuccess).toHaveBeenCalledWith('claude');
+    expect(breaker.recordSuccess).toHaveBeenCalledWith('claude', probe);
   });
 
-  it('records the classified failure with the probe flag', async () => {
-    const breaker = stubBreaker({ allowed: true, probe: true });
+  it('records the classified failure with its admission', async () => {
+    const probe: CircuitAdmission = { allowed: true, probe: true, claimId: 'c1' };
+    const breaker = stubBreaker(probe);
     const child = fakeChild();
     spawnMock.mockReturnValue(child);
     const pending = run(breaker);
     child.stdout.emit('data', Buffer.from('Claude AI usage limit reached|1767225600'));
     child.emit('close', 1);
     await expect(pending).rejects.toMatchObject({ code: 'provider-rate-limit' });
-    expect(breaker.recordFailure).toHaveBeenCalledWith('claude', 'provider-rate-limit', { probe: true });
+    expect(breaker.recordFailure).toHaveBeenCalledWith('claude', 'provider-rate-limit', probe);
   });
 });

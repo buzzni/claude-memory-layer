@@ -26,7 +26,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import { CIRCUIT_OPEN_CODE, ProviderCircuitBreaker } from './provider-circuit-breaker.js';
+import { CIRCUIT_OPEN_CODE, PROBE_LEASE_MARGIN_MS, ProviderCircuitBreaker } from './provider-circuit-breaker.js';
 
 export type CliProviderName = 'claude' | 'codex';
 
@@ -153,23 +153,22 @@ export interface RunCliProviderOptions {
  * CLI start per call.
  */
 export async function runCliProvider(options: RunCliProviderOptions): Promise<string> {
-  const { provider, label } = options;
+  const { provider, label, timeoutMs } = options;
   const breaker = options.breaker ?? new ProviderCircuitBreaker();
-  const admission = breaker.admit(provider);
+  // The call is killed at timeoutMs, so a probe's outcome lands within its lease.
+  const admission = breaker.admit(provider, timeoutMs + PROBE_LEASE_MARGIN_MS);
   if (!admission.allowed) {
     throw new CliProviderError(
-      `${label} skipped: provider circuit is open until ${admission.nextProbeAt ?? 'the next probe'}`,
+      `${label} skipped: provider circuit is open until ${admission.nextProbeAt}`,
       CIRCUIT_OPEN_CODE
     );
   }
   try {
     const output = await spawnCliProvider(options);
-    breaker.recordSuccess(provider);
+    breaker.recordSuccess(provider, admission);
     return output;
   } catch (error) {
-    breaker.recordFailure(provider, error instanceof CliProviderError ? error.code : undefined, {
-      probe: admission.probe
-    });
+    breaker.recordFailure(provider, error instanceof CliProviderError ? error.code : undefined, admission);
     throw error;
   }
 }

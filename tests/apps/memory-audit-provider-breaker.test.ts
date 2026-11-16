@@ -27,7 +27,7 @@ describe('audit LLM provider circuit section', () => {
       filePath: getProviderCircuitStatePath(homeDir),
       now: () => NOW.getTime(),
       config: { enabled: true, failureThreshold: 1, cooldownMs: 60_000, maxCooldownMs: 60_000 }
-    }).recordFailure('claude', 'provider-rate-limit', { probe: false });
+    }).recordFailure('claude', 'provider-rate-limit', { allowed: true, probe: false });
     savePendingSummary('s1', { homeDir, now: () => NOW.getTime() });
     savePendingSummary('s2', { homeDir, now: () => NOW.getTime() });
 
