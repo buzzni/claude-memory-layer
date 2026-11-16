@@ -46,6 +46,7 @@ describe('repair redact-credentials governance audit', () => {
     });
 
     expect(plan.affectedEventIds).toEqual([leakedId]);
+    expect((await store.getEvent(leakedId))?.content).not.toContain('sk-live');
     const rows = auditRows(store);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ operation: 'credential_redact', actor: 'cli', target_type: 'store', target_id: 'redact-credentials' });

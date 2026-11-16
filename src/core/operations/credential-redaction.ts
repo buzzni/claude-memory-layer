@@ -94,24 +94,42 @@ function columnExists(db: SQLiteDatabase, table: string, column: string): boolea
   return rows.some((row) => row.name === column);
 }
 
+interface PendingRowRedaction {
+  change: RedactionRowChange;
+  idColumn: string;
+  original: string;
+  redacted: string;
+}
+
 /**
  * Scan SQLite for values the privacy filter would change, and optionally write
  * the redacted form back.
  *
- * With `audit`, an apply writes one governance audit row in the same transaction
- * as the updates whenever anything (rows here, or the mirror files the caller
- * already redacted) changed. The row holds counts and event ids only — never a
- * secret or the text it was replaced in.
+ * The scan runs outside any write transaction; an apply then writes only the
+ * changed rows in one short transaction, so hooks writing meanwhile never wait
+ * on the whole scan. Each update is guarded on the scanned value, and a row
+ * that changed in between is left for the next run rather than overwritten.
+ *
+ * With `audit`, an apply writes one governance audit row in that transaction
+ * whenever anything (rows here, or the mirror files the caller already
+ * redacted) changed. The row holds counts and event ids only — never a secret
+ * or the text it was replaced in.
  */
 export function planSqliteRedaction(
   db: SQLiteDatabase,
   options: { apply: boolean; audit?: { actor: string; fileChanges: RedactionFileChange[] } }
 ): { rowChanges: RedactionRowChange[]; affectedEventIds: string[] } {
-  const { audit } = options;
-  if (!options.apply) return scanSqliteRedaction(db, false);
+  const pending = scanSqliteRedaction(db);
+  if (!options.apply) return summarizeRedaction(pending);
 
+  const { audit } = options;
   return sqliteTransaction(db, () => {
-    const plan = scanSqliteRedaction(db, true);
+    const applied = pending.filter(({ change, idColumn, original, redacted }) => sqliteRun(
+      db,
+      `UPDATE ${change.table} SET ${change.column} = ? WHERE ${idColumn} = ? AND ${change.column} = ?`,
+      [redacted, change.rowId, original]
+    ).changes > 0);
+    const plan = summarizeRedaction(applied);
     if (audit && (plan.rowChanges.length > 0 || audit.fileChanges.length > 0)) {
       const rowsByColumn: Record<string, number> = {};
       for (const change of plan.rowChanges) {
@@ -136,12 +154,18 @@ export function planSqliteRedaction(
   });
 }
 
-function scanSqliteRedaction(
-  db: SQLiteDatabase,
-  apply: boolean
+function summarizeRedaction(
+  pending: PendingRowRedaction[]
 ): { rowChanges: RedactionRowChange[]; affectedEventIds: string[] } {
-  const rowChanges: RedactionRowChange[] = [];
   const affectedEventIds = new Set<string>();
+  for (const { change } of pending) {
+    if (change.table === 'events') affectedEventIds.add(change.rowId);
+  }
+  return { rowChanges: pending.map(({ change }) => change), affectedEventIds: Array.from(affectedEventIds) };
+}
+
+function scanSqliteRedaction(db: SQLiteDatabase): PendingRowRedaction[] {
+  const pending: PendingRowRedaction[] = [];
 
   for (const target of SQLITE_TARGETS) {
     if (!tableExists(db, target.table)) continue;
@@ -163,26 +187,17 @@ function scanSqliteRedaction(
         const redacted = redactText(value);
         if (redacted === value) continue;
 
-        rowChanges.push({
-          table: target.table,
-          rowId,
-          column,
-          preview: previewOf(redacted)
+        pending.push({
+          change: { table: target.table, rowId, column, preview: previewOf(redacted) },
+          idColumn: target.idColumn,
+          original: value,
+          redacted
         });
-        if (target.table === 'events') affectedEventIds.add(rowId);
-
-        if (apply) {
-          sqliteRun(
-            db,
-            `UPDATE ${target.table} SET ${column} = ? WHERE ${target.idColumn} = ?`,
-            [redacted, rowId]
-          );
-        }
       }
     }
   }
 
-  return { rowChanges, affectedEventIds: Array.from(affectedEventIds) };
+  return pending;
 }
 
 function walkMarkdown(dir: string, found: string[]): void {

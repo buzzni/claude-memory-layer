@@ -70,10 +70,6 @@ export interface ClaudeMessage {
  * - 'thinking': Assistant thinking (thinking blocks)
  * - 'skip': Everything else (progress, system, summary, etc.)
  */
-/**
- * Filter trivial user inputs that aren't worth storing.
- * Mirrors the shouldStorePrompt() logic from user-prompt-submit.ts.
- */
 /** Audit entry for the delete a forced reimport runs before re-importing a session. */
 export function sessionReimportAudit(
   sessionId: string,
@@ -89,6 +85,10 @@ export function sessionReimportAudit(
   };
 }
 
+/**
+ * Filter trivial user inputs that aren't worth storing.
+ * Mirrors the shouldStorePrompt() logic from user-prompt-submit.ts.
+ */
 export function isWorthStoringPrompt(content: string): boolean {
   const trimmed = content.trim();
   if (isHarnessBoilerplate(trimmed)) return false;
