@@ -828,6 +828,13 @@ export class CodexSessionHistoryImporter {
 
     const effectiveProjectPath = options.projectPath ?? meta.cwd ?? undefined;
 
+    // A message limit stops the re-import before the end of the session, so
+    // the rows past it would be deleted and never put back.
+    if (options.force && Number.isFinite(options.limit || Infinity)) {
+      result.errors.push(`Skipped force reimport (a message limit would drop the rows past it; rerun without a limit): ${filePath}`);
+      return result;
+    }
+
     // Keep host-owned rows intact on a forced legacy refresh: the legacy parser
     // cannot recreate the host's final-answer/privacy contract. Plain legacy
     // sessions retain the historical delete-then-reimport behavior.
@@ -839,7 +846,8 @@ export class CodexSessionHistoryImporter {
       })
       : false;
     if (options.force && !hasHostManagedRows) {
-      const deleted = await this.memoryService.deleteSessionEvents(sessionId);
+      // Only the rows an import wrote; the hooks' rows are not in the file.
+      const deleted = await this.memoryService.deleteSessionEvents(sessionId, { importedOnly: true });
       if (options.verbose && deleted > 0) {
         console.log(`  Deleted ${deleted} existing events for session ${sessionId}`);
       }

@@ -188,6 +188,29 @@ describe('Hermes SessionDB validation/import', () => {
     expect(serialized).not.toContain('another project');
   });
 
+  it('refuses a force reimport with a message limit and deletes nothing', async () => {
+    const dir = tempDir();
+    const stateDbPath = join(dir, 'state.db');
+    const projectA = join(dir, 'project-a');
+    const projectB = join(dir, 'project-b');
+    createHermesStateDb(stateDbPath, projectA, projectB);
+
+    const memoryService = {
+      startSession: vi.fn(async (_sessionId: string, _projectPath?: string) => undefined),
+      endSession: vi.fn(async (_sessionId: string) => undefined),
+      deleteSessionEvents: vi.fn(async (_sessionId: string) => 0),
+      storeUserPrompt: vi.fn(async () => ({ success: true, isDuplicate: false })),
+      storeAgentResponse: vi.fn(async () => ({ success: true, isDuplicate: false }))
+    };
+
+    const importer = createHermesSessionHistoryImporter(memoryService as never, { stateDbPath });
+    const result = await importer.importProject(projectA, { force: true, limit: 1 });
+
+    expect(memoryService.deleteSessionEvents).not.toHaveBeenCalled();
+    expect(memoryService.storeUserPrompt).not.toHaveBeenCalled();
+    expect(result.errors).toEqual([expect.stringContaining('Skipped force reimport (a message limit')]);
+  });
+
   it('imports only matched user/assistant turns, redacts secrets, and skips tool messages', async () => {
     const dir = tempDir();
     const stateDbPath = join(dir, 'state.db');
@@ -215,7 +238,7 @@ describe('Hermes SessionDB validation/import', () => {
     const importer = createHermesSessionHistoryImporter(memoryService as never, { stateDbPath });
     const result = await importer.importProject(projectA, { force: true });
 
-    expect(memoryService.deleteSessionEvents).toHaveBeenCalledWith('hermes:session-a');
+    expect(memoryService.deleteSessionEvents).toHaveBeenCalledWith('hermes:session-a', { importedOnly: true });
     expect(memoryService.startSession).toHaveBeenCalledWith('hermes:session-a', projectA);
     expect(memoryService.endSession).toHaveBeenCalledWith('hermes:session-a');
     expect(memoryService.evaluateSessionHelpfulness).toHaveBeenCalledWith('hermes:session-a');

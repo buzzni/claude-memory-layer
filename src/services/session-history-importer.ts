@@ -277,16 +277,23 @@ export class SessionHistoryImporter {
     // Extract session ID from filename
     const sessionId = path.basename(filePath, '.jsonl');
 
-    // Force reimport: delete existing events for this session. Validate that the
-    // source file is readable and has at least one parseable record BEFORE the
+    // Force reimport: delete the rows earlier imports wrote for this session.
+    // Rows the hooks and the daemon wrote (summaries, tool observations) are
+    // not in the transcript, and a message limit stops the re-import before
+    // the end of it, so neither could be put back. Validate that the source
+    // file is readable and has at least one parseable record BEFORE the
     // destructive delete, so a corrupt/empty/unreadable file can never wipe the
     // existing session with nothing to re-import in its place.
     if (options.force) {
+      if (Number.isFinite(options.limit || Infinity)) {
+        result.errors.push(`Skipped force reimport (a message limit would drop the rows past it; rerun without a limit): ${filePath}`);
+        return result;
+      }
       if (!(await this.hasParseableContent(filePath))) {
         result.errors.push(`Skipped force reimport (no parseable records): ${filePath}`);
         return result;
       }
-      const deleted = await this.memoryService.deleteSessionEvents(sessionId);
+      const deleted = await this.memoryService.deleteSessionEvents(sessionId, { importedOnly: true });
       if (options.verbose && deleted > 0) {
         console.log(`  Deleted ${deleted} existing events for session ${sessionId}`);
       }
