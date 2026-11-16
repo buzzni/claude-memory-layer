@@ -5386,6 +5386,57 @@ export class SQLiteEventStore {
   }
 
   /**
+   * Hide events that a newer event replaces (a refreshed session summary) from every read
+   * path, by setting the quarantine status those paths already filter on under its own
+   * category. Not a delete: that rebuilds the whole FTS index and would run on every refresh.
+   * Returns how many events were newly hidden.
+   */
+  async markEventsSuperseded(eventIds: string[], supersededBy: string): Promise<number> {
+    await this.initialize();
+    const targets = eventIds.filter((id) => id !== supersededBy);
+    if (targets.length === 0) return 0;
+
+    const nowIso = new Date().toISOString();
+    const runUpdate = this.db.transaction((): number => {
+      let changed = 0;
+      for (const id of targets) {
+        const row = sqliteGet<{ metadata: unknown }>(this.db, `SELECT metadata FROM events WHERE id = ?`, [id]);
+        if (!row) continue;
+        const metadata = safeParseMetadataValue(row.metadata) ?? {};
+        if (isActiveQuarantinedMetadata(metadata)) continue;
+        metadata.quarantine = {
+          ...(isRecord(metadata.quarantine) ? metadata.quarantine : {}),
+          status: 'active',
+          category: 'superseded',
+          reason: 'superseded by a newer event',
+          supersededBy,
+          detectedAt: nowIso
+        };
+        addMetadataTag(metadata, 'quarantine:superseded');
+        changed += sqliteRun(this.db, `UPDATE events SET metadata = ? WHERE id = ?`, [JSON.stringify(metadata), id]).changes || 0;
+      }
+      return changed;
+    });
+
+    return runUpdate();
+  }
+
+  /**
+   * Shallow-merge `patch` into one event's metadata. Returns false when the event does not exist.
+   */
+  async mergeEventMetadata(eventId: string, patch: Record<string, unknown>): Promise<boolean> {
+    await this.initialize();
+    const runUpdate = this.db.transaction((): boolean => {
+      const row = sqliteGet<{ metadata: unknown }>(this.db, `SELECT metadata FROM events WHERE id = ?`, [eventId]);
+      if (!row) return false;
+      const metadata = { ...(safeParseMetadataValue(row.metadata) ?? {}), ...patch };
+      return (sqliteRun(this.db, `UPDATE events SET metadata = ? WHERE id = ?`, [JSON.stringify(metadata), eventId]).changes || 0) > 0;
+    });
+
+    return runUpdate();
+  }
+
+  /**
    * Delete a single event and everything keyed to it.
    *
    * Deliberately NOT sharing an implementation with `deleteSessionEvents`: that one deletes

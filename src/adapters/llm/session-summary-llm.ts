@@ -67,6 +67,10 @@ export function isLlmSummaryEnabled(env: NodeJS.ProcessEnv = process.env): boole
  * Only prompts and answers carry decisions. Tool observations are excluded on
  * purpose: they are 82% of stored volume, ground at 0.2%, and would dominate
  * the context window with content the summary must not describe anyway.
+ *
+ * A session_summary event means this run replaces that summary. It goes in as
+ * prior findings, because the transcript keeps only the last MAX_EVENTS and
+ * what the old summary drew from earlier turns would otherwise be lost.
  */
 export function buildSummaryPrompt(events: SummarySourceEvent[]): string | null {
   const usable = events
@@ -75,6 +79,12 @@ export function buildSummaryPrompt(events: SummarySourceEvent[]): string | null 
     .slice(-MAX_EVENTS);
 
   if (usable.length < 2) return null;
+
+  const previousSummary = events
+    .filter((event) => event.eventType === 'session_summary')
+    .map((event) => (typeof event.content === 'string' ? event.content.trim() : ''))
+    .filter((content) => content.length > 0)
+    .at(-1);
 
   const transcript = usable
     .map((event) => {
@@ -99,6 +109,15 @@ export function buildSummaryPrompt(events: SummarySourceEvent[]): string | null 
     '- 위 세 가지에 해당하는 내용이 하나도 없으면 다른 말 없이 정확히 ' + NO_DURABLE_CONTENT + ' 만 출력해라.',
     '- 최대 5줄. 각 줄은 "- " 로 시작. 머리말, 인사, 총평, 설명 금지.',
     '- 추측하지 마라. 기록에 근거가 있는 것만 써라.',
+    ...(previousSummary
+      ? [
+          '- 아래 이전 요약은 이 세션의 앞부분에서 만든 것이고, 네 출력이 이를 대체한다. 이전 요약의 항목 중 기록이 뒤집지 않은 것은 유지하고, 뒤집힌 것은 새 내용으로 바꿔라.',
+          '',
+          '--- 이전 요약 시작 ---',
+          previousSummary,
+          '--- 이전 요약 끝 ---'
+        ]
+      : []),
     '',
     '--- 기록 시작 ---',
     transcript,

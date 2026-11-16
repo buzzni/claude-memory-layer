@@ -23,6 +23,23 @@ describe('session summary llm provider', () => {
     expect(prompt).not.toContain('npm run build ok');
   });
 
+  it('hands the summary being replaced to the model as prior findings', () => {
+    const exchange = [
+      { eventType: 'user_prompt', content: '캐시는 왜 안 비워지지' },
+      { eventType: 'agent_response', content: 'TTL 설정이 0이었다' }
+    ];
+    const first = buildSummaryPrompt(exchange)!;
+    const refresh = buildSummaryPrompt([
+      { eventType: 'session_summary', content: '- 결정: publish 설정 추가' },
+      ...exchange
+    ])!;
+
+    expect(first).not.toContain('이전 요약');
+    expect(refresh).toContain('--- 이전 요약 시작 ---\n- 결정: publish 설정 추가\n--- 이전 요약 끝 ---');
+    expect(refresh.indexOf('이전 요약 시작')).toBeLessThan(refresh.indexOf('기록 시작'));
+    expect(refresh).toContain('TTL 설정이 0이었다');
+  });
+
   it('abstains when a session has too little conversation to summarize', () => {
     expect(buildSummaryPrompt([{ eventType: 'user_prompt', content: '안녕' }])).toBeNull();
     expect(buildSummaryPrompt([

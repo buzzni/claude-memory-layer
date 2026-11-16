@@ -40,6 +40,8 @@ interface IngestEventStore extends SessionUpsertStore {
   append(input: MemoryEventInput): Promise<AppendResult>;
   enqueueForEmbedding(eventId: string, content: string): Promise<unknown>;
   recordCaptureSkipped?(reason: string): Promise<void>;
+  markEventsSuperseded(eventIds: string[], supersededBy: string): Promise<number>;
+  mergeEventMetadata(eventId: string, patch: Record<string, unknown>): Promise<boolean>;
 }
 
 interface IngestMarkdownMirror {
@@ -47,6 +49,30 @@ interface IngestMarkdownMirror {
 }
 
 export type IngestOperation = 'user_prompt' | 'agent_response' | 'session_summary' | 'tool_observation';
+
+/**
+ * Prompt/answer events a session must gain after its stored LLM summary before
+ * that summary is regenerated (about five turns). Without a refresh the first
+ * turn's summary was the only one a session ever got (#221); the bound keeps a
+ * long session from paying a provider call on every turn.
+ */
+export const SUMMARY_REFRESH_MIN_NEW_EXCHANGES = 10;
+
+function isExchangeEvent(event: MemoryEvent): boolean {
+  return (event.eventType === 'user_prompt' || event.eventType === 'agent_response')
+    && typeof event.content === 'string'
+    && event.content.trim().length > 0;
+}
+
+/**
+ * Prompt/answer events the summary was built from: recorded on summaries since
+ * #221, otherwise the ones stored before it.
+ */
+function summarizedExchangeCount(summary: MemoryEvent, events: MemoryEvent[]): number {
+  const recorded = summary.metadata?.summarizedExchangeCount;
+  if (typeof recorded === 'number' && Number.isFinite(recorded)) return recorded;
+  return events.slice(0, events.indexOf(summary)).filter(isExchangeEvent).length;
+}
 
 export interface MemoryIngestServiceOptions {
   initialize: () => Promise<void>;
@@ -243,6 +269,11 @@ export class MemoryIngestService {
    * session then still has no summary and stays eligible for a later backfill
    * attempt. It deliberately does not fall back to the rule-based text, whose
    * table-of-contents shape is the reason this path exists.
+   *
+   * A session that already has a summary is summarized again once it has
+   * gained SUMMARY_REFRESH_MIN_NEW_EXCHANGES prompt/answer events since. The
+   * generator then also receives the previous summary, and the new one
+   * supersedes it so retrieval does not return both.
    */
   async generateLlmSessionSummary(sessionId: string): Promise<boolean> {
     await this.initialize();
@@ -250,19 +281,51 @@ export class MemoryIngestService {
 
     const events = await this.eventStore.getSessionEvents(sessionId);
     if (events.length < 3) return false;
-    if (events.some((event) => event.eventType === 'session_summary')) return false;
+    const previousSummaries = events.filter((event) => event.eventType === 'session_summary');
+    const exchangeCount = events.filter(isExchangeEvent).length;
+    const latestSummary = previousSummaries.at(-1);
+    if (
+      latestSummary
+      && exchangeCount - summarizedExchangeCount(latestSummary, events) < SUMMARY_REFRESH_MIN_NEW_EXCHANGES
+    ) {
+      return false;
+    }
+
+    // A refresh that yields nothing new keeps the current summary but counts
+    // the conversation as covered; otherwise every later turn would call the
+    // provider again.
+    const markLatestCovered = async () => {
+      if (!latestSummary) return;
+      await this.eventStore.mergeEventMetadata(latestSummary.id, { summarizedExchangeCount: exchangeCount });
+    };
 
     const summary = await this.llmSummaryGenerator(
       events.map((event) => ({ eventType: event.eventType, content: event.content }))
     );
-    if (!summary) return false;
+    if (!summary) {
+      await markLatestCovered();
+      return false;
+    }
 
     // The store reports write failures as a result, not an exception; true
     // must mean the summary is on disk (or already was), because callers
     // treat it as done and stop retrying.
-    const stored = await this.storeSessionSummary(sessionId, summary.text, summary.metadata);
+    const stored = await this.storeSessionSummary(sessionId, summary.text, {
+      ...summary.metadata,
+      summarizedExchangeCount: exchangeCount
+    });
     if (!stored.success) {
       throw new Error(`session summary could not be stored: ${stored.error}`);
+    }
+    // A duplicate means the provider repeated a summary this session already
+    // has; superseding around it could hide the only one left.
+    if (stored.isDuplicate || !stored.eventId) {
+      await markLatestCovered();
+    } else if (previousSummaries.length > 0) {
+      await this.eventStore.markEventsSuperseded(
+        previousSummaries.map((event) => event.id),
+        stored.eventId
+      );
     }
     return true;
   }
