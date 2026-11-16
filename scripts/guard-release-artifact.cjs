@@ -127,8 +127,12 @@ const FORBIDDEN_IN_TARBALL = /(^|\/)\.claude-memory(\/|$)|(^|\/)graphify-out(\/|
  * The MIT license requires its notice to travel with every copy. npm adds a
  * root LICENSE on its own, so this only fails if the file is deleted or
  * renamed — which would otherwise ship silently.
+ *
+ * README.md is what the npm package page renders, and it links to
+ * README.ko.md as its language switch. npm adds every root README* file on
+ * its own, so both ship without a `files` entry; docs/ does not ship.
  */
-const REQUIRED_IN_TARBALL = ['LICENSE'];
+const REQUIRED_IN_TARBALL = ['LICENSE', 'README.md', 'README.ko.md'];
 
 function guardTarball(packJsonPath) {
   if (!packJsonPath) fail('usage: guard-release-artifact.cjs tarball <npm-pack-dry-run-json>');
