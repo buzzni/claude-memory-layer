@@ -7,23 +7,38 @@
  * same rows mem-checkpoint-create writes) with a session target. Built from
  * stored events only, never an LLM call: PreCompact runs on the compaction's
  * critical path.
+ *
+ * SQLite calls are synchronous, so the hook watchdog cannot cut one short.
+ * What bounds this path instead: a dedicated connection with a short busy
+ * wait (the shared factory waits 5 s), no schema initialization, and reads
+ * capped in rows and characters.
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
+import Database from 'better-sqlite3';
 import { CheckpointRepository } from '../../../core/operations/checkpoint-repository.js';
+import { applyPrivacyFilter } from '../../../core/privacy/index.js';
 import { getProjectStoragePath, hashProjectPath } from '../../../core/registry/project-path.js';
 import { singleLineRecallText } from '../../../core/recall-sanitizer.js';
-import { SQLiteEventStore } from '../../../core/sqlite-event-store.js';
-import type { MemoryEvent } from '../../../core/types.js';
+import { notActiveQuarantinedSql } from '../../../core/sqlite-event-store.js';
+import { sqliteAll, type SQLiteDatabase } from '../../../core/sqlite-wrapper.js';
+import type { Config } from '../../../core/types.js';
 
 const CHECKPOINT_KIND = 'pre_compact';
 const CHECKPOINT_ACTOR = 'claude-hook:pre-compact';
 
-/** Turns scanned for the checkpoint. Bounds the read on a long session. */
-const SCAN_TURNS = 5;
+/** How long one statement waits for another connection's lock before failing. */
+const DB_BUSY_TIMEOUT_MS = 200;
+
 const MAX_PROMPTS = 3;
 const MAX_EDITED_FILES = 10;
+/** Tool observations scanned for edited files, newest first. */
+const SCAN_TOOL_OBSERVATIONS = 40;
+/** Characters read per prompt/response, before filtering and clipping. */
+const SOURCE_CHARS = 4000;
+/** Tool observations larger than this are skipped rather than parsed. */
+const MAX_TOOL_OBSERVATION_CHARS = 64 * 1024;
 const PROMPT_CHARS = 300;
 const RESPONSE_CHARS = 600;
 
@@ -34,8 +49,25 @@ const RESPONSE_CHARS = 600;
  * this one's did not.
  */
 export const COMPACTION_CHECKPOINT_MAX_AGE_MS = 10 * 60 * 1000;
+/** A clock stepped back this far still accepts the checkpoint; further, it reads as from the future. */
+export const COMPACTION_CHECKPOINT_MAX_FUTURE_SKEW_MS = 60 * 1000;
 
-const EDIT_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit']);
+const EDIT_TOOLS = ['Write', 'Edit', 'MultiEdit', 'NotebookEdit'];
+
+/** Rows stored before prompt filtering still carry private tags; every format is removed. */
+const CHECKPOINT_PRIVACY_CONFIG: Config['privacy'] = {
+  excludePatterns: ['password', 'secret', 'api_key', 'token', 'bearer'],
+  anonymize: false,
+  privateTags: {
+    enabled: true,
+    // Not '[PRIVATE]': that is also the bracket format's opening tag.
+    marker: '[REDACTED]',
+    preserveLineCount: false,
+    supportedFormats: ['xml', 'bracket', 'comment']
+  }
+};
+/** An opening tag left after filtering: unclosed, or cut off by SOURCE_CHARS. */
+const PRIVATE_TAG_OPENING = /<private>|\[private\]|<!--\s*private\s*-->/i;
 
 export interface CompactionCheckpoint {
   trigger: string;
@@ -49,8 +81,22 @@ export interface CompactionCheckpoint {
   sourceEventIds: string[];
 }
 
+interface TextRow { id: string; session_id: string; content: string }
+interface EditRow { id: string; session_id: string; file_path: unknown }
+
 function storeDbPath(cwd: string): string {
   return path.join(getProjectStoragePath(cwd), 'events.sqlite');
+}
+
+function openStore(dbPath: string, readonly: boolean): SQLiteDatabase {
+  return new Database(dbPath, { readonly, fileMustExist: true, timeout: DB_BUSY_TIMEOUT_MS });
+}
+
+/** Private sections removed, then anything from an opening tag left without its end. */
+function privateSafeText(text: string): string {
+  const filtered = applyPrivacyFilter(text, CHECKPOINT_PRIVACY_CONFIG).content;
+  const opening = filtered.search(PRIVATE_TAG_OPENING);
+  return opening === -1 ? filtered : `${filtered.slice(0, opening)}[REDACTED]`;
 }
 
 function clip(text: string, limit: number): string {
@@ -58,87 +104,103 @@ function clip(text: string, limit: number): string {
   return trimmed.length <= limit ? trimmed : `${trimmed.slice(0, limit).trimEnd()}…`;
 }
 
-/** The project file a stored edit observation touched, relative to cwd; null outside it. */
-function editedFile(event: MemoryEvent, cwd: string): string | null {
-  try {
-    const payload = JSON.parse(event.content) as {
-      toolName?: unknown;
-      toolInput?: Record<string, unknown>;
-      metadata?: Record<string, unknown>;
-    };
-    if (typeof payload.toolName !== 'string' || !EDIT_TOOLS.has(payload.toolName)) return null;
-    const filePath = payload.metadata?.filePath ?? payload.toolInput?.file_path ?? payload.toolInput?.notebook_path;
-    if (typeof filePath !== 'string' || !path.isAbsolute(filePath)) return null;
-    const relative = path.relative(cwd, filePath);
-    return relative && !relative.startsWith('..') && !path.isAbsolute(relative) ? relative : null;
-  } catch {
-    return null;
-  }
+/** The newest rows of one event type in this session, newest first. */
+function recentRows<T>(db: SQLiteDatabase, select: string, sessionId: string, eventType: string, limit: number, extra = ''): T[] {
+  // The inner query reads only columns stored before `content`, so it never
+  // walks a large row's overflow pages; the outer one reads `limit` rows.
+  return sqliteAll<T>(
+    db,
+    `SELECT ${select} FROM events
+     WHERE rowid IN (
+       SELECT rowid FROM events WHERE session_id = ? AND event_type = ?
+       ORDER BY timestamp DESC LIMIT ?
+     ) AND session_id = ? AND ${notActiveQuarantinedSql()} ${extra}
+     ORDER BY timestamp DESC`,
+    [sessionId, eventType, limit, sessionId]
+  );
 }
 
-/** Turns newest first, events within a turn oldest first (getSessionTurns order). */
-export function buildCompactionCheckpointState(
-  turns: ReadonlyArray<{ events: MemoryEvent[] }>,
-  cwd: string
-): Omit<CompactionCheckpoint, 'trigger' | 'createdAt'> {
-  const newestFirst = turns.flatMap((turn) => [...turn.events].reverse());
-  const prompts = newestFirst
-    .filter((event) => event.eventType === 'user_prompt' && event.content.trim())
-    .slice(0, MAX_PROMPTS)
+function projectRelative(filePath: unknown, cwd: string): string | null {
+  if (typeof filePath !== 'string' || !path.isAbsolute(filePath)) return null;
+  const relative = path.relative(cwd, filePath);
+  return relative && !relative.startsWith('..') && !path.isAbsolute(relative) ? relative : null;
+}
+
+function readCheckpointState(db: SQLiteDatabase, sessionId: string, cwd: string): Omit<CompactionCheckpoint, 'trigger' | 'createdAt'> {
+  const textSelect = `id, session_id, substr(content, 1, ${SOURCE_CHARS}) AS content`;
+  const json = `CASE WHEN json_valid(content) THEN content ELSE '{}' END`;
+  // Rows are re-checked against the session before anything is saved.
+  const ownSession = <T extends { session_id: string }>(rows: T[]) => rows.filter((row) => row.session_id === sessionId);
+
+  const prompts = ownSession(recentRows<TextRow>(db, textSelect, sessionId, 'user_prompt', MAX_PROMPTS))
+    .map((row) => ({ id: row.id, text: clip(privateSafeText(row.content), PROMPT_CHARS) }))
+    .filter((prompt) => prompt.text)
     .reverse();
-  const response = newestFirst.find((event) => event.eventType === 'agent_response' && event.content.trim());
+  const response = ownSession(recentRows<TextRow>(db, textSelect, sessionId, 'agent_response', 1))
+    .map((row) => ({ id: row.id, text: clip(privateSafeText(row.content), RESPONSE_CHARS) }))
+    .find((candidate) => candidate.text);
+  const edits = ownSession(recentRows<EditRow>(
+    db,
+    `id, session_id, COALESCE(json_extract(${json}, '$.metadata.filePath'), json_extract(${json}, '$.toolInput.file_path'),`
+      + ` json_extract(${json}, '$.toolInput.notebook_path')) AS file_path`,
+    sessionId,
+    'tool_observation',
+    SCAN_TOOL_OBSERVATIONS,
+    `AND length(content) <= ${MAX_TOOL_OBSERVATION_CHARS}`
+      + ` AND json_extract(${json}, '$.toolName') IN (${EDIT_TOOLS.map((tool) => `'${tool}'`).join(', ')})`
+  ));
   const editedFiles: string[] = [];
-  for (const event of newestFirst) {
-    if (editedFiles.length >= MAX_EDITED_FILES) break;
-    if (event.eventType !== 'tool_observation') continue;
-    const file = editedFile(event, cwd);
+  for (const edit of edits) {
+    const file = projectRelative(edit.file_path, cwd);
     if (file && !editedFiles.includes(file)) editedFiles.push(file);
+    if (editedFiles.length >= MAX_EDITED_FILES) break;
   }
 
   return {
-    recentPrompts: prompts.map((event) => clip(event.content, PROMPT_CHARS)),
-    ...(response ? { lastResponse: clip(response.content, RESPONSE_CHARS) } : {}),
+    recentPrompts: prompts.map((prompt) => prompt.text),
+    ...(response ? { lastResponse: response.text } : {}),
     editedFiles,
-    sourceEventIds: [...prompts, ...(response ? [response] : [])].map((event) => event.id)
+    sourceEventIds: [...prompts, ...(response ? [response] : [])].map((item) => item.id)
   };
 }
 
 /**
  * Save the checkpoint for this session. Returns false, without creating a
- * store, when the project has no store or the session has no stored turns.
+ * store, when the project has no store or the session has no stored events.
  */
 export async function saveCompactionCheckpoint(input: { cwd: string; sessionId: string; trigger: string }): Promise<boolean> {
   const dbPath = storeDbPath(input.cwd);
   if (!fs.existsSync(dbPath)) return false;
 
-  const store = new SQLiteEventStore(dbPath);
+  const db = openStore(dbPath, false);
   try {
-    const turns = await store.getSessionTurns(input.sessionId, { limit: SCAN_TURNS });
-    const state = buildCompactionCheckpointState(turns, input.cwd);
+    const state = readCheckpointState(db, input.sessionId, input.cwd);
     if (state.recentPrompts.length === 0 && !state.lastResponse && state.editedFiles.length === 0) return false;
 
     const { sourceEventIds, ...rest } = state;
-    await new CheckpointRepository(store.getDatabase()).create({
+    await new CheckpointRepository(db).create({
       projectHash: hashProjectPath(input.cwd),
       sessionId: input.sessionId,
       title: `Pre-compaction checkpoint (${input.trigger})`,
       summary: `${rest.recentPrompts.length} recent request(s), ${rest.editedFiles.length} edited file(s)`,
-      // The repository redacts absolute paths and credentials in this state.
+      // The repository also redacts absolute paths and credentials in this state.
       stateJson: { kind: CHECKPOINT_KIND, trigger: input.trigger, ...rest },
       sourceEventIds,
       actor: CHECKPOINT_ACTOR
     });
     return true;
   } finally {
-    await store.close();
+    db.close();
   }
 }
 
-function stringArray(value: unknown): string[] {
-  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+function safeStrings(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string').map(privateSafeText)
+    : [];
 }
 
-/** This session's latest compaction checkpoint, or null when there is no recent one. */
+/** This session's latest compaction checkpoint, or null when there is no current one. */
 export async function readCompactionCheckpoint(
   cwd: string,
   sessionId: string,
@@ -147,24 +209,29 @@ export async function readCompactionCheckpoint(
   const dbPath = storeDbPath(cwd);
   if (!fs.existsSync(dbPath)) return null;
 
-  const store = new SQLiteEventStore(dbPath, { readonly: true });
+  const db = openStore(dbPath, true);
   try {
-    const checkpoints = await new CheckpointRepository(store.getDatabase())
+    const checkpoints = await new CheckpointRepository(db)
       .list({ projectHash: hashProjectPath(cwd), sessionId, limit: 10 });
-    const latest = checkpoints.find((checkpoint) => checkpoint.stateJson.kind === CHECKPOINT_KIND);
-    if (!latest || now.getTime() - latest.createdAt.getTime() > COMPACTION_CHECKPOINT_MAX_AGE_MS) return null;
+    const latest = checkpoints.find((checkpoint) => checkpoint.sessionId === sessionId
+      && checkpoint.stateJson.kind === CHECKPOINT_KIND);
+    if (!latest) return null;
+    const age = now.getTime() - latest.createdAt.getTime();
+    if (!Number.isFinite(age) || age > COMPACTION_CHECKPOINT_MAX_AGE_MS || age < -COMPACTION_CHECKPOINT_MAX_FUTURE_SKEW_MS) {
+      return null;
+    }
 
     const state = latest.stateJson;
     return {
       trigger: typeof state.trigger === 'string' ? state.trigger : 'unknown',
       createdAt: latest.createdAt,
-      recentPrompts: stringArray(state.recentPrompts),
-      ...(typeof state.lastResponse === 'string' ? { lastResponse: state.lastResponse } : {}),
-      editedFiles: stringArray(state.editedFiles),
+      recentPrompts: safeStrings(state.recentPrompts),
+      ...(typeof state.lastResponse === 'string' ? { lastResponse: privateSafeText(state.lastResponse) } : {}),
+      editedFiles: safeStrings(state.editedFiles),
       sourceEventIds: latest.sourceEventIds
     };
   } finally {
-    await store.close();
+    db.close();
   }
 }
 
