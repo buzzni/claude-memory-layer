@@ -35,6 +35,13 @@ import type { McpClientConfigRead, RegisteredMcpServer } from './mcp-client-conf
 import type { PendingSessionEndJob } from '../../adapters/claude/hooks/session-end-pending.js';
 import { buildCliProviderEnv, type CliProviderName } from '../../adapters/llm/cli-provider.js';
 import { getSummaryProviderName, isLlmSummaryEnabled } from '../../adapters/llm/session-summary-llm.js';
+import {
+  getProviderCircuitStatePath,
+  readProviderCircuitStates,
+  resolveProviderCircuitConfig,
+  type ProviderCircuitState
+} from '../../adapters/llm/provider-circuit-breaker.js';
+import { listPendingSummaries } from '../../adapters/llm/summary-pending.js';
 import { defaultRuntimeTelemetryDir, readRuntimeResourceSnapshots } from '../../core/runtime-resource-telemetry.js';
 
 export type DoctorStatus = 'pass' | 'warn' | 'fail';
@@ -358,6 +365,8 @@ export interface SummaryDaemonFacts {
   stored: number;
   empty: number;
   failures: number;
+  /** Calls the open provider circuit skipped; absent in snapshots that predate the breaker. */
+  skipped?: number;
   lastFailureCode: string | null;
 }
 
@@ -418,6 +427,7 @@ export function checkSummaryProvider(facts: SummaryProviderFacts): DoctorCheckRe
       name,
       status: 'pass',
       detail: `provider=${reporting.provider} model=${reporting.model} stored=${reporting.stored} empty=${reporting.empty} failures=${reporting.failures}`
+        + (reporting.skipped ? ` skipped=${reporting.skipped}` : '')
         + (reporting.provider && reporting.provider !== facts.envProvider ? ` (shell env would start ${facts.envProvider})` : '')
     };
   }
@@ -488,6 +498,7 @@ function readRunningSummaryDaemons(): Array<SummaryDaemonFacts | null> {
           stored: snapshot.summary.stored,
           empty: snapshot.summary.empty,
           failures: snapshot.summary.failures,
+          skipped: snapshot.summary.skipped,
           lastFailureCode: snapshot.summary.lastFailure?.code ?? null
         }
       : null);
@@ -539,6 +550,57 @@ export function gatherSummaryProviderFacts(deps: SummaryProviderFactsDeps = {}):
     facts.auth = probeSummaryAuth(facts.provider, env, deps.runProbe ?? runSummaryAuthProbe);
   }
   return facts;
+}
+
+export interface ProviderBreakerFacts {
+  /** This shell's setting; hook-spawned daemons read theirs from settings.json env. */
+  enabled: boolean;
+  states: Record<string, ProviderCircuitState>;
+  pendingSummaries: number;
+}
+
+/**
+ * An open breaker skips every summary and lesson extraction without an error
+ * anyone sees, so doctor names it, why it opened, and when it probes next.
+ */
+export function checkProviderBreaker(facts: ProviderBreakerFacts): DoctorCheckResult {
+  const name = 'llm-provider-breaker';
+  const kept = facts.pendingSummaries === 0
+    ? ''
+    : `; ${facts.pendingSummaries} skipped session ${facts.pendingSummaries === 1 ? 'summary' : 'summaries'} kept for after recovery`;
+  const entries = Object.entries(facts.states);
+  const open = entries.filter(([, state]) => state.state === 'open');
+  if (open.length > 0) {
+    return {
+      name,
+      status: 'warn',
+      detail: open
+        .map(([provider, state]) => `${provider} open since ${state.openedAt} (${state.reason}), next probe at ${state.nextProbeAt}`)
+        .join(' | ') + kept,
+      fix: open
+        .map(([provider, state]) => state.reason === 'provider-auth'
+          ? `Log in to the ${provider} CLI; the next probe closes the circuit`
+          : `Wait for the ${provider} usage limit to reset; the next probe closes the circuit`)
+        .join(' | ')
+    };
+  }
+  if (!facts.enabled) {
+    return { name, status: 'pass', detail: `disabled in this shell (CLAUDE_MEMORY_LLM_BREAKER=off)${kept}` };
+  }
+  const streaks = entries
+    .filter(([, state]) => state.consecutiveFailures > 0)
+    .map(([provider, state]) => `${provider}: ${state.consecutiveFailures} consecutive ${state.reason} failures`);
+  return { name, status: 'pass', detail: `closed${streaks.length > 0 ? ` (${streaks.join(', ')})` : ''}${kept}` };
+}
+
+export function gatherProviderBreakerFacts(
+  deps: { env?: NodeJS.ProcessEnv; homeDir?: string; now?: () => number } = {}
+): ProviderBreakerFacts {
+  return {
+    enabled: resolveProviderCircuitConfig(deps.env ?? process.env).enabled,
+    states: readProviderCircuitStates(getProviderCircuitStatePath(deps.homeDir)),
+    pendingSummaries: listPendingSummaries({ homeDir: deps.homeDir, now: deps.now }).length
+  };
 }
 
 /**

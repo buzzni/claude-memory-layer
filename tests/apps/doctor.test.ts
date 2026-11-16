@@ -640,6 +640,15 @@ describe('checkSummaryProvider', () => {
     });
   });
 
+  it('shows the calls the open provider circuit skipped', () => {
+    expect(checkSummaryProvider({ ...base, daemons: [daemon({ skipped: 2 })] }).detail)
+      .toBe('provider=claude model=claude-haiku-4-5 stored=3 empty=1 failures=0 skipped=2');
+  });
+
+  it('does not count skipped calls as failed attempts', () => {
+    expect(checkSummaryProvider({ ...base, daemons: [daemon({ stored: 0, empty: 0, skipped: 5 })] }).status).toBe('pass');
+  });
+
   it('passes without counters for a daemon that predates summary telemetry or when none runs', () => {
     expect(checkSummaryProvider({ ...base, daemons: [] }).detail).toBe('no running daemon snapshot');
     expect(checkSummaryProvider({ ...base, daemons: [null] }).detail).toBe('no summary counters yet');

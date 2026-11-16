@@ -29,6 +29,8 @@ import {
 import { loadSessionRegistry, type SessionRegistry } from '../../core/registry/session-registry.js';
 import { summarizeTypedSelections } from '../../core/retrieval-trace-ledger.js';
 import { readSessionSummaryCoverage, type SessionSummaryCoverage } from '../../core/session-summary-coverage.js';
+import { getProviderCircuitStatePath, readProviderCircuitStates } from '../../adapters/llm/provider-circuit-breaker.js';
+import { listPendingSummaries } from '../../adapters/llm/summary-pending.js';
 import {
   auditLessonUsage,
   type LessonQualitySummary,
@@ -135,6 +137,20 @@ export interface MemoryAuditReport {
     evidencePromptGrounded: number;
   }>;
   stores: MemoryAuditStoreReport[];
+  /** Machine-wide, read from the memory root; codes and timestamps only. */
+  llmProviderCircuit: {
+    /** Providers with an open circuit or a failure streak; absent providers are closed. */
+    providers: Array<{
+      provider: string;
+      state: 'closed' | 'open';
+      reason: string | null;
+      consecutiveFailures: number;
+      openedAt: string | null;
+      nextProbeAt: string | null;
+    }>;
+    /** Session summaries the open circuit skipped, kept to run after recovery. */
+    pendingSummaries: number;
+  };
   notes: string[];
 }
 
@@ -602,6 +618,19 @@ export function buildMemoryAuditReport(options: MemoryAuditOptions = {}): Memory
     totals,
     byProjectClass,
     stores: reports.sort((a, b) => b.events.window - a.events.window || a.storeHash.localeCompare(b.storeHash)),
+    llmProviderCircuit: {
+      providers: Object.entries(readProviderCircuitStates(getProviderCircuitStatePath(homeDir)))
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([provider, state]) => ({
+          provider,
+          state: state.state,
+          reason: state.reason,
+          consecutiveFailures: state.consecutiveFailures,
+          openedAt: state.openedAt,
+          nextProbeAt: state.nextProbeAt
+        })),
+      pendingSummaries: listPendingSummaries({ homeDir, now: () => now.getTime() }).length
+    },
     notes
   };
 }
@@ -657,6 +686,7 @@ export function formatMemoryAuditMarkdown(report: MemoryAuditReport): string {
   lines.push('', 'Importer cursor: unknown; observed source timestamps above are not importer progress or backlog measurements.');
   lines.push(...formatLessonUsageMarkdown(report.stores));
   lines.push(...formatSessionSummaryCoverageMarkdown(report.stores));
+  lines.push(...formatProviderCircuitMarkdown(report.llmProviderCircuit));
   if (suggestions.length > 0) {
     lines.push('', '## Suggestions (no action taken)', '');
     for (const store of suggestions) lines.push(`- \`${store.storeHash}\`: ${store.mergeSuggestion}`);
@@ -788,6 +818,21 @@ function formatSessionSummaryCoverageMarkdown(stores: MemoryAuditStoreReport[]):
     lines.push(`| ${store.storeHash} | ${coverage.sessionsStarted} | ${coverage.eligible} | ${coverage.withSummary} | `
       + `${coverage.llmGenerated} | ${coverage.latestSummaryAt ?? '-'} |`);
   }
+  return lines;
+}
+
+function formatProviderCircuitMarkdown(circuit: MemoryAuditReport['llmProviderCircuit']): string[] {
+  const lines: string[] = ['', '## LLM provider circuit', ''];
+  if (circuit.providers.length === 0) {
+    lines.push('Every provider circuit is closed.');
+  } else {
+    lines.push('| Provider | State | Reason | Consecutive failures | Opened | Next probe |', '|---|---|---|---:|---|---|');
+    for (const entry of circuit.providers) {
+      lines.push(`| ${entry.provider} | ${entry.state} | ${entry.reason ?? '-'} | ${entry.consecutiveFailures} | `
+        + `${entry.openedAt ?? '-'} | ${entry.nextProbeAt ?? '-'} |`);
+    }
+  }
+  lines.push('', `Skipped session summaries kept for after recovery: ${circuit.pendingSummaries}`);
   return lines;
 }
 
