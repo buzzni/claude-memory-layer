@@ -38,7 +38,7 @@ import {
 } from '../../core/external-market-context.js';
 import { generateCitationId } from '../../core/citation-generator.js';
 import { fenceRecallBlock, sanitizeRecallText } from '../../core/recall-sanitizer.js';
-import { classifyEventOrigin, memoryOriginLabel } from '../../core/memory-origin.js';
+import { classifyEventOrigin, memoryOriginLabelSuffix, type MemoryOrigin } from '../../core/memory-origin.js';
 import { getProjectStoragePath, hashProjectPath, resolveMemoryRootMarkerPath } from '../../core/registry/project-path.js';
 import { ExistingStoreReadError, withExistingStoreReadSnapshot } from '../../core/registry/existing-store.js';
 import { applyPrivacyFilter, maskSensitiveInput } from '../../core/privacy/filter.js';
@@ -2234,7 +2234,7 @@ async function handleMemSearch(memoryService: MemoryService, args: Record<string
     const preview = sanitizeOperationString(m.event.content, 100);
 
     lines.push(`### ${i + 1}. [mem:${citationId}] (score: ${m.score.toFixed(2)})`);
-    lines.push(`**Type**: ${m.event.eventType}${originLabelSuffix(m.event)} | **Date**: ${date}`);
+    lines.push(`**Type**: ${m.event.eventType}${memoryOriginLabelSuffix(classifyEventOrigin(m.event))} | **Date**: ${date}`);
     lines.push(`> ${preview}`);
     lines.push('');
   }
@@ -2545,7 +2545,7 @@ async function handleMemTimeline(memoryService: MemoryService, args: Record<stri
         : sanitizeOperationString(e.content, 60);
       const citationId = generateCitationId(e.id);
 
-      lines.push(`${marker} ${time} [${citationId}] ${e.eventType}${originLabelSuffix(e)}: ${preview}`);
+      lines.push(`${marker} ${time} [${citationId}] ${e.eventType}${memoryOriginLabelSuffix(classifyEventOrigin(e))}: ${preview}`);
     }
 
     lines.push('');
@@ -3228,6 +3228,8 @@ interface SessionSummary {
   eventCounts: Record<EventType, number>;
   source: string;
   lastPreview: string;
+  /** Origin of the event lastPreview quotes; its label goes outside the preview. */
+  lastOrigin: MemoryOrigin;
 }
 
 function summarizeSessions(
@@ -3254,6 +3256,7 @@ function summarizeSessions(
         eventCounts: countEventTypes(sorted),
         source: dominantSource(sorted),
         lastPreview: '',
+        lastOrigin: classifyEventOrigin(last),
         lastEvent: last
       };
     })
@@ -3669,12 +3672,6 @@ function appendSourceRefNeighborContext(
   }
 }
 
-/** ` [low-trust: …]` for a low-trust origin, empty for the common trusted ones. */
-function originLabelSuffix(event: MemoryEvent): string {
-  const label = memoryOriginLabel(classifyEventOrigin(event));
-  return label ? ` [${label}]` : '';
-}
-
 function formatRelevantMemoryLine(
   event: MemoryEvent,
   score: number,
@@ -3699,7 +3696,7 @@ function formatSessionSummary(session: SessionSummary, compact = false): string 
     return [
       `- Session: ${session.sessionId}`,
       `  Events: ${session.events.length}; Source: ${session.source}; Counts: ${countSummary || 'n/a'}`,
-      `  Last: ${session.lastPreview}`,
+      `  Last${memoryOriginLabelSuffix(session.lastOrigin)}: ${session.lastPreview}`,
       ''
     ].join('\n');
   }
@@ -3709,7 +3706,7 @@ function formatSessionSummary(session: SessionSummary, compact = false): string 
     `  Events: ${session.events.length}`,
     `  Source: ${session.source}`,
     `  Counts: ${countSummary || 'n/a'}`,
-    `  Last: ${session.lastPreview}`,
+    `  Last${memoryOriginLabelSuffix(session.lastOrigin)}: ${session.lastPreview}`,
     ''
   ].join('\n');
 }
