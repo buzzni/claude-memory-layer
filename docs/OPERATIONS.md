@@ -17,6 +17,25 @@
 
 These scripts are best-effort operational automation for Claude memory DB (`~/.claude-code/memory/events.sqlite`).
 
+## Dashboard network access
+
+The dashboard answers a request only when its `Host` header names an allowed host. This blocks DNS-rebinding pages
+that resolve an attacker's domain to `127.0.0.1`. Rejected requests get an empty `403` on every route, including
+`/health`.
+
+- **Default:** `localhost`, `127.0.0.1` and `[::1]` on the serving port (for example `localhost:37777`). Case and a
+  single trailing dot are ignored. A `Host` without a port counts as port 80. A request with no `Host` is rejected.
+- **Other names or addresses** (a `0.0.0.0` bind reached over the LAN, or a reverse proxy that forwards the public
+  `Host`): set `DASHBOARD_ALLOWED_HOSTS` to a comma-separated list. `hostname` allows any port and `hostname:port`
+  allows only that port, e.g. `DASHBOARD_ALLOWED_HOSTS=192.168.0.10:37777,memory.example.com`. Entries are host names,
+  not origins: `http://…` entries are ignored. Programmatic callers can pass `allowedHosts` to `startServer` or
+  `createDashboardApp` instead.
+- A `0.0.0.0` bind without `DASHBOARD_ALLOWED_HOSTS` prints a startup warning. It still answers the loopback names only.
+- State-changing `/api/*` requests that carry an `Origin` must name an allowed host (`http` or `https`) or be listed
+  in `DASHBOARD_ALLOWED_ORIGINS`. The `Origin` is not compared with the request's own `Host` header.
+- Check from a shell: `curl -i -H 'Host: evil.example:37777' http://127.0.0.1:37777/health` returns `403` with an
+  empty body; `curl -i http://127.0.0.1:37777/health` returns `200`.
+
 ## Lesson usage and lookup diagnostics
 
 The inspection steps below are read-only. The optional restart is a separate, deliberate user action.
