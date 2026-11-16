@@ -1,15 +1,12 @@
 {
-  "name": "claude-memory-layer",
+  "name": "memory-layer",
   "description": "Learn from conversations to provide personalized assistance. The more you use it, the smarter it gets.",
   "version": "2.5.10",
   "author": {
     "name": "Buzzni"
   },
   "homepage": "https://github.com/buzzni/claude-memory-layer",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/buzzni/claude-memory-layer.git"
-  },
+  "repository": "https://github.com/buzzni/claude-memory-layer",
   "license": "MIT",
   "engines": {
     "claude-code": ">=1.0.33"
@@ -20,5 +17,6 @@
     "personalization",
     "context",
     "axiommind"
-  ]
+  ],
+  "hooks": "./.claude-plugin/hooks.json"
 }

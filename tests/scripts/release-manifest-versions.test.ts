@@ -22,7 +22,7 @@ function readJson<T = Record<string, unknown>>(filePath: string): T {
  * The scripts resolve the repository root from their own location, so copying
  * them into a temp tree makes that tree the root they guard and rewrite.
  */
-function makeFixtureRepo(name: string, versions: { pkg: string; plugin: string }): string {
+function makeFixtureRepo(name: string, versions: { pkg: string; plugin: string; marketplace?: string }): string {
   const root = mkdtempSync(path.join(tmpdir(), `cml-manifest-versions-${name}-`));
   mkdirSync(path.join(root, 'scripts'));
   mkdirSync(path.join(root, '.claude-plugin'));
@@ -46,6 +46,11 @@ function makeFixtureRepo(name: string, versions: { pkg: string; plugin: string }
     description: 'fixture plugin',
     version: versions.plugin,
     keywords: ['memory']
+  });
+  writeJson(path.join(root, '.claude-plugin', 'marketplace.json'), {
+    name: 'cml-fixture',
+    owner: { name: 'fixture' },
+    plugins: [{ name: 'cml-fixture', source: './', version: versions.marketplace ?? versions.plugin }]
   });
   return root;
 }
@@ -100,6 +105,16 @@ describe('release manifest version guard', () => {
     expect(result.stderr).toContain('.claude-plugin/plugin.json');
   });
 
+  it('fails when the marketplace entry version drifts from package.json', () => {
+    const root = makeFixtureRepo('marketplace-drift', { pkg: '2.4.17', plugin: '2.4.17', marketplace: '2.4.16' });
+
+    const result = runGuard(root);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('.claude-plugin/marketplace.json');
+    expect(result.stderr).toContain('2.4.16');
+  });
+
   it('passes when every manifest matches package.json', () => {
     const root = makeFixtureRepo('match', { pkg: '2.4.17', plugin: '2.4.17' });
 
@@ -132,6 +147,8 @@ describe('manifest version sync on npm version', () => {
     expect(run(root, 'git', ['status', '--porcelain']).stdout).toBe('');
     const committedPlugin = JSON.parse(run(root, 'git', ['show', 'HEAD:.claude-plugin/plugin.json']).stdout);
     expect(committedPlugin.version).toBe('2.4.18');
+    const committedMarketplace = JSON.parse(run(root, 'git', ['show', 'HEAD:.claude-plugin/marketplace.json']).stdout);
+    expect(committedMarketplace.plugins[0].version).toBe('2.4.18');
     expect(runGuard(root).status).toBe(0);
   });
 

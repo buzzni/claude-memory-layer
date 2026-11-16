@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node dist/hooks/session-start.js"
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/.claude-plugin/hook-launcher.cjs\" session-start"
           }
         ]
       }
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node dist/hooks/user-prompt-submit.js"
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/.claude-plugin/hook-launcher.cjs\" user-prompt-submit"
           }
         ]
       }
@@ -28,7 +28,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node dist/hooks/post-tool-use.js"
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/.claude-plugin/hook-launcher.cjs\" post-tool-use"
           }
         ]
       }
@@ -39,7 +39,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node dist/hooks/stop.js"
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/.claude-plugin/hook-launcher.cjs\" stop"
           }
         ]
       }
@@ -50,7 +50,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node dist/hooks/session-end.js"
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/.claude-plugin/hook-launcher.cjs\" session-end"
           }
         ]
       }

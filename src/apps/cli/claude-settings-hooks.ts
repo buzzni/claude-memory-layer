@@ -182,6 +182,31 @@ export function isPluginHookCommand(command: string | undefined, pluginPath?: st
   });
 }
 
+/**
+ * Name in .claude-plugin/plugin.json. Claude Code reserves names starting
+ * with "claude-", so the plugin cannot be called after the package.
+ */
+export const CLAUDE_PLUGIN_NAME = 'memory-layer';
+
+/**
+ * `<plugin>@<marketplace>` ids that settings.json enables under this plugin's
+ * name. Another marketplace can list a different plugin with the same name,
+ * so an id alone does not prove the plugin is this one.
+ */
+export function enabledPluginIds(settings: ClaudeSettingsWithHooks): string[] {
+  const enabled = settings.enabledPlugins;
+  if (!enabled || typeof enabled !== 'object') return [];
+  return Object.entries(enabled as Record<string, unknown>)
+    .filter(([id, value]) => value === true && id.startsWith(`${CLAUDE_PLUGIN_NAME}@`))
+    .map(([id]) => id);
+}
+
+/** Whether settings.json holds any hook that `install` writes. */
+export function hasPluginHooksInSettings(settings: ClaudeSettingsWithHooks, pluginPath?: string): boolean {
+  return (Object.keys(PLUGIN_HOOKS) as PluginHookName[]).some((hookName) => (settings.hooks?.[hookName] ?? [])
+    .some((entry) => (entry.hooks ?? []).some((hook) => isPluginHookCommand(hook.command, pluginPath))));
+}
+
 export function hasHook(
   settings: ClaudeSettingsWithHooks,
   hookName: PluginHookName,

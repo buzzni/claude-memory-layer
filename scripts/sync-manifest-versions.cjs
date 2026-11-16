@@ -18,11 +18,17 @@ const path = require('path');
 const ROOT = path.resolve(__dirname, '..');
 
 /**
- * Repo-relative paths of JSON manifests with a top-level `version` that must
- * equal package.json's. The build copies `.claude-plugin/` into dist/ as-is,
- * so the dist copy follows from the source and is not listed separately.
+ * JSON manifests whose version fields must equal package.json's: the
+ * repo-relative path, and the objects inside the parsed manifest that carry a
+ * `version`. The build copies `.claude-plugin/` into dist/ as-is, so the dist
+ * copy follows from the source and is not listed separately.
  */
-const VERSION_MANIFESTS = ['.claude-plugin/plugin.json'];
+const VERSION_MANIFESTS = [
+  { path: '.claude-plugin/plugin.json', versionHolders: (data) => [data] },
+  // plugin.json wins at install time; the entry is kept equal so `claude plugin
+  // validate` does not warn and the catalog shows the version users get.
+  { path: '.claude-plugin/marketplace.json', versionHolders: (data) => data.plugins || [] }
+];
 
 function readJson(relativePath) {
   return JSON.parse(fs.readFileSync(path.join(ROOT, relativePath), 'utf8'));
@@ -31,11 +37,12 @@ function readJson(relativePath) {
 function syncManifestVersions() {
   const { version } = readJson('package.json');
   for (const manifest of VERSION_MANIFESTS) {
-    const data = readJson(manifest);
-    if (data.version === version) continue;
-    data.version = version;
-    fs.writeFileSync(path.join(ROOT, manifest), `${JSON.stringify(data, null, 2)}\n`);
-    console.log(`${manifest}: version -> ${version}`);
+    const data = readJson(manifest.path);
+    const stale = manifest.versionHolders(data).filter((holder) => holder.version !== version);
+    if (stale.length === 0) continue;
+    for (const holder of stale) holder.version = version;
+    fs.writeFileSync(path.join(ROOT, manifest.path), `${JSON.stringify(data, null, 2)}\n`);
+    console.log(`${manifest.path}: version -> ${version}`);
   }
 }
 
