@@ -234,11 +234,19 @@ describe('runtime resource telemetry', () => {
         stored: 1,
         empty: 1,
         failures: 2,
+        skipped: 0,
         lastSuccessAt: '2026-11-07T00:00:06.000Z',
         lastFailure: { at: '2026-11-07T00:00:02.000Z', code: 'unknown' }
       });
       const [persisted] = readRuntimeResourceSnapshots(directory, now);
       expect(persisted.summary?.stored).toBe(1);
+    });
+
+    it('counts calls the open circuit breaker skipped apart from attempts and failures', () => {
+      const telemetry = new RuntimeResourceTelemetry({ persist: false, now: () => Date.parse('2026-11-07T00:00:00.000Z') });
+      telemetry.recordSummaryOutcome({ provider: 'claude', model: null, outcome: 'skipped', errorCode: 'provider-circuit-open' });
+      telemetry.recordSummaryOutcome({ provider: 'claude', model: null, outcome: 'skipped', errorCode: 'provider-circuit-open' });
+      expect(telemetry.getSnapshot().summary).toMatchObject({ attempts: 0, failures: 0, skipped: 2, lastFailure: null });
     });
 
     it('keeps reading and aggregating snapshots written before the summary section existed', () => {

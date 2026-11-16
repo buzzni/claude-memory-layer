@@ -15,6 +15,14 @@ import {
   isLlmSummaryEnabled
 } from '../../llm/session-summary-llm.js';
 import { CliProviderError } from '../../llm/cli-provider.js';
+import { CIRCUIT_OPEN_CODE } from '../../llm/provider-circuit-breaker.js';
+import {
+  claimPendingSummary,
+  completePendingSummary,
+  pendingSummarySessionIds,
+  releasePendingSummary,
+  savePendingSummary
+} from '../../llm/summary-pending.js';
 import { disposeDefaultEmbedder } from '../../../core/embedder.js';
 import {
   getRuntimeResourceTelemetry,
@@ -223,13 +231,21 @@ function getProjectKeyForSession(sessionId: string): string {
 }
 
 /**
+ * done: a summary was stored, or nothing is left to do (already summarized,
+ * nothing durable, too few events). deferred: nothing was attempted (breaker
+ * open, store busy, summaries off). failed: the attempt reached the provider
+ * or the store and failed.
+ */
+type SummaryRunOutcome = 'done' | 'deferred' | 'failed';
+
+/**
  * Generate the outcome-focused session summary outside the hook response path.
  *
  * The cached daemon service is read-only, so this builds a short-lived writable
  * one exactly like the graduation path does.
  */
-async function runSessionSummaryWithWriterLock(sessionId: string): Promise<void> {
-  if (!isLlmSummaryEnabled()) return;
+async function runSessionSummaryWithWriterLock(sessionId: string): Promise<SummaryRunOutcome> {
+  if (!isLlmSummaryEnabled()) return 'deferred';
 
   const projectInfo = getSessionProject(sessionId);
   const storagePath = projectInfo
@@ -237,11 +253,13 @@ async function runSessionSummaryWithWriterLock(sessionId: string): Promise<void>
     : path.join(os.homedir(), '.claude-code', 'memory');
   const writerLock = new WorkerLock(path.join(storagePath, 'summary-worker.lock'));
   const lockResult = writerLock.acquire();
-  if (!lockResult.acquired) return;
+  if (!lockResult.acquired) return 'deferred';
 
   // The ingest service also returns false without calling the provider
   // (already summarized, too few events); only real provider attempts count.
   let providerCalled = false;
+  let providerAnswered = false;
+  let outcome: SummaryRunOutcome = 'failed';
   const provider = getSummaryProviderName();
   const model = getSummaryModel(process.env, provider);
   const service = new MemoryService({
@@ -260,7 +278,9 @@ async function runSessionSummaryWithWriterLock(sessionId: string): Promise<void>
   try {
     await service.initialize();
     const stored = await service.generateLlmSessionSummary(sessionId);
+    outcome = 'done';
     if (providerCalled) {
+      providerAnswered = true;
       getRuntimeResourceTelemetry().recordSummaryOutcome({
         provider,
         model,
@@ -268,12 +288,20 @@ async function runSessionSummaryWithWriterLock(sessionId: string): Promise<void>
       });
     }
   } catch (error) {
+    const errorCode = error instanceof CliProviderError ? error.code : undefined;
+    const skipped = errorCode === CIRCUIT_OPEN_CODE;
+    if (skipped) {
+      // A no-op while the drain below holds this session's claim; the drain
+      // puts the claimed entry back itself.
+      savePendingSummary(sessionId);
+      outcome = 'deferred';
+    }
     if (providerCalled) {
       getRuntimeResourceTelemetry().recordSummaryOutcome({
         provider,
         model,
-        outcome: 'failure',
-        errorCode: error instanceof CliProviderError ? error.code : undefined
+        outcome: skipped ? 'skipped' : 'failure',
+        errorCode
       });
     }
     if (process.env.CLAUDE_MEMORY_DEBUG) {
@@ -282,6 +310,43 @@ async function runSessionSummaryWithWriterLock(sessionId: string): Promise<void>
   } finally {
     await service.shutdown().catch(() => undefined);
     writerLock.release();
+  }
+  // After the lock is released: a kept session may belong to this store.
+  if (providerAnswered) void drainPendingSummaries().catch(() => undefined);
+  return outcome;
+}
+
+let drainingPendingSummaries = false;
+
+/**
+ * Summarize the sessions the open circuit breaker skipped. Runs once a
+ * provider call has been answered again, one drain at a time.
+ *
+ * Invariant: a kept summary does not disappear before it is done (stored and
+ * the store confirmed it, or nothing was left to store). The only exceptions
+ * are the stated bounds: 7 days, 100 entries in the whole queue, 3 failed
+ * retries. Each session is claimed before its run and then completed (done)
+ * or released back (deferred, or failed and counted toward the limit). A
+ * daemon that dies mid-run leaves a claim the next drain takes back.
+ */
+async function drainPendingSummaries(): Promise<void> {
+  if (drainingPendingSummaries) return;
+  drainingPendingSummaries = true;
+  try {
+    for (const sessionId of pendingSummarySessionIds()) {
+      const claim = claimPendingSummary(sessionId);
+      if (!claim) continue;
+      let outcome: SummaryRunOutcome = 'failed';
+      try {
+        outcome = await runSessionSummaryWithWriterLock(claim.sessionId);
+      } catch {
+        // Counted as failed below; the entry goes back.
+      }
+      if (outcome === 'done') completePendingSummary(claim);
+      else releasePendingSummary(claim, { failed: outcome === 'failed' });
+    }
+  } finally {
+    drainingPendingSummaries = false;
   }
 }
 

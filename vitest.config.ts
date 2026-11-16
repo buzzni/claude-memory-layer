@@ -29,6 +29,10 @@ export default defineConfig({
       // default registry loads it, so pin the loader to a nonexistent path.
       // Individual tests override this env var for their own fixtures.
       CLAUDE_MEMORY_OPERATIONS_CONFIG_PATH: '/nonexistent/cml-test-operations.json',
+      // The provider circuit breaker keeps its state under the real memory
+      // root; a test that fails a provider call must not open the developer's
+      // breaker. Breaker tests pass their own state path and config.
+      CLAUDE_MEMORY_LLM_BREAKER: 'off',
       // Tests that run `npm run ...` assert on stderr; npm's update notice
       // must not leak into it.
       NPM_CONFIG_UPDATE_NOTIFIER: 'false'

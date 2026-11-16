@@ -145,6 +145,7 @@ These commands remove only hooks and scheduler definitions. Your memory stays in
 | [docs/MONGO_SYNC.md](docs/MONGO_SYNC.md) | Optional multi-server sync through MongoDB |
 | [docs/EXTERNAL_MARKET_CONTEXT.md](docs/EXTERNAL_MARKET_CONTEXT.md) | Read-only DART/FRED/Finnhub market context |
 | [docs/OPERATIONS.md](docs/OPERATIONS.md) | Operations runbook |
+| [docs/OPERATIONS.md#llm-provider-circuit-breaker](docs/OPERATIONS.md#llm-provider-circuit-breaker) | LLM provider circuit breaker: skipped calls, kept summaries, doctor/audit |
 | [SECURITY.md](SECURITY.md) | Threat model, data that leaves the machine, vulnerability reports (Korean) |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Development setup, checks, PR and release flow (Korean) |
 | [CHANGELOG.md](CHANGELOG.md) | Release notes |

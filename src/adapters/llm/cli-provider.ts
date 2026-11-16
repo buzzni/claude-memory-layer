@@ -26,9 +26,20 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
+import {
+  CIRCUIT_OPEN_CODE,
+  MAX_PROVIDER_CALL_MS,
+  PROBE_LEASE_MARGIN_MS,
+  ProviderCircuitBreaker
+} from './provider-circuit-breaker.js';
+
 export type CliProviderName = 'claude' | 'codex';
 
 export const DEFAULT_CLI_TIMEOUT_MS = 120_000;
+/** Configured or explicit timeouts above this run with this; the breaker's probe lease relies on it. */
+export const MAX_CLI_TIMEOUT_MS = MAX_PROVIDER_CALL_MS;
+
+const FAILURE_STDOUT_TAIL_CHARS = 500;
 
 /** Default model for the claude CLI. codex runs with its own configured default. */
 export const DEFAULT_CLAUDE_MODEL = 'claude-haiku-4-5-20251001';
@@ -40,6 +51,15 @@ export class CliProviderError extends Error {
   }
 }
 
+/**
+ * Quota, usage-limit and rate-limit wording from both CLIs. Overload (HTTP
+ * 529) is deliberately absent: it clears on its own within seconds, while
+ * these keep failing until a quota window resets. A bare "limit reached" is
+ * absent too: a per-input limit (context length) says nothing about the next
+ * call.
+ */
+const RATE_LIMIT_PATTERN = /rate[ _-]?limit|usage limit|hit your (?:usage )?limit|(?:\d+-hour|hourly|daily|weekly) limit|quota|too many requests|\b429\b|credit balance/;
+
 export function classifyCliProviderFailure(detail: string, label: string): CliProviderError {
   const lowered = detail.toLowerCase();
   if (lowered.includes('enoent') || lowered.includes('not found')) {
@@ -47,6 +67,9 @@ export function classifyCliProviderFailure(detail: string, label: string): CliPr
   }
   if (lowered.includes('timed out') || lowered.includes('etimedout')) {
     return new CliProviderError(`${label} timed out`, 'provider-timeout');
+  }
+  if (RATE_LIMIT_PATTERN.test(lowered)) {
+    return new CliProviderError(`${label} hit a usage or rate limit`, 'provider-rate-limit');
   }
   if (lowered.includes('auth') || lowered.includes('credential') || lowered.includes('login')) {
     return new CliProviderError(`${label} authentication failed`, 'provider-auth');
@@ -126,9 +149,39 @@ export interface RunCliProviderOptions {
   scratchDirName: string;
   /** Label used in error messages, e.g. 'lesson provider'. */
   label: string;
+  /** Defaults to the shared on-disk breaker configured from the environment. */
+  breaker?: Pick<ProviderCircuitBreaker, 'admit' | 'recordSuccess' | 'recordFailure'>;
 }
 
-export function runCliProvider(options: RunCliProviderOptions): Promise<string> {
+/**
+ * Every provider call goes through the circuit breaker: an open breaker
+ * rejects with CIRCUIT_OPEN_CODE without starting the CLI, and each outcome
+ * feeds the breaker so a logged-out or rate-limited provider stops costing a
+ * CLI start per call.
+ */
+export async function runCliProvider(options: RunCliProviderOptions): Promise<string> {
+  const { provider, label } = options;
+  const timeoutMs = Math.min(options.timeoutMs, MAX_CLI_TIMEOUT_MS);
+  const breaker = options.breaker ?? new ProviderCircuitBreaker();
+  // The call is killed at timeoutMs, so a probe's outcome lands within its lease.
+  const admission = breaker.admit(provider, timeoutMs + PROBE_LEASE_MARGIN_MS);
+  if (!admission.allowed) {
+    throw new CliProviderError(
+      `${label} skipped: provider circuit is open until ${admission.nextProbeAt}`,
+      CIRCUIT_OPEN_CODE
+    );
+  }
+  try {
+    const output = await spawnCliProvider({ ...options, timeoutMs });
+    breaker.recordSuccess(provider, admission);
+    return output;
+  } catch (error) {
+    breaker.recordFailure(provider, error instanceof CliProviderError ? error.code : undefined, admission);
+    throw error;
+  }
+}
+
+function spawnCliProvider(options: RunCliProviderOptions): Promise<string> {
   const { provider, model, prompt, timeoutMs, scratchDirName, label } = options;
   const classify = (detail: string) => classifyCliProviderFailure(detail, label);
 
@@ -169,7 +222,10 @@ export function runCliProvider(options: RunCliProviderOptions): Promise<string> 
     });
     child.on('close', (code) => {
       if (code === 0) settle(undefined, stdout);
-      else settle(classify(stderr || `exit code ${code}`));
+      // `claude -p` prints its own errors ("Not logged in", usage limits) on
+      // stdout and leaves stderr empty, so classify from both. Only the tail:
+      // the error line comes last, and model text is no classification input.
+      else settle(classify([stderr, stdout.slice(-FAILURE_STDOUT_TAIL_CHARS)].filter(Boolean).join('\n') || `exit code ${code}`));
     });
 
     child.stdin.on('error', (error) => {
@@ -185,5 +241,5 @@ export function resolveCliTimeoutMs(
   fallback: number = DEFAULT_CLI_TIMEOUT_MS
 ): number {
   const parsed = Number(configured);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+  return Number.isFinite(parsed) && parsed > 0 ? Math.min(parsed, MAX_CLI_TIMEOUT_MS) : fallback;
 }

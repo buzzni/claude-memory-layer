@@ -33,8 +33,15 @@ import {
 } from './claude-settings-hooks.js';
 import type { McpClientConfigRead, RegisteredMcpServer } from './mcp-client-config.js';
 import type { PendingSessionEndJob } from '../../adapters/claude/hooks/session-end-pending.js';
-import { buildCliProviderEnv, type CliProviderName } from '../../adapters/llm/cli-provider.js';
+import { MAX_CLI_TIMEOUT_MS, buildCliProviderEnv, type CliProviderName } from '../../adapters/llm/cli-provider.js';
 import { getSummaryProviderName, isLlmSummaryEnabled } from '../../adapters/llm/session-summary-llm.js';
+import {
+  getProviderCircuitStatePath,
+  readProviderCircuitStates,
+  resolveProviderCircuitConfig,
+  type ProviderCircuitState
+} from '../../adapters/llm/provider-circuit-breaker.js';
+import { listPendingSummaries } from '../../adapters/llm/summary-pending.js';
 import { defaultRuntimeTelemetryDir, readRuntimeResourceSnapshots } from '../../core/runtime-resource-telemetry.js';
 
 export type DoctorStatus = 'pass' | 'warn' | 'fail';
@@ -358,6 +365,8 @@ export interface SummaryDaemonFacts {
   stored: number;
   empty: number;
   failures: number;
+  /** Calls the open provider circuit skipped; absent in snapshots that predate the breaker. */
+  skipped?: number;
   lastFailureCode: string | null;
 }
 
@@ -406,7 +415,8 @@ export function checkSummaryProvider(facts: SummaryProviderFacts): DoctorCheckRe
     if (!daemon) continue;
     if (daemon.failures > 0 && daemon.stored === 0) {
       warnings.push(
-        `daemon summary attempts all failed (stored=${daemon.stored} empty=${daemon.empty} failures=${daemon.failures}, last error: ${daemon.lastFailureCode ?? 'unknown'})`
+        `daemon summary attempts all failed (stored=${daemon.stored} empty=${daemon.empty} failures=${daemon.failures}`
+          + `${daemon.skipped ? ` skipped=${daemon.skipped}` : ''}, last error: ${daemon.lastFailureCode ?? 'unknown'})`
       );
     }
   }
@@ -418,6 +428,7 @@ export function checkSummaryProvider(facts: SummaryProviderFacts): DoctorCheckRe
       name,
       status: 'pass',
       detail: `provider=${reporting.provider} model=${reporting.model} stored=${reporting.stored} empty=${reporting.empty} failures=${reporting.failures}`
+        + (reporting.skipped ? ` skipped=${reporting.skipped}` : '')
         + (reporting.provider && reporting.provider !== facts.envProvider ? ` (shell env would start ${facts.envProvider})` : '')
     };
   }
@@ -488,6 +499,7 @@ function readRunningSummaryDaemons(): Array<SummaryDaemonFacts | null> {
           stored: snapshot.summary.stored,
           empty: snapshot.summary.empty,
           failures: snapshot.summary.failures,
+          skipped: snapshot.summary.skipped,
           lastFailureCode: snapshot.summary.lastFailure?.code ?? null
         }
       : null);
@@ -539,6 +551,73 @@ export function gatherSummaryProviderFacts(deps: SummaryProviderFactsDeps = {}):
     facts.auth = probeSummaryAuth(facts.provider, env, deps.runProbe ?? runSummaryAuthProbe);
   }
   return facts;
+}
+
+export interface ProviderBreakerFacts {
+  /** This shell's setting; hook-spawned daemons read theirs from settings.json env. */
+  enabled: boolean;
+  states: Record<string, ProviderCircuitState>;
+  pendingSummaries: number;
+  /** CLI timeout settings above MAX_CLI_TIMEOUT_MS; they run with the cap. */
+  clampedTimeouts: Array<{ name: string; configuredMs: number }>;
+}
+
+const CLI_TIMEOUT_ENV_KEYS = ['CLAUDE_MEMORY_SUMMARY_TIMEOUT_MS', 'CLAUDE_MEMORY_LESSON_TIMEOUT_MS'] as const;
+
+/**
+ * An open breaker skips every summary and lesson extraction without an error
+ * anyone sees, so doctor names it, why it opened, and when it probes next.
+ */
+export function checkProviderBreaker(facts: ProviderBreakerFacts): DoctorCheckResult {
+  const name = 'llm-provider-breaker';
+  const kept = facts.pendingSummaries === 0
+    ? ''
+    : `; ${facts.pendingSummaries} skipped session ${facts.pendingSummaries === 1 ? 'summary' : 'summaries'} kept for after recovery`;
+  const clamped = facts.clampedTimeouts
+    .map(({ name: key, configuredMs }) =>
+      `; ${key}=${configuredMs} is above the ${MAX_CLI_TIMEOUT_MS} ms cap, calls run with ${MAX_CLI_TIMEOUT_MS}`)
+    .join('');
+  const clampFixes = facts.clampedTimeouts.map(({ name: key }) => `Set ${key} to ${MAX_CLI_TIMEOUT_MS} or less`);
+  const entries = Object.entries(facts.states);
+  const open = entries.filter(([, state]) => state.state === 'open');
+  if (open.length > 0) {
+    return {
+      name,
+      status: 'warn',
+      detail: open
+        .map(([provider, state]) => `${provider} open since ${state.openedAt} (${state.reason}), next probe at ${state.nextProbeAt}`)
+        .join(' | ') + kept + clamped,
+      fix: [
+        ...open.map(([provider, state]) => state.reason === 'provider-auth'
+          ? `Log in to the ${provider} CLI; the next probe closes the circuit`
+          : `Wait for the ${provider} usage limit to reset; the next probe closes the circuit`),
+        ...clampFixes
+      ].join(' | ')
+    };
+  }
+  const streaks = entries
+    .filter(([, state]) => state.consecutiveFailures > 0)
+    .map(([provider, state]) => `${provider}: ${state.consecutiveFailures} consecutive ${state.reason} failures`);
+  const detail = facts.enabled
+    ? `closed${streaks.length > 0 ? ` (${streaks.join(', ')})` : ''}${kept}${clamped}`
+    : `disabled in this shell (CLAUDE_MEMORY_LLM_BREAKER=off)${kept}${clamped}`;
+  return clampFixes.length > 0
+    ? { name, status: 'warn', detail, fix: clampFixes.join(' | ') }
+    : { name, status: 'pass', detail };
+}
+
+export function gatherProviderBreakerFacts(
+  deps: { env?: NodeJS.ProcessEnv; homeDir?: string; now?: () => number } = {}
+): ProviderBreakerFacts {
+  const env = deps.env ?? process.env;
+  return {
+    enabled: resolveProviderCircuitConfig(env).enabled,
+    states: readProviderCircuitStates(getProviderCircuitStatePath(deps.homeDir)),
+    pendingSummaries: listPendingSummaries({ homeDir: deps.homeDir, now: deps.now }).length,
+    clampedTimeouts: CLI_TIMEOUT_ENV_KEYS
+      .map((key) => ({ name: key, configuredMs: Number(env[key]) }))
+      .filter(({ configuredMs }) => Number.isFinite(configuredMs) && configuredMs > MAX_CLI_TIMEOUT_MS)
+  };
 }
 
 /**

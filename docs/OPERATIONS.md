@@ -70,3 +70,45 @@ The inspection steps below are read-only. The optional restart is a separate, de
 4. **Restart only if needed** — if the running MCP process uses an older installed artifact than step 1,
    the user restarts it (for example by restarting the client session). Retrieval-trace versions alone do not establish this.
 5. **Re-run the same read** — repeat the step 2 read for the same project and compare.
+
+## LLM provider circuit breaker
+
+Session summaries and lesson extraction call a local `claude` (or `codex`) CLI. When that CLI is logged out or has hit a
+usage/rate limit, every call fails the same way until someone logs in or the quota resets. A per-provider circuit
+breaker stops paying for those calls:
+
+- **Opens** after 3 consecutive `provider-auth` or `provider-rate-limit` failures. Timeouts and other errors neither
+  count nor reset the streak, so a single slow call never opens it.
+- **While open**, calls are skipped without starting the CLI (`provider-circuit-open`).
+- **Probes** once after a 5-minute cooldown. Concurrent hook and daemon processes share the state, and only one of them
+  sends the probe; its claim lasts as long as the call's CLI timeout plus a minute. Success closes the breaker; the same
+  kind of failure reopens it and doubles the cooldown, up to 1 hour.
+- **Fails open**: if the state cannot be read, locked or written, or holds times the clock cannot have produced, calls
+  go to the provider as if there were no breaker.
+- **Skipped session summaries are kept**, one file per session in `~/.claude-code/memory/summary-pending/` (session
+  ids and times only). The semantic daemon retries them after the next summary call the provider answers. A kept
+  summary does not disappear before its retry is done (the summary was stored, or there was nothing left to store);
+  the only exceptions are the bounds: 7 days, 100 entries in the whole queue, 3 failed retries. A daemon that dies
+  mid-retry leaves a claim the next retry takes back. An entry that cannot be read (permissions, I/O) is left alone;
+  one that cannot be understood (corrupt, unknown version) is moved aside as `<name>.invalid-<time>` and removed after
+  7 days.
+  Lesson extraction needs no queue: it is computed on demand and failed groups are never cached, so the next
+  `mem-lesson-candidates` call after recovery extracts them; until then its note names the open circuit and the next
+  probe time.
+
+State: `~/.claude-code/memory/llm-provider-breaker.json`. Check it with:
+
+- `claude-memory-layer doctor`: the `llm-provider-breaker` check shows open circuits, the reason code, the next probe
+  time and the number of kept summaries. `summary-provider` shows how many summary calls the daemon skipped.
+- `claude-memory-layer audit`: the "LLM provider circuit" section, `llmProviderCircuit` in `--format json`.
+
+Settings, including how to turn the breaker off, are in
+[CONFIGURATION.md](CONFIGURATION.md#llm-summaries-and-lessons). To retry right away after logging in, delete
+`llm-provider-breaker.json`; the next call then runs normally.
+
+Known limits:
+
+- When two processes take over a dead process's state lock at the same instant, both can get in, so the breaker may
+  send one extra probe (one extra provider call) and two queue changes may overlap (#217).
+- A summary skipped while the queue lock is unavailable for half a second is not kept; it stays eligible for the
+  session-start backfill.
