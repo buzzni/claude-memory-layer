@@ -15,6 +15,8 @@ import {
   isLlmSummaryEnabled
 } from '../../llm/session-summary-llm.js';
 import { CliProviderError } from '../../llm/cli-provider.js';
+import { CIRCUIT_OPEN_CODE } from '../../llm/provider-circuit-breaker.js';
+import { savePendingSummary, takePendingSummaries } from '../../llm/summary-pending.js';
 import { disposeDefaultEmbedder } from '../../../core/embedder.js';
 import {
   getRuntimeResourceTelemetry,
@@ -242,6 +244,7 @@ async function runSessionSummaryWithWriterLock(sessionId: string): Promise<void>
   // The ingest service also returns false without calling the provider
   // (already summarized, too few events); only real provider attempts count.
   let providerCalled = false;
+  let providerAnswered = false;
   const provider = getSummaryProviderName();
   const model = getSummaryModel(process.env, provider);
   const service = new MemoryService({
@@ -261,6 +264,7 @@ async function runSessionSummaryWithWriterLock(sessionId: string): Promise<void>
     await service.initialize();
     const stored = await service.generateLlmSessionSummary(sessionId);
     if (providerCalled) {
+      providerAnswered = true;
       getRuntimeResourceTelemetry().recordSummaryOutcome({
         provider,
         model,
@@ -268,12 +272,15 @@ async function runSessionSummaryWithWriterLock(sessionId: string): Promise<void>
       });
     }
   } catch (error) {
+    const errorCode = error instanceof CliProviderError ? error.code : undefined;
+    const skipped = errorCode === CIRCUIT_OPEN_CODE;
+    if (skipped) savePendingSummary(sessionId);
     if (providerCalled) {
       getRuntimeResourceTelemetry().recordSummaryOutcome({
         provider,
         model,
-        outcome: 'failure',
-        errorCode: error instanceof CliProviderError ? error.code : undefined
+        outcome: skipped ? 'skipped' : 'failure',
+        errorCode
       });
     }
     if (process.env.CLAUDE_MEMORY_DEBUG) {
@@ -282,6 +289,27 @@ async function runSessionSummaryWithWriterLock(sessionId: string): Promise<void>
   } finally {
     await service.shutdown().catch(() => undefined);
     writerLock.release();
+  }
+  // After the lock is released: a kept session may belong to this store.
+  if (providerAnswered) void drainPendingSummaries().catch(() => undefined);
+}
+
+let drainingPendingSummaries = false;
+
+/**
+ * Summarize the sessions the open circuit breaker skipped. Runs once a
+ * provider call has been answered again, one drain at a time; a session the
+ * breaker skips again during the drain goes back into the queue.
+ */
+async function drainPendingSummaries(): Promise<void> {
+  if (drainingPendingSummaries) return;
+  drainingPendingSummaries = true;
+  try {
+    for (const sessionId of takePendingSummaries()) {
+      await runSessionSummaryWithWriterLock(sessionId);
+    }
+  } finally {
+    drainingPendingSummaries = false;
   }
 }
 

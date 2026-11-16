@@ -40,6 +40,8 @@ export interface RuntimeSummaryTelemetry {
   empty: number;
   /** The provider call threw. */
   failures: number;
+  /** The open provider circuit breaker skipped the call; not an attempt. Absent before the breaker existed. */
+  skipped?: number;
   lastSuccessAt: string | null;
   lastFailure: { at: string; code: string } | null;
 }
@@ -47,7 +49,7 @@ export interface RuntimeSummaryTelemetry {
 export interface RuntimeSummaryOutcome {
   provider: string;
   model: string | null;
-  outcome: 'stored' | 'empty' | 'failure';
+  outcome: 'stored' | 'empty' | 'failure' | 'skipped';
   errorCode?: string;
 }
 
@@ -276,12 +278,19 @@ export class RuntimeResourceTelemetry implements RuntimeRetrievalTelemetry {
       stored: 0,
       empty: 0,
       failures: 0,
+      skipped: 0,
       lastSuccessAt: null,
       lastFailure: null
     };
     const at = this.isoNow();
     summary.provider = input.provider;
     summary.model = input.model;
+    if (input.outcome === 'skipped') {
+      summary.skipped = (summary.skipped ?? 0) + 1;
+      this.snapshot.summary = summary;
+      this.touchAndPersist();
+      return;
+    }
     summary.attempts += 1;
     if (input.outcome === 'stored') {
       summary.stored += 1;
