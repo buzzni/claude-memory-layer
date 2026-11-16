@@ -52,5 +52,5 @@ Use `/memory-list` to see available sessions before importing.
 ## Implementation
 
 ```bash
-node dist/cli/index.js import $ARGUMENTS
+claude-memory-layer import $ARGUMENTS
 ```

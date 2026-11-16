@@ -33,5 +33,5 @@ Use this command to identify which sessions you want to import before running `/
 ## Implementation
 
 ```bash
-node dist/cli/index.js list $ARGUMENTS
+claude-memory-layer list $ARGUMENTS
 ```

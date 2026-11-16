@@ -38,5 +38,5 @@ Removes memories from storage. This operation:
 ## Implementation
 
 ```bash
-node dist/cli/index.js forget $ARGUMENTS
+claude-memory-layer forget $ARGUMENTS
 ```
