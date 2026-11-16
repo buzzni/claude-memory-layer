@@ -38,6 +38,7 @@ function createService(options: CreateServiceOptions = {}) {
     upsertSession: vi.fn(async () => {}),
     getSessionEvents: vi.fn(async (sessionId: string) => eventsBySession[sessionId] ?? []),
     getSessionsWithoutSummary: vi.fn(async () => Object.keys(eventsBySession)),
+    markSessionSummaryEmpty: vi.fn(async (_sessionId: string, _eventCount: number) => {}),
     append: vi.fn(async (input: MemoryEventInput): Promise<AppendResult> => {
       appended.push(input);
       return options.appendResult ?? { success: true, eventId: `event-${appended.length}`, isDuplicate: false };
@@ -381,6 +382,32 @@ describe('MemoryIngestService LLM session summary', () => {
 
     await expect(service.generateLlmSessionSummary('s')).resolves.toBe(false);
     expect(appended).toHaveLength(0);
+  });
+
+  it('records the empty verdict so the backfill stops re-sending the session', async () => {
+    const { service, store } = createService({
+      eventsBySession: { s: sessionEvents },
+      llmSummaryGenerator: async () => null
+    });
+
+    await service.generateLlmSessionSummary('s');
+    expect(store.markSessionSummaryEmpty).toHaveBeenCalledWith('s', sessionEvents.length);
+  });
+
+  it('records no verdict when the summary is stored or the provider fails', async () => {
+    const stored = createService({
+      eventsBySession: { s: sessionEvents },
+      llmSummaryGenerator: async () => ({ text: '- 결정: x', metadata: {} })
+    });
+    await stored.service.generateLlmSessionSummary('s');
+    expect(stored.store.markSessionSummaryEmpty).not.toHaveBeenCalled();
+
+    const failed = createService({
+      eventsBySession: { s: sessionEvents },
+      llmSummaryGenerator: async () => { throw new Error('provider timed out'); }
+    });
+    await expect(failed.service.generateLlmSessionSummary('s')).rejects.toThrow('provider timed out');
+    expect(failed.store.markSessionSummaryEmpty).not.toHaveBeenCalled();
   });
 
   it('does not fall back to the rule-based summary when the generator throws', async () => {

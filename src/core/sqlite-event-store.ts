@@ -444,6 +444,15 @@ export class SQLiteEventStore {
         tags TEXT
       );
 
+      -- Sessions the LLM summarizer judged to hold nothing durable. event_count
+      -- is how many events that verdict covered, so the session becomes
+      -- eligible for the summary backfill again only once it grows past it.
+      CREATE TABLE IF NOT EXISTS empty_summary_sessions (
+        session_id TEXT PRIMARY KEY,
+        event_count INTEGER NOT NULL,
+        judged_at TEXT NOT NULL
+      );
+
       -- Insights (derived data, rebuildable)
       CREATE TABLE IF NOT EXISTS insights (
         id TEXT PRIMARY KEY,
@@ -1556,9 +1565,20 @@ export class SQLiteEventStore {
   /**
    * Get session IDs that have events but no session_summary event.
    * Used to backfill summaries for sessions that ended without Stop hook.
+   *
+   * Sessions already judged empty are left out until they gain events, so
+   * they neither go back to the provider on every session start nor fill the
+   * window ahead of sessions whose summary failed for a real reason.
    */
   async getSessionsWithoutSummary(currentSessionId: string, limit = 5): Promise<string[]> {
     await this.initialize();
+    // A read-only handle skips schema creation, so an older store may lack it.
+    const notJudgedEmpty = this.hasTable('empty_summary_sessions')
+      ? `AND SUM(CASE WHEN ${notActiveQuarantinedSql('e.metadata')} THEN 1 ELSE 0 END) > COALESCE(
+           (SELECT v.event_count FROM empty_summary_sessions v WHERE v.session_id = e.session_id),
+           -1
+         )`
+      : '';
     const rows = sqliteAll<{ session_id: string }>(
       this.db,
       `SELECT DISTINCT e.session_id
@@ -1570,11 +1590,27 @@ export class SQLiteEventStore {
          )
        GROUP BY e.session_id
        HAVING COUNT(*) >= 3
+         ${notJudgedEmpty}
        ORDER BY MAX(e.timestamp) DESC
        LIMIT ?`,
       [currentSessionId, limit]
     );
     return rows.map((r) => r.session_id);
+  }
+
+  /**
+   * Record that the LLM summarizer found nothing durable in a session.
+   * eventCount is the number of (non-quarantined) events it was shown, so
+   * events appended while the provider ran still make the session eligible.
+   */
+  async markSessionSummaryEmpty(sessionId: string, eventCount: number): Promise<void> {
+    await this.initialize();
+    sqliteRun(
+      this.db,
+      `INSERT OR REPLACE INTO empty_summary_sessions (session_id, event_count, judged_at)
+       VALUES (?, ?, ?)`,
+      [sessionId, eventCount, toSQLiteTimestamp(new Date())]
+    );
   }
 
   /**

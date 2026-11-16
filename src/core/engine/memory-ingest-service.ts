@@ -34,6 +34,7 @@ interface SessionUpsertStore {
   upsertSession(session: SessionRecord): Promise<void>;
   getSessionEvents(sessionId: string): Promise<MemoryEvent[]>;
   getSessionsWithoutSummary(currentSessionId: string, limit?: number): Promise<string[]>;
+  markSessionSummaryEmpty(sessionId: string, eventCount: number): Promise<void>;
 }
 
 interface IngestEventStore extends SessionUpsertStore {
@@ -238,10 +239,12 @@ export class MemoryIngestService {
    * Generate an outcome-focused summary through the injected LLM generator.
    *
    * Slow by nature, so callers must keep it off any hook response path. On
-   * failure or when the session holds nothing durable this stores nothing: the
-   * session then still has no summary and stays eligible for a later backfill
-   * attempt. It deliberately does not fall back to the rule-based text, whose
-   * table-of-contents shape is the reason this path exists.
+   * failure this stores nothing: the session then still has no summary and
+   * stays eligible for a later backfill attempt. When the session holds
+   * nothing durable it records only that verdict, which keeps the backfill
+   * from re-sending the session until it gains events. It deliberately does
+   * not fall back to the rule-based text, whose table-of-contents shape is the
+   * reason this path exists.
    */
   async generateLlmSessionSummary(sessionId: string): Promise<boolean> {
     await this.initialize();
@@ -254,7 +257,10 @@ export class MemoryIngestService {
     const summary = await this.llmSummaryGenerator(
       events.map((event) => ({ eventType: event.eventType, content: event.content }))
     );
-    if (!summary) return false;
+    if (!summary) {
+      await this.eventStore.markSessionSummaryEmpty(sessionId, events.length);
+      return false;
+    }
 
     await this.storeSessionSummary(sessionId, summary.text, summary.metadata);
     return true;
