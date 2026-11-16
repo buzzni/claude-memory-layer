@@ -3104,7 +3104,7 @@ program
   .option('-a, --all', 'Import all sessions from all projects')
   .option('-l, --limit <number>', 'Limit messages per session')
   .option('--session-limit <number>', 'Limit recent matching sessions to import')
-  .option('-f, --force', 'Force reimport: delete existing events and reimport with turn_id grouping')
+  .option('-f, --force', 'Force reimport: delete the events earlier imports wrote and reimport with turn_id grouping (hook events are kept; not allowed with --limit)')
   .option('--embedding-model <name>', `Embedding model override (default: ${DEFAULT_EMBEDDING_MODEL}, or env CLAUDE_MEMORY_EMBEDDING_MODEL; fallback: ${DEFAULT_EMBEDDING_FALLBACK_MODEL} or env CLAUDE_MEMORY_EMBEDDING_FALLBACK_MODEL)`)
   .option('--lock-path <path>', 'Override vector worker lock path (advanced)')
   .option('-v, --verbose', 'Show detailed progress')
@@ -3160,7 +3160,7 @@ program
       }
 
       if (options.force) {
-        console.log('🔄 Force mode: existing events will be deleted and reimported with turn_id grouping\n');
+        console.log('🔄 Force mode: imported events will be deleted and reimported with turn_id grouping\n');
       }
 
       let result;
@@ -3433,7 +3433,7 @@ codexCmd
   .option('--sessions-dir <path>', 'Codex sessions directory (default: ~/.codex/sessions)')
   .option('-l, --limit <number>', 'Limit memories imported across selected matching sessions')
   .option('--session-limit <number>', 'Limit recent matching sessions to import')
-  .option('-f, --force', 'Delete existing events for each imported session before reimporting')
+  .option('-f, --force', 'Delete the events earlier imports wrote for each imported session before reimporting (hook events are kept; not allowed with --limit)')
   .option('-v, --verbose', 'Show detailed progress')
   .option('--lock-path <path>', 'Override vector worker lock path (advanced)')
   .option('--no-process-embeddings', 'Skip processing pending embeddings after import')
@@ -3531,7 +3531,7 @@ hermesCmd
   .option('--state-db <path>', 'Hermes state database path (default: ~/.hermes/state.db)')
   .option('-l, --limit <number>', 'Limit messages imported per selected Hermes session')
   .option('--session-limit <number>', 'Limit recent matching sessions to import')
-  .option('-f, --force', 'Delete existing events for each imported session before reimporting')
+  .option('-f, --force', 'Delete the events earlier imports wrote for each imported session before reimporting (hook events are kept; not allowed with --limit)')
   .option('-v, --verbose', 'Show detailed progress')
   .option('--lock-path <path>', 'Override vector worker lock path (advanced)')
   .option('--no-process-embeddings', 'Skip processing pending embeddings after import')

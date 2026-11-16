@@ -234,7 +234,7 @@ export const toolDefinitions: Tool[] = [
         },
         refreshForce: {
           type: 'boolean',
-          description: 'Force reimport during refresh by deleting existing events for imported sessions first (default: false)'
+          description: 'Force reimport during refresh: replace the rows earlier imports wrote; hook rows are kept. Refused under a message limit, which this tool always applies; use CLI import --force (default: false)'
         },
         refreshEmbeddings: {
           type: 'boolean',
@@ -305,7 +305,7 @@ export const toolDefinitions: Tool[] = [
         },
         force: {
           type: 'boolean',
-          description: 'Force reimport by deleting existing events for imported sessions first (default: false)'
+          description: 'Force reimport: replace the rows earlier imports wrote; hook rows are kept. Refused under a message limit, which this tool always applies; use CLI import --force (default: false)'
         },
         processEmbeddings: {
           type: 'boolean',
