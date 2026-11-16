@@ -180,7 +180,7 @@ export async function main(): Promise<string> {
     // 4.6. Capture policy (operations.json `capturePolicy`): not stored, only counted
     const decision = decideCapture(input, loadCapturePolicy());
     if (!decision.capture) {
-      await memoryService.recordCaptureSkipped(input.session_id, decision.reason);
+      await memoryService.recordCaptureSkipped(decision.reason);
       return JSON.stringify({});
     }
 

@@ -35,8 +35,8 @@ afterEach(async () => {
   rmSync(home, { recursive: true, force: true });
 });
 
-function configure(skipSubagentTypes: string[]): void {
-  writeFileSync(join(home, 'operations.json'), JSON.stringify({ capturePolicy: { skipSubagentTypes } }));
+function configure(skipSubagentTypes: string[], others: Record<string, unknown> = {}): void {
+  writeFileSync(join(home, 'operations.json'), JSON.stringify({ ...others, capturePolicy: { skipSubagentTypes } }));
 }
 
 function editInput(agent?: { agent_id: string; agent_type: string }, file = 'a.ts'): string {
@@ -78,6 +78,15 @@ function storeCounts(): { observations: number; skips: Array<{ error: string; co
   }
 }
 
+function skipRows(): Array<Record<string, unknown>> {
+  const db = new Database(join(home, '.claude-code', 'memory', 'events.sqlite'), { readonly: true });
+  try {
+    return db.prepare("SELECT * FROM pipeline_metrics WHERE stage = 'capture_skipped'").all() as Array<Record<string, unknown>>;
+  } finally {
+    db.close();
+  }
+}
+
 const EXPLORE = { agent_id: 'a1', agent_type: 'Explore' };
 const GENERAL = { agent_id: 'a2', agent_type: 'general-purpose' };
 
@@ -90,7 +99,7 @@ describe('PostToolUse capture policy', () => {
   it('skips a listed subagent type, counts the skip, and still emits the normal output', async () => {
     configure(['Explore']);
     expect(await runPostToolUse(editInput(EXPLORE))).toBe('{}');
-    expect(storeCounts()).toEqual({ observations: 0, skips: [{ error: 'subagent', count: 1 }] });
+    expect(storeCounts()).toEqual({ observations: 0, skips: [{ error: 'subagent_or_teammate', count: 1 }] });
   });
 
   it('keeps storing other subagent types and the main session', async () => {
@@ -105,5 +114,46 @@ describe('PostToolUse capture policy', () => {
     const unchanged = JSON.parse(editInput(GENERAL));
     await runPostToolUse(JSON.stringify({ ...unchanged, tool_name: 'Read' }));
     expect(storeCounts()).toEqual({ observations: 0, skips: [] });
+  });
+
+  it('writes no session, agent or path identifier into the skip row', async () => {
+    configure(['Explore']);
+    await runPostToolUse(editInput(EXPLORE));
+    const rows = skipRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].session_id).toBeNull();
+    const serialized = JSON.stringify(rows);
+    for (const identifier of ['session-1', EXPLORE.agent_id, EXPLORE.agent_type, 'toolu_1', home]) {
+      expect(serialized).not.toContain(identifier);
+    }
+  });
+
+  it('still skips with the pre-edit check and the source-trust filter switched on', async () => {
+    configure(['Explore'], {
+      preEditCheck: { enabled: true },
+      sourceTrust: { excludeUntrustedFromAutoInjection: true }
+    });
+    await runPostToolUse(editInput(EXPLORE));
+    await runPostToolUse(editInput(undefined, 'b.ts'));
+    expect(storeCounts()).toEqual({ observations: 1, skips: [{ error: 'subagent_or_teammate', count: 1 }] });
+  });
+
+  it('returns the normal output and stores nothing when recording the skip fails', async () => {
+    configure(['Explore']);
+    const { SQLiteEventStore } = await import('../../src/core/sqlite-event-store.js');
+    vi.spyOn(SQLiteEventStore.prototype, 'recordCaptureSkipped').mockRejectedValue(new Error('SQLITE_READONLY'));
+    expect(await runPostToolUse(editInput(EXPLORE))).toBe('{}');
+    expect(storeCounts()).toEqual({ observations: 0, skips: [] });
+  });
+
+  // operations.json safety rule: a file that is not valid JSON or does not
+  // match the schema is ignored, so the defaults (store everything) apply.
+  it.each([
+    ['not valid JSON', '{"capturePolicy": {"skipSubagentTypes": ["Explore"]'],
+    ['a schema error', '{"capturePolicy": {"skipSubagentTypes": "Explore"}}']
+  ])('falls back to storing when operations.json is %s', async (_label, body) => {
+    writeFileSync(join(home, 'operations.json'), body);
+    expect(await runPostToolUse(editInput(EXPLORE))).toBe('{}');
+    expect(storeCounts()).toEqual({ observations: 1, skips: [] });
   });
 });

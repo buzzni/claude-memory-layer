@@ -319,8 +319,8 @@ export class MemoryService {
   }
 
   /** Counts a hook input the capture policy kept out of the store. */
-  async recordCaptureSkipped(sessionId: string, reason: string): Promise<void> {
-    return this.ingestService.recordCaptureSkipped(sessionId, reason);
+  async recordCaptureSkipped(reason: string): Promise<void> {
+    return this.ingestService.recordCaptureSkipped(reason);
   }
 
   /**

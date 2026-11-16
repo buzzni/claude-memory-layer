@@ -17,12 +17,12 @@ async function seedStore(homeDir: string, storeHash: string, skips: number): Pro
   mkdirSync(dir, { recursive: true });
   const store = new SQLiteEventStore(path.join(dir, 'events.sqlite'));
   await store.initialize();
-  for (let i = 0; i < skips; i++) await store.recordCaptureSkipped('private-session-id', 'subagent');
+  for (let i = 0; i < skips; i++) await store.recordCaptureSkipped('subagent_or_teammate');
   await store.close();
 }
 
 describe('memory audit: hook inputs the capture policy kept out', () => {
-  it('counts skips per reason code and prints no session ids', async () => {
+  it('counts skips per reason code', async () => {
     const homeDir = mkdtempSync(path.join(tmpdir(), 'cml-audit-capture-'));
     roots.push(homeDir);
     await seedStore(homeDir, 'aaaaaaaa', 3);
@@ -31,13 +31,12 @@ describe('memory audit: hook inputs the capture policy kept out', () => {
     const report = buildMemoryAuditReport({ homeDir, allProjects: true });
     const skippedOf = (hash: string) => report.stores.find((store) => store.storeHash === hash)?.captureSkipped;
 
-    expect(skippedOf('aaaaaaaa')).toEqual([{ reason: 'subagent', count: 3 }]);
+    expect(skippedOf('aaaaaaaa')).toEqual([{ reason: 'subagent_or_teammate', count: 3 }]);
     expect(skippedOf('bbbbbbbb')).toEqual([]);
     const markdown = formatMemoryAuditMarkdown(report);
     expect(markdown).toContain('## Not stored by the capture policy');
-    expect(markdown).toContain('| aaaaaaaa | subagent | 3 |');
-    expect(markdown).not.toContain('| bbbbbbbb | subagent');
-    expect(markdown).not.toContain('private-session-id');
+    expect(markdown).toContain('| aaaaaaaa | subagent_or_teammate | 3 |');
+    expect(markdown).not.toContain('| bbbbbbbb | subagent_or_teammate');
   });
 
   it('prints no section when nothing was skipped', async () => {
