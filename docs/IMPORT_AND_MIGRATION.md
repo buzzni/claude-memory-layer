@@ -21,14 +21,14 @@ claude-memory-layer import                   # import this project's sessions, t
 | `-a, --all` | Import all sessions from all projects |
 | `-l, --limit <number>` | Limit messages per session |
 | `--session-limit <number>` | Limit recent matching sessions to import |
-| `-f, --force` | Delete existing events and reimport |
+| `-f, --force` | Delete every existing event of each imported session, then reimport it |
 | `--embedding-model <name>` | Embedding model override (see [INSTALL.md](INSTALL.md#embedding-model)) |
 | `-v, --verbose` | Show detailed progress |
 
 Notes:
 
 - Repeat the same flow in each project. Every project gets its own store under `~/.claude-code/memory/projects/<hash>`; see [CONFIGURATION.md](CONFIGURATION.md#project-scope) for how worktrees and workspace roots are grouped.
-- Import skips duplicates by content hash, so running it again does not store the same content twice. `--force` deletes the existing imported events and loads them again, so use it with care.
+- Import skips duplicates by content hash, so running it again does not store the same content twice. `--force` deletes every event of each imported session, including rows the hooks wrote, and imports only what the transcript holds again: session summaries, tool observations and messages past `--limit` are lost ([OPERATIONS.md](OPERATIONS.md#what-unattended-work-changes-and-what-it-does-not), #227).
 - `import --all` imports every Claude Code session into the global store. If per-project context quality matters, run `import --project <path>` in each repository instead. The same applies to `codex import --all` and `hermes import --all`.
 
 ### Import legacy Markdown memory
