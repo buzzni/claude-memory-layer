@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 const spawnMock = vi.hoisted(() => vi.fn());
 vi.mock('child_process', () => ({ spawn: spawnMock }));
 
-import { buildCliProviderEnv, runCliProvider } from '../../src/adapters/llm/cli-provider.js';
+import { buildCliProviderEnv, classifyCliProviderFailure, runCliProvider } from '../../src/adapters/llm/cli-provider.js';
 
 function fakeChild() {
   const child = new EventEmitter() as EventEmitter & {
@@ -79,5 +79,60 @@ describe('runCliProvider', () => {
     const env = spawnMock.mock.calls[0][2].env as NodeJS.ProcessEnv;
     expect(env).not.toHaveProperty('CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST');
     expect(env.CLAUDE_MEMORY_DISABLE_HOOKS).toBe('true');
+  });
+});
+
+describe('classifyCliProviderFailure', () => {
+  it.each([
+    // Observed shapes: claude -p prints these on stdout and exits 1.
+    ['Not logged in · Please run /login', 'provider-auth'],
+    ['Claude AI usage limit reached|1767225600', 'provider-rate-limit'],
+    ["You've hit your limit · resets 5pm", 'provider-rate-limit'],
+    ['API Error: 429 {"type":"error","error":{"type":"rate_limit_error"}}', 'provider-rate-limit'],
+    ['Credit balance is too low', 'provider-rate-limit'],
+    ['stream error: unexpected status 429 Too Many Requests', 'provider-rate-limit'],
+    // Overload is the provider's problem for a moment, not the account's.
+    ['API Error: 529 {"type":"error","error":{"type":"overloaded_error"}}', 'provider-error'],
+    ['exit code 1', 'provider-error']
+  ])('classifies %s as %s', (detail, code) => {
+    expect(classifyCliProviderFailure(detail, 'test provider').code).toBe(code);
+  });
+});
+
+describe('runCliProvider failure detail', () => {
+  afterEach(() => { spawnMock.mockReset(); });
+
+  function failWith(stdout: string, stderr: string) {
+    const child = fakeChild();
+    spawnMock.mockReturnValue(child);
+    const run = runCliProvider({
+      provider: 'claude',
+      model: null,
+      prompt: 'hi',
+      timeoutMs: 1000,
+      scratchDirName: 'cml-test',
+      label: 'test provider'
+    });
+    if (stdout) child.stdout.emit('data', Buffer.from(stdout));
+    if (stderr) child.stderr.emit('data', Buffer.from(stderr));
+    child.emit('close', 1);
+    return run;
+  }
+
+  it('classifies from stdout when the CLI reports its error there and leaves stderr empty', async () => {
+    // Reproduced with `claude -p` 2.1.x and an empty config dir: exit 1,
+    // "Not logged in · Please run /login" on stdout, nothing on stderr.
+    await expect(failWith('Not logged in · Please run /login\n', '')).rejects.toMatchObject({ code: 'provider-auth' });
+  });
+
+  it('classifies a usage limit reported on stdout as a rate limit', async () => {
+    await expect(failWith('Claude AI usage limit reached|1767225600\n', '')).rejects.toMatchObject({
+      code: 'provider-rate-limit'
+    });
+  });
+
+  it('never puts the provider output into the error message', async () => {
+    const error = await failWith('Not logged in · secret-ish detail\n', '').catch((caught: unknown) => caught);
+    expect(String((error as Error).message)).not.toContain('secret-ish');
   });
 });

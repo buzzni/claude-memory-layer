@@ -30,6 +30,8 @@ export type CliProviderName = 'claude' | 'codex';
 
 export const DEFAULT_CLI_TIMEOUT_MS = 120_000;
 
+const FAILURE_STDOUT_TAIL_CHARS = 500;
+
 /** Default model for the claude CLI. codex runs with its own configured default. */
 export const DEFAULT_CLAUDE_MODEL = 'claude-haiku-4-5-20251001';
 
@@ -40,6 +42,13 @@ export class CliProviderError extends Error {
   }
 }
 
+/**
+ * Quota, usage-limit and rate-limit wording from both CLIs. Overload (HTTP
+ * 529) is deliberately absent: it clears on its own within seconds, while
+ * these keep failing until a quota window resets.
+ */
+const RATE_LIMIT_PATTERN = /rate[ _-]?limit|usage limit|hit your (?:usage )?limit|limit reached|quota|too many requests|\b429\b|credit balance/;
+
 export function classifyCliProviderFailure(detail: string, label: string): CliProviderError {
   const lowered = detail.toLowerCase();
   if (lowered.includes('enoent') || lowered.includes('not found')) {
@@ -47,6 +56,9 @@ export function classifyCliProviderFailure(detail: string, label: string): CliPr
   }
   if (lowered.includes('timed out') || lowered.includes('etimedout')) {
     return new CliProviderError(`${label} timed out`, 'provider-timeout');
+  }
+  if (RATE_LIMIT_PATTERN.test(lowered)) {
+    return new CliProviderError(`${label} hit a usage or rate limit`, 'provider-rate-limit');
   }
   if (lowered.includes('auth') || lowered.includes('credential') || lowered.includes('login')) {
     return new CliProviderError(`${label} authentication failed`, 'provider-auth');
@@ -169,7 +181,10 @@ export function runCliProvider(options: RunCliProviderOptions): Promise<string> 
     });
     child.on('close', (code) => {
       if (code === 0) settle(undefined, stdout);
-      else settle(classify(stderr || `exit code ${code}`));
+      // `claude -p` prints its own errors ("Not logged in", usage limits) on
+      // stdout and leaves stderr empty, so classify from both. Only the tail:
+      // the error line comes last, and model text is no classification input.
+      else settle(classify([stderr, stdout.slice(-FAILURE_STDOUT_TAIL_CHARS)].filter(Boolean).join('\n') || `exit code ${code}`));
     });
 
     child.stdin.on('error', (error) => {
