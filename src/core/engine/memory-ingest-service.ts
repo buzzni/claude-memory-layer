@@ -39,6 +39,7 @@ interface SessionUpsertStore {
 interface IngestEventStore extends SessionUpsertStore {
   append(input: MemoryEventInput): Promise<AppendResult>;
   enqueueForEmbedding(eventId: string, content: string): Promise<unknown>;
+  recordCaptureSkipped?(sessionId: string, reason: string): Promise<void>;
 }
 
 interface IngestMarkdownMirror {
@@ -264,6 +265,12 @@ export class MemoryIngestService {
       throw new Error(`session summary could not be stored: ${stored.error}`);
     }
     return true;
+  }
+
+  /** Counts a hook input the capture policy kept out of the store. */
+  async recordCaptureSkipped(sessionId: string, reason: string): Promise<void> {
+    await this.initialize();
+    await this.eventStore.recordCaptureSkipped?.(sessionId, reason);
   }
 
   async storeToolObservation(

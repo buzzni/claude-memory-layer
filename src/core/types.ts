@@ -187,6 +187,11 @@ export const MemoryOperationsConfigSchema = z.object({
   sourceTrust: z.object({
     excludeUntrustedFromAutoInjection: z.boolean().default(false)
   }).prefault({}),
+  /** Hook inputs that are not stored (src/adapters/claude/hooks/capture-policy.ts). */
+  capturePolicy: z.object({
+    /** Subagent `agent_type` values whose tool calls PostToolUse does not store; '*' matches every subagent. */
+    skipSubagentTypes: z.array(z.string().trim().min(1)).max(50).default([])
+  }).prefault({}),
   perspectiveMemory: z.object({
     enabled: z.boolean().default(false),
     deriver: z.object({
@@ -735,6 +740,9 @@ export interface SessionEndInput {
 export interface PostToolUseInput {
   session_id: string;
   hook_event_name: string;
+  /** Present only when the hook fires inside a subagent. */
+  agent_id?: string;
+  agent_type?: string;
   tool_name: string;
   tool_input: Record<string, unknown>;
   tool_use_id: string;
