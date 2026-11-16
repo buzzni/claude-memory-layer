@@ -57,18 +57,26 @@ turnsRouter.get('/', async (c) => {
   }
 });
 
-// GET /api/turns/:turnId - Get full turn details
+// GET /api/turns/:turnId?sessionId=xxx - Get full turn details
 turnsRouter.get('/:turnId', async (c) => {
   const { turnId } = c.req.param();
+  const sessionId = c.req.query('sessionId') || undefined;
   const memoryService = getDiagnosticsServiceFromQuery(c);
 
   try {
     await memoryService.initialize();
 
-    const events = await memoryService.getEventsByTurn(turnId);
+    const events = await memoryService.getEventsByTurn(turnId, { sessionId });
 
     if (events.length === 0) {
       return c.json({ error: 'Turn not found' }, 404);
+    }
+
+    // A turn id can be shared by two sessions (forked or re-imported Codex
+    // transcripts); without sessionId their events would read as one turn.
+    const sessionIds = [...new Set(events.map(e => e.sessionId))];
+    if (sessionIds.length > 1) {
+      return c.json({ error: 'Turn id is shared by more than one session; pass sessionId', sessionIds }, 409);
     }
 
     const promptEvent = events.find(e => e.eventType === 'user_prompt');
