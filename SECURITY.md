@@ -33,6 +33,10 @@ Claude Memory Layer는 한 사용자의 머신에서 돌아가는 로컬 도구�
 - **CORS는 기본적으로 same-origin만** 허용합니다. CORS 헤더를 내보내지 않으므로 브라우저는 다른 출처 페이지가 API 응답을 읽지 못하게 막습니다. `DASHBOARD_ALLOWED_ORIGINS`(쉼표 구분)에 적은 출처에만 CORS를 엽니다.
 - **상태를 바꾸는 API 요청은 Origin을 검사**합니다. `/api/*`에 대한 GET·HEAD·OPTIONS 외 요청에 `Origin` 헤더가 있으면, 그 출처가 위 Host 허용 목록의 호스트를 가리키는 `http`/`https` 출처이거나 `DASHBOARD_ALLOWED_ORIGINS`에 있어야 하고, 아니면 403으로 거절합니다. 요청의 `Host` 헤더와는 비교하지 않습니다(rebinding된 페이지는 `Host`와 `Origin`을 함께 공격자 도메인으로 보냅니다). `Origin`이 없는 요청(CLI, curl)은 로컬 사용을 위해 통과시킵니다.
 
+### 회상된 기억의 출처
+
+회상되는 기억에는 도구 출력(파일, 웹 페이지, 명령 결과)처럼 대화 밖에서 들어온 텍스트가 섞여 있습니다. 그런 텍스트에 심어 둔 지시문은 나중에 기억으로 주입되어 에이전트를 움직일 수 있습니다(메모리 오염, OWASP Agentic ASI06). 렌더 시점 sanitizer는 보이지 않는 문자와 래퍼 태그를 지우지만, 평범한 문장으로 쓴 지시는 막지 못합니다. 그래서 회상 출력은 기억의 출처를 함께 보여 줍니다. 도구 출력, import된 기록(세션 기록 importer, Codex 세션, Mongo sync로 다른 프로젝트 store에서 받은 행), 유형을 알 수 없는 기억에는 `low-trust` 라벨이 붙습니다([HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md#source-trust-labels)). `operations.json`의 `sourceTrust.excludeUntrustedFromAutoInjection`을 켜면 도구 출력과 출처 미상 기억은 자동 주입에서 빠집니다. MCP나 CLI로 직접 조회할 때는 결과에서 빠지지 않고 라벨만 붙습니다. 출처는 저장된 유형과 metadata로만 판단하므로 한계가 있습니다. 요약과 lesson은 도구 출력의 내용을 다시 옮겨 담을 수 있지만 `derived`로 분류되어 라벨이 붙지 않습니다. 같은 프로젝트 store끼리 Mongo sync로 받은 행에는 표시가 남지 않아 import로 구분되지 않습니다.
+
 ### 저장 전 마스킹
 
 Claude Code 훅은 저장하기 전에 아래 마스킹을 적용합니다. 어디에 무엇이 적용되는지는 필드마다 다릅니다.

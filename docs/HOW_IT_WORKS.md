@@ -117,6 +117,27 @@ Search returns a compact index first. A timeline around a result, and then full 
 
 Context injected by the hooks and MCP results cite memories as `[mem:abc123]`. The MCP `mem-source-ref` tool resolves a citation to a redacted preview and safe metadata, optionally with the neighboring events of the same session.
 
+### Source trust labels
+
+Every recalled memory is classified by where its text came from (`src/core/memory-origin.ts`). The class is derived from the event type and metadata every row already has, so old rows are classified too; nothing extra is stored.
+
+| Origin | Rows | Label |
+|---|---|---|
+| `user` | `user_prompt` stored by a live hook | none |
+| `assistant` | `agent_response` stored by a live hook | none |
+| `derived` | `session_summary` and lessons (text this system wrote from stored rows) | none |
+| `imported` | any other row with `metadata.importedFrom` (Claude/Codex/Hermes history importers, including Codex's own SessionEnd capture), or pulled by Mongo sync from another project's store | `low-trust: imported` |
+| `tool` | `tool_observation` (tool input and output), imported or not | `low-trust: tool output` |
+| `unknown` | any other event type | `low-trust: unknown origin` |
+
+Only the low-trust classes are labelled, so the common case costs no extra tokens. The label sits outside the memory text, next to the type: `- [tool_observation] [low-trust: tool output] …` in the prompt-time evidence block, `- **date** [low-trust: imported]: …` in the SessionStart recap, `(agent_response; low-trust: imported)` on a reference card, and after the type in `mem-search` and `mem-timeline`. Field-style MCP output always carries the class: `origin=…` on `mem-context-pack` memory lines and `mem-source-ref` neighbors, and `Origin:` in `mem-details` and `mem-source-ref`.
+
+Graduation does not change the class. A memory graduates by being retrieved, and an injected memory is retrieved again by being injected, so trusting graduated rows would let a poisoned row earn trust just by being recalled. Summaries and lessons stay `derived` even though they can restate tool output.
+
+Operators can keep `tool` and `unknown` rows out of automatic injection (SessionStart and UserPromptSubmit, including the Codex hooks) with an [`operations.json` flag](CONFIGURATION.md#optional-features-operationsjson). The filter runs before ranking, so trusted memories can take the freed slots; tool rows still seed the same-turn episode lookup, which then injects that turn's answer. Requested reads (MCP tools, CLI `search`) are never filtered, only labelled. The PreCompact re-injection quotes only the session's own prompts and response plus file paths from its own edit-tool calls, so it is not filtered either.
+
+Hook traces record how many injected memories each class had (`injectedByOrigin` in the trace diagnostics; counts only). `memory-audit` sums them per store, so the flag's reach can be checked before turning it on, and `npm run eval:hook-replay` replays a store copy with the filter on as its `source-trust filter` arm.
+
 ## Graduation
 
 `process` runs one bounded graduation pass that promotes memories through levels. A memory moves up when it meets all criteria of the step and is not older than its age limit:
