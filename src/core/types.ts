@@ -179,6 +179,10 @@ export const MemoryOperationsConfigSchema = z.object({
   preEditCheck: z.object({
     enabled: z.boolean().default(false)
   }).prefault({}),
+  /** Keep tool-output and unknown-origin memories out of automatic hook injection (src/core/memory-origin.ts). */
+  sourceTrust: z.object({
+    excludeUntrustedFromAutoInjection: z.boolean().default(false)
+  }).prefault({}),
   perspectiveMemory: z.object({
     enabled: z.boolean().default(false),
     deriver: z.object({

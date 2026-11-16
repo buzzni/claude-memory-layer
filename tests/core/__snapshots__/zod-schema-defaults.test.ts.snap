@@ -82,6 +82,9 @@ exports[`core/types schema defaults > fills the same defaults for undefined and 
           "enabled": false,
           "policyVersion": "v1",
         },
+        "sourceTrust": {
+          "excludeUntrustedFromAutoInjection": false,
+        },
       },
       "privacy": {
         "anonymize": false,
@@ -204,6 +207,9 @@ exports[`core/types schema defaults > fills the same defaults for undefined and 
         "enabled": false,
         "policyVersion": "v1",
       },
+      "sourceTrust": {
+        "excludeUntrustedFromAutoInjection": false,
+      },
     },
     "fromUndefined": {
       "actions": {
@@ -250,6 +256,9 @@ exports[`core/types schema defaults > fills the same defaults for undefined and 
       "retention": {
         "enabled": false,
         "policyVersion": "v1",
+      },
+      "sourceTrust": {
+        "excludeUntrustedFromAutoInjection": false,
       },
     },
   },

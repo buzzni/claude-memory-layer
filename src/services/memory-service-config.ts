@@ -69,6 +69,7 @@ export const DISABLED_MEMORY_OPERATIONS_CONFIG: MemoryOperationsConfig = {
   codifyLite: { enabled: false },
   lessons: { enabled: false },
   preEditCheck: { enabled: false },
+  sourceTrust: { excludeUntrustedFromAutoInjection: false },
   perspectiveMemory: {
     enabled: false,
     deriver: { enabled: false, maxEventsPerBatch: 20, maxObserversPerSession: 5 },
