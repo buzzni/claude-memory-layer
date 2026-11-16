@@ -40,6 +40,8 @@ const PERSISTENT_FAILURE_CODES = new Set(['provider-auth', 'provider-rate-limit'
 
 /** Added to the caller's CLI timeout for the probe lease: lock and spawn overhead. */
 export const PROBE_LEASE_MARGIN_MS = 60_000;
+/** No CLI call runs this long; a longer lease comes from a damaged file. */
+const MAX_PROBE_LEASE_MS = 24 * 60 * 60_000;
 /** The lock is held for one read and one write; a live holder frees it within this. */
 const LOCK_ATTEMPTS = 20;
 const LOCK_RETRY_MS = 10;
@@ -257,8 +259,9 @@ export class ProviderCircuitBreaker {
   /**
    * Why an open breaker withholds a call right now, or null when a probe may
    * go. Times the clock cannot have produced — a probe due further out than
-   * the cooldown cap, a claim dated in the future — come from a clock that
-   * went back or a damaged file, and do not withhold anything.
+   * the cooldown cap, a claim dated in the future, a lease longer than any
+   * call — come from a clock that went back or a damaged file, and do not
+   * withhold anything.
    */
   private waitReason(state: ProviderCircuitState, now: number): CircuitAdmission | null {
     const nextProbe = Date.parse(state.nextProbeAt!);
@@ -266,7 +269,8 @@ export class ProviderCircuitBreaker {
     const claimLive = state.probeClaimId !== null
       && state.probeClaimedAt !== null && state.probeLeaseUntil !== null
       && Date.parse(state.probeClaimedAt) <= now
-      && now < Date.parse(state.probeLeaseUntil);
+      && now < Date.parse(state.probeLeaseUntil)
+      && Date.parse(state.probeLeaseUntil) - Date.parse(state.probeClaimedAt) <= MAX_PROBE_LEASE_MS;
     if ((now < nextProbe && plausibleNextProbe) || claimLive) {
       return { allowed: false, nextProbeAt: state.nextProbeAt! };
     }

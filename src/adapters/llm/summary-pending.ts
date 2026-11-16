@@ -115,7 +115,7 @@ function defaultIsProcessRunning(pid: number): boolean {
   }
 }
 
-/** Keep a session the breaker skipped. Never throws; never replaces a kept or claimed entry. */
+/** Keep a session the breaker skipped. Never throws (nor does anything else here); never replaces a kept or claimed entry. */
 export function savePendingSummary(sessionId: string, options: SummaryPendingOptions = {}): void {
   const dir = getSummaryPendingDir(options);
   const name = queueFileName(sessionId);
@@ -143,6 +143,14 @@ export function savePendingSummary(sessionId: string, options: SummaryPendingOpt
   pruneUnclaimed(options);
 }
 
+function removeQuietly(file: string): void {
+  try {
+    fs.rmSync(file, { force: true });
+  } catch {
+    // Left in place; a later prune or claim retries.
+  }
+}
+
 /** Drops expired, unreadable and excess unclaimed entries. Claimed entries belong to their retry. */
 function pruneUnclaimed(options: SummaryPendingOptions): void {
   const dir = getSummaryPendingDir(options);
@@ -156,7 +164,7 @@ function pruneUnclaimed(options: SummaryPendingOptions): void {
       retained += 1;
       continue;
     }
-    fs.rmSync(file, { force: true });
+    removeQuietly(file);
   }
 }
 
@@ -210,7 +218,7 @@ export function claimPendingSummary(sessionId: string, options: SummaryPendingOp
   }
   const record = readRecord(claimPath);
   if (!record || expired(record, options)) {
-    fs.rmSync(claimPath, { force: true });
+    removeQuietly(claimPath);
     return null;
   }
   return { sessionId: record.sessionId, record, claimPath, queuePath };
@@ -218,7 +226,8 @@ export function claimPendingSummary(sessionId: string, options: SummaryPendingOp
 
 /** The retry stored a summary or found nothing left to do. */
 export function completePendingSummary(claim: PendingSummaryClaim): void {
-  fs.rmSync(claim.claimPath, { force: true });
+  // A claim that cannot be removed is taken back once stale; its retry then finds nothing to do.
+  removeQuietly(claim.claimPath);
 }
 
 /**

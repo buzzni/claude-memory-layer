@@ -92,6 +92,25 @@ describe('keeping skipped summaries', () => {
   });
 });
 
+describe('summary pending storage failures', () => {
+  it('never throws from save, claim or complete when the directory turns read-only', () => {
+    if (process.getuid?.() === 0) return; // root ignores the permission bits
+    savePendingSummary('s1', options());
+    const dir = getSummaryPendingDir({ homeDir });
+    fs.chmodSync(dir, 0o500);
+    try {
+      clock += SUMMARY_PENDING_MAX_AGE_MS + 1;
+      expect(() => savePendingSummary('s2', options())).not.toThrow();
+      clock = START;
+      expect(claimPendingSummary('s1', options())).toBeNull();
+      expect(() => completePendingSummary({ sessionId: 's1', record: { sessionId: 's1', queuedAt: '2026-01-01T00:00:00.000Z', attempts: 0 }, claimPath: path.join(dir, 's1.json'), queuePath: path.join(dir, 's1.json') })).not.toThrow();
+      expect(ids()).toEqual(['s1']);
+    } finally {
+      fs.chmodSync(dir, 0o700);
+    }
+  });
+});
+
 describe('retrying kept summaries', () => {
   it('removes an entry only when its retry completes', () => {
     savePendingSummary('s1', options());

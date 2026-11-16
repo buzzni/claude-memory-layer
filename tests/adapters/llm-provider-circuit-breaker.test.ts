@@ -279,6 +279,16 @@ describe('ProviderCircuitBreaker fails open', () => {
     expect(breaker().admit('claude', LEASE)).toMatchObject({ allowed: true, probe: true });
   });
 
+  it('does not trust a probe lease longer than any CLI call', () => {
+    writeRawState(openState({
+      nextProbeAt: '2025-12-31T23:59:00.000Z',
+      probeClaimId: 'stuck',
+      probeClaimedAt: '2025-12-31T23:59:00.000Z',
+      probeLeaseUntil: '2036-01-01T00:00:00.000Z'
+    }));
+    expect(breaker().admit('claude', LEASE)).toMatchObject({ allowed: true, probe: true });
+  });
+
   it('admits the call when a live process keeps the state lock', () => {
     trip(breaker());
     clock = START + 60_000;
