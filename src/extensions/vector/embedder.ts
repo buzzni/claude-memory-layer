@@ -5,6 +5,7 @@
 
 import { existsSync, readFileSync } from 'node:fs';
 import { createRequire as createNodeRequire } from 'node:module';
+import { homedir } from 'node:os';
 import { dirname as pathDirname, join, parse } from 'node:path';
 import { fileURLToPath as urlToFilePath, pathToFileURL } from 'node:url';
 import {
@@ -12,6 +13,7 @@ import {
   opaqueBackendId,
   type RuntimeModelReleaseReason
 } from '../../core/runtime-resource-telemetry.js';
+import { WorkerLock } from '../../core/worker-lock.js';
 
 export interface EmbeddingResult {
   vector: number[];
@@ -36,11 +38,18 @@ export interface EmbedderOptions {
   telemetry?: EmbeddingLifecycleTelemetry;
   now?: () => number;
   loadPipeline?: () => Promise<FeatureExtractionPipelineFactory>;
+  /** On-disk model cache this embedder loads from; defaults to the shared one for the built-in backend. */
+  modelCacheDir?: string;
+  modelLoadLockWaitMs?: number;
 }
 
 export const DEFAULT_EMBEDDING_MODEL = 'Xenova/multilingual-e5-small';
 export const DEFAULT_EMBEDDING_FALLBACK_MODEL = 'intfloat/multilingual-e5-small';
 const MANAGED_EMBEDDING_BACKEND_DIR = '.claude-memory-layer-embedding-backend';
+// A cached load takes about a second; anything longer is a download, which the
+// caller should not sit behind.
+const MODEL_LOAD_LOCK_WAIT_MS = 30_000;
+const MODEL_LOAD_LOCK_POLL_MS = 200;
 let embedderResourceSequence = 0;
 
 export class Embedder {
@@ -54,6 +63,8 @@ export class Embedder {
   private readonly telemetry: EmbeddingLifecycleTelemetry;
   private readonly now: () => number;
   private readonly loadPipeline: () => Promise<FeatureExtractionPipelineFactory>;
+  private readonly modelCacheDir: string | undefined;
+  private readonly modelLoadLockWaitMs: number;
   private readonly resourceId: string;
 
   constructor(modelName: string = DEFAULT_EMBEDDING_MODEL, options: EmbedderOptions = {}) {
@@ -62,6 +73,9 @@ export class Embedder {
     this.telemetry = options.telemetry ?? getRuntimeResourceTelemetry();
     this.now = options.now ?? Date.now;
     this.loadPipeline = options.loadPipeline ?? loadTransformersPipeline;
+    // An injected pipeline has no on-disk cache to guard unless the caller names one.
+    this.modelCacheDir = options.modelCacheDir ?? (options.loadPipeline ? undefined : resolveModelCacheDir());
+    this.modelLoadLockWaitMs = options.modelLoadLockWaitMs ?? MODEL_LOAD_LOCK_WAIT_MS;
     this.resourceId = `embedder-${++embedderResourceSequence}`;
   }
 
@@ -111,7 +125,9 @@ export class Embedder {
       return;
     } catch (primaryError) {
       const fallbackModel = process.env.CLAUDE_MEMORY_EMBEDDING_FALLBACK_MODEL || DEFAULT_EMBEDDING_FALLBACK_MODEL;
-      if (fallbackModel === this.modelName) {
+      // A busy cache says nothing about the primary model; downloading the
+      // fallback instead would only add a second model to the queue.
+      if (fallbackModel === this.modelName || primaryError instanceof ModelCacheBusyError) {
         this.telemetry.recordModelLoadFailure(this.now() - startedAt);
         throw primaryError;
       }
@@ -152,16 +168,47 @@ export class Embedder {
     pipeline: FeatureExtractionPipelineFactory,
     modelName: string
   ): Promise<NonNullable<Embedder['pipeline']>> {
+    const cacheLock = await this.acquireModelCacheLock();
     try {
       return await withSuppressedKnownTransformersWarnings(() => pipeline('feature-extraction', modelName));
     } catch (error) {
       if (!isCorruptedModelCacheError(error)) throw error;
 
-      const cleared = await clearModelCacheDirectory(modelName);
+      const cleared = await clearModelCacheDirectory(modelName, this.modelCacheDir);
       if (!cleared) throw error;
 
       console.warn(`[Embedder] Detected a corrupted cache for ${modelName}; cleared it and retrying.`);
       return await withSuppressedKnownTransformersWarnings(() => pipeline('feature-extraction', modelName));
+    } finally {
+      cacheLock?.release();
+    }
+  }
+
+  /**
+   * One loader per model cache at a time, across processes and embedders.
+   *
+   * @huggingface/transformers streams a download straight into its final
+   * cache path. Two loaders downloading the same model overwrite each other;
+   * the first to finish reads a half-rewritten file, takes it for a corrupted
+   * cache, and deletes the directory under the other — which then does the
+   * same in return. The semantic daemon, the maintenance run and MCP servers
+   * all load the model, so this happened whenever the cache was empty.
+   */
+  private async acquireModelCacheLock(): Promise<WorkerLock | undefined> {
+    if (!this.modelCacheDir) return undefined;
+
+    const lock = new WorkerLock(join(this.modelCacheDir, 'model-load.lock'));
+    const deadline = Date.now() + this.modelLoadLockWaitMs;
+    for (;;) {
+      try {
+        if (lock.acquire().acquired) return lock;
+      } catch {
+        // A cache that cannot be written cannot be downloaded into either, so
+        // there is nothing to serialize.
+        return undefined;
+      }
+      if (Date.now() >= deadline) throw new ModelCacheBusyError();
+      await new Promise((resolve) => setTimeout(resolve, MODEL_LOAD_LOCK_POLL_MS));
     }
   }
 
@@ -274,6 +321,13 @@ export class Embedder {
       this.telemetry.recordModelReleaseFailure();
       throw error;
     }
+  }
+}
+
+class ModelCacheBusyError extends Error {
+  constructor() {
+    super('Embedding model cache is busy: another process is loading or downloading the model.');
+    this.name = 'ModelCacheBusyError';
   }
 }
 
@@ -407,11 +461,30 @@ export function normalizeTransformersNamespace(namespace: TransformersModuleLike
   return namespace;
 }
 
+/**
+ * The backend's own default cache is a directory inside its package, which a
+ * reinstall or upgrade of claude-memory-layer deletes along with the ~470MB
+ * model. The memory root outlives the package.
+ */
+export function resolveModelCacheDir(): string {
+  return join(homedir(), '.claude-code', 'memory', 'models');
+}
+
+export function configureTransformersCache(
+  transformers: TransformersModuleLike,
+  cacheDir: string = resolveModelCacheDir()
+): TransformersModuleLike {
+  if (transformers.env) transformers.env.cacheDir = cacheDir;
+  return transformers;
+}
+
 async function loadTransformersModule(): Promise<TransformersModuleLike> {
   const dynamicImport = new Function('specifier', 'return import(specifier)') as (
     specifier: string
   ) => Promise<TransformersModuleLike>;
-  return normalizeTransformersNamespace(await dynamicImport(resolveTransformersModuleSpecifier()));
+  return configureTransformersCache(
+    normalizeTransformersNamespace(await dynamicImport(resolveTransformersModuleSpecifier()))
+  );
 }
 
 async function loadTransformersPipeline(): Promise<FeatureExtractionPipelineFactory> {

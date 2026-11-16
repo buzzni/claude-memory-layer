@@ -153,6 +153,7 @@ ONNXRUNTIME_NODE_INSTALL_CUDA=skip node scripts/postinstall-embedding-backend.cj
 - `@huggingface/transformers`/ONNX Runtime CPU에서 동작하므로 CUDA가 필요 없습니다.
 - 원본 `intfloat/multilingual-e5-small`은 multilingual + Korean(`ko`) 지원 모델이고, Xenova variant는 Transformers.js용 ONNX 파일을 제공합니다.
 - 384차원이라 대규모 세션 import에서도 CPU/메모리 부담이 작습니다.
+- 모델 파일(약 470MB)은 처음 쓸 때 한 번 내려받아 `~/.claude-code/memory/models/`에 둡니다. 패키지 디렉터리 밖이라 재설치·업그레이드 후에도 다시 받지 않습니다.
 - 더 높은 품질이 필요하면 `--embedding-model <hf-model>` 또는 `CLAUDE_MEMORY_EMBEDDING_MODEL`로 `onnx-community/Qwen3-Embedding-0.6B-ONNX`, `onnx-community/embeddinggemma-300m-ONNX` 같은 Transformers.js/ONNX 모델을 실험할 수 있습니다. 다만 이들은 다운로드/CPU 비용이 더 크거나 모델/라이선스 성숙도를 별도 검토해야 합니다.
 
 ```bash

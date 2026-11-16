@@ -185,6 +185,63 @@ export function readLastAssistantSnippet(sessionId: string): string | null {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Pending Prompt State
+// UserPromptSubmit stores the prompt only after retrieval, so that it cannot
+// be retrieved as its own exact match. A hook the host kills in between never
+// gets there; this file is what it leaves, and the session's next hook stores
+// it. It exists only for the duration of one retrieval unless that happens.
+// ---------------------------------------------------------------------------
+
+interface PendingPromptState {
+  sessionId: string;
+  content: string;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+}
+
+function getPendingPromptPath(sessionId: string): string {
+  return path.join(TURN_STATE_DIR, `.pending-prompt-${sessionId}.json`);
+}
+
+/** `content` is what will be stored, so it must already be redacted. */
+export function writePendingPrompt(sessionId: string, content: string, metadata: Record<string, unknown>): void {
+  try {
+    if (!fs.existsSync(TURN_STATE_DIR)) {
+      fs.mkdirSync(TURN_STATE_DIR, { recursive: true });
+    }
+    const state: PendingPromptState = { sessionId, content, metadata, createdAt: new Date().toISOString() };
+    const filePath = getPendingPromptPath(sessionId);
+    const tempPath = filePath + '.tmp';
+    fs.writeFileSync(tempPath, JSON.stringify(state));
+    fs.renameSync(tempPath, filePath);
+  } catch {
+    // non-critical: the prompt is still stored on the normal path
+  }
+}
+
+export function readPendingPrompt(
+  sessionId: string
+): { content: string; metadata: Record<string, unknown>; createdAt: string } | null {
+  try {
+    const filePath = getPendingPromptPath(sessionId);
+    if (!fs.existsSync(filePath)) return null;
+    const state: PendingPromptState = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+    if (state.sessionId !== sessionId || typeof state.content !== 'string') return null;
+    return { content: state.content, metadata: state.metadata ?? {}, createdAt: state.createdAt };
+  } catch {
+    return null;
+  }
+}
+
+export function clearPendingPrompt(sessionId: string): void {
+  try {
+    fs.rmSync(getPendingPromptPath(sessionId), { force: true });
+  } catch {
+    // non-critical
+  }
+}
+
 /**
  * Clean up stale turn state files (older than 1 hour).
  * Can be called periodically to prevent file accumulation.

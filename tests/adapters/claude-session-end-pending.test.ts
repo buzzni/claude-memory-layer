@@ -122,7 +122,9 @@ describe('pending SessionEnd jobs', () => {
   });
 
   it('does not run a job another worker is already retrying, but takes over one it left behind', async () => {
-    savePendingSessionEndJob(job, new Error('boom'), at('2026-11-07T01:00:00.000Z'));
+    // Saved on the real clock: the retries below run on it too (claim
+    // staleness is file mtime), so a fixed date would expire the job a week on.
+    savePendingSessionEndJob(job, new Error('boom'), { homeDir });
     const dir = getSessionEndPendingDir({ homeDir });
     const [file] = readdirSync(dir);
     const claimed = path.join(dir, `${file}.claimed`);
@@ -142,7 +144,7 @@ describe('pending SessionEnd jobs', () => {
   });
 
   it('does not let a second worker take over a job saved long ago that the first has just claimed', async () => {
-    savePendingSessionEndJob(job, new Error('boom'), at('2026-11-07T01:00:00.000Z'));
+    savePendingSessionEndJob(job, new Error('boom'), { homeDir });
     const dir = getSessionEndPendingDir({ homeDir });
     const [file] = readdirSync(dir);
     // Saved two hours ago; a rename keeps this mtime on the claim.
