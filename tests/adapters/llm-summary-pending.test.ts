@@ -112,13 +112,6 @@ describe('keeping skipped summaries', () => {
     expect(kept).not.toContain('n9');
     expect(kept).toContain('n10');
   });
-
-  it('ignores corrupt files', () => {
-    fs.mkdirSync(getSummaryPendingDir({ homeDir }), { recursive: true });
-    fs.writeFileSync(path.join(getSummaryPendingDir({ homeDir }), 'bad.json'), 'garbage');
-    savePendingSummary('s1', options());
-    expect(ids()).toEqual(['s1']);
-  });
 });
 
 describe('summary pending storage failures', () => {
@@ -137,6 +130,61 @@ describe('summary pending storage failures', () => {
     } finally {
       fs.chmodSync(dir, 0o700);
     }
+  });
+});
+
+describe('entries that cannot be read or understood', () => {
+  const dir = () => getSummaryPendingDir({ homeDir });
+  const quarantined = () => fs.readdirSync(dir()).filter((name) => name.includes('.invalid-'));
+
+  it('leaves an entry it cannot read in place (review case: read permission removed)', () => {
+    if (process.getuid?.() === 0) return; // root ignores the permission bits
+    savePendingSummary('kept', options());
+    const kept = path.join(dir(), 'kept.json');
+    fs.chmodSync(kept, 0o000);
+    try {
+      savePendingSummary('other', options());
+      expect(claimPendingSummary('kept', options())).toBeNull();
+      expect(fs.existsSync(kept)).toBe(true);
+    } finally {
+      fs.chmodSync(kept, 0o600);
+    }
+    expect(ids()).toEqual(['kept', 'other']);
+  });
+
+  it.each([
+    ['corrupt JSON', 'garbage'],
+    ['an unknown version', JSON.stringify({ version: 2, sessionId: 'x', queuedAt: '2026-01-01T00:00:00.000Z', attempts: 0 })]
+  ])('quarantines an entry with %s instead of deleting it', (_label, content) => {
+    fs.mkdirSync(dir(), { recursive: true });
+    fs.writeFileSync(path.join(dir(), 'odd.json'), content);
+    savePendingSummary('s1', options());
+    expect(quarantined()).toHaveLength(1);
+    expect(fs.readFileSync(path.join(dir(), quarantined()[0]), 'utf8')).toBe(content);
+    expect(ids()).toEqual(['s1']);
+  });
+
+  it('quarantines an entry it cannot understand when claiming it', () => {
+    fs.mkdirSync(dir(), { recursive: true });
+    fs.writeFileSync(path.join(dir(), 'odd.json'), 'garbage');
+    expect(claimPendingSummary('odd', options())).toBeNull();
+    expect(quarantined()).toHaveLength(1);
+  });
+
+  it('removes quarantined entries after the age limit', () => {
+    fs.mkdirSync(dir(), { recursive: true });
+    fs.writeFileSync(path.join(dir(), 'odd.json'), 'garbage');
+    savePendingSummary('s1', options());
+    clock += SUMMARY_PENDING_MAX_AGE_MS + 1;
+    savePendingSummary('s2', options());
+    expect(quarantined()).toEqual([]);
+  });
+
+  it('removes temp files a writer that died left behind (review recommendation)', () => {
+    fs.mkdirSync(dir(), { recursive: true });
+    fs.writeFileSync(path.join(dir(), 'kept.json.4242.tmp'), '{"version":1');
+    savePendingSummary('s1', options());
+    expect(fs.readdirSync(dir()).filter((name) => name.endsWith('.tmp'))).toEqual([]);
   });
 });
 

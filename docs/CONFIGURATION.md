@@ -84,7 +84,8 @@ Core memory blocks, `mem-entity-supersede` and temporal graph queries are always
 | `CLAUDE_MEMORY_LLM_BREAKER_COOLDOWN_MS` | `300000` | Wait before the first probe |
 | `CLAUDE_MEMORY_LLM_BREAKER_MAX_COOLDOWN_MS` | `3600000` | Cap for the cooldown, which doubles after each failed probe |
 
-Both CLI timeouts are capped at `1800000` (30 minutes); a larger value runs with the cap, and `doctor` says so.
+Both CLI timeouts are capped at `1800000` (30 minutes); a larger value runs with the cap. `doctor` warns about a larger
+value set in the shell it runs in; a value that reaches only the daemon (`settings.json` `env`) is not visible to it.
 
 What these send off the machine is described in [SECURITY.md](../SECURITY.md).
 

@@ -89,7 +89,9 @@ breaker stops paying for those calls:
   ids and times only). The semantic daemon retries them after the next summary call the provider answers. A kept
   summary does not disappear before its retry is done (the summary was stored, or there was nothing left to store);
   the only exceptions are the bounds: 7 days, 100 entries in the whole queue, 3 failed retries. A daemon that dies
-  mid-retry leaves a claim the next retry takes back.
+  mid-retry leaves a claim the next retry takes back. An entry that cannot be read (permissions, I/O) is left alone;
+  one that cannot be understood (corrupt, unknown version) is moved aside as `<name>.invalid-<time>` and removed after
+  7 days.
   Lesson extraction needs no queue: it is computed on demand and failed groups are never cached, so the next
   `mem-lesson-candidates` call after recovery extracts them; until then its note names the open circuit and the next
   probe time.

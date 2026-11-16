@@ -21,10 +21,13 @@
  * summary was stored, or there was nothing left to store). The only other
  * removals are the stated bounds: older than 7 days, beyond 100 entries in
  * the whole queue (claimed ones included; the oldest unclaimed go first), or
- * 3 retries that reached the provider and failed. Known limits: a save that
- * cannot take the lock is dropped (the session stays eligible for the
- * session-start backfill), and WorkerLock's takeover of a dead holder's lock
- * can, rarely, let two processes in at once.
+ * 3 retries that reached the provider and failed. An entry that cannot be
+ * read (permissions, I/O) is left untouched; one that was read but cannot be
+ * understood (corrupt JSON, an unknown version) is moved aside as
+ * `<name>.invalid-<time>` and removed after the same 7 days. Known limits: a
+ * save that cannot take the lock is dropped (the session stays eligible for
+ * the session-start backfill), and WorkerLock's takeover of a dead holder's
+ * lock can, rarely, let two processes in at once (#217).
  */
 
 import { randomUUID } from 'node:crypto';
@@ -49,6 +52,8 @@ const LOCK_NAME = '.lock';
 const LOCK_DEADLINE_MS = 500;
 const CLAIM_MARKER = '.claimed-';
 const CLAIM_PATTERN = /\.claimed-(\d+)-(\d+)-[0-9a-f-]+$/;
+const QUARANTINE_MARKER = '.invalid-';
+const QUARANTINE_PATTERN = /\.invalid-(\d+)$/;
 
 export interface PendingSummary {
   sessionId: string;
@@ -101,9 +106,19 @@ function readDir(dir: string): string[] {
   }
 }
 
-function readRecord(file: string): PendingSummary | null {
+/**
+ * unreadable: the read itself failed (permissions, I/O) and says nothing
+ * about the entry, so it is left alone. invalid: the content was read and is
+ * not an entry this version understands.
+ */
+type EntryRead =
+  | { kind: 'ok'; record: PendingSummary }
+  | { kind: 'unreadable' }
+  | { kind: 'invalid' };
+
+function parseRecord(raw: string): PendingSummary | null {
   try {
-    const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as Partial<PendingSummaryFile>;
+    const parsed = JSON.parse(raw) as Partial<PendingSummaryFile>;
     if (parsed?.version !== 1 || typeof parsed.sessionId !== 'string' || typeof parsed.queuedAt !== 'string') return null;
     if (!Number.isFinite(Date.parse(parsed.queuedAt))) return null;
     const attempts = Number.isInteger(parsed.attempts) && parsed.attempts! >= 0 ? parsed.attempts! : 0;
@@ -111,6 +126,27 @@ function readRecord(file: string): PendingSummary | null {
   } catch {
     return null;
   }
+}
+
+function readEntry(file: string): EntryRead {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(file, 'utf8');
+  } catch {
+    return { kind: 'unreadable' };
+  }
+  const record = parseRecord(raw);
+  return record ? { kind: 'ok', record } : { kind: 'invalid' };
+}
+
+function readRecord(file: string): PendingSummary | null {
+  const entry = readEntry(file);
+  return entry.kind === 'ok' ? entry.record : null;
+}
+
+/** Lock held: moves an entry this version cannot understand out of the queue, keeping its content. */
+function quarantineLocked(file: string, options: SummaryPendingOptions): void {
+  fs.renameSync(file, `${file}${QUARANTINE_MARKER}${nowMs(options)}`);
 }
 
 function writeRecord(file: string, record: PendingSummary): void {
@@ -169,23 +205,33 @@ export function savePendingSummary(sessionId: string, options: SummaryPendingOpt
 }
 
 /**
- * Lock held: drops expired and unreadable unclaimed entries, then the oldest
- * unclaimed ones while the whole queue, claimed entries included, is over
- * the limit. Claimed entries belong to their retry and are never removed here.
+ * Lock held: drops expired unclaimed entries, quarantines ones it cannot
+ * understand, leaves ones it cannot read, then drops the oldest unclaimed
+ * entries while the whole queue, claimed entries included, is over the
+ * limit. Claimed entries belong to their retry and are never removed here.
+ * Also clears quarantined entries past the age limit and temp files: every
+ * write happens under this lock, so a temp file seen now was left by a
+ * writer that died (WorkerLock's own `.lock.*.tmp` files are not ours).
  */
 function pruneLocked(dir: string, options: SummaryPendingOptions): void {
   const names = readDir(dir);
+  for (const name of names) {
+    const quarantined = QUARANTINE_PATTERN.exec(name);
+    const staleQuarantine = quarantined && nowMs(options) - Number(quarantined[1]) > SUMMARY_PENDING_MAX_AGE_MS;
+    const orphanTemp = name.endsWith('.tmp') && !name.startsWith(LOCK_NAME);
+    if (staleQuarantine || orphanTemp) fs.rmSync(path.join(dir, name), { force: true });
+  }
   const claimed = names.filter(isClaimName).length;
-  const unclaimed = names
-    .filter((name) => name.endsWith('.json'))
-    .map((name) => ({ file: path.join(dir, name), record: readRecord(path.join(dir, name)) }));
-  const keep = unclaimed
-    .filter(({ file, record }) => {
-      if (record && !expired(record, options)) return true;
-      fs.rmSync(file, { force: true });
-      return false;
-    })
-    .sort((a, b) => a.record!.queuedAt.localeCompare(b.record!.queuedAt));
+  const keep: Array<{ file: string; record: PendingSummary }> = [];
+  for (const name of names.filter((entry) => entry.endsWith('.json'))) {
+    const file = path.join(dir, name);
+    const entry = readEntry(file);
+    if (entry.kind === 'unreadable') continue;
+    if (entry.kind === 'invalid') quarantineLocked(file, options);
+    else if (expired(entry.record, options)) fs.rmSync(file, { force: true });
+    else keep.push({ file, record: entry.record });
+  }
+  keep.sort((a, b) => a.record.queuedAt.localeCompare(b.record.queuedAt));
   for (const { file } of keep.slice(0, Math.max(0, claimed + keep.length - SUMMARY_PENDING_MAX_ENTRIES))) {
     fs.rmSync(file, { force: true });
   }
@@ -233,14 +279,20 @@ export function claimPendingSummary(sessionId: string, options: SummaryPendingOp
   return withQueueLock(options, (dir) => {
     const queuePath = path.join(dir, queueFileName(sessionId));
     if (!fs.existsSync(queuePath)) return null;
-    const claimPath = `${queuePath}${CLAIM_MARKER}${options.pid ?? process.pid}-${nowMs(options)}-${randomUUID()}`;
-    fs.renameSync(queuePath, claimPath);
-    const record = readRecord(claimPath);
-    if (!record || expired(record, options)) {
-      fs.rmSync(claimPath, { force: true });
+    // Read before moving: nothing else moves files while the lock is held.
+    const entry = readEntry(queuePath);
+    if (entry.kind === 'unreadable') return null;
+    if (entry.kind === 'invalid') {
+      quarantineLocked(queuePath, options);
       return null;
     }
-    return { sessionId: record.sessionId, record, claimPath, queuePath };
+    if (expired(entry.record, options)) {
+      fs.rmSync(queuePath, { force: true });
+      return null;
+    }
+    const claimPath = `${queuePath}${CLAIM_MARKER}${options.pid ?? process.pid}-${nowMs(options)}-${randomUUID()}`;
+    fs.renameSync(queuePath, claimPath);
+    return { sessionId: entry.record.sessionId, record: entry.record, claimPath, queuePath };
   }) ?? null;
 }
 
