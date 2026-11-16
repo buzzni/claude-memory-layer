@@ -29,6 +29,7 @@
     "release:npm": "bash scripts/release-npm.sh",
     "version": "node scripts/sync-manifest-versions.cjs",
     "smoke:dashboard": "tsx scripts/dashboard-smoke.ts",
+    "smoke:dist": "node scripts/smoke-dist.mjs",
     "check:architecture": "node scripts/check-import-boundaries.mjs",
     "ops:sync-gap:report": "node scripts/report-sync-gap.js",
     "ops:sync-gap:fix": "node scripts/fix-sync-gap.js",
