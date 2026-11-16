@@ -132,3 +132,37 @@ describe('PostToolUseFailure hook', () => {
     expect(stored.payloads).toHaveLength(0);
   });
 });
+
+describe('PostToolUse after sharing its storage path with PostToolUseFailure', () => {
+  afterEach(() => {
+    stored.payloads = [];
+    vi.restoreAllMocks();
+  });
+
+  async function runPostToolUse(body: Record<string, unknown>): Promise<void> {
+    const runtime = await import('../../src/adapters/claude/hooks/hook-runtime.js');
+    vi.spyOn(runtime, 'readStdin').mockResolvedValue(JSON.stringify({ session_id: SESSION, ...body }));
+    const { main } = await import('../../src/adapters/claude/hooks/post-tool-use.js');
+    await main();
+  }
+
+  it('still stores a successful call as successful, with stderr as its error message', async () => {
+    await runPostToolUse({
+      tool_name: 'Bash',
+      tool_input: { command: 'npm test' },
+      tool_response: { stdout: 'tests passed', stderr: 'warning: something deprecated here' }
+    });
+
+    expect(stored.payloads).toHaveLength(1);
+    expect(stored.payloads[0]).toMatchObject({
+      success: true,
+      errorMessage: 'warning: something deprecated here'
+    });
+  });
+
+  it('still drops a short, low-signal Bash output', async () => {
+    await runPostToolUse({ tool_name: 'Bash', tool_input: { command: 'true' }, tool_response: { stdout: 'ok' } });
+
+    expect(stored.payloads).toHaveLength(0);
+  });
+});
