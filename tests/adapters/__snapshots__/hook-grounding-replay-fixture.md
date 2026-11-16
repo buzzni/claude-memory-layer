@@ -27,13 +27,13 @@
 
 ## Change vs. current
 
-| arm | query changed | selection changed |
-|---|---:|---:|
-| current | 0 | 0 |
-| fts-absolute (#121) | 0 | 2 |
-| query-sanitizer (#125) | 3 | 1 |
-| #121 + #125 | 3 | 2 |
-| source-trust filter | 0 | 0 |
+| arm | query changed | selection changed | paired Δ mean overlap (95% CI) |
+|---|---:|---:|---|
+| current | 0 | 0 | n/a |
+| fts-absolute (#121) | 0 | 2 | +0.000 (+0.000..+0.000) |
+| query-sanitizer (#125) | 3 | 1 | +0.000 (+0.000..+0.000) |
+| #121 + #125 | 3 | 2 | +0.000 (+0.000..+0.000) |
+| source-trust filter | 0 | 0 | +0.000 (+0.000..+0.000) |
 
 ## Injected memories by origin
 
