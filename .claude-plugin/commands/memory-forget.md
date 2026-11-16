@@ -34,7 +34,7 @@ Without `--confirm` the command only reports what matches and deletes nothing. W
 
 1. Deletes the matching events and their dependent rows from SQLite
 2. Removes the corresponding vectors from LanceDB
-3. Removes the markdown mirror entries (`--before` removes whole dated mirror files)
+3. Removes the entries from the store's markdown mirror under `~/.claude-code/memory` (`--before` removes whole dated mirror files)
 
 ⚠️ **Note**: Deletion is permanent. Only `--before` runs `VACUUM`; after deleting a single event or session, freed database pages are reused but the file does not shrink until a later vacuum.
 
