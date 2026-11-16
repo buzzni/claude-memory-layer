@@ -118,12 +118,14 @@ describe('PostToolUse capture policy', () => {
 
   it('writes no session, agent or path identifier into the skip row', async () => {
     configure(['Explore']);
-    await runPostToolUse(editInput(EXPLORE));
+    // Identifiers that cannot occur by chance in the row's random id or timestamp.
+    const agent = { agent_id: 'agent-sentinel-qz', agent_type: 'Explore' };
+    await runPostToolUse(editInput(agent));
     const rows = skipRows();
     expect(rows).toHaveLength(1);
     expect(rows[0].session_id).toBeNull();
     const serialized = JSON.stringify(rows);
-    for (const identifier of ['session-1', EXPLORE.agent_id, EXPLORE.agent_type, 'toolu_1', home]) {
+    for (const identifier of ['session-1', agent.agent_id, agent.agent_type, 'toolu_1', home]) {
       expect(serialized).not.toContain(identifier);
     }
   });
