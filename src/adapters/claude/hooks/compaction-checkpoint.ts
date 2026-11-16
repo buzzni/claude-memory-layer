@@ -18,12 +18,11 @@ import * as fs from 'fs';
 import * as path from 'path';
 import Database from 'better-sqlite3';
 import { CheckpointRepository } from '../../../core/operations/checkpoint-repository.js';
-import { applyPrivacyFilter } from '../../../core/privacy/index.js';
 import { getProjectStoragePath, hashProjectPath } from '../../../core/registry/project-path.js';
 import { singleLineRecallText } from '../../../core/recall-sanitizer.js';
 import { notActiveQuarantinedSql } from '../../../core/sqlite-event-store.js';
 import { sqliteAll, type SQLiteDatabase } from '../../../core/sqlite-wrapper.js';
-import type { Config } from '../../../core/types.js';
+import { privateSafeText } from './stored-text-privacy.js';
 
 const CHECKPOINT_KIND = 'pre_compact';
 const CHECKPOINT_ACTOR = 'claude-hook:pre-compact';
@@ -54,21 +53,6 @@ export const COMPACTION_CHECKPOINT_MAX_FUTURE_SKEW_MS = 60 * 1000;
 
 const EDIT_TOOLS = ['Write', 'Edit', 'MultiEdit', 'NotebookEdit'];
 
-/** Rows stored before prompt filtering still carry private tags; every format is removed. */
-const CHECKPOINT_PRIVACY_CONFIG: Config['privacy'] = {
-  excludePatterns: ['password', 'secret', 'api_key', 'token', 'bearer'],
-  anonymize: false,
-  privateTags: {
-    enabled: true,
-    // Not '[PRIVATE]': that is also the bracket format's opening tag.
-    marker: '[REDACTED]',
-    preserveLineCount: false,
-    supportedFormats: ['xml', 'bracket', 'comment']
-  }
-};
-/** An opening tag left after filtering: unclosed, or cut off by SOURCE_CHARS. */
-const PRIVATE_TAG_OPENING = /<private>|\[private\]|<!--\s*private\s*-->/i;
-
 export interface CompactionCheckpoint {
   trigger: string;
   createdAt: Date;
@@ -90,13 +74,6 @@ function storeDbPath(cwd: string): string {
 
 function openStore(dbPath: string, readonly: boolean): SQLiteDatabase {
   return new Database(dbPath, { readonly, fileMustExist: true, timeout: DB_BUSY_TIMEOUT_MS });
-}
-
-/** Private sections removed, then anything from an opening tag left without its end. */
-function privateSafeText(text: string): string {
-  const filtered = applyPrivacyFilter(text, CHECKPOINT_PRIVACY_CONFIG).content;
-  const opening = filtered.search(PRIVATE_TAG_OPENING);
-  return opening === -1 ? filtered : `${filtered.slice(0, opening)}[REDACTED]`;
 }
 
 function clip(text: string, limit: number): string {
