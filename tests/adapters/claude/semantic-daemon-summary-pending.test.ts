@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   generate: vi.fn(),
   acquire: vi.fn(),
+  storeFailsFor: new Set<string>(),
   summarized: [] as string[]
 }));
 vi.mock('../../../src/services/memory-service.js', () => ({
@@ -17,7 +18,10 @@ vi.mock('../../../src/services/memory-service.js', () => ({
     async shutdown() {}
     async generateLlmSessionSummary(sessionId: string) {
       mocks.summarized.push(sessionId);
-      return Boolean(await this.options.llmSummaryGenerator([]));
+      const summary = await this.options.llmSummaryGenerator([]);
+      // Mirrors MemoryIngestService: a failed append throws instead of returning true.
+      if (summary && mocks.storeFailsFor.has(sessionId)) throw new Error('session summary could not be stored: SQLITE_FULL');
+      return Boolean(summary);
     }
   }
 }));
@@ -67,6 +71,7 @@ beforeEach(() => {
   mocks.generate.mockReset();
   mocks.acquire.mockReset().mockReturnValue({ acquired: true });
   mocks.summarized.length = 0;
+  mocks.storeFailsFor.clear();
 });
 
 afterEach(() => {
@@ -132,6 +137,19 @@ describe('semantic daemon and the provider circuit breaker', () => {
     mocks.generate
       .mockResolvedValueOnce({ text: '- ok', metadata: {} })
       .mockRejectedValue(new CliProviderError('timed out', 'provider-timeout'));
+
+    await summarize(daemon, 'fresh');
+
+    await vi.waitFor(() => expect(mocks.summarized).toEqual(['fresh', 'kept-1']));
+    await settled(pending);
+    expect(pending.listPendingSummaries()).toMatchObject([{ sessionId: 'kept-1', attempts: 1 }]);
+  });
+
+  it('keeps a kept session whose summary could not be stored (review case: SQLITE_FULL)', async () => {
+    const { daemon, pending } = await loadModules();
+    pending.savePendingSummary('kept-1');
+    mocks.generate.mockResolvedValue({ text: '- ok', metadata: {} });
+    mocks.storeFailsFor.add('kept-1');
 
     await summarize(daemon, 'fresh');
 

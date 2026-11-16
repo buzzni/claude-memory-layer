@@ -373,6 +373,28 @@ describe('MemoryIngestService LLM session summary', () => {
     expect(appended[0].content).toBe('- 결정: publish 설정 추가');
   });
 
+  it('fails instead of reporting success when the summary could not be stored', async () => {
+    // The store reports write failures (disk full, locked) as a result, not
+    // an exception; a caller that took `true` here dropped the retry.
+    const { service } = createService({
+      eventsBySession: { s: sessionEvents },
+      appendResult: { success: false, error: 'SQLITE_FULL' },
+      llmSummaryGenerator: async () => ({ text: '- 결정: x', metadata: { generated: 'llm' } })
+    });
+
+    await expect(service.generateLlmSessionSummary('s')).rejects.toThrow(/could not be stored: SQLITE_FULL/);
+  });
+
+  it('counts an already-stored duplicate summary as stored', async () => {
+    const { service } = createService({
+      eventsBySession: { s: sessionEvents },
+      appendResult: { success: true, eventId: 'existing', isDuplicate: true },
+      llmSummaryGenerator: async () => ({ text: '- 결정: x', metadata: { generated: 'llm' } })
+    });
+
+    await expect(service.generateLlmSessionSummary('s')).resolves.toBe(true);
+  });
+
   it('stores nothing when the session holds no durable content', async () => {
     const { service, appended } = createService({
       eventsBySession: { s: sessionEvents },

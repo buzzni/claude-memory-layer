@@ -256,7 +256,13 @@ export class MemoryIngestService {
     );
     if (!summary) return false;
 
-    await this.storeSessionSummary(sessionId, summary.text, summary.metadata);
+    // The store reports write failures as a result, not an exception; true
+    // must mean the summary is on disk (or already was), because callers
+    // treat it as done and stop retrying.
+    const stored = await this.storeSessionSummary(sessionId, summary.text, summary.metadata);
+    if (!stored.success) {
+      throw new Error(`session summary could not be stored: ${stored.error}`);
+    }
     return true;
   }
 
