@@ -29,15 +29,23 @@ describe('release tarball guard', () => {
     expect(result.stderr).toContain('LICENSE');
   });
 
-  it('passes when the tarball carries LICENSE and nothing forbidden', () => {
-    const result = runTarballGuard(['LICENSE', 'package.json', 'README.md', 'dist/cli/index.js']);
+  it.each(['README.md', 'README.ko.md'])('fails when %s would be missing from the published tarball', (readme) => {
+    const files = ['LICENSE', 'README.md', 'README.ko.md', 'package.json', 'dist/cli/index.js'];
+    const result = runTarballGuard(files.filter((file) => file !== readme));
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(readme);
+  });
+
+  it('passes when the tarball carries the required files and nothing forbidden', () => {
+    const result = runTarballGuard(['LICENSE', 'package.json', 'README.md', 'README.ko.md', 'dist/cli/index.js']);
 
     expect(result.status, result.stderr).toBe(0);
     expect(JSON.parse(result.stdout)).toMatchObject({ check: 'tarball', missing: [], suspicious: [] });
   });
 
-  it('still fails on forbidden files when LICENSE is present', () => {
-    const result = runTarballGuard(['LICENSE', 'package.json', 'src/index.ts']);
+  it('still fails on forbidden files when the required files are present', () => {
+    const result = runTarballGuard(['LICENSE', 'README.md', 'README.ko.md', 'package.json', 'src/index.ts']);
 
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('forbidden');
