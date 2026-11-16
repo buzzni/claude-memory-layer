@@ -238,8 +238,18 @@ function validateMemContextPackPerspectiveArgs(args: Record<string, unknown>): v
   requiredOperationString(args.targetActorId ?? args.observedActorId, 'targetActorId');
 }
 
+type McpHandlerDomainName = 'compatibility' | 'context-search' | 'source-import' | 'operations' | 'graph-lessons' | 'governance-assets' | 'perspective-shared';
+
 export async function handleToolCallInDomain(
-  _domain: 'compatibility' | 'context-search' | 'source-import' | 'operations' | 'graph-lessons' | 'governance-assets' | 'perspective-shared',
+  domain: McpHandlerDomainName,
+  name: string,
+  rawArgs: Record<string, unknown>
+): Promise<ToolResult> {
+  return dispatchToolCall(domain, name, rawArgs);
+}
+
+async function dispatchToolCall(
+  _domain: McpHandlerDomainName,
   name: string,
   rawArgs: Record<string, unknown>
 ): Promise<ToolResult> {
