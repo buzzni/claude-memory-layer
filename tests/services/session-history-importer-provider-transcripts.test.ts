@@ -59,6 +59,22 @@ describe('SessionHistoryImporter.importAll provider transcripts', () => {
     expect(result.totalSessions).toBe(1);
   });
 
+  it('never resolves a project import or listing to a provider scratch project', async () => {
+    // A project with no transcripts of its own whose basename appears in the
+    // scratch directory name used to fuzzy-match the scratch project.
+    writeTranscript('-private-var-folders-bh-abc123-T-cml-summary', 'summary-run');
+
+    const importer = new SessionHistoryImporter({} as MemoryService);
+    const importSessionFile = vi.spyOn(importer, 'importSessionFile');
+
+    const result = await importer.importProject('/Users/dev/summary');
+
+    expect(importSessionFile).not.toHaveBeenCalled();
+    expect(result.totalSessions).toBe(0);
+    expect(await importer.listAvailableSessions('/Users/dev/summary')).toEqual([]);
+    expect(await importer.listAvailableSessions()).toEqual([]);
+  });
+
   it('still imports a project whose name only contains a scratch directory name', async () => {
     const userSession = writeTranscript('-Users-dev-cml-summary-notes', 'user-session');
 

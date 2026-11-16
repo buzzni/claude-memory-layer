@@ -552,11 +552,7 @@ export class SessionHistoryImporter {
 
     // Find all project directories and session files
     onProgress?.({ phase: 'scan', message: 'Scanning all projects...' });
-    // This tool's own summary/lesson provider runs are not sessions (#230).
-    const projectDirs = fs.readdirSync(projectsDir)
-      .filter(name => !isProviderScratchProjectDir(name))
-      .map(name => path.join(projectsDir, name))
-      .filter(p => fs.statSync(p).isDirectory());
+    const projectDirs = this.listProjectDirs(projectsDir);
 
     // Collect all session files across all projects
     const allSessionFiles: string[] = [];
@@ -615,9 +611,7 @@ export class SessionHistoryImporter {
       return [];
     }
 
-    const projectDirs = fs.readdirSync(projectsDir)
-      .map(name => path.join(projectsDir, name))
-      .filter(p => fs.statSync(p).isDirectory());
+    const projectDirs = this.listProjectDirs(projectsDir);
 
     const normalizedPath = projectPath.replace(/\+/g, '/').replace(/\/$/, '');
     const normalizeToken = (value: string) => value
@@ -660,6 +654,17 @@ export class SessionHistoryImporter {
     return scored
       .filter(x => x.score >= threshold)
       .map(x => x.dir);
+  }
+
+  /**
+   * Project directories that hold Claude Code sessions. This tool's own
+   * summary/lesson provider runs are not sessions (#230).
+   */
+  private listProjectDirs(projectsDir: string): string[] {
+    return fs.readdirSync(projectsDir)
+      .filter(name => !isProviderScratchProjectDir(name))
+      .map(name => path.join(projectsDir, name))
+      .filter(p => fs.statSync(p).isDirectory());
   }
 
   /**
@@ -725,9 +730,7 @@ export class SessionHistoryImporter {
     } else {
       const projectsDir = path.join(this.claudeDir, 'projects');
       if (fs.existsSync(projectsDir)) {
-        projectDirs = fs.readdirSync(projectsDir)
-          .map(name => path.join(projectsDir, name))
-          .filter(p => fs.statSync(p).isDirectory());
+        projectDirs = this.listProjectDirs(projectsDir);
       }
     }
 
