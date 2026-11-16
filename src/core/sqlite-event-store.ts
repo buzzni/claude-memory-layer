@@ -23,6 +23,7 @@ import {
 } from './types.js';
 import { makeCanonicalKey, makeDedupeKey } from './canonical-key.js';
 import { generateCitationId } from './citation-generator.js';
+import { buildFtsMatchQuery } from './fts-match-query.js';
 import * as nodePath from 'path';
 import { hashProjectPath, hashProjectPathIgnoringMarker } from './registry/project-path.js';
 import {
@@ -4335,12 +4336,7 @@ export class SQLiteEventStore {
     const toolObservationSql = includeToolObservations ? '' : `AND e.event_type != 'tool_observation'`;
 
     // Escape special FTS5 characters and prepare search terms
-    const searchTerms = query
-      .replace(/['"(){}[\]^~*?:\\/-]/g, ' ')  // Remove special chars
-      .split(/\s+/)
-      .filter(term => term.length > 1)  // Filter short terms
-      .map(term => `"${term}"*`)  // Prefix matching
-      .join(' OR ');
+    const searchTerms = buildFtsMatchQuery(query);
 
     if (!searchTerms) {
       return [];
@@ -4396,12 +4392,7 @@ export class SQLiteEventStore {
     limit: number = 10
   ): Promise<Array<{ event: MemoryEvent; rank: number; level: string; accessCount: number }>> {
     await this.initialize();
-    const searchTerms = query
-      .replace(/['"(){}[\]^~*?:\\/-]/g, ' ')
-      .split(/\s+/)
-      .filter(term => term.length > 1)
-      .map(term => `"${term}"*`)
-      .join(' OR ');
+    const searchTerms = buildFtsMatchQuery(query);
     if (!searchTerms) return [];
 
     try {
