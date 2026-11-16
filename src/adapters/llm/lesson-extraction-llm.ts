@@ -21,6 +21,7 @@
 import {
   CliProviderError,
   classifyCliProviderFailure,
+  LESSON_SCRATCH_DIR_NAME,
   resolveCliModel,
   resolveCliTimeoutMs,
   runCliProvider,
@@ -281,7 +282,7 @@ export async function extractLessonWithLlm(
     model,
     prompt: buildLessonPrompt(source),
     timeoutMs,
-    scratchDirName: 'cml-lesson',
+    scratchDirName: LESSON_SCRATCH_DIR_NAME,
     label: 'lesson provider'
   });
   return resolveLessonVerdict(raw);

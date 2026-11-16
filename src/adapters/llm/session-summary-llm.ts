@@ -16,6 +16,7 @@ import {
   resolveCliModel,
   resolveCliTimeoutMs,
   runCliProvider,
+  SUMMARY_SCRATCH_DIR_NAME,
   type CliProviderError,
   type CliProviderName
 } from './cli-provider.js';
@@ -159,7 +160,7 @@ export async function generateLlmSessionSummary(
     model,
     prompt,
     timeoutMs,
-    scratchDirName: 'cml-summary',
+    scratchDirName: SUMMARY_SCRATCH_DIR_NAME,
     label: 'summary provider'
   });
   const text = normalizeSummaryOutput(raw);

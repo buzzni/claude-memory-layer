@@ -102,6 +102,22 @@ export function buildCliArgs(provider: CliProviderName, model: string | null): s
   return ['-p', '--setting-sources', 'project', ...modelArgs];
 }
 
+export const SUMMARY_SCRATCH_DIR_NAME = 'cml-summary';
+export const LESSON_SCRATCH_DIR_NAME = 'cml-lesson';
+
+/**
+ * Claude Code records each `claude -p` provider run under
+ * ~/.claude/projects/<cwd with every non-alphanumeric char as '-'>/, so the
+ * scratch cwd's project directory ends in `-<scratch dir name>`. Matched by
+ * suffix because the temp dir differs by platform, symlink resolution
+ * (/var → /private/var) and TMPDIR. Those transcripts hold other sessions'
+ * content and must never be imported as sessions of their own (#230).
+ */
+export function isProviderScratchProjectDir(projectDirName: string): boolean {
+  return [SUMMARY_SCRATCH_DIR_NAME, LESSON_SCRATCH_DIR_NAME]
+    .some((scratchDirName) => projectDirName.endsWith(`-${scratchDirName}`));
+}
+
 /**
  * A scratch cwd keeps project-level hooks and CLAUDE.md out of the child run.
  * `--setting-sources project` alone would still load them when the child

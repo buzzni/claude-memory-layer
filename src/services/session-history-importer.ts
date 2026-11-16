@@ -17,6 +17,7 @@ import { mergeAgentResponseBlocks, truncateAgentResponse } from './turn-bufferin
 import { planPromptStorage, promptClassifierMetadata, redactPromptForStorage } from '../core/prompt-normalizer.js';
 import { isHarnessBoilerplate } from '../core/harness-boilerplate.js';
 import { reconcileSessionTranscript } from '../adapters/claude/hooks/session-end-reconcile.js';
+import { isProviderScratchProjectDir } from '../adapters/llm/cli-provider.js';
 import type { TurnTrigger } from '../core/turn-state.js';
 
 export type ProgressEvent =
@@ -551,7 +552,9 @@ export class SessionHistoryImporter {
 
     // Find all project directories and session files
     onProgress?.({ phase: 'scan', message: 'Scanning all projects...' });
+    // This tool's own summary/lesson provider runs are not sessions (#230).
     const projectDirs = fs.readdirSync(projectsDir)
+      .filter(name => !isProviderScratchProjectDir(name))
       .map(name => path.join(projectsDir, name))
       .filter(p => fs.statSync(p).isDirectory());
 
