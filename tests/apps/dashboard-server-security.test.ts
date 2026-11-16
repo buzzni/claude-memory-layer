@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const serveMock = vi.hoisted(() => vi.fn(() => ({ close: vi.fn() })));
 
@@ -7,6 +7,14 @@ vi.mock('@hono/node-server', () => ({
 }));
 
 const serverModule = await import('../../src/apps/server/index.js');
+
+// In-process requests carry no Host header unless one is set; the dashboard
+// rejects requests whose Host is not on its allow-list (default port 37777).
+const LOCAL_HOST = 'localhost:37777';
+
+function withHost(init: RequestInit = {}, host = LOCAL_HOST): RequestInit {
+  return { ...init, headers: { Host: host, ...(init.headers as Record<string, string> | undefined) } };
+}
 
 describe('dashboard server bind/auth options', () => {
   beforeEach(() => {
@@ -44,11 +52,11 @@ describe('dashboard server bind/auth options', () => {
   it('requires login before serving dashboard or API when password is configured', async () => {
     const app = serverModule.createDashboardApp({ password: 'pw' });
 
-    const pageRes = await app.request('/');
+    const pageRes = await app.request('/', withHost());
     expect(pageRes.status).toBe(401);
     expect(await pageRes.text()).toContain('Dashboard Login');
 
-    const apiRes = await app.request('/api/projects');
+    const apiRes = await app.request('/api/projects', withHost());
     expect(apiRes.status).toBe(401);
     expect(await apiRes.json()).toEqual({ error: 'Authentication required' });
   });
@@ -57,11 +65,11 @@ describe('dashboard server bind/auth options', () => {
     const password = ['dashboard', 'password', 'sentinel'].join('-');
     const app = serverModule.createDashboardApp({ password });
 
-    const loginRes = await app.request('/api/auth/login', {
+    const loginRes = await app.request('/api/auth/login', withHost({
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ password })
-    });
+    }));
 
     expect(loginRes.status).toBe(200);
     const setCookie = loginRes.headers.get('set-cookie') ?? '';
@@ -70,15 +78,15 @@ describe('dashboard server bind/auth options', () => {
     expect(setCookie).not.toContain(password);
 
     const cookie = setCookie.split(';')[0];
-    const statusRes = await app.request('/api/auth/status', {
+    const statusRes = await app.request('/api/auth/status', withHost({
       headers: { Cookie: cookie }
-    });
+    }));
     expect(statusRes.status).toBe(200);
     expect(await statusRes.json()).toEqual({ enabled: true, authenticated: true });
 
-    const dashboardRes = await app.request('/', {
+    const dashboardRes = await app.request('/', withHost({
       headers: { Cookie: cookie }
-    });
+    }));
     expect(dashboardRes.status).toBe(200);
     expect(await dashboardRes.text()).toContain('Code Memory');
   });
@@ -86,11 +94,11 @@ describe('dashboard server bind/auth options', () => {
   it('does not set a session cookie for an incorrect password', async () => {
     const app = serverModule.createDashboardApp({ password: 'pw' });
 
-    const loginRes = await app.request('/api/auth/login', {
+    const loginRes = await app.request('/api/auth/login', withHost({
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ password: 'wrong' })
-    });
+    }));
 
     expect(loginRes.status).toBe(401);
     expect(loginRes.headers.get('set-cookie')).toBeNull();
@@ -100,14 +108,14 @@ describe('dashboard server bind/auth options', () => {
   it('redirects browser form login back to the dashboard after setting the session cookie', async () => {
     const app = serverModule.createDashboardApp({ password: 'pw' });
 
-    const loginRes = await app.request('/api/auth/login', {
+    const loginRes = await app.request('/api/auth/login', withHost({
       method: 'POST',
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded',
         Accept: 'text/html'
       },
       body: new URLSearchParams({ password: 'pw' }).toString()
-    });
+    }));
 
     expect(loginRes.status).toBe(303);
     expect(loginRes.headers.get('location')).toBe('/');
@@ -117,14 +125,14 @@ describe('dashboard server bind/auth options', () => {
   it('renders the login page again for incorrect browser form passwords', async () => {
     const app = serverModule.createDashboardApp({ password: 'pw' });
 
-    const loginRes = await app.request('/api/auth/login', {
+    const loginRes = await app.request('/api/auth/login', withHost({
       method: 'POST',
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded',
         Accept: 'text/html'
       },
       body: new URLSearchParams({ password: 'wrong' }).toString()
-    });
+    }));
 
     expect(loginRes.status).toBe(401);
     expect(await loginRes.text()).toContain('Invalid password');
@@ -147,11 +155,11 @@ describe('dashboard server bind/auth options', () => {
   it('blocks cross-origin state-changing API requests by default', async () => {
     const app = serverModule.createDashboardApp();
 
-    const res = await app.request('/api/auth/login', {
+    const res = await app.request('/api/auth/login', withHost({
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Origin: 'https://evil.example' },
       body: JSON.stringify({})
-    });
+    }));
 
     expect(res.status).toBe(403);
     expect(await res.json()).toEqual({ error: 'Cross-origin request blocked' });
@@ -160,27 +168,27 @@ describe('dashboard server bind/auth options', () => {
   it('allows same-origin and non-browser state-changing API requests', async () => {
     const app = serverModule.createDashboardApp();
 
-    const sameOrigin = await app.request('/api/auth/login', {
+    const sameOrigin = await app.request('/api/auth/login', withHost({
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Origin: 'http://localhost' },
       body: JSON.stringify({})
-    });
+    }));
     expect(sameOrigin.status).not.toBe(403);
 
-    const noOrigin = await app.request('/api/auth/login', {
+    const noOrigin = await app.request('/api/auth/login', withHost({
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({})
-    });
+    }));
     expect(noOrigin.status).not.toBe(403);
   });
 
   it('does not emit a wildcard CORS header by default (same-origin lockdown)', async () => {
     const app = serverModule.createDashboardApp();
 
-    const res = await app.request('/health', {
+    const res = await app.request('/health', withHost({
       headers: { Origin: 'https://evil.example' }
-    });
+    }));
 
     expect(res.headers.get('access-control-allow-origin')).toBeNull();
   });
@@ -188,14 +196,14 @@ describe('dashboard server bind/auth options', () => {
   it('emits CORS headers only for an explicitly allowed origin', async () => {
     const app = serverModule.createDashboardApp({ allowedOrigins: ['https://trusted.example'] });
 
-    const allowed = await app.request('/health', {
+    const allowed = await app.request('/health', withHost({
       headers: { Origin: 'https://trusted.example' }
-    });
+    }));
     expect(allowed.headers.get('access-control-allow-origin')).toBe('https://trusted.example');
 
-    const disallowed = await app.request('/health', {
+    const disallowed = await app.request('/health', withHost({
       headers: { Origin: 'https://evil.example' }
-    });
+    }));
     expect(disallowed.headers.get('access-control-allow-origin')).not.toBe('https://evil.example');
   });
 });
