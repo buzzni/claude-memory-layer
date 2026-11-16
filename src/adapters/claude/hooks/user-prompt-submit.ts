@@ -53,7 +53,7 @@ import {
 } from './prompt-injection-policy.js';
 import { normalizeUserPrompt, promptClassifierMetadata, redactPromptForStorage } from '../../../core/prompt-normalizer.js';
 import { sanitizeRetrievalQuery } from '../../../core/retrieval-query-sanitizer.js';
-import { singleLineRecallText } from '../../../core/recall-sanitizer.js';
+import { indentContinuationLines } from '../../../core/recall-sanitizer.js';
 import type { UserPromptSubmitInput, UserPromptSubmitOutput } from '../../../core/types.js';
 
 // Configuration. All numeric env vars go through readNumberEnv so an invalid
@@ -186,8 +186,9 @@ export function memoryEvidencePreview(memory: { type: string; content: string },
 export function formatMemoryContext(items: Array<{ type: string; content: string; id?: string; memoryLevel?: string }>, query: string): string {
   if (items.length === 0) return '';
   const lines = items.map((m) => {
-    // One memory per line: a recalled heading or bullet cannot pose as framing or a sibling memory.
-    const preview = singleLineRecallText(memoryEvidencePreview(m, query));
+    // Continuation lines stay indented under the item, so a recalled heading or
+    // bullet cannot pose as framing or a sibling memory; code keeps its shape.
+    const preview = indentContinuationLines(memoryEvidencePreview(m, query), '  ');
     const sourceRef = m.id ? ` [${m.type === 'lesson' ? 'lesson' : 'event'}:${m.id}]` : '';
     const level = m.memoryLevel && m.memoryLevel !== 'L0' ? ` ${m.memoryLevel}` : '';
     return `- [${m.type}${level}] ${preview}${sourceRef}`;
