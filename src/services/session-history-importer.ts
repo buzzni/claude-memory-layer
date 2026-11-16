@@ -18,6 +18,7 @@ import { planPromptStorage, promptClassifierMetadata, redactPromptForStorage } f
 import { isHarnessBoilerplate } from '../core/harness-boilerplate.js';
 import { reconcileSessionTranscript } from '../adapters/claude/hooks/session-end-reconcile.js';
 import type { TurnTrigger } from '../core/turn-state.js';
+import type { EventDeletionAuditInput } from '../core/operations/governance-audit.js';
 
 export type ProgressEvent =
   | { phase: 'scan'; message: string }
@@ -35,6 +36,8 @@ export interface ImportOptions {
   sessionLimit?: number;
   skipExisting?: boolean;
   force?: boolean;
+  /** Who ran the import (`cli`, `mcp`), recorded on the audit row a forced reimport's delete writes. */
+  auditActor?: string;
   verbose?: boolean;
   onProgress?: (event: ProgressEvent) => void;
 }
@@ -71,6 +74,21 @@ export interface ClaudeMessage {
  * Filter trivial user inputs that aren't worth storing.
  * Mirrors the shouldStorePrompt() logic from user-prompt-submit.ts.
  */
+/** Audit entry for the delete a forced reimport runs before re-importing a session. */
+export function sessionReimportAudit(
+  sessionId: string,
+  source: 'claude' | 'codex' | 'hermes',
+  options: ImportOptions
+): EventDeletionAuditInput {
+  return {
+    operation: 'session_reimport',
+    actor: options.auditActor ?? 'import',
+    targetType: 'session',
+    targetId: sessionId,
+    beforeJson: { source }
+  };
+}
+
 export function isWorthStoringPrompt(content: string): boolean {
   const trimmed = content.trim();
   if (isHarnessBoilerplate(trimmed)) return false;
@@ -286,7 +304,7 @@ export class SessionHistoryImporter {
         result.errors.push(`Skipped force reimport (no parseable records): ${filePath}`);
         return result;
       }
-      const deleted = await this.memoryService.deleteSessionEvents(sessionId);
+      const deleted = await this.memoryService.deleteSessionEvents(sessionId, sessionReimportAudit(sessionId, 'claude', options));
       if (options.verbose && deleted > 0) {
         console.log(`  Deleted ${deleted} existing events for session ${sessionId}`);
       }

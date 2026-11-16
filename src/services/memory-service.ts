@@ -48,6 +48,7 @@ import type { IngestInterceptor } from '../core/ingest-interceptor.js';
 import type { MemoryIngestService } from '../core/engine/memory-ingest-service.js';
 import type { MemoryQueryService } from '../core/engine/memory-query-service.js';
 import type { CanonicalMemoryInjection } from '../core/operations/canonical-memory-injection-service.js';
+import type { EventDeletionAuditInput } from '../core/operations/governance-audit.js';
 import type {
   RecordReferenceNavigationInput,
   RecordReferenceNavigationResult,
@@ -833,10 +834,11 @@ export class MemoryService {
   }
 
   /**
-   * Delete all events for a session (for force reimport)
+   * Delete all events for a session (for force reimport). `audit` is recorded in the same
+   * transaction as the delete.
    */
-  async deleteSessionEvents(sessionId: string): Promise<number> {
-    return this.queryService.deleteSessionEvents(sessionId);
+  async deleteSessionEvents(sessionId: string, audit?: EventDeletionAuditInput): Promise<number> {
+    return this.queryService.deleteSessionEvents(sessionId, audit);
   }
 
   /** Whether an exact user prompt is stored for this session (append dedupe key). */

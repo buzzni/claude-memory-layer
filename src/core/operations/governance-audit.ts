@@ -24,7 +24,10 @@ export const MEMORY_GOVERNANCE_AUDIT_OPERATIONS = [
   'memory_asset_create',
   'memory_asset_update',
   'memory_asset_bind',
-  'memory_asset_grant_set'
+  'memory_asset_grant_set',
+  'event_delete',
+  'session_reimport',
+  'credential_redact'
 ] as const;
 
 export type MemoryGovernanceAuditOperation = typeof MEMORY_GOVERNANCE_AUDIT_OPERATIONS[number];
@@ -39,6 +42,14 @@ export interface GovernanceAuditEntryInput {
   afterJson?: Record<string, unknown>;
   sourceEventIds?: string[];
 }
+
+/**
+ * Audit entry for a destructive event delete. The event store writes it inside the delete
+ * transaction and fills `afterJson` with the deleted row count, so a delete never commits
+ * without its audit row and nothing is written when nothing was deleted. Carries scope only —
+ * deleted content must never be put here.
+ */
+export type EventDeletionAuditInput = Omit<GovernanceAuditEntryInput, 'afterJson'>;
 
 export interface MemoryGovernanceAuditEntry {
   auditId: string;

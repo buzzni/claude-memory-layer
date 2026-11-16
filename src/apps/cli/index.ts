@@ -1902,8 +1902,12 @@ repairCommand
       try {
         await store.initialize();
         const db = store.getDatabase();
-        const { rowChanges, affectedEventIds } = planSqliteRedaction(db, { apply: !dryRun });
+        // The mirror goes first so the SQLite transaction's audit row can count its files too.
         const fileChanges = planMarkdownRedaction(storagePath, { apply: !dryRun });
+        const { rowChanges, affectedEventIds } = planSqliteRedaction(db, {
+          apply: !dryRun,
+          audit: { actor: 'cli', fileChanges }
+        });
 
         if (!dryRun && affectedEventIds.length > 0) {
           // Lance rows cannot be edited in place, so the stale vectors are
@@ -3125,6 +3129,7 @@ program
       limit: parsePositiveIntegerOption(options.limit, 'limit'),
       sessionLimit: parsePositiveIntegerOption(options.sessionLimit, 'session-limit'),
       force: options.force,
+      auditActor: 'cli',
       verbose: options.verbose,
       onProgress: renderProgress
     };

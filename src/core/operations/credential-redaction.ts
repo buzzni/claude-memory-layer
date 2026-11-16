@@ -20,8 +20,9 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { sqliteAll, sqliteRun, type SQLiteDatabase } from '../sqlite-wrapper.js';
+import { sqliteAll, sqliteRun, sqliteTransaction, type SQLiteDatabase } from '../sqlite-wrapper.js';
 import { applyPrivacyFilter } from '../privacy/filter.js';
+import { writeGovernanceAuditEntrySync } from './governance-audit.js';
 import type { Config } from '../types.js';
 
 const REDACTION_PRIVACY_CONFIG: Config['privacy'] = {
@@ -96,10 +97,48 @@ function columnExists(db: SQLiteDatabase, table: string, column: string): boolea
 /**
  * Scan SQLite for values the privacy filter would change, and optionally write
  * the redacted form back.
+ *
+ * With `audit`, an apply writes one governance audit row in the same transaction
+ * as the updates whenever anything (rows here, or the mirror files the caller
+ * already redacted) changed. The row holds counts and event ids only — never a
+ * secret or the text it was replaced in.
  */
 export function planSqliteRedaction(
   db: SQLiteDatabase,
-  options: { apply: boolean }
+  options: { apply: boolean; audit?: { actor: string; fileChanges: RedactionFileChange[] } }
+): { rowChanges: RedactionRowChange[]; affectedEventIds: string[] } {
+  const { audit } = options;
+  if (!options.apply) return scanSqliteRedaction(db, false);
+
+  return sqliteTransaction(db, () => {
+    const plan = scanSqliteRedaction(db, true);
+    if (audit && (plan.rowChanges.length > 0 || audit.fileChanges.length > 0)) {
+      const rowsByColumn: Record<string, number> = {};
+      for (const change of plan.rowChanges) {
+        const key = `${change.table}.${change.column}`;
+        rowsByColumn[key] = (rowsByColumn[key] ?? 0) + 1;
+      }
+      writeGovernanceAuditEntrySync(db, {
+        operation: 'credential_redact',
+        actor: audit.actor,
+        targetType: 'store',
+        targetId: 'redact-credentials',
+        afterJson: {
+          rowsRedacted: plan.rowChanges.length,
+          rowsByColumn,
+          eventsAffected: plan.affectedEventIds.length,
+          mirrorFilesRedacted: audit.fileChanges.length
+        },
+        sourceEventIds: plan.affectedEventIds
+      });
+    }
+    return plan;
+  });
+}
+
+function scanSqliteRedaction(
+  db: SQLiteDatabase,
+  apply: boolean
 ): { rowChanges: RedactionRowChange[]; affectedEventIds: string[] } {
   const rowChanges: RedactionRowChange[] = [];
   const affectedEventIds = new Set<string>();
@@ -132,7 +171,7 @@ export function planSqliteRedaction(
         });
         if (target.table === 'events') affectedEventIds.add(rowId);
 
-        if (options.apply) {
+        if (apply) {
           sqliteRun(
             db,
             `UPDATE ${target.table} SET ${column} = ? WHERE ${target.idColumn} = ?`,

@@ -13,7 +13,7 @@ import * as readline from 'readline';
 import { createHash, randomUUID } from 'crypto';
 import { MemoryService } from './memory-service.js';
 import { registerTerminalSession } from '../core/registry/session-registry.js';
-import type { ImportOptions, ImportResult } from './session-history-importer.js';
+import { sessionReimportAudit, type ImportOptions, type ImportResult } from './session-history-importer.js';
 import { mergeAgentResponseBlocks, truncateAgentResponse } from './turn-buffering.js';
 import { planPromptStorage, promptClassifierMetadata, redactPromptForStorage } from '../core/prompt-normalizer.js';
 import type { TurnTrigger } from '../core/turn-state.js';
@@ -839,7 +839,7 @@ export class CodexSessionHistoryImporter {
       })
       : false;
     if (options.force && !hasHostManagedRows) {
-      const deleted = await this.memoryService.deleteSessionEvents(sessionId);
+      const deleted = await this.memoryService.deleteSessionEvents(sessionId, sessionReimportAudit(sessionId, 'codex', options));
       if (options.verbose && deleted > 0) {
         console.log(`  Deleted ${deleted} existing events for session ${sessionId}`);
       }
