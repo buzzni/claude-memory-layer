@@ -47,9 +47,11 @@ export class CliProviderError extends Error {
 /**
  * Quota, usage-limit and rate-limit wording from both CLIs. Overload (HTTP
  * 529) is deliberately absent: it clears on its own within seconds, while
- * these keep failing until a quota window resets.
+ * these keep failing until a quota window resets. A bare "limit reached" is
+ * absent too: a per-input limit (context length) says nothing about the next
+ * call.
  */
-const RATE_LIMIT_PATTERN = /rate[ _-]?limit|usage limit|hit your (?:usage )?limit|limit reached|quota|too many requests|\b429\b|credit balance/;
+const RATE_LIMIT_PATTERN = /rate[ _-]?limit|usage limit|hit your (?:usage )?limit|(?:\d+-hour|hourly|daily|weekly) limit|quota|too many requests|\b429\b|credit balance/;
 
 export function classifyCliProviderFailure(detail: string, label: string): CliProviderError {
   const lowered = detail.toLowerCase();

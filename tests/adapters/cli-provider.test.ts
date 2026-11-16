@@ -89,11 +89,15 @@ describe('classifyCliProviderFailure', () => {
     ['Not logged in · Please run /login', 'provider-auth'],
     ['Claude AI usage limit reached|1767225600', 'provider-rate-limit'],
     ["You've hit your limit · resets 5pm", 'provider-rate-limit'],
+    ['5-hour limit reached ∙ resets 3pm', 'provider-rate-limit'],
+    ['Weekly limit reached ∙ resets Oct 6, 9am', 'provider-rate-limit'],
     ['API Error: 429 {"type":"error","error":{"type":"rate_limit_error"}}', 'provider-rate-limit'],
     ['Credit balance is too low', 'provider-rate-limit'],
     ['stream error: unexpected status 429 Too Many Requests', 'provider-rate-limit'],
     // Overload is the provider's problem for a moment, not the account's.
     ['API Error: 529 {"type":"error","error":{"type":"overloaded_error"}}', 'provider-error'],
+    // Limits of one input are not the account's quota: the next input may pass.
+    ['Context limit reached for this conversation', 'provider-error'],
     ['exit code 1', 'provider-error']
   ])('classifies %s as %s', (detail, code) => {
     expect(classifyCliProviderFailure(detail, 'test provider').code).toBe(code);
