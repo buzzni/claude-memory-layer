@@ -322,10 +322,12 @@ let drainingPendingSummaries = false;
  * Summarize the sessions the open circuit breaker skipped. Runs once a
  * provider call has been answered again, one drain at a time.
  *
- * Invariant: a kept session leaves the queue only when its run reports done.
- * Each one is claimed before its run and either completed or released back
- * (deferred and failed runs alike, the latter counted toward the attempt
- * limit). A daemon that dies mid-run leaves a claim the next drain takes back.
+ * Invariant: a kept summary does not disappear before it is done (stored and
+ * the store confirmed it, or nothing was left to store). The only exceptions
+ * are the stated bounds: 7 days, 100 entries in the whole queue, 3 failed
+ * retries. Each session is claimed before its run and then completed (done)
+ * or released back (deferred, or failed and counted toward the limit). A
+ * daemon that dies mid-run leaves a claim the next drain takes back.
  */
 async function drainPendingSummaries(): Promise<void> {
   if (drainingPendingSummaries) return;

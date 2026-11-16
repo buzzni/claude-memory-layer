@@ -26,10 +26,12 @@ vi.mock('../../../src/services/memory-service.js', () => ({
   }
 }));
 vi.mock('../../../src/core/registry/session-registry.js', () => ({ getSessionProject: () => undefined }));
+// Only the per-store summary lock is scripted; the queue's own lock always succeeds here.
 vi.mock('../../../src/core/worker-lock.js', () => ({
   WorkerLock: class {
-    acquire() { return mocks.acquire(); }
-    release() {}
+    constructor(private readonly lockPath: string) {}
+    acquire() { return this.lockPath.endsWith('summary-worker.lock') ? mocks.acquire() : { acquired: true }; }
+    release() { return true; }
   }
 }));
 vi.mock('../../../src/adapters/llm/session-summary-llm.js', () => ({
