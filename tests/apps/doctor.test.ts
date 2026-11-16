@@ -800,20 +800,20 @@ describe('inspectEnabledPlugin', () => {
 });
 
 describe('checkCapturePolicy', () => {
-  it('reports that every hook input is stored by default', () => {
+  it('reports no extra exclusion by default', () => {
     expect(checkCapturePolicy({ skipSubagentTypes: [] })).toEqual({
       name: 'capture-policy',
       status: 'pass',
-      detail: 'stores every hook input (operations.json capturePolicy not set)'
+      detail: 'no extra exclusion by the capture policy (operations.json capturePolicy not set)'
     });
   });
 
   it('names the skipped subagent types and where the skips are counted', () => {
     expect(checkCapturePolicy({ skipSubagentTypes: ['Explore', 'web-fetch'] }).detail).toBe(
-      'tool calls inside subagents of type Explore, web-fetch are not stored; memory-audit counts them'
+      'tool calls inside subagents or in-process teammates of type Explore, web-fetch are not stored; memory-audit counts them'
     );
     expect(checkCapturePolicy({ skipSubagentTypes: ['*'] }).detail).toBe(
-      'tool calls inside any subagent are not stored; memory-audit counts them'
+      'tool calls inside any subagent or in-process teammate are not stored; memory-audit counts them'
     );
   });
 });

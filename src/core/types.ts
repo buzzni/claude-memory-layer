@@ -189,7 +189,7 @@ export const MemoryOperationsConfigSchema = z.object({
   }).prefault({}),
   /** Hook inputs that are not stored (src/adapters/claude/hooks/capture-policy.ts). */
   capturePolicy: z.object({
-    /** Subagent `agent_type` values whose tool calls PostToolUse does not store; '*' matches every subagent. */
+    /** `agent_type` values of subagents and in-process teammates whose tool calls PostToolUse does not store; '*' matches all. */
     skipSubagentTypes: z.array(z.string().trim().min(1)).max(50).default([])
   }).prefault({}),
   perspectiveMemory: z.object({

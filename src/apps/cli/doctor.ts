@@ -570,9 +570,11 @@ export function checkCapturePolicy(policy: CapturePolicy): DoctorCheckResult {
   const name = 'capture-policy';
   const types = policy.skipSubagentTypes;
   if (types.length === 0) {
-    return { name, status: 'pass', detail: 'stores every hook input (operations.json capturePolicy not set)' };
+    return { name, status: 'pass', detail: 'no extra exclusion by the capture policy (operations.json capturePolicy not set)' };
   }
-  const which = types.includes('*') ? 'any subagent' : `subagents of type ${types.join(', ')}`;
+  const which = types.includes('*')
+    ? 'any subagent or in-process teammate'
+    : `subagents or in-process teammates of type ${types.join(', ')}`;
   return { name, status: 'pass', detail: `tool calls inside ${which} are not stored; memory-audit counts them` };
 }
 

@@ -784,7 +784,7 @@ function formatCaptureSkippedMarkdown(stores: MemoryAuditStoreReport[]): string[
   if (rows.length === 0) return [];
   return [
     '', '## Not stored by the capture policy', '',
-    'Hook inputs that operations.json `capturePolicy` kept out of the store (`subagent`: a tool call made inside a skipped subagent type).',
+    'Hook inputs that operations.json `capturePolicy` kept out of the store (`subagent_or_teammate`: a tool call made inside a subagent or in-process teammate of a skipped type).',
     '',
     '| Store | Reason | Not stored |',
     '|---|---|---:|',
