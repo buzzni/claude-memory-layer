@@ -50,6 +50,7 @@ Flags (the full schema is `MemoryOperationsConfigSchema` in `src/core/types.ts`)
 | Flag | Default | Effect |
 |---|---|---|
 | `codifyLite.enabled` | `false` | Records a `source_file` entity and `touched_in` edge for every tool call that touches a file, and turns on a session-file search lane that surfaces past memories linked to files the current session touches. Recommended. |
+| `preEditCheck.enabled` | `false` | Before an edit tool runs, adds lessons, failed tool runs and session summaries about that file ([pre-edit check](HOW_IT_WORKS.md#pre-edit-check)). Adds about 100 ms to each edit while on. |
 | `graphExpansion.enabled` | `false` | Graph-expansion search lane based on entities extracted from the query. Its effect on ranking has not been validated; keep the default. |
 | `retention.enabled`, `lessons.enabled`, `perspectiveMemory.*` | `false` | Retention audit, lessons and perspective memory sub-features, as needed. |
 | `facets.enabled`, `actions.enabled` | `true` | Facets and actions. |

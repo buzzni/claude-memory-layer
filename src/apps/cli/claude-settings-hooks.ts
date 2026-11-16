@@ -18,6 +18,7 @@ export interface ClaudeSettingsHooks {
   Stop?: ClaudeHookEntry[];
   SessionEnd?: ClaudeHookEntry[];
   PreCompact?: ClaudeHookEntry[];
+  PreToolUse?: ClaudeHookEntry[];
   [key: string]: ClaudeHookEntry[] | undefined;
 }
 
@@ -34,7 +35,9 @@ export const REQUIRED_HOOK_FILES = [
   'session-end.js',
   'session-end-worker.js',
   'session-end-handler.js',
-  'pre-compact.js'
+  'pre-compact.js',
+  'pre-tool-use.js',
+  'pre-tool-use-handler.js'
 ] as const;
 
 export const PLUGIN_HOOKS = {
@@ -43,10 +46,20 @@ export const PLUGIN_HOOKS = {
   PostToolUse: 'post-tool-use.js',
   Stop: 'stop.js',
   SessionEnd: 'session-end.js',
-  PreCompact: 'pre-compact.js'
+  PreCompact: 'pre-compact.js',
+  PreToolUse: 'pre-tool-use.js'
 } as const;
 
 export type PluginHookName = keyof typeof PLUGIN_HOOKS;
+
+/**
+ * Matchers for hooks that only apply to some tools; the rest match everything.
+ * Mirrored in .claude-plugin/hooks.json and hook-launcher.cjs (HOOK_MATCHERS).
+ */
+export const PLUGIN_HOOK_MATCHERS: Partial<Record<PluginHookName, string>> = {
+  // The edit tools PRE_TOOL_USE_EDIT_TOOLS lists (src/adapters/claude/hooks/pre-tool-use.ts).
+  PreToolUse: 'Write|Edit|MultiEdit|NotebookEdit'
+};
 
 export type ClaudeHookTargetStatus = 'current' | 'missing' | 'missing-target' | 'different-target' | 'unverifiable';
 
@@ -155,9 +168,9 @@ export function buildHookCommand(pluginPath: string, fileName: string): string {
 }
 
 export function getHooksConfig(pluginPath: string): ClaudeSettingsHooks {
-  const makeHook = (fileName: string): ClaudeHookEntry[] => [
+  const makeHook = (hookName: PluginHookName, fileName: string): ClaudeHookEntry[] => [
     {
-      matcher: '',
+      matcher: PLUGIN_HOOK_MATCHERS[hookName] ?? '',
       hooks: [
         {
           type: 'command',
@@ -168,7 +181,8 @@ export function getHooksConfig(pluginPath: string): ClaudeSettingsHooks {
   ];
 
   return Object.fromEntries(
-    Object.entries(PLUGIN_HOOKS).map(([hookName, fileName]) => [hookName, makeHook(fileName)])
+    (Object.entries(PLUGIN_HOOKS) as Array<[PluginHookName, string]>)
+      .map(([hookName, fileName]) => [hookName, makeHook(hookName, fileName)])
   ) as ClaudeSettingsHooks;
 }
 

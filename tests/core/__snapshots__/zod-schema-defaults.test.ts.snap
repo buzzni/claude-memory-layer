@@ -75,6 +75,9 @@ exports[`core/types schema defaults > fills the same defaults for undefined and 
             "maxSourceObservations": 20,
           },
         },
+        "preEditCheck": {
+          "enabled": false,
+        },
         "retention": {
           "enabled": false,
           "policyVersion": "v1",
@@ -194,6 +197,9 @@ exports[`core/types schema defaults > fills the same defaults for undefined and 
           "maxSourceObservations": 20,
         },
       },
+      "preEditCheck": {
+        "enabled": false,
+      },
       "retention": {
         "enabled": false,
         "policyVersion": "v1",
@@ -237,6 +243,9 @@ exports[`core/types schema defaults > fills the same defaults for undefined and 
           "maxDerivedObservations": 5,
           "maxSourceObservations": 20,
         },
+      },
+      "preEditCheck": {
+        "enabled": false,
       },
       "retention": {
         "enabled": false,

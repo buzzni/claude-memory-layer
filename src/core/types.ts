@@ -175,6 +175,10 @@ export const MemoryOperationsConfigSchema = z.object({
   lessons: z.object({
     enabled: z.boolean().default(false)
   }).prefault({}),
+  /** PreToolUse hook: before an edit, recall what earlier sessions left about the file. */
+  preEditCheck: z.object({
+    enabled: z.boolean().default(false)
+  }).prefault({}),
   perspectiveMemory: z.object({
     enabled: z.boolean().default(false),
     deriver: z.object({

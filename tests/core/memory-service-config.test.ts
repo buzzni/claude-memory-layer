@@ -54,6 +54,7 @@ describe('memory-service-config', () => {
       graphExpansion: { enabled: false, maxHops: 1 },
       codifyLite: { enabled: false },
       lessons: { enabled: false },
+      preEditCheck: { enabled: false },
       perspectiveMemory: {
         enabled: false,
         deriver: { enabled: false, maxEventsPerBatch: 20, maxObserversPerSession: 5 },

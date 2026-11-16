@@ -63,11 +63,11 @@ describe('Claude Code hook settings helpers', () => {
     ]);
   });
 
-  it('registers PreCompact on install, alongside the other five hooks', () => {
+  it('registers PreCompact on install, alongside the other hooks', () => {
     const merged = mergePluginHooksIntoSettings({}, '/plugin/dist');
 
     expect(Object.keys(merged.hooks ?? {}).sort()).toEqual(
-      ['PostToolUse', 'PreCompact', 'SessionEnd', 'SessionStart', 'Stop', 'UserPromptSubmit']
+      ['PostToolUse', 'PreCompact', 'PreToolUse', 'SessionEnd', 'SessionStart', 'Stop', 'UserPromptSubmit']
     );
     expect(merged.hooks?.PreCompact).toEqual([
       { matcher: '', hooks: [{ type: 'command', command: "node '/plugin/dist/hooks/pre-compact.js'" }] }
@@ -84,6 +84,28 @@ describe('Claude Code hook settings helpers', () => {
       ...getHooksConfig('/plugin/dist'),
       PreCompact: [userPreCompact, ...getHooksConfig('/plugin/dist').PreCompact!]
     });
+  });
+
+  it('registers PreToolUse for the edit tools only, the tools the hook handles', async () => {
+    const { PRE_TOOL_USE_EDIT_TOOLS } = await import('../../src/adapters/claude/hooks/pre-tool-use.js');
+    const merged = mergePluginHooksIntoSettings({}, '/plugin/dist');
+
+    expect(merged.hooks?.PreToolUse).toEqual([
+      {
+        matcher: PRE_TOOL_USE_EDIT_TOOLS.join('|'),
+        hooks: [{ type: 'command', command: "node '/plugin/dist/hooks/pre-tool-use.js'" }]
+      }
+    ]);
+  });
+
+  it('adds PreToolUse when install runs again over an earlier install, and uninstall removes it', () => {
+    const { PreToolUse: _added, ...earlierHooks } = getHooksConfig('/plugin/dist');
+    const userPreToolUse = { matcher: 'Bash', hooks: [{ type: 'command', command: 'node /other/guard.js' }] };
+
+    const merged = mergePluginHooksIntoSettings({ hooks: { ...earlierHooks, PreToolUse: [userPreToolUse] } }, '/plugin/dist');
+    expect(merged.hooks?.PreToolUse).toEqual([userPreToolUse, ...getHooksConfig('/plugin/dist').PreToolUse!]);
+
+    expect(removePluginHooksFromSettings(merged, '/plugin/dist').hooks).toEqual({ PreToolUse: [userPreToolUse] });
   });
 
   it('uninstall removes PreCompact with the other hooks', () => {
@@ -143,7 +165,7 @@ describe('Claude Code hook settings helpers', () => {
       existsImpl: (target) => { targets.push(target); return true; },
       realpathImpl: (target) => target
     });
-    expect(checks).toHaveLength(6);
+    expect(checks).toHaveLength(7);
     expect(checks.every((check) => check.status === 'current')).toBe(true);
     expect(targets.every((target) => target.startsWith(`${pluginPath}/hooks/`))).toBe(true);
   });
@@ -191,7 +213,7 @@ describe('Claude Code hook settings helpers', () => {
     });
     expect(checks.filter((check) => check.status === 'unverifiable').map((check) => check.hookName))
       .toEqual(['Stop', 'SessionEnd']);
-    expect(checkedTargets).toHaveLength(4);
+    expect(checkedTargets).toHaveLength(5);
   });
 
   it('does not declare unquoted glob or brace expansion targets current', () => {

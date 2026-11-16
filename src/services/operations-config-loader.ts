@@ -17,16 +17,11 @@
  */
 
 import * as fs from 'fs';
-import * as os from 'os';
-import * as path from 'path';
 
 import { MemoryOperationsConfigSchema, type MemoryOperationsConfig } from '../core/types.js';
+import { resolveOperationsConfigPath } from './operations-config-path.js';
 
-export function resolveOperationsConfigPath(): string {
-  const override = process.env.CLAUDE_MEMORY_OPERATIONS_CONFIG_PATH;
-  if (override && override.trim().length > 0) return override.trim();
-  return path.join(os.homedir(), '.claude-code', 'memory', 'operations.json');
-}
+export { resolveOperationsConfigPath };
 
 let cached: { path: string; value: MemoryOperationsConfig | undefined } | null = null;
 

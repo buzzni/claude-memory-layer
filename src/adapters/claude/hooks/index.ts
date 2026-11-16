@@ -2,6 +2,7 @@
 
 export { main as postToolUseMain } from './post-tool-use.js';
 export { main as preCompactMain } from './pre-compact.js';
+export { main as preToolUseMain } from './pre-tool-use.js';
 export { main as sessionEndMain } from './session-end.js';
 export { main as semanticDaemonMain } from './semantic-daemon.js';
 export { main as sessionStartMain } from './session-start.js';
