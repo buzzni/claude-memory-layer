@@ -57,7 +57,7 @@ npm run check:architecture  # import 경계 검사
 
 4. `.github/workflows/publish-npm.yml`이 태그·버전 일치, 기배포 여부, self-dependency, `npm audit --omit=dev`, typecheck·lint·test·build, 아키텍처 경계, 타르볼 내용물을 검사한 뒤 npm에 배포합니다. 배포가 끝나면 그 태그로 GitHub Release를 만듭니다(노트는 직전 `v*` 태그 이후 PR로 자동 생성).
 
-실패한 배포는 태그를 지우지 말고 `workflow_dispatch`로 다시 돌립니다. npm 배포는 성공했는데 Release 생성만 실패했다면, 그 실행에서 **Re-run failed jobs**를 누르세요.
+실패한 배포는 태그를 지우지 말고 `workflow_dispatch`로 다시 돌립니다. npm 배포는 됐는데 Release가 없다면 같은 태그로 `workflow_dispatch`를 돌리세요. publish job은 기배포 검사에서 실패로 끝나지만(이중 배포 방지), Release job은 그 버전이 npm에 있는지 확인한 뒤 Release를 만듭니다. 이미 Release가 있으면 건너뜁니다.
 
 ## Self-dependency 주의
 
