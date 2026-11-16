@@ -46,6 +46,8 @@ const MAX_LESSONS_SCANNED = 500;
 const MAX_LESSONS = 3;
 const MAX_FAILURES = 2;
 const MAX_SESSIONS = 3;
+/** Sessions checked for a summary, newest first; one without a summary does not take a slot. */
+const MAX_SESSIONS_CHECKED = 10;
 const LESSON_CHARS = 160;
 const FAILURE_CHARS = 200;
 const SUMMARY_CHARS = 300;
@@ -243,10 +245,13 @@ function collectItems(db: SQLiteDatabase, request: PreEditMemoryRequest, touches
   for (const touch of touches) {
     if (!lastTouchBySession.has(touch.sessionId)) lastTouchBySession.set(touch.sessionId, touch.at);
   }
-  for (const [sessionId, lastTouch] of [...lastTouchBySession].slice(0, MAX_SESSIONS)) {
+  let sessionItems = 0;
+  for (const [sessionId, lastTouch] of [...lastTouchBySession].slice(0, MAX_SESSIONS_CHECKED)) {
+    if (sessionItems >= MAX_SESSIONS) break;
     const summary = latestSummary(db, sessionId);
     const text = summary ? displayText(summary.content, request.cwd, SUMMARY_CHARS) : '';
     if (!text) continue;
+    sessionItems++;
     items.push({
       key: `session:${sessionId}`,
       line: `- Session that edited it on ${day(lastTouch)}: ${text}${mark(lastTouch)}`

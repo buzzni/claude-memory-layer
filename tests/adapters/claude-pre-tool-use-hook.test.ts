@@ -240,6 +240,19 @@ describe('PreToolUse hook (pre-edit check)', () => {
     expect(other).toContain('Split the parser into modules.');
   });
 
+  it('skips sessions without a summary instead of letting them take the session slots', async () => {
+    const events: SeedEvent[] = [
+      { sessionId: 'session-summarized', eventType: 'tool_observation', content: observation('Edit', file), at: EARLIER },
+      { sessionId: 'session-summarized', eventType: 'session_summary', content: 'The summarized session', at: EARLIER }
+    ];
+    for (let index = 0; index < 3; index++) {
+      events.push({ sessionId: `session-unsummarized-${index}`, eventType: 'tool_observation', content: observation('Edit', file), at: new Date(LATER.getTime() + index * 1000) });
+    }
+    await seed(events);
+
+    expect(contextOf(await runHook(editInput()))).toContain('The summarized session');
+  });
+
   it('leaves out the current session’s own edits and summary', async () => {
     await seed([
       { sessionId: CURRENT, eventType: 'tool_observation', content: observation('Edit', file, { success: false, errorMessage: 'boom' }), at: EARLIER },
