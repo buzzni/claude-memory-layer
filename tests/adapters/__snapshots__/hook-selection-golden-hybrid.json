@@ -50,10 +50,16 @@
   ],
   "turnRequests": [
     [
-      "turn-1"
+      "turn-1",
+      {
+        "sessionId": "past-session"
+      }
     ],
     [
-      "turn-1"
+      "turn-1",
+      {
+        "sessionId": "past-session"
+      }
     ]
   ],
   "accessWrites": [

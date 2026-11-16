@@ -232,8 +232,11 @@ async function expandEpisodeEvidence(
       const targetTurnId = typeof episode?.target.metadata?.turnId === 'string'
         ? episode.target.metadata.turnId
         : undefined;
-      if (seed.episodeSeedAligned && targetTurnId) {
-        const turnEvents = await memoryService.getEventsByTurn(targetTurnId);
+      // A turn id can be shared by two sessions, so the turn is only read
+      // within the target event's own session.
+      const targetSessionId = episode?.target.sessionId;
+      if (seed.episodeSeedAligned && targetTurnId && targetSessionId) {
+        const turnEvents = await memoryService.getEventsByTurn(targetTurnId, { sessionId: targetSessionId });
         for (const event of turnEvents) {
           if (seen.has(event.id) || (event.eventType !== 'agent_response' && event.eventType !== 'session_summary')) continue;
           seen.add(event.id);

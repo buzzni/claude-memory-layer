@@ -132,7 +132,7 @@ describe('UserPromptSubmit selection golden output', () => {
       { event: event('ev-weak', 'agent_response', 'Unrelated note about the dashboard theme colors.'), score: 0.35 }
     ]);
     service.expandDisclosure.mockResolvedValue({
-      target: { metadata: { turnId: 'turn-1' } },
+      target: { sessionId: 'past-session', metadata: { turnId: 'turn-1' } },
       summaries: [],
       surroundingFacts: []
     });
