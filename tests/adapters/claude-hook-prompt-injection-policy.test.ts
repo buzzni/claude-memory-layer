@@ -5,6 +5,7 @@ import type { MemoryEvent } from '../../src/core/types.js';
 import {
   filterHookInjectableMemories,
   getHookInjectionPolicy,
+  rankHookInjectionPool,
   reserveLessonSlot,
   scoreGraduatedEvidence,
   scoreLessonEvidence,
@@ -41,6 +42,23 @@ describe('Claude hook prompt injection policy', () => {
     ]);
     expect(summarizeHookInjectionConfidence(candidates)).toBe('high');
     expect(summarizeHookInjectionConfidence([])).toBe('none');
+  });
+
+  it('exposes the whole eligible pool that the score cliff and budget then cut', () => {
+    const query = 'sqlite fts query latency tail';
+    const candidates: HookMemoryCandidate[] = [
+      { id: 'top', type: 'agent_response', content: 'sqlite fts query latency tail fixed by capping terms', score: 0.9, source: 'semantic' },
+      { id: 'close', type: 'agent_response', content: 'sqlite fts query latency tail measured per store', score: 0.89, source: 'keyword' },
+      { id: 'weak', type: 'agent_response', content: 'sqlite fts query latency', score: 0.3, source: 'semantic' },
+      { id: 'prompt', type: 'user_prompt', content: 'sqlite fts query latency tail again', score: 0.95, source: 'keyword' },
+      { id: 'later', type: 'agent_response', content: 'sqlite fts query latency tail in the daemon', score: 0.75, source: 'semantic' }
+    ];
+    const policy = getHookInjectionPolicy({});
+
+    // The score cliff falls after 'close'; the answerability gate then drops the prompt.
+    expect(filterHookInjectableMemories(candidates, policy, query).map((c) => c.id)).toEqual(['top', 'close']);
+    // The pool keeps 'later' past the cliff, and still leaves out the below-threshold row and the prompt.
+    expect(rankHookInjectionPool(candidates, policy, query).map((c) => c.id)).toEqual(['top', 'close', 'later']);
   });
 
   it('limits injected hook memories by highest confidence rather than first passing candidate', () => {

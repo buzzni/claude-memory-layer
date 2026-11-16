@@ -78,6 +78,19 @@ export function filterHookInjectableMemories(
 }
 
 /**
+ * Every candidate filterHookInjectableMemories could inject for the query,
+ * best first, before the score cliff and the budget. The grounding replay
+ * reorders this pool to compare ranking arms at the same budget.
+ */
+export function rankHookInjectionPool(
+  candidates: HookMemoryCandidate[],
+  policy: HookInjectionPolicy,
+  query: string
+): HookMemoryCandidate[] {
+  return applyAnswerabilityGate(rankHookCandidates(candidates, policy, query).map(({ candidate }) => candidate), query);
+}
+
+/**
  * specs/lesson-recall-hooks R3 — keep one query-covering lesson alive.
  *
  * Lessons score 0.65-0.8 by design (lexical coverage only) while transcript

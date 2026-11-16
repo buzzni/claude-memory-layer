@@ -617,6 +617,8 @@ export interface HookSelectionInput {
 export interface HookSelection {
   minScore: number;
   mergedMemories: HookMemoryCandidate[];
+  /** Lane candidates plus episode evidence, after the source-trust filter: what ranking chose from. */
+  injectionPool: HookMemoryCandidate[];
   injectableMemories: HookMemoryCandidate[];
   semanticCandidateCount: number;
   keywordCandidateCount: number;
@@ -851,6 +853,7 @@ export async function selectHookInjection(
   return {
     minScore,
     mergedMemories,
+    injectionPool: trustedPool,
     injectableMemories,
     semanticCandidateCount,
     keywordCandidateCount,
