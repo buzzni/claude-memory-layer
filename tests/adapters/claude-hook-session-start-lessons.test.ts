@@ -133,7 +133,13 @@ describe('SessionStart lesson index order', () => {
     expect(context).toContain('## Project Runbooks');
     expect(context).not.toContain('## Project Lessons');
     expect([...context.matchAll(/^- (\S+) — /gm)].map((match) => match[1])).toEqual(['middle-lesson']);
-    expect(fixture.service.recordQueryTrace.mock.calls.map((call) => call[0])).toContainEqual(expect.objectContaining({ queryText: '[session-start] runbook index', strategy: 'session-start-lessons', selectedEventIds: ['c'] }));
+    expect(fixture.service.recordQueryTrace.mock.calls.map((call) => call[0])).toContainEqual(expect.objectContaining({
+      queryText: '[session-start] runbook index',
+      strategy: 'session-start-lessons',
+      selectedEventIds: ['c'],
+      // Shown lessons count as derived memories in the origin telemetry.
+      outcomeDiagnostics: expect.objectContaining({ injectedByOrigin: { derived: 1 } })
+    }));
   });
 
   it('keeps the full lesson index on the native path while the project has no runbooks', async () => {

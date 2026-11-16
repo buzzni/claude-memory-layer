@@ -543,7 +543,9 @@ export async function main(options: SessionStartMainOptions = {}): Promise<strin
                 filteredCounts: {},
                 topScore: null,
                 threshold: 0,
-                freshnessState: 'unknown'
+                freshnessState: 'unknown',
+                // Lessons come from the lesson table: always derived.
+                injectedByOrigin: { derived: shownIds.length }
               }
             }).catch(() => undefined);
             deliveredTraceIds.push(lessonTraceId);
