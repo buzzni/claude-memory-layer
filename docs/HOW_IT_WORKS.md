@@ -41,6 +41,7 @@ SQLite is the canonical source of truth and LanceDB is a derived accelerator tha
 | SessionStart | Loads project context for the new session |
 | UserPromptSubmit | Stores the prompt and searches related memories to inject |
 | PostToolUse | Stores tool observations (tool input and output) |
+| PostToolUseFailure | Stores a failed tool call as an unsuccessful tool observation (tool input and the error) |
 | PreCompact | Saves a checkpoint of where the session stood right before Claude Code compacts the context ([below](#compaction-checkpoint)) |
 | Stop | Stores the assistant's response |
 | SessionEnd | Finishes the session (summary and storage) |

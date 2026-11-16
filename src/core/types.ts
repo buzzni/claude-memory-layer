@@ -741,6 +741,22 @@ export interface PostToolUseInput {
   permission_mode: string;
 }
 
+// Claude Code sends a failed tool call here instead of to PostToolUse:
+// no tool_response, the failure arrives as top-level fields.
+export interface PostToolUseFailureInput {
+  session_id: string;
+  hook_event_name: string;
+  tool_name: string;
+  tool_input: Record<string, unknown>;
+  tool_use_id: string;
+  error?: string;
+  is_interrupt?: boolean;
+  duration_ms?: number;
+  cwd: string;
+  transcript_path: string;
+  permission_mode: string;
+}
+
 // ============================================================
 // Tool Observation Types
 // ============================================================

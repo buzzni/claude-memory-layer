@@ -25,7 +25,7 @@
  * import, and PostToolUse runs on every tool call.
  *
  * Usage:
- *   node hook-launcher.cjs <session-start|user-prompt-submit|post-tool-use|stop|session-end|pre-compact>
+ *   node hook-launcher.cjs <session-start|user-prompt-submit|post-tool-use|post-tool-use-failure|stop|session-end|pre-compact>
  */
 
 const fs = require('node:fs');
@@ -40,6 +40,7 @@ const HOOK_EVENTS = {
   'session-start': 'SessionStart',
   'user-prompt-submit': 'UserPromptSubmit',
   'post-tool-use': 'PostToolUse',
+  'post-tool-use-failure': 'PostToolUseFailure',
   stop: 'Stop',
   'session-end': 'SessionEnd',
   'pre-compact': 'PreCompact'

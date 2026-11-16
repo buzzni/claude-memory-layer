@@ -12,7 +12,7 @@ There are two ways to connect it to Claude Code. **Use one of them, not both.**
 | npm package needed | Yes | Yes. The plugin's hooks run the globally installed package |
 | Remove with | `claude-memory-layer uninstall` | `claude plugin uninstall memory-layer@claude-memory-layer` |
 
-Both register the same six hooks: SessionStart, UserPromptSubmit, PostToolUse, PreCompact, Stop and SessionEnd.
+Both register the same seven hooks: SessionStart, UserPromptSubmit, PostToolUse, PostToolUseFailure, PreCompact, Stop and SessionEnd.
 
 ## A. npm global install + `install`
 

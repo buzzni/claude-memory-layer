@@ -1,6 +1,7 @@
 /** Claude Code hook adapter entrypoints and supporting runtime utilities. */
 
 export { main as postToolUseMain } from './post-tool-use.js';
+export { main as postToolUseFailureMain } from './post-tool-use-failure.js';
 export { main as preCompactMain } from './pre-compact.js';
 export { main as sessionEndMain } from './session-end.js';
 export { main as semanticDaemonMain } from './semantic-daemon.js';

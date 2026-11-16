@@ -75,7 +75,7 @@ Claude Code 2.1.275 이상에서는 `/plugin install memory-layer --marketplace 
 - 플러그인만 설치하면 훅이 동작하지 않습니다. 플러그인의 훅은 전역 설치된 npm 패키지를 실행하므로 `npm install -g claude-memory-layer@latest`가 필요합니다. 패키지가 없으면 세션 시작 때 설치 안내 한 줄만 보여 주고 아무것도 하지 않습니다.
 - 플러그인 이름은 npm 패키지 이름(`claude-memory-layer`)과 다른 `memory-layer`입니다. Claude Code가 `claude-`로 시작하는 이름을 예약하기 때문입니다. 플러그인 ID는 `memory-layer@claude-memory-layer`이고, 컴포넌트 이름 앞에는 `memory-layer:`가 붙습니다. 예전에 `--plugin-dir`로 이전 이름을 쓰던 경우 `enabledPlugins` 키와 호출명이 바뀝니다.
 
-**`claude-memory-layer install`과 플러그인 중 하나만 쓰세요.** 둘 다 같은 훅 여섯 개(SessionStart, UserPromptSubmit, PostToolUse, PreCompact, Stop, SessionEnd)를 등록합니다.
+**`claude-memory-layer install`과 플러그인 중 하나만 쓰세요.** 둘 다 같은 훅 일곱 개(SessionStart, UserPromptSubmit, PostToolUse, PostToolUseFailure, PreCompact, Stop, SessionEnd)를 등록합니다.
 
 - 플러그인만 쓰려면: `claude-memory-layer uninstall` (settings.json의 훅 제거)
 - settings.json 방식만 쓰려면: `claude plugin uninstall memory-layer@claude-memory-layer`
@@ -525,6 +525,7 @@ npx claude-memory-layer install
 | **SessionStart** | 세션 시작 시 프로젝트 관련 컨텍스트 로드 |
 | **UserPromptSubmit** | 프롬프트 입력 시 관련 기억 검색 및 저장 |
 | **PostToolUse** | 도구 사용 결과(도구 입력·출력)를 저장 |
+| **PostToolUseFailure** | 실패한 도구 호출(도구 입력·오류)을 실패한 도구 기록으로 저장 |
 | **PreCompact** | 컨텍스트 압축 직전에 세션 체크포인트 저장 (아래 참고) |
 | **Stop** | AI 응답 완료 시 응답 내용 저장 |
 | **SessionEnd** | 세션 종료 시 요약 생성 및 저장 |

@@ -11,7 +11,7 @@ Everything is stored on your machine under `~/.claude-code/memory/`, in a separa
 | What | Captured by | Where |
 |---|---|---|
 | Your prompts and the assistant's responses | Claude Code hooks (UserPromptSubmit, Stop), Codex hooks, history import | `projects/<hash>/events.sqlite` |
-| Tool observations (tool input and output) | Claude Code PostToolUse hook | `projects/<hash>/events.sqlite` |
+| Tool observations (tool input and output; failed calls with their error) | Claude Code PostToolUse and PostToolUseFailure hooks | `projects/<hash>/events.sqlite` |
 | Session summaries | Session hooks (LLM-written by default, see [Privacy](#privacy-and-security)) | `projects/<hash>/events.sqlite` |
 | Compaction checkpoints (where a session stood before Claude Code compacted it) | Claude Code PreCompact hook | `projects/<hash>/events.sqlite` |
 | Facets, actions, checkpoints, lessons, actor cards | CLI and MCP tools | `projects/<hash>/events.sqlite` |
@@ -64,7 +64,7 @@ claude-memory-layer stats
 claude-memory-layer dashboard  # local web dashboard on http://localhost:37777
 ```
 
-After that the hooks work on their own. SessionStart loads project context, UserPromptSubmit searches related memories for each prompt, and UserPromptSubmit, PostToolUse, Stop and SessionEnd store what happened. Before Claude Code compacts the conversation, PreCompact saves a checkpoint of where the session stood, and the SessionStart that follows the compaction puts it back first.
+After that the hooks work on their own. SessionStart loads project context, UserPromptSubmit searches related memories for each prompt, and UserPromptSubmit, PostToolUse, PostToolUseFailure, Stop and SessionEnd store what happened. Before Claude Code compacts the conversation, PreCompact saves a checkpoint of where the session stood, and the SessionStart that follows the compaction puts it back first.
 
 ## Features
 

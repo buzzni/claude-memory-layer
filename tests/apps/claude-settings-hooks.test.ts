@@ -4,6 +4,7 @@ import {
   buildHookCommand,
   getHooksConfig,
   inspectPluginHookTargets,
+  isPluginHookCommand,
   mergePluginHooksIntoSettings,
   removePluginHooksFromSettings,
   type ClaudeSettingsWithHooks
@@ -63,11 +64,11 @@ describe('Claude Code hook settings helpers', () => {
     ]);
   });
 
-  it('registers PreCompact on install, alongside the other five hooks', () => {
+  it('registers PreCompact on install, alongside the other hooks', () => {
     const merged = mergePluginHooksIntoSettings({}, '/plugin/dist');
 
     expect(Object.keys(merged.hooks ?? {}).sort()).toEqual(
-      ['PostToolUse', 'PreCompact', 'SessionEnd', 'SessionStart', 'Stop', 'UserPromptSubmit']
+      ['PostToolUse', 'PostToolUseFailure', 'PreCompact', 'SessionEnd', 'SessionStart', 'Stop', 'UserPromptSubmit']
     );
     expect(merged.hooks?.PreCompact).toEqual([
       { matcher: '', hooks: [{ type: 'command', command: "node '/plugin/dist/hooks/pre-compact.js'" }] }
@@ -84,6 +85,23 @@ describe('Claude Code hook settings helpers', () => {
       ...getHooksConfig('/plugin/dist'),
       PreCompact: [userPreCompact, ...getHooksConfig('/plugin/dist').PreCompact!]
     });
+  });
+
+  it('registers PostToolUseFailure on install, since failed tool calls never reach PostToolUse', () => {
+    const merged = mergePluginHooksIntoSettings({}, '/plugin/dist');
+
+    expect(merged.hooks?.PostToolUseFailure).toEqual([
+      { matcher: '', hooks: [{ type: 'command', command: "node '/plugin/dist/hooks/post-tool-use-failure.js'" }] }
+    ]);
+    expect(isPluginHookCommand("node '/plugin/dist/hooks/post-tool-use-failure.js'", '/plugin/dist')).toBe(true);
+  });
+
+  it('adds PostToolUseFailure when install runs again over an install made before it existed', () => {
+    const { PostToolUseFailure: _added, ...earlierHooks } = getHooksConfig('/plugin/dist');
+
+    const merged = mergePluginHooksIntoSettings({ hooks: earlierHooks }, '/plugin/dist');
+
+    expect(merged.hooks).toEqual(getHooksConfig('/plugin/dist'));
   });
 
   it('uninstall removes PreCompact with the other hooks', () => {
@@ -143,7 +161,7 @@ describe('Claude Code hook settings helpers', () => {
       existsImpl: (target) => { targets.push(target); return true; },
       realpathImpl: (target) => target
     });
-    expect(checks).toHaveLength(6);
+    expect(checks).toHaveLength(7);
     expect(checks.every((check) => check.status === 'current')).toBe(true);
     expect(targets.every((target) => target.startsWith(`${pluginPath}/hooks/`))).toBe(true);
   });
@@ -191,7 +209,7 @@ describe('Claude Code hook settings helpers', () => {
     });
     expect(checks.filter((check) => check.status === 'unverifiable').map((check) => check.hookName))
       .toEqual(['Stop', 'SessionEnd']);
-    expect(checkedTargets).toHaveLength(4);
+    expect(checkedTargets).toHaveLength(5);
   });
 
   it('does not declare unquoted glob or brace expansion targets current', () => {

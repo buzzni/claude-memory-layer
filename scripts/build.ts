@@ -77,6 +77,7 @@ async function build() {
     'session-start',
     'user-prompt-submit',
     'post-tool-use',
+    'post-tool-use-failure',
     'stop',
     // Before session-end: a hook whose worker cannot load this falls back to
     // its own bundled copy, but a half-built dist should not need to.
