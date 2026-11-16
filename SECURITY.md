@@ -32,20 +32,28 @@ Claude Memory Layer는 한 사용자의 머신에서 돌아가는 로컬 도구�
 
 ### 저장 전 마스킹
 
-Claude Code 훅은 사용자 프롬프트, 도구 입력·출력, 어시스턴트 응답을 **저장하기 전에** 프라이버시 필터에 통과시킵니다. 세션 기록 importer도 프롬프트에 같은 필터 설정을 씁니다.
+Claude Code 훅은 저장하기 전에 아래 마스킹을 적용합니다. 어디에 무엇이 적용되는지는 필드마다 다릅니다.
 
-- **`<private>` 태그**: `<private>…</private>`로 감싼 부분은 `[PRIVATE]`로 바뀐 채 저장됩니다. 단, 코드 블록이나 인라인 코드 안에 쓴 `<private>` 태그는 마스킹 지시로 처리하지 않습니다.
-- **자격 증명 마스킹**: 다음 패턴을 `[REDACTED]`로 바꿉니다. `password`·`secret`·`token`·`api_key` 형태의 할당, `--password` 같은 CLI 옵션 값, 사용자 정보가 들어간 URI(`scheme://user:pass@host`), Bearer 토큰, PEM 개인 키, AWS·GitHub·GitLab·Slack·Hugging Face·OpenAI·Anthropic 토큰 접두사. 도구 입력 중 키 이름에 `password`·`secret`·`key`·`token`·`auth`·`credential`이 들어간 문자열 값도 통째로 가립니다.
+| 저장 대상 | `<private>` 태그 | 자격 증명 패턴 |
+| --- | --- | --- |
+| 사용자 프롬프트 (세션 기록 importer 포함) | ✅ | ✅ |
+| 어시스턴트 응답 | ✅ | ✅ |
+| 도구 출력 (PostToolUse) | ✅ | ✅ |
+| 도구 입력 (PostToolUse) | ❌ | ✅ |
+| 도구 stderr (PostToolUse) | ❌ | ❌ 원본 그대로 저장 |
+
+- **`<private>` 태그**: `<private>…</private>`로 감싼 부분은 `[PRIVATE]`로 바뀐 채 저장됩니다. 위 표에서 ✅인 필드에만 적용되고, 코드 블록이나 인라인 코드 안에 쓴 `<private>` 태그는 마스킹 지시로 처리하지 않습니다.
+- **자격 증명 마스킹**: 다음 패턴을 `[REDACTED]`로 바꿉니다. `password`·`secret`·`token`·`api_key` 형태의 할당, `--password` 같은 CLI 옵션 값, 사용자 정보가 들어간 URI(`scheme://user:pass@host`), Bearer 토큰, PEM 개인 키, AWS·GitHub·GitLab·Slack·Hugging Face·OpenAI·Anthropic 토큰 접두사. 도구 입력은 키 이름에 `password`·`secret`·`key`·`token`·`auth`·`credential`이 들어간 문자열 값을 통째로 가립니다.
 - **경로 마스킹**: retention·governance 감사 결과는 절대 경로를 마스킹합니다. Hermes 세션 원본 경로는 공개 source ref에서 가려집니다.
 
-이 필터는 패턴 기반입니다. 패턴에 맞지 않는 비밀값은 그대로 저장될 수 있으니, 민감한 내용은 `<private>`로 감싸세요.
+이 필터는 패턴 기반입니다. 패턴에 맞지 않는 비밀값은 그대로 저장될 수 있습니다. `<private>`는 프롬프트와 응답에 쓴 내용을 가릴 때 쓰세요. 도구에 넘기는 입력이나 도구가 stderr로 내보내는 값은 이 태그로 가려지지 않습니다.
 
 ### Mongo sync
 
-Mongo sync는 기본으로 꺼져 있습니다. `mongo-sync` 명령을 직접 실행하거나, 프로젝트 설정으로 SessionEnd 자동 sync를 켰을 때만 동작합니다.
+Mongo sync는 기본으로 꺼져 있습니다. 훅에서는 실행되지 않고, `mongo-sync` 명령을 직접 실행할 때(1회 또는 `--watch`로 계속)만 동작합니다.
 
-- 설정을 저장하면 연결 URI(자격 증명 포함 가능)가 프로젝트 저장소 디렉터리의 설정 파일에 **평문으로** 들어갑니다. 파일은 권한 `0600`으로 씁니다. 연결 오류 메시지에서는 URI의 비밀값을 가립니다.
-- push는 로컬 이벤트(저장 전 마스킹을 거친 내용)와 이 머신의 hostname, 인스턴스 ID를 MongoDB로 보냅니다.
+- 연결 정보는 `--mongo-uri`/`--mongo-db` 옵션이나 `CLAUDE_MEMORY_MONGO_URI`/`CLAUDE_MEMORY_MONGO_DB` 환경 변수로 받습니다. 연결 오류 메시지에서는 URI의 비밀값을 가립니다.
+- push는 로컬에 저장된 이벤트를 저장된 그대로, 이 머신의 hostname·인스턴스 ID와 함께 MongoDB로 보냅니다. 따라서 위 "저장 전 마스킹" 표에서 마스킹되지 않는 필드(도구 입력의 `<private>`, 도구 stderr)도 그대로 전송됩니다.
 - pull은 다른 머신이 push한 이벤트를 로컬 저장소에 넣습니다. 이 이벤트는 이후 회상 결과로 프롬프트에 주입될 수 있습니다. **그 MongoDB 데이터베이스에 쓰기 권한이 있는 모든 주체를 신뢰 경계 안쪽으로 보세요.** 직접 관리하고 쓰기 권한을 통제하는 데이터베이스만 연결하세요.
 
 ## 기기 밖으로 나가는 데이터
@@ -59,7 +67,7 @@ Mongo sync는 기본으로 꺼져 있습니다. `mongo-sync` 명령을 직접 �
 | LLM 세션 요약 | **기본 켜짐** | 세션의 프롬프트·응답 일부를 로컬 `claude` CLI(또는 `codex`)에 넘깁니다. 그 CLI가 사용자 계정으로 해당 provider에 보냅니다. | `CLAUDE_MEMORY_SUMMARY_MODE=rule` 또는 `off` |
 | LLM lesson 추출 | **기본 켜짐**, `mem-lesson-candidates` MCP 도구를 호출할 때 | 후보 세션의 내용을 같은 방식으로 `claude`/`codex` CLI에 넘깁니다. | `CLAUDE_MEMORY_LESSON_MODE=off` |
 | 대시보드 채팅 | 대시보드에서 채팅을 쓸 때 | 질문과 회상한 메모리를 로컬 `claude` CLI에 넘깁니다. | 채팅을 쓰지 않으면 나가지 않습니다 |
-| Mongo sync | 직접 실행하거나 켰을 때 | 위 "Mongo sync" 참고 | 실행하지 않거나 자동 sync를 끕니다 |
+| Mongo sync | `mongo-sync` 명령을 실행했을 때 | 위 "Mongo sync" 참고 | 실행하지 않으면 나가지 않습니다 |
 | 질의 의도 재작성 | `MEMORY_INTENT_REWRITE_ENABLED=1`이고 API URL을 설정했을 때 | 회상 질의 텍스트를 설정한 URL로 보냅니다. | 기본 꺼짐 |
-| `external-market-context` MCP 도구 | `experimental`/`all` 프로필에서 도구를 호출하고 해당 API 키가 있을 때 | 회사명·종목 코드를 DART·FRED·Finnhub API로 보냅니다. | API 키를 설정하지 않으면 건너뜁니다 |
+| `external-market-context` MCP 도구 | `experimental`/`all` 프로필에서 도구를 호출하고 해당 API 키가 있을 때 | DART에는 `corp_code`(지정한 경우), FRED에는 `series_id`, Finnhub에는 `symbol`을 API 키와 함께 보냅니다. 회사명은 보내지 않고, `corp_code` 없이 받은 DART 공시 목록을 로컬에서 거를 때만 씁니다. | API 키를 설정하지 않으면 건너뜁니다 |
 | 임베딩 모델·백엔드 다운로드 | 설치(postinstall)와 첫 임베딩 때 | 사용자 데이터는 보내지 않습니다. npm 레지스트리와 Hugging Face Hub에서 패키지·모델을 내려받기만 합니다. 임베딩 계산은 로컬에서 합니다. | `CLAUDE_MEMORY_LAYER_SKIP_EMBEDDING_POSTINSTALL=1`로 설치 시 다운로드를 건너뜁니다 |
