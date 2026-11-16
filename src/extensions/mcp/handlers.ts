@@ -111,7 +111,14 @@ import type {
   PerspectiveObservationLevel
 } from '../../core/types.js';
 import { retrieveSemanticMemories } from '../../adapters/claude/hooks/semantic-daemon-client.js';
-import { extractLessonWithLlm, isLlmLessonExtractionEnabled } from '../../adapters/llm/lesson-extraction-llm.js';
+import {
+  extractLessonWithLlm,
+  getLessonProviderName,
+  isLlmLessonExtractionEnabled
+} from '../../adapters/llm/lesson-extraction-llm.js';
+import { CliProviderError } from '../../adapters/llm/cli-provider.js';
+import { CIRCUIT_OPEN_CODE, readProviderCircuitStates } from '../../adapters/llm/provider-circuit-breaker.js';
+import type { LessonExtractionStats } from '../../core/operations/lesson-candidate-service.js';
 import { rankCuratedLessonsHybrid } from './hybrid-lesson-ranking.js';
 import { rankCuratedLessons } from './lesson-ranking.js';
 import { isReadOnlyMcpRuntime, READ_ONLY_MCP_TOOL_NAMES } from './read-only-runtime.js';
@@ -1067,29 +1074,67 @@ async function handleLessonList(context: MemoryOperationContext, args: Record<st
   };
 }
 
+/**
+ * Splits the calls the open provider circuit skipped out of the extraction
+ * stats (the service counts them as attempts that failed) and picks the note.
+ * Distinguish "no patterns exist" from "extraction could not run": an empty
+ * candidate list with failures, circuit skips or budget skips means retry (or
+ * fix the provider), not that the project holds nothing reusable.
+ */
+export function describeLessonExtraction(
+  candidateCount: number,
+  stats: LessonExtractionStats,
+  skippedByCircuit: number,
+  circuit: { reason: string | null; nextProbeAt: string | null } | null
+): { extraction: LessonExtractionStats & { skippedByCircuit: number }; note: string } {
+  const extraction = {
+    ...stats,
+    freshAttempts: stats.freshAttempts - skippedByCircuit,
+    failures: stats.failures - skippedByCircuit,
+    skippedByCircuit
+  };
+  const note = skippedByCircuit > 0
+    ? `The lesson provider circuit is open${circuit?.reason ? ` (${circuit.reason})` : ''}: ${skippedByCircuit} group(s) were skipped `
+      + 'without calling the provider, and nothing was cached. '
+      + `Call again after the next probe${circuit?.nextProbeAt ? ` at ${circuit.nextProbeAt}` : ''}.`
+    : candidateCount === 0 && extraction.failures > 0
+      ? 'Extraction failed for every uncached group (provider unavailable?). This is not evidence that no patterns exist — retry once the lesson provider CLI is reachable.'
+      : stats.skippedNoExtractor > 0
+        ? `LLM lesson extraction is disabled (CLAUDE_MEMORY_LESSON_MODE=off); ${stats.skippedNoExtractor} mined group(s) cannot produce lesson text until it is re-enabled.`
+        : stats.skippedByBudget > 0
+          ? `Read-only detection. ${stats.skippedByBudget} group(s) still await extraction (per-call budget); call again to continue. Review a candidate and call mem-lesson-save to promote it.`
+          : 'Read-only detection. Review a candidate and call mem-lesson-save to promote it into a curated lesson.';
+  return { extraction, note };
+}
+
 async function handleLessonCandidates(context: MemoryOperationContext, args: Record<string, unknown>): Promise<Record<string, unknown>> {
   // With extraction disabled, no extractor is wired at all: an always-null
   // extractor would have its nulls cached as permanent "no lesson" verdicts
   // that keep suppressing the groups after extraction is re-enabled.
   const extractionEnabled = isLlmLessonExtractionEnabled();
+  let skippedByCircuit = 0;
   const result = await new LessonCandidateService(context.db, {
-    lessonExtractor: extractionEnabled ? (source) => extractLessonWithLlm(source) : undefined
+    lessonExtractor: extractionEnabled
+      ? async (source) => {
+          try {
+            return await extractLessonWithLlm(source);
+          } catch (error) {
+            if (error instanceof CliProviderError && error.code === CIRCUIT_OPEN_CODE) skippedByCircuit += 1;
+            throw error;
+          }
+        }
+      : undefined
   }).findCandidates({
     projectHash: context.projectHash,
     minSessions: typeof args.minSessions === 'number' ? args.minSessions : undefined,
     limit: numberArg(args.limit, 25, 1, 100)
   });
-  // Distinguish "no patterns exist" from "extraction could not run": an empty
-  // candidate list with failures or budget skips means retry (or fix the
-  // provider), not that the project holds nothing reusable.
-  const stats = result.extraction;
-  const note = result.candidates.length === 0 && stats.failures > 0
-    ? 'Extraction failed for every uncached group (provider unavailable?). This is not evidence that no patterns exist — retry once the lesson provider CLI is reachable.'
-    : stats.skippedNoExtractor > 0
-      ? `LLM lesson extraction is disabled (CLAUDE_MEMORY_LESSON_MODE=off); ${stats.skippedNoExtractor} mined group(s) cannot produce lesson text until it is re-enabled.`
-      : stats.skippedByBudget > 0
-        ? `Read-only detection. ${stats.skippedByBudget} group(s) still await extraction (per-call budget); call again to continue. Review a candidate and call mem-lesson-save to promote it.`
-        : 'Read-only detection. Review a candidate and call mem-lesson-save to promote it into a curated lesson.';
+  const { extraction, note } = describeLessonExtraction(
+    result.candidates.length,
+    result.extraction,
+    skippedByCircuit,
+    skippedByCircuit > 0 ? readProviderCircuitStates()[getLessonProviderName()] ?? null : null
+  );
   // Shadow evaluation of the same candidates (specs R4). Read-only: it attaches
   // provenance and applies the promotion safeguards, and nothing it returns is
   // retrievable — promotion is still an explicit mem-lesson-save.
@@ -1121,7 +1166,7 @@ async function handleLessonCandidates(context: MemoryOperationContext, args: Rec
     scannedSessions: result.scannedSessions,
     eligibleSessions: result.eligibleSessions,
     count: result.candidates.length,
-    extraction: result.extraction,
+    extraction,
     candidates: result.candidates.map((rawCandidate) => {
       const entry = shadowById.get(rawCandidate.candidateId) ?? blockedById.get(rawCandidate.candidateId);
       const sensitive = entry?.promotion.rejections.includes('sensitive_material') === true;

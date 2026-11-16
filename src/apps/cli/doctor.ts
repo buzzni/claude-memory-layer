@@ -415,7 +415,8 @@ export function checkSummaryProvider(facts: SummaryProviderFacts): DoctorCheckRe
     if (!daemon) continue;
     if (daemon.failures > 0 && daemon.stored === 0) {
       warnings.push(
-        `daemon summary attempts all failed (stored=${daemon.stored} empty=${daemon.empty} failures=${daemon.failures}, last error: ${daemon.lastFailureCode ?? 'unknown'})`
+        `daemon summary attempts all failed (stored=${daemon.stored} empty=${daemon.empty} failures=${daemon.failures}`
+          + `${daemon.skipped ? ` skipped=${daemon.skipped}` : ''}, last error: ${daemon.lastFailureCode ?? 'unknown'})`
       );
     }
   }

@@ -645,6 +645,11 @@ describe('checkSummaryProvider', () => {
       .toBe('provider=claude model=claude-haiku-4-5 stored=3 empty=1 failures=0 skipped=2');
   });
 
+  it('shows the skipped calls in the all-failed warning too', () => {
+    const result = checkSummaryProvider({ ...base, daemons: [daemon({ stored: 0, failures: 2, skipped: 4, lastFailureCode: 'provider-auth' })] });
+    expect(result.detail).toBe('daemon summary attempts all failed (stored=0 empty=1 failures=2 skipped=4, last error: provider-auth)');
+  });
+
   it('does not count skipped calls as failed attempts', () => {
     expect(checkSummaryProvider({ ...base, daemons: [daemon({ stored: 0, empty: 0, skipped: 5 })] }).status).toBe('pass');
   });
