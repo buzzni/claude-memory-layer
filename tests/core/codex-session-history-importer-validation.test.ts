@@ -184,4 +184,28 @@ describe('Codex session validation replay', () => {
     expect(memoryService.storeUserPrompt).toHaveBeenCalledTimes(1);
     expect(memoryService.storeAgentResponse).toHaveBeenCalledTimes(1);
   });
+
+  it('passes a session_reimport audit entry to the forced delete', async () => {
+    const sessionsDir = tempDir();
+    const projectA = join(sessionsDir, 'project-a');
+    writeJsonl(join(sessionsDir, 'rollout-2026-05-05T00-00-00-session-forced.jsonl'), [
+      { type: 'session_meta', payload: { id: 'session-forced', cwd: projectA } },
+      { type: 'response_item', timestamp: '2026-05-05T00:00:01.000Z', payload: { type: 'message', role: 'user', content: 'forced reimport prompt that is long enough to keep' } }
+    ]);
+
+    const memoryService = {
+      startSession: vi.fn(async (_sessionId: string, _projectPath?: string) => undefined),
+      endSession: vi.fn(async (_sessionId: string) => undefined),
+      deleteSessionEvents: vi.fn(async (_sessionId: string, _audit?: unknown) => 3),
+      storeUserPrompt: vi.fn(async () => ({ success: true, isDuplicate: false })),
+      storeAgentResponse: vi.fn(async () => ({ success: true, isDuplicate: false }))
+    };
+    const importer = createCodexSessionHistoryImporter(memoryService as never, { sessionsDir });
+
+    await importer.importProject(projectA, { force: true, auditActor: 'mcp' });
+
+    expect(memoryService.deleteSessionEvents).toHaveBeenCalledWith('session-forced', {
+      operation: 'session_reimport', actor: 'mcp', targetType: 'session', targetId: 'session-forced', beforeJson: { source: 'codex' }
+    });
+  });
 });

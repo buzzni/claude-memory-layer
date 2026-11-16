@@ -103,8 +103,9 @@ describe('session history importer prompt filtering', () => {
 
     const calls: string[] = [];
     const evaluateSessionHelpfulness = vi.fn(async () => {});
+    const deleteSessionEvents = vi.fn(async (_sessionId: string, _audit?: unknown) => { calls.push('delete'); return 2; });
     const importer = new SessionHistoryImporter({
-      deleteSessionEvents: vi.fn(async () => { calls.push('delete'); return 2; }),
+      deleteSessionEvents,
       startSession: vi.fn(async () => { calls.push('start'); }),
       getSessionHistory: vi.fn(async () => []),
       storeUserPrompt: vi.fn(async () => ({ success: true, isDuplicate: false, eventId: 'e1' })),
@@ -113,10 +114,13 @@ describe('session history importer prompt filtering', () => {
       evaluateSessionHelpfulness
     } as never);
 
-    await importer.importSessionFile(file, { force: true });
+    await importer.importSessionFile(file, { force: true, auditActor: 'cli' });
 
     // The destructive delete must run, and only after the file passed pre-flight.
     expect(calls[0]).toBe('delete');
+    expect(deleteSessionEvents).toHaveBeenCalledWith('valid-session', {
+      operation: 'session_reimport', actor: 'cli', targetType: 'session', targetId: 'valid-session', beforeJson: { source: 'claude' }
+    });
     expect(calls).toContain('start');
     expect(evaluateSessionHelpfulness).toHaveBeenCalledTimes(1);
   });

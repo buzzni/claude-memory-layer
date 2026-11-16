@@ -61,7 +61,16 @@ describe('DELETE /api/events/:id', () => {
       vectorDeleted: true,
       event: { id: 'evt-1', sessionId: 's1', contentLength: 'to be removed'.length }
     });
-    expect(mocks.store.deleteEventById).toHaveBeenCalledWith('evt-1');
+    expect(mocks.store.deleteEventById).toHaveBeenCalledWith('evt-1', {
+      operation: 'event_delete',
+      actor: 'dashboard',
+      targetType: 'event',
+      targetId: 'evt-1',
+      beforeJson: { eventType: 'user_prompt', sessionId: 's1', timestamp: existingEvent.timestamp, contentLength: 'to be removed'.length },
+      sourceEventIds: ['evt-1']
+    });
+    // 감사 기록에는 지운 본문이 들어가면 안 된다.
+    expect(JSON.stringify(mocks.store.deleteEventById.mock.calls[0])).not.toContain('to be removed');
     expect(mocks.vectorStore.deleteEventEverywhere).toHaveBeenCalledWith('evt-1');
     // 열어 둔 스토어는 반드시 닫는다 — 안 닫으면 SQLite 핸들이 샌다.
     expect(mocks.store.close).toHaveBeenCalled();

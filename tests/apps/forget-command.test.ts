@@ -10,6 +10,7 @@ import {
   runForgetBefore
 } from '../../src/apps/cli/forget-command.js';
 import { SQLiteEventStore } from '../../src/core/sqlite-event-store.js';
+import { sqliteAll } from '../../src/core/sqlite-wrapper.js';
 
 const roots: string[] = [];
 
@@ -127,6 +128,40 @@ describe('runForgetBefore', () => {
     expect(await store.getEvent(ids.oldTool)).toBeNull();
     expect(await store.getEvent(ids.newTool)).not.toBeNull();
     expect(await store.getEvent(ids.oldPrompt)).not.toBeNull();
+    await store.close();
+  });
+
+  it('apply records one governance audit row for the purge, with scope and counts but no content', async () => {
+    const storagePath = tempStoragePath();
+    await seedStore(storagePath);
+    seedMirror(storagePath);
+
+    await runForgetBefore(storagePath, {
+      before: new Date('2026-02-01T00:00:00.000Z'), eventType: 'tool_observation', apply: true
+    }, { vectorStore: { deleteEventsBefore: async () => {} } });
+
+    const store = new SQLiteEventStore(path.join(storagePath, 'events.sqlite'));
+    await store.initialize();
+    const rows = sqliteAll<Record<string, string>>(store.getDatabase(), 'SELECT * FROM memory_governance_audit');
+    await store.close();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ operation: 'event_delete', actor: 'cli', target_type: 'events_before', target_id: '2026-02-01:tool_observation' });
+    expect(JSON.parse(rows[0].before_json)).toMatchObject({
+      command: 'forget --before', before: '2026-02-01', eventType: 'tool_observation', matchingRows: 1, mirrorFiles: 1
+    });
+    expect(JSON.parse(rows[0].after_json)).toEqual({ deletedEvents: 1 });
+    expect(JSON.stringify(rows[0])).not.toContain('old tool output');
+  });
+
+  it('dry-run writes no audit row', async () => {
+    const storagePath = tempStoragePath();
+    await seedStore(storagePath);
+
+    await runForgetBefore(storagePath, { before: new Date('2026-02-01T00:00:00.000Z'), apply: false });
+
+    const store = new SQLiteEventStore(path.join(storagePath, 'events.sqlite'));
+    await store.initialize();
+    expect(sqliteAll(store.getDatabase(), 'SELECT * FROM memory_governance_audit')).toEqual([]);
     await store.close();
   });
 

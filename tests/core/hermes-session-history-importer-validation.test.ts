@@ -199,7 +199,7 @@ describe('Hermes SessionDB validation/import', () => {
       startSession: vi.fn(async (_sessionId: string, _projectPath?: string) => undefined),
       endSession: vi.fn(async (_sessionId: string) => undefined),
       evaluateSessionHelpfulness: vi.fn(async (_sessionId: string) => undefined),
-      deleteSessionEvents: vi.fn(async (_sessionId: string) => 0),
+      deleteSessionEvents: vi.fn(async (_sessionId: string, _audit?: unknown) => 0),
       storeUserPrompt: vi.fn(async (
         _sessionId: string,
         _content: string,
@@ -215,7 +215,9 @@ describe('Hermes SessionDB validation/import', () => {
     const importer = createHermesSessionHistoryImporter(memoryService as never, { stateDbPath });
     const result = await importer.importProject(projectA, { force: true });
 
-    expect(memoryService.deleteSessionEvents).toHaveBeenCalledWith('hermes:session-a');
+    expect(memoryService.deleteSessionEvents).toHaveBeenCalledWith('hermes:session-a', {
+      operation: 'session_reimport', actor: 'import', targetType: 'session', targetId: 'hermes:session-a', beforeJson: { source: 'hermes' }
+    });
     expect(memoryService.startSession).toHaveBeenCalledWith('hermes:session-a', projectA);
     expect(memoryService.endSession).toHaveBeenCalledWith('hermes:session-a');
     expect(memoryService.evaluateSessionHelpfulness).toHaveBeenCalledWith('hermes:session-a');
@@ -291,7 +293,7 @@ describe('Hermes SessionDB validation/import', () => {
     const memoryService = {
       startSession: vi.fn(async (_sessionId: string, _projectPath?: string) => undefined),
       endSession: vi.fn(async (_sessionId: string) => undefined),
-      deleteSessionEvents: vi.fn(async (_sessionId: string) => 0),
+      deleteSessionEvents: vi.fn(async (_sessionId: string, _audit?: unknown) => 0),
       storeUserPrompt: vi.fn(async () => ({ success: true, isDuplicate: false })),
       storeAgentResponse: vi.fn(async () => ({ success: true, isDuplicate: false }))
     };
@@ -354,7 +356,7 @@ describe('Hermes SessionDB validation/import', () => {
     const memoryService = {
       startSession: vi.fn(async (_sessionId: string, _projectPath?: string) => undefined),
       endSession: vi.fn(async (_sessionId: string) => undefined),
-      deleteSessionEvents: vi.fn(async (_sessionId: string) => 0),
+      deleteSessionEvents: vi.fn(async (_sessionId: string, _audit?: unknown) => 0),
       storeUserPrompt: vi.fn(async () => ({ success: true, isDuplicate: false })),
       storeAgentResponse: vi.fn(async () => ({ success: true, isDuplicate: false }))
     };
@@ -459,7 +461,7 @@ describe('Hermes SessionDB validation/import', () => {
     const memoryService = {
       startSession: vi.fn(async (_sessionId: string, _projectPath?: string) => undefined),
       endSession: vi.fn(async (_sessionId: string) => undefined),
-      deleteSessionEvents: vi.fn(async (_sessionId: string) => 0),
+      deleteSessionEvents: vi.fn(async (_sessionId: string, _audit?: unknown) => 0),
       storeUserPrompt: vi.fn(async () => ({ success: true, isDuplicate: false })),
       storeAgentResponse: vi.fn(async () => ({ success: true, isDuplicate: false }))
     };
@@ -538,7 +540,7 @@ describe('Hermes SessionDB validation/import', () => {
     const memoryService = {
       startSession: vi.fn(async (_sessionId: string, _projectPath?: string) => undefined),
       endSession: vi.fn(async (_sessionId: string) => undefined),
-      deleteSessionEvents: vi.fn(async (_sessionId: string) => 0),
+      deleteSessionEvents: vi.fn(async (_sessionId: string, _audit?: unknown) => 0),
       storeUserPrompt: vi.fn(async () => ({ success: true, isDuplicate: false })),
       storeAgentResponse: vi.fn(async () => ({ success: true, isDuplicate: false }))
     };
@@ -595,7 +597,7 @@ describe('Hermes SessionDB validation/import', () => {
     const memoryService = {
       startSession: vi.fn(async (_sessionId: string, _projectPath?: string) => undefined),
       endSession: vi.fn(async (_sessionId: string) => undefined),
-      deleteSessionEvents: vi.fn(async (_sessionId: string) => 0),
+      deleteSessionEvents: vi.fn(async (_sessionId: string, _audit?: unknown) => 0),
       storeUserPrompt: vi.fn(async () => ({ success: true, isDuplicate: false })),
       storeAgentResponse: vi.fn(async () => ({ success: true, isDuplicate: false }))
     };

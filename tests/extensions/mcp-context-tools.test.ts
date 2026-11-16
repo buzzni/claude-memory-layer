@@ -373,13 +373,15 @@ describe('MCP project context tools', () => {
       projectPath: '/repo/app',
       sessionLimit: 2,
       limit: 50,
-      force: true
+      force: true,
+      auditActor: 'mcp'
     });
     expect(mocks.codexImporter.importProject).toHaveBeenCalledWith('/repo/app', {
       projectPath: '/repo/app',
       sessionLimit: 2,
       limit: 50,
-      force: true
+      force: true,
+      auditActor: 'mcp'
     });
     expect(mocks.projectService.processPendingEmbeddings).toHaveBeenCalledTimes(1);
     expect(text).toContain('## Latest Session Import');
@@ -481,13 +483,15 @@ describe('MCP project context tools', () => {
       projectPath: '/repo/app',
       sessionLimit: 1,
       limit: 200,
-      force: false
+      force: false,
+      auditActor: 'mcp'
     });
     expect(mocks.codexImporter.importProject).toHaveBeenCalledWith('/repo/app', {
       projectPath: '/repo/app',
       sessionLimit: 1,
       limit: 200,
-      force: false
+      force: false,
+      auditActor: 'mcp'
     });
     expect(mocks.hermesImporter.importProject.mock.invocationCallOrder[0]).toBeLessThan(
       mocks.projectService.retrieveMemories.mock.invocationCallOrder[0]
@@ -631,7 +635,8 @@ describe('MCP project context tools', () => {
       projectPath: '/repo/app',
       sessionLimit: 2,
       limit: 50,
-      force: true
+      force: true,
+      auditActor: 'mcp'
     });
     expect(mocks.projectService.processPendingEmbeddings).toHaveBeenCalledTimes(1);
     expect(mocks.hermesImporter.importProject.mock.invocationCallOrder[0]).toBeLessThan(
