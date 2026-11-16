@@ -129,10 +129,13 @@ const TOUCH_COLUMNS = (() => {
 
 /** Tool observations on the file from other sessions: the newest scanned, plus codify-lite links. */
 function readTouches(db: SQLiteDatabase, request: PreEditMemoryRequest, relPath: string): Touch[] {
-  const filters = `session_id != ? AND event_type = 'tool_observation' AND ${notActiveQuarantinedSql()}`
-    + ` AND length(content) <= ${MAX_TOOL_OBSERVATION_CHARS}`;
+  const filters = `session_id != ? AND ${notActiveQuarantinedSql()} AND length(content) <= ${MAX_TOOL_OBSERVATION_CHARS}`;
   // The inner query reads only columns stored before `content`; the outer one
   // reads content only for rows that contain the path as a JSON string.
+  // Neither outer query tests event_type: that makes SQLite walk every tool
+  // observation in the type index instead of looking up the listed rows. The
+  // CROSS JOIN keeps the graph lookup starting from the one file entity rather
+  // than from every touched_in edge. Edges only link tool observations.
   const rows = sqliteAll<TouchRow>(
     db,
     `SELECT ${TOUCH_COLUMNS} FROM events
@@ -146,9 +149,8 @@ function readTouches(db: SQLiteDatabase, request: PreEditMemoryRequest, relPath:
       db,
       `SELECT ${TOUCH_COLUMNS} FROM events
        WHERE id IN (
-         SELECT g.src_id FROM entities n JOIN edges g ON g.dst_id = n.entity_id
-         WHERE n.entity_type = 'source_file' AND n.canonical_key = ?
-           AND g.rel_type = 'touched_in' AND g.src_type = 'event'
+         SELECT g.src_id FROM entities n CROSS JOIN edges g ON g.dst_id = n.entity_id AND g.rel_type = 'touched_in'
+         WHERE n.entity_type = 'source_file' AND n.canonical_key = ? AND g.src_type = 'event'
          ORDER BY g.created_at DESC LIMIT ${GRAPH_LINK_LIMIT}
        ) AND ${filters}`,
       [makeSourceFileKey(relPath, hashProjectPath(request.cwd)), request.sessionId]
