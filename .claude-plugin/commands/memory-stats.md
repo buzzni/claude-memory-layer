@@ -30,5 +30,5 @@ The graduation pipeline moves memories through these levels:
 ## Implementation
 
 ```bash
-node dist/cli/index.js stats
+claude-memory-layer stats
 ```

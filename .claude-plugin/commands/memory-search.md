@@ -32,5 +32,5 @@ The search uses AXIOMMIND weighted scoring:
 ## Implementation
 
 ```bash
-node dist/cli/index.js search "$ARGUMENTS"
+claude-memory-layer search "$ARGUMENTS"
 ```

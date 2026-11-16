@@ -18,5 +18,6 @@
     "context",
     "axiommind"
   ],
-  "hooks": "./.claude-plugin/hooks.json"
+  "hooks": "./.claude-plugin/hooks.json",
+  "commands": "./.claude-plugin/commands/"
 }

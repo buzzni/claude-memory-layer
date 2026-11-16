@@ -30,5 +30,5 @@ Displays stored conversation events from memory. By default shows the most recen
 ## Implementation
 
 ```bash
-node dist/cli/index.js history $ARGUMENTS
+claude-memory-layer history $ARGUMENTS
 ```

@@ -45,5 +45,5 @@ If vectors could not be removed, the command prints a warning; with `event-id` o
 ## Implementation
 
 ```bash
-node dist/cli/index.js forget $ARGUMENTS
+claude-memory-layer forget $ARGUMENTS
 ```

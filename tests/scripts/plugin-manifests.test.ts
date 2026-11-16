@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import * as path from 'node:path';
 
@@ -15,7 +15,9 @@ function readJson<T = Record<string, unknown>>(relativePath: string): T {
 type HookConfig = { hooks: Record<string, Array<{ matcher: string; hooks: Array<{ type: string; command: string }> }>> };
 
 const pkg = readJson<{ version: string }>('package.json');
-const plugin = readJson<{ name: string; version: string; repository: unknown; hooks: string }>('.claude-plugin/plugin.json');
+const plugin = readJson<{ name: string; version: string; repository: unknown; hooks: string; commands?: string }>(
+  '.claude-plugin/plugin.json'
+);
 const marketplace = readJson<{
   name: string;
   owner: { name: string };
@@ -62,6 +64,29 @@ describe('Claude Code plugin manifests', () => {
       expect(hooks[event].map((entry) => entry.matcher), event).toEqual([PLUGIN_HOOK_MATCHERS[event as keyof typeof PLUGIN_HOOKS] ?? '']);
       // scripts/build.ts builds dist/hooks/<name>.js from src/hooks/<name>.ts.
       expect(existsSync(path.join(repoRoot, 'src', 'hooks', `${hookName}.ts`)), hookName).toBe(true);
+    }
+  });
+
+  it('points plugin.json at the slash command files, which Claude Code does not look for inside .claude-plugin/', () => {
+    // Without the field only <plugin root>/commands/ is read, so these were never loaded.
+    expect(plugin.commands).toBe('./.claude-plugin/commands/');
+    expect(readdirSync(path.join(repoRoot, plugin.commands!)).filter((file) => file.endsWith('.md'))).not.toEqual([]);
+  });
+
+  it('runs every slash command through the claude-memory-layer bin with a top-level CLI subcommand', () => {
+    // The command runs in the user's project, and a marketplace install has no dist/,
+    // so the CLI is reached the way hook-launcher.cjs finds it: the bin on PATH.
+    const cliSource = readFileSync(path.join(repoRoot, 'src', 'apps', 'cli', 'index.ts'), 'utf8');
+    const subcommands = new Set([...cliSource.matchAll(/^program\n {2}\.command\('([\w-]+)/gm)].map((match) => match[1]));
+    const commandsDir = path.join(repoRoot, plugin.commands ?? '.claude-plugin/commands');
+
+    for (const file of readdirSync(commandsDir).filter((name) => name.endsWith('.md'))) {
+      const body = readFileSync(path.join(commandsDir, file), 'utf8');
+      const invocations = [...body.matchAll(/^```bash\n(.+)\n```$/gm)].map((match) => match[1]);
+      expect(invocations, file).toHaveLength(1);
+      const [bin, subcommand] = invocations[0].split(' ');
+      expect(bin, file).toBe('claude-memory-layer');
+      expect(subcommands, file).toContain(subcommand);
     }
   });
 
