@@ -56,13 +56,28 @@ When the compaction finishes, SessionStart runs with source `compact` and puts t
 
 ## Pre-edit check
 
-With `preEditCheck.enabled` in `operations.json`, the PreToolUse hook runs before Write, Edit, MultiEdit and NotebookEdit and adds a short "Memory About <file>" note next to the tool result. It lists up to 3 lessons linked to the file (built from an edit of it, or naming its project-relative path), up to 2 failed tool runs on it, and up to 3 summaries of the sessions that edited it. The current session's own edits are left out. A note recorded before the file's last modification time is marked "(file changed since)".
+With `preEditCheck.enabled` in `operations.json`, the PreToolUse hook runs before Write, Edit, MultiEdit and NotebookEdit and adds a short "Memory About <file>" note next to the tool result. It lists up to 3 lessons linked to the file (built from an edit of it, or naming its project-relative path), up to 2 failed tool runs on it, and summaries of up to 3 sessions that edited it (Write, Edit, MultiEdit or NotebookEdit; a session that only read the file is not listed). The current session's own edits, summary and lessons are left out.
 
-It finds the file through the stored tool observations: the newest 2000 are scanned, and with codify-lite the file's `touched_in` links reach older ones. It reads only the project store, never calls an LLM or the semantic daemon, and waits at most 200 ms for a lock. Paths are shown relative to the project, and stored text goes through the privacy filter and the output sanitizer.
+**What it searches.** Every read is capped so the hook finishes in bounded time on any store. Memories outside these windows are not looked for:
 
-An item shown for a file is not shown again for that file in the same session (records in `projects/<hash>/pre-edit-check/`, deleted after 7 idle days), and the note is capped at 1500 characters; what does not fit can appear on a later edit of the file. Nothing found means no output.
+- the newest 2000 tool observations, skipping any larger than 64 KiB;
+- with codify-lite, the newest 50 `touched_in` links of the file;
+- the newest 500 session summaries, for the sessions found above;
+- up to 500 lessons of the project.
 
-The hook never blocks the edit: it returns no permission decision, and on any error, timeout or missing store it prints nothing and exits 0. It is always registered; while the flag is off its entry exits before loading SQLite (about 3 ms over a bare Node start, measured on macOS). When on, a run takes about 100–115 ms including Node start, against a 20,000-observation store.
+It reads only the project store, never calls an LLM or the semantic daemon, and waits at most 200 ms for a lock.
+
+**Which file.** The file and the project directory are compared by real path (symlinks resolved, the case the filesystem stores, and for a file not created yet, its nearest existing directory), so `src/../src/a.ts`, a symlinked path and a case alias on a case-insensitive filesystem are the same file, and a path that leads out of the project through a symlink gets nothing.
+
+**"(file changed since)".** A note is marked only when the file certainly changed after it was recorded: the file's modification time, cut to whole milliseconds, is later than the note's time (a summary's own time, a failed run's time, a lesson's last update). Coarse filesystem timestamps only round down, so the mark is never added wrongly by them; it can be missing for a change in the same millisecond, or when the system clock was set back between the note and the change.
+
+**What it shows.** Paths inside the project are shown relative to it, and any other absolute path in stored text becomes `[path]`; stored text goes through the privacy filter and the output sanitizer. The note is capped at 1500 characters as it leaves the sanitizer; what does not fit can appear on a later edit of the file. Nothing found means no output.
+
+**Not repeating itself.** An item shown for a file is not shown again for that file in the same session. Each shown item is reserved by creating an empty marker file exclusively under `projects/<hash>/pre-edit-check/<session>/`, so parallel edits in one session show it once. That costs one empty file per item shown. A session's markers are deleted 7 days after the last run in that session that found notes, by the first run of another session.
+
+**Known limit.** Failed tool calls are mostly missing from the store until PostToolUseFailure is captured ([#222](https://github.com/buzzni/claude-memory-layer/issues/222)): PostToolUse records a call as failed only when it was interrupted. Until then the failed-runs list is almost always empty.
+
+**Cost.** The hook never blocks the edit: it returns no permission decision, and on any error, timeout or missing store it prints nothing and exits 0. It is always registered; while the flag is off its entry exits before loading SQLite (about 3–5 ms over a bare Node start of 26 ms, measured on macOS). When on, a run takes about 105–115 ms including Node start, on a store with 300,000 summaries and 200,000 links to the file; when the 2000 newest observations are all just under 64 KiB, about 300 ms.
 
 ## Storing a memory
 
