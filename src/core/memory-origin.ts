@@ -14,6 +14,16 @@
  *   metadata that is not an object, a provenance marker of the wrong shape)
  *   the answer is `unknown`.
  *
+ * Where it is computed: once, by the layer that reads the row from SQLite,
+ * from the raw columns (classifyStoredEvent: SQLiteEventStore.rowToEvent puts
+ * it on MemoryEvent.origin; the pre-edit check, which reads rows with its own
+ * SQL, calls it the same way). Everything after that (disclosure envelopes,
+ * hooks, MCP, CLI) passes the value on with eventOrigin() and never
+ * classifies again: by then metadata may have been parsed, dropped or
+ * merged, and a "no metadata" row would look trusted. A value reported by
+ * another process (the semantic daemon) is not trusted; it can only lower
+ * the class of the stored row (lowerTrustOrigin). A test pins the call sites.
+ *
  * The host-import rule below is not an exception: an absolute-path
  * `importedFrom` does not raise a row above its role, it is only the
  * condition under which `importedFrom` does not lower it to `imported`.
@@ -109,7 +119,8 @@ function provenance(metadata: Record<string, unknown>): 'none' | 'imported' | 'u
 
 /**
  * `type` must be the stored row's own type column; `metadata` the row's
- * parsed metadata (undefined or null when the row has none).
+ * parsed metadata (undefined or null when the row has none). Exported for
+ * tests; production code goes through classifyStoredEvent.
  */
 export function classifyMemoryOrigin(memory: { type: string; metadata?: unknown }): MemoryOrigin {
   const byType = Object.hasOwn(ORIGIN_BY_TYPE, memory.type) ? ORIGIN_BY_TYPE[memory.type] : 'unknown';
@@ -122,8 +133,45 @@ export function classifyMemoryOrigin(memory: { type: string; metadata?: unknown 
   return marker === 'imported' ? 'imported' : byType;
 }
 
-export function classifyEventOrigin(event: { eventType: string; metadata?: unknown }): MemoryOrigin {
-  return classifyMemoryOrigin({ type: event.eventType, metadata: event.metadata });
+/**
+ * The origin of a row as read from SQLite: its `event_type` and `metadata`
+ * columns exactly as stored. Absent, NULL or empty metadata means none; text
+ * that does not parse, or parses to anything but an object, is unknown.
+ */
+export function classifyStoredEvent(eventType: unknown, rawMetadata: unknown): MemoryOrigin {
+  if (typeof eventType !== 'string') return 'unknown';
+  let metadata: unknown = rawMetadata;
+  if (typeof rawMetadata === 'string') {
+    if (rawMetadata === '') {
+      metadata = undefined;
+    } else {
+      try {
+        metadata = JSON.parse(rawMetadata);
+      } catch {
+        return 'unknown';
+      }
+    }
+  }
+  return classifyMemoryOrigin({ type: eventType, metadata });
+}
+
+/** The origin the read layer put on a row or candidate; one that never went through it is unknown. */
+export function eventOrigin(memory: { origin?: MemoryOrigin }): MemoryOrigin {
+  return memory.origin ?? 'unknown';
+}
+
+/** Trusted classes rank 0; higher is less trusted. */
+const TRUST_RANK: Readonly<Record<MemoryOrigin, number>> = {
+  user: 0, assistant: 0, derived: 0, imported: 1, tool: 2, unknown: 3
+};
+
+/**
+ * The stored row's class, unless a report from elsewhere says less: a reported
+ * origin can lower the class, never raise it. Between two trusted classes the
+ * stored row's wins.
+ */
+export function lowerTrustOrigin(stored: MemoryOrigin, reported: MemoryOrigin | null): MemoryOrigin {
+  return reported !== null && TRUST_RANK[reported] > TRUST_RANK[stored] ? reported : stored;
 }
 
 /** A value read back from another process or a stored row; anything else is `null`. */

@@ -27,7 +27,7 @@ import type { VectorStore } from '../../../core/vector-store.js';
 import { MemoryService } from '../../../services/memory-service.js';
 import { DISABLED_SHARED_STORE_CONFIG } from '../../../services/memory-service-config.js';
 import type { SemanticMemory } from './semantic-daemon-client.js';
-import { classifyEventOrigin, countMemoryOrigins, MEMORY_ORIGINS, type MemoryOrigin } from '../../../core/memory-origin.js';
+import { countMemoryOrigins, eventOrigin, MEMORY_ORIGINS, type MemoryOrigin } from '../../../core/memory-origin.js';
 import {
   buildRetrievalQuery,
   hookCandidateOrigin,
@@ -422,8 +422,8 @@ function selectionDeps(sources: ReplaySources, turn: ReplayTurn, stats: { semant
           id: memory.event.id,
           score: memory.score,
           sessionId: memory.event.sessionId,
-          // As the daemon reports it, from the stored row.
-          origin: classifyEventOrigin(memory.event)
+          // As the daemon reports it: the store's own classification of the row.
+          origin: eventOrigin(memory.event)
         })),
         dropped: result.memories.length - visible.length
       };

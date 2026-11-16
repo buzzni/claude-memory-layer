@@ -55,8 +55,8 @@ import { normalizeUserPrompt, promptClassifierMetadata, redactPromptForStorage }
 import { sanitizeRetrievalQuery } from '../../../core/retrieval-query-sanitizer.js';
 import { indentContinuationLines } from '../../../core/recall-sanitizer.js';
 import {
-  classifyEventOrigin,
-  classifyMemoryOrigin,
+  eventOrigin,
+  lowerTrustOrigin,
   countMemoryOrigins,
   isAutoInjectionExcludableOrigin,
   memoryOriginLabel,
@@ -64,7 +64,7 @@ import {
   type MemoryOrigin
 } from '../../../core/memory-origin.js';
 import { excludesUntrustedFromAutoInjection } from '../../../services/operations-config-loader.js';
-import type { UserPromptSubmitInput, UserPromptSubmitOutput } from '../../../core/types.js';
+import type { MemoryEvent, UserPromptSubmitInput, UserPromptSubmitOutput } from '../../../core/types.js';
 
 // Configuration. All numeric env vars go through readNumberEnv so an invalid
 // value (e.g. a typo) falls back to the default instead of producing NaN, which
@@ -242,21 +242,36 @@ export interface UserPromptSubmitMainOptions {
 }
 
 /**
- * A daemon started before origins were reported sends none, so the hit is
- * classified from its stored row. No row, or no way to read it, is `unknown`:
- * the type the daemon reported is not taken on trust.
+ * A semantic hit as its stored row says: the row's type, content and session,
+ * and the origin the store gave the row. The daemon's report comes from
+ * another process, so its origin may only lower that class and its type and
+ * text are not used. A hit whose row cannot be read has no type to trust and
+ * is unknown.
  */
-async function storedRowOrigin(
+async function resolveSemanticHit(
   memoryService: Pick<HookSelectionMemoryService, 'getEvent'>,
-  id: string | undefined
-): Promise<MemoryOrigin> {
-  if (!id) return 'unknown';
-  try {
-    const event = await memoryService.getEvent(id);
-    return event ? classifyEventOrigin(event) : 'unknown';
-  } catch {
-    return 'unknown';
+  hit: SemanticMemory
+): Promise<HookMemoryCandidate> {
+  let row: MemoryEvent | null = null;
+  if (hit.id) {
+    try {
+      row = await memoryService.getEvent(hit.id);
+    } catch {
+      row = null;
+    }
   }
+  if (!row) {
+    return { id: hit.id, type: 'unknown', content: hit.content, sessionId: hit.sessionId, score: hit.score, source: 'semantic', origin: 'unknown' };
+  }
+  return {
+    id: row.id,
+    type: row.eventType,
+    content: row.content,
+    sessionId: row.sessionId,
+    score: hit.score,
+    source: 'semantic',
+    origin: lowerTrustOrigin(eventOrigin(row), normalizeMemoryOrigin(hit.origin))
+  };
 }
 
 async function expandEpisodeEvidence(
@@ -285,7 +300,7 @@ async function expandEpisodeEvidence(
             content: event.content,
             score: Math.max(0, (seed.score ?? 0) - 0.02),
             source: 'episode',
-            origin: classifyEventOrigin(event),
+            origin: eventOrigin(event),
             episodeLinked: true,
             episodeSeedAligned: true,
             episodeSeedStrongAligned: seed.episodeSeedStrongAligned === true
@@ -297,8 +312,9 @@ async function expandEpisodeEvidence(
       }
       const facts = [...(episode?.summaries ?? []), ...(episode?.surroundingFacts ?? [])];
       for (const fact of facts) {
-        // eventType and eventId are the row's own columns: the envelope writes
-        // them after the stored metadata, which cannot replace them.
+        // eventType and eventId are the row's own columns and `origin` the
+        // store's class for it: the envelope writes them after (or outside) the
+        // stored metadata, which cannot replace them.
         const eventType = typeof fact.metadata?.eventType === 'string' ? fact.metadata.eventType : '';
         const eventId = typeof fact.metadata?.eventId === 'string' ? fact.metadata.eventId : undefined;
         const factTurnId = typeof fact.metadata?.turnId === 'string' ? fact.metadata.turnId : undefined;
@@ -311,7 +327,7 @@ async function expandEpisodeEvidence(
           content: fact.snippet,
           score: Math.max(0, (seed.score ?? 0) - 0.02),
           source: 'episode',
-          origin: classifyMemoryOrigin({ type: eventType, metadata: fact.metadata }),
+          origin: eventOrigin(fact),
           episodeLinked: Boolean(targetTurnId && factTurnId && targetTurnId === factTurnId),
           episodeSeedAligned: seed.episodeSeedAligned === true,
           episodeSeedStrongAligned: seed.episodeSeedStrongAligned === true
@@ -640,11 +656,8 @@ export async function selectHookInjection(
         topK: MAX_MEMORIES,
         minScore
       });
-      mergedMemories = (await Promise.all(semanticMemories.map(async ({ origin, ...memory }) => ({
-        ...memory,
-        source: 'semantic' as const,
-        origin: normalizeMemoryOrigin(origin) ?? await storedRowOrigin(deps.memoryService, memory.id)
-      })))).filter((memory) => !isExcludedEvaluationSession(memory.sessionId)
+      mergedMemories = (await Promise.all(semanticMemories.map((hit) => resolveSemanticHit(deps.memoryService, hit))))
+        .filter((memory) => !isExcludedEvaluationSession(memory.sessionId)
         && !isCurrentSessionEvent(memory.sessionId, input.sessionId));
       semanticCandidateCount = mergedMemories.length;
     } catch {
@@ -676,7 +689,7 @@ export async function selectHookInjection(
         id: result.event.id,
         sessionId: result.event.sessionId,
         source: 'graduated',
-        origin: classifyEventOrigin(result.event),
+        origin: eventOrigin(result.event),
         memoryLevel: result.level,
         accessCount: result.accessCount,
         retrievalRankScore: (worstGraduatedRank - result.rank) / graduatedRankRange
@@ -764,7 +777,7 @@ export async function selectHookInjection(
         sessionId: result.event.sessionId,
         score: result.score,
         source: 'keyword',
-        origin: classifyEventOrigin(result.event),
+        origin: eventOrigin(result.event),
         fallback: result.score < minScore
       });
     }
@@ -782,7 +795,7 @@ export async function selectHookInjection(
         sessionId: r.event.sessionId,
         score: r.score,
         source: 'keyword',
-        origin: classifyEventOrigin(r.event),
+        origin: eventOrigin(r.event),
         fallback: usedFallbackFloor
       };
       const existingIndex = existingById.get(r.event.id);

@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { generateCitationId } from '../../src/core/citation-generator.js';
 import { hashProjectPath } from '../../src/core/registry/project-path.js';
 import type { MemoryEvent } from '../../src/core/types.js';
+import { asStored } from '../helpers/stored-origin.js';
 
 const mocks = vi.hoisted(() => {
   function createService() {
@@ -104,8 +105,9 @@ function resetImporter(importer: typeof mocks.claudeImporter) {
   });
 }
 
+/** As the store returns a row: with the origin it computes from the row's columns. */
 function event(overrides: Partial<MemoryEvent>): MemoryEvent {
-  return {
+  return asStored({
     id: 'event-1',
     eventType: 'user_prompt',
     sessionId: 'session-a',
@@ -115,7 +117,7 @@ function event(overrides: Partial<MemoryEvent>): MemoryEvent {
     dedupeKey: 'dedupe:event-1',
     metadata: {},
     ...overrides
-  };
+  });
 }
 
 function textOf(result: Awaited<ReturnType<typeof handleToolCall>>): string {

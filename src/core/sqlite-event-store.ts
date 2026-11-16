@@ -88,6 +88,7 @@ import {
   type MemoryKind
 } from './memory-ref.js';
 import { recordReferenceNavigationOnDb } from './retrieval-navigation.js';
+import { classifyStoredEvent } from './memory-origin.js';
 import {
   observeLessonFollowThrough,
   parseToolObservation,
@@ -5529,7 +5530,10 @@ export class SQLiteEventStore {
       content: row.content as string,
       canonicalKey: row.canonical_key as string,
       dedupeKey: row.dedupe_key as string,
-      metadata: safeParseMetadataValue(row.metadata)
+      metadata: safeParseMetadataValue(row.metadata),
+      // From the raw columns, before metadata is parsed: an unreadable value
+      // is dropped above and would otherwise look like a row without metadata.
+      origin: classifyStoredEvent(row.event_type, row.metadata)
     };
 
     // Include access tracking fields if present

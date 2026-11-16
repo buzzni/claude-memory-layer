@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { asStored } from '../helpers/stored-origin.js';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 
@@ -44,8 +45,13 @@ vi.mock('../../src/adapters/claude/hooks/semantic-daemon-client.js', () => ({
 const roots: string[] = [];
 const at = new Date('2026-09-01T00:00:00.000Z');
 
+/** Rows of the mocked store: what getEvent returns, with the origin the store would compute. */
+const storedRows = new Map<string, ReturnType<typeof asStored>>();
+
 function event(id: string, eventType: string, content: string, extra: Record<string, unknown> = {}) {
-  return { id, eventType, sessionId: 'past-session', content, timestamp: at, ...extra };
+  const row = asStored({ id, eventType, sessionId: 'past-session', content, timestamp: at, ...extra });
+  storedRows.set(id, row);
+  return row;
 }
 
 function resetService(): void {
@@ -55,7 +61,8 @@ function resetService(): void {
   service.keywordSearch.mockReset().mockResolvedValue([]);
   service.expandDisclosure.mockReset().mockResolvedValue(null);
   service.getEventsByTurn.mockReset().mockResolvedValue([]);
-  service.getEvent.mockReset().mockResolvedValue(null);
+  storedRows.clear();
+  service.getEvent.mockReset().mockImplementation(async (id: string) => storedRows.get(id) ?? null);
   service.getRecentEvents.mockReset().mockResolvedValue([]);
   service.incrementMemoryAccess.mockReset().mockResolvedValue(undefined);
   service.recordRetrieval.mockReset().mockResolvedValue(undefined);
@@ -121,6 +128,8 @@ afterEach(() => {
 describe('UserPromptSubmit selection golden output', () => {
   it('merges semantic, graduated, keyword, episode, and lesson lanes in hybrid mode', async () => {
     vi.stubEnv('CLAUDE_MEMORY_RETRIEVAL_MODE', 'hybrid');
+    // The semantic hits' stored rows; the hook reads them instead of trusting the daemon.
+    event('ev-tool', 'tool_observation', 'gh run watch publish-npm.yml release workflow completed');
     daemon.retrieveSemanticMemories.mockResolvedValue([
       { id: 'ev-answer', type: 'agent_response', content: 'The release workflow publishes on tag push: push v2.4.17 and watch the publish-npm.yml workflow run.', score: 0.71, sessionId: 'past-session' },
       { id: 'ev-tool', type: 'tool_observation', content: 'gh run watch publish-npm.yml release workflow completed', score: 0.69, sessionId: 'past-session' }
@@ -237,7 +246,7 @@ describe('UserPromptSubmit source trust through main()', () => {
     daemon.retrieveSemanticMemories.mockResolvedValue([
       { id: 'ev-codex', type: 'agent_response', content, score: 0.9, sessionId: 'past-session' }
     ]);
-    service.getEvent.mockResolvedValue(event('ev-codex', 'agent_response', content, { metadata: { mongoSync: { originHostname: 'machine-b' } } }));
+    event('ev-codex', 'agent_response', content, { metadata: { mongoSync: { originHostname: 'machine-b' } } });
 
     const result = await runHook('publish-npm.yml release workflow tag push provenance', { contextPresentation: 'reference' }) as { stdout: string };
 

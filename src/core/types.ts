@@ -4,6 +4,7 @@
  */
 
 import { z } from 'zod';
+import { MEMORY_ORIGINS } from './memory-origin.js';
 
 // ============================================================
 // Event Types
@@ -29,7 +30,9 @@ export const MemoryEventSchema = z.object({
   content: z.string(),
   canonicalKey: z.string(),
   dedupeKey: z.string(),
-  metadata: z.record(z.string(), z.unknown()).optional()
+  metadata: z.record(z.string(), z.unknown()).optional(),
+  /** Set only by the store when it reads the row (src/core/memory-origin.ts); never stored or accepted as input. */
+  origin: z.enum(MEMORY_ORIGINS).optional()
 });
 export type MemoryEvent = z.infer<typeof MemoryEventSchema>;
 
@@ -37,7 +40,8 @@ export type MemoryEvent = z.infer<typeof MemoryEventSchema>;
 export const MemoryEventInputSchema = MemoryEventSchema.omit({
   id: true,
   dedupeKey: true,
-  canonicalKey: true
+  canonicalKey: true,
+  origin: true
 });
 export type MemoryEventInput = z.infer<typeof MemoryEventInputSchema>;
 

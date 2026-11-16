@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { asStored } from '../helpers/stored-origin.js';
 
 /**
  * SessionStart recap: rows from another machine carry a low-trust label;
@@ -41,8 +42,9 @@ const NATIVE_ANSWER = 'Native answer: releases go through publish-npm.yml on tag
 const CODEX_ANSWER = 'Codex answer: the Codex session fixed the replay fixture.';
 const IMPORTED_ANSWER = 'Pulled answer: machine B moved the dashboard port.';
 
+/** As getRecentEvents returns it: with the origin the store computes. */
 function answer(id: string, content: string, timestamp: string, metadata: Record<string, unknown> = {}) {
-  return { id, eventType: 'agent_response', sessionId: `session-${id}`, content, timestamp: new Date(timestamp), metadata };
+  return asStored({ id, eventType: 'agent_response', sessionId: `session-${id}`, content, timestamp: new Date(timestamp), metadata });
 }
 
 function createService() {

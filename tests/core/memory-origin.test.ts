@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  classifyEventOrigin,
   classifyMemoryOrigin,
+  classifyStoredEvent,
+  eventOrigin,
+  lowerTrustOrigin,
   countMemoryOrigins,
   isAutoInjectionExcludableOrigin,
   memoryOriginLabel,
@@ -47,9 +49,22 @@ describe('classifyMemoryOrigin', () => {
     expect(classifyMemoryOrigin({ type: 'tool_observation', metadata: { mongoSync: {} } })).toBe('tool');
   });
 
-  it('classifies a stored event by its eventType and metadata', () => {
-    expect(classifyEventOrigin({ eventType: 'agent_response', metadata: { mongoSync: {} } })).toBe('imported');
-    expect(classifyEventOrigin({ eventType: 'user_prompt', metadata: { importedFrom: '/x.jsonl' } })).toBe('user');
+  it('classifies a stored row from its raw event_type and metadata columns', () => {
+    expect(classifyStoredEvent('agent_response', '{"mongoSync":{}}')).toBe('imported');
+    expect(classifyStoredEvent('user_prompt', '{"importedFrom":"/x.jsonl"}')).toBe('user');
+    expect(classifyStoredEvent('agent_response', null)).toBe('assistant');
+    expect(classifyStoredEvent('agent_response', '')).toBe('assistant');
+    expect(classifyStoredEvent('agent_response', undefined)).toBe('assistant');
+  });
+
+  // The column as stored, before any parsing drops what it cannot read.
+  it('classifies a stored row whose metadata column is not an object as unknown', () => {
+    for (const raw of ['"{\\"mongoSync\\":{}}"', '["mongoSync"]', '3', 'true', 'null-ish', '{not json']) {
+      expect(classifyStoredEvent('agent_response', raw)).toBe('unknown');
+    }
+    expect(classifyStoredEvent('agent_response', 'null')).toBe('assistant');
+    expect(classifyStoredEvent(undefined, null)).toBe('unknown');
+    expect(classifyStoredEvent(7, null)).toBe('unknown');
   });
 
   it('falls to unknown for a type it does not know, including prototype keys', () => {
@@ -81,13 +96,31 @@ describe('classifyMemoryOrigin with metadata it cannot read', () => {
   });
 
   it('never takes the type from metadata: a forged eventType cannot raise a tool row', () => {
-    expect(classifyEventOrigin({ eventType: 'tool_observation', metadata: { eventType: 'agent_response', type: 'user_prompt' } })).toBe('tool');
-    expect(classifyEventOrigin({ eventType: 'mystery', metadata: { eventType: 'agent_response' } })).toBe('unknown');
+    expect(classifyStoredEvent('tool_observation', '{"eventType":"agent_response","type":"user_prompt"}')).toBe('tool');
+    expect(classifyStoredEvent('mystery', '{"eventType":"agent_response"}')).toBe('unknown');
   });
 
   it('ignores inherited keys, reading only the row\'s own markers', () => {
     const metadata = Object.create({ mongoSync: {} }) as Record<string, unknown>;
     expect(classifyMemoryOrigin({ type: 'agent_response', metadata })).toBe('assistant');
+  });
+});
+
+describe('passing an origin on', () => {
+  it('treats a row or candidate the store never classified as unknown', () => {
+    expect(eventOrigin({ origin: 'assistant' })).toBe('assistant');
+    expect(eventOrigin({})).toBe('unknown');
+  });
+
+  it('lets a reported origin lower the stored class, never raise it', () => {
+    expect(lowerTrustOrigin('tool', 'assistant')).toBe('tool');
+    expect(lowerTrustOrigin('unknown', 'user')).toBe('unknown');
+    expect(lowerTrustOrigin('assistant', 'tool')).toBe('tool');
+    expect(lowerTrustOrigin('assistant', 'imported')).toBe('imported');
+    expect(lowerTrustOrigin('imported', 'unknown')).toBe('unknown');
+    // Between two trusted classes the stored row decides.
+    expect(lowerTrustOrigin('assistant', 'user')).toBe('assistant');
+    expect(lowerTrustOrigin('derived', null)).toBe('derived');
   });
 });
 

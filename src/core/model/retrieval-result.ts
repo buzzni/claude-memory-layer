@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { MEMORY_ORIGINS } from '../memory-origin.js';
 
 export const RetrievalReasonSchema = z.enum([
   'semantic_match',
@@ -31,6 +32,8 @@ export const RetrievalResultEnvelopeSchema = z.object({
   sourceRef: z.string().optional(),
   sessionId: z.string().optional(),
   turnId: z.string().optional(),
-  metadata: z.record(z.string(), z.unknown()).optional()
+  metadata: z.record(z.string(), z.unknown()).optional(),
+  /** The store's classification of the row (src/core/memory-origin.ts), outside metadata so stored values cannot pose as it. */
+  origin: z.enum(MEMORY_ORIGINS).optional()
 });
 export type RetrievalResultEnvelope = z.infer<typeof RetrievalResultEnvelopeSchema>;

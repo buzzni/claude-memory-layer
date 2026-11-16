@@ -6,6 +6,7 @@ import {
   formatPlainSearchResults
 } from '../../src/apps/cli/retrieval-disclosure-output.js';
 import type { MemoryEvent } from '../../src/core/types.js';
+import { asStored } from '../helpers/stored-origin.js';
 
 describe('retrieval disclosure CLI output', () => {
   it('formats compact search envelopes with type badges, reasons, and source refs', () => {
@@ -20,7 +21,8 @@ describe('retrieval disclosure CLI output', () => {
           reasons: ['semantic_match', 'tool_followup'],
           sourceRef: 'event:e1',
           sessionId: 'session-1234567890',
-          metadata: { eventId: 'e1', eventType: 'tool_observation' }
+          metadata: { eventId: 'e1', eventType: 'tool_observation' },
+          origin: 'tool'
         }
       ],
       meta: {
@@ -214,7 +216,7 @@ describe('retrieval disclosure CLI output', () => {
 
   describe('source-trust labels (CLI reads are labelled, never filtered)', () => {
     const at = new Date('2026-02-24T00:00:00.000Z');
-    const row = (id: string, eventType: MemoryEvent['eventType'], metadata: Record<string, unknown> = {}): MemoryEvent => ({
+    const row = (id: string, eventType: MemoryEvent['eventType'], metadata: Record<string, unknown> = {}): MemoryEvent => asStored({
       id, sessionId: 'session-1234567890', eventType, content: `${id} content`, canonicalKey: id, dedupeKey: id, timestamp: at, metadata
     });
 
@@ -238,15 +240,17 @@ describe('retrieval disclosure CLI output', () => {
       expect(out).toContain('📌 tool_observation [low-trust: tool output] (2026-02-24)');
     });
 
-    it('labels a disclosure result from its row type, and one without a row type as unknown', () => {
-      const envelope = (id: string, metadata?: Record<string, unknown>) => ({
-        id, resultType: 'source', title: 'T', snippet: 's', score: 1, reasons: [], sourceRef: id, ...(metadata ? { metadata } : {})
+    it('labels a disclosure result by the origin the store gave its row, and one without as unknown', () => {
+      const envelope = (id: string, origin?: string, metadata?: Record<string, unknown>) => ({
+        id, resultType: 'source', title: 'T', snippet: 's', score: 1, reasons: [], sourceRef: id,
+        ...(origin ? { origin } : {}), ...(metadata ? { metadata } : {})
       });
       const out = formatDisclosureSearch({
         results: [
-          envelope('event:a', { eventId: 'a', eventType: 'agent_response' }),
-          envelope('event:p', { eventId: 'p', eventType: 'agent_response', mongoSync: {} }),
-          envelope('shared:x')
+          envelope('event:a', 'assistant'),
+          envelope('event:p', 'imported'),
+          // Metadata that claims a trusted type does not stand in for the store's origin.
+          envelope('shared:x', undefined, { eventType: 'agent_response' })
         ],
         meta: { total: 3, usedVector: false, usedKeyword: true, fallbackApplied: false }
       } as never);

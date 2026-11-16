@@ -37,7 +37,7 @@ import Database from 'better-sqlite3';
 import { makeSourceFileKey, normalizeFilePath } from '../../../core/canonical-key.js';
 import { CanonicalMemoryInjectionService } from '../../../core/operations/canonical-memory-injection-service.js';
 import {
-  classifyEventOrigin,
+  classifyStoredEvent,
   isAutoInjectionExcludableOrigin,
   memoryOriginLabel,
   type MemoryOrigin
@@ -279,7 +279,7 @@ function readTouches(db: SQLiteDatabase, request: PreEditMemoryRequest, target: 
     touches.set(row.id, {
       id: row.id,
       sessionId: row.session_id,
-      origin: classifyEventOrigin({ eventType: row.event_type, metadata: parseMetadata(row.metadata) }) === 'tool' ? 'tool' : 'unknown',
+      origin: classifyStoredEvent(row.event_type, row.metadata) === 'tool' ? 'tool' : 'unknown',
       at,
       toolName: typeof row.tool_name === 'string' ? row.tool_name : 'tool',
       failed: row.success === 0 || row.success === false,
@@ -287,16 +287,6 @@ function readTouches(db: SQLiteDatabase, request: PreEditMemoryRequest, target: 
     });
   }
   return [...touches.values()].sort((left, right) => right.at.getTime() - left.at.getTime());
-}
-
-/** The metadata column as stored: JSON text, or NULL. Unparseable text stays a string, which classifies as unknown. */
-function parseMetadata(value: unknown): unknown {
-  if (typeof value !== 'string') return value ?? undefined;
-  try {
-    return JSON.parse(value);
-  } catch {
-    return value;
-  }
 }
 
 /** Each session's latest summary among the newest summaries, in one bounded read. */
@@ -318,7 +308,7 @@ function latestSummaries(db: SQLiteDatabase, request: PreEditMemoryRequest, sess
     if (!sessionIds.includes(row.session_id) || Number.isNaN(at.getTime())) continue;
     const current = summaries.get(row.session_id);
     if (!current || at > current.at) {
-      const origin = classifyEventOrigin({ eventType: row.event_type, metadata: parseMetadata(row.metadata) });
+      const origin = classifyStoredEvent(row.event_type, row.metadata);
       summaries.set(row.session_id, { at, content: row.content, origin });
     }
   }

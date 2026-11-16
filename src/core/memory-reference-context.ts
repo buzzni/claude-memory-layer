@@ -1,5 +1,5 @@
 import { generateCitationId } from './citation-generator.js';
-import { classifyMemoryOrigin, memoryOriginLabel, type MemoryOrigin } from './memory-origin.js';
+import { eventOrigin, memoryOriginLabel, type MemoryOrigin } from './memory-origin.js';
 import { applyPrivacyFilter } from './privacy/index.js';
 import type { Config, MemoryEvent } from './types.js';
 
@@ -12,7 +12,7 @@ export interface MemoryReferenceItem {
   metadata?: Record<string, unknown>;
   memoryLevel?: string;
   sourceKind?: 'event' | 'lesson';
-  /** Overrides classification from `type` and `metadata`. */
+  /** As the store classified the row; an item without one is unknown. */
   origin?: MemoryOrigin;
 }
 
@@ -134,7 +134,7 @@ export function formatMemoryReferenceContext(
   const cards = resolvable.map((item, index) => {
     const source = sourceFor(item);
     const level = item.memoryLevel && item.memoryLevel !== 'L0' ? ` ${item.memoryLevel}` : '';
-    const originLabel = memoryOriginLabel(item.origin ?? classifyMemoryOrigin(item));
+    const originLabel = memoryOriginLabel(eventOrigin(item));
     return [
       `${index + 1}. Title: ${JSON.stringify(memoryReferenceTitle(item.content))}`,
       `   - Summary: ${JSON.stringify(memoryReferenceSummary(item.content, options.query))}`,
@@ -169,6 +169,7 @@ export function memoryEventReferenceItem(event: MemoryEvent): MemoryReferenceIte
     timestamp: event.timestamp,
     sessionId: event.sessionId,
     metadata: event.metadata,
+    origin: event.origin,
     sourceKind: 'event'
   };
 }

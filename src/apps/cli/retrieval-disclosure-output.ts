@@ -5,18 +5,11 @@ import type {
 } from '../../core/engine/retrieval-disclosure-service.js';
 import type { RetrievalResultEnvelope } from '../../core/model/retrieval-result.js';
 import type { UnifiedRetrievalResult } from '../../core/retriever.js';
-import { classifyEventOrigin, classifyMemoryOrigin, memoryOriginLabelSuffix } from '../../core/memory-origin.js';
+import { eventOrigin, memoryOriginLabelSuffix } from '../../core/memory-origin.js';
 
-/**
- * A disclosure envelope's origin: the service writes the row's own eventType
- * after its stored metadata. Without one (a shared entry) it is unknown.
- */
+/** The origin the store put on the envelope's row; a shared entry has none and is unknown. */
 function envelopeOriginSuffix(result: RetrievalResultEnvelope): string {
-  const eventType = result.metadata?.eventType;
-  return memoryOriginLabelSuffix(classifyMemoryOrigin({
-    type: typeof eventType === 'string' ? eventType : '',
-    metadata: result.metadata
-  }));
+  return memoryOriginLabelSuffix(eventOrigin(result));
 }
 
 /** Shared cross-project entries carry no row of this store to classify. */
@@ -36,7 +29,7 @@ export function formatPlainSearchResults(result: UnifiedRetrievalResult): string
   for (const memory of result.memories) {
     const date = memory.event.timestamp.toISOString().split('T')[0];
     lines.push('---');
-    lines.push(`📌 ${memory.event.eventType}${memoryOriginLabelSuffix(classifyEventOrigin(memory.event))} (${date})`);
+    lines.push(`📌 ${memory.event.eventType}${memoryOriginLabelSuffix(eventOrigin(memory.event))} (${date})`);
     lines.push(`   Score: ${memory.score.toFixed(3)}`);
     lines.push(`   Session: ${memory.event.sessionId.slice(0, 8)}...`);
     lines.push(`   Content: ${preview(memory.event.content, 200)}`);
