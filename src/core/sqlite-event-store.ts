@@ -254,7 +254,7 @@ function activeQuarantineStatusExpression(column = 'metadata'): string {
   return `COALESCE(json_extract(CASE WHEN json_valid(${column}) THEN ${column} ELSE '{}' END, '$.quarantine.status'), '')`;
 }
 
-function notActiveQuarantinedSql(column = 'metadata'): string {
+export function notActiveQuarantinedSql(column = 'metadata'): string {
   return `${activeQuarantineStatusExpression(column)} != 'active'`;
 }
 
@@ -5254,7 +5254,13 @@ export class SQLiteEventStore {
     }> = [];
 
     for (const turnRow of turnRows) {
-      const events = await this.getEventsByTurn(turnRow.turn_id, options);
+      // Scoped to the session too: a forked or re-imported transcript keeps
+      // its host turn ids under a new session id.
+      const events = sqliteAll<Record<string, unknown>>(
+        this.db,
+        `SELECT * FROM events WHERE turn_id = ? AND session_id = ? AND ${maybeQuarantinePredicate(options)} ORDER BY timestamp ASC`,
+        [turnRow.turn_id, sessionId]
+      ).map(this.rowToEvent);
 
       const promptEvent = events.find(e => e.eventType === 'user_prompt');
       const toolEvents = events.filter(e => e.eventType === 'tool_observation');
