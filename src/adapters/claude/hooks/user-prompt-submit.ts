@@ -19,7 +19,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { getLightweightMemoryServiceForProject } from '../../../services/memory-service.js';
-import { writeTurnState, readLastAssistantSnippet } from '../../../core/turn-state.js';
+import { writeTurnState, readLastAssistantSnippet, writePendingPrompt, clearPendingPrompt } from '../../../core/turn-state.js';
+import { recoverPendingPrompt } from './pending-prompt-recovery.js';
 import { retrieveSemanticMemories, scheduleSemanticGraduation, type SemanticMemory } from './semantic-daemon-client.js';
 import { readStdin, readNumberEnv } from './hook-runtime.js';
 import { reportRecallDiagnostic } from './recall-diagnostics.js';
@@ -818,6 +819,11 @@ export async function main(options: UserPromptSubmitMainOptions = {}): Promise<s
     // must never silently move recall to the global store or another project.
     stage = 'service';
     const memoryService = getLightweightMemoryServiceForProject(input.cwd);
+    // An earlier prompt whose hook was killed mid-retrieval and whose turn
+    // never reached Stop (interrupted) is stored now, before it is overwritten.
+    if (options.persistPrompt !== false && !isHookEvaluationMode()) {
+      await recoverPendingPrompt(memoryService, input.session_id);
+    }
     stage = 'retrieval';
 
     let context = '';
@@ -827,6 +833,21 @@ export async function main(options: UserPromptSubmitMainOptions = {}): Promise<s
     const adherenceDecision = shouldRunAdherenceCheck(currentTurn, prompt, adherenceState);
     logAdherenceDecision(currentTurn, adherenceDecision.run, adherenceDecision.reason);
 
+    const persistPrompt = shouldPersistSubmittedPrompt(prompt, options);
+    const storedPrompt = redactForStorage(prompt);
+    const promptMetadata = {
+      turnId,
+      adherence: {
+        checked: adherenceDecision.run,
+        reason: adherenceDecision.reason,
+        turn: currentTurn
+      },
+      ...promptClassifierMetadata(normalizedPrompt)
+    };
+    // The host kills a hook that overruns its timeout, and retrieval is where
+    // it would be. Leave the prompt where the session's next hook finds it.
+    if (persistPrompt) writePendingPrompt(input.session_id, storedPrompt, promptMetadata);
+
     // On first turn of a new session, backfill helpfulness for sessions
     // that ended without Stop hook (crash, force-close, etc.)
     if (!isHookEvaluationMode() && options.maintenance !== false && currentTurn === 1) {
@@ -835,7 +856,10 @@ export async function main(options: UserPromptSubmitMainOptions = {}): Promise<s
 
     // Search strategy: turn-1 always enforce adherence check,
     // then adaptively enforce on write-intent/continuation/decision/code/topic-shift/interval
-    if (ENABLE_SEARCH && shouldRunMemorySearch(prompt, adherenceDecision)) {
+    // Recall is best-effort: a failure here injects nothing, but the prompt
+    // below is still stored.
+    let retrievalFailed = false;
+    if (ENABLE_SEARCH && shouldRunMemorySearch(prompt, adherenceDecision)) { try {
       // On turn 2+, enrich ambiguous follow-up retrieval with the previous user prompt
       // and assistant response so short prompts ("그거 고쳐줘") resolve correctly.
       const lastSnippet = currentTurn > 1 ? readLastAssistantSnippet(input.session_id) : null;
@@ -1045,24 +1069,16 @@ export async function main(options: UserPromptSubmitMainOptions = {}): Promise<s
           } catch { /* non-critical */ }
         }
       }
-    }
+    } catch (error) {
+      retrievalFailed = true;
+      reportRecallDiagnostic({ event: 'UserPromptSubmit', stage, outcome: 'error', error });
+    } }
 
     // Persist after retrieval so the current prompt cannot be retrieved as an
     // exact keyword match and injected back into the same turn.
-    if (shouldPersistSubmittedPrompt(prompt, options)) {
-      await memoryService.storeUserPrompt(
-        input.session_id,
-        redactForStorage(prompt),
-        {
-          turnId,
-          adherence: {
-            checked: adherenceDecision.run,
-            reason: adherenceDecision.reason,
-            turn: currentTurn
-          },
-          ...promptClassifierMetadata(normalizedPrompt)
-        }
-      );
+    if (persistPrompt) {
+      await memoryService.storeUserPrompt(input.session_id, storedPrompt, promptMetadata);
+      clearPendingPrompt(input.session_id);
     }
 
     if (!isHookEvaluationMode()) {
@@ -1079,7 +1095,9 @@ export async function main(options: UserPromptSubmitMainOptions = {}): Promise<s
     }
 
     const output: UserPromptSubmitOutput = JSON.parse(formatClaudeContextHookOutput('UserPromptSubmit', context));
-    reportRecallDiagnostic({ event: 'UserPromptSubmit', stage: 'complete', outcome: context ? 'selected' : 'empty', contextChars: context.length });
+    if (!retrievalFailed) {
+      reportRecallDiagnostic({ event: 'UserPromptSubmit', stage: 'complete', outcome: context ? 'selected' : 'empty', contextChars: context.length });
+    }
     return JSON.stringify(output);
   } catch (error) {
     reportRecallDiagnostic({ event: 'UserPromptSubmit', stage, outcome: 'error', error: stage === 'input' ? { code: 'invalid_input' } : error });

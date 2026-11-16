@@ -20,6 +20,7 @@ import { readStdin } from './hook-runtime.js';
 import { recordStopPayloadDiagnostic } from './stop-payload-diagnostics.js';
 import { isStorableAgentResponse, normalizeAgentResponse, readMinAgentResponseLength } from './agent-response-normalization.js';
 import { scheduleSessionSummary } from './semantic-daemon-client.js';
+import { recoverPendingPrompt } from './pending-prompt-recovery.js';
 import { isLlmSummaryEnabled } from '../../llm/session-summary-llm.js';
 
 export async function main(): Promise<string> {
@@ -31,6 +32,9 @@ export async function main(): Promise<string> {
     // Stop has an explicit cwd; do not let a missing or stale session registry
     // redirect canonical writes to the global or another project store.
     const memoryService = getLightweightMemoryServiceForProject(input.cwd);
+
+    // A prompt hook killed mid-retrieval never stored this turn's prompt.
+    await recoverPendingPrompt(memoryService, input.session_id);
 
     // Read current turn_id from state file
     const turnState = readTurnStateDetails(input.session_id);
