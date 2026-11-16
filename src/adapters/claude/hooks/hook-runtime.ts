@@ -86,7 +86,8 @@ export function readStdin(options: { timeoutMs?: number } = {}): Promise<string>
  * rather than assumed delivered (specs R3).
  */
 function emitHookOutput(json: string): void {
-  const payload = json.endsWith('\n') ? json : `${json}\n`;
+  // An empty output stays empty: PreCompact's stdout becomes compaction instructions.
+  const payload = json === '' || json.endsWith('\n') ? json : `${json}\n`;
   process.stdout.write(payload, (error) => {
     void reportHookDelivery(error ? { status: 'failed', error } : { status: 'emitted' });
   });

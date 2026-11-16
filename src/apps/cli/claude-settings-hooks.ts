@@ -17,6 +17,7 @@ export interface ClaudeSettingsHooks {
   SessionStart?: ClaudeHookEntry[];
   Stop?: ClaudeHookEntry[];
   SessionEnd?: ClaudeHookEntry[];
+  PreCompact?: ClaudeHookEntry[];
   [key: string]: ClaudeHookEntry[] | undefined;
 }
 
@@ -32,7 +33,8 @@ export const REQUIRED_HOOK_FILES = [
   'stop.js',
   'session-end.js',
   'session-end-worker.js',
-  'session-end-handler.js'
+  'session-end-handler.js',
+  'pre-compact.js'
 ] as const;
 
 export const PLUGIN_HOOKS = {
@@ -40,7 +42,8 @@ export const PLUGIN_HOOKS = {
   UserPromptSubmit: 'user-prompt-submit.js',
   PostToolUse: 'post-tool-use.js',
   Stop: 'stop.js',
-  SessionEnd: 'session-end.js'
+  SessionEnd: 'session-end.js',
+  PreCompact: 'pre-compact.js'
 } as const;
 
 export type PluginHookName = keyof typeof PLUGIN_HOOKS;

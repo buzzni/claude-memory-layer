@@ -83,6 +83,7 @@ async function build() {
     'session-end-handler',
     'session-end',
     'session-end-worker',
+    'pre-compact',
     'codex-session-start',
     'codex-user-prompt-submit',
     'codex-session-end',

@@ -63,6 +63,35 @@ describe('Claude Code hook settings helpers', () => {
     ]);
   });
 
+  it('registers PreCompact on install, alongside the other five hooks', () => {
+    const merged = mergePluginHooksIntoSettings({}, '/plugin/dist');
+
+    expect(Object.keys(merged.hooks ?? {}).sort()).toEqual(
+      ['PostToolUse', 'PreCompact', 'SessionEnd', 'SessionStart', 'Stop', 'UserPromptSubmit']
+    );
+    expect(merged.hooks?.PreCompact).toEqual([
+      { matcher: '', hooks: [{ type: 'command', command: "node '/plugin/dist/hooks/pre-compact.js'" }] }
+    ]);
+  });
+
+  it('adds PreCompact when install runs again over an install made before it existed', () => {
+    const { PreCompact: _added, ...earlierHooks } = getHooksConfig('/plugin/dist');
+    const userPreCompact = { matcher: 'manual', hooks: [{ type: 'command', command: 'node /other/pre-compact-notes.js' }] };
+
+    const merged = mergePluginHooksIntoSettings({ hooks: { ...earlierHooks, PreCompact: [userPreCompact] } }, '/plugin/dist');
+
+    expect(merged.hooks).toEqual({
+      ...getHooksConfig('/plugin/dist'),
+      PreCompact: [userPreCompact, ...getHooksConfig('/plugin/dist').PreCompact!]
+    });
+  });
+
+  it('uninstall removes PreCompact with the other hooks', () => {
+    const removed = removePluginHooksFromSettings({ hooks: getHooksConfig('/plugin/dist') }, '/plugin/dist');
+
+    expect(removed.hooks).toBeUndefined();
+  });
+
   it('uninstall removes only claude-memory-layer hook commands and leaves other hooks intact', () => {
     const settings: ClaudeSettingsWithHooks = {
       hooks: {
@@ -114,7 +143,7 @@ describe('Claude Code hook settings helpers', () => {
       existsImpl: (target) => { targets.push(target); return true; },
       realpathImpl: (target) => target
     });
-    expect(checks).toHaveLength(5);
+    expect(checks).toHaveLength(6);
     expect(checks.every((check) => check.status === 'current')).toBe(true);
     expect(targets.every((target) => target.startsWith(`${pluginPath}/hooks/`))).toBe(true);
   });
@@ -162,7 +191,7 @@ describe('Claude Code hook settings helpers', () => {
     });
     expect(checks.filter((check) => check.status === 'unverifiable').map((check) => check.hookName))
       .toEqual(['Stop', 'SessionEnd']);
-    expect(checkedTargets).toHaveLength(3);
+    expect(checkedTargets).toHaveLength(4);
   });
 
   it('does not declare unquoted glob or brace expansion targets current', () => {
