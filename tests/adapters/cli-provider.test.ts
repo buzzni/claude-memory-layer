@@ -4,7 +4,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 const spawnMock = vi.hoisted(() => vi.fn());
 vi.mock('child_process', () => ({ spawn: spawnMock }));
 
-import { buildCliProviderEnv, classifyCliProviderFailure, runCliProvider } from '../../src/adapters/llm/cli-provider.js';
+import {
+  MAX_CLI_TIMEOUT_MS,
+  buildCliProviderEnv,
+  classifyCliProviderFailure,
+  resolveCliTimeoutMs,
+  runCliProvider
+} from '../../src/adapters/llm/cli-provider.js';
 import type { CircuitAdmission, ProviderCircuitBreaker } from '../../src/adapters/llm/provider-circuit-breaker.js';
 
 function fakeChild() {
@@ -203,5 +209,32 @@ describe('runCliProvider circuit breaker', () => {
     child.emit('close', 1);
     await expect(pending).rejects.toMatchObject({ code: 'provider-rate-limit' });
     expect(breaker.recordFailure).toHaveBeenCalledWith('claude', 'provider-rate-limit', probe);
+  });
+});
+
+describe('CLI timeout cap', () => {
+  afterEach(() => { spawnMock.mockReset(); });
+
+  it('clamps a configured timeout above the cap', () => {
+    expect(resolveCliTimeoutMs(String(25 * 60 * 60_000))).toBe(MAX_CLI_TIMEOUT_MS);
+    expect(resolveCliTimeoutMs('600000')).toBe(600_000);
+  });
+
+  it('clamps an explicit timeout too, so the probe lease always covers the call', async () => {
+    const breaker = {
+      admit: vi.fn(() => ({ allowed: false, nextProbeAt: '2026-01-01T00:05:00.000Z' }) as CircuitAdmission),
+      recordSuccess: vi.fn(),
+      recordFailure: vi.fn()
+    };
+    await runCliProvider({
+      provider: 'claude',
+      model: null,
+      prompt: 'hi',
+      timeoutMs: 25 * 60 * 60_000,
+      scratchDirName: 'cml-test',
+      label: 'test provider',
+      breaker
+    }).catch(() => undefined);
+    expect(breaker.admit).toHaveBeenCalledWith('claude', MAX_CLI_TIMEOUT_MS + 60_000);
   });
 });

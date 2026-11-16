@@ -26,11 +26,18 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import { CIRCUIT_OPEN_CODE, PROBE_LEASE_MARGIN_MS, ProviderCircuitBreaker } from './provider-circuit-breaker.js';
+import {
+  CIRCUIT_OPEN_CODE,
+  MAX_PROVIDER_CALL_MS,
+  PROBE_LEASE_MARGIN_MS,
+  ProviderCircuitBreaker
+} from './provider-circuit-breaker.js';
 
 export type CliProviderName = 'claude' | 'codex';
 
 export const DEFAULT_CLI_TIMEOUT_MS = 120_000;
+/** Configured or explicit timeouts above this run with this; the breaker's probe lease relies on it. */
+export const MAX_CLI_TIMEOUT_MS = MAX_PROVIDER_CALL_MS;
 
 const FAILURE_STDOUT_TAIL_CHARS = 500;
 
@@ -153,7 +160,8 @@ export interface RunCliProviderOptions {
  * CLI start per call.
  */
 export async function runCliProvider(options: RunCliProviderOptions): Promise<string> {
-  const { provider, label, timeoutMs } = options;
+  const { provider, label } = options;
+  const timeoutMs = Math.min(options.timeoutMs, MAX_CLI_TIMEOUT_MS);
   const breaker = options.breaker ?? new ProviderCircuitBreaker();
   // The call is killed at timeoutMs, so a probe's outcome lands within its lease.
   const admission = breaker.admit(provider, timeoutMs + PROBE_LEASE_MARGIN_MS);
@@ -164,7 +172,7 @@ export async function runCliProvider(options: RunCliProviderOptions): Promise<st
     );
   }
   try {
-    const output = await spawnCliProvider(options);
+    const output = await spawnCliProvider({ ...options, timeoutMs });
     breaker.recordSuccess(provider, admission);
     return output;
   } catch (error) {
@@ -233,5 +241,5 @@ export function resolveCliTimeoutMs(
   fallback: number = DEFAULT_CLI_TIMEOUT_MS
 ): number {
   const parsed = Number(configured);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+  return Number.isFinite(parsed) && parsed > 0 ? Math.min(parsed, MAX_CLI_TIMEOUT_MS) : fallback;
 }

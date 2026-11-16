@@ -28,7 +28,7 @@ const open = (overrides: Partial<ProviderCircuitState> = {}): ProviderCircuitSta
 
 describe('checkProviderBreaker', () => {
   it('passes when every provider circuit is closed', () => {
-    expect(checkProviderBreaker({ enabled: true, states: {}, pendingSummaries: 0 })).toEqual({
+    expect(checkProviderBreaker({ enabled: true, states: {}, pendingSummaries: 0, clampedTimeouts: [] })).toEqual({
       name: 'llm-provider-breaker',
       status: 'pass',
       detail: 'closed'
@@ -36,7 +36,7 @@ describe('checkProviderBreaker', () => {
   });
 
   it('warns with the reason, next probe and kept summaries while a circuit is open', () => {
-    const result = checkProviderBreaker({ enabled: true, states: { claude: open() }, pendingSummaries: 4 });
+    const result = checkProviderBreaker({ enabled: true, states: { claude: open() }, pendingSummaries: 4, clampedTimeouts: [] });
     expect(result).toMatchObject({
       name: 'llm-provider-breaker',
       status: 'warn',
@@ -47,21 +47,35 @@ describe('checkProviderBreaker', () => {
   });
 
   it('points at the login when authentication opened the circuit', () => {
-    const result = checkProviderBreaker({ enabled: true, states: { codex: open({ reason: 'provider-auth' }) }, pendingSummaries: 0 });
+    const result = checkProviderBreaker({ enabled: true, states: { codex: open({ reason: 'provider-auth' }) }, pendingSummaries: 0, clampedTimeouts: [] });
     expect(result.fix).toContain('Log in to the codex CLI');
   });
 
   it('reports a failure streak below the threshold and kept summaries while closed', () => {
     const streak = open({ state: 'closed', consecutiveFailures: 2, openedAt: null, nextProbeAt: null, cooldownMs: null });
-    expect(checkProviderBreaker({ enabled: true, states: { claude: streak }, pendingSummaries: 1 })).toEqual({
+    expect(checkProviderBreaker({ enabled: true, states: { claude: streak }, pendingSummaries: 1, clampedTimeouts: [] })).toEqual({
       name: 'llm-provider-breaker',
       status: 'pass',
       detail: 'closed (claude: 2 consecutive provider-rate-limit failures); 1 skipped session summary kept for after recovery'
     });
   });
 
+  it('warns that a CLI timeout above the cap runs with the cap', () => {
+    expect(checkProviderBreaker({
+      enabled: true,
+      states: {},
+      pendingSummaries: 0,
+      clampedTimeouts: [{ name: 'CLAUDE_MEMORY_SUMMARY_TIMEOUT_MS', configuredMs: 7_200_000 }]
+    })).toEqual({
+      name: 'llm-provider-breaker',
+      status: 'warn',
+      detail: 'closed; CLAUDE_MEMORY_SUMMARY_TIMEOUT_MS=7200000 is above the 1800000 ms cap, calls run with 1800000',
+      fix: 'Set CLAUDE_MEMORY_SUMMARY_TIMEOUT_MS to 1800000 or less'
+    });
+  });
+
   it('says when this shell has the breaker turned off', () => {
-    expect(checkProviderBreaker({ enabled: false, states: {}, pendingSummaries: 0 }).detail)
+    expect(checkProviderBreaker({ enabled: false, states: {}, pendingSummaries: 0, clampedTimeouts: [] }).detail)
       .toBe('disabled in this shell (CLAUDE_MEMORY_LLM_BREAKER=off)');
   });
 });
@@ -79,7 +93,12 @@ describe('gatherProviderBreakerFacts', () => {
     breaker.recordFailure('claude', 'provider-auth', { allowed: true, probe: false });
     savePendingSummary('s1', { homeDir, now: () => now });
 
-    const facts = gatherProviderBreakerFacts({ env: {}, homeDir, now: () => now });
+    const facts = gatherProviderBreakerFacts({
+      env: { CLAUDE_MEMORY_LESSON_TIMEOUT_MS: '99999999', CLAUDE_MEMORY_SUMMARY_TIMEOUT_MS: '60000' },
+      homeDir,
+      now: () => now
+    });
+    expect(facts.clampedTimeouts).toEqual([{ name: 'CLAUDE_MEMORY_LESSON_TIMEOUT_MS', configuredMs: 99_999_999 }]);
     expect(facts.enabled).toBe(true);
     expect(facts.states.claude).toMatchObject({ state: 'open', reason: 'provider-auth' });
     expect(facts.pendingSummaries).toBe(1);

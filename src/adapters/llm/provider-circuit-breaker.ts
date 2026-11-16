@@ -31,20 +31,22 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-import { WorkerLock } from '../../core/worker-lock.js';
+import type { WorkerLock } from '../../core/worker-lock.js';
+import { acquireWorkerLockWithin, releaseQuietly } from './lock-within.js';
 
 /** CliProviderError code for a call the open breaker skipped. */
 export const CIRCUIT_OPEN_CODE = 'provider-circuit-open';
 
 const PERSISTENT_FAILURE_CODES = new Set(['provider-auth', 'provider-rate-limit']);
 
+/** The longest a provider call may run; cli-provider clamps every CLI timeout to it. */
+export const MAX_PROVIDER_CALL_MS = 30 * 60_000;
 /** Added to the caller's CLI timeout for the probe lease: lock and spawn overhead. */
 export const PROBE_LEASE_MARGIN_MS = 60_000;
-/** No CLI call runs this long; a longer lease comes from a damaged file. */
-const MAX_PROBE_LEASE_MS = 24 * 60 * 60_000;
+/** Longest lease admit() grants; a longer one in the file comes from a damaged file. */
+export const MAX_PROBE_LEASE_MS = MAX_PROVIDER_CALL_MS + PROBE_LEASE_MARGIN_MS;
 /** The lock is held for one read and one write; a live holder frees it within this. */
-const LOCK_ATTEMPTS = 20;
-const LOCK_RETRY_MS = 10;
+const LOCK_DEADLINE_MS = 200;
 
 export interface ProviderCircuitConfig {
   enabled: boolean;
@@ -149,10 +151,6 @@ export function readProviderCircuitStates(
   return readStateFile(filePath);
 }
 
-function sleepSync(ms: number): void {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
-
 export class ProviderCircuitBreaker {
   private readonly filePath: string;
   private readonly now: () => number;
@@ -189,7 +187,7 @@ export class ProviderCircuitBreaker {
         ...current,
         probeClaimId: claimId,
         probeClaimedAt: this.iso(now),
-        probeLeaseUntil: this.iso(now + leaseMs),
+        probeLeaseUntil: this.iso(now + Math.min(Math.max(leaseMs, 0), MAX_PROBE_LEASE_MS)),
         updatedAt: this.iso(now)
       };
       return { allowed: true, probe: true, claimId };
@@ -307,25 +305,15 @@ export class ProviderCircuitBreaker {
     } catch {
       return undefined;
     } finally {
-      try {
-        lock?.release();
-      } catch {
-        // An unreleasable lock is taken over once this process exits.
-      }
+      releaseQuietly(lock);
     }
   }
 
   private acquireLock(): WorkerLock | null {
     fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
-    for (let attempt = 0; attempt < LOCK_ATTEMPTS; attempt += 1) {
-      // A fresh owner id per acquisition: release() then only ever removes this one.
-      const lock = new WorkerLock(`${this.filePath}.lock`, {
-        now: () => new Date(this.now()),
-        ...(this.isProcessRunning ? { isProcessRunning: this.isProcessRunning } : {})
-      });
-      if (lock.acquire().acquired) return lock;
-      sleepSync(LOCK_RETRY_MS);
-    }
-    return null;
+    return acquireWorkerLockWithin(`${this.filePath}.lock`, LOCK_DEADLINE_MS, {
+      now: () => new Date(this.now()),
+      ...(this.isProcessRunning ? { isProcessRunning: this.isProcessRunning } : {})
+    });
   }
 }

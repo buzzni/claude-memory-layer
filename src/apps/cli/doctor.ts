@@ -33,7 +33,7 @@ import {
 } from './claude-settings-hooks.js';
 import type { McpClientConfigRead, RegisteredMcpServer } from './mcp-client-config.js';
 import type { PendingSessionEndJob } from '../../adapters/claude/hooks/session-end-pending.js';
-import { buildCliProviderEnv, type CliProviderName } from '../../adapters/llm/cli-provider.js';
+import { MAX_CLI_TIMEOUT_MS, buildCliProviderEnv, type CliProviderName } from '../../adapters/llm/cli-provider.js';
 import { getSummaryProviderName, isLlmSummaryEnabled } from '../../adapters/llm/session-summary-llm.js';
 import {
   getProviderCircuitStatePath,
@@ -558,7 +558,11 @@ export interface ProviderBreakerFacts {
   enabled: boolean;
   states: Record<string, ProviderCircuitState>;
   pendingSummaries: number;
+  /** CLI timeout settings above MAX_CLI_TIMEOUT_MS; they run with the cap. */
+  clampedTimeouts: Array<{ name: string; configuredMs: number }>;
 }
+
+const CLI_TIMEOUT_ENV_KEYS = ['CLAUDE_MEMORY_SUMMARY_TIMEOUT_MS', 'CLAUDE_MEMORY_LESSON_TIMEOUT_MS'] as const;
 
 /**
  * An open breaker skips every summary and lesson extraction without an error
@@ -569,6 +573,11 @@ export function checkProviderBreaker(facts: ProviderBreakerFacts): DoctorCheckRe
   const kept = facts.pendingSummaries === 0
     ? ''
     : `; ${facts.pendingSummaries} skipped session ${facts.pendingSummaries === 1 ? 'summary' : 'summaries'} kept for after recovery`;
+  const clamped = facts.clampedTimeouts
+    .map(({ name: key, configuredMs }) =>
+      `; ${key}=${configuredMs} is above the ${MAX_CLI_TIMEOUT_MS} ms cap, calls run with ${MAX_CLI_TIMEOUT_MS}`)
+    .join('');
+  const clampFixes = facts.clampedTimeouts.map(({ name: key }) => `Set ${key} to ${MAX_CLI_TIMEOUT_MS} or less`);
   const entries = Object.entries(facts.states);
   const open = entries.filter(([, state]) => state.state === 'open');
   if (open.length > 0) {
@@ -577,30 +586,37 @@ export function checkProviderBreaker(facts: ProviderBreakerFacts): DoctorCheckRe
       status: 'warn',
       detail: open
         .map(([provider, state]) => `${provider} open since ${state.openedAt} (${state.reason}), next probe at ${state.nextProbeAt}`)
-        .join(' | ') + kept,
-      fix: open
-        .map(([provider, state]) => state.reason === 'provider-auth'
+        .join(' | ') + kept + clamped,
+      fix: [
+        ...open.map(([provider, state]) => state.reason === 'provider-auth'
           ? `Log in to the ${provider} CLI; the next probe closes the circuit`
-          : `Wait for the ${provider} usage limit to reset; the next probe closes the circuit`)
-        .join(' | ')
+          : `Wait for the ${provider} usage limit to reset; the next probe closes the circuit`),
+        ...clampFixes
+      ].join(' | ')
     };
-  }
-  if (!facts.enabled) {
-    return { name, status: 'pass', detail: `disabled in this shell (CLAUDE_MEMORY_LLM_BREAKER=off)${kept}` };
   }
   const streaks = entries
     .filter(([, state]) => state.consecutiveFailures > 0)
     .map(([provider, state]) => `${provider}: ${state.consecutiveFailures} consecutive ${state.reason} failures`);
-  return { name, status: 'pass', detail: `closed${streaks.length > 0 ? ` (${streaks.join(', ')})` : ''}${kept}` };
+  const detail = facts.enabled
+    ? `closed${streaks.length > 0 ? ` (${streaks.join(', ')})` : ''}${kept}${clamped}`
+    : `disabled in this shell (CLAUDE_MEMORY_LLM_BREAKER=off)${kept}${clamped}`;
+  return clampFixes.length > 0
+    ? { name, status: 'warn', detail, fix: clampFixes.join(' | ') }
+    : { name, status: 'pass', detail };
 }
 
 export function gatherProviderBreakerFacts(
   deps: { env?: NodeJS.ProcessEnv; homeDir?: string; now?: () => number } = {}
 ): ProviderBreakerFacts {
+  const env = deps.env ?? process.env;
   return {
-    enabled: resolveProviderCircuitConfig(deps.env ?? process.env).enabled,
+    enabled: resolveProviderCircuitConfig(env).enabled,
     states: readProviderCircuitStates(getProviderCircuitStatePath(deps.homeDir)),
-    pendingSummaries: listPendingSummaries({ homeDir: deps.homeDir, now: deps.now }).length
+    pendingSummaries: listPendingSummaries({ homeDir: deps.homeDir, now: deps.now }).length,
+    clampedTimeouts: CLI_TIMEOUT_ENV_KEYS
+      .map((key) => ({ name: key, configuredMs: Number(env[key]) }))
+      .filter(({ configuredMs }) => Number.isFinite(configuredMs) && configuredMs > MAX_CLI_TIMEOUT_MS)
   };
 }
 

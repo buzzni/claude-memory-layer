@@ -4,6 +4,7 @@ import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
+  MAX_PROBE_LEASE_MS,
   ProviderCircuitBreaker,
   getProviderCircuitStatePath,
   readProviderCircuitStates,
@@ -276,6 +277,17 @@ describe('ProviderCircuitBreaker fails open', () => {
       probeClaimedAt: '2026-01-01T06:00:00.000Z',
       probeLeaseUntil: '2026-01-01T07:00:00.000Z'
     }));
+    expect(breaker().admit('claude', LEASE)).toMatchObject({ allowed: true, probe: true });
+  });
+
+  it('never grants a lease longer than the longest allowed CLI call (review case: 25-hour lease)', () => {
+    const subject = breaker();
+    trip(subject);
+    clock = START + 60_000;
+    expect(subject.admit('claude', 25 * 60 * 60_000)).toMatchObject({ allowed: true, probe: true });
+    expect(Date.parse(claude()!.probeLeaseUntil!) - clock).toBe(MAX_PROBE_LEASE_MS);
+    expect(breaker().admit('claude', 25 * 60 * 60_000)).toMatchObject({ allowed: false });
+    clock += MAX_PROBE_LEASE_MS;
     expect(breaker().admit('claude', LEASE)).toMatchObject({ allowed: true, probe: true });
   });
 
