@@ -276,7 +276,7 @@ TMP_DIR=""
 
 if [[ "$NO_GIT" -eq 0 ]]; then
   log "Creating release commit"
-  git add package.json package-lock.json .claude-plugin/plugin.json
+  git add package.json package-lock.json .claude-plugin/plugin.json .claude-plugin/marketplace.json
   git commit -m "chore(release): v${NEW_VERSION}"
 fi
 

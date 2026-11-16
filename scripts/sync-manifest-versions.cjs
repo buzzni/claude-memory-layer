@@ -24,7 +24,10 @@ const ROOT = path.resolve(__dirname, '..');
  * copy follows from the source and is not listed separately.
  */
 const VERSION_MANIFESTS = [
-  { path: '.claude-plugin/plugin.json', versionHolders: (data) => [data] }
+  { path: '.claude-plugin/plugin.json', versionHolders: (data) => [data] },
+  // plugin.json wins at install time; the entry is kept equal so `claude plugin
+  // validate` does not warn and the catalog shows the version users get.
+  { path: '.claude-plugin/marketplace.json', versionHolders: (data) => data.plugins || [] }
 ];
 
 function readJson(relativePath) {
