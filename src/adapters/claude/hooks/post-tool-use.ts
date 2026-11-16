@@ -127,6 +127,34 @@ function isToolSuccess(response: PostToolUseInput['tool_response']): boolean {
   return true;
 }
 
+/**
+ * Tool observation config with the env blocklist override applied.
+ * Shared with the PostToolUseFailure hook so both skip the same tools.
+ */
+export function resolveToolObservationConfig(): Config['toolObservation'] {
+  const config = { ...DEFAULT_CONFIG };
+
+  // Allow env-based blocklist override
+  const envBlocklist = process.env.CLAUDE_MEMORY_TOOL_BLOCKLIST;
+  if (envBlocklist !== undefined) {
+    config.excludedTools = envBlocklist.split(',').map((s) => s.trim()).filter(Boolean);
+  }
+  return config;
+}
+
+/** True when the config stores observations of this tool at all. */
+export function isToolObserved(config: Config['toolObservation'], toolName: string): boolean {
+  return config.enabled && !config.excludedTools?.includes(toolName);
+}
+
+/** Privacy-filter and truncate tool output text before it is stored. */
+export function maskToolOutput(text: string, config: Config['toolObservation']): string {
+  return truncateOutput(applyPrivacyFilter(text, DEFAULT_PRIVACY_CONFIG).content, {
+    maxLength: config.maxOutputLength,
+    maxLines: config.maxOutputLines
+  });
+}
+
 export async function main(): Promise<string> {
   // Read input from stdin. Guard the parse so a malformed/empty body still emits
   // a valid envelope instead of throwing past the hook into an unhandled rejection.
@@ -137,22 +165,10 @@ export async function main(): Promise<string> {
     return JSON.stringify({});
   }
 
-  const config = { ...DEFAULT_CONFIG };
-  const privacyConfig = DEFAULT_PRIVACY_CONFIG;
+  const config = resolveToolObservationConfig();
 
-  // Allow env-based blocklist override
-  const envBlocklist = process.env.CLAUDE_MEMORY_TOOL_BLOCKLIST;
-  if (envBlocklist !== undefined) {
-    config.excludedTools = envBlocklist.split(',').map((s) => s.trim()).filter(Boolean);
-  }
-
-  // 1. Check if tool observation is enabled
-  if (!config.enabled) {
-    return JSON.stringify({});
-  }
-
-  // 2. Check if tool is excluded
-  if (config.excludedTools?.includes(input.tool_name)) {
+  // 1-2. Check if tool observation is enabled and the tool is not excluded
+  if (!isToolObserved(config, input.tool_name)) {
     return JSON.stringify({});
   }
 
@@ -173,21 +189,31 @@ export async function main(): Promise<string> {
     return JSON.stringify({});
   }
 
+  return storeToolCall(input, config, {
+    toolOutput,
+    success,
+    errorMessage: input.tool_response?.stderr || undefined
+  });
+}
+
+/**
+ * Store one tool call as a tool_observation (steps 5-10). Also used by the
+ * PostToolUseFailure hook, which has no tool_response to read.
+ */
+export async function storeToolCall(
+  input: Pick<PostToolUseInput, 'session_id' | 'tool_name' | 'tool_input'>,
+  config: Config['toolObservation'],
+  call: { toolOutput: string; success: boolean; errorMessage?: string }
+): Promise<string> {
+  const { toolOutput, success } = call;
   try {
     const memoryService = getLightweightMemoryService(input.session_id);
 
     // 5. Mask sensitive data in input
     const maskedInput = maskSensitiveInput(input.tool_input);
 
-    // 6. Apply privacy filter to output
-    const filterResult = applyPrivacyFilter(toolOutput, privacyConfig);
-    const maskedOutput = filterResult.content;
-
-    // 7. Truncate output
-    const truncatedOutput = truncateOutput(maskedOutput, {
-      maxLength: config.maxOutputLength,
-      maxLines: config.maxOutputLines
-    });
+    // 6-7. Apply privacy filter to output and truncate it
+    const truncatedOutput = maskToolOutput(toolOutput, config);
 
     // 8. Extract metadata
     const metadata = extractMetadata(
@@ -207,7 +233,7 @@ export async function main(): Promise<string> {
       toolOutput: truncatedOutput,
       durationMs: 0, // Claude Code doesn't provide timing info
       success,
-      errorMessage: input.tool_response?.stderr || undefined,
+      errorMessage: call.errorMessage,
       metadata: {
         ...metadata,
         ...(turnId ? { turnId } : {})
