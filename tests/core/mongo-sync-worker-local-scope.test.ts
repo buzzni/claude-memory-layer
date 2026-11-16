@@ -96,13 +96,26 @@ describe('MongoSyncWorker pull re-homes events to the local project', () => {
     });
   });
 
-  it('leaves pulled metadata as it was when no local project is configured', async () => {
+  it('keeps pulled scope as it was when no local project is configured, marking only the origin', async () => {
     const sync = worker();
     const metadata = { scope: { project: { hash: 'aaaaaaaa' } }, tags: ['proj:aaaaaaaa'] };
     connectFake(sync, [remoteDoc(1, metadata)]);
 
     await sync.syncNow();
 
-    expect((await store.getEvent('event-1'))?.metadata).toEqual(metadata);
+    expect((await store.getEvent('event-1'))?.metadata).toEqual({ ...metadata, mongoSync: { originHostname: 'machine-a' } });
+  });
+
+  // Recall labels pulled rows as imported (src/core/memory-origin.ts), so every pull must leave the marker.
+  it('marks a row pulled within the same project hash as from another origin', async () => {
+    const sync = worker({ hash: 'bbbbbbbb', path: '/home/b/work/proj' });
+    const metadata = { scope: { project: { hash: 'bbbbbbbb' } }, tags: ['proj:bbbbbbbb'], importedFrom: '/home/a/.codex/sessions/a.jsonl' };
+    const unnamed = { ...remoteDoc(2, null), source: {} };
+    connectFake(sync, [remoteDoc(1, metadata), unnamed]);
+
+    await sync.syncNow();
+
+    expect((await store.getEvent('event-1'))?.metadata).toEqual({ ...metadata, mongoSync: { originHostname: 'machine-a' } });
+    expect((await store.getEvent('event-2'))?.metadata).toMatchObject({ mongoSync: {} });
   });
 });

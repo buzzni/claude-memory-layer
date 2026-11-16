@@ -646,16 +646,24 @@ export class MongoSyncWorker {
   }
 
   private async importPulled(docs: RemoteEventDoc[]): Promise<number> {
-    const events: MemoryEvent[] = docs.map((d) => ({
-      id: d.eventId,
-      eventType: d.eventType as any,
-      sessionId: d.sessionId,
-      timestamp: d.timestamp instanceof Date ? d.timestamp : new Date(d.timestamp),
-      content: d.content,
-      canonicalKey: d.canonicalKey,
-      dedupeKey: d.dedupeKey,
-      metadata: this.config.localProject ? localizePulledMetadata(d, this.config.localProject) : d.metadata ?? undefined
-    }));
+    const events: MemoryEvent[] = docs.map((d) => {
+      const metadata = this.config.localProject ? localizePulledMetadata(d, this.config.localProject) : { ...d.metadata };
+      // Pull never returns this store's own rows, so every pulled row is marked as from another origin
+      // (recall labels it, src/core/memory-origin.ts). A re-homed row already carries the record.
+      if (!isRecord(metadata.mongoSync)) {
+        metadata.mongoSync = d.source?.hostname ? { originHostname: d.source.hostname } : {};
+      }
+      return {
+        id: d.eventId,
+        eventType: d.eventType as any,
+        sessionId: d.sessionId,
+        timestamp: d.timestamp instanceof Date ? d.timestamp : new Date(d.timestamp),
+        content: d.content,
+        canonicalKey: d.canonicalKey,
+        dedupeKey: d.dedupeKey,
+        metadata
+      };
+    });
     return (await this.sqliteStore.importEvents(events)).inserted;
   }
 }
