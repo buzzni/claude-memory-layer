@@ -101,18 +101,19 @@ function guardProvenance() {
 function guardManifestVersions() {
   const { version } = readPackageJson();
   const mismatches = VERSION_MANIFESTS.flatMap((manifest) => {
-    const manifestPath = path.join(ROOT, manifest);
-    if (!fs.existsSync(manifestPath)) return [`${manifest} is missing`];
-    const manifestVersion = JSON.parse(fs.readFileSync(manifestPath, 'utf8')).version;
-    return manifestVersion === version
-      ? []
-      : [`${manifest} has version ${JSON.stringify(manifestVersion)}, package.json has ${JSON.stringify(version)}`];
+    const manifestPath = path.join(ROOT, manifest.path);
+    if (!fs.existsSync(manifestPath)) return [`${manifest.path} is missing`];
+    const holders = manifest.versionHolders(JSON.parse(fs.readFileSync(manifestPath, 'utf8')));
+    if (holders.length === 0) return [`${manifest.path} has no version field`];
+    return holders
+      .filter((holder) => holder.version !== version)
+      .map((holder) => `${manifest.path} has version ${JSON.stringify(holder.version)}, package.json has ${JSON.stringify(version)}`);
   });
   if (mismatches.length) {
     fail(`manifest versions disagree with package.json (run node scripts/sync-manifest-versions.cjs):\n  ${mismatches.join('\n  ')}`);
   }
 
-  console.log(JSON.stringify({ check: 'manifest-versions', version, manifests: VERSION_MANIFESTS, ok: true }));
+  console.log(JSON.stringify({ check: 'manifest-versions', version, manifests: VERSION_MANIFESTS.map((manifest) => manifest.path), ok: true }));
 }
 
 /**

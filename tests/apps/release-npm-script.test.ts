@@ -7,7 +7,7 @@ import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const { VERSION_MANIFESTS } = createRequire(import.meta.url)('../../scripts/sync-manifest-versions.cjs') as {
-  VERSION_MANIFESTS: string[];
+  VERSION_MANIFESTS: Array<{ path: string }>;
 };
 
 describe('release npm script safety gates', () => {
@@ -42,7 +42,7 @@ describe('release npm script safety gates', () => {
     const releaseCommitAdd = script.split('\n').find((line) => line.trim().startsWith('git add package.json'));
     expect(releaseCommitAdd).toBeDefined();
     for (const manifest of VERSION_MANIFESTS) {
-      expect(releaseCommitAdd).toContain(manifest);
+      expect(releaseCommitAdd).toContain(manifest.path);
     }
   });
 
