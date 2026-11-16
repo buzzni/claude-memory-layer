@@ -13,6 +13,7 @@ import type {
   WorkingSetItem
 } from './types.js';
 import { EventStore } from './event-store.js';
+import { classifyStoredEvent } from './memory-origin.js';
 
 export class WorkingSetStore {
   constructor(
@@ -75,7 +76,8 @@ export class WorkingSetStore {
       content: row.content as string,
       canonicalKey: row.canonical_key as string,
       dedupeKey: row.dedupe_key as string,
-      metadata: row.metadata ? JSON.parse(row.metadata as string) : undefined
+      metadata: row.metadata ? JSON.parse(row.metadata as string) : undefined,
+      origin: classifyStoredEvent(row.event_type, row.metadata)
     }));
 
     return {

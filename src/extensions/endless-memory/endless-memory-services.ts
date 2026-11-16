@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
 
 import type { EventStore } from '../../core/event-store.js';
+import { eventOrigin, memoryOriginLabelSuffix } from '../../core/memory-origin.js';
 import {
   createWorkingSetStore,
   type WorkingSetStore
@@ -316,7 +317,7 @@ class DefaultEndlessMemoryServices implements EndlessMemoryServices {
       for (const event of recent) {
         const preview = event.content.slice(0, 80) + (event.content.length > 80 ? '...' : '');
         const time = event.timestamp.toLocaleTimeString();
-        parts.push(`- ${time} [${event.eventType}] ${preview}`);
+        parts.push(`- ${time} [${event.eventType}]${memoryOriginLabelSuffix(eventOrigin(event))} ${preview}`);
       }
     }
 

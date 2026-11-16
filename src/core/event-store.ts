@@ -12,6 +12,7 @@ import {
   OutboxItem
 } from './types.js';
 import { makeCanonicalKey, makeDedupeKey } from './canonical-key.js';
+import { classifyStoredEvent } from './memory-origin.js';
 import { createDatabase, dbRun, dbAll, dbClose, toDate, type Database, type DatabaseOptions } from './db-wrapper.js';
 
 export type EventStoreOptions = DatabaseOptions;
@@ -811,7 +812,8 @@ export class EventStore {
       content: row.content as string,
       canonicalKey: row.canonical_key as string,
       dedupeKey: row.dedupe_key as string,
-      metadata: row.metadata ? JSON.parse(row.metadata as string) : undefined
+      metadata: row.metadata ? JSON.parse(row.metadata as string) : undefined,
+      origin: classifyStoredEvent(row.event_type, row.metadata)
     };
   }
 }

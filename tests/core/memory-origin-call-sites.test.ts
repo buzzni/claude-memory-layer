@@ -12,10 +12,12 @@ import { describe, expect, it } from 'vitest';
 
 const SRC = path.join(__dirname, '../../src');
 
-/** Readers of raw event rows; nothing else may classify. */
+/** Readers of raw event rows, all with their own SQL; nothing else may classify. */
 const ROW_READERS = [
   'core/sqlite-event-store.ts',
-  // Reads event rows with its own SQL, raw columns included.
+  'core/working-set-store.ts',
+  // Instantiated only by tests today; kept consistent with the others.
+  'core/event-store.ts',
   'adapters/claude/hooks/pre-edit-memory.ts'
 ];
 
@@ -33,7 +35,7 @@ describe('memory origin call sites', () => {
     .filter(({ rel }) => rel !== 'core/memory-origin.ts');
 
   it('classifies stored rows only where raw rows are read', () => {
-    const callers = files.filter(({ text }) => /\bclassifyStoredEvent\b/.test(text)).map(({ rel }) => rel).sort();
+    const callers = files.filter(({ text }) => /\b(?:classifyStoredEvent|readStoredMetadata)\b/.test(text)).map(({ rel }) => rel).sort();
     expect(callers).toEqual([...ROW_READERS].sort());
   });
 
