@@ -5,6 +5,7 @@ const spawnMock = vi.hoisted(() => vi.fn());
 vi.mock('child_process', () => ({ spawn: spawnMock }));
 
 import { buildCliProviderEnv, classifyCliProviderFailure, runCliProvider } from '../../src/adapters/llm/cli-provider.js';
+import type { CircuitAdmission, ProviderCircuitBreaker } from '../../src/adapters/llm/provider-circuit-breaker.js';
 
 function fakeChild() {
   const child = new EventEmitter() as EventEmitter & {
@@ -134,5 +135,61 @@ describe('runCliProvider failure detail', () => {
   it('never puts the provider output into the error message', async () => {
     const error = await failWith('Not logged in · secret-ish detail\n', '').catch((caught: unknown) => caught);
     expect(String((error as Error).message)).not.toContain('secret-ish');
+  });
+});
+
+describe('runCliProvider circuit breaker', () => {
+  afterEach(() => { spawnMock.mockReset(); });
+
+  function stubBreaker(admission: CircuitAdmission) {
+    return {
+      admit: vi.fn(() => admission),
+      recordSuccess: vi.fn(),
+      recordFailure: vi.fn()
+    } as unknown as ProviderCircuitBreaker & {
+      admit: ReturnType<typeof vi.fn>;
+      recordSuccess: ReturnType<typeof vi.fn>;
+      recordFailure: ReturnType<typeof vi.fn>;
+    };
+  }
+
+  function run(breaker: ProviderCircuitBreaker) {
+    return runCliProvider({
+      provider: 'claude',
+      model: null,
+      prompt: 'hi',
+      timeoutMs: 1000,
+      scratchDirName: 'cml-test',
+      label: 'test provider',
+      breaker
+    });
+  }
+
+  it('skips the call without spawning while the breaker is open', async () => {
+    const breaker = stubBreaker({ allowed: false, nextProbeAt: '2026-01-01T00:05:00.000Z' });
+    await expect(run(breaker)).rejects.toMatchObject({ code: 'provider-circuit-open' });
+    expect(spawnMock).not.toHaveBeenCalled();
+    expect(breaker.recordFailure).not.toHaveBeenCalled();
+  });
+
+  it('records success after a clean exit', async () => {
+    const breaker = stubBreaker({ allowed: true, probe: true });
+    const child = fakeChild();
+    spawnMock.mockReturnValue(child);
+    const pending = run(breaker);
+    child.emit('close', 0);
+    await pending;
+    expect(breaker.recordSuccess).toHaveBeenCalledWith('claude');
+  });
+
+  it('records the classified failure with the probe flag', async () => {
+    const breaker = stubBreaker({ allowed: true, probe: true });
+    const child = fakeChild();
+    spawnMock.mockReturnValue(child);
+    const pending = run(breaker);
+    child.stdout.emit('data', Buffer.from('Claude AI usage limit reached|1767225600'));
+    child.emit('close', 1);
+    await expect(pending).rejects.toMatchObject({ code: 'provider-rate-limit' });
+    expect(breaker.recordFailure).toHaveBeenCalledWith('claude', 'provider-rate-limit', { probe: true });
   });
 });

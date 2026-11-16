@@ -26,6 +26,8 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
+import { CIRCUIT_OPEN_CODE, ProviderCircuitBreaker } from './provider-circuit-breaker.js';
+
 export type CliProviderName = 'claude' | 'codex';
 
 export const DEFAULT_CLI_TIMEOUT_MS = 120_000;
@@ -138,9 +140,39 @@ export interface RunCliProviderOptions {
   scratchDirName: string;
   /** Label used in error messages, e.g. 'lesson provider'. */
   label: string;
+  /** Defaults to the shared on-disk breaker configured from the environment. */
+  breaker?: Pick<ProviderCircuitBreaker, 'admit' | 'recordSuccess' | 'recordFailure'>;
 }
 
-export function runCliProvider(options: RunCliProviderOptions): Promise<string> {
+/**
+ * Every provider call goes through the circuit breaker: an open breaker
+ * rejects with CIRCUIT_OPEN_CODE without starting the CLI, and each outcome
+ * feeds the breaker so a logged-out or rate-limited provider stops costing a
+ * CLI start per call.
+ */
+export async function runCliProvider(options: RunCliProviderOptions): Promise<string> {
+  const { provider, label } = options;
+  const breaker = options.breaker ?? new ProviderCircuitBreaker();
+  const admission = breaker.admit(provider);
+  if (!admission.allowed) {
+    throw new CliProviderError(
+      `${label} skipped: provider circuit is open until ${admission.nextProbeAt ?? 'the next probe'}`,
+      CIRCUIT_OPEN_CODE
+    );
+  }
+  try {
+    const output = await spawnCliProvider(options);
+    breaker.recordSuccess(provider);
+    return output;
+  } catch (error) {
+    breaker.recordFailure(provider, error instanceof CliProviderError ? error.code : undefined, {
+      probe: admission.probe
+    });
+    throw error;
+  }
+}
+
+function spawnCliProvider(options: RunCliProviderOptions): Promise<string> {
   const { provider, model, prompt, timeoutMs, scratchDirName, label } = options;
   const classify = (detail: string) => classifyCliProviderFailure(detail, label);
 
