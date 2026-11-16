@@ -7,7 +7,10 @@ import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const launcher = path.join(process.cwd(), '.claude-plugin', 'hook-launcher.cjs');
-const { HOOK_EVENTS } = createRequire(import.meta.url)(launcher) as { HOOK_EVENTS: Record<string, string> };
+const { HOOK_EVENTS, HOOK_MATCHERS } = createRequire(import.meta.url)(launcher) as {
+  HOOK_EVENTS: Record<string, string>;
+  HOOK_MATCHERS: Record<string, string>;
+};
 const HOOK_FILES = Object.keys(HOOK_EVENTS);
 
 /** Stand-in hook: echoes its stdin so a test can see it ran and got the payload. */
@@ -154,6 +157,28 @@ describe('plugin hook launcher', () => {
     expect(skipped.status).toBe(0);
     expect(skipped.stdout).toBe('');
     expect(ranHook(runLauncher(env, otherHook))).toContain(`${otherHook}.js`);
+  });
+
+  it('skips pre-tool-use when settings.json runs it with the same edit-tool matcher', () => {
+    const { home, binDir, env } = makeEnv('dedupe-matcher');
+    const packageRoot = makeFakePackage(path.join(home, 'lib', 'node_modules', 'claude-memory-layer'));
+    installOnPath(binDir, packageRoot);
+    writeSettingsHook(home, 'PreToolUse', {
+      matcher: HOOK_MATCHERS['pre-tool-use'],
+      command: `node '${path.join(packageRoot, 'dist', 'hooks', 'pre-tool-use.js')}'`
+    });
+
+    expect(runLauncher(env, 'pre-tool-use')).toMatchObject({ status: 0, stdout: '' });
+  });
+
+  it('still runs pre-tool-use when settings.json covers only some of the edit tools', () => {
+    const { home, binDir, env } = makeEnv('partial-matcher');
+    const packageRoot = makeFakePackage(path.join(home, 'lib', 'node_modules', 'claude-memory-layer'));
+    installOnPath(binDir, packageRoot);
+    const hookPath = path.join(packageRoot, 'dist', 'hooks', 'pre-tool-use.js');
+    writeSettingsHook(home, 'PreToolUse', { matcher: 'Edit', command: `node '${hookPath}'` });
+
+    expect(ranHook(runLauncher(env, 'pre-tool-use'))).toBe(hookPath);
   });
 
   it.each([

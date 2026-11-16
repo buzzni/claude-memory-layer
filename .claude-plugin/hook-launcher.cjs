@@ -25,7 +25,7 @@
  * import, and PostToolUse runs on every tool call.
  *
  * Usage:
- *   node hook-launcher.cjs <session-start|user-prompt-submit|post-tool-use|stop|session-end|pre-compact>
+ *   node hook-launcher.cjs <session-start|user-prompt-submit|post-tool-use|stop|session-end|pre-compact|pre-tool-use>
  */
 
 const fs = require('node:fs');
@@ -42,7 +42,13 @@ const HOOK_EVENTS = {
   'post-tool-use': 'PostToolUse',
   stop: 'Stop',
   'session-end': 'SessionEnd',
-  'pre-compact': 'PreCompact'
+  'pre-compact': 'PreCompact',
+  'pre-tool-use': 'PreToolUse'
+};
+
+/** Hooks that apply to some tools only, mirroring PLUGIN_HOOK_MATCHERS; the rest match everything. */
+const HOOK_MATCHERS = {
+  'pre-tool-use': 'Write|Edit|MultiEdit|NotebookEdit'
 };
 
 const MISSING_PACKAGE_NOTICE = `${PACKAGE_NAME}: npm package not found, memory hooks are inactive. `
@@ -86,20 +92,21 @@ function literalNodeScript(command) {
   return match[2] ?? match[3] ?? match[4];
 }
 
-/** Matchers that let a settings.json hook fire on every occurrence of its event. */
-function matchesEverything(matcher) {
-  return matcher === undefined || matcher === '' || matcher === '*';
+/** Matchers that let a settings.json hook fire on every occurrence this plugin hook covers. */
+function coversPluginMatcher(matcher, hookFile) {
+  return matcher === undefined || matcher === '' || matcher === '*' || matcher === HOOK_MATCHERS[hookFile];
 }
 
 /**
  * True only when settings.json runs this package's hook file for every
- * occurrence of the event: a catch-all matcher, a plain `node <path>` command,
- * and a path that exists inside a claude-memory-layer package.
+ * occurrence the plugin hook covers: a catch-all matcher (or the plugin hook's
+ * own), a plain `node <path>` command, and a path that exists inside a
+ * claude-memory-layer package.
  */
 function settingsRunsSameHook(settings, event, hookFile) {
   const entries = settings && settings.hooks && settings.hooks[event];
   if (!Array.isArray(entries)) return false;
-  return entries.some((entry) => entry && matchesEverything(entry.matcher) && Array.isArray(entry.hooks)
+  return entries.some((entry) => entry && coversPluginMatcher(entry.matcher, hookFile) && Array.isArray(entry.hooks)
     && entry.hooks.some((hook) => {
       const script = hook && hook.type === 'command' && typeof hook.command === 'string'
         ? literalNodeScript(hook.command)
@@ -189,7 +196,7 @@ async function main() {
   await import(pathToFileURL(target).href);
 }
 
-module.exports = { HOOK_EVENTS, resolveHookTarget };
+module.exports = { HOOK_EVENTS, HOOK_MATCHERS, resolveHookTarget };
 
 if (require.main === module) {
   main().catch((error) => fail(error && error.message ? error.message : String(error)));

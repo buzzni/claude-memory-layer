@@ -47,7 +47,7 @@ On Claude Code 2.1.275 or later this also works in one step:
 
 The plugin's hooks run the npm package, so also run `npm install -g claude-memory-layer@latest`. Without the package the plugin does nothing.
 
-Restart Claude Code afterwards. If you upgrade from an earlier version and use ①, run `claude-memory-layer install` again so newly added hooks (such as PreCompact) are registered; `doctor` reports any that are missing. To switch from one to the other, keep only the plugin with `claude-memory-layer uninstall`, or keep only the `settings.json` hooks with `claude plugin uninstall memory-layer@claude-memory-layer`. `claude-memory-layer doctor` warns when both are active.
+Restart Claude Code afterwards. If you upgrade from an earlier version and use ①, run `claude-memory-layer install` again so newly added hooks (such as PreCompact and PreToolUse) are registered; `doctor` reports any that are missing. To switch from one to the other, keep only the plugin with `claude-memory-layer uninstall`, or keep only the `settings.json` hooks with `claude plugin uninstall memory-layer@claude-memory-layer`. `claude-memory-layer doctor` warns when both are active.
 
 Local checkout, embedding model, scheduled maintenance and CUDA 11 troubleshooting: [docs/INSTALL.md](docs/INSTALL.md).
 
@@ -64,11 +64,11 @@ claude-memory-layer stats
 claude-memory-layer dashboard  # local web dashboard on http://localhost:37777
 ```
 
-After that the hooks work on their own. SessionStart loads project context, UserPromptSubmit searches related memories for each prompt, and UserPromptSubmit, PostToolUse, Stop and SessionEnd store what happened. Before Claude Code compacts the conversation, PreCompact saves a checkpoint of where the session stood, and the SessionStart that follows the compaction puts it back first.
+After that the hooks work on their own. SessionStart loads project context, UserPromptSubmit searches related memories for each prompt, and UserPromptSubmit, PostToolUse, Stop and SessionEnd store what happened. Before Claude Code compacts the conversation, PreCompact saves a checkpoint of where the session stood, and the SessionStart that follows the compaction puts it back first. PreToolUse can add what earlier sessions left about a file before it is edited; it stays off until `preEditCheck` is enabled in `operations.json` ([pre-edit check](docs/HOW_IT_WORKS.md#pre-edit-check)).
 
 ## Features
 
-- **Automatic capture and recall** in Claude Code through six lifecycle hooks, with one store per project.
+- **Automatic capture and recall** in Claude Code through seven lifecycle hooks, with one store per project.
 - **Hybrid retrieval**: keyword and semantic search, progressive disclosure (`search --disclosure`, then `expand` and `source`), and `[mem:…]` citations that MCP tools resolve back to the source event.
 - **History import** for Claude Code, Codex and Hermes sessions, with a read-only validation report before any Codex or Hermes import.
 - **MCP server** (`claude-memory-layer-mcp`) with a context pack for starting work, a project timeline and privacy-filtered source refs, plus tool profiles and a read-only mode.

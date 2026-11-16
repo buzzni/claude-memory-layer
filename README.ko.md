@@ -75,7 +75,7 @@ Claude Code 2.1.275 이상에서는 `/plugin install memory-layer --marketplace 
 - 플러그인만 설치하면 훅이 동작하지 않습니다. 플러그인의 훅은 전역 설치된 npm 패키지를 실행하므로 `npm install -g claude-memory-layer@latest`가 필요합니다. 패키지가 없으면 세션 시작 때 설치 안내 한 줄만 보여 주고 아무것도 하지 않습니다.
 - 플러그인 이름은 npm 패키지 이름(`claude-memory-layer`)과 다른 `memory-layer`입니다. Claude Code가 `claude-`로 시작하는 이름을 예약하기 때문입니다. 플러그인 ID는 `memory-layer@claude-memory-layer`이고, 컴포넌트 이름 앞에는 `memory-layer:`가 붙습니다. 예전에 `--plugin-dir`로 이전 이름을 쓰던 경우 `enabledPlugins` 키와 호출명이 바뀝니다.
 
-**`claude-memory-layer install`과 플러그인 중 하나만 쓰세요.** 둘 다 같은 훅 여섯 개(SessionStart, UserPromptSubmit, PostToolUse, PreCompact, Stop, SessionEnd)를 등록합니다.
+**`claude-memory-layer install`과 플러그인 중 하나만 쓰세요.** 둘 다 같은 훅 일곱 개(SessionStart, UserPromptSubmit, PostToolUse, PreToolUse, PreCompact, Stop, SessionEnd)를 등록합니다.
 
 - 플러그인만 쓰려면: `claude-memory-layer uninstall` (settings.json의 훅 제거)
 - settings.json 방식만 쓰려면: `claude plugin uninstall memory-layer@claude-memory-layer`
@@ -93,7 +93,7 @@ npx claude-memory-layer status
 npx claude-memory-layer doctor
 ```
 
-- `install`은 **한 번만** 하면 됩니다(Claude Code hooks 등록). 업그레이드한 뒤에는 `claude-memory-layer install`을 다시 실행하면 새 버전에 추가된 훅(예: PreCompact)이 기존 설치에 더해집니다. 빠진 훅이 있으면 `doctor`가 알려 줍니다.
+- `install`은 **한 번만** 하면 됩니다(Claude Code hooks 등록). 업그레이드한 뒤에는 `claude-memory-layer install`을 다시 실행하면 새 버전에 추가된 훅(예: PreCompact, PreToolUse)이 기존 설치에 더해집니다. 빠진 훅이 있으면 `doctor`가 알려 줍니다.
 - `npm install`만으로는 백그라운드 서비스를 등록하지 않습니다. `maintenance install` 또는 `install --with-maintenance`를 사용자가 명시적으로 실행해야 합니다.
 - `codex hooks install`은 `~/.codex/hooks.json`에 SessionStart/UserPromptSubmit/SessionEnd 훅을 병합합니다. Codex를 재시작한 뒤 `/hooks`에서 새 훅 정의를 검토하고 신뢰해야 실행됩니다.
 - Embedding backend은 런타임 필수 기능이며, postinstall이 패키지 내부의 격리된 관리 디렉터리에 설치합니다. 이 경계에서 `sharp` 보안 버전을 강제하고, CUDA 11 환경에서는 `onnxruntime-node`를 CPU-only로 설치합니다.
@@ -484,6 +484,7 @@ EOF
 | 플래그 | 효과 | 권장 |
 |--------|------|------|
 | `codifyLite.enabled` | 파일을 만지는 도구 호출마다 `source_file` 엔티티/`touched_in` 엣지를 축적하고, 현재 세션이 만지는 파일과 연결된 과거 메모리를 검색에 올리는 session-file 레인을 켭니다 | 켜기 권장 |
+| `preEditCheck.enabled` | 편집 도구 실행 직전에 그 파일과 연결된 lesson, 실패한 도구 실행, 세션 요약을 넣습니다 (아래 PreToolUse 참고). 켜 두면 편집마다 약 100ms가 더 듭니다 | 필요 시 |
 | `graphExpansion.enabled` | 쿼리에서 추출한 엔티티 기준 그래프 확장 검색 레인 | 랭킹 영향 미검증, 기본 유지 |
 | `retention.enabled` / `lessons.enabled` / `perspectiveMemory.*` | retention audit, lesson, perspective memory 하위 기능 | 필요 시 |
 
@@ -525,6 +526,7 @@ npx claude-memory-layer install
 | **SessionStart** | 세션 시작 시 프로젝트 관련 컨텍스트 로드 |
 | **UserPromptSubmit** | 프롬프트 입력 시 관련 기억 검색 및 저장 |
 | **PostToolUse** | 도구 사용 결과(도구 입력·출력)를 저장 |
+| **PreToolUse** | 편집 도구 실행 직전에 그 파일에 대한 과거 기억을 넣음. `preEditCheck`를 켰을 때만 (아래 참고) |
 | **PreCompact** | 컨텍스트 압축 직전에 세션 체크포인트 저장 (아래 참고) |
 | **Stop** | AI 응답 완료 시 응답 내용 저장 |
 | **SessionEnd** | 세션 종료 시 요약 생성 및 저장 |
@@ -532,6 +534,14 @@ npx claude-memory-layer install
 ### PreCompact (압축 전 체크포인트)
 
 Claude Code가 컨텍스트를 압축하기 직전에 현재 세션이 어디까지 왔는지를 체크포인트로 저장합니다. 최근 요청 3개, 마지막 응답, 세션이 최근 수정한 프로젝트 안의 파일(최대 10개)이 들어가며, 저장된 기억에서만 읽고 LLM은 호출하지 않습니다. 압축이 끝나면 SessionStart(`source: compact`)가 이 체크포인트를 "Before Compaction" 섹션으로 맨 앞에 다시 넣고, 같은 내용은 최근 기억 요약에서 뺍니다. 10분이 지난 체크포인트는 쓰지 않습니다. 훅은 아무것도 출력하지 않고 실패해도 종료 코드 0으로 끝나므로 압축은 그대로 진행됩니다. 기존 사용자는 업그레이드 후 `claude-memory-layer install`을 다시 실행하면 이 훅이 추가되며, `doctor`가 누락 여부를 알려 줍니다.
+
+### PreToolUse (편집 전 파일 점검)
+
+`operations.json`에서 `preEditCheck.enabled`를 켜면 Write·Edit·MultiEdit·NotebookEdit 직전에 "Memory About <파일>" 메모를 도구 결과 옆에 넣습니다. 그 파일과 연결된 lesson(그 파일을 편집한 이벤트에서 나왔거나 프로젝트 상대 경로를 언급한 것) 최대 3개, 그 파일에서 실패한 도구 실행 최대 2개, 그 파일을 편집한 세션의 요약 최대 3개가 들어가고, 현재 세션 자신의 편집은 빠집니다. 파일이 마지막으로 바뀐 시각(mtime)보다 먼저 기록된 항목에는 "(file changed since)"가 붙습니다.
+
+저장된 도구 관찰 중 최근 2000개를 훑고, codify-lite가 켜져 있으면 파일의 `touched_in` 링크로 더 오래된 것도 찾습니다. 프로젝트 저장소만 읽고 LLM이나 semantic daemon은 부르지 않으며, 잠금은 최대 200ms까지만 기다립니다. 경로는 프로젝트 상대 경로로, 저장된 텍스트는 privacy 필터와 출력 sanitizer를 거쳐 나갑니다. 같은 세션에서 같은 파일에 이미 보여 준 항목은 다시 넣지 않고, 메모는 1500자를 넘지 않습니다. 찾은 것이 없으면 아무것도 출력하지 않습니다.
+
+이 훅은 편집을 막지 않습니다. 권한 결정을 내지 않고, 오류·타임아웃·저장소 없음에서는 아무것도 출력하지 않고 종료 코드 0으로 끝납니다. 훅은 항상 등록되며, 꺼져 있으면 SQLite를 불러오기 전에 끝나서 Node 시작 대비 약 3ms만 더 듭니다(macOS 실측). 켜면 2만 개 관찰이 있는 저장소에서 Node 시작 포함 약 100–115ms입니다.
 
 ### Slash 명령어
 

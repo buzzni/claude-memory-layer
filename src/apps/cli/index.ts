@@ -1021,7 +1021,8 @@ program
       console.log('  - PostToolUse: Store tool observations');
       console.log('  - Stop: Store assistant responses');
       console.log('  - SessionEnd: Persist session summary');
-      console.log('  - PreCompact: Checkpoint the session before compaction\n');
+      console.log('  - PreCompact: Checkpoint the session before compaction');
+      console.log('  - PreToolUse: Recall notes about a file before it is edited (off until preEditCheck is enabled)\n');
       console.log('Plugin path:', pluginPath);
       if (maintenanceStatus) {
         console.log(`Maintenance: ${maintenanceStatus.active ? 'installed and active' : 'installed'}`);

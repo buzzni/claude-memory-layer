@@ -84,6 +84,9 @@ async function build() {
     'session-end',
     'session-end-worker',
     'pre-compact',
+    // pre-tool-use imports pre-tool-use-handler only when the pre-edit check is on.
+    'pre-tool-use-handler',
+    'pre-tool-use',
     'codex-session-start',
     'codex-user-prompt-submit',
     'codex-session-end',

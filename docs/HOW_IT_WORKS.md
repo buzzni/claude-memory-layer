@@ -42,6 +42,7 @@ SQLite is the canonical source of truth and LanceDB is a derived accelerator tha
 | UserPromptSubmit | Stores the prompt and searches related memories to inject |
 | PostToolUse | Stores tool observations (tool input and output) |
 | PreCompact | Saves a checkpoint of where the session stood right before Claude Code compacts the context ([below](#compaction-checkpoint)) |
+| PreToolUse | Edit tools only, off unless `preEditCheck` is enabled: before a file is edited, adds what earlier sessions left about it ([below](#pre-edit-check)) |
 | Stop | Stores the assistant's response |
 | SessionEnd | Finishes the session (summary and storage) |
 
@@ -52,6 +53,16 @@ Right before Claude Code compacts the conversation (manually or automatically), 
 The hook always prints nothing, since its output would become instructions for the compaction summary, and it exits 0 on any error, so compaction always proceeds.
 
 When the compaction finishes, SessionStart runs with source `compact` and puts the checkpoint back first, as a "Before Compaction" section. Events the checkpoint quotes are left out of the recent-memory recap, so nothing is injected twice. A checkpoint older than 10 minutes is ignored, because it belongs to an earlier compaction.
+
+## Pre-edit check
+
+With `preEditCheck.enabled` in `operations.json`, the PreToolUse hook runs before Write, Edit, MultiEdit and NotebookEdit and adds a short "Memory About <file>" note next to the tool result. It lists up to 3 lessons linked to the file (built from an edit of it, or naming its project-relative path), up to 2 failed tool runs on it, and up to 3 summaries of the sessions that edited it. The current session's own edits are left out. A note recorded before the file's last modification time is marked "(file changed since)".
+
+It finds the file through the stored tool observations: the newest 2000 are scanned, and with codify-lite the file's `touched_in` links reach older ones. It reads only the project store, never calls an LLM or the semantic daemon, and waits at most 200 ms for a lock. Paths are shown relative to the project, and stored text goes through the privacy filter and the output sanitizer.
+
+An item shown for a file is not shown again for that file in the same session (records in `projects/<hash>/pre-edit-check/`, deleted after 7 idle days), and the note is capped at 1500 characters; what does not fit can appear on a later edit of the file. Nothing found means no output.
+
+The hook never blocks the edit: it returns no permission decision, and on any error, timeout or missing store it prints nothing and exits 0. It is always registered; while the flag is off its entry exits before loading SQLite (about 3 ms over a bare Node start, measured on macOS). When on, a run takes about 100–115 ms including Node start, against a 20,000-observation store.
 
 ## Storing a memory
 

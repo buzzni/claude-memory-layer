@@ -134,7 +134,7 @@ describe('checkSessionEndPendingJobs', () => {
 });
 
 describe('checkHooksInstalled', () => {
-  it('passes when all six hooks are present', () => {
+  it('passes when all seven hooks are present', () => {
     const settings: ClaudeSettingsWithHooks = {
       hooks: {
         SessionStart: [{ hooks: [{ type: 'command', command: 'node hooks/session-start.js' }] }],
@@ -142,17 +142,25 @@ describe('checkHooksInstalled', () => {
         PostToolUse: [{ hooks: [{ type: 'command', command: 'node hooks/post-tool-use.js' }] }],
         Stop: [{ hooks: [{ type: 'command', command: 'node hooks/stop.js' }] }],
         SessionEnd: [{ hooks: [{ type: 'command', command: 'node hooks/session-end.js' }] }],
-        PreCompact: [{ hooks: [{ type: 'command', command: 'node hooks/pre-compact.js' }] }]
+        PreCompact: [{ hooks: [{ type: 'command', command: 'node hooks/pre-compact.js' }] }],
+        PreToolUse: [{ hooks: [{ type: 'command', command: 'node hooks/pre-tool-use.js' }] }]
       }
     };
     expect(checkHooksInstalled(settings).status).toBe('pass');
   });
 
-  it('names PreCompact for an install made before that hook existed', () => {
-    const { PreCompact: _added, ...earlierInstall } = getHooksConfig('/active/claude-memory-layer/dist');
+  it('names PreToolUse for an install made before that hook existed', () => {
+    const { PreToolUse: _added, ...earlierInstall } = getHooksConfig('/active/claude-memory-layer/dist');
     const result = checkHooksInstalled({ hooks: earlierInstall });
     expect(result.status).toBe('fail');
-    expect(result.detail).toBe('Not installed in Claude settings: PreCompact');
+    expect(result.detail).toBe('Not installed in Claude settings: PreToolUse');
+  });
+
+  it('names PreCompact for an install made before that hook existed', () => {
+    const { PreCompact: _added, PreToolUse: _alsoAdded, ...earlierInstall } = getHooksConfig('/active/claude-memory-layer/dist');
+    const result = checkHooksInstalled({ hooks: earlierInstall });
+    expect(result.status).toBe('fail');
+    expect(result.detail).toBe('Not installed in Claude settings: PreCompact, PreToolUse');
     expect(result.fix).toBe('claude-memory-layer install');
   });
 

@@ -4,7 +4,7 @@ import * as path from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { CLAUDE_PLUGIN_NAME, PLUGIN_HOOKS } from '../../src/apps/cli/claude-settings-hooks.js';
+import { CLAUDE_PLUGIN_NAME, PLUGIN_HOOK_MATCHERS, PLUGIN_HOOKS } from '../../src/apps/cli/claude-settings-hooks.js';
 
 const repoRoot = process.cwd();
 
@@ -58,17 +58,26 @@ describe('Claude Code plugin manifests', () => {
       const commands = hooks[event].flatMap((entry) => entry.hooks.map((hook) => hook.command));
       const hookName = fileName.replace(/\.js$/, '');
       expect(commands).toEqual([`node "\${CLAUDE_PLUGIN_ROOT}/.claude-plugin/hook-launcher.cjs" ${hookName}`]);
+      // Same matcher as install writes, so the launcher can tell an install covers it.
+      expect(hooks[event].map((entry) => entry.matcher), event).toEqual([PLUGIN_HOOK_MATCHERS[event as keyof typeof PLUGIN_HOOKS] ?? '']);
       // scripts/build.ts builds dist/hooks/<name>.js from src/hooks/<name>.ts.
       expect(existsSync(path.join(repoRoot, 'src', 'hooks', `${hookName}.ts`)), hookName).toBe(true);
     }
   });
 
-  it('gives the launcher the same hook-to-event map that install writes', () => {
-    const { HOOK_EVENTS } = createRequire(import.meta.url)('../../.claude-plugin/hook-launcher.cjs') as {
+  it('gives the launcher the same hook-to-event map and matchers that install writes', () => {
+    const { HOOK_EVENTS, HOOK_MATCHERS } = createRequire(import.meta.url)('../../.claude-plugin/hook-launcher.cjs') as {
       HOOK_EVENTS: Record<string, string>;
+      HOOK_MATCHERS: Record<string, string>;
     };
     expect(HOOK_EVENTS).toEqual(Object.fromEntries(
       Object.entries(PLUGIN_HOOKS).map(([event, fileName]) => [fileName.replace(/\.js$/, ''), event])
+    ));
+    expect(HOOK_MATCHERS).toEqual(Object.fromEntries(
+      Object.entries(PLUGIN_HOOK_MATCHERS).map(([event, matcher]) => [
+        PLUGIN_HOOKS[event as keyof typeof PLUGIN_HOOKS].replace(/\.js$/, ''),
+        matcher
+      ])
     ));
   });
 });
