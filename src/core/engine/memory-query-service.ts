@@ -67,7 +67,7 @@ interface QueryMaintenanceStore extends QueryStore {
   getEventsByLevel(level: string, options?: { limit?: number; offset?: number }): Promise<MemoryEvent[]>;
   getEventLevel(eventId: string): Promise<string | null>;
   getSessionTurns(sessionId: string, options?: { limit?: number; offset?: number }): Promise<MemorySessionTurn[]>;
-  getEventsByTurn(turnId: string): Promise<MemoryEvent[]>;
+  getEventsByTurn(turnId: string, options?: { sessionId?: string }): Promise<MemoryEvent[]>;
   getEventByCitationId(citationId: string): Promise<MemoryEvent | null>;
   getEventsAfter(sinceIso: string): Promise<MemoryEvent[]>;
   getEventTypeCounts(): Promise<Array<{ eventType: string; count: number }>>;
@@ -410,9 +410,9 @@ export class MemoryQueryService {
     return this.getMaintenanceStore('getSessionTurns').getSessionTurns(sessionId, options);
   }
 
-  async getEventsByTurn(turnId: string): Promise<MemoryEvent[]> {
+  async getEventsByTurn(turnId: string, options?: { sessionId?: string }): Promise<MemoryEvent[]> {
     await this.initialize();
-    return this.getMaintenanceStore('getEventsByTurn').getEventsByTurn(turnId);
+    return this.getMaintenanceStore('getEventsByTurn').getEventsByTurn(turnId, options);
   }
 
   async countSessionTurns(sessionId: string): Promise<number> {

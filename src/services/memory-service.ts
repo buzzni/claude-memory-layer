@@ -812,10 +812,11 @@ export class MemoryService {
   }
 
   /**
-   * Get all events for a specific turn
+   * Get all events for a specific turn. Pass sessionId: a turn id can be
+   * shared by two sessions (forked or re-imported Codex transcripts).
    */
-  async getEventsByTurn(turnId: string): Promise<MemoryEvent[]> {
-    return this.queryService.getEventsByTurn(turnId);
+  async getEventsByTurn(turnId: string, options?: { sessionId?: string }): Promise<MemoryEvent[]> {
+    return this.queryService.getEventsByTurn(turnId, options);
   }
 
   /**

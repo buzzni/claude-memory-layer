@@ -97,7 +97,7 @@ describe('MemoryQueryService', () => {
     await expect(service.getEventsByLevel('working', { limit: 2, offset: 3 })).resolves.toEqual(events);
     await expect(service.getEventLevel('event-1')).resolves.toBe('working');
     await expect(service.getSessionTurns('session-1', { limit: 5, offset: 8 })).resolves.toEqual([turn]);
-    await expect(service.getEventsByTurn('turn-1')).resolves.toEqual(events);
+    await expect(service.getEventsByTurn('turn-1', { sessionId: 'session-1' })).resolves.toEqual(events);
     await expect(service.countSessionTurns('session-1')).resolves.toBe(11);
     await expect(service.backfillTurnIds()).resolves.toBe(13);
     await expect(service.deleteSessionEvents('session-1')).resolves.toBe(17);
@@ -110,7 +110,7 @@ describe('MemoryQueryService', () => {
     expect(queryStore.getEventsByLevel).toHaveBeenCalledWith('working', { limit: 2, offset: 3 });
     expect(queryStore.getEventLevel).toHaveBeenCalledWith('event-1');
     expect(queryStore.getSessionTurns).toHaveBeenCalledWith('session-1', { limit: 5, offset: 8 });
-    expect(queryStore.getEventsByTurn).toHaveBeenCalledWith('turn-1');
+    expect(queryStore.getEventsByTurn).toHaveBeenCalledWith('turn-1', { sessionId: 'session-1' });
     expect(queryStore.countSessionTurns).toHaveBeenCalledWith('session-1');
     expect(queryStore.backfillTurnIds).toHaveBeenCalledOnce();
     expect(queryStore.deleteSessionEvents).toHaveBeenCalledWith('session-1');
