@@ -131,13 +131,14 @@ describe('pending SessionEnd jobs', () => {
     rmSync(path.join(dir, file));
     const handle = vi.fn(async () => {});
 
-    expect(await retryPendingSessionEndJobs(handle, { homeDir })).toEqual({ completed: 0, failed: 0, abandoned: 0 });
+    // A job's age is judged by the clock passed in; a claim's age by the real one.
+    expect(await retryPendingSessionEndJobs(handle, at('2026-11-07T02:00:00.000Z'))).toEqual({ completed: 0, failed: 0, abandoned: 0 });
     expect(handle).not.toHaveBeenCalled();
     expect(listPendingSessionEndJobs({ homeDir })).toHaveLength(1);
 
     const longAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
     utimesSync(claimed, longAgo, longAgo);
-    expect(await retryPendingSessionEndJobs(handle, { homeDir })).toEqual({ completed: 1, failed: 0, abandoned: 0 });
+    expect(await retryPendingSessionEndJobs(handle, at('2026-11-07T02:00:00.000Z'))).toEqual({ completed: 1, failed: 0, abandoned: 0 });
     expect(existsSync(claimed)).toBe(false);
   });
 
@@ -151,9 +152,9 @@ describe('pending SessionEnd jobs', () => {
     const releases: Array<() => void> = [];
     const handle = vi.fn(() => new Promise<void>((resolve) => { releases.push(resolve); }));
 
-    const first = retryPendingSessionEndJobs(handle, { homeDir });
+    const first = retryPendingSessionEndJobs(handle, at('2026-11-07T02:00:00.000Z'));
     await vi.waitFor(() => expect(handle).toHaveBeenCalledTimes(1));
-    const second = retryPendingSessionEndJobs(handle, { homeDir });
+    const second = retryPendingSessionEndJobs(handle, at('2026-11-07T02:00:00.000Z'));
     await new Promise((resolve) => setImmediate(resolve));
     const runs = handle.mock.calls.length;
     releases.forEach((release) => release());
