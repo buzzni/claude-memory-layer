@@ -123,18 +123,22 @@ Every recalled memory is classified by where its text came from (`src/core/memor
 
 | Origin | Rows | Label |
 |---|---|---|
-| `user` | `user_prompt` stored by a live hook | none |
-| `assistant` | `agent_response` stored by a live hook | none |
+| `user` | `user_prompt`, from a live hook or a host session import | none |
+| `assistant` | `agent_response`, from a live hook or a host session import | none |
 | `derived` | `session_summary` and lessons (text this system wrote from stored rows) | none |
-| `imported` | any other row with `metadata.importedFrom` (Claude/Codex/Hermes history importers, including Codex's own SessionEnd capture), or pulled by Mongo sync from another project's store | `low-trust: imported` |
-| `tool` | `tool_observation` (tool input and output), imported or not | `low-trust: tool output` |
+| `imported` | any other row pulled by Mongo sync (from another machine), or imported from a source that cannot be told (`metadata.importedFrom` that is not an absolute path) | `low-trust: imported` |
+| `tool` | `tool_observation` (tool input and output), however it was stored | `low-trust: tool output` |
 | `unknown` | any other event type | `low-trust: unknown origin` |
+
+**Host session imports keep their role.** `claude-memory-layer import` (Claude Code sessions), the Codex SessionEnd hook (every Codex session is captured this way) and the Hermes import read this machine's own host session records from a path the user configured, and store that path in `metadata.importedFrom`. They are trusted like a live capture: a prompt is `user`, a response `assistant`, a tool call `tool`. Every importer version has stored an absolute path there, which is how old rows are recognised too. Labelling them would put a low-trust label on every memory of a Codex user, and a label on everything means nothing. Limit: a session file copied from another machine and imported locally cannot be told apart from a local one.
+
+**Mongo sync pull marks every pulled row** with a `metadata.mongoSync` record (pull never returns this store's own rows), so a memory from another machine is `imported`. Before this marker, only rows re-homed from another project hash got the record; rows pulled earlier within the same project hash carry no marker and classify by their role.
 
 Only the low-trust classes are labelled, so the common case costs no extra tokens. The label sits outside the memory text, next to the type: `- [tool_observation] [low-trust: tool output] …` in the prompt-time evidence block, `- **date** [low-trust: imported]: …` in the SessionStart recap, `(agent_response; low-trust: imported)` on a reference card, and after the type in `mem-search` and `mem-timeline`. Field-style MCP output always carries the class: `origin=…` on `mem-context-pack` memory lines and `mem-source-ref` neighbors, and `Origin:` in `mem-details` and `mem-source-ref`.
 
 Graduation does not change the class. A memory graduates by being retrieved, and an injected memory is retrieved again by being injected, so trusting graduated rows would let a poisoned row earn trust just by being recalled. Summaries and lessons stay `derived` even though they can restate tool output.
 
-Operators can keep `tool` and `unknown` rows out of automatic injection (SessionStart and UserPromptSubmit, including the Codex hooks) with an [`operations.json` flag](CONFIGURATION.md#optional-features-operationsjson). The filter runs before ranking, so trusted memories can take the freed slots; tool rows still seed the same-turn episode lookup, which then injects that turn's answer. Requested reads (MCP tools, CLI `search`) are never filtered, only labelled. The PreCompact re-injection quotes only the session's own prompts and response plus file paths from its own edit-tool calls, so it is not filtered either.
+Operators can keep `tool` and `unknown` rows out of automatic injection (SessionStart and UserPromptSubmit, including the Codex hooks) with an [`operations.json` flag](CONFIGURATION.md#optional-features-operationsjson). The filter runs before ranking, so trusted memories can take the freed slots; tool rows still seed the same-turn episode lookup, which then injects that turn's answer. Because ranking (including its score cliff) runs on what is left, the injection with the flag on is **not** a subset of the injection with it off: removing a tool row can let another memory in or change where the cut falls. Requested reads (MCP tools, CLI `search`) are never filtered, only labelled. The PreCompact re-injection quotes only the session's own prompts and response plus file paths from its own edit-tool calls, so it is not filtered either.
 
 Hook traces record how many injected memories each class had (`injectedByOrigin` in the trace diagnostics; counts only). `memory-audit` sums them per store, so the flag's reach can be checked before turning it on, and `npm run eval:hook-replay` replays a store copy with the filter on as its `source-trust filter` arm.
 

@@ -35,7 +35,14 @@ Claude Memory Layer는 한 사용자의 머신에서 돌아가는 로컬 도구�
 
 ### 회상된 기억의 출처
 
-회상되는 기억에는 도구 출력(파일, 웹 페이지, 명령 결과)처럼 대화 밖에서 들어온 텍스트가 섞여 있습니다. 그런 텍스트에 심어 둔 지시문은 나중에 기억으로 주입되어 에이전트를 움직일 수 있습니다(메모리 오염, OWASP Agentic ASI06). 렌더 시점 sanitizer는 보이지 않는 문자와 래퍼 태그를 지우지만, 평범한 문장으로 쓴 지시는 막지 못합니다. 그래서 회상 출력은 기억의 출처를 함께 보여 줍니다. 도구 출력, import된 기록(세션 기록 importer, Codex 세션, Mongo sync로 다른 프로젝트 store에서 받은 행), 유형을 알 수 없는 기억에는 `low-trust` 라벨이 붙습니다([HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md#source-trust-labels)). `operations.json`의 `sourceTrust.excludeUntrustedFromAutoInjection`을 켜면 도구 출력과 출처 미상 기억은 자동 주입에서 빠집니다. MCP나 CLI로 직접 조회할 때는 결과에서 빠지지 않고 라벨만 붙습니다. 출처는 저장된 유형과 metadata로만 판단하므로 한계가 있습니다. 요약과 lesson은 도구 출력의 내용을 다시 옮겨 담을 수 있지만 `derived`로 분류되어 라벨이 붙지 않습니다. 같은 프로젝트 store끼리 Mongo sync로 받은 행에는 표시가 남지 않아 import로 구분되지 않습니다.
+회상되는 기억에는 도구 출력(파일, 웹 페이지, 명령 결과)처럼 대화 밖에서 들어온 텍스트가 섞여 있습니다. 그런 텍스트에 심어 둔 지시문은 나중에 기억으로 주입되어 에이전트를 움직일 수 있습니다(메모리 오염, OWASP Agentic ASI06). 렌더 시점 sanitizer는 보이지 않는 문자와 래퍼 태그를 지우지만, 평범한 문장으로 쓴 지시는 막지 못합니다. 그래서 회상 출력은 기억의 출처를 함께 보여 줍니다. 도구 출력, 다른 머신에서 온 기억(Mongo sync로 pull한 행), 출처를 알 수 없는 가져오기, 유형을 알 수 없는 기억에는 `low-trust` 라벨이 붙습니다([HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md#source-trust-labels)). `operations.json`의 `sourceTrust.excludeUntrustedFromAutoInjection`을 켜면 도구 출력과 출처 미상 기억은 자동 주입에서 빠집니다. MCP나 CLI로 직접 조회할 때는 결과에서 빠지지 않고 라벨만 붙습니다.
+
+이 머신의 호스트 세션 기록을 사용자가 설정한 경로에서 읽어 들인 것(`claude-memory-layer import`, Codex SessionEnd 훅, Hermes import)은 실시간 캡처와 같은 신뢰로 다룹니다. 그 기록은 이 사용자의 호스트가 이 머신에 쓴 것이고, Codex는 모든 세션을 이 경로로 저장하므로 여기에 라벨을 붙이면 Codex 사용자의 모든 기억에 라벨이 붙어 의미가 없어지기 때문입니다. 대화 속 역할로 분류하므로 그 안의 도구 출력은 여전히 `tool`입니다.
+
+출처는 저장된 유형과 metadata로만 판단하므로 한계가 있습니다.
+- 다른 서버에서 복사해 온 세션 파일을 로컬에서 import하면 로컬 기록과 구분되지 않습니다.
+- 요약과 lesson은 도구 출력의 내용을 다시 옮겨 담을 수 있지만 `derived`로 분류되어 라벨이 붙지 않습니다.
+- Mongo sync pull은 이제 모든 행에 표시를 남깁니다. 그 전에 같은 프로젝트 store끼리 받은 행에는 표시가 없어 다른 머신에서 온 것으로 구분되지 않습니다.
 
 ### 저장 전 마스킹
 
