@@ -10,8 +10,17 @@
 
 ### Added
 
-- feat: make session-summary provider failures visible (telemetry, doctor, audit) ([#185](https://github.com/buzzni/claude-memory-layer/pull/185))
 - `LICENSE`, `SECURITY.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, and a GitHub Release created from each published `v*` tag
+
+## [2.5.9] - 2026-11-17
+
+### Added
+
+- feat: make session-summary provider failures visible (telemetry, doctor, audit) ([#185](https://github.com/buzzni/claude-memory-layer/pull/185))
+
+### Fixed
+
+- fix: long prompts timing out the prompt hook, lost prompts, and the model re-download loop ([#196](https://github.com/buzzni/claude-memory-layer/pull/196))
 
 ## [2.5.8] - 2026-11-08
 
@@ -105,7 +114,8 @@
 - refactor(core): unify harness boilerplate detection into one anchored marker list (T9) ([#129](https://github.com/buzzni/claude-memory-layer/pull/129))
 - chore(release): guard and auto-sync plugin manifest version ([#118](https://github.com/buzzni/claude-memory-layer/pull/118))
 
-[Unreleased]: https://github.com/buzzni/claude-memory-layer/compare/v2.5.8...HEAD
+[Unreleased]: https://github.com/buzzni/claude-memory-layer/compare/v2.5.9...HEAD
+[2.5.9]: https://github.com/buzzni/claude-memory-layer/compare/v2.5.8...v2.5.9
 [2.5.8]: https://github.com/buzzni/claude-memory-layer/compare/v2.5.7...v2.5.8
 [2.5.7]: https://github.com/buzzni/claude-memory-layer/compare/v2.5.6...v2.5.7
 [2.5.6]: https://github.com/buzzni/claude-memory-layer/compare/v2.5.5...v2.5.6
