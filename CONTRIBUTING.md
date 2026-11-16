@@ -23,6 +23,7 @@ PR을 올리기 전에 아래가 모두 통과해야 합니다. CI도 같은 검
 ```bash
 npm run verify              # typecheck + lint + test
 npm run build
+npm run smoke:dist          # 빌드된 CLI·MCP·훅을 임시 HOME에서 실행
 npm run check:architecture  # import 경계 검사
 ```
 

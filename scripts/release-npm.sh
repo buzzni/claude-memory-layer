@@ -24,7 +24,7 @@ What this script does:
   2. Checks npm login and package self-dependency mistakes.
   3. Bumps package.json/package-lock.json with npm version --no-git-tag-version.
   4. Verifies the target npm version does not already exist.
-  5. Runs npm audit --omit=dev, then npm run prepublishOnly.
+  5. Runs npm audit --omit=dev, npm run prepublishOnly, then starts the built bundles.
   6. Runs npm pack --dry-run --json and blocks suspicious files.
   7. Scans pending/release diff for credential-shaped values without printing secrets.
   8. Optionally commits the version bump, publishes to npm, verifies registry state,
@@ -216,6 +216,9 @@ fi
 
 log "Running prepublish checks"
 npm run prepublishOnly
+
+log "Starting the built bundles"
+npm run smoke:dist
 
 log "Checking npm tarball contents with npm pack --dry-run"
 PACK_JSON="$(mktemp)"
