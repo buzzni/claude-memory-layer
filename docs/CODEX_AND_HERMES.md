@@ -40,7 +40,8 @@ claude-memory-layer codex validate --project /path/to/project --format markdown
 cd /path/to/project
 claude-memory-layer codex import
 
-# import one session
+# import one session; session file paths are in the JSON report (sessions[].filePath), not the Markdown one
+claude-memory-layer codex validate --project /path/to/project --format json
 claude-memory-layer codex import --project /path/to/project --session /path/to/session.jsonl
 
 # import every Codex session into the global store (only when you mean it)
@@ -63,7 +64,8 @@ claude-memory-layer hermes validate --project /path/to/project --format markdown
 cd /path/to/project
 claude-memory-layer hermes import
 
-# import one Hermes session id
+# import one Hermes session id; ids are in the JSON report (sessions[].sessionId), not the Markdown one
+claude-memory-layer hermes validate --project /path/to/project --format json
 claude-memory-layer hermes import --project /path/to/project --session 20260505_010203_abcd1234
 
 # import every Hermes session into the global store (only when you mean it)

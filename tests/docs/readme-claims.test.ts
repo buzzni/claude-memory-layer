@@ -136,3 +136,42 @@ describe('README claims', () => {
     expect([...cited].filter((name) => !new RegExp(`\\b${name}\\b`).test(sources))).toEqual([]);
   });
 });
+
+// Command lines of fenced blocks, with backslash continuations joined.
+function fencedCommandBlocks(markdown: string): string[][] {
+  return [...markdown.matchAll(/^(```|~~~)[^\n]*\n([\s\S]*?)^\1[ \t]*$/gm)]
+    .map((m) => m[2].replace(/\\\n\s*/g, ' ').split('\n'));
+}
+const blocks = fencedCommandBlocks(readme);
+
+describe('README procedures', () => {
+  it('shows forget only with --before while event-id and --session forget are unimplemented', () => {
+    const cli = read('src/apps/cli/index.ts');
+    if (!cli.includes('Forget functionality requires additional implementation')) return;
+
+    const unsupported = blocks.flat()
+      .filter((line) => /\bclaude-memory-layer forget\b|\/memory-forget\b/.test(line))
+      .filter((line) => !line.includes('--before'));
+    expect(unsupported).toEqual([]);
+  });
+
+  it('takes Codex/Hermes session paths and ids from a JSON validate report, since the Markdown one has only totals', () => {
+    for (const formatter of ['codex', 'hermes']) {
+      expect(read(`src/apps/cli/${formatter}-validation-output.ts`)).not.toMatch(/filePath|\.sessionId/);
+    }
+
+    // An import of one --session after a validate in the same block must follow a JSON validate.
+    const fromMarkdown: string[] = [];
+    for (const lines of blocks) {
+      const lastValidate = new Map<string, string>();
+      for (const line of lines) {
+        const command = line.match(/\bclaude-memory-layer (codex|hermes) (validate|import)\b/);
+        if (!command) continue;
+        const [, agent, verb] = command;
+        if (verb === 'validate') lastValidate.set(agent, line);
+        else if (line.includes('--session') && lastValidate.get(agent)?.includes('--format markdown')) fromMarkdown.push(line);
+      }
+    }
+    expect(fromMarkdown).toEqual([]);
+  });
+});

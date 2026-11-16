@@ -17,7 +17,7 @@ After a global install, run `claude-memory-layer`. From a local checkout use `np
 | `stats` | Read-only store statistics |
 | `health` | Read-only aggregate health reports |
 | `audit` | Read-only per-project memory audit |
-| `forget [eventId]` | Remove memories (`--session`, `--before <YYYY-MM-DD>` with `--type`; dry-run unless `--confirm`) |
+| `forget --before <YYYY-MM-DD>` | Delete events older than a date, optionally only one `--type`; dry-run unless `--confirm`. Deleting by event id or `--session` is not implemented yet (see [below](#forget)) |
 | `list` / `import` | List / import Claude Code sessions ([IMPORT_AND_MIGRATION.md](IMPORT_AND_MIGRATION.md)) |
 | `organize-import [sourceDir]` | Import legacy Markdown memory or bootstrap knowledge docs from code and git |
 | `codex …` | Codex hooks, validate, replay, import ([CODEX_AND_HERMES.md](CODEX_AND_HERMES.md)) |
@@ -102,6 +102,21 @@ claude-memory-layer market-context --company 삼성전자 --dart-corp-code 00126
 ```
 
 Context injected by the hooks and MCP results cite memories as `[mem:…]`. The CLI `expand` and `source` commands take the `id:` from `search --disclosure` output; to resolve a `mem:` citation, use the MCP `mem-source-ref` or `mem-details` tool.
+
+## Forget
+
+Only deletion by date is implemented. It removes the matching events from SQLite, purges their vectors and removes the matching Markdown mirror files.
+
+```bash
+# preview what would be deleted
+claude-memory-layer forget --before 2026-01-01
+# only tool observations
+claude-memory-layer forget --before 2026-01-01 --type tool_observation
+# delete
+claude-memory-layer forget --before 2026-01-01 --confirm
+```
+
+The command also accepts an event id (`forget <eventId>`) and `--session <id>`, but those paths are **not implemented**: with `--confirm` they print a "requires additional implementation" message and delete nothing.
 
 ## Endless Mode
 

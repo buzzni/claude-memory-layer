@@ -104,7 +104,7 @@ Hooks pick it up in the next session. Recall thresholds, retrieval mode, LLM sum
 
 - Run `claude-memory-layer doctor` first. It checks Node version, the embedding backend, duplicate installs on `PATH`, hooks, MCP client configs and store write access. `doctor --fix` repairs the embedding backend when that is safe.
 - `npm install` fails with `CUDA 11 binaries are not supported by this script yet`: see [CUDA 11 troubleshooting](docs/INSTALL.md#troubleshooting-cuda-11-and-onnxruntime-node).
-- Context appears twice: the hooks are registered by both `install` and the plugin. Remove one (see [Install](#install-in-60-seconds)).
+- Context appears twice, or `doctor` warns that the hooks are registered twice: both `install` and the plugin are active. The plugin skips its own copy only when it can confirm the `settings.json` hook is the same one, so keep just one of them (see [Install](#install-in-60-seconds)).
 - Sessions from before you installed are not in memory: run `claude-memory-layer import` in that project to load them.
 
 ## Uninstall

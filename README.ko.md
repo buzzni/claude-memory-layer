@@ -340,23 +340,25 @@ claude-memory-layer hermes import --project "$PROJECT" --verbose
 claude-memory-layer process --project "$PROJECT"
 ```
 
-이전 서버와 새 서버의 repo 절대 경로가 다르면, `OLD_PROJECT`로 원본 세션을 찾고 특정 session 파일/id를 새 프로젝트 저장소(`NEW_PROJECT`)로 가져오세요.
+이전 서버와 새 서버의 repo 절대 경로가 다르면, `OLD_PROJECT`로 원본 세션을 찾고 특정 session 파일/id를 새 프로젝트 저장소(`NEW_PROJECT`)로 가져오세요. validate의 Markdown 리포트에는 집계만 있으므로, Codex session 파일 경로와 Hermes session id는 JSON 리포트에서 확인합니다. `sessions[]`의 각 항목에 `sessionId`, `matched`가 있고 Codex는 `filePath`도 있습니다.
 
 ```bash
 export OLD_PROJECT=/old/server/path/to/your-project
 export NEW_PROJECT=/path/to/your-project
 cd "$NEW_PROJECT"
 
-# Claude Code: list 출력의 JSONL session file path를 확인해서 사용
+# Claude Code: list 출력의 "Path:" 줄에서 JSONL session file path를 확인해서 사용 (최근 20개까지 표시)
 claude-memory-layer list --project "$OLD_PROJECT"
 claude-memory-layer import --project "$NEW_PROJECT" --session /path/to/claude-session.jsonl --verbose
 
-# Codex: validate 결과에서 session JSONL 파일을 확인한 뒤 import
-claude-memory-layer codex validate --project "$OLD_PROJECT" --format markdown
+# Codex: JSON 리포트에서 session 파일 경로를 뽑은 뒤 하나씩 import
+claude-memory-layer codex validate --project "$OLD_PROJECT" --format json \
+  | node -e 'for (const s of JSON.parse(require("fs").readFileSync(0, "utf8")).sessions) if (s.matched) console.log(s.filePath)'
 claude-memory-layer codex import --project "$NEW_PROJECT" --session /path/to/codex-session.jsonl --verbose
 
-# Hermes: validate 결과에서 Hermes session id를 확인한 뒤 import
-claude-memory-layer hermes validate --project "$OLD_PROJECT" --format markdown
+# Hermes: JSON 리포트에서 Hermes session id를 뽑은 뒤 하나씩 import
+claude-memory-layer hermes validate --project "$OLD_PROJECT" --format json \
+  | node -e 'for (const s of JSON.parse(require("fs").readFileSync(0, "utf8")).sessions) if (s.matched) console.log(s.sessionId)'
 claude-memory-layer hermes import --project "$NEW_PROJECT" --session 20260505_010203_abcd1234 --verbose
 
 claude-memory-layer process --project "$NEW_PROJECT"
@@ -549,8 +551,9 @@ Claude Code 내에서 사용할 수 있는 명령어:
 # 임포트 가능한 세션 목록
 /memory-list
 
-# 메모리 삭제
-/memory-forget --session <id> --confirm
+# 메모리 삭제: 날짜 기준(--before)만 구현돼 있습니다. --confirm 없이는 미리보기만 합니다.
+# 이벤트 ID·--session 단위 삭제는 아직 구현되지 않아 아무것도 지우지 않습니다.
+/memory-forget --before 2026-01-01 --confirm
 ```
 
 ### 기존 메모리 정리 Import (구조화)
@@ -670,7 +673,7 @@ claude-memory-layer mongo-sync --watch --interval 30000 --process-after-sync --p
 
 서버마다 프로젝트 경로가 달라도 됩니다. Pull된 이벤트는 이 서버의 프로젝트(`--project` 경로의 hash)로 다시 귀속되어 project-scoped 검색에 나오며, 원래 서버의 project scope와 hostname은 `metadata.mongoSync`에 남습니다. 같은 프로젝트를 모으려면 모든 서버에서 `--mongo-project`(또는 `CLAUDE_MEMORY_MONGO_PROJECT`)를 같은 값으로 지정하세요. 기본값은 경로의 마지막 폴더 이름입니다.
 
-Pull 커서는 push한 저장소(origin)마다 따로 둡니다. 각 저장소는 처음 동기화할 때 만든 origin id를 `sync_positions`에 머신 식별값(OS machine id의 해시)과 함께 보관하고, push하는 문서마다 그 origin 안에서의 순번(`originSeq`)을 붙입니다. Pull은 origin별로 마지막에 읽은 `originSeq` 다음부터 읽고, 자기 origin은 건너뜁니다. 한 origin의 예약과 삽입은 저장소 단위 락(`mongo-sync-push.lock`) 아래에서 차례로 일어나므로, push가 오래 멈추거나 서버 간 시계가 어긋나도 커서 아래에 문서가 끼어들지 않습니다. Pull로 받은 이벤트는 다시 push하지 않습니다. 저장소 폴더를 다른 머신으로 복사하거나 백업에서 복원하면, 그 머신에서는 새 origin id를 만들어 원래 저장소와 서로 계속 주고받습니다.
+Pull 커서는 push한 저장소(origin)마다 따로 둡니다. 각 저장소는 처음 동기화할 때 만든 origin id를 `sync_positions`에 머신 식별값(OS machine id의 해시)과 함께 보관하고, push하는 문서마다 그 origin 안에서의 순번(`originSeq`)을 붙입니다. Pull은 origin별로 마지막에 읽은 `originSeq` 다음부터 읽고, 자기 origin은 건너뜁니다. 한 origin의 예약과 삽입은 저장소 단위 락(`mongo-sync-push.lock`) 아래에서 차례로 일어나므로, push가 오래 멈추거나 서버 간 시계가 어긋나도 커서 아래에 문서가 끼어들지 않습니다. Pull로 받은 이벤트는 다시 push하지 않습니다. 저장소는 보관한 머신 식별값이 지금 머신과 같은 동안 origin id를 유지합니다. 저장소 폴더를 **다른 머신**으로 복사하거나 그 머신에서 백업을 복원하면 식별값이 달라 새 origin id를 만들고, 원래 저장소와 서로 계속 주고받습니다. **같은 머신**에서 백업을 복원하면 기존 origin id를 그대로 씁니다. Pull은 자기 origin을 건너뛰므로, 백업 이후 이 저장소가 push했던 문서는 다시 받아 오지 않습니다.
 
 이전 버전이 push한 문서에는 `originSeq`가 없습니다. 이런 문서는 예전처럼 프로젝트 전체 seq 커서로 읽고, 직전 pull보다 30분 앞부터 들어온 문서를 커서 아래까지 다시 읽습니다. 이 경로에서는 서버 간 시계 차이와 push 지연이 30분 안이어야 합니다. 그래서 모든 서버를 새 버전으로 올리는 것이 좋습니다. 새 버전으로 처음 pull할 때 프로젝트 키마다 한 번 전체를 다시 읽어, 예전 커서가 놓친 문서를 채웁니다(이미 가진 이벤트는 건너뜀). `claude-memory-layer mongo-sync audit`로 놓친 문서가 남았는지 확인할 수 있습니다.
 
@@ -850,7 +853,7 @@ MCP 도구 surface는 `CLAUDE_MEMORY_MCP_PROFILE`로 `core`, `operations`, `gove
 
 쓰기 제한 샌드박스에서 조회할 때는 MCP server entry의 `env`에 `CLAUDE_MEMORY_MCP_READ_ONLY=1`을 설정할 수 있습니다. Happy가 자동 recall을 담당해 `CLAUDE_MEMORY_RECALL_OWNER=host`를 전달하는 native MCP도 이 모드를 사용합니다. 선택한 프로필에서 `mem-context-pack`, `mem-search`, `mem-timeline`, `mem-details`, `mem-project-timeline`, `mem-source-ref`, `mem-stats`, `mem-lesson-get`, `mem-lesson-list`, `external-market-context`만 노출하며, 그 외 도구와 명시적 freshness refresh는 `read_only_runtime` 오류로 거절합니다.
 
-이 모드의 메모리 조회는 임시 SQLite snapshot과 어휘 검색을 사용합니다. 의미 검색용 모델·vector 초기화, 자동 import, 조회 telemetry 기록을 수행하지 않으므로 의미 검색 품질과 usage 집계에 차이가 있습니다. `mem-stats`는 기존 vector index가 있으면 읽기 전용으로 개수를 조회합니다. `mem-context-pack`의 `refreshLatest=false`도 모델 초기화 없이 조회합니다. 원본 메모리 파일을 읽을 권한과 canonical memory 밖의 임시 디렉터리에 쓸 권한은 필요하며, 이 설정이 샌드박스 권한을 늘려주지는 않습니다. 동시 checkpoint 중 snapshot은 최신 데이터를 놓칠 수 있으므로 최신성이 필요하면 조회를 반복하거나 권한이 있는 writable runtime에서 import 후 조회하세요. 새 바이너리 설치 후에는 MCP 프로세스를 재시작해야 적용됩니다.
+이 모드의 메모리 조회는 임시 SQLite snapshot과 어휘 검색을 사용합니다. 서버가 직접 의미 검색용 모델·vector를 초기화하지 않고, 자동 import와 조회 telemetry 기록도 하지 않으므로 의미 검색 품질과 usage 집계에 차이가 있습니다. 다만 `mem-search`와 `mem-context-pack`은 **이미 실행 중인** semantic daemon(훅이 띄운 것)이 있으면 그 의미 검색 결과를 어휘 결과 앞에 합칩니다. 절대 경로 `projectPath`가 있고 `sessionId` 필터가 없을 때만 해당하며, `sessionId` 필터가 있거나 절대 경로가 아니거나 daemon이 없으면 어휘 검색만 씁니다. 서버가 daemon을 새로 시작하지는 않습니다. `mem-stats`는 기존 vector index가 있으면 읽기 전용으로 개수를 조회합니다. `mem-context-pack`의 `refreshLatest=false`도 모델 초기화 없이 조회합니다. 원본 메모리 파일을 읽을 권한과 canonical memory 밖의 임시 디렉터리에 쓸 권한은 필요하며, 이 설정이 샌드박스 권한을 늘려주지는 않습니다. 동시 checkpoint 중 snapshot은 최신 데이터를 놓칠 수 있으므로 최신성이 필요하면 조회를 반복하거나 권한이 있는 writable runtime에서 import 후 조회하세요. 새 바이너리 설치 후에는 MCP 프로세스를 재시작해야 적용됩니다.
 
 ### 제공되는 MCP 도구
 
@@ -969,7 +972,8 @@ npx claude-memory-layer codex validate --project /path/to/project --format markd
 cd /path/to/project
 npx claude-memory-layer codex import
 
-# 특정 세션만 import
+# 특정 세션만 import: session 파일 경로는 Markdown이 아니라 JSON 리포트의 sessions[].filePath에 있습니다
+npx claude-memory-layer codex validate --project /path/to/project --format json
 npx claude-memory-layer codex import --project /path/to/project --session /path/to/session.jsonl
 
 # 모든 Codex 세션 import (전역 저장소 사용; 필요할 때만)
@@ -1012,7 +1016,8 @@ npx claude-memory-layer hermes validate --project /path/to/project --format mark
 cd /path/to/project
 npx claude-memory-layer hermes import
 
-# 특정 Hermes session id만 import
+# 특정 Hermes session id만 import: id는 Markdown이 아니라 JSON 리포트의 sessions[].sessionId에 있습니다
+npx claude-memory-layer hermes validate --project /path/to/project --format json
 npx claude-memory-layer hermes import --project /path/to/project --session 20260505_010203_abcd1234
 
 # 모든 Hermes 세션 import (전역 저장소 사용; 필요할 때만)

@@ -10,8 +10,8 @@ If you have used Claude Code before installing, import the sessions it already w
 
 ```bash
 cd /path/to/your-project
-claude-memory-layer list      # sessions available for this project
-claude-memory-layer import    # import this project's sessions, then embed them
+claude-memory-layer list --project "$PWD"   # sessions for this project (without --project: all projects)
+claude-memory-layer import                   # import this project's sessions, then embed them
 ```
 
 | Option | Meaning |
@@ -123,29 +123,31 @@ claude-memory-layer hermes import --project "$PROJECT" --verbose
 claude-memory-layer process --project "$PROJECT"
 ```
 
-If the absolute paths differ, find the original sessions with `OLD_PROJECT` and import specific session files or ids into the new project store (`NEW_PROJECT`):
+If the absolute paths differ, find the original sessions with `OLD_PROJECT` and import specific session files or ids into the new project store (`NEW_PROJECT`). The Markdown validate reports contain aggregate counts only, so take the Codex session file paths and Hermes session ids from the JSON report: each entry of `sessions[]` has `sessionId`, `matched` and, for Codex, `filePath`.
 
 ```bash
 export OLD_PROJECT=/old/server/path/to/your-project
 export NEW_PROJECT=/path/to/your-project
 cd "$NEW_PROJECT"
 
-# Claude Code: take the JSONL session file path from the list output
+# Claude Code: take the JSONL path from the "Path:" lines of the list output (first 20 sessions)
 claude-memory-layer list --project "$OLD_PROJECT"
 claude-memory-layer import --project "$NEW_PROJECT" --session /path/to/claude-session.jsonl --verbose
 
-# Codex: take the session JSONL file from the validate report
-claude-memory-layer codex validate --project "$OLD_PROJECT" --format markdown
+# Codex: print the session file paths from the JSON report, then import each one
+claude-memory-layer codex validate --project "$OLD_PROJECT" --format json \
+  | node -e 'for (const s of JSON.parse(require("fs").readFileSync(0, "utf8")).sessions) if (s.matched) console.log(s.filePath)'
 claude-memory-layer codex import --project "$NEW_PROJECT" --session /path/to/codex-session.jsonl --verbose
 
-# Hermes: take the Hermes session id from the validate report
-claude-memory-layer hermes validate --project "$OLD_PROJECT" --format markdown
+# Hermes: print the session ids from the JSON report, then import each one
+claude-memory-layer hermes validate --project "$OLD_PROJECT" --format json \
+  | node -e 'for (const s of JSON.parse(require("fs").readFileSync(0, "utf8")).sessions) if (s.matched) console.log(s.sessionId)'
 claude-memory-layer hermes import --project "$NEW_PROJECT" --session 20260505_010203_abcd1234 --verbose
 
 claude-memory-layer process --project "$NEW_PROJECT"
 ```
 
-The output of `import`, `validate` and `list` can include parts of conversations and local paths. Remove sensitive data and paths before sharing it; for Codex validate reports you can add `--anonymize-projects`.
+The output of `import`, `validate` and `list` can include parts of conversations and local paths (the JSON reports list session file paths). Remove sensitive data and paths before sharing it; for Codex validate reports you can add `--anonymize-projects`, which hashes the project labels but not `filePath`.
 
 ### 4. Verify
 
