@@ -86,11 +86,13 @@ breaker stops paying for those calls:
 - **Fails open**: if the state cannot be read, locked or written, or holds times the clock cannot have produced, calls
   go to the provider as if there were no breaker.
 - **Skipped session summaries are kept**, one file per session in `~/.claude-code/memory/summary-pending/` (session
-  ids and times only). The semantic daemon retries them after the next summary call the provider answers, and removes
-  an entry only once its retry is done. Bounds: 100 entries, 7 days, 3 failed retries; a daemon that dies mid-retry
-  leaves a claim the next retry takes back.
+  ids and times only). The semantic daemon retries them after the next summary call the provider answers. A kept
+  summary does not disappear before its retry is done (the summary was stored, or there was nothing left to store);
+  the only exceptions are the bounds: 7 days, 100 entries in the whole queue, 3 failed retries. A daemon that dies
+  mid-retry leaves a claim the next retry takes back.
   Lesson extraction needs no queue: it is computed on demand and failed groups are never cached, so the next
-  `mem-lesson-candidates` call after recovery extracts them.
+  `mem-lesson-candidates` call after recovery extracts them; until then its note names the open circuit and the next
+  probe time.
 
 State: `~/.claude-code/memory/llm-provider-breaker.json`. Check it with:
 
@@ -98,14 +100,13 @@ State: `~/.claude-code/memory/llm-provider-breaker.json`. Check it with:
   time and the number of kept summaries. `summary-provider` shows how many summary calls the daemon skipped.
 - `claude-memory-layer audit`: the "LLM provider circuit" section, `llmProviderCircuit` in `--format json`.
 
-Settings (environment, like the other `CLAUDE_MEMORY_*` LLM settings; set them in `settings.json` `env` so hook-spawned
-daemons see them):
+Settings, including how to turn the breaker off, are in
+[CONFIGURATION.md](CONFIGURATION.md#llm-summaries-and-lessons). To retry right away after logging in, delete
+`llm-provider-breaker.json`; the next call then runs normally.
 
-| Variable | Default | Meaning |
-|---|---|---|
-| `CLAUDE_MEMORY_LLM_BREAKER` | on | `off` disables the breaker |
-| `CLAUDE_MEMORY_LLM_BREAKER_THRESHOLD` | `3` | consecutive auth/limit failures that open it |
-| `CLAUDE_MEMORY_LLM_BREAKER_COOLDOWN_MS` | `300000` | wait before the first probe |
-| `CLAUDE_MEMORY_LLM_BREAKER_MAX_COOLDOWN_MS` | `3600000` | cap for the doubling cooldown |
+Known limits:
 
-To retry right away after logging in, delete `llm-provider-breaker.json`; the next call then runs normally.
+- When two processes take over a dead process's state lock at the same instant, both can get in, so the breaker may
+  send one extra probe (one extra provider call) and two queue changes may overlap (#217).
+- A summary skipped while the queue lock is unavailable for half a second is not kept; it stays eligible for the
+  session-start backfill.

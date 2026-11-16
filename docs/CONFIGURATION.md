@@ -79,6 +79,12 @@ Core memory blocks, `mem-entity-supersede` and temporal graph queries are always
 | `CLAUDE_MEMORY_SUMMARY_PROVIDER` | `claude` | `claude` or `codex` CLI |
 | `CLAUDE_MEMORY_SUMMARY_MODEL`, `CLAUDE_MEMORY_SUMMARY_TIMEOUT_MS` | | Model and timeout for the summary CLI call |
 | `CLAUDE_MEMORY_LESSON_MODE`, `CLAUDE_MEMORY_LESSON_PROVIDER`, `CLAUDE_MEMORY_LESSON_MODEL`, `CLAUDE_MEMORY_LESSON_TIMEOUT_MS` | | Lesson extraction, see [MCP.md](MCP.md#llm-lesson-extraction) |
+| `CLAUDE_MEMORY_LLM_BREAKER` | on | `off` turns the [provider circuit breaker](OPERATIONS.md#llm-provider-circuit-breaker) off |
+| `CLAUDE_MEMORY_LLM_BREAKER_THRESHOLD` | `3` | Consecutive auth/usage-limit failures that open the breaker |
+| `CLAUDE_MEMORY_LLM_BREAKER_COOLDOWN_MS` | `300000` | Wait before the first probe |
+| `CLAUDE_MEMORY_LLM_BREAKER_MAX_COOLDOWN_MS` | `3600000` | Cap for the cooldown, which doubles after each failed probe |
+
+Both CLI timeouts are capped at `1800000` (30 minutes); a larger value runs with the cap, and `doctor` says so.
 
 What these send off the machine is described in [SECURITY.md](../SECURITY.md).
 
