@@ -112,3 +112,68 @@ Known limits:
   send one extra probe (one extra provider call) and two queue changes may overlap (#217).
 - A summary skipped while the queue lock is unavailable for half a second is not kept; it stays eligible for the
   session-start backfill.
+
+## What unattended work changes and what it does not
+
+Hooks, the semantic daemon, background workers and the opt-in `maintenance` scheduler run with no one at the keyboard.
+None of them deletes or rewrites a stored event (prompt, response, tool observation, session summary) or a lesson.
+What they remove is either derived data that is rebuilt from the events in SQLite, or bookkeeping that holds no memory
+content. Deleting or rewriting events takes an explicit command, or an explicit tool argument from an agent.
+
+"Recoverable" below means the data can be rebuilt from what is still stored. The governance audit is the
+`memory_governance_audit` table in the project's `events.sqlite`; no command prints it yet. Its before and after
+snapshots mask absolute paths and credential-looking values, so a version restored from one lacks those values.
+
+### Unattended
+
+| What runs | Started by | What it removes or changes | Recoverable | Audit |
+|---|---|---|---|---|
+| `maintenance run` | The launchd/systemd job from `maintenance install` (opt-in) | Requeues stuck vector jobs, embeds pending events, compacts LanceDB tables and drops table versions older than 1 hour (`CLAUDE_MEMORY_LANCE_VERSION_RETENTION_MS`) | Yes: vectors are rebuilt from SQLite | No; `maintenance status` shows the last run |
+| Embedding model change | An import that finds vectors from another model, including the Codex SessionEnd auto-import | Drops every vector and requeues every event | Yes | No |
+| Tool-observation vector auto-heal | SessionStart hook, in the background | Deletes vectors of `tool_observation` events embedded before those events were excluded from embedding | Yes; the events stay | No |
+| Embedding queue | Vector worker | Removes finished `embedding_outbox` jobs | Not memory | No |
+| Graduation | Semantic daemon, background graduation worker | Raises an event's `memory_levels` entry (L0 → L1 …); never lowers one | The events are untouched | A run record in `build_runs` |
+| Endless Mode consolidation | Consolidation worker, only while Endless Mode is enabled | Adds consolidated memories; prunes expired and over-limit `working_set` entries | The working set only lists event ids; the events stay | No |
+| Kept session summaries (`summary-pending/`) | Semantic daemon | Entries past 7 days, beyond 100, or after 3 failed retries ([circuit breaker](#llm-provider-circuit-breaker)) | Entries hold session ids only; the session's events stay, without a summary unless the session-start backfill reaches it | Shown by `doctor` and `audit` |
+| SessionEnd retry jobs (`session-end-pending/`) | Session-end worker | Jobs past 7 days, beyond 50, or after 3 failed retries | The transcript is untouched and can be imported | `session-end-diagnostics.jsonl` |
+| Event capture, session summaries, PreCompact checkpoints, Codex SessionEnd auto-import | Hooks and the semantic daemon | Only add rows | — | — |
+| Hook scratch files | Hooks | Transcript cursors idle for 14 days, pre-edit "already shown" markers older than 7 days, read snapshots left by exited processes, runtime telemetry files | Not memory | No |
+
+### Agents (MCP tools, no human confirmation)
+
+| Tool call | What it removes or changes | Recoverable | Audit |
+|---|---|---|---|
+| `mem-import-latest` with `force: true`, `mem-search` with `refreshForce: true` | Deletes every event of the most recent session of each source (`hermes` and `codex` by default, `claude` when asked), then imports it again up to the message limit (default 200) | **Partly**; see the known limits below | **No** |
+| `mem-entity-supersede` | Marks the entity superseded and adds a `supersedes` edge | Yes; the entity stays | Yes |
+| `mem-lesson-save` with an existing lesson's name | Replaces that lesson | From the audit's before snapshot | Yes |
+| `mem-core-block-update`, `mem-actor-card-upsert` | Replace the block or the card | From the audit's before snapshot | Yes |
+| `mem-perspective-observation-delete` | Sets `deleted_at` (soft delete) | Yes | Yes |
+
+### Explicit commands
+
+| Command | What it removes or changes | Recoverable | Audit |
+|---|---|---|---|
+| `forget --before <date> [--type <type>] --confirm` | Deletes the matching events, their vectors and dated mirror files, then runs VACUUM. Without `--confirm` it only previews | No | **No** |
+| `forget <eventId>`, `forget --session <id>` | Nothing; not implemented (#211) | — | — |
+| Dashboard `DELETE /api/events/:id` | Deletes one event and its vectors; the response names the event (id, type, time, session, content length), not its content | No | **No** |
+| `import --force`, `codex import --force`, `hermes import --force` | Same as the MCP `force` argument above; `--limit` caps what is imported again | **Partly** | **No** |
+| `repair redact-credentials --apply` | Rewrites credential-looking text in events, helpfulness rows, retrieval traces and the Markdown mirror; deletes the affected vectors and requeues the events | No, by design | **No** |
+| `repair legacy-project-scope --apply` | Adds repair or quarantine markers to event metadata; content is untouched | Yes | Markers in the metadata only |
+| `retention audit` | Nothing; reads a read-only snapshot | — | — |
+| `retention apply-lifecycle` | Writes retention scores; deletes no events | Yes | Yes |
+| `lesson consolidate --apply` | Adds a runbook and switches the lessons it absorbs off | Yes: `lesson revert-consolidation --apply` | Yes |
+| `cleanup ephemeral --apply` | Stale runtime and adherence files | Not memory | No |
+| `cleanup stores` | Nothing; preview only | — | — |
+| `mongo-sync` (pull) | Only adds rows | — | — |
+
+Known limits:
+
+- **Force reimport loses rows** (#227). It deletes every event of the session, then imports only what the transcript
+  holds, up to the message limit. Session summaries and tool observations are not in the transcript, so they are gone
+  for good; messages past the limit come back only by importing the transcript again without a limit, while the
+  transcript still exists. A 600-line Claude transcript plus one summary and one tool observation went from 602 events
+  to 201 after a force reimport with the limit at 200. Before deleting, the Claude importer only checks that the
+  transcript has a readable record, the Codex importer skips the delete when the session has rows written by the Codex
+  host, and the Hermes importer checks nothing.
+- **No audit record** for `forget`, the dashboard delete, force reimport and `repair redact-credentials` (#228).
+  Afterwards nothing in the store shows when, by whom or how much was deleted.
