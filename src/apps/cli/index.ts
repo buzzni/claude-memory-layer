@@ -72,6 +72,7 @@ import {
 import { getDefaultMcpServerEntry, installMcpServer } from './mcp-install.js';
 import { readMcpClientConfigs } from './mcp-client-config.js';
 import {
+  checkCapturePolicy,
   checkEmbeddingBackend,
   checkHooksInstalled,
   checkMcpClientConfig,
@@ -91,6 +92,7 @@ import {
   type EmbeddingBackendScript
 } from './doctor.js';
 import { repairEmbeddingBackend, runDoctor } from './doctor-fix.js';
+import { loadCapturePolicy } from '../../adapters/claude/hooks/capture-policy.js';
 import { listPendingSessionEndJobs } from '../../adapters/claude/hooks/session-end-pending.js';
 import {
   inspectPluginHookTargets,
@@ -1174,6 +1176,7 @@ program
       checkEmbeddingBackend(packageRoot, embeddingBackendScript?.isEmbeddingBackendAvailable ?? null),
       checkSummaryProvider(gatherSummaryProviderFacts()),
       checkProviderBreaker(gatherProviderBreakerFacts()),
+      checkCapturePolicy(loadCapturePolicy()),
       checkPathConsistency('claude-memory-layer', process.env.PATH ?? ''),
       checkPathConsistency('claude-memory-layer-mcp', process.env.PATH ?? ''),
       ...readMcpClientConfigs({ cwd: process.cwd() })

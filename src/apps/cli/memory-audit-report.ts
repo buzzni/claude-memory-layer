@@ -87,6 +87,8 @@ export interface MemoryAuditStoreReport {
    * summed over the hook traces that recorded it; older traces did not.
    */
   injectedByOrigin: { traces: number; counts: Record<MemoryOrigin, number> };
+  /** Hook inputs operations.json `capturePolicy` kept out of the store, per reason code. */
+  captureSkipped: Array<{ reason: string; count: number }>;
   typedSelections: TypedSelectionSummary;
   evaluation: {
     /** evidence + user_prompt rows with an observed adoption. */
@@ -323,6 +325,21 @@ function readInjectedByOrigin(
   return { traces: Number(row?.traces ?? 0), counts };
 }
 
+/** Rows the capture policy wrote instead of storing a hook input; reason codes only. */
+function readCaptureSkipped(
+  db: SQLiteDatabase,
+  window: { sql: string; params: unknown[] }
+): MemoryAuditStoreReport['captureSkipped'] {
+  const skipped = `stage = 'capture_skipped'`;
+  return sqliteAll<{ reason: string; count: number }>(
+    db,
+    `SELECT COALESCE(error, 'unknown') AS reason, COUNT(*) AS count
+     FROM pipeline_metrics${window.sql ? `${window.sql} AND ${skipped}` : ` WHERE ${skipped}`}
+     GROUP BY 1 ORDER BY 2 DESC, 1`,
+    window.params
+  ).map((row) => ({ reason: row.reason, count: Number(row.count) }));
+}
+
 function auditOneStore(
   store: DiscoveredStore,
   options: { memoryRoot: string; since?: Date; until?: Date; now: Date; alias?: StoreAliasInfo; projectClass?: MemoryAuditProjectClass }
@@ -357,6 +374,7 @@ function auditOneStore(
     traces: { window: 0, withSelection: 0, emptySelection: 0 },
     outcomeReasons: [],
     injectedByOrigin: { traces: 0, counts: emptyOriginCounts() },
+    captureSkipped: [],
     typedSelections: emptyTypedSelectionSummary(),
     evaluation: {
       evidencePromptEvaluated: 0,
@@ -419,6 +437,9 @@ function auditOneStore(
     base.events.last24h = rollingCount(24);
     base.events.last48h = rollingCount(48);
     base.sources = readIngestSourceClocks(db, { since: options.since, until: options.until });
+    if (tableExists(db, 'pipeline_metrics')) {
+      base.captureSkipped = readCaptureSkipped(db, windowClause('', 'ts', options.since, options.until));
+    }
 
     if (base.schemaCapability.retrievalTraces) {
       const traceWindow = windowClause('', 'created_at', options.since, options.until);
@@ -722,6 +743,7 @@ export function formatMemoryAuditMarkdown(report: MemoryAuditReport): string {
   }
   lines.push('', 'Importer cursor: unknown; observed source timestamps above are not importer progress or backlog measurements.');
   lines.push(...formatInjectedByOriginMarkdown(report.stores));
+  lines.push(...formatCaptureSkippedMarkdown(report.stores));
   lines.push(...formatLessonUsageMarkdown(report.stores));
   lines.push(...formatSessionSummaryCoverageMarkdown(report.stores));
   lines.push(...formatProviderCircuitMarkdown(report.llmProviderCircuit));
@@ -754,6 +776,19 @@ function formatInjectedByOriginMarkdown(stores: MemoryAuditStoreReport[]): strin
     `|---|---:|${MEMORY_ORIGINS.map(() => '---:').join('|')}|`,
     ...measured.map((store) => `| ${store.storeHash} | ${store.injectedByOrigin.traces} | `
       + `${MEMORY_ORIGINS.map((origin) => store.injectedByOrigin.counts[origin]).join(' | ')} |`)
+  ];
+}
+
+function formatCaptureSkippedMarkdown(stores: MemoryAuditStoreReport[]): string[] {
+  const rows = stores.flatMap((store) => store.captureSkipped.map((entry) => ({ store: store.storeHash, ...entry })));
+  if (rows.length === 0) return [];
+  return [
+    '', '## Not stored by the capture policy', '',
+    'Hook inputs that operations.json `capturePolicy` kept out of the store (`subagent`: a tool call made inside a skipped subagent type).',
+    '',
+    '| Store | Reason | Not stored |',
+    '|---|---|---:|',
+    ...rows.map((row) => `| ${row.store} | ${row.reason} | ${row.count} |`)
   ];
 }
 

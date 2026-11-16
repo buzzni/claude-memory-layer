@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
+  checkCapturePolicy,
   checkEmbeddingBackend,
   checkHooksInstalled,
   checkMcpClientConfig,
@@ -795,5 +796,24 @@ describe('inspectEnabledPlugin', () => {
     const result = inspectEnabledPlugin(enabled(), depsFor({ [`${pluginsDir}/installed_plugins.json`]: files()[`${pluginsDir}/installed_plugins.json`] }));
     expect(result).toMatchObject({ status: 'unverified' });
     expect(result?.status === 'unverified' && result.reason).toContain(installPath);
+  });
+});
+
+describe('checkCapturePolicy', () => {
+  it('reports that every hook input is stored by default', () => {
+    expect(checkCapturePolicy({ skipSubagentTypes: [] })).toEqual({
+      name: 'capture-policy',
+      status: 'pass',
+      detail: 'stores every hook input (operations.json capturePolicy not set)'
+    });
+  });
+
+  it('names the skipped subagent types and where the skips are counted', () => {
+    expect(checkCapturePolicy({ skipSubagentTypes: ['Explore', 'web-fetch'] }).detail).toBe(
+      'tool calls inside subagents of type Explore, web-fetch are not stored; memory-audit counts them'
+    );
+    expect(checkCapturePolicy({ skipSubagentTypes: ['*'] }).detail).toBe(
+      'tool calls inside any subagent are not stored; memory-audit counts them'
+    );
   });
 });
