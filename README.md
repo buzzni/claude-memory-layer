@@ -504,30 +504,30 @@ npx claude-memory-layer install
 
 ### Slash 명령어
 
-Claude Code 내에서 사용할 수 있는 명령어:
+Claude Code 플러그인(`memory-layer@claude-memory-layer`)으로 설치했을 때 쓸 수 있는 명령어입니다. 플러그인 이름이 앞에 붙고, PATH에 있는 `claude-memory-layer` CLI를 실행합니다. `claude-memory-layer install`은 훅만 등록하므로 이 명령어는 생기지 않습니다.
 
 ```bash
 # 메모리 검색 - 관련 기억 찾기
-/memory-search "authentication 구현 방법"
+/memory-layer:memory-search "authentication 구현 방법"
 
 # 대화 기록 보기
-/memory-history
-/memory-history --limit 50
-/memory-history --session <session-id>
+/memory-layer:memory-history
+/memory-layer:memory-history --limit 50
+/memory-layer:memory-history --session <session-id>
 
 # 통계 확인
-/memory-stats
+/memory-layer:memory-stats
 
 # 기존 대화 기록 임포트
-/memory-import                            # 현재 프로젝트
-/memory-import --all                      # 모든 프로젝트
-/memory-import --project /path/to/project # 특정 프로젝트
+/memory-layer:memory-import                            # 현재 프로젝트
+/memory-layer:memory-import --all                      # 모든 프로젝트
+/memory-layer:memory-import --project /path/to/project # 특정 프로젝트
 
 # 임포트 가능한 세션 목록
-/memory-list
+/memory-layer:memory-list
 
 # 메모리 삭제
-/memory-forget --session <id> --confirm
+/memory-layer:memory-forget --session <id> --confirm
 ```
 
 ### 기존 메모리 정리 Import (구조화)
