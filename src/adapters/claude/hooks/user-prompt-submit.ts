@@ -54,6 +54,16 @@ import {
 import { normalizeUserPrompt, promptClassifierMetadata, redactPromptForStorage } from '../../../core/prompt-normalizer.js';
 import { sanitizeRetrievalQuery } from '../../../core/retrieval-query-sanitizer.js';
 import { indentContinuationLines } from '../../../core/recall-sanitizer.js';
+import {
+  classifyEventOrigin,
+  classifyMemoryOrigin,
+  countMemoryOrigins,
+  isAutoInjectionExcludableOrigin,
+  memoryOriginLabel,
+  normalizeMemoryOrigin,
+  type MemoryOrigin
+} from '../../../core/memory-origin.js';
+import { excludesUntrustedFromAutoInjection } from '../../../services/operations-config-loader.js';
 import type { UserPromptSubmitInput, UserPromptSubmitOutput } from '../../../core/types.js';
 
 // Configuration. All numeric env vars go through readNumberEnv so an invalid
@@ -183,7 +193,15 @@ export function memoryEvidencePreview(memory: { type: string; content: string },
     : preview;
 }
 
-export function formatMemoryContext(items: Array<{ type: string; content: string; id?: string; memoryLevel?: string }>, query: string): string {
+/** The lane's classification when it had the stored row, else one from the type alone. */
+export function hookCandidateOrigin(candidate: { type: string; origin?: MemoryOrigin }): MemoryOrigin {
+  return candidate.origin ?? classifyMemoryOrigin({ type: candidate.type });
+}
+
+export function formatMemoryContext(
+  items: Array<{ type: string; content: string; id?: string; memoryLevel?: string; origin?: MemoryOrigin }>,
+  query: string
+): string {
   if (items.length === 0) return '';
   const lines = items.map((m) => {
     // Continuation lines stay indented under the item, so a recalled heading or
@@ -191,7 +209,8 @@ export function formatMemoryContext(items: Array<{ type: string; content: string
     const preview = indentContinuationLines(memoryEvidencePreview(m, query), '  ');
     const sourceRef = m.id ? ` [${m.type === 'lesson' ? 'lesson' : 'event'}:${m.id}]` : '';
     const level = m.memoryLevel && m.memoryLevel !== 'L0' ? ` ${m.memoryLevel}` : '';
-    return `- [${m.type}${level}] ${preview}${sourceRef}`;
+    const originLabel = memoryOriginLabel(hookCandidateOrigin(m));
+    return `- [${m.type}${level}]${originLabel ? ` [${originLabel}]` : ''} ${preview}${sourceRef}`;
   });
   // The self-report line is what makes memory reuse visible to the user in the
   // chat itself. It asks for a short human-readable label rather than an id:
@@ -243,6 +262,7 @@ async function expandEpisodeEvidence(
             content: event.content,
             score: Math.max(0, (seed.score ?? 0) - 0.02),
             source: 'episode',
+            origin: classifyEventOrigin(event),
             episodeLinked: true,
             episodeSeedAligned: true,
             episodeSeedStrongAligned: seed.episodeSeedStrongAligned === true
@@ -266,6 +286,7 @@ async function expandEpisodeEvidence(
           content: fact.snippet,
           score: Math.max(0, (seed.score ?? 0) - 0.02),
           source: 'episode',
+          origin: classifyMemoryOrigin({ type: eventType, metadata: fact.metadata }),
           episodeLinked: Boolean(targetTurnId && factTurnId && targetTurnId === factTurnId),
           episodeSeedAligned: seed.episodeSeedAligned === true,
           episodeSeedStrongAligned: seed.episodeSeedStrongAligned === true
@@ -480,6 +501,10 @@ export interface HookRetrievalLaneCounts {
   graduated: number;
   lesson: number;
   thresholdFiltered: number;
+  /** Removed by the operations.json sourceTrust filter; also counted in qualityFiltered. */
+  sourceTrustFiltered?: number;
+  /** Origin class of each injected memory, counted into the diagnostics. */
+  injectedOrigins?: MemoryOrigin[];
   qualityFiltered: number;
   selected: number;
   minScore: number;
@@ -517,11 +542,13 @@ export function buildHookOutcomeDiagnostics(counts: HookRetrievalLaneCounts): Re
     },
     filteredCounts: {
       threshold: counts.thresholdFiltered,
-      quality: counts.qualityFiltered
+      quality: counts.qualityFiltered,
+      ...(counts.sourceTrustFiltered ? { source_trust: counts.sourceTrustFiltered } : {})
     },
     topScore: counts.topScore,
     threshold: counts.minScore,
-    freshnessState: 'unknown'
+    freshnessState: 'unknown',
+    ...(counts.injectedOrigins ? { injectedByOrigin: countMemoryOrigins(counts.injectedOrigins) } : {})
   };
 }
 
@@ -542,6 +569,8 @@ export interface HookSelectionInput {
   actorId?: string;
   /** The prompt's own session; its events are not injected back into it. */
   sessionId?: string;
+  /** operations.json sourceTrust: keep tool and unknown-origin memories out of the injection. */
+  excludeUntrustedOrigins?: boolean;
 }
 
 export interface HookSelection {
@@ -553,6 +582,8 @@ export interface HookSelection {
   graduatedCandidateCount: number;
   lessonCandidateCount: number;
   thresholdFilteredCount: number;
+  /** Candidates the source-trust filter removed before ranking; 0 while it is off. */
+  sourceTrustFilteredCount: number;
 }
 
 /**
@@ -584,9 +615,12 @@ export async function selectHookInjection(
         topK: MAX_MEMORIES,
         minScore
       });
-      mergedMemories = semanticMemories.map((memory) => ({
+      mergedMemories = semanticMemories.map(({ origin, ...memory }) => ({
         ...memory,
-        source: 'semantic' as const
+        source: 'semantic' as const,
+        // A daemon started before origins were reported sends none; the type
+        // alone then classifies the row, missing only `imported`.
+        origin: normalizeMemoryOrigin(origin) ?? undefined
       })).filter((memory) => !isExcludedEvaluationSession(memory.sessionId)
         && !isCurrentSessionEvent(memory.sessionId, input.sessionId));
       semanticCandidateCount = mergedMemories.length;
@@ -619,6 +653,7 @@ export async function selectHookInjection(
         id: result.event.id,
         sessionId: result.event.sessionId,
         source: 'graduated',
+        origin: classifyEventOrigin(result.event),
         memoryLevel: result.level,
         accessCount: result.accessCount,
         retrievalRankScore: (worstGraduatedRank - result.rank) / graduatedRankRange
@@ -706,6 +741,7 @@ export async function selectHookInjection(
         sessionId: result.event.sessionId,
         score: result.score,
         source: 'keyword',
+        origin: classifyEventOrigin(result.event),
         fallback: result.score < minScore
       });
     }
@@ -723,6 +759,7 @@ export async function selectHookInjection(
         sessionId: r.event.sessionId,
         score: r.score,
         source: 'keyword',
+        origin: classifyEventOrigin(r.event),
         fallback: usedFallbackFloor
       };
       const existingIndex = existingById.get(r.event.id);
@@ -737,6 +774,7 @@ export async function selectHookInjection(
             ...existing,
             score: r.score,
             source: 'keyword',
+            origin: keywordCandidate.origin,
             fallback: usedFallbackFloor
           };
         }
@@ -758,9 +796,15 @@ export async function selectHookInjection(
   ).values());
   const episodeSeeds = selectHookEpisodeSeeds(episodeSeedPool, injectionPolicy, retrievalQuery);
   const episodeEvidence = await expandEpisodeEvidence(deps.memoryService, episodeSeeds);
+  // Applied before ranking so trusted memories take the freed slots. Tool rows
+  // still seed episodes above: they find the turn, its answer is injected.
+  const injectionPool = [...mergedMemories, ...episodeEvidence];
+  const trustedPool = input.excludeUntrustedOrigins
+    ? injectionPool.filter((candidate) => !isAutoInjectionExcludableOrigin(hookCandidateOrigin(candidate)))
+    : injectionPool;
   const injectableMemories = reserveLessonSlot(
     filterHookInjectableMemories(
-      [...mergedMemories, ...episodeEvidence],
+      trustedPool,
       injectionPolicy,
       retrievalQuery
     ),
@@ -776,7 +820,8 @@ export async function selectHookInjection(
     keywordCandidateCount,
     graduatedCandidateCount,
     lessonCandidateCount,
-    thresholdFilteredCount
+    thresholdFilteredCount,
+    sourceTrustFilteredCount: injectionPool.length - trustedPool.length
   };
 }
 
@@ -883,7 +928,8 @@ export async function main(options: UserPromptSubmitMainOptions = {}): Promise<s
         keywordCandidateCount,
         graduatedCandidateCount,
         lessonCandidateCount,
-        thresholdFilteredCount
+        thresholdFilteredCount,
+        sourceTrustFilteredCount
       } = await selectHookInjection(
         {
           memoryService,
@@ -893,7 +939,13 @@ export async function main(options: UserPromptSubmitMainOptions = {}): Promise<s
             { allowDaemonStart: options.allowDaemonStart }
           )
         },
-        { prompt, retrievalQuery, actorId: input.actor_id, sessionId: input.session_id }
+        {
+          prompt,
+          retrievalQuery,
+          actorId: input.actor_id,
+          sessionId: input.session_id,
+          excludeUntrustedOrigins: excludesUntrustedFromAutoInjection()
+        }
       );
 
       // One trace id shared by the query trace and every helpfulness row it
@@ -921,11 +973,13 @@ export async function main(options: UserPromptSubmitMainOptions = {}): Promise<s
                     timestamp: event.timestamp,
                     sessionId: event.sessionId,
                     metadata: event.metadata,
+                    // The stored row decides; a candidate's own origin may lack its metadata.
+                    origin: classifyEventOrigin(event),
                     sourceKind: 'event' as const
                   }
-                : { ...memory, sourceKind: 'event' as const };
+                : { ...memory, origin: hookCandidateOrigin(memory), sourceKind: 'event' as const };
             } catch {
-              return { ...memory, sourceKind: 'event' as const };
+              return { ...memory, origin: hookCandidateOrigin(memory), sourceKind: 'event' as const };
             }
           }));
         }
@@ -1020,6 +1074,8 @@ export async function main(options: UserPromptSubmitMainOptions = {}): Promise<s
           graduated: graduatedCandidateCount,
           lesson: lessonCandidateCount,
           thresholdFiltered: thresholdFilteredCount,
+          sourceTrustFiltered: sourceTrustFilteredCount,
+          injectedOrigins: injectableMemories.map(hookCandidateOrigin),
           qualityFiltered: Math.max(0, mergedMemories.length - injectableMemories.length),
           selected: injectableMemories.length,
           minScore,

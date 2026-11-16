@@ -7,7 +7,8 @@
  * the memories, and every injected excerpt is scored against the session's
  * later agent responses with computeMemoryUsageEvidence — the function the
  * helpfulness evaluator uses for content_overlap_score. Arms toggle the
- * retrieval experiment flags so their effect is measured on the hook path.
+ * retrieval experiment flags, or the operations.json source-trust filter, so
+ * their effect is measured on the hook path.
  *
  * The store copy is opened read-only. Events at or after each trace's time are
  * hidden from every lane, including the semantic retriever: reads are
@@ -26,8 +27,10 @@ import type { VectorStore } from '../../../core/vector-store.js';
 import { MemoryService } from '../../../services/memory-service.js';
 import { DISABLED_SHARED_STORE_CONFIG } from '../../../services/memory-service-config.js';
 import type { SemanticMemory } from './semantic-daemon-client.js';
+import { countMemoryOrigins, MEMORY_ORIGINS, type MemoryOrigin } from '../../../core/memory-origin.js';
 import {
   buildRetrievalQuery,
+  hookCandidateOrigin,
   hookMemoryRefKind,
   memoryEvidencePreview,
   redactForStorage,
@@ -51,13 +54,20 @@ const QUERY_SANITIZER_FLAG = 'CLAUDE_MEMORY_RETRIEVAL_QUERY_SANITIZER_EXPERIMENT
 export interface ReplayArm {
   name: string;
   flags: Record<string, 'true' | undefined>;
+  /** operations.json sourceTrust.excludeUntrustedFromAutoInjection for this arm. */
+  excludeUntrustedOrigins?: boolean;
 }
 
 export const DEFAULT_REPLAY_ARMS: ReplayArm[] = [
   { name: 'current', flags: { [FTS_ABSOLUTE_FLAG]: undefined, [QUERY_SANITIZER_FLAG]: undefined } },
   { name: 'fts-absolute (#121)', flags: { [FTS_ABSOLUTE_FLAG]: 'true', [QUERY_SANITIZER_FLAG]: undefined } },
   { name: 'query-sanitizer (#125)', flags: { [FTS_ABSOLUTE_FLAG]: undefined, [QUERY_SANITIZER_FLAG]: 'true' } },
-  { name: '#121 + #125', flags: { [FTS_ABSOLUTE_FLAG]: 'true', [QUERY_SANITIZER_FLAG]: 'true' } }
+  { name: '#121 + #125', flags: { [FTS_ABSOLUTE_FLAG]: 'true', [QUERY_SANITIZER_FLAG]: 'true' } },
+  {
+    name: 'source-trust filter',
+    flags: { [FTS_ABSOLUTE_FLAG]: undefined, [QUERY_SANITIZER_FLAG]: undefined },
+    excludeUntrustedOrigins: true
+  }
 ];
 
 export interface ReplayTurn {
@@ -81,6 +91,7 @@ export interface ReplayTurn {
 export interface ReplayInjection {
   kind: string;
   id: string;
+  origin: MemoryOrigin;
   overlap: number | null;
 }
 
@@ -106,6 +117,8 @@ export interface ReplayMetrics {
 export interface ReplayArmReport {
   arm: string;
   all: ReplayMetrics;
+  /** Injected memories per origin class over all turns. */
+  injectedByOrigin: Partial<Record<MemoryOrigin, number>>;
   /** Turns where the hook injected nothing at the time: free of the response bias. */
   historicallyUninjected: ReplayMetrics;
   queryChangedVsCurrent: number;
@@ -436,7 +449,7 @@ async function withFlags<T>(flags: ReplayArm['flags'], run: () => Promise<T>): P
   }
 }
 
-async function replayTurn(sources: ReplaySources, turn: ReplayTurn): Promise<ReplayTurnResult> {
+async function replayTurn(sources: ReplaySources, turn: ReplayTurn, arm: ReplayArm): Promise<ReplayTurnResult> {
   const stats = { semanticDropped: 0 };
   const retrievalQuery = buildRetrievalQuery({
     prompt: turn.prompt,
@@ -448,13 +461,15 @@ async function replayTurn(sources: ReplaySources, turn: ReplayTurn): Promise<Rep
   const selection = await selectHookInjection(selectionDeps(sources, turn, stats), {
     prompt: turn.prompt,
     retrievalQuery,
-    sessionId: turn.sessionId
+    sessionId: turn.sessionId,
+    excludeUntrustedOrigins: arm.excludeUntrustedOrigins === true
   });
   const injections = selection.injectableMemories
     .filter((memory): memory is typeof memory & { id: string } => Boolean(memory.id))
     .map((memory) => ({
       kind: hookMemoryRefKind(memory),
       id: memory.id,
+      origin: hookCandidateOrigin(memory),
       overlap: turn.responses.length > 0
         ? computeMemoryUsageEvidence(memoryEvidencePreview(memory, retrievalQuery), turn.responses).contentOverlapScore
         : null
@@ -550,7 +565,7 @@ export async function runHookGroundingReplay(options: HookGroundingReplayOptions
     for (const arm of arms) {
       const results: ReplayTurnResult[] = [];
       for (const turn of turns) {
-        results.push(await withFlags(arm.flags, () => replayTurn(sources, turn)));
+        results.push(await withFlags(arm.flags, () => replayTurn(sources, turn, arm)));
       }
       armResults.push({ arm, results });
     }
@@ -560,6 +575,7 @@ export async function runHookGroundingReplay(options: HookGroundingReplayOptions
     const reports = armResults.map(({ arm, results }) => ({
       arm: arm.name,
       all: summarizeReplay(turns, results),
+      injectedByOrigin: countMemoryOrigins(results.flatMap((result) => result.injections.map((injection) => injection.origin))),
       historicallyUninjected: summarizeReplay(uninjected, results),
       queryChangedVsCurrent: results.filter((result, i) => result.retrievalQuery !== current[i].retrievalQuery).length,
       selectionChangedVsCurrent: results.filter((result, i) => !sameIds(
@@ -572,7 +588,8 @@ export async function runHookGroundingReplay(options: HookGroundingReplayOptions
     // Fidelity of the first arm against what the hook recorded at the time.
     // Mismatches come from the approximations listed in the report.
     const baselineIsCurrent = arms[0].flags[FTS_ABSOLUTE_FLAG] === undefined
-      && arms[0].flags[QUERY_SANITIZER_FLAG] === undefined;
+      && arms[0].flags[QUERY_SANITIZER_FLAG] === undefined
+      && arms[0].excludeUntrustedOrigins !== true;
     return {
       storeLabel: options.storeLabel ?? 'store copy',
       semantic: options.semantic,
@@ -723,6 +740,12 @@ export function formatReplayReport(report: ReplayReport): string {
     '| arm | query changed | selection changed |',
     '|---|---:|---:|',
     ...report.arms.map((arm) => `| ${arm.arm} | ${arm.queryChangedVsCurrent} | ${arm.selectionChangedVsCurrent} |`),
+    '',
+    '## Injected memories by origin',
+    '',
+    `| arm | ${MEMORY_ORIGINS.join(' | ')} |`,
+    `|---|${MEMORY_ORIGINS.map(() => '---:').join('|')}|`,
+    ...report.arms.map((arm) => `| ${arm.arm} | ${MEMORY_ORIGINS.map((origin) => arm.injectedByOrigin[origin] ?? 0).join(' | ')} |`),
     '',
     ...report.caveats.flatMap((note) => [note, ''])
   ];

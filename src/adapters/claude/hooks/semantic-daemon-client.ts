@@ -21,6 +21,8 @@ export interface SemanticMemory {
   id?: string;
   score?: number;
   sessionId?: string;
+  /** MemoryOrigin from the stored row; unvalidated until the caller normalizes it. */
+  origin?: string;
 }
 
 interface SemanticDaemonRequest {

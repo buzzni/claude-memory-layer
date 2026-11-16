@@ -1,4 +1,5 @@
 import { generateCitationId } from './citation-generator.js';
+import { classifyMemoryOrigin, memoryOriginLabel, type MemoryOrigin } from './memory-origin.js';
 import { applyPrivacyFilter } from './privacy/index.js';
 import type { Config, MemoryEvent } from './types.js';
 
@@ -11,6 +12,8 @@ export interface MemoryReferenceItem {
   metadata?: Record<string, unknown>;
   memoryLevel?: string;
   sourceKind?: 'event' | 'lesson';
+  /** Overrides classification from `type` and `metadata`. */
+  origin?: MemoryOrigin;
 }
 
 export interface MemoryReferenceContextOptions {
@@ -131,10 +134,11 @@ export function formatMemoryReferenceContext(
   const cards = resolvable.map((item, index) => {
     const source = sourceFor(item);
     const level = item.memoryLevel && item.memoryLevel !== 'L0' ? ` ${item.memoryLevel}` : '';
+    const originLabel = memoryOriginLabel(item.origin ?? classifyMemoryOrigin(item));
     return [
       `${index + 1}. Title: ${JSON.stringify(memoryReferenceTitle(item.content))}`,
       `   - Summary: ${JSON.stringify(memoryReferenceSummary(item.content, options.query))}`,
-      `   - Source document: ${source.document} (${item.type}${level})`,
+      `   - Source document: ${source.document} (${item.type}${level}${originLabel ? `; ${originLabel}` : ''})`,
       `   - Location: ${locationFor(item)}`,
       `   - Fetch if needed: ${source.fetch}`
     ].join('\n');

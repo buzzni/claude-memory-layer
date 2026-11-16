@@ -1,3 +1,5 @@
+import type { MemoryOrigin } from '../../../core/memory-origin.js';
+
 export type HookMemorySource = 'semantic' | 'keyword' | 'graduated' | 'episode' | 'lesson' | 'unknown';
 
 export interface HookMemoryCandidate {
@@ -7,6 +9,8 @@ export interface HookMemoryCandidate {
   sessionId?: string;
   score?: number;
   source?: HookMemorySource;
+  /** Set where the lane had the stored row; otherwise derived from `type` alone. */
+  origin?: MemoryOrigin;
   fallback?: boolean;
   memoryLevel?: string;
   accessCount?: number;

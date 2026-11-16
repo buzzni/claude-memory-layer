@@ -35,6 +35,8 @@ import {
   memoryReferenceSummary
 } from '../../../core/memory-reference-context.js';
 import { singleLineRecallText } from '../../../core/recall-sanitizer.js';
+import { classifyEventOrigin, countMemoryOrigins, isAutoInjectionExcludableOrigin, memoryOriginLabel } from '../../../core/memory-origin.js';
+import { excludesUntrustedFromAutoInjection } from '../../../services/operations-config-loader.js';
 import type {
   CoreMemoryBlock,
   EventType,
@@ -589,10 +591,14 @@ export async function main(options: SessionStartMainOptions = {}): Promise<strin
     // stay eligible there, except those the checkpoint already quotes.
     // CLAUDE_MEMORY_INJECT_SAME_SESSION=true keeps them on resume.
     const checkpointEventIds = new Set(compactionCheckpoint?.sourceEventIds ?? []);
+    // The type tiers already leave tool rows out; the operations.json
+    // sourceTrust filter holds the same line if the tiers ever widen.
+    const excludeUntrusted = excludesUntrustedFromAutoInjection();
     const recentEvents = (input.source === 'resume' && process.env.CLAUDE_MEMORY_INJECT_SAME_SESSION !== 'true'
       ? scannedEvents.filter((event) => event.sessionId !== input.session_id)
       : scannedEvents
-    ).filter((event) => !checkpointEventIds.has(event.id));
+    ).filter((event) => !checkpointEventIds.has(event.id)
+      && !(excludeUntrusted && isAutoInjectionExcludableOrigin(classifyEventOrigin(event))));
 
     const injectedEvents = selectSessionStartMemories(recentEvents, SESSION_START_MAX_MEMORIES);
 
@@ -616,7 +622,8 @@ export async function main(options: SessionStartMainOptions = {}): Promise<strin
           const date = event.timestamp.toISOString().split('T')[0];
           const excerpt = sessionStartExcerpt(event);
           excerpts.set(event.id, excerpt);
-          context += `- **${date}**: ${excerpt}\n`;
+          const originLabel = memoryOriginLabel(classifyEventOrigin(event));
+          context += `- **${date}**${originLabel ? ` [${originLabel}]` : ''}: ${excerpt}\n`;
         }
       }
 
@@ -653,7 +660,8 @@ export async function main(options: SessionStartMainOptions = {}): Promise<strin
               filteredCounts: {},
               topScore: null,
               threshold: 0,
-              freshnessState: 'unknown'
+              freshnessState: 'unknown',
+              injectedByOrigin: countMemoryOrigins(injectedEvents.map(classifyEventOrigin))
             }
           });
           deliveredTraceIds.push(batchTraceId);

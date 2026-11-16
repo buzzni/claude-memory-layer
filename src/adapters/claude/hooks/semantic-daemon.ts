@@ -24,6 +24,7 @@ import {
   savePendingSummary
 } from '../../llm/summary-pending.js';
 import { disposeDefaultEmbedder } from '../../../core/embedder.js';
+import { classifyEventOrigin } from '../../../core/memory-origin.js';
 import {
   getRuntimeResourceTelemetry,
   markRuntimeProcessStopped,
@@ -414,7 +415,8 @@ export async function handleSemanticDaemonRequest(raw: string): Promise<Semantic
       content: m.event.content,
       id: m.event.id,
       score: m.score,
-      sessionId: m.event.sessionId
+      sessionId: m.event.sessionId,
+      origin: classifyEventOrigin(m.event)
     }));
 
     return {

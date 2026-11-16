@@ -1,4 +1,5 @@
 import type { MemoryKind } from './memory-ref.js';
+import { normalizeMemoryOrigin, type MemoryOrigin } from './memory-origin.js';
 
 export const RETRIEVAL_PRESENTATION_MODES = ['evidence', 'reference', 'core', 'unknown'] as const;
 export type RetrievalPresentationMode = typeof RETRIEVAL_PRESENTATION_MODES[number];
@@ -231,12 +232,14 @@ export interface RetrievalOutcomeDiagnostics {
   topScore: number | null;
   threshold: number;
   freshnessState: 'fresh' | 'stale' | 'unknown';
+  /** Injected memories per origin class (src/core/memory-origin.ts); hook traces only. */
+  injectedByOrigin?: Partial<Record<MemoryOrigin, number>>;
 }
 
 const RETRIEVAL_OUTCOME_REASON_SET = new Set<string>(RETRIEVAL_OUTCOME_REASONS);
 const DIAGNOSTIC_COUNT_KEYS = new Set([
   'keyword', 'vector', 'summary', 'graph', 'session_rescue', 'shared',
-  'scope', 'quality', 'threshold', 'context_pack_policy'
+  'scope', 'quality', 'threshold', 'context_pack_policy', 'source_trust'
 ]);
 
 export function normalizeRetrievalOutcomeReason(value: unknown): RetrievalOutcomeReason {
@@ -264,8 +267,22 @@ export function normalizeRetrievalOutcomeDiagnostics(
       : 0,
     freshnessState: raw.freshnessState === 'fresh' || raw.freshnessState === 'stale'
       ? raw.freshnessState
-      : 'unknown'
+      : 'unknown',
+    ...(raw.injectedByOrigin && typeof raw.injectedByOrigin === 'object'
+      ? { injectedByOrigin: normalizeOriginCounts(raw.injectedByOrigin as Record<string, unknown>) }
+      : {})
   };
+}
+
+function normalizeOriginCounts(value: Record<string, unknown>): Partial<Record<MemoryOrigin, number>> {
+  const counts: Partial<Record<MemoryOrigin, number>> = {};
+  for (const [key, count] of Object.entries(value)) {
+    const origin = normalizeMemoryOrigin(key);
+    if (origin && Number.isFinite(Number(count))) {
+      counts[origin] = Math.max(0, Math.min(1_000_000, Math.floor(Number(count))));
+    }
+  }
+  return counts;
 }
 
 function normalizeDiagnosticCounts(value: unknown): Record<string, number> {

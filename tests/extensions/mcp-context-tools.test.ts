@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { generateCitationId } from '../../src/core/citation-generator.js';
 import { hashProjectPath } from '../../src/core/registry/project-path.js';
@@ -2356,4 +2356,87 @@ describe('MCP project context tools', () => {
       expectSanitized(String(result.content[0]?.text ?? ''));
     });
   });
+
+  describe('source-trust labels (requested reads are labelled, never filtered)', () => {
+    const toolRow = event({
+      id: '61616161-6161-4161-8161-616161616161',
+      eventType: 'tool_observation',
+      content: 'Codex Hermes MCP integration: npm test stdout shows 12 passing'
+    });
+    const importedRow = event({
+      id: '62626262-6262-4262-8262-626262626262',
+      eventType: 'agent_response',
+      content: 'Codex Hermes MCP integration verified in the Codex session.',
+      // Scoped, or context-pack drops it as unscoped imported history.
+      metadata: { importedFrom: '/codex/sessions/a.jsonl', projectPath: '/repo/app' }
+    });
+    const nativeRow = event({
+      id: '63636363-6363-4363-8363-636363636363',
+      eventType: 'agent_response',
+      content: 'Codex Hermes MCP integration verified natively.'
+    });
+    const rows = [toolRow, importedRow, nativeRow];
+    let configDir: string | undefined;
+
+    async function enableSourceTrustFilter(): Promise<void> {
+      const fs = await import('node:fs');
+      const os = await import('node:os');
+      const path = await import('node:path');
+      const { clearMemoryOperationsConfigCache } = await import('../../src/services/operations-config-loader.js');
+      configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cml-source-trust-'));
+      const file = path.join(configDir, 'operations.json');
+      fs.writeFileSync(file, JSON.stringify({ sourceTrust: { excludeUntrustedFromAutoInjection: true } }));
+      vi.stubEnv('CLAUDE_MEMORY_OPERATIONS_CONFIG_PATH', file);
+      clearMemoryOperationsConfigCache();
+    }
+
+    afterEach(async () => {
+      const { clearMemoryOperationsConfigCache } = await import('../../src/services/operations-config-loader.js');
+      vi.unstubAllEnvs();
+      clearMemoryOperationsConfigCache();
+      if (configDir) (await import('node:fs')).rmSync(configDir, { recursive: true, force: true });
+      configDir = undefined;
+    });
+
+    it('labels low-trust mem-search results and keeps them with the auto-injection filter on', async () => {
+      await enableSourceTrustFilter();
+      mocks.projectService.retrieveMemories.mockResolvedValue({
+        memories: rows.map((row, index) => ({ event: row, score: 0.9 - index * 0.01 }))
+      });
+
+      const text = textOf(await handleToolCall('mem-search', { projectPath: '/repo/app', query: 'Codex Hermes MCP integration', topK: 5 }));
+
+      expect(text).toContain(`[mem:${generateCitationId(toolRow.id)}]`);
+      expect(text).toContain('**Type**: tool_observation [low-trust: tool output] | **Date**');
+      expect(text).toContain('**Type**: agent_response [low-trust: imported] | **Date**');
+      expect(text.match(/\*\*Type\*\*: agent_response \| \*\*Date\*\*/g)).toHaveLength(1);
+    });
+
+    // Context-pack keeps tool rows out of its relevant memories on its own.
+    it('adds an origin field to every context-pack memory line', async () => {
+      await enableSourceTrustFilter();
+      mocks.projectService.retrieveMemories.mockResolvedValue({
+        memories: rows.map((row, index) => ({ event: row, score: 0.9 - index * 0.01 }))
+      });
+
+      const text = textOf(await handleToolCall('mem-context-pack', { projectPath: '/repo/app', query: 'Codex Hermes MCP integration', topK: 3 }));
+
+      expect(text).toMatch(new RegExp(`\\[mem:${generateCitationId(importedRow.id)}\\] score=\\S+ type=agent_response origin=imported date=`));
+      expect(text).toMatch(new RegExp(`\\[mem:${generateCitationId(nativeRow.id)}\\] score=\\S+ type=agent_response origin=assistant date=`));
+    });
+
+    it('reports the origin in mem-details, mem-source-ref and mem-timeline', async () => {
+      mocks.projectService.getRecentEvents.mockResolvedValue(rows);
+
+      const details = textOf(await handleToolCall('mem-details', { projectPath: '/repo/app', ids: [importedRow.id] }));
+      const sourceRef = textOf(await handleToolCall('mem-source-ref', { projectPath: '/repo/app', ids: [toolRow.id] }));
+      const timeline = textOf(await handleToolCall('mem-timeline', { projectPath: '/repo/app', ids: [nativeRow.id] }));
+
+      expect(details).toContain('**Type**: agent_response\n**Origin**: imported\n');
+      expect(sourceRef).toContain('- Type: tool_observation\n- Origin: tool\n');
+      expect(timeline).toContain(`[${generateCitationId(toolRow.id)}] tool_observation [low-trust: tool output]: `);
+      expect(timeline).toContain(`[${generateCitationId(nativeRow.id)}] agent_response: `);
+    });
+  });
 });
+

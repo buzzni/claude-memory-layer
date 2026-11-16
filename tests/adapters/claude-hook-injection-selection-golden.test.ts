@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 
@@ -76,13 +76,16 @@ function stable(value: unknown): unknown {
   }));
 }
 
-async function runHook(prompt: string): Promise<unknown> {
+async function runHook(
+  prompt: string,
+  options: { contextPresentation?: 'evidence' | 'reference' } = {}
+): Promise<unknown> {
   const stdin = JSON.stringify({ session_id: 'session-golden', prompt, cwd: '/repo/app' });
   vi.spyOn(process.stdin, 'setEncoding').mockReturnValue(process.stdin);
   const { main } = await import('../../src/adapters/claude/hooks/user-prompt-submit.js');
   const runtime = await import('../../src/adapters/claude/hooks/hook-runtime.js');
   vi.spyOn(runtime, 'readStdin').mockResolvedValue(stdin);
-  const stdout = await main({ persistPrompt: false, maintenance: false });
+  const stdout = await main({ persistPrompt: false, maintenance: false, ...options });
   return stable({
     stdout,
     semanticRequests: daemon.retrieveSemanticMemories.mock.calls,
@@ -186,3 +189,59 @@ describe('UserPromptSubmit selection golden output', () => {
       .toMatchFileSnapshot('__snapshots__/hook-selection-golden-empty.json');
   });
 });
+
+describe('UserPromptSubmit source trust through main()', () => {
+  const TOOL_QUERY = 'publish-npm.yml release workflow tag push provenance stdout';
+
+  function seedToolEvidence(): void {
+    vi.stubEnv('CLAUDE_MEMORY_RETRIEVAL_MODE', 'keyword');
+    service.keywordSearch.mockResolvedValue([
+      { event: event('ev-tool', 'tool_observation', 'publish-npm.yml release workflow on tag push: npm publish --provenance stdout ok'), score: 0.95 },
+      { event: event('ev-answer', 'agent_response', 'The publish-npm.yml release workflow starts on tag push and publishes with provenance.'), score: 0.9 },
+      { event: event('ev-prompt', 'user_prompt', 'how does the publish-npm.yml release workflow run on tag push?'), score: 0.75 }
+    ]);
+  }
+
+  function lastTraceDiagnostics(result: unknown): Record<string, unknown> {
+    const traces = (result as { traces: Array<[{ outcomeDiagnostics: Record<string, unknown> }]> }).traces;
+    return traces[traces.length - 1][0].outcomeDiagnostics;
+  }
+
+  it('labels injected tool output and counts it per origin while the flag is off', async () => {
+    seedToolEvidence();
+
+    const result = await runHook(TOOL_QUERY) as { stdout: string };
+
+    expect(result.stdout).toContain('- [tool_observation] [low-trust: tool output] ');
+    expect(lastTraceDiagnostics(result).injectedByOrigin).toEqual({ assistant: 1, tool: 1 });
+  });
+
+  it('keeps tool output out of the injection and records the removal when the flag is on', async () => {
+    seedToolEvidence();
+    const config = path.join(roots[roots.length - 1], 'operations.json');
+    writeFileSync(config, JSON.stringify({ sourceTrust: { excludeUntrustedFromAutoInjection: true } }));
+    vi.stubEnv('CLAUDE_MEMORY_OPERATIONS_CONFIG_PATH', config);
+
+    const result = await runHook(TOOL_QUERY) as { stdout: string };
+
+    expect(result.stdout).not.toContain('tool_observation');
+    expect(result.stdout).toContain('[event:ev-answer]');
+    const diagnostics = lastTraceDiagnostics(result);
+    expect(diagnostics.injectedByOrigin).toEqual({ assistant: 1 });
+    expect(diagnostics.filteredCounts).toMatchObject({ source_trust: 1 });
+  });
+
+  it('labels a reference card from the stored row when the semantic hit carried no origin', async () => {
+    vi.stubEnv('CLAUDE_MEMORY_RETRIEVAL_MODE', 'semantic');
+    const content = 'Codex: publish-npm.yml release workflow runs on tag push with provenance enabled.';
+    daemon.retrieveSemanticMemories.mockResolvedValue([
+      { id: 'ev-codex', type: 'agent_response', content, score: 0.9, sessionId: 'past-session' }
+    ]);
+    service.getEvent.mockResolvedValue(event('ev-codex', 'agent_response', content, { metadata: { importedFrom: '/codex/a.jsonl' } }));
+
+    const result = await runHook('publish-npm.yml release workflow tag push provenance', { contextPresentation: 'reference' }) as { stdout: string };
+
+    expect(result.stdout).toContain('(agent_response; low-trust: imported)');
+  });
+});
+
