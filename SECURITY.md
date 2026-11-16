@@ -22,6 +22,8 @@
 
 Claude Memory Layer는 한 사용자의 머신에서 돌아가는 로컬 도구입니다. 훅·CLI·MCP 서버·대시보드가 같은 로컬 저장소(기본 `~/.claude-code/memory`)를 읽고 씁니다. 그 머신에서 이 사용자 권한으로 실행되는 다른 프로세스는 신뢰 경계 **안쪽**으로 봅니다. 저장소 파일 자체는 암호화하지 않습니다.
 
+사람 확인 없이 도는 작업(훅, daemon, maintenance)이 지우거나 바꾸는 것과, 감사 기록 없이 기억을 지우는 명령은 [OPERATIONS.md](docs/OPERATIONS.md#what-unattended-work-changes-and-what-it-does-not)에 정리했습니다.
+
 ### 대시보드
 
 - **기본 bind는 localhost**입니다. `dashboard` 명령과 `DASHBOARD_HOST`는 `localhost`, `127.0.0.1`, `0.0.0.0`만 받고, 지정하지 않으면 `127.0.0.1`에 bind합니다.

@@ -54,6 +54,7 @@ claude-memory-layer stats --project /path/to/project
 # Claude Code session import
 claude-memory-layer list --project /path/to/project
 claude-memory-layer import --project /path/to/project --verbose
+# --force deletes the session's events first; rows not in the transcript are lost (docs/OPERATIONS.md, #227)
 
 # Codex/Hermes: read-only validation first, then an explicit import
 claude-memory-layer codex validate --project /path/to/project --format markdown --anonymize-projects
@@ -117,6 +118,8 @@ claude-memory-layer forget --before 2026-01-01 --confirm
 ```
 
 The command also accepts an event id (`forget <eventId>`) and `--session <id>`, but those paths are **not implemented**: with `--confirm` they print a "requires additional implementation" message and delete nothing.
+
+The deletion cannot be undone and leaves no governance audit record (#228); [OPERATIONS.md](OPERATIONS.md#what-unattended-work-changes-and-what-it-does-not) lists what each command and unattended job removes.
 
 ## Endless Mode
 
