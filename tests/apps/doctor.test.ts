@@ -205,6 +205,47 @@ describe('checkHooksInstalled', () => {
     expect(result.status).toBe('warn');
     expect(result.detail).toContain('Could not verify hook targets: Stop');
   });
+
+  describe('with the Claude Code plugin enabled', () => {
+    const deps = { existsImpl: () => true, realpathImpl: (target: string) => target };
+    const enabledPlugins = { 'memory-layer@claude-memory-layer': true };
+
+    it('passes when the plugin provides the hooks and settings.json registers none', () => {
+      const result = checkHooksInstalled({ enabledPlugins }, '/active/claude-memory-layer/dist', deps);
+      expect(result.status).toBe('pass');
+      expect(result.detail).toContain('memory-layer@claude-memory-layer');
+    });
+
+    it('warns that hooks are registered twice when settings.json also has them', () => {
+      const result = checkHooksInstalled({
+        enabledPlugins,
+        hooks: getHooksConfig('/active/claude-memory-layer/dist')
+      }, '/active/claude-memory-layer/dist', deps);
+      expect(result.status).toBe('warn');
+      expect(result.detail).toContain('registered twice');
+      expect(result.fix).toContain('claude-memory-layer uninstall');
+      expect(result.fix).toContain('claude plugin uninstall memory-layer@claude-memory-layer');
+    });
+
+    it('keeps the settings.json failure visible next to the duplicate warning', () => {
+      const result = checkHooksInstalled({
+        enabledPlugins,
+        hooks: getHooksConfig('/old/claude-memory-layer/dist')
+      }, '/active/claude-memory-layer/dist', {
+        existsImpl: (target) => target.startsWith('/active/'),
+        realpathImpl: (target) => target
+      });
+      expect(result.status).toBe('fail');
+      expect(result.detail).toContain('registered twice');
+      expect(result.detail).toContain('Registered hook files do not exist');
+    });
+
+    it('ignores a disabled plugin', () => {
+      const result = checkHooksInstalled({ enabledPlugins: { 'memory-layer@claude-memory-layer': false } });
+      expect(result.status).toBe('fail');
+      expect(result.detail).toContain('Not installed in Claude settings');
+    });
+  });
 });
 
 describe('checkEmbeddingBackend', () => {

@@ -18,7 +18,9 @@ import * as path from 'path';
 import { pathToFileURL } from 'url';
 
 import {
+  findEnabledPluginId,
   hasHook,
+  hasPluginHooksInSettings,
   inspectPluginHookTargets,
   PLUGIN_HOOKS,
   REQUIRED_HOOK_FILES,
@@ -171,10 +173,38 @@ export function checkSessionEndPendingJobs(pending: PendingSessionEndJob[]): Doc
   };
 }
 
+/**
+ * Hooks come from settings.json (`claude-memory-layer install`), from the
+ * Claude Code plugin, or — wrongly — from both, which would capture and inject
+ * every event twice. The plugin's launcher skips events whose settings.json
+ * hook names this package, but a custom `install --path` slips past that.
+ */
 export function checkHooksInstalled(
   settings: ClaudeSettingsWithHooks,
   pluginPath?: string,
   deps: Parameters<typeof inspectPluginHookTargets>[2] = {}
+): DoctorCheckResult {
+  const pluginId = findEnabledPluginId(settings);
+  if (!pluginId) return checkSettingsHooks(settings, pluginPath, deps);
+  if (!hasPluginHooksInSettings(settings, pluginPath)) {
+    return { name: 'hooks', status: 'pass', detail: `hooks provided by Claude Code plugin ${pluginId}` };
+  }
+  const settingsCheck = checkSettingsHooks(settings, pluginPath, deps);
+  return {
+    name: 'hooks',
+    status: settingsCheck.status === 'fail' ? 'fail' : 'warn',
+    detail: [
+      `Hooks registered twice: in Claude settings (claude-memory-layer install) and by plugin ${pluginId}`,
+      settingsCheck.status !== 'pass' && settingsCheck.detail
+    ].filter(Boolean).join('. '),
+    fix: `Keep one: claude-memory-layer uninstall (plugin only), or claude plugin uninstall ${pluginId} (settings only)`
+  };
+}
+
+function checkSettingsHooks(
+  settings: ClaudeSettingsWithHooks,
+  pluginPath: string | undefined,
+  deps: Parameters<typeof inspectPluginHookTargets>[2]
 ): DoctorCheckResult {
   if (pluginPath) {
     const targets = inspectPluginHookTargets(settings, pluginPath, deps);
