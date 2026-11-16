@@ -15,6 +15,7 @@ import { applyPrivacyFilter, maskSensitiveInput, truncateOutput } from '../../..
 import { extractMetadata } from '../../../core/metadata-extractor.js';
 import { readTurnState } from '../../../core/turn-state.js';
 import { readStdin, readNumberEnv } from './hook-runtime.js';
+import { decideCapture, loadCapturePolicy } from './capture-policy.js';
 import type { PostToolUseInput, ToolObservationPayload, Config } from '../../../core/types.js';
 
 // Default config
@@ -175,6 +176,13 @@ export async function main(): Promise<string> {
 
   try {
     const memoryService = getLightweightMemoryService(input.session_id);
+
+    // 4.6. Capture policy (operations.json `capturePolicy`): not stored, only counted
+    const decision = decideCapture(input, loadCapturePolicy());
+    if (!decision.capture) {
+      await memoryService.recordCaptureSkipped(decision.reason);
+      return JSON.stringify({});
+    }
 
     // 5. Mask sensitive data in input
     const maskedInput = maskSensitiveInput(input.tool_input);

@@ -191,6 +191,16 @@ describe('PreToolUse hook (pre-edit check)', () => {
     expect(context).not.toMatch(/\(file changed since\)$/m);
   });
 
+  it('still adds memory inside a subagent whose tool calls the capture policy keeps out of the store', async () => {
+    await seedPastSession();
+    const configPath = join(home, 'operations.json');
+    writeFileSync(configPath, JSON.stringify({ preEditCheck: { enabled: true }, capturePolicy: { skipSubagentTypes: ['*'] } }));
+
+    const context = contextOf(await runHook(editInput({ agent_id: 'a1', agent_type: 'general-purpose' })));
+
+    expect(context).toContain('Summary of a session that edited it (2026-03-01): Rewrote the tokenizer');
+  });
+
   it('labels a failed run as tool output and a summary pulled from another machine as imported, ahead of the stored text', async () => {
     const [editId] = await seedPastSession();
     await seed([

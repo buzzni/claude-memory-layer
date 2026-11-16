@@ -40,6 +40,9 @@ exports[`core/types schema defaults > fills the same defaults for undefined and 
         "actions": {
           "enabled": true,
         },
+        "capturePolicy": {
+          "skipSubagentTypes": [],
+        },
         "codifyLite": {
           "enabled": false,
         },
@@ -165,6 +168,9 @@ exports[`core/types schema defaults > fills the same defaults for undefined and 
       "actions": {
         "enabled": true,
       },
+      "capturePolicy": {
+        "skipSubagentTypes": [],
+      },
       "codifyLite": {
         "enabled": false,
       },
@@ -214,6 +220,9 @@ exports[`core/types schema defaults > fills the same defaults for undefined and 
     "fromUndefined": {
       "actions": {
         "enabled": true,
+      },
+      "capturePolicy": {
+        "skipSubagentTypes": [],
       },
       "codifyLite": {
         "enabled": false,

@@ -2764,6 +2764,22 @@ export class SQLiteEventStore {
     );
   }
 
+  /**
+   * One pipeline_metrics row per hook input the capture policy kept out of the
+   * store (stage `capture_skipped`, reason code in `error`). Counts only: no
+   * content and no session id, so a row cannot name the session it skipped.
+   */
+  async recordCaptureSkipped(reason: string): Promise<void> {
+    await this.initialize();
+    if (this.readOnly) return;
+    sqliteRun(
+      this.db,
+      `INSERT INTO pipeline_metrics (id, ts, stage, latency_ms, success, error, session_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [randomUUID(), new Date().toISOString(), 'capture_skipped', 0, 1, reason, null]
+    );
+  }
+
   /** Aggregate-only worker liveness for health/status surfaces. */
   async getDerivationLiveness(projectHash?: string): Promise<DerivationLiveness> {
     await this.initialize();

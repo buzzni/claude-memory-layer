@@ -32,6 +32,7 @@ import {
   type PluginHookName
 } from './claude-settings-hooks.js';
 import type { McpClientConfigRead, RegisteredMcpServer } from './mcp-client-config.js';
+import type { CapturePolicy } from '../../adapters/claude/hooks/capture-policy.js';
 import type { PendingSessionEndJob } from '../../adapters/claude/hooks/session-end-pending.js';
 import { MAX_CLI_TIMEOUT_MS, buildCliProviderEnv, type CliProviderName } from '../../adapters/llm/cli-provider.js';
 import { getSummaryProviderName, isLlmSummaryEnabled } from '../../adapters/llm/session-summary-llm.js';
@@ -563,6 +564,19 @@ export interface ProviderBreakerFacts {
 }
 
 const CLI_TIMEOUT_ENV_KEYS = ['CLAUDE_MEMORY_SUMMARY_TIMEOUT_MS', 'CLAUDE_MEMORY_LESSON_TIMEOUT_MS'] as const;
+
+/** operations.json `capturePolicy`: which hook inputs are counted instead of stored. */
+export function checkCapturePolicy(policy: CapturePolicy): DoctorCheckResult {
+  const name = 'capture-policy';
+  const types = policy.skipSubagentTypes;
+  if (types.length === 0) {
+    return { name, status: 'pass', detail: 'no extra exclusion by the capture policy (operations.json capturePolicy not set)' };
+  }
+  const which = types.includes('*')
+    ? 'any subagent or in-process teammate'
+    : `subagents or in-process teammates of type ${types.join(', ')}`;
+  return { name, status: 'pass', detail: `tool calls inside ${which} are not stored; memory-audit counts them` };
+}
 
 /**
  * An open breaker skips every summary and lesson extraction without an error

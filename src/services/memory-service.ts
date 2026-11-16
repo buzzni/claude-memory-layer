@@ -318,6 +318,11 @@ export class MemoryService {
     return this.ingestService.storeToolObservation(sessionId, payload);
   }
 
+  /** Counts a hook input the capture policy kept out of the store. */
+  async recordCaptureSkipped(reason: string): Promise<void> {
+    return this.ingestService.recordCaptureSkipped(reason);
+  }
+
   /**
    * Retrieve relevant memories for a query
    */
