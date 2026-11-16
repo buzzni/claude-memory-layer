@@ -63,6 +63,28 @@ describe('selectHookInjection same-session exclusion', () => {
     expect(ids(selection.mergedMemories)).toEqual(expect.arrayContaining(['sem-current', 'grad-current', 'kw-current']));
   });
 
+  it('asks the semantic lane to search outside the current session', async () => {
+    const lane = deps();
+    const retrieveSemantic = vi.fn(lane.retrieveSemantic);
+
+    await selectHookInjection({ ...lane, retrieveSemantic }, { prompt, retrievalQuery: prompt, sessionId: 'current' });
+
+    expect(retrieveSemantic).toHaveBeenCalledWith(expect.objectContaining({ excludeSessionId: 'current' }));
+  });
+
+  it.each([
+    ['the caller names no session', undefined, undefined],
+    ['CLAUDE_MEMORY_INJECT_SAME_SESSION=true', 'current', 'true']
+  ])('excludes no session from the semantic lane when %s', async (_case, sessionId, flag) => {
+    if (flag) vi.stubEnv('CLAUDE_MEMORY_INJECT_SAME_SESSION', flag);
+    const lane = deps();
+    const retrieveSemantic = vi.fn(lane.retrieveSemantic);
+
+    await selectHookInjection({ ...lane, retrieveSemantic }, { prompt, retrievalQuery: prompt, sessionId });
+
+    expect(retrieveSemantic.mock.calls[0][0].excludeSessionId).toBeUndefined();
+  });
+
   it('keeps current-session events when CLAUDE_MEMORY_INJECT_SAME_SESSION=true', async () => {
     vi.stubEnv('CLAUDE_MEMORY_INJECT_SAME_SESSION', 'true');
     const selection = await selectHookInjection(deps(), { prompt, retrievalQuery: prompt, sessionId: 'current' });

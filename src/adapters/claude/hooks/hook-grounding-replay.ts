@@ -27,6 +27,7 @@ import type { VectorStore } from '../../../core/vector-store.js';
 import { MemoryService } from '../../../services/memory-service.js';
 import { DISABLED_SHARED_STORE_CONFIG } from '../../../services/memory-service-config.js';
 import type { SemanticMemory } from './semantic-daemon-client.js';
+import { semanticLaneRetrievalOptions } from './semantic-daemon.js';
 import { countMemoryOrigins, eventOrigin, MEMORY_ORIGINS, type MemoryOrigin } from '../../../core/memory-origin.js';
 import {
   buildRetrievalQuery,
@@ -390,7 +391,7 @@ function selectionDeps(sources: ReplaySources, turn: ReplayTurn, stats: { semant
 
   const retrieveSemantic: HookSelectionDeps['retrieveSemantic'] = async (request) => {
     if (sources.semantic === 'off') return [];
-    const key = `${turn.traceId}\u0000${request.prompt}`;
+    const key = `${turn.traceId}\u0000${request.excludeSessionId ?? ''}\u0000${request.prompt}`;
     let cached = sources.semanticCache.get(key);
     if (!cached) {
       // Same options as the daemon, with the retriever's own stores bounded
@@ -401,15 +402,10 @@ function selectionDeps(sources: ReplaySources, turn: ReplayTurn, stats: { semant
       retriever.vectorStore = timeBoundVectorStore(original.vectorStore, turn.asOf, laterEventCount);
       let result: Awaited<ReturnType<MemoryService['retrieveMemories']>>;
       try {
-        result = await sources.service.retrieveMemories(request.prompt, {
-          topK: request.topK,
-          minScore: request.minScore,
-          sessionId: turn.sessionId,
-          intentRewrite: true,
-          adaptiveRerank: true,
-          projectScopeMode: 'strict',
-          recordTrace: false
-        });
+        result = await sources.service.retrieveMemories(
+          request.prompt,
+          semanticLaneRetrievalOptions({ ...request, sessionId: turn.sessionId })
+        );
       } finally {
         retriever.eventStore = original.eventStore;
         retriever.vectorStore = original.vectorStore;

@@ -35,6 +35,8 @@ import {
 export interface SemanticDaemonRequest {
   type?: 'retrieve' | 'graduate' | 'summarize';
   sessionId?: string;
+  /** Retrieve only: search outside this session (the prompt hook names its own). */
+  excludeSessionId?: string;
   projectPath?: string;
   prompt?: string;
   topK?: number;
@@ -144,7 +146,35 @@ export function isValidSemanticDaemonRequest(
     && Number.isFinite(input.topK)
     && Number.isFinite(input.minScore)
     && (input.projectPath === undefined || (typeof input.projectPath === 'string' && path.isAbsolute(input.projectPath)))
+    && (input.excludeSessionId === undefined || (typeof input.excludeSessionId === 'string' && input.excludeSessionId.length > 0))
     && (input.evaluation === undefined || typeof input.evaluation === 'boolean');
+}
+
+/**
+ * Retrieval options for one semantic lane request; the hook-path replay uses
+ * the same ones.
+ *
+ * To the retriever a session id means "search this session first", and a
+ * session's own events are the closest match to its next prompt. The prompt
+ * hook injects only other sessions' memories, so it names its session as
+ * excluded and gets the vector search outside it. A caller that excludes
+ * nothing keeps the session-scoped search.
+ */
+export function semanticLaneRetrievalOptions(
+  request: { topK: number; minScore: number; sessionId: string; excludeSessionId?: string },
+  sessionFilter = true
+) {
+  return {
+    topK: request.topK,
+    minScore: request.minScore,
+    ...(request.excludeSessionId !== undefined
+      ? { strategy: 'deep' as const, ...(sessionFilter ? { excludeSessionId: request.excludeSessionId } : {}) }
+      : (sessionFilter ? { sessionId: request.sessionId } : {})),
+    intentRewrite: true,
+    adaptiveRerank: true,
+    projectScopeMode: 'strict' as const,
+    recordTrace: false
+  };
 }
 
 export function makeSemanticDaemonErrorResponse(error: unknown): SemanticDaemonResponse {
@@ -382,17 +412,10 @@ export async function handleSemanticDaemonRequest(raw: string): Promise<Semantic
       ? getServiceForProject(input.projectPath)
       : getServiceForSession(sessionId);
     const prompt = input.prompt!;
+    const laneRequest = { topK: input.topK!, minScore: input.minScore!, sessionId, excludeSessionId: input.excludeSessionId };
     let result;
     try {
-      result = await service.retrieveMemories(prompt, {
-        topK: input.topK!,
-        minScore: input.minScore!,
-        sessionId,
-        intentRewrite: true,
-        adaptiveRerank: true,
-        projectScopeMode: 'strict',
-        recordTrace: false
-      });
+      result = await service.retrieveMemories(prompt, semanticLaneRetrievalOptions(laneRequest));
     } catch (error) {
       if (!isVectorSessionFilterError(error)) {
         throw error;
@@ -400,17 +423,10 @@ export async function handleSemanticDaemonRequest(raw: string): Promise<Semantic
 
       // LanceDB field-case mismatch can fail sessionId filtering.
       // Retry without session filter and keep project strict scoping.
-      result = await service.retrieveMemories(prompt, {
-        topK: input.topK!,
-        minScore: input.minScore!,
-        intentRewrite: true,
-        adaptiveRerank: true,
-        projectScopeMode: 'strict',
-        recordTrace: false
-      });
+      result = await service.retrieveMemories(prompt, semanticLaneRetrievalOptions(laneRequest, false));
     }
 
-    const memories = result.memories.map((m) => ({
+    const memories = result.memories.filter((m) => m.event.sessionId !== input.excludeSessionId).map((m) => ({
       type: m.event.eventType,
       content: m.event.content,
       id: m.event.id,
