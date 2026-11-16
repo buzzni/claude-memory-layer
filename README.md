@@ -13,6 +13,7 @@ Everything is stored on your machine under `~/.claude-code/memory/`, in a separa
 | Your prompts and the assistant's responses | Claude Code hooks (UserPromptSubmit, Stop), Codex hooks, history import | `projects/<hash>/events.sqlite` |
 | Tool observations (tool input and output) | Claude Code PostToolUse hook | `projects/<hash>/events.sqlite` |
 | Session summaries | Session hooks (LLM-written by default, see [Privacy](#privacy-and-security)) | `projects/<hash>/events.sqlite` |
+| Compaction checkpoints (where a session stood before Claude Code compacted it) | Claude Code PreCompact hook | `projects/<hash>/events.sqlite` |
 | Facets, actions, checkpoints, lessons, actor cards | CLI and MCP tools | `projects/<hash>/events.sqlite` |
 | Vector embeddings (derived, rebuildable from SQLite) | Vector worker | `projects/<hash>/vectors/` (LanceDB) |
 | Local embedding model (downloaded on first use) | Embedder | `models/` |
@@ -46,7 +47,7 @@ On Claude Code 2.1.275 or later this also works in one step:
 
 The plugin's hooks run the npm package, so also run `npm install -g claude-memory-layer@latest`. Without the package the plugin does nothing.
 
-Restart Claude Code afterwards. To switch from one to the other, keep only the plugin with `claude-memory-layer uninstall`, or keep only the `settings.json` hooks with `claude plugin uninstall memory-layer@claude-memory-layer`. `claude-memory-layer doctor` warns when both are active.
+Restart Claude Code afterwards. If you upgrade from an earlier version and use ①, run `claude-memory-layer install` again so newly added hooks (such as PreCompact) are registered; `doctor` reports any that are missing. To switch from one to the other, keep only the plugin with `claude-memory-layer uninstall`, or keep only the `settings.json` hooks with `claude plugin uninstall memory-layer@claude-memory-layer`. `claude-memory-layer doctor` warns when both are active.
 
 Local checkout, embedding model, scheduled maintenance and CUDA 11 troubleshooting: [docs/INSTALL.md](docs/INSTALL.md).
 
@@ -63,11 +64,11 @@ claude-memory-layer stats
 claude-memory-layer dashboard  # local web dashboard on http://localhost:37777
 ```
 
-After that the hooks work on their own. SessionStart loads project context, UserPromptSubmit searches related memories for each prompt, and UserPromptSubmit, PostToolUse, Stop and SessionEnd store what happened.
+After that the hooks work on their own. SessionStart loads project context, UserPromptSubmit searches related memories for each prompt, and UserPromptSubmit, PostToolUse, Stop and SessionEnd store what happened. Before Claude Code compacts the conversation, PreCompact saves a checkpoint of where the session stood, and the SessionStart that follows the compaction puts it back first.
 
 ## Features
 
-- **Automatic capture and recall** in Claude Code through five lifecycle hooks, with one store per project.
+- **Automatic capture and recall** in Claude Code through six lifecycle hooks, with one store per project.
 - **Hybrid retrieval**: keyword and semantic search, progressive disclosure (`search --disclosure`, then `expand` and `source`), and `[mem:…]` citations that MCP tools resolve back to the source event.
 - **History import** for Claude Code, Codex and Hermes sessions, with a read-only validation report before any Codex or Hermes import.
 - **MCP server** (`claude-memory-layer-mcp`) with a context pack for starting work, a project timeline and privacy-filtered source refs, plus tool profiles and a read-only mode.

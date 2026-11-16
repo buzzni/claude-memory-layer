@@ -74,7 +74,7 @@ Claude Code 2.1.275 이상에서는 `/plugin install memory-layer --marketplace 
 - 플러그인만 설치하면 훅이 동작하지 않습니다. 플러그인의 훅은 전역 설치된 npm 패키지를 실행하므로 `npm install -g claude-memory-layer@latest`가 필요합니다. 패키지가 없으면 세션 시작 때 설치 안내 한 줄만 보여 주고 아무것도 하지 않습니다.
 - 플러그인 이름은 npm 패키지 이름(`claude-memory-layer`)과 다른 `memory-layer`입니다. Claude Code가 `claude-`로 시작하는 이름을 예약하기 때문입니다. 플러그인 ID는 `memory-layer@claude-memory-layer`이고, 컴포넌트 이름 앞에는 `memory-layer:`가 붙습니다. 예전에 `--plugin-dir`로 이전 이름을 쓰던 경우 `enabledPlugins` 키와 호출명이 바뀝니다.
 
-**`claude-memory-layer install`과 플러그인 중 하나만 쓰세요.** 둘 다 같은 훅 다섯 개(SessionStart, UserPromptSubmit, PostToolUse, Stop, SessionEnd)를 등록합니다.
+**`claude-memory-layer install`과 플러그인 중 하나만 쓰세요.** 둘 다 같은 훅 여섯 개(SessionStart, UserPromptSubmit, PostToolUse, PreCompact, Stop, SessionEnd)를 등록합니다.
 
 - 플러그인만 쓰려면: `claude-memory-layer uninstall` (settings.json의 훅 제거)
 - settings.json 방식만 쓰려면: `claude plugin uninstall memory-layer@claude-memory-layer`
@@ -92,7 +92,7 @@ npx claude-memory-layer status
 npx claude-memory-layer doctor
 ```
 
-- `install`은 **한 번만** 하면 됩니다(Claude Code hooks 등록).
+- `install`은 **한 번만** 하면 됩니다(Claude Code hooks 등록). 업그레이드한 뒤에는 `claude-memory-layer install`을 다시 실행하면 새 버전에 추가된 훅(예: PreCompact)이 기존 설치에 더해집니다. 빠진 훅이 있으면 `doctor`가 알려 줍니다.
 - `npm install`만으로는 백그라운드 서비스를 등록하지 않습니다. `maintenance install` 또는 `install --with-maintenance`를 사용자가 명시적으로 실행해야 합니다.
 - `codex hooks install`은 `~/.codex/hooks.json`에 SessionStart/UserPromptSubmit/SessionEnd 훅을 병합합니다. Codex를 재시작한 뒤 `/hooks`에서 새 훅 정의를 검토하고 신뢰해야 실행됩니다.
 - Embedding backend은 런타임 필수 기능이며, postinstall이 패키지 내부의 격리된 관리 디렉터리에 설치합니다. 이 경계에서 `sharp` 보안 버전을 강제하고, CUDA 11 환경에서는 `onnxruntime-node`를 CPU-only로 설치합니다.
@@ -524,8 +524,13 @@ npx claude-memory-layer install
 | **SessionStart** | 세션 시작 시 프로젝트 관련 컨텍스트 로드 |
 | **UserPromptSubmit** | 프롬프트 입력 시 관련 기억 검색 및 저장 |
 | **PostToolUse** | 도구 사용 결과(도구 입력·출력)를 저장 |
+| **PreCompact** | 컨텍스트 압축 직전에 세션 체크포인트 저장 (아래 참고) |
 | **Stop** | AI 응답 완료 시 응답 내용 저장 |
 | **SessionEnd** | 세션 종료 시 요약 생성 및 저장 |
+
+### PreCompact (압축 전 체크포인트)
+
+Claude Code가 컨텍스트를 압축하기 직전에 현재 세션이 어디까지 왔는지를 체크포인트로 저장합니다. 최근 요청 3개, 마지막 응답, 세션이 최근 수정한 프로젝트 안의 파일(최대 10개)이 들어가며, 저장된 기억에서만 읽고 LLM은 호출하지 않습니다. 압축이 끝나면 SessionStart(`source: compact`)가 이 체크포인트를 "Before Compaction" 섹션으로 맨 앞에 다시 넣고, 같은 내용은 최근 기억 요약에서 뺍니다. 10분이 지난 체크포인트는 쓰지 않습니다. 훅은 아무것도 출력하지 않고 실패해도 종료 코드 0으로 끝나므로 압축은 그대로 진행됩니다. 기존 사용자는 업그레이드 후 `claude-memory-layer install`을 다시 실행하면 이 훅이 추가되며, `doctor`가 누락 여부를 알려 줍니다.
 
 ### Slash 명령어
 

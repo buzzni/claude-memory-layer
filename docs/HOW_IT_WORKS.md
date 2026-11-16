@@ -41,8 +41,17 @@ SQLite is the canonical source of truth and LanceDB is a derived accelerator tha
 | SessionStart | Loads project context for the new session |
 | UserPromptSubmit | Stores the prompt and searches related memories to inject |
 | PostToolUse | Stores tool observations (tool input and output) |
+| PreCompact | Saves a checkpoint of where the session stood right before Claude Code compacts the context ([below](#compaction-checkpoint)) |
 | Stop | Stores the assistant's response |
 | SessionEnd | Finishes the session (summary and storage) |
+
+## Compaction checkpoint
+
+Right before Claude Code compacts the conversation (manually or automatically), the PreCompact hook saves where the session stood as a checkpoint: the last 3 requests, the latest response, and up to 10 files inside the project that the session recently edited (Write, Edit, MultiEdit, NotebookEdit). It reads only stored events and never calls an LLM, because it runs on the compaction's critical path. It is stored with the other checkpoints (`memory_checkpoints`) in the project store; a project without a store gets none.
+
+The hook always prints nothing, since its output would become instructions for the compaction summary, and it exits 0 on any error, so compaction always proceeds.
+
+When the compaction finishes, SessionStart runs with source `compact` and puts the checkpoint back first, as a "Before Compaction" section. Events the checkpoint quotes are left out of the recent-memory recap, so nothing is injected twice. A checkpoint older than 10 minutes is ignored, because it belongs to an earlier compaction.
 
 ## Storing a memory
 

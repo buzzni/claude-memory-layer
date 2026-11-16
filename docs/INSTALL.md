@@ -12,7 +12,7 @@ There are two ways to connect it to Claude Code. **Use one of them, not both.**
 | npm package needed | Yes | Yes. The plugin's hooks run the globally installed package |
 | Remove with | `claude-memory-layer uninstall` | `claude plugin uninstall memory-layer@claude-memory-layer` |
 
-Both register the same five hooks: SessionStart, UserPromptSubmit, PostToolUse, Stop and SessionEnd.
+Both register the same six hooks: SessionStart, UserPromptSubmit, PostToolUse, PreCompact, Stop and SessionEnd.
 
 ## A. npm global install + `install`
 
@@ -31,6 +31,7 @@ claude-memory-layer doctor
 
 - A global install is recommended. `install` stores the hook file paths in `~/.claude/settings.json`, so a one-off `npx claude-memory-layer install` is less safe than a global install or a fixed local checkout.
 - `install` only needs to be run **once** per machine. Restart Claude Code if it is already running.
+- After upgrading, run `install` again: it adds hooks introduced by the new version (for example PreCompact) to an older installation. `claude-memory-layer doctor` fails the hooks check and lists any hook that is not installed.
 - `install` / `uninstall` modify `~/.claude/settings.json` and keep your other hooks.
 - `npm install` alone does not register any background service; see [Maintenance](#maintenance-optional).
 
