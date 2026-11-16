@@ -4,8 +4,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 /**
- * SessionStart recap: imported rows carry a low-trust label, native ones do
- * not, and the trace counts the injected rows per origin class.
+ * SessionStart recap: rows from another machine carry a low-trust label;
+ * native rows and this machine's host session imports (Codex) do not. The
+ * trace counts the injected rows per origin class.
  */
 
 const fixture = vi.hoisted(() => ({
@@ -37,7 +38,8 @@ vi.mock('../../src/adapters/claude/hooks/tool-observation-vector-auto-heal-clien
 }));
 
 const NATIVE_ANSWER = 'Native answer: releases go through publish-npm.yml on tag push.';
-const IMPORTED_ANSWER = 'Imported answer: the Codex session fixed the replay fixture.';
+const CODEX_ANSWER = 'Codex answer: the Codex session fixed the replay fixture.';
+const IMPORTED_ANSWER = 'Pulled answer: machine B moved the dashboard port.';
 
 function answer(id: string, content: string, timestamp: string, metadata: Record<string, unknown> = {}) {
   return { id, eventType: 'agent_response', sessionId: `session-${id}`, content, timestamp: new Date(timestamp), metadata };
@@ -54,7 +56,8 @@ function createService() {
     listProjectRunbookIds: vi.fn().mockResolvedValue([]),
     getRecentEvents: vi.fn().mockResolvedValue([
       answer('native', NATIVE_ANSWER, '2026-11-07T01:00:00.000Z'),
-      answer('imported', IMPORTED_ANSWER, '2026-11-06T01:00:00.000Z', { importedFrom: '/codex/sessions/a.jsonl', source: 'codex' })
+      answer('codex', CODEX_ANSWER, '2026-11-06T01:00:00.000Z', { importedFrom: '/home/u/.codex/sessions/a.jsonl', source: 'codex' }),
+      answer('imported', IMPORTED_ANSWER, '2026-11-05T01:00:00.000Z', { mongoSync: { originHostname: 'machine-b' } })
     ]),
     recordRetrieval: vi.fn().mockResolvedValue(undefined),
     recordQueryTrace: vi.fn().mockResolvedValue('trace-id'),
@@ -95,11 +98,12 @@ async function sessionStartContext(): Promise<string> {
 }
 
 describe('SessionStart source-trust labels', () => {
-  it('labels the imported recap row and leaves the native one bare', async () => {
+  it('labels the row from another machine and leaves native and host-import rows bare', async () => {
     const context = await sessionStartContext();
 
     expect(context).toContain(`- **2026-11-07**: ${NATIVE_ANSWER}`);
-    expect(context).toContain(`- **2026-11-06** [low-trust: imported]: ${IMPORTED_ANSWER}`);
+    expect(context).toContain(`- **2026-11-06**: ${CODEX_ANSWER}`);
+    expect(context).toContain(`- **2026-11-05** [low-trust: imported]: ${IMPORTED_ANSWER}`);
   });
 
   it('records the recap rows per origin class on the trace', async () => {
@@ -108,7 +112,7 @@ describe('SessionStart source-trust labels', () => {
     const recapTrace = fixture.service!.recordQueryTrace.mock.calls
       .map(([trace]) => trace)
       .find((trace) => trace.strategy === 'session-start-hook');
-    expect(recapTrace.outcomeDiagnostics.injectedByOrigin).toEqual({ assistant: 1, imported: 1 });
+    expect(recapTrace.outcomeDiagnostics.injectedByOrigin).toEqual({ assistant: 2, imported: 1 });
   });
 
   it('keeps imported rows in the recap when the source-trust filter is on', async () => {

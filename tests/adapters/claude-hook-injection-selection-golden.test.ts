@@ -237,7 +237,7 @@ describe('UserPromptSubmit source trust through main()', () => {
     daemon.retrieveSemanticMemories.mockResolvedValue([
       { id: 'ev-codex', type: 'agent_response', content, score: 0.9, sessionId: 'past-session' }
     ]);
-    service.getEvent.mockResolvedValue(event('ev-codex', 'agent_response', content, { metadata: { importedFrom: '/codex/a.jsonl' } }));
+    service.getEvent.mockResolvedValue(event('ev-codex', 'agent_response', content, { metadata: { mongoSync: { originHostname: 'machine-b' } } }));
 
     const result = await runHook('publish-npm.yml release workflow tag push provenance', { contextPresentation: 'reference' }) as { stdout: string };
 

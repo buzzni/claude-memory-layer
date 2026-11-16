@@ -9,18 +9,13 @@
  *              the conversation (files, web pages, command output), the main
  *              path for memory poisoning (OWASP Agentic ASI06). This wins
  *              over `imported`: an imported tool row is still tool text.
- *   imported   any other row with `metadata.importedFrom` (a string path):
- *              stored by a history importer (Claude, Codex or Hermes
- *              transcripts) rather than by a live hook. Its user/assistant
- *              role comes from parsing a file after the fact. Codex sessions
- *              are captured this way by design (its SessionEnd hook runs the
- *              importer), so every Codex row is `imported`. Also a row with a
- *              `metadata.mongoSync` record: pulled from another machine's
- *              store. Mongo pull writes that record only when it re-homes a
- *              row from another project hash; a row pulled within the same
- *              project hash carries no marker and classifies by its type.
- *   user       `user_prompt` from a live hook: what the user typed.
- *   assistant  `agent_response` from a live hook: what the agent wrote.
+ *   imported   a row from another machine or from an import whose source
+ *              cannot be told: a `metadata.mongoSync` record (Mongo sync
+ *              stamps every pulled row; pull never returns this store's own
+ *              rows), or a `metadata.importedFrom` that is not an absolute
+ *              path.
+ *   user       `user_prompt`: what the user typed.
+ *   assistant  `agent_response`: what the agent wrote.
  *   derived    `session_summary` and lessons: text this system wrote (an LLM
  *              or rule-based summary, an extracted or curated lesson) from
  *              stored rows. It can carry tool text forward in its own words;
@@ -28,11 +23,24 @@
  *              sources.
  *   unknown    anything else. Lowest trust, below `tool`.
  *
+ * Host session imports keep their role. The Claude, Codex and Hermes history
+ * importers read this machine's own host session records from a path the
+ * user configured and store that path in `metadata.importedFrom`; Codex's
+ * SessionEnd hook captures every Codex session this way. Every importer
+ * version has written an absolute path there, so an absolute-path
+ * `importedFrom` is treated like a live capture and classified by its role.
+ * Limit: a session file copied from another machine and imported locally
+ * looks the same as a local one.
+ *
+ * Mongo sync stamped only re-homed rows (another project hash) before every
+ * pull was stamped; a row pulled earlier within the same project hash
+ * carries no marker and classifies by its role.
+ *
  * Trust: `user`, `assistant` and `derived` are the common case and render
  * without a label; `tool`, `imported` and `unknown` render with one.
  * When the operator opts in (operations.json `sourceTrust`), `tool` and
- * `unknown` are also kept out of automatic injection. `imported` is only
- * labelled: it is the whole store of a Codex user.
+ * `unknown` are also kept out of automatic injection; `imported` is only
+ * labelled.
  *
  * Graduation (L1+) does not change the class. A memory graduates by being
  * retrieved often, and an injected memory is retrieved again by being
@@ -70,10 +78,15 @@ export function classifyMemoryOrigin(memory: { type: string; metadata?: Record<s
   return isImported(memory.metadata) ? 'imported' : byType;
 }
 
+/** POSIX, Windows drive or UNC absolute path; `path.isAbsolute` would follow the reading platform. */
+const ABSOLUTE_PATH = /^(?:\/|[A-Za-z]:[\\/]|\\\\)/;
+
 function isImported(metadata: Record<string, unknown> | undefined): boolean {
   const mongoSync = metadata?.mongoSync;
-  return typeof metadata?.importedFrom === 'string'
-    || (typeof mongoSync === 'object' && mongoSync !== null && !Array.isArray(mongoSync));
+  if (typeof mongoSync === 'object' && mongoSync !== null && !Array.isArray(mongoSync)) return true;
+  const importedFrom = metadata?.importedFrom;
+  if (importedFrom === undefined || importedFrom === null) return false;
+  return !(typeof importedFrom === 'string' && ABSOLUTE_PATH.test(importedFrom));
 }
 
 export function classifyEventOrigin(event: { eventType: string; metadata?: Record<string, unknown> }): MemoryOrigin {

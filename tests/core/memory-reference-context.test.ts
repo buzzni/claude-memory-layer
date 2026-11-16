@@ -76,9 +76,10 @@ describe('memory reference context', () => {
     expect(memoryReferenceSummary(content)).not.toContain('const secret');
   });
 
-  it('marks a low-trust source document and leaves a native one unmarked', () => {
-    const imported = formatMemoryReferenceContext([memoryEventReferenceItem(event())], { heading: 'Index' });
-    const native = formatMemoryReferenceContext([memoryEventReferenceItem(event({ metadata: { turnId: 'turn-1' } }))], { heading: 'Index' });
+  it('marks a low-trust source document and leaves native and host-import ones unmarked', () => {
+    const imported = formatMemoryReferenceContext([memoryEventReferenceItem(event({ metadata: { mongoSync: { originHostname: 'machine-b' } } }))], { heading: 'Index' });
+    // The default fixture is a host session import (absolute importedFrom path).
+    const native = formatMemoryReferenceContext([memoryEventReferenceItem(event())], { heading: 'Index' });
     const tool = formatMemoryReferenceContext([{ id: EVENT_ID, type: 'tool_observation', content: 'ran tests', origin: 'tool' }], { heading: 'Index' });
 
     expect(imported).toMatch(/Source document: project memory event \[mem:[^\]]+\] \(agent_response; low-trust: imported\)/);

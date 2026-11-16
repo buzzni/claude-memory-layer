@@ -18,36 +18,46 @@ describe('classifyMemoryOrigin', () => {
     expect(classifyMemoryOrigin({ type: 'tool_observation' })).toBe('tool');
   });
 
-  it('classifies importer rows as imported', () => {
-    const metadata = { importedFrom: '/home/u/.codex/sessions/a.jsonl', source: 'codex' };
-    expect(classifyMemoryOrigin({ type: 'user_prompt', metadata })).toBe('imported');
-    expect(classifyMemoryOrigin({ type: 'agent_response', metadata })).toBe('imported');
+  it('classifies host session imports (an absolute importedFrom path) by their role, like a live capture', () => {
+    const codex = { importedFrom: '/home/u/.codex/sessions/2026/11/a.jsonl', source: 'codex' };
+    expect(classifyMemoryOrigin({ type: 'user_prompt', metadata: codex })).toBe('user');
+    expect(classifyMemoryOrigin({ type: 'agent_response', metadata: codex })).toBe('assistant');
+    expect(classifyMemoryOrigin({ type: 'agent_response', metadata: { importedFrom: '/home/u/.hermes/state.db' } })).toBe('assistant');
+    expect(classifyMemoryOrigin({ type: 'agent_response', metadata: { importedFrom: 'C:\\Users\\u\\.claude\\projects\\a.jsonl' } })).toBe('assistant');
+    expect(classifyMemoryOrigin({ type: 'agent_response', metadata: { importedFrom: '\\\\host\\share\\a.jsonl' } })).toBe('assistant');
   });
 
-  it('classifies a row pulled from another machine through Mongo sync as imported', () => {
-    const metadata = { mongoSync: { originHostname: 'machine-a' } };
-    expect(classifyMemoryOrigin({ type: 'agent_response', metadata })).toBe('imported');
+  it('classifies an import it cannot attribute to a host session as imported', () => {
+    for (const importedFrom of ['codex', 'relative/a.jsonl', '', true, 3, {}]) {
+      expect(classifyMemoryOrigin({ type: 'agent_response', metadata: { importedFrom } })).toBe('imported');
+    }
+    expect(classifyMemoryOrigin({ type: 'agent_response', metadata: { importedFrom: null } })).toBe('assistant');
+  });
+
+  it('classifies a row pulled through Mongo sync as imported, even when it was a host session import there', () => {
+    expect(classifyMemoryOrigin({ type: 'agent_response', metadata: { mongoSync: {} } })).toBe('imported');
+    expect(classifyMemoryOrigin({
+      type: 'user_prompt',
+      metadata: { importedFrom: '/home/b/.codex/sessions/a.jsonl', mongoSync: { originHostname: 'machine-b' } }
+    })).toBe('imported');
     expect(classifyMemoryOrigin({ type: 'agent_response', metadata: { mongoSync: 'yes' } })).toBe('assistant');
   });
 
   it('keeps an imported tool row as tool, the class automatic injection can exclude', () => {
-    expect(classifyMemoryOrigin({ type: 'tool_observation', metadata: { importedFrom: '/x.jsonl' } })).toBe('tool');
-  });
-
-  it('ignores an importedFrom that is not a string', () => {
-    expect(classifyMemoryOrigin({ type: 'agent_response', metadata: { importedFrom: true } })).toBe('assistant');
+    expect(classifyMemoryOrigin({ type: 'tool_observation', metadata: { importedFrom: 'codex' } })).toBe('tool');
+    expect(classifyMemoryOrigin({ type: 'tool_observation', metadata: { mongoSync: {} } })).toBe('tool');
   });
 
   it('classifies a stored event by its eventType and metadata', () => {
-    expect(classifyEventOrigin({ eventType: 'agent_response', metadata: { importedFrom: '/x.jsonl' } })).toBe('imported');
-    expect(classifyEventOrigin({ eventType: 'user_prompt' })).toBe('user');
+    expect(classifyEventOrigin({ eventType: 'agent_response', metadata: { mongoSync: {} } })).toBe('imported');
+    expect(classifyEventOrigin({ eventType: 'user_prompt', metadata: { importedFrom: '/x.jsonl' } })).toBe('user');
   });
 
   it('falls to unknown for a type it does not know, including prototype keys', () => {
     expect(classifyMemoryOrigin({ type: 'shared_troubleshooting' })).toBe('unknown');
     expect(classifyMemoryOrigin({ type: '' })).toBe('unknown');
     expect(classifyMemoryOrigin({ type: 'constructor' })).toBe('unknown');
-    expect(classifyMemoryOrigin({ type: 'mystery', metadata: { importedFrom: '/x.jsonl' } })).toBe('unknown');
+    expect(classifyMemoryOrigin({ type: 'mystery', metadata: { mongoSync: {} } })).toBe('unknown');
   });
 });
 

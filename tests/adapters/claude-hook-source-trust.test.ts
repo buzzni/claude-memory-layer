@@ -17,7 +17,7 @@ function event(id: string, eventType: string, content: string, metadata: Record<
 
 const TOOL_TEXT = 'publish-npm.yml release workflow on tag push: npm publish --provenance ran in the workflow log';
 const ANSWER_TEXT = 'The publish-npm.yml release workflow starts on tag push and publishes with provenance.';
-const IMPORTED_TEXT = 'Codex: publish-npm.yml release workflow runs on tag push with provenance enabled.';
+const IMPORTED_TEXT = 'Machine B: publish-npm.yml release workflow runs on tag push with provenance enabled.';
 const PROMPT_TEXT = 'how does the publish-npm.yml release workflow run on tag push?';
 
 function deps(semantic: Array<Record<string, unknown>> = []): HookSelectionDeps {
@@ -28,7 +28,8 @@ function deps(semantic: Array<Record<string, unknown>> = []): HookSelectionDeps 
       keywordSearch: vi.fn().mockResolvedValue([
         { event: event('tool-1', 'tool_observation', TOOL_TEXT), score: 0.95 },
         { event: event('answer-1', 'agent_response', ANSWER_TEXT), score: 0.9 },
-        { event: event('codex-1', 'agent_response', IMPORTED_TEXT, { importedFrom: '/codex/a.jsonl' }), score: 0.88 },
+        // Pulled from another machine through Mongo sync.
+        { event: event('codex-1', 'agent_response', IMPORTED_TEXT, { mongoSync: { originHostname: 'machine-b' } }), score: 0.88 },
         // Ranks well below the rest, so the score cliff keeps the three above.
         { event: event('prompt-1', 'user_prompt', PROMPT_TEXT), score: 0.75 }
       ]),

@@ -2366,9 +2366,9 @@ describe('MCP project context tools', () => {
     const importedRow = event({
       id: '62626262-6262-4262-8262-626262626262',
       eventType: 'agent_response',
-      content: 'Codex Hermes MCP integration verified in the Codex session.',
-      // Scoped, or context-pack drops it as unscoped imported history.
-      metadata: { importedFrom: '/codex/sessions/a.jsonl', projectPath: '/repo/app' }
+      content: 'Codex Hermes MCP integration verified on machine B.',
+      // Pulled from another machine; scoped, or context-pack drops it.
+      metadata: { mongoSync: { originHostname: 'machine-b' }, projectPath: '/repo/app' }
     });
     const nativeRow = event({
       id: '63636363-6363-4363-8363-636363636363',
