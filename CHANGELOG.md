@@ -8,11 +8,19 @@
 
 ## [Unreleased]
 
+## [2.5.10] - 2026-11-17
+
 ### Added
 
 - `LICENSE`, `SECURITY.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, and a GitHub Release created from each published `v*` tag
 
+### Fixed
+
+- fix(deps): update hono and @hono/node-server past the advisories blocking publish ([#200](https://github.com/buzzni/claude-memory-layer/pull/200))
+
 ## [2.5.9] - 2026-11-17
+
+태그만 만들어졌고 npm에는 배포되지 않았습니다. 배포 워크플로가 `npm audit --omit=dev`에서 멈췄고([#200](https://github.com/buzzni/claude-memory-layer/pull/200)), 아래 변경은 2.5.10으로 처음 배포됐습니다.
 
 ### Added
 
@@ -114,7 +122,8 @@
 - refactor(core): unify harness boilerplate detection into one anchored marker list (T9) ([#129](https://github.com/buzzni/claude-memory-layer/pull/129))
 - chore(release): guard and auto-sync plugin manifest version ([#118](https://github.com/buzzni/claude-memory-layer/pull/118))
 
-[Unreleased]: https://github.com/buzzni/claude-memory-layer/compare/v2.5.9...HEAD
+[Unreleased]: https://github.com/buzzni/claude-memory-layer/compare/v2.5.10...HEAD
+[2.5.10]: https://github.com/buzzni/claude-memory-layer/compare/v2.5.9...v2.5.10
 [2.5.9]: https://github.com/buzzni/claude-memory-layer/compare/v2.5.8...v2.5.9
 [2.5.8]: https://github.com/buzzni/claude-memory-layer/compare/v2.5.7...v2.5.8
 [2.5.7]: https://github.com/buzzni/claude-memory-layer/compare/v2.5.6...v2.5.7
