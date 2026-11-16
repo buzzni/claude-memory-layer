@@ -159,3 +159,42 @@ jobs:
           npm install "$NAME@$VERSION"
           node -e "const p=require('$WORKDIR/node_modules/$NAME/package.json'); console.log(JSON.stringify({name:p.name,version:p.version,bin:p.bin},null,2))"
           ./node_modules/.bin/claude-memory-layer --version
+
+  # A separate job so the write token never reaches the publish job, which runs
+  # npm install scripts. It also means a failed Release can be retried with
+  # "Re-run failed jobs" — a workflow_dispatch re-run stops at the
+  # already-published check once the version is on npm.
+  github-release:
+    name: GitHub Release
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # create the Release
+    env:
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+
+    steps:
+      # Full history so the previous tag can be found below.
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      # GitHub otherwise picks the notes' starting point from earlier Releases,
+      # and none exist for the v2.x tags, so the first notes could span the
+      # whole history. The previous v* tag is the real starting point.
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "GitHub Release $TAG already exists; skipping"
+            exit 0
+          fi
+          PREVIOUS_TAG="$(git describe --tags --abbrev=0 --match 'v*' "$TAG^" 2>/dev/null || true)"
+          gh release create "$TAG" --verify-tag --title "$TAG" --generate-notes \
+            ${PREVIOUS_TAG:+--notes-start-tag "$PREVIOUS_TAG"}

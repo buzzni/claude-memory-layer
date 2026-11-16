@@ -51,4 +51,29 @@ describe('release npm script safety gates', () => {
     expect(guardIndex).toBeGreaterThan(-1);
     expect(guardIndex).toBeLessThan(publishIndex);
   });
+
+  it('creates the GitHub Release in its own job, after publish, with the only write permission', () => {
+    const workflow = readFileSync('.github/workflows/publish-npm.yml', 'utf8');
+    const [publishJob, releaseJob] = workflow.split(/\n {2}github-release:\n/);
+
+    expect(releaseJob).toBeDefined();
+    expect(releaseJob).toMatch(/\n {4}needs: publish\n/);
+    expect(releaseJob).toMatch(/\n {6}contents: write\b/);
+    expect(publishJob).toMatch(/\n {6}contents: read\b/);
+    expect(publishJob).not.toContain('contents: write');
+    expect(publishJob).not.toContain('gh release');
+  });
+
+  it('skips an existing GitHub Release so a re-run does not fail', () => {
+    const workflow = readFileSync('.github/workflows/publish-npm.yml', 'utf8');
+    const releaseJob = workflow.split(/\n {2}github-release:\n/)[1] ?? '';
+    const viewIndex = releaseJob.indexOf('gh release view "$TAG"');
+    const createIndex = releaseJob.indexOf('gh release create "$TAG"');
+
+    expect(viewIndex).toBeGreaterThan(-1);
+    expect(createIndex).toBeGreaterThan(viewIndex);
+    expect(releaseJob.slice(viewIndex, createIndex)).toContain('exit 0');
+    expect(releaseJob).toContain('--generate-notes');
+    expect(releaseJob).toContain('--verify-tag');
+  });
 });
