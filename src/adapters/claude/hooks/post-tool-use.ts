@@ -177,7 +177,7 @@ export async function main(): Promise<string> {
     const memoryService = getLightweightMemoryService(input.session_id);
 
     // 5. Mask sensitive data in input
-    const maskedInput = maskSensitiveInput(input.tool_input);
+    const maskedInput = maskSensitiveInput(input.tool_input, privacyConfig);
 
     // 6. Apply privacy filter to output
     const filterResult = applyPrivacyFilter(toolOutput, privacyConfig);
@@ -207,7 +207,9 @@ export async function main(): Promise<string> {
       toolOutput: truncatedOutput,
       durationMs: 0, // Claude Code doesn't provide timing info
       success,
-      errorMessage: input.tool_response?.stderr || undefined,
+      errorMessage: input.tool_response?.stderr
+        ? applyPrivacyFilter(input.tool_response.stderr, privacyConfig).content
+        : undefined,
       metadata: {
         ...metadata,
         ...(turnId ? { turnId } : {})

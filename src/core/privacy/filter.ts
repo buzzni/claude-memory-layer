@@ -214,11 +214,18 @@ export function applyPrivacyFilter(
 
 /**
  * Mask sensitive data in tool input (recursively)
+ *
+ * With a privacy config, every string value goes through the full
+ * `applyPrivacyFilter` (`<private>` tags included) instead of the credential
+ * patterns alone, so stored tool input is masked the way tool output is.
  */
 export function maskSensitiveInput(
-  input: Record<string, unknown>
+  input: Record<string, unknown>,
+  privacyConfig?: Config['privacy']
 ): Record<string, unknown> {
   const result: Record<string, unknown> = {};
+  const maskString = (value: string): string =>
+    privacyConfig ? applyPrivacyFilter(value, privacyConfig).content : maskSensitiveString(value);
 
   for (const [key, value] of Object.entries(input)) {
     // Check if key suggests sensitive data
@@ -231,16 +238,16 @@ export function maskSensitiveInput(
       result[key] = '[REDACTED]';
     } else if (typeof value === 'string') {
       // Apply pattern filtering to string values
-      result[key] = maskSensitiveString(value);
+      result[key] = maskString(value);
     } else if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
-      result[key] = maskSensitiveInput(value as Record<string, unknown>);
+      result[key] = maskSensitiveInput(value as Record<string, unknown>, privacyConfig);
     } else if (Array.isArray(value)) {
       result[key] = value.map(item => {
         if (typeof item === 'string') {
-          return isSensitiveKey ? '[REDACTED]' : maskSensitiveString(item);
+          return isSensitiveKey ? '[REDACTED]' : maskString(item);
         }
         return typeof item === 'object' && item !== null
-          ? maskSensitiveInput(item as Record<string, unknown>)
+          ? maskSensitiveInput(item as Record<string, unknown>, privacyConfig)
           : item;
       });
     } else {
