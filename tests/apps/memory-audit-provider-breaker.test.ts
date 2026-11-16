@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { buildMemoryAuditReport, formatMemoryAuditMarkdown } from '../../src/apps/cli/memory-audit-report.js';
 import { ProviderCircuitBreaker, getProviderCircuitStatePath } from '../../src/adapters/llm/provider-circuit-breaker.js';
-import { getSummaryPendingPath, savePendingSummary } from '../../src/adapters/llm/summary-pending.js';
+import { getSummaryPendingDir, savePendingSummary } from '../../src/adapters/llm/summary-pending.js';
 
 const NOW = new Date('2026-01-01T00:00:00.000Z');
 
@@ -57,6 +57,6 @@ describe('audit LLM provider circuit section', () => {
     expect(report.llmProviderCircuit).toEqual({ providers: [], pendingSummaries: 0 });
     expect(formatMemoryAuditMarkdown(report)).toContain('Every provider circuit is closed.');
     expect(existsSync(getProviderCircuitStatePath(homeDir))).toBe(false);
-    expect(existsSync(getSummaryPendingPath({ homeDir }))).toBe(false);
+    expect(existsSync(getSummaryPendingDir({ homeDir }))).toBe(false);
   });
 });

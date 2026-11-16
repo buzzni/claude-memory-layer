@@ -81,9 +81,14 @@ breaker stops paying for those calls:
   count nor reset the streak, so a single slow call never opens it.
 - **While open**, calls are skipped without starting the CLI (`provider-circuit-open`).
 - **Probes** once after a 5-minute cooldown. Concurrent hook and daemon processes share the state, and only one of them
-  sends the probe. Success closes the breaker; the same kind of failure reopens it and doubles the cooldown, up to 1 hour.
-- **Skipped session summaries are kept** in `~/.claude-code/memory/summary-pending.json` (session ids and times only,
-  at most 100 entries, 7 days). The semantic daemon summarizes them after the next summary call the provider answers.
+  sends the probe; its claim lasts as long as the call's CLI timeout plus a minute. Success closes the breaker; the same
+  kind of failure reopens it and doubles the cooldown, up to 1 hour.
+- **Fails open**: if the state cannot be read, locked or written, or holds times the clock cannot have produced, calls
+  go to the provider as if there were no breaker.
+- **Skipped session summaries are kept**, one file per session in `~/.claude-code/memory/summary-pending/` (session
+  ids and times only). The semantic daemon retries them after the next summary call the provider answers, and removes
+  an entry only once its retry is done. Bounds: 100 entries, 7 days, 3 failed retries; a daemon that dies mid-retry
+  leaves a claim the next retry takes back.
   Lesson extraction needs no queue: it is computed on demand and failed groups are never cached, so the next
   `mem-lesson-candidates` call after recovery extracts them.
 

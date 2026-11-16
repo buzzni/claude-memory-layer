@@ -7,8 +7,10 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { tsxArgs, tsxCommand } from '../helpers/tsx-process.js';
 import { ProviderCircuitBreaker, type ProviderCircuitConfig } from '../../src/adapters/llm/provider-circuit-breaker.js';
+import { listPendingSummaries, savePendingSummary } from '../../src/adapters/llm/summary-pending.js';
 
 const MODULE_URL = pathToFileURL(path.resolve('src/adapters/llm/provider-circuit-breaker.ts')).href;
+const PENDING_MODULE_URL = pathToFileURL(path.resolve('src/adapters/llm/summary-pending.ts')).href;
 const START = Date.parse('2026-01-01T00:00:00.000Z');
 const CONFIG: ProviderCircuitConfig = { enabled: true, failureThreshold: 1, cooldownMs: 60_000, maxCooldownMs: 60_000 };
 const PROCESSES = 8;
@@ -23,9 +25,9 @@ afterEach(() => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-function runAdmitter(entry: string, filePath: string, goFile: string): Promise<{ allowed: boolean; probe?: boolean }> {
+function runEntry<T>(entry: string, ...args: string[]): Promise<T> {
   return new Promise((resolve, reject) => {
-    const child = spawn(tsxCommand, tsxArgs(entry, filePath, goFile, String(START + CONFIG.cooldownMs)), {
+    const child = spawn(tsxCommand, tsxArgs(entry, ...args), {
       stdio: ['ignore', 'pipe', 'pipe']
     });
     let stdout = '';
@@ -34,10 +36,19 @@ function runAdmitter(entry: string, filePath: string, goFile: string): Promise<{
     child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
     child.on('error', reject);
     child.on('close', (code) => {
-      if (code === 0) resolve(JSON.parse(stdout));
-      else reject(new Error(`admitter exited ${code}: ${stderr}`));
+      if (code === 0) resolve(JSON.parse(stdout) as T);
+      else reject(new Error(`child exited ${code}: ${stderr}`));
     });
   });
+}
+
+/** Waits until every child is spinning on the go file, then creates it. */
+async function releaseWhenReady(goFile: string, count: number): Promise<void> {
+  await expect.poll(
+    () => fs.readdirSync(dir).filter((name) => name.startsWith('go.')).length,
+    { timeout: 45_000, interval: 50 }
+  ).toBe(count);
+  fs.writeFileSync(goFile, '');
 }
 
 describe('ProviderCircuitBreaker across processes', () => {
@@ -60,14 +71,38 @@ describe('ProviderCircuitBreaker across processes', () => {
       `process.stdout.write(JSON.stringify(breaker.admit('claude', 60000)));`
     ].join('\n'));
 
-    const runs = Array.from({ length: PROCESSES }, () => runAdmitter(entry, filePath, goFile));
-    await expect.poll(
-      () => fs.readdirSync(dir).filter((name) => name.startsWith('go.')).length,
-      { timeout: 45_000, interval: 50 }
-    ).toBe(PROCESSES);
-    fs.writeFileSync(goFile, '');
+    const runs = Array.from({ length: PROCESSES }, () =>
+      runEntry<{ allowed: boolean }>(entry, filePath, goFile, String(START + CONFIG.cooldownMs)));
+    await releaseWhenReady(goFile, PROCESSES);
 
     const results = await Promise.all(runs);
     expect(results.filter((result) => result.allowed)).toEqual([{ allowed: true, probe: true, claimId: expect.any(String) }]);
+  }, 60_000);
+});
+
+describe('summary pending queue across processes', () => {
+  it('keeps every session when several processes save at once (review case: 2 of 5 survived)', async () => {
+    const homeDir = path.join(dir, 'home');
+    savePendingSummary('existing', { homeDir });
+
+    const entry = path.join(dir, 'save.ts');
+    const goFile = path.join(dir, 'go');
+    fs.writeFileSync(entry, [
+      `import * as fs from 'node:fs';`,
+      `import { savePendingSummary } from ${JSON.stringify(PENDING_MODULE_URL)};`,
+      `const [homeDir, goFile, sessionId] = process.argv.slice(2);`,
+      `fs.writeFileSync(goFile + '.' + process.pid, '');`,
+      `while (!fs.existsSync(goFile)) { /* spin */ }`,
+      `savePendingSummary(sessionId, { homeDir });`,
+      `process.stdout.write('true');`
+    ].join('\n'));
+
+    const savers = 4;
+    const runs = Array.from({ length: savers }, (_, i) => runEntry<boolean>(entry, homeDir, goFile, `s${i}`));
+    await releaseWhenReady(goFile, savers);
+    await Promise.all(runs);
+
+    expect(listPendingSummaries({ homeDir }).map((entry) => entry.sessionId).sort())
+      .toEqual(['existing', 's0', 's1', 's2', 's3']);
   }, 60_000);
 });
