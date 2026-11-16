@@ -40,9 +40,12 @@ import { HARNESS_BOILERPLATE_MARKERS } from './harness-boilerplate.js';
  * - variation selectors other than the emoji/text presentation pair: in runs
  *   after a visible character they can encode arbitrary bytes. CJK and math
  *   variants fall back to the base glyph.
+ * - every other format character (\p{Cf}), such as shorthand and musical
+ *   symbol format controls; the Arabic number signs among them are rare and
+ *   lose only their prefix shape. ZWJ is the one exception, handled below.
  * ZWNJ goes as well; Persian or Indic text loses only a shaping hint, not meaning.
  */
-const INVISIBLE_OR_CONTROL = /[\u0000-\u0008\u000B-\u001F\u007F-\u009F\u00AD\u034F\u061C\u180E\u200B\u200C\u200E\u200F\u202A-\u202E\u2060-\u206F\uFE00-\uFE0D\uFEFF\uFFF9-\uFFFB\u{E0000}-\u{E007F}\u{E0100}-\u{E01EF}]/gu;
+const INVISIBLE_OR_CONTROL = /[\u0000-\u0008\u000B-\u001F\u007F-\u009F\u00AD\u034F\u061C\u180E\u200B\u200C\u200E\u200F\u202A-\u202E\u2060-\u206F\uFE00-\uFE0D\uFEFF\uFFF9-\uFFFB\u{E0000}-\u{E007F}\u{E0100}-\u{E01EF}]|(?!\u200D)\p{Cf}/gu;
 
 /** One emoji/text presentation selector is meaningful; a run of them only carries bits. */
 const REPEATED_PRESENTATION_SELECTOR = /(?<=[\uFE0E\uFE0F])[\uFE0E\uFE0F]/gu;

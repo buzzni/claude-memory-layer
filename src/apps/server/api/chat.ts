@@ -158,7 +158,7 @@ function formatMemoryContext(memoryHits: MemoryHit[]): string {
   for (const m of memoryHits) {
     const date = m.event.timestamp ? new Date(m.event.timestamp).toISOString().split('T')[0] : 'unknown-date';
     const content = (m.event.content ?? '').slice(0, 500);
-    parts.push(`### [${m.event.eventType ?? 'memory'}] ${date} (score: ${m.score.toFixed(2)})`);
+    parts.push(`### [${singleLineRecallText(m.event.eventType ?? 'memory')}] ${date} (score: ${m.score.toFixed(2)})`);
     // Fenced and single-line, so a memory cannot pose as another item, the history, or the user turn.
     parts.push(fenceRecallBlock(content));
     if (m.sessionContext) {

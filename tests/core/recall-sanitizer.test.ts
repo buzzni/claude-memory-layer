@@ -25,6 +25,12 @@ describe('sanitizeRecallText', () => {
     expect(sanitizeRecallText(smuggled)).toBe('ok');
   });
 
+  it('removes every other invisible format character, beyond the named ranges', () => {
+    // Shorthand format controls, musical symbol formatting, Arabic number sign.
+    const text = 'a' + String.fromCodePoint(0x1BCA0, 0x1D173, 0x0600, 0x110BD) + 'b';
+    expect(sanitizeRecallText(text)).toBe('ab');
+  });
+
   it('removes C0/C1 control characters but keeps newlines and tabs', () => {
     expect(sanitizeRecallText('a\u0000b\u0007c\u001Bd\r\ne\tf\u007Fg\u0085h\u009Fi')).toBe('abcd\ne\tfghi');
   });
