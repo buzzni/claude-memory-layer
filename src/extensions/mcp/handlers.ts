@@ -37,6 +37,7 @@ import {
   type ExternalMarketProvider
 } from '../../core/external-market-context.js';
 import { generateCitationId } from '../../core/citation-generator.js';
+import { fenceRecallBlock, sanitizeRecallText } from '../../core/recall-sanitizer.js';
 import { getProjectStoragePath, hashProjectPath, resolveMemoryRootMarkerPath } from '../../core/registry/project-path.js';
 import { ExistingStoreReadError, withExistingStoreReadSnapshot } from '../../core/registry/existing-store.js';
 import { applyPrivacyFilter, maskSensitiveInput } from '../../core/privacy/filter.js';
@@ -238,8 +239,27 @@ function validateMemContextPackPerspectiveArgs(args: Record<string, unknown>): v
   requiredOperationString(args.targetActorId ?? args.observedActorId, 'targetActorId');
 }
 
+type McpHandlerDomainName = 'compatibility' | 'context-search' | 'source-import' | 'operations' | 'graph-lessons' | 'governance-assets' | 'perspective-shared';
+
+/**
+ * Every MCP tool result leaves through here (registry domains and the
+ * compatibility handleToolCall alike), so this is where recalled text in tool
+ * output is sanitized before it reaches the agent.
+ */
 export async function handleToolCallInDomain(
-  _domain: 'compatibility' | 'context-search' | 'source-import' | 'operations' | 'graph-lessons' | 'governance-assets' | 'perspective-shared',
+  domain: McpHandlerDomainName,
+  name: string,
+  rawArgs: Record<string, unknown>
+): Promise<ToolResult> {
+  const result = await dispatchToolCall(domain, name, rawArgs);
+  return {
+    ...result,
+    content: result.content.map((item) => item.type === 'text' ? { ...item, text: sanitizeRecallText(item.text) } : item)
+  };
+}
+
+async function dispatchToolCall(
+  _domain: McpHandlerDomainName,
   name: string,
   rawArgs: Record<string, unknown>
 ): Promise<ToolResult> {
@@ -2108,8 +2128,12 @@ function sanitizeOperationKey(key: string): string {
 }
 
 function sanitizeOperationString(value: string, maxLength: number): string {
-  const masked = maskSensitiveInput({ value }).value;
-  const asString = typeof masked === 'string' ? masked : String(value);
+  // Per field, before JSON.stringify escapes controls into text that the
+  // result-level pass cannot see but a JSON consumer decodes back. First, so an
+  // invisible character cannot split a secret's name past the masking below.
+  const visible = sanitizeRecallText(value);
+  const masked = maskSensitiveInput({ value: visible }).value;
+  const asString = typeof masked === 'string' ? masked : visible;
   const scrubbed = asString
     .replace(/[A-Za-z]:[\\/][^\s'"`<>)]*/g, '[path]')
     .replace(/~[\\/][^\s'"`<>)]*/g, '[path]')
@@ -2518,12 +2542,11 @@ async function handleMemDetails(memoryService: MemoryService, args: Record<strin
     lines.push(`**Date**: ${date}`);
     lines.push('');
     lines.push('**Content**:');
-    lines.push('```');
     // Redact secrets/PII before disclosure. mem-details intentionally returns
     // full (untruncated) content, but every other read tool sanitizes, so this
     // must not be the one path that leaks raw captured transcript data.
-    lines.push(applyPrivacyFilter(event.content, MCP_PRIVACY_CONFIG).content);
-    lines.push('```');
+    // The fence outruns any backtick run inside, so content cannot close it.
+    lines.push(fenceRecallBlock(applyPrivacyFilter(event.content, MCP_PRIVACY_CONFIG).content));
     lines.push('');
     lines.push('---');
     lines.push('');

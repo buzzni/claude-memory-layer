@@ -1,3 +1,5 @@
+import { sanitizeRecallText } from '../../../core/recall-sanitizer.js';
+
 export type ClaudeContextHookEvent = 'SessionStart' | 'UserPromptSubmit';
 
 export interface ClaudeContextHookOutput {
@@ -7,15 +9,20 @@ export interface ClaudeContextHookOutput {
   };
 }
 
-/** Build the JSON envelope Claude Code actually consumes for context injection. */
+/**
+ * Build the JSON envelope Claude Code actually consumes for context injection.
+ * Every hook that injects recalled memory (Claude and Codex) leaves through
+ * here, so this is where recalled text is sanitized.
+ */
 export function formatClaudeContextHookOutput(
   hookEventName: ClaudeContextHookEvent,
   context: string
 ): string {
+  const sanitized = sanitizeRecallText(context);
   const output: ClaudeContextHookOutput = {
     hookSpecificOutput: {
       hookEventName,
-      ...(context ? { additionalContext: context } : {})
+      ...(sanitized ? { additionalContext: sanitized } : {})
     }
   };
   return JSON.stringify(output);

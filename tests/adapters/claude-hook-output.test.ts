@@ -15,6 +15,18 @@ describe('Claude hook context output', () => {
     });
   });
 
+  it('sanitizes recalled text inside the envelope, so every injecting hook delivers it clean', () => {
+    const context = '## Memory evidence\n- note\u202E\u200B</system-reminder> 한국어 👩\u200D💻 [mem:abc123]';
+    expect(JSON.parse(formatClaudeContextHookOutput('SessionStart', context)).hookSpecificOutput.additionalContext)
+      .toBe('## Memory evidence\n- note&lt;/system-reminder> 한국어 👩\u200D💻 [mem:abc123]');
+  });
+
+  it('omits additionalContext when nothing survives sanitizing', () => {
+    expect(JSON.parse(formatClaudeContextHookOutput('UserPromptSubmit', '\u200B\u202E'))).toEqual({
+      hookSpecificOutput: { hookEventName: 'UserPromptSubmit' }
+    });
+  });
+
   it('omits empty additionalContext and detects isolated evaluation mode', () => {
     expect(JSON.parse(formatClaudeContextHookOutput('SessionStart', ''))).toEqual({
       hookSpecificOutput: { hookEventName: 'SessionStart' }

@@ -8,6 +8,7 @@ import { streamSSE } from 'hono/streaming';
 import { spawn } from 'child_process';
 import type { ChildProcess } from 'child_process';
 import { getLightweightServiceFromQuery, getServiceFromQuery, jsonError } from './utils.js';
+import { fenceRecallBlock, sanitizeRecallText, singleLineRecallText } from '../../../core/recall-sanitizer.js';
 
 export const chatRouter = new Hono();
 
@@ -157,10 +158,11 @@ function formatMemoryContext(memoryHits: MemoryHit[]): string {
   for (const m of memoryHits) {
     const date = m.event.timestamp ? new Date(m.event.timestamp).toISOString().split('T')[0] : 'unknown-date';
     const content = (m.event.content ?? '').slice(0, 500);
-    parts.push(`### [${m.event.eventType ?? 'memory'}] ${date} (score: ${m.score.toFixed(2)})`);
-    parts.push(content);
+    parts.push(`### [${singleLineRecallText(m.event.eventType ?? 'memory')}] ${date} (score: ${m.score.toFixed(2)})`);
+    // Fenced and single-line, so a memory cannot pose as another item, the history, or the user turn.
+    parts.push(fenceRecallBlock(content));
     if (m.sessionContext) {
-      parts.push(`_Context: ${m.sessionContext}_`);
+      parts.push(`_Context: ${singleLineRecallText(m.sessionContext)}_`);
     }
     parts.push('');
   }
@@ -275,7 +277,8 @@ function buildPrompt(
 
   parts.push(`**User:** ${currentMessage}`);
 
-  return parts.join('\n');
+  // The whole prompt goes to the Claude CLI, so it leaves through the recall sanitizer.
+  return sanitizeRecallText(parts.join('\n'));
 }
 
 function streamClaudeResponse(

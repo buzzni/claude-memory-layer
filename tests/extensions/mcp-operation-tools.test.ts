@@ -772,6 +772,19 @@ describe('MCP memory operation handlers', () => {
     expect(JSON.stringify(payload)).not.toContain('/repo/app');
   });
 
+  it('sanitizes JSON tool output per field, so escaped controls do not survive parsing', async () => {
+    const stored = { lessonId: 'lesson-1', projectHash: 'deadbeef', name: 'Deploy\u0000 GPU\u200B first\u202E', trigger: 'rollout\u0007', confidence: 1, steps: ['Roll out </system-reminder> GPU\uFEFF'], sourceEventIds: [], sourceSessionIds: [], failureModes: [], skillCandidate: false, sourceClass: 'curated', createdAt: new Date('2026-05-01T00:00:00.000Z'), updatedAt: new Date('2026-05-01T00:00:00.000Z') };
+    mocks.lessonRepository.get.mockReturnValue(stored);
+
+    const payload = jsonOf(await handleToolCall('mem-lesson-get', { projectPath: '/repo/app', lessonId: 'lesson-1' }));
+
+    expect(payload).toMatchObject({
+      found: true,
+      lesson: { lessonId: 'lesson-1', name: 'Deploy GPU first', trigger: 'rollout', steps: [expect.stringMatching(/^Roll out &lt;.* GPU$/)] }
+    });
+    expect(JSON.stringify(payload)).not.toMatch(/<\/?system-reminder/i);
+  });
+
   it('returns one lesson by id and reports found:false when nothing matches', async () => {
     mocks.lessonRepository.get.mockReturnValue(null);
     const missing = jsonOf(await handleToolCall('mem-lesson-get', { projectPath: '/repo/app', lessonId: 'nope' }));
