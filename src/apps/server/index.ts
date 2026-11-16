@@ -155,7 +155,9 @@ function verifyDashboardSessionToken(
   return Number.isSafeInteger(issuedAt) && age >= 0 && age <= maxAgeSeconds;
 }
 
-function isDashboardAuthenticated(c: Context, options: Required<DashboardAppOptions>): boolean {
+type DashboardAuthOptions = Required<Pick<DashboardAppOptions, 'password' | 'cookieMaxAgeSeconds' | 'now'>>;
+
+function isDashboardAuthenticated(c: Context, options: DashboardAuthOptions): boolean {
   if (!options.password) return true;
   return verifyDashboardSessionToken(
     getCookie(c, DASHBOARD_SESSION_COOKIE),
@@ -227,13 +229,20 @@ async function readSubmittedPassword(c: Context): Promise<string> {
   return typeof password === 'string' ? password : '';
 }
 
-function createAuthOptions(options: DashboardAppOptions): Required<DashboardAppOptions> {
+function createAuthOptions(options: DashboardAppOptions): DashboardAuthOptions {
   return {
     password: options.password ?? '',
     cookieMaxAgeSeconds: options.cookieMaxAgeSeconds ?? DEFAULT_SESSION_MAX_AGE_SECONDS,
-    now: options.now ?? Date.now,
-    allowedOrigins: options.allowedOrigins ?? []
+    now: options.now ?? Date.now
   };
+}
+
+/** An explicit list option, or else the comma-separated env var of that name. */
+function resolveListOption(explicit: string[] | undefined, envName: string): string[] {
+  if (explicit && explicit.length > 0) return explicit;
+  const raw = process.env[envName];
+  if (!raw) return [];
+  return raw.split(',').map((value) => value.trim()).filter(Boolean);
 }
 
 /**
@@ -242,10 +251,7 @@ function createAuthOptions(options: DashboardAppOptions): Required<DashboardAppO
  * empty result means same-origin only (no CORS headers emitted).
  */
 function resolveAllowedOrigins(explicit?: string[]): string[] {
-  if (explicit && explicit.length > 0) return explicit;
-  const raw = process.env.DASHBOARD_ALLOWED_ORIGINS;
-  if (!raw) return [];
-  return raw.split(',').map((value) => value.trim()).filter(Boolean);
+  return resolveListOption(explicit, 'DASHBOARD_ALLOWED_ORIGINS');
 }
 
 /**
