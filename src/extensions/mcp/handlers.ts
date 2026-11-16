@@ -2128,8 +2128,12 @@ function sanitizeOperationKey(key: string): string {
 }
 
 function sanitizeOperationString(value: string, maxLength: number): string {
-  const masked = maskSensitiveInput({ value }).value;
-  const asString = typeof masked === 'string' ? masked : String(value);
+  // Per field, before JSON.stringify escapes controls into text that the
+  // result-level pass cannot see but a JSON consumer decodes back. First, so an
+  // invisible character cannot split a secret's name past the masking below.
+  const visible = sanitizeRecallText(value);
+  const masked = maskSensitiveInput({ value: visible }).value;
+  const asString = typeof masked === 'string' ? masked : visible;
   const scrubbed = asString
     .replace(/[A-Za-z]:[\\/][^\s'"`<>)]*/g, '[path]')
     .replace(/~[\\/][^\s'"`<>)]*/g, '[path]')
