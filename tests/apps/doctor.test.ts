@@ -18,6 +18,7 @@ import {
   doctorExitCode,
   findPathInstalls,
   formatDoctorReport,
+  inspectEnabledPlugin,
   type DoctorCheckResult
 } from '../../src/apps/cli/doctor.js';
 import { getHooksConfig, REQUIRED_HOOK_FILES, type ClaudeSettingsWithHooks } from '../../src/apps/cli/claude-settings-hooks.js';
@@ -208,19 +209,44 @@ describe('checkHooksInstalled', () => {
 
   describe('with the Claude Code plugin enabled', () => {
     const deps = { existsImpl: () => true, realpathImpl: (target: string) => target };
+    const active = '/active/claude-memory-layer/dist';
     const enabledPlugins = { 'memory-layer@claude-memory-layer': true };
+    const verified = (target: string | null = `${active}/hooks/session-start.js`) => (
+      { id: 'memory-layer@claude-memory-layer', status: 'verified', target } as const
+    );
 
-    it('passes when the plugin provides the hooks and settings.json registers none', () => {
-      const result = checkHooksInstalled({ enabledPlugins }, '/active/claude-memory-layer/dist', deps);
+    it('passes when the plugin provides hooks from the active installation and settings.json has none', () => {
+      const result = checkHooksInstalled({ enabledPlugins }, active, deps, verified());
       expect(result.status).toBe('pass');
       expect(result.detail).toContain('memory-layer@claude-memory-layer');
     });
 
+    it('warns when the plugin launcher finds no npm package to run', () => {
+      const result = checkHooksInstalled({ enabledPlugins }, active, deps, verified(null));
+      expect(result.status).toBe('warn');
+      expect(result.detail).toContain('no claude-memory-layer package');
+      expect(result.fix).toContain('npm install -g claude-memory-layer');
+    });
+
+    it('warns when the plugin runs hooks from another installation', () => {
+      const result = checkHooksInstalled({ enabledPlugins }, active, deps, verified('/old/claude-memory-layer/dist/hooks/session-start.js'));
+      expect(result.status).toBe('warn');
+      expect(result.detail).toContain('/old/claude-memory-layer/dist/hooks/session-start.js');
+    });
+
+    it('warns when the enabled plugin installation cannot be verified', () => {
+      const result = checkHooksInstalled({ enabledPlugins }, active, deps, {
+        id: 'memory-layer@claude-memory-layer',
+        status: 'unverified',
+        reason: 'install directory /gone is missing'
+      });
+      expect(result.status).toBe('warn');
+      expect(result.detail).toContain('install directory /gone is missing');
+      expect(result.fix).toContain('claude plugin install memory-layer@claude-memory-layer');
+    });
+
     it('warns that hooks are registered twice when settings.json also has them', () => {
-      const result = checkHooksInstalled({
-        enabledPlugins,
-        hooks: getHooksConfig('/active/claude-memory-layer/dist')
-      }, '/active/claude-memory-layer/dist', deps);
+      const result = checkHooksInstalled({ enabledPlugins, hooks: getHooksConfig(active) }, active, deps, verified());
       expect(result.status).toBe('warn');
       expect(result.detail).toContain('registered twice');
       expect(result.fix).toContain('claude-memory-layer uninstall');
@@ -228,22 +254,13 @@ describe('checkHooksInstalled', () => {
     });
 
     it('keeps the settings.json failure visible next to the duplicate warning', () => {
-      const result = checkHooksInstalled({
-        enabledPlugins,
-        hooks: getHooksConfig('/old/claude-memory-layer/dist')
-      }, '/active/claude-memory-layer/dist', {
+      const result = checkHooksInstalled({ enabledPlugins, hooks: getHooksConfig('/old/claude-memory-layer/dist') }, active, {
         existsImpl: (target) => target.startsWith('/active/'),
         realpathImpl: (target) => target
-      });
+      }, verified());
       expect(result.status).toBe('fail');
       expect(result.detail).toContain('registered twice');
       expect(result.detail).toContain('Registered hook files do not exist');
-    });
-
-    it('ignores a disabled plugin', () => {
-      const result = checkHooksInstalled({ enabledPlugins: { 'memory-layer@claude-memory-layer': false } });
-      expect(result.status).toBe('fail');
-      expect(result.detail).toContain('Not installed in Claude settings');
     });
   });
 });
@@ -687,5 +704,65 @@ describe('gatherSummaryProviderFacts', () => {
       readDaemons: noDaemons
     });
     expect(facts.binaryFound).toBe(false);
+  });
+});
+
+describe('inspectEnabledPlugin', () => {
+  const pluginsDir = '/home/.claude/plugins';
+  const installPath = `${pluginsDir}/cache/claude-memory-layer/memory-layer/2.5.8`;
+  const files = (extra: Record<string, string> = {}): Record<string, string> => ({
+    [`${pluginsDir}/installed_plugins.json`]: JSON.stringify({
+      version: 2,
+      plugins: { 'memory-layer@claude-memory-layer': [{ scope: 'user', installPath }] }
+    }),
+    [`${installPath}/.claude-plugin/plugin.json`]: JSON.stringify({ name: 'memory-layer' }),
+    [`${installPath}/.claude-plugin/hook-launcher.cjs`]: '',
+    ...extra
+  });
+  const depsFor = (fileMap: Record<string, string>, target: string | null = '/pkg/dist/hooks/session-start.js') => ({
+    pluginsDir,
+    existsImpl: (p: string) => p in fileMap || Object.keys(fileMap).some((file) => file.startsWith(`${p}/`)),
+    readFileImpl: (p: string) => {
+      if (!(p in fileMap)) throw new Error(`ENOENT ${p}`);
+      return fileMap[p];
+    },
+    resolveTargetImpl: () => target
+  });
+  const enabled = (id = 'memory-layer@claude-memory-layer') => ({ enabledPlugins: { [id]: true } });
+
+  it('returns null when no memory-layer plugin is enabled', () => {
+    expect(inspectEnabledPlugin({ enabledPlugins: { 'memory-layer@claude-memory-layer': false } }, depsFor(files()))).toBeNull();
+  });
+
+  it('verifies an installed copy of this plugin and reports the hook its launcher resolves', () => {
+    expect(inspectEnabledPlugin(enabled(), depsFor(files()))).toEqual({
+      id: 'memory-layer@claude-memory-layer',
+      status: 'verified',
+      target: '/pkg/dist/hooks/session-start.js'
+    });
+  });
+
+  it('ignores a plugin of the same name from another marketplace that is not this one', () => {
+    const otherPath = `${pluginsDir}/cache/unrelated/memory-layer/1.0.0`;
+    const fileMap = {
+      [`${pluginsDir}/installed_plugins.json`]: JSON.stringify({
+        version: 2,
+        plugins: { 'memory-layer@unrelated': [{ scope: 'user', installPath: otherPath }] }
+      }),
+      [`${otherPath}/.claude-plugin/plugin.json`]: JSON.stringify({ name: 'memory-layer' })
+    };
+    expect(inspectEnabledPlugin(enabled('memory-layer@unrelated'), depsFor(fileMap))).toBeNull();
+  });
+
+  it('cannot verify a plugin missing from installed_plugins.json', () => {
+    const result = inspectEnabledPlugin(enabled(), depsFor({}));
+    expect(result).toMatchObject({ status: 'unverified' });
+    expect(result?.status === 'unverified' && result.reason).toContain('installed_plugins.json');
+  });
+
+  it('cannot verify a plugin whose install directory is gone', () => {
+    const result = inspectEnabledPlugin(enabled(), depsFor({ [`${pluginsDir}/installed_plugins.json`]: files()[`${pluginsDir}/installed_plugins.json`] }));
+    expect(result).toMatchObject({ status: 'unverified' });
+    expect(result?.status === 'unverified' && result.reason).toContain(installPath);
   });
 });

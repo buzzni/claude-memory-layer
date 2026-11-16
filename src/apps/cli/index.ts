@@ -84,6 +84,7 @@ import {
   checkSummaryProvider,
   findClaudeMemoryPackage,
   gatherSummaryProviderFacts,
+  inspectEnabledPlugin,
   type DoctorCheckResult,
   type EmbeddingBackendScript
 } from './doctor.js';
@@ -1080,7 +1081,7 @@ program
       console.log('\n🧠 Claude Memory Layer Status\n');
 
       const targets = inspectPluginHookTargets(settings, pluginPath);
-      const hookCheck = checkHooksInstalled(settings, pluginPath);
+      const hookCheck = checkHooksInstalled(settings, pluginPath, {}, inspectEnabledPlugin(settings));
       const targetLabels = {
         missing: '❌ Not installed',
         'missing-target': '❌ Hook file missing',
@@ -1163,7 +1164,7 @@ program
       checkNodeVersion(process.version, readEnginesNodeRange(packageRoot)),
       checkPluginFiles(pluginPath),
       checkSessionEndHandlerLoads(pluginPath),
-      checkHooksInstalled(settings, pluginPath),
+      checkHooksInstalled(settings, pluginPath, {}, inspectEnabledPlugin(settings)),
       checkSessionEndPendingJobs(listPendingSessionEndJobs()),
       checkEmbeddingBackend(packageRoot, embeddingBackendScript?.isEmbeddingBackendAvailable ?? null),
       checkSummaryProvider(gatherSummaryProviderFacts()),

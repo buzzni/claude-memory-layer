@@ -14,11 +14,14 @@
 
 import { spawnSync } from 'child_process';
 import * as fs from 'fs';
+import { createRequire as createNodeRequire } from 'node:module';
+import * as os from 'os';
 import * as path from 'path';
 import { pathToFileURL } from 'url';
 
 import {
-  findEnabledPluginId,
+  CLAUDE_PLUGIN_NAME,
+  enabledPluginIds,
   hasHook,
   hasPluginHooksInSettings,
   inspectPluginHookTargets,
@@ -173,32 +176,126 @@ export function checkSessionEndPendingJobs(pending: PendingSessionEndJob[]): Doc
   };
 }
 
+export type EnabledPlugin =
+  /** `target` is the hook file the plugin's launcher runs; null when it finds no package. */
+  | { id: string; status: 'verified'; target: string | null }
+  | { id: string; status: 'unverified'; reason: string };
+
+export interface EnabledPluginDeps {
+  pluginsDir?: string;
+  existsImpl?: (p: string) => boolean;
+  readFileImpl?: (p: string) => string;
+  resolveTargetImpl?: (installPath: string) => string | null;
+}
+
+/** Asks the installed launcher itself, so doctor resolves the package exactly as the hooks do. */
+function resolveInstalledLauncherTarget(installPath: string): string | null {
+  const launcher = createNodeRequire(import.meta.url)(path.join(installPath, '.claude-plugin', 'hook-launcher.cjs')) as {
+    resolveHookTarget: (hookFile: string, options: { pluginRoot: string; pathEnv?: string }) => string | null;
+  };
+  return launcher.resolveHookTarget('session-start', { pluginRoot: installPath, pathEnv: process.env.PATH });
+}
+
+/**
+ * This repository's plugin as Claude Code installed it. An enabled
+ * `memory-layer@<marketplace>` counts only when its install directory holds
+ * this plugin's launcher; a same-named plugin from elsewhere is ignored.
+ */
+export function inspectEnabledPlugin(settings: ClaudeSettingsWithHooks, deps: EnabledPluginDeps = {}): EnabledPlugin | null {
+  const pluginsDir = deps.pluginsDir ?? path.join(os.homedir(), '.claude', 'plugins');
+  const existsImpl = deps.existsImpl ?? fs.existsSync;
+  const readFileImpl = deps.readFileImpl ?? ((p: string) => fs.readFileSync(p, 'utf-8'));
+  const resolveTargetImpl = deps.resolveTargetImpl ?? resolveInstalledLauncherTarget;
+
+  let installed: Record<string, Array<{ installPath?: string }>> = {};
+  try {
+    installed = (JSON.parse(readFileImpl(path.join(pluginsDir, 'installed_plugins.json'))) as { plugins?: typeof installed }).plugins ?? {};
+  } catch {
+    // no record of any install; every enabled id is unverified below
+  }
+
+  let unverified: EnabledPlugin | null = null;
+  for (const id of enabledPluginIds(settings)) {
+    const installPath = installed[id]?.find((record) => typeof record.installPath === 'string')?.installPath;
+    if (!installPath) {
+      unverified ??= { id, status: 'unverified', reason: `not listed in ${path.join(pluginsDir, 'installed_plugins.json')}` };
+      continue;
+    }
+    if (!existsImpl(installPath)) {
+      unverified ??= { id, status: 'unverified', reason: `install directory ${installPath} is missing` };
+      continue;
+    }
+    let name: unknown;
+    try {
+      name = (JSON.parse(readFileImpl(path.join(installPath, '.claude-plugin', 'plugin.json'))) as { name?: unknown }).name;
+    } catch {
+      name = undefined;
+    }
+    if (name !== CLAUDE_PLUGIN_NAME || !existsImpl(path.join(installPath, '.claude-plugin', 'hook-launcher.cjs'))) continue;
+    try {
+      return { id, status: 'verified', target: resolveTargetImpl(installPath) };
+    } catch (error) {
+      unverified ??= { id, status: 'unverified', reason: `its hook launcher failed to load: ${error instanceof Error ? error.message : String(error)}` };
+    }
+  }
+  return unverified;
+}
+
 /**
  * Hooks come from settings.json (`claude-memory-layer install`), from the
- * Claude Code plugin, or — wrongly — from both, which would capture and inject
- * every event twice. The plugin's launcher skips events whose settings.json
- * hook names this package, but a custom `install --path` slips past that.
+ * Claude Code plugin, or — wrongly — from both, which injects context twice
+ * per event (the store already drops the repeated capture). The plugin's
+ * launcher skips only events whose settings.json hook it can match exactly,
+ * so anything else, such as a custom `install --path`, still runs twice.
  */
 export function checkHooksInstalled(
   settings: ClaudeSettingsWithHooks,
   pluginPath?: string,
-  deps: Parameters<typeof inspectPluginHookTargets>[2] = {}
+  deps: Parameters<typeof inspectPluginHookTargets>[2] = {},
+  plugin: EnabledPlugin | null = null
 ): DoctorCheckResult {
-  const pluginId = findEnabledPluginId(settings);
-  if (!pluginId) return checkSettingsHooks(settings, pluginPath, deps);
-  if (!hasPluginHooksInSettings(settings, pluginPath)) {
-    return { name: 'hooks', status: 'pass', detail: `hooks provided by Claude Code plugin ${pluginId}` };
-  }
-  const settingsCheck = checkSettingsHooks(settings, pluginPath, deps);
-  return {
-    name: 'hooks',
-    status: settingsCheck.status === 'fail' ? 'fail' : 'warn',
-    detail: [
-      `Hooks registered twice: in Claude settings (claude-memory-layer install) and by plugin ${pluginId}`,
-      settingsCheck.status !== 'pass' && settingsCheck.detail
-    ].filter(Boolean).join('. '),
-    fix: `Keep one: claude-memory-layer uninstall (plugin only), or claude plugin uninstall ${pluginId} (settings only)`
+  if (!plugin) return checkSettingsHooks(settings, pluginPath, deps);
+
+  const realpathImpl = deps.realpathImpl ?? fs.realpathSync;
+  const canonicalPath = (filePath: string): string => {
+    try {
+      return realpathImpl(filePath);
+    } catch {
+      return path.resolve(filePath);
+    }
   };
+  const details: string[] = [];
+  const fixes: string[] = [];
+  let status: DoctorCheckResult['status'] = 'pass';
+
+  if (hasPluginHooksInSettings(settings, pluginPath)) {
+    const settingsCheck = checkSettingsHooks(settings, pluginPath, deps);
+    status = settingsCheck.status === 'fail' ? 'fail' : 'warn';
+    details.push(`Hooks registered twice: in Claude settings (claude-memory-layer install) and by plugin ${plugin.id}`);
+    if (settingsCheck.status !== 'pass') details.push(settingsCheck.detail);
+    fixes.push(`Keep one: claude-memory-layer uninstall (plugin only), or claude plugin uninstall ${plugin.id} (settings only)`);
+  }
+
+  const warn = (detail: string, fix: string) => {
+    if (status === 'pass') status = 'warn';
+    details.push(detail);
+    fixes.push(fix);
+  };
+  if (plugin.status === 'unverified') {
+    warn(`Claude Code plugin ${plugin.id} is enabled but its installation could not be verified: ${plugin.reason}`,
+      `claude plugin install ${plugin.id} (or disable it)`);
+  } else if (!plugin.target) {
+    warn(`Claude Code plugin ${plugin.id} finds no claude-memory-layer package on PATH, so its hooks do nothing`,
+      'npm install -g claude-memory-layer');
+  } else if (pluginPath && !canonicalPath(plugin.target).startsWith(canonicalPath(pluginPath) + path.sep)) {
+    warn(`Claude Code plugin ${plugin.id} runs ${plugin.target}, not the active CLI installation`,
+      'Remove the stale install, or reorder PATH so the intended one wins');
+  }
+
+  if (status === 'pass') {
+    return { name: 'hooks', status, detail: `hooks provided by Claude Code plugin ${plugin.id}` };
+  }
+  return { name: 'hooks', status, detail: details.join('. '), fix: fixes.join('; ') };
 }
 
 function checkSettingsHooks(

@@ -188,12 +188,17 @@ export function isPluginHookCommand(command: string | undefined, pluginPath?: st
  */
 export const CLAUDE_PLUGIN_NAME = 'memory-layer';
 
-/** `<plugin>@<marketplace>` of this plugin when settings.json enables it. */
-export function findEnabledPluginId(settings: ClaudeSettingsWithHooks): string | undefined {
+/**
+ * `<plugin>@<marketplace>` ids that settings.json enables under this plugin's
+ * name. Another marketplace can list a different plugin with the same name,
+ * so an id alone does not prove the plugin is this one.
+ */
+export function enabledPluginIds(settings: ClaudeSettingsWithHooks): string[] {
   const enabled = settings.enabledPlugins;
-  if (!enabled || typeof enabled !== 'object') return undefined;
+  if (!enabled || typeof enabled !== 'object') return [];
   return Object.entries(enabled as Record<string, unknown>)
-    .find(([id, value]) => value === true && id.startsWith(`${CLAUDE_PLUGIN_NAME}@`))?.[0];
+    .filter(([id, value]) => value === true && id.startsWith(`${CLAUDE_PLUGIN_NAME}@`))
+    .map(([id]) => id);
 }
 
 /** Whether settings.json holds any hook that `install` writes. */
