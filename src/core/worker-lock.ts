@@ -192,15 +192,30 @@ export class WorkerLock {
     }
   }
 
+  /**
+   * The re-check and the unlink are two steps, so contenders run them one at a
+   * time under a takeover guard: otherwise one can unlink the lock another has
+   * just created in their place. The guard is itself a WorkerLock, so a guard
+   * left by a contender that died mid-takeover is recovered the same way.
+   */
   private removeExistingLock(expected: WorkerLockPayload | null): boolean {
-    const current = this.readPayload();
-    if (!sameLockPayload(current, expected)) return false;
+    const guard = new WorkerLock(`${this.lockPath}.takeover`, {
+      pid: this.pid,
+      ownerId: this.ownerId,
+      now: this.now,
+      isProcessRunning: this.isProcessRunning
+    });
+    if (!guard.acquire().acquired) return false;
     try {
+      const current = this.readPayload();
+      if (!sameLockPayload(current, expected)) return false;
       unlinkSync(this.lockPath);
       return true;
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       return code === 'ENOENT';
+    } finally {
+      guard.release();
     }
   }
 }
