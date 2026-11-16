@@ -134,17 +134,26 @@ describe('checkSessionEndPendingJobs', () => {
 });
 
 describe('checkHooksInstalled', () => {
-  it('passes when all five hooks are present', () => {
+  it('passes when all six hooks are present', () => {
     const settings: ClaudeSettingsWithHooks = {
       hooks: {
         SessionStart: [{ hooks: [{ type: 'command', command: 'node hooks/session-start.js' }] }],
         UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'node hooks/user-prompt-submit.js' }] }],
         PostToolUse: [{ hooks: [{ type: 'command', command: 'node hooks/post-tool-use.js' }] }],
         Stop: [{ hooks: [{ type: 'command', command: 'node hooks/stop.js' }] }],
-        SessionEnd: [{ hooks: [{ type: 'command', command: 'node hooks/session-end.js' }] }]
+        SessionEnd: [{ hooks: [{ type: 'command', command: 'node hooks/session-end.js' }] }],
+        PreCompact: [{ hooks: [{ type: 'command', command: 'node hooks/pre-compact.js' }] }]
       }
     };
     expect(checkHooksInstalled(settings).status).toBe('pass');
+  });
+
+  it('names PreCompact for an install made before that hook existed', () => {
+    const { PreCompact: _added, ...earlierInstall } = getHooksConfig('/active/claude-memory-layer/dist');
+    const result = checkHooksInstalled({ hooks: earlierInstall });
+    expect(result.status).toBe('fail');
+    expect(result.detail).toBe('Not installed in Claude settings: PreCompact');
+    expect(result.fix).toBe('claude-memory-layer install');
   });
 
   it('fails and names each missing hook when settings are empty', () => {

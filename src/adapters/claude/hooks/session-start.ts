@@ -28,6 +28,7 @@ import {
   registerHookDeliveryReporter
 } from './hook-output.js';
 import { isPromptOnlySessionSummary } from './prompt-injection-policy.js';
+import { formatCompactionCheckpointContext, readCompactionCheckpoint } from './compaction-checkpoint.js';
 import {
   formatMemoryReferenceContext,
   memoryEventReferenceItem,
@@ -417,6 +418,13 @@ export async function main(options: SessionStartMainOptions = {}): Promise<strin
     // once the envelope is actually written to stdout (specs R3).
     const deliveredTraceIds: string[] = [];
 
+    // After a compaction, where the session stood right before it (saved by
+    // the PreCompact hook) goes first. Supplementary like the lanes below.
+    const compactionCheckpoint = input.source === 'compact'
+      && process.env.CLAUDE_MEMORY_EVAL_DISABLE_SESSION_CONTEXT !== 'true'
+      ? await readCompactionCheckpoint(input.cwd, input.session_id).catch(() => null)
+      : null;
+
     // Core memory blocks remain a no-query/no-scoring lane and come before
     // incidental recent events. Once asset enforcement is enabled, the
     // service filters this lane through the active actor binding.
@@ -578,10 +586,13 @@ export async function main(options: SessionStartMainOptions = {}): Promise<strin
       });
     // A resumed session reloads its own transcript, so its events are already
     // in context. After a compaction the transcript is only a summary, so they
-    // stay eligible there. CLAUDE_MEMORY_INJECT_SAME_SESSION=true keeps them.
-    const recentEvents = input.source === 'resume' && process.env.CLAUDE_MEMORY_INJECT_SAME_SESSION !== 'true'
+    // stay eligible there, except those the checkpoint already quotes.
+    // CLAUDE_MEMORY_INJECT_SAME_SESSION=true keeps them on resume.
+    const checkpointEventIds = new Set(compactionCheckpoint?.sourceEventIds ?? []);
+    const recentEvents = (input.source === 'resume' && process.env.CLAUDE_MEMORY_INJECT_SAME_SESSION !== 'true'
       ? scannedEvents.filter((event) => event.sessionId !== input.session_id)
-      : scannedEvents;
+      : scannedEvents
+    ).filter((event) => !checkpointEventIds.has(event.id));
 
     const injectedEvents = selectSessionStartMemories(recentEvents, SESSION_START_MAX_MEMORIES);
 
@@ -703,6 +714,11 @@ export async function main(options: SessionStartMainOptions = {}): Promise<strin
           await deliveryService.close().catch(() => undefined);
         }
       });
+    }
+
+    if (compactionCheckpoint) {
+      const checkpointContext = formatCompactionCheckpointContext(compactionCheckpoint);
+      context = context ? `${checkpointContext}\n${context}` : checkpointContext;
     }
 
     const output: SessionStartOutput = JSON.parse(formatClaudeContextHookOutput('SessionStart', context));

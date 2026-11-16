@@ -25,7 +25,7 @@
  * import, and PostToolUse runs on every tool call.
  *
  * Usage:
- *   node hook-launcher.cjs <session-start|user-prompt-submit|post-tool-use|stop|session-end>
+ *   node hook-launcher.cjs <session-start|user-prompt-submit|post-tool-use|stop|session-end|pre-compact>
  */
 
 const fs = require('node:fs');
@@ -41,7 +41,8 @@ const HOOK_EVENTS = {
   'user-prompt-submit': 'UserPromptSubmit',
   'post-tool-use': 'PostToolUse',
   stop: 'Stop',
-  'session-end': 'SessionEnd'
+  'session-end': 'SessionEnd',
+  'pre-compact': 'PreCompact'
 };
 
 const MISSING_PACKAGE_NOTICE = `${PACKAGE_NAME}: npm package not found, memory hooks are inactive. `

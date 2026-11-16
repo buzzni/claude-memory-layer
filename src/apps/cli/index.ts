@@ -1018,7 +1018,8 @@ program
       console.log('  - UserPromptSubmit: Memory retrieval on user input');
       console.log('  - PostToolUse: Store tool observations');
       console.log('  - Stop: Store assistant responses');
-      console.log('  - SessionEnd: Persist session summary\n');
+      console.log('  - SessionEnd: Persist session summary');
+      console.log('  - PreCompact: Checkpoint the session before compaction\n');
       console.log('Plugin path:', pluginPath);
       if (maintenanceStatus) {
         console.log(`Maintenance: ${maintenanceStatus.active ? 'installed and active' : 'installed'}`);

@@ -54,6 +54,17 @@
           }
         ]
       }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/.claude-plugin/hook-launcher.cjs\" pre-compact"
+          }
+        ]
+      }
     ]
   }
 }

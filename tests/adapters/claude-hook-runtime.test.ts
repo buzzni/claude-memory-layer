@@ -52,6 +52,13 @@ describe('runHook', () => {
     expect(writes).toEqual(['{"context":"ok"}\n']);
   });
 
+  it('writes nothing, not even a newline, for an empty output', async () => {
+    // PreCompact hands its stdout to the compaction summary as instructions.
+    const writes = captureStdout();
+    await runHook({ name: 'test', fallbackOutput: '' }, async () => '');
+    expect(writes).toEqual(['']);
+  });
+
   it('emits the fallback envelope when the body throws (e.g. malformed stdin JSON)', async () => {
     const writes = captureStdout();
     await runHook({ name: 'test', fallbackOutput: '{"context":""}' }, async () => {
