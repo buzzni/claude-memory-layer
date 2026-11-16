@@ -42,6 +42,13 @@ class ProviderFailure extends Error {
 
 const CLAUDE_TIMEOUT_MS = 120_000;
 
+// Recalled memories are stored text, not instructions, so they reach the prompt
+// with control, bidi, and zero-width characters (\p{Cf}) removed and tag
+// openings defanged with a lookalike, so `</system-reminder>` cannot close or
+// open a wrapper. The lookalike stays readable where the dashboard renders it.
+const RECALL_INVISIBLE_CHARS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\p{Cf}]/gu;
+const RECALL_TAG_OPENING = /<(?=[/!?A-Za-z])/g;
+
 chatRouter.post('/', async (c) => {
   let body: ChatRequest;
   try {
@@ -156,15 +163,25 @@ function formatMemoryContext(memoryHits: MemoryHit[]): string {
   const parts: string[] = ['## Relevant Memories\n'];
   for (const m of memoryHits) {
     const date = m.event.timestamp ? new Date(m.event.timestamp).toISOString().split('T')[0] : 'unknown-date';
-    const content = (m.event.content ?? '').slice(0, 500);
-    parts.push(`### [${m.event.eventType ?? 'memory'}] ${date} (score: ${m.score.toFixed(2)})`);
-    parts.push(content);
+    const content = singleLineRecallText((m.event.content ?? '').slice(0, 500));
+    parts.push(`### [${singleLineRecallText(m.event.eventType ?? 'memory')}] ${date} (score: ${m.score.toFixed(2)})`);
+    parts.push(`> ${content}`);
     if (m.sessionContext) {
-      parts.push(`_Context: ${m.sessionContext}_`);
+      parts.push(`_Context: ${singleLineRecallText(m.sessionContext)}_`);
     }
     parts.push('');
   }
   return parts.join('\n');
+}
+
+// One line per field, and the body behind a `> ` quote, so a memory cannot
+// start its own `### [type] date` heading or `**User:**` turn in the prompt.
+function singleLineRecallText(text: string): string {
+  return text
+    .replace(RECALL_INVISIBLE_CHARS, '')
+    .replace(RECALL_TAG_OPENING, '\u2039')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 async function streamMemoryOnlyResponse(
