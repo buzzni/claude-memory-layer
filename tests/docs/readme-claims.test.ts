@@ -3,9 +3,10 @@ import * as path from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-// README makes concrete claims: npm scripts, CLI bin/subcommand names and
-// CLAUDE_MEMORY_* env vars. This checks that each cited name still exists in
-// the code. Names are read from package.json and src/, not hardcoded here.
+// The READMEs and the user docs they link to make concrete claims: npm
+// scripts, CLI bin/subcommand names and CLAUDE_MEMORY_* env vars. This checks
+// that each cited name still exists in the code. Names are read from
+// package.json and src/, not hardcoded here.
 // Out of scope: benchmark/grounding numbers and wording.
 
 const root = path.resolve(import.meta.dirname, '../..');
@@ -15,7 +16,21 @@ const pkg = JSON.parse(read('package.json')) as {
   scripts: Record<string, string>;
   bin: Record<string, string>;
 };
-const readme = read('README.md');
+const USER_DOCS = [
+  'README.md',
+  'README.ko.md',
+  'docs/INSTALL.md',
+  'docs/CLI.md',
+  'docs/CONFIGURATION.md',
+  'docs/IMPORT_AND_MIGRATION.md',
+  'docs/CODEX_AND_HERMES.md',
+  'docs/MCP.md',
+  'docs/DASHBOARD.md',
+  'docs/HOW_IT_WORKS.md',
+  'docs/MONGO_SYNC.md',
+  'docs/EXTERNAL_MARKET_CONTEXT.md'
+];
+const readme = USER_DOCS.map(read).join('\n');
 
 // Fenced blocks and inline code spans only: prose may mention names loosely.
 function codeText(markdown: string): string {

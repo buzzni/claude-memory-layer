@@ -1,1285 +1,163 @@
 # Claude Memory Layer
 
-Claude Code, Codex, Hermes, MCP 클라이언트가 함께 쓰는 **프로젝트 스코프 메모리 레이어**입니다. 대화/세션 기록을 SQLite 이벤트 저장소와 LanceDB 벡터 인덱스로 관리하고, 작업 시작 시 필요한 기억·타임라인·액션 프런티어를 privacy-safe 컨텍스트로 제공합니다.
+**English** | [한국어](README.ko.md)
 
-## 개요
+Project-scoped memory for Claude Code, Codex, Hermes and MCP clients. It records your conversations per project in a local SQLite store with a LanceDB vector index, and brings relevant past decisions, errors and results back as context when you start or continue work.
 
-Claude Memory Layer는 AI 에이전트의 대화와 작업 이벤트를 프로젝트별로 저장하고, 새로운 작업을 시작할 때 관련 기억을 자동 검색해 컨텍스트로 제공합니다. 최신 npm 패키지는 단순 Claude Code hook을 넘어 다음 용도로 사용할 수 있습니다:
+## What it stores and where
 
-- **연속성 있는 대화**: 이전 세션에서 논의한 결정, 오류, 검증 결과를 검색
-- **프로젝트 맥락 이해**: 프로젝트별 isolated store와 `projectPath` 기반 MCP/CLI 조회
-- **다중 에이전트 호환**: Claude Code hooks + Codex/Hermes session import + MCP stdio server
-- **운영형 메모리**: actions/frontier/checkpoints/facets/lessons/retention audit로 다음 작업을 이어받기
-- **Perspective Memory**: 사용자/어시스턴트/서브에이전트 관점의 actor card와 observation 관리
-- **신뢰 가능한 벡터 동기화**: Vector Outbox V2, worker lock, dashboard/vector-status health로 누락 복구
+Everything is stored on your machine under `~/.claude-code/memory/`, in a separate store per project.
 
-## 최신 릴리스 하이라이트
+| What | Captured by | Where |
+|---|---|---|
+| Your prompts and the assistant's responses | Claude Code hooks (UserPromptSubmit, Stop), Codex hooks, history import | `projects/<hash>/events.sqlite` |
+| Tool observations (tool input and output) | Claude Code PostToolUse hook | `projects/<hash>/events.sqlite` |
+| Session summaries | Session hooks (LLM-written by default, see [Privacy](#privacy-and-security)) | `projects/<hash>/events.sqlite` |
+| Facets, actions, checkpoints, lessons, actor cards | CLI and MCP tools | `projects/<hash>/events.sqlite` |
+| Vector embeddings (derived, rebuildable from SQLite) | Vector worker | `projects/<hash>/vectors/` (LanceDB) |
+| Local embedding model (downloaded on first use) | Embedder | `models/` |
+| Optional feature flags | You | `operations.json` |
 
-- **MCP Context Navigator**: `mem-context-pack`, `mem-project-timeline`, `mem-source-ref`, `mem-import-latest`로 Hermes/Codex/Claude Desktop이 같은 프로젝트 기억을 안전하게 조회합니다.
-- **Memory Operations Layer**: facet/action/frontier/checkpoint/retention/graph/lesson 도구와 CLI가 추가되어 “무엇을 다음에 해야 하는가”를 메모리에서 바로 복원합니다.
-- **Honcho-inspired Perspective Memory**: actor/session membership, actor cards, perspective observations, contradiction/derived observation, perspective context/query 도구를 제공합니다.
-- **Vector Outbox V2**: SQLite source write와 vector enqueue를 같은 트랜잭션으로 묶고, versioned LanceDB upsert와 stuck-job recovery를 지원합니다.
-- **Dashboard 운영성 강화**: local-only 기본 bind, 선택적 password gate, Vector Health 카드, Perspective Memory aggregate 카드, retrieval trace/score breakdown과 aggregate-only strategy/context-pack telemetry를 제공합니다.
-- **Codex/Hermes history ingest**: 원본 세션은 read-only validate/replay로 먼저 확인하고, 명시적 import로만 프로젝트 메모리에 반영합니다.
-- **Hermes/CML/Headroom 운영 모델**: Hermes built-in memory, `session_search`, CML context-pack, read-only Hermes provider, Headroom reference stance는 [`docs/HERMES_CML_HEADROOM_OPERATING_MODEL.md`](docs/HERMES_CML_HEADROOM_OPERATING_MODEL.md)에 정리되어 있습니다.
-- **npm 설치 안정화**: `@huggingface/transformers`는 보안 버전의 `sharp`를 고정한 격리 backend로 설치하며, CUDA 11 환경에서는 CPU-only ONNX Runtime으로 자동 복구합니다.
-- **코드 에이전트 메모리 4종 (v2.1)**: codify-lite 코드 구조 앵커링(`source_file` 엔티티 + `touched_in` 그래프 + session-file 검색 레인), Letta식 코어 메모리 블록(`mem-core-block-get/update`, SessionStart 상시 주입), Mem0식 사실 조정(`mem-entity-supersede`), Zep/Graphiti식 bitemporal 엣지 히스토리(`mem-graph-query`의 `asOf`/`knownAt`)를 제공합니다.
-- **operations.json 기능 플래그 (v2.2)**: codify-lite 등 옵트인 기능을 `~/.claude-code/memory/operations.json` 파일 하나로 켤 수 있습니다. 아래 [선택 기능 활성화](#선택-기능-활성화-operationsjson) 참고.
+SQLite is the source of truth; the vector index is a derived accelerator. Worktrees and subdirectories of one git repository share the main checkout's store. Details: [project scope](docs/CONFIGURATION.md#project-scope).
 
-## 빠른 시작 (신규 프로젝트 기준)
+## Install in 60 seconds
 
-아래 순서대로 하면 됩니다.
+Requires **Node.js 20.19+**. Connect Claude Code in **one** of these two ways. Using both registers the hooks twice.
 
-> **Runtime requirement:** Claude Memory Layer 2.0.0부터 Node.js 20.19 이상이 필요합니다.
-> Hono 정적 파일 서버와 로컬 embedding 이미지 backend의 보안 수정 버전을 사용하기 위한 최소 버전입니다.
-
-### 0) 최초 1회(머신 전체) 설치
-
-권장 설치 방식은 npm에 배포된 패키지를 **전역 설치**하는 것입니다. `install`은 Claude Code hook 파일 경로를 `~/.claude/settings.json`에 저장하므로, 일회성 `npx claude-memory-layer install`보다 전역 설치 또는 고정된 로컬 checkout을 쓰는 것이 안전합니다.
+**① npm global install + `install`** (writes the hooks into `~/.claude/settings.json`)
 
 ```bash
 npm install -g claude-memory-layer@latest
-
-# 기본: Claude Code 훅만 설치
 claude-memory-layer install
-
-# 또는: 훅과 주기 maintenance를 한 번에 설치
-claude-memory-layer install --with-maintenance
-
-claude-memory-layer status
-
-# 설치 후 뭔가 이상하면 환경 진단 (Node 버전, embedding backend, PATH 중복 설치, 훅, 스토어 쓰기 권한)
-claude-memory-layer doctor
-# embedding backend 점검이 실패하면 안전할 때만 재설치하고, 아니면 거절 사유와 수동 명령을 출력
-claude-memory-layer doctor --fix
-
-# Codex에서도 자동 컨텍스트 적재/불러오기를 사용할 때
-claude-memory-layer codex hooks install
-claude-memory-layer codex hooks status
 ```
 
-로컬 개발 checkout에서 설치할 때:
-
-```bash
-git clone https://github.com/buzzni/claude-memory-layer.git
-cd claude-memory-layer
-npm install
-npm run build
-npx claude-memory-layer install
-npx claude-memory-layer status
-npx claude-memory-layer doctor
-```
-
-- `install`은 **한 번만** 하면 됩니다(Claude Code hooks 등록).
-- `npm install`만으로는 백그라운드 서비스를 등록하지 않습니다. `maintenance install` 또는 `install --with-maintenance`를 사용자가 명시적으로 실행해야 합니다.
-- `codex hooks install`은 `~/.codex/hooks.json`에 SessionStart/UserPromptSubmit/SessionEnd 훅을 병합합니다. Codex를 재시작한 뒤 `/hooks`에서 새 훅 정의를 검토하고 신뢰해야 실행됩니다.
-- Embedding backend은 런타임 필수 기능이며, postinstall이 패키지 내부의 격리된 관리 디렉터리에 설치합니다. 이 경계에서 `sharp` 보안 버전을 강제하고, CUDA 11 환경에서는 `onnxruntime-node`를 CPU-only로 설치합니다.
-- 이후 프로젝트별로 메모리 저장소가 자동 분리됩니다.
-- `install` / `uninstall`은 `~/.claude/settings.json`을, `codex hooks install` / `uninstall`은 `~/.codex/hooks.json`을 수정합니다. `maintenance install` / `uninstall`은 사용자 계정의 launchd/systemd 정의만 변경합니다. 기존의 다른 훅과 서비스는 보존합니다.
-
-#### 선택: 자동 maintenance
-
-프로젝트별 pending embedding/vector outbox와 5분 이상 멈춘 processing 작업을 주기적으로 처리하려면 최초 1회 활성화합니다.
-
-```bash
-# macOS: ~/Library/LaunchAgents에 사용자 LaunchAgent 등록
-# Linux: ~/.config/systemd/user에 systemd user timer 등록(sudo 불필요)
-claude-memory-layer maintenance install
-
-# 기본 5분 대신 15분 주기
-claude-memory-layer maintenance install --interval 900
-
-claude-memory-layer maintenance status
-claude-memory-layer maintenance run --json
-claude-memory-layer maintenance run --no-compaction
-
-# 기본 5 GiB보다 넉넉한 여유 공간을 요구할 때
-claude-memory-layer maintenance run --min-free-gb 10
-
-# 스케줄러 정의만 제거하며 메모리 데이터는 보존
-claude-memory-layer maintenance uninstall
-```
-
-각 실행은 최근 저장소부터 순차적으로 확인하고 프로젝트별 worker lock을 사용합니다. 기본적으로 저장소당 최대 4 processing round(각 vector schema당 최대 한 batch)를 처리해 장시간 자원 독점을 피합니다. pending, retry 가능한 failed, 5분 이상 멈춘 processing 작업만 자동 복구하며 재시도 한도를 넘은 quarantined 작업은 무한 반복하지 않고 상태에 남깁니다.
-
-maintenance는 메모리 루트가 있는 파일시스템의 여유 공간이 기본 5 GiB 미만이면 쓰기 작업을 `blocked`로 기록하고 큐 현황만 보고합니다. 기준은 `maintenance run --min-free-gb <GiB>`로 조정할 수 있으며, `0`은 이 보호 장치를 명시적으로 끕니다. 예약 실행도 같은 기본값을 사용합니다.
-
-systemd user session이 없는 최소 Linux, 컨테이너, 일부 WSL 환경에서는 스케줄러 설치 대신 `claude-memory-layer maintenance run`을 기존 cron/작업 스케줄러에서 호출할 수 있습니다.
-
-#### CUDA 11 / `onnxruntime-node` 설치 에러
-
-Linux x64 서버에 CUDA 11이 설치되어 있으면 `@huggingface/transformers`의 하위 의존성인 `onnxruntime-node`가 `nvcc --version`을 감지한 뒤 CUDA 11용 GPU 바이너리를 자동 설치하려고 합니다. 현재 해당 install script는 CUDA 11 자동 설치를 지원하지 않아 다음 오류로 `npm install`이 실패할 수 있습니다.
+**② Claude Code plugin marketplace** (run inside Claude Code)
 
 ```text
-Error: CUDA 11 binaries are not supported by this script yet.
+/plugin marketplace add buzzni/claude-memory-layer
+/plugin install memory-layer@claude-memory-layer
 ```
 
-Claude Memory Layer는 로컬 semantic/vector embedding에 필요한 `@huggingface/transformers`를 런타임 필수 backend로 취급합니다. 설치 중 postinstall repair가 이를 격리된 관리 디렉터리에 설치하면서 `ONNXRUNTIME_NODE_INSTALL_CUDA=skip`으로 CPU-only ONNX Runtime과 보안 수정된 `sharp`를 함께 고정합니다. npm 로그의 최종 exit code가 0이고 `claude-memory-layer --version`이 동작하면 정상입니다. 최신 버전에서는 일반적으로 아래 명령이 그대로 동작해야 합니다.
+On Claude Code 2.1.275 or later this also works in one step:
 
-```bash
-npm install -g claude-memory-layer@latest
-claude-memory-layer --version
+```text
+/plugin install memory-layer --marketplace buzzni/claude-memory-layer
 ```
 
-만약 npm 버전/환경 차이로 같은 오류가 계속 나면 아래처럼 CUDA 바이너리 다운로드를 명시적으로 건너뛰어 재설치하세요.
+The plugin's hooks run the npm package, so also run `npm install -g claude-memory-layer@latest`. Without the package the plugin does nothing.
+
+Restart Claude Code afterwards. To switch from one to the other, keep only the plugin with `claude-memory-layer uninstall`, or keep only the `settings.json` hooks with `claude plugin uninstall memory-layer@claude-memory-layer`. `claude-memory-layer doctor` warns when both are active.
+
+Local checkout, embedding model, scheduled maintenance and CUDA 11 troubleshooting: [docs/INSTALL.md](docs/INSTALL.md).
+
+## Check your first memories
 
 ```bash
-# 실패한 전역 설치가 일부 남아 있으면 먼저 제거
-npm uninstall -g claude-memory-layer || true
+claude-memory-layer status     # are the hooks installed?
+claude-memory-layer doctor     # Node, embedding backend, PATH, hooks, MCP configs, store access
 
-# CPU-only ONNX Runtime으로 재설치
-ONNXRUNTIME_NODE_INSTALL_CUDA=skip npm install -g claude-memory-layer@latest
-claude-memory-layer --version
-```
-
-로컬 checkout 개발 환경에서 같은 오류가 나면 아래처럼 설치합니다.
-
-```bash
-ONNXRUNTIME_NODE_INSTALL_CUDA=skip npm install
-```
-
-이미 설치된 패키지 디렉터리에서 backend만 손상/누락된 경우에는 해당 패키지 디렉터리에서 아래 복구 스크립트를 실행할 수 있습니다.
-
-```bash
-ONNXRUNTIME_NODE_INSTALL_CUDA=skip node scripts/postinstall-embedding-backend.cjs
-```
-
-`npm warn deprecated ...` 경고는 하위 의존성 경고이며 설치 실패 원인이 아닙니다.
-
-#### Embedding model
-
-기본 로컬 embedding 모델은 `Xenova/multilingual-e5-small`입니다.
-
-- `@huggingface/transformers`/ONNX Runtime CPU에서 동작하므로 CUDA가 필요 없습니다.
-- 원본 `intfloat/multilingual-e5-small`은 multilingual + Korean(`ko`) 지원 모델이고, Xenova variant는 Transformers.js용 ONNX 파일을 제공합니다.
-- 384차원이라 대규모 세션 import에서도 CPU/메모리 부담이 작습니다.
-- 모델 파일(약 470MB)은 처음 쓸 때 한 번 내려받아 `~/.claude-code/memory/models/`에 둡니다. 패키지 디렉터리 밖이라 재설치·업그레이드 후에도 다시 받지 않습니다.
-- 더 높은 품질이 필요하면 `--embedding-model <hf-model>` 또는 `CLAUDE_MEMORY_EMBEDDING_MODEL`로 `onnx-community/Qwen3-Embedding-0.6B-ONNX`, `onnx-community/embeddinggemma-300m-ONNX` 같은 Transformers.js/ONNX 모델을 실험할 수 있습니다. 다만 이들은 다운로드/CPU 비용이 더 크거나 모델/라이선스 성숙도를 별도 검토해야 합니다.
-
-```bash
-claude-memory-layer import --project "$PWD" --embedding-model Xenova/multilingual-e5-small
-CLAUDE_MEMORY_EMBEDDING_MODEL=onnx-community/Qwen3-Embedding-0.6B-ONNX claude-memory-layer process --project "$PWD"
-```
-
-### 1) 새 프로젝트에서 초기 메모리 생성
-
-```bash
 cd /path/to/your-project
-claude-memory-layer import
-```
-
-- 현재 프로젝트의 기존 Claude Code 세션(`~/.claude/projects/...`)을 읽어와 메모리로 적재합니다.
-- 벡터 임베딩까지 한 번에 처리됩니다.
-
-### 2) 사용 중 확인
-
-```bash
-# 프로젝트 메모리 검색
-claude-memory-layer search "인증 구조"
-
-# 통계 확인
+claude-memory-layer import     # optional: load this project's existing Claude Code sessions
+claude-memory-layer search "auth design"
 claude-memory-layer stats
-
-# 대시보드 실행
-claude-memory-layer dashboard --no-open
+claude-memory-layer dashboard  # local web dashboard on http://localhost:37777
 ```
 
-### 3) 다른 프로젝트에도 동일하게 적용?
-
-네. **완전히 동일한 흐름**을 각 프로젝트에서 반복하면 됩니다.
-
-```bash
-cd /path/to/another-project
-claude-memory-layer import
-claude-memory-layer search "배포 이슈"
-```
-
-프로젝트마다 내부적으로 별도 저장소(`~/.claude-code/memory/projects/<hash>`)를 사용하므로,
-기억이 자동으로 분리됩니다. 같은 저장소(git) 안의 워크트리·하위 디렉터리는 메인 체크아웃으로
-자동 수렴합니다.
-
-git 경계를 넘어 수렴시키고 싶을 때 — 예: 워크스페이스 제품이 채팅/인스턴스마다 디렉터리(각자
-git repo인 경우 포함)를 만들어 메모리가 파편화될 때 — 워크스페이스 루트에 빈 마커 파일을 두면
-하위 모든 경로가 그 디렉터리 하나의 저장소를 공유합니다:
-
-```bash
-touch <workspace-root>/.claude-memory-root
-```
-
-- 마커는 **빈 일반 파일**이어야 합니다(같은 이름의 디렉터리는 무시).
-- 마커 디렉터리 자체의 해시는 변하지 않으므로, 이미 그 경로에 있던 저장소는 그대로 이어집니다.
-- 가장 가까운(안쪽) 마커가 이기므로 중첩 워크스페이스는 분리 상태를 유지합니다.
-- 마커는 자체 `.git`을 가진 하위 repo보다 우선합니다 — 그것이 이 opt-in의 존재 이유입니다.
-- 마커 판정은 git 수렴 **이후의** 기준 경로에서 위로 올라가며 이루어집니다. 그래서
-  워크스페이스 밖에 체크아웃된 워크트리도 메인 체크아웃을 통해 마커에 도달하고,
-  repo에 커밋된 루트 마커가 워크트리를 개별 저장소로 쪼개지 않으며,
-  repo **하위 디렉터리**의 마커는 무시됩니다(서브트리가 repo 저장소에서 분리되지 않음).
-- 홈 디렉터리·시스템 temp 루트·파일시스템 루트에 놓인 마커는 무시합니다 —
-  실수로 놓인 마커 하나가 머신의 모든 프로젝트를 한 저장소로 합치는 사고 방지.
-- 훅은 프로세스가 매번 새로 뜨므로 즉시 반영되지만, 장수 프로세스(MCP 서버·대시보드·데몬)는
-  재시작해야 마커를 반영합니다.
-- 기존 파편 저장소의 과거 데이터가 자동 병합되지는 않습니다(새 세션부터 수렴).
-  마커 채택 후 기존 파편 저장소에 project-scope repair를 실행하면 과거 행들이
-  현재 해시 기준과 달라 격리될 수 있으니 주의하세요.
-
-### 4) 운영 팁
-
-- 특정 프로젝트를 명시하고 싶으면 대부분 명령에 `--project <path>` 사용 가능
-- 대규모 리임포트가 필요하면 `import --force` 사용
-- 최근 일부만 가져오고 싶으면 `--session-limit <n>` 또는 `--limit <n>` 사용
-- 백그라운드 worker가 못 처리한 임베딩은 opt-in `maintenance install`로 주기 처리하거나 `process`로 수동 처리
-- 상태 점검:
-  - `GET /health` (서버 헬스)
-  - `GET /api/health` (outbox pending/failed 포함 상세 헬스)
-  - `GET /api/stats/retrieval-traces` (검색→컨텍스트 채택 추적)
-- 주입 임계값 튜닝(환경변수):
-  - `CLAUDE_MEMORY_RETRIEVAL_MODE` (기본 `hybrid`, `keyword`/`hybrid`/`semantic`)
-  - `CLAUDE_MEMORY_SEMANTIC_DAEMON_IDLE_MS` (기본 `600000`, semantic daemon 유휴 종료 시간)
-  - `CLAUDE_MEMORY_MIN_SCORE` (기본 0.4)
-  - `CLAUDE_MEMORY_FALLBACK_MIN_SCORE` (기본 0.3, 결과 0건일 때 재시도)
-  - `CLAUDE_MEMORY_FTS_ABSOLUTE_SCORE_EXPERIMENT` (기본 꺼짐, `true`면 FTS 점수를 결과 목록 내 상대값 대신 bm25 절대 척도 `x/(x+15)`로 계산. 흔한 토큰 하나만 맞은 결과가 1.0을 받지 않음)
-  - `CLAUDE_MEMORY_RETRIEVAL_QUERY_SANITIZER_EXPERIMENT` (기본 꺼짐, `true`면 UserPromptSubmit 검색 쿼리에서 200자를 넘는 현재 프롬프트를 물음표 문장 → 한국어 질문·요청 어미(`…까`, `…나요`, `…해줘`) 문장 → 마지막 문장 → 꼬리 250자 순으로 줄임. 버려진 부분의 경로·`#번호`·커밋 SHA는 쿼리 뒤에 붙임)
-
----
-
-## 다른 서버 초기 세팅 & 이전 대화 ingest
-
-새 서버에서 Claude Memory Layer를 설치하고 기존 Claude Code/Codex/Hermes 대화 기록을 처음 적재할 때는 아래 체크리스트를 따르세요.
-
-### 1) 새 서버 준비
-
-```bash
-node --version   # Node.js >= 18 필수
-npm --version
-npm install -g claude-memory-layer@latest
-claude-memory-layer install
-claude-memory-layer status
-```
-
-> `claude-memory-layer install`은 Claude Code hooks를 등록합니다. 이미 Claude Code가 실행 중이면 재시작해야 hook이 반영됩니다.
-
-### 2) 이전 서버의 원본 대화 기록 가져오기
-
-가장 안전한 방식은 **원본 대화 기록을 새 서버로 복사한 뒤 새 서버에서 다시 import**하는 것입니다. 필요한 것만 선택해서 복사하세요. 이 디렉토리/DB에는 민감한 대화와 경로가 포함될 수 있으므로 공개 저장소에 커밋하거나 공유하지 말고, SSH/사설망 등 신뢰할 수 있는 경로로만 복사하세요.
-
-```bash
-# Claude Code 원본 세션(JSONL)
-mkdir -p ~/.claude/projects
-rsync -a OLD_HOST:~/.claude/projects/ ~/.claude/projects/
-
-# Codex CLI 원본 세션(JSONL) - Codex 기록도 가져올 때만
-mkdir -p ~/.codex/sessions
-rsync -a OLD_HOST:~/.codex/sessions/ ~/.codex/sessions/
-
-# Hermes Agent SessionDB - Hermes 기록도 가져올 때만
-# 권장: OLD_HOST에서 Hermes/gateway/agent 프로세스를 먼저 멈춘 뒤 SQLite sidecar까지 함께 복사
-mkdir -p ~/.hermes
-rsync -a OLD_HOST:'~/.hermes/state.db*' ~/.hermes/
-```
-
-Hermes를 멈출 수 없는 운영 서버라면, `state.db` 파일을 직접 복사하는 대신 OLD_HOST에서 SQLite `.backup`으로 일관된 스냅샷을 만든 뒤 가져오세요.
-
-```bash
-ssh OLD_HOST 'sqlite3 ~/.hermes/state.db ".backup /tmp/hermes-state.db.backup"'
-mkdir -p ~/.hermes
-rsync -a OLD_HOST:/tmp/hermes-state.db.backup ~/.hermes/state.db
-```
-
-이미 처리된 CML 저장소를 그대로 옮기고 싶다면, 이전/새 서버의 관련 agent, dashboard, semantic daemon/worker 등 모든 CML writer를 멈춘 뒤 아래처럼 복사할 수도 있습니다. 단, 재현성과 모델/버전 migration을 위해서는 위의 원본 기록 re-ingest 방식을 우선 권장합니다.
-
-```bash
-mkdir -p ~/.claude-code
-rsync -a OLD_HOST:~/.claude-code/memory/ ~/.claude-code/memory/
-```
-
-### 3) 프로젝트별로 read-only 검증 후 import
-
-프로젝트 메모리는 프로젝트 경로 기준으로 분리됩니다. 새 서버의 실제 repo 경로를 `PROJECT`에 넣고, 필요한 importer만 실행하세요.
-
-중요: Codex/Hermes/Claude Code 원본 세션의 project filter는 **대화가 생성될 당시의 절대 경로**를 기준으로 매칭합니다. 새 서버에서도 repo 절대 경로가 이전 서버와 같으면 아래 project import를 그대로 쓰면 됩니다.
-
-```bash
-export PROJECT=/path/to/your-project
-cd "$PROJECT"
-
-# Claude Code 기록: import 가능한 세션 확인 후 프로젝트 메모리로 적재
-claude-memory-layer list --project "$PROJECT"
-claude-memory-layer import --project "$PROJECT" --verbose
-
-# Codex 기록: 먼저 읽기 전용 리포트로 확인한 뒤 명시적으로 import
-claude-memory-layer codex validate --project "$PROJECT" --format markdown
-claude-memory-layer codex import --project "$PROJECT" --verbose
-
-# Hermes 기록: 먼저 읽기 전용 리포트로 확인한 뒤 명시적으로 import
-claude-memory-layer hermes validate --project "$PROJECT" --format markdown
-claude-memory-layer hermes import --project "$PROJECT" --verbose
-
-# pending embedding이 남아 있으면 수동 처리
-claude-memory-layer process --project "$PROJECT"
-```
-
-이전 서버와 새 서버의 repo 절대 경로가 다르면, `OLD_PROJECT`로 원본 세션을 찾고 특정 session 파일/id를 새 프로젝트 저장소(`NEW_PROJECT`)로 가져오세요.
-
-```bash
-export OLD_PROJECT=/old/server/path/to/your-project
-export NEW_PROJECT=/path/to/your-project
-cd "$NEW_PROJECT"
-
-# Claude Code: list 출력의 JSONL session file path를 확인해서 사용
-claude-memory-layer list --project "$OLD_PROJECT"
-claude-memory-layer import --project "$NEW_PROJECT" --session /path/to/claude-session.jsonl --verbose
-
-# Codex: validate 결과에서 session JSONL 파일을 확인한 뒤 import
-claude-memory-layer codex validate --project "$OLD_PROJECT" --format markdown
-claude-memory-layer codex import --project "$NEW_PROJECT" --session /path/to/codex-session.jsonl --verbose
-
-# Hermes: validate 결과에서 Hermes session id를 확인한 뒤 import
-claude-memory-layer hermes validate --project "$OLD_PROJECT" --format markdown
-claude-memory-layer hermes import --project "$NEW_PROJECT" --session 20260505_010203_abcd1234 --verbose
-
-claude-memory-layer process --project "$NEW_PROJECT"
-```
-
-주의:
-
-- `claude-memory-layer import --all`은 모든 Claude Code 세션을 전역 저장소로 가져옵니다. 프로젝트별 컨텍스트 품질이 중요하면 각 repo에서 `--project <path>` 방식으로 반복하는 것을 권장합니다.
-- `codex import --all`, `hermes import --all`도 의도적으로 전역 메모리를 만들 때만 사용하세요.
-- import/validate/list 결과에는 대화 내용 일부나 로컬 경로가 포함될 수 있습니다. 외부 공유 전에는 민감정보와 경로를 제거하고, Codex validate 리포트는 필요하면 `--anonymize-projects`를 함께 사용하세요.
-- import는 콘텐츠 해시 기반으로 중복을 건너뛰므로 여러 번 실행해도 같은 내용이 중복 저장되지 않습니다. 단, `--force`는 기존 import 이벤트를 지우고 재적재하므로 신중히 사용하세요.
-
-### 4) 검증
-
-```bash
-export VERIFY_PROJECT=/path/to/your-project  # 위에서 쓴 PROJECT 또는 NEW_PROJECT
-claude-memory-layer stats --project "$VERIFY_PROJECT"
-claude-memory-layer search "최근에 하던 작업" --project "$VERIFY_PROJECT" --top-k 5
-claude-memory-layer dashboard --no-open --port 37777
-# 다른 터미널에서: curl http://localhost:37777/api/health
-
-# 프로젝트 저장소 분리 상태를 aggregate-only 리포트로 점검
-claude-memory-layer project scope-audit --days 7
-```
-
-### 5) MCP/다른 agent에 연결
-
-Claude Desktop은 CLI로 자동 등록할 수 있습니다. 기본값으로 지금 실행 중인 node와 이 설치본의 MCP 진입점(`dist/mcp/index.js`) 절대 경로를 기록하므로, GUI 앱의 `PATH`나 nvm 구버전 설치에 영향을 받지 않습니다.
-
-```bash
-claude-memory-layer mcp install
-# Claude Desktop 재시작
-```
-
-`claude-memory-layer doctor`는 Claude Code(`~/.claude.json`), Claude Desktop, Codex(`~/.codex/config.toml`) 설정에 적힌 MCP command가 지금 CLI와 같은 설치본을 가리키는지 읽기 전용으로 확인하고, PATH 이름이거나 다른 설치를 가리키면 고치는 명령을 함께 보여 줍니다.
-
-Codex/Hermes 등 MCP client에도 전역 설치된 stdio binary를 등록하면 됩니다.
-
-```bash
-# Codex 예시
-codex mcp add claude-memory-layer -- claude-memory-layer-mcp
-
-# Hermes 예시
-hermes mcp add claude-memory-layer --command claude-memory-layer-mcp
-```
-
-MCP client가 환경에 따라 PATH를 못 찾으면 `command -v claude-memory-layer-mcp`로 절대 경로를 확인해서 command에 넣으세요.
-
-MCP 서버는 client의 stdio가 닫히거나 부모 프로세스가 사라지면 자원을 정리하고 종료합니다. 연결은 유지됐지만 호출이 없을 때는 기본 10분 후 embedding 모델/native 자원을 해제하며, 다음 호출에서 자동으로 다시 준비합니다. 필요하면 `CLAUDE_MEMORY_MCP_IDLE_RELEASE_MS`를 60000~86400000ms 범위에서 지정할 수 있습니다.
-
----
+After that the hooks work on their own. SessionStart loads project context, UserPromptSubmit searches related memories for each prompt, and UserPromptSubmit, PostToolUse, Stop and SessionEnd store what happened.
 
 ## Features
 
-### Core Features
+- **Automatic capture and recall** in Claude Code through five lifecycle hooks, with one store per project.
+- **Hybrid retrieval**: keyword and semantic search, progressive disclosure (`search --disclosure`, then `expand` and `source`), and `[mem:…]` citations that MCP tools resolve back to the source event.
+- **History import** for Claude Code, Codex and Hermes sessions, with a read-only validation report before any Codex or Hermes import.
+- **MCP server** (`claude-memory-layer-mcp`) with a context pack for starting work, a project timeline and privacy-filtered source refs, plus tool profiles and a read-only mode.
+- **Memory operations**: facets, actions, frontier, checkpoints, retention audit, graph query and procedural lessons, so the next task can be resumed from memory.
+- **Perspective memory**: actor cards and observer→observed observations for multi-agent work.
+- **Local dashboard**: event browser, search, retrieval traces and vector health. It binds to localhost by default and takes an optional password.
+- **Vector outbox**: SQLite writes and vector jobs are queued in one transaction, with worker locks and stuck-job recovery.
+- **Optional extras**: Mongo sync between servers, Endless Mode, and a read-only DART/FRED/Finnhub market-context tool.
 
-- **Project-scoped Conversation Memory**: Claude Code, Codex, Hermes의 user/assistant turn을 프로젝트별 SQLite store에 저장
-- **Hybrid Retrieval**: keyword/semantic/auto 전략, progressive disclosure, source/citation drill-down
-- **MCP Context Navigator**: 작업 시작용 compact context pack + recent project timeline + privacy-safe source refs
-- **Memory Operations**: facets, actions, frontier, checkpoints, retention audit, graph query, procedural lessons
-- **Perspective Memory**: actor list, actor card, observer→observed observations, contradiction/derived lanes
-- **Vector Outbox V2**: transactional enqueue, versioned vector upsert, worker lock, stuck recovery, aggregate health
-- **Dashboard**: localhost dashboard, retrieval trace, aggregate-only strategy/context-pack telemetry, Vector Health, Perspective Memory aggregate panels
-- **External Context**: DART/FRED/Finnhub read-only market context snapshot for research/analysis workflows
+See the [CLI reference](docs/CLI.md) and [how it works](docs/HOW_IT_WORKS.md).
 
-### Advanced Features
+## Codex, Hermes and other MCP clients
 
-- **Citations System**: 검색 결과를 `[mem:abc123]` 형태로 추적하고 `source`/`mem-source-ref`로 근거 확인
-- **Source Neighbor Expansion**: `mem-source-ref(includeNeighbors=true, neighborWindow=1..5)`로 MemPalace식 hit 주변 세션 이벤트를 privacy-safe preview로 함께 확인
-- **Progressive Disclosure**: index → timeline → details 순서로 필요한 만큼만 확장해 토큰 비용 절감
-- **Codex/Hermes Importers**: read-only validate/replay와 explicit import 지원; Codex는 사용자가 설치한 lifecycle hook을 통한 프로젝트별 자동 import도 지원
-- **Perspective Query Agent**: 관점별 observation + raw memory를 읽기 전용으로 조합하고 source refs를 유지
-- **Governance Audit**: facet/action/checkpoint/perspective mutation은 actor/evidence metadata와 함께 기록
-- **Privacy Guardrails**: `<private>` 태그, credential/path redaction, aggregate-only dashboard/API/CLI 출력
-- **Append-only Markdown Mirror**: 선택적으로 저장 이벤트를 `memory/<namespace>/.../YYYY-MM-DD.md`에 append
-- **Mongo Sync**: 멀티 서버 협업을 위한 선택적 이벤트 push/pull sync
-- **Endless Mode / Shared Memory**: 세션 경계 없는 연속 기억 및 공유 store 실험 기능
+**Codex.** `claude-memory-layer codex hooks install` adds SessionStart, UserPromptSubmit and SessionEnd hooks to `~/.codex/hooks.json`. After you restart Codex and trust them in `/hooks`, Codex receives project memory at session start and for each prompt, and finished sessions are imported automatically. Existing Codex history is imported with `codex validate` (read-only report) and then `codex import`. See [docs/CODEX_AND_HERMES.md](docs/CODEX_AND_HERMES.md).
 
-### 현재 feature status
+**Hermes.** Hermes history in `~/.hermes/state.db` is imported explicitly: `hermes validate` writes a read-only report, then `hermes import` stores the user and assistant turns in project memory. See [docs/CODEX_AND_HERMES.md](docs/CODEX_AND_HERMES.md#hermes).
 
-| 영역 | 상태 | 비고 |
-|------|------|------|
-| Claude Code hooks / CLI | Stable | `install`, `search`, `import`, `stats`, `dashboard`, `process` |
-| SQLite event store / project registry | Stable | 프로젝트별 canonical source of truth, WAL 기반 동시 읽기/쓰기 |
-| LanceDB vector index / Embedder | Stable accelerator | 격리된 `@huggingface/transformers` backend + security-pinned `sharp`, versioned vector tables |
-| Vector Outbox V2 | Implemented | transactional enqueue, worker lock, stale recovery, `vector-status`, dashboard Vector Health |
-| Progressive disclosure / retrieval traces | Implemented | `search --disclosure`, `expand`, `source`, score breakdown, privacy-safe lanes, aggregate-only strategy/context-pack telemetry |
-| MCP server | Implemented | package bin `claude-memory-layer-mcp`, project-aware read tools + audited operation tools |
-| Codex/Hermes session ingestion | Implemented | validate/replay는 read-only, explicit import 지원; Codex는 opt-in SessionStart/UserPromptSubmit 조회와 SessionEnd 자동 import 지원 |
-| Memory Operations layer | Implemented | facets/actions/frontier/checkpoints/retention/graph/lessons |
-| Perspective Memory | Implemented P0/P1 | actors, actor cards, perspective observations, context-pack lanes, aggregate dashboard |
-| Dashboard | Implemented | local-only default bind, optional password, vector/perspective/trace panels |
-| External Market Context | Implemented | DART/FRED/Finnhub read-only snapshot + MCP tool |
-| Mongo sync / Endless mode / shared memory | Experimental | 고급/운영 옵션으로 취급 |
-| Codify-lite (코드 구조 앵커링) | Implemented, opt-in | `operations.json`으로 활성화, 아래 참고 |
-| Core memory blocks / entity supersede / temporal graph | Implemented | MCP 도구로 상시 사용 가능 (`mem-core-block-*`, `mem-entity-supersede`, `mem-graph-query asOf`) |
+**MCP clients.** `claude-memory-layer mcp install` registers the MCP server in Claude Desktop. For Codex, Hermes and other clients, register the `claude-memory-layer-mcp` stdio binary, for example `codex mcp add claude-memory-layer -- claude-memory-layer-mcp`. Tools, profiles and the read-only mode are described in [docs/MCP.md](docs/MCP.md).
 
-## 선택 기능 활성화 (operations.json)
+## Configuration
 
-검색 랭킹에 영향을 주는 기능은 기본적으로 꺼져 있고(옵트인), `~/.claude-code/memory/operations.json` 파일로 켭니다 (v2.2.0+):
+Features that change search ranking or collect data in the background are opt-in and are turned on in one machine-wide file. For example, codify-lite links memories to the files a session touches:
 
 ```bash
 mkdir -p ~/.claude-code/memory
-cat > ~/.claude-code/memory/operations.json <<'EOF'
-{
-  "enabled": true,
-  "codifyLite": { "enabled": true }
-}
-EOF
+cat > ~/.claude-code/memory/operations.json <<'JSON'
+{ "enabled": true, "codifyLite": { "enabled": true } }
+JSON
 ```
 
-동작 방식:
+Hooks pick it up in the next session. Recall thresholds, retrieval mode, LLM summary/lesson settings and other environment variables are listed in [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 
-- **적용 범위**: 머신 전역 — 이 파일 하나로 해당 머신의 모든 프로젝트에 적용됩니다.
-- **반영 시점**: 훅은 세션마다 새 프로세스라 다음 세션부터 바로 적용됩니다. MCP 서버·semantic daemon 같은 장수 프로세스는 재시작해야 반영됩니다.
-- **끄기**: 해당 플래그를 `false`로 바꾸거나 파일을 삭제하면 됩니다.
-- **안전장치**: 파일이 없거나 JSON이 깨졌거나 스키마에 맞지 않으면 조용히 전부-꺼짐 기본값으로 동작합니다 (세션 시작을 절대 실패시키지 않음).
-- **경로 변경**: `CLAUDE_MEMORY_OPERATIONS_CONFIG_PATH` 환경변수로 다른 파일을 지정할 수 있습니다 (주로 테스트·격리용).
+## Troubleshooting
 
-켤 수 있는 플래그 (전체 스키마는 `MemoryOperationsConfigSchema` 참고):
+- Run `claude-memory-layer doctor` first. It checks Node version, the embedding backend, duplicate installs on `PATH`, hooks, MCP client configs and store write access. `doctor --fix` repairs the embedding backend when that is safe.
+- `npm install` fails with `CUDA 11 binaries are not supported by this script yet`: see [CUDA 11 troubleshooting](docs/INSTALL.md#troubleshooting-cuda-11-and-onnxruntime-node).
+- Context appears twice: the hooks are registered by both `install` and the plugin. Remove one (see [Install](#install-in-60-seconds)).
+- Sessions from before you installed are not in memory: run `claude-memory-layer import` in that project to load them.
 
-| 플래그 | 효과 | 권장 |
-|--------|------|------|
-| `codifyLite.enabled` | 파일을 만지는 도구 호출마다 `source_file` 엔티티/`touched_in` 엣지를 축적하고, 현재 세션이 만지는 파일과 연결된 과거 메모리를 검색에 올리는 session-file 레인을 켭니다 | 켜기 권장 |
-| `graphExpansion.enabled` | 쿼리에서 추출한 엔티티 기준 그래프 확장 검색 레인 | 랭킹 영향 미검증, 기본 유지 |
-| `retention.enabled` / `lessons.enabled` / `perspectiveMemory.*` | retention audit, lesson, perspective memory 하위 기능 | 필요 시 |
-
-참고: 코어 메모리 블록·`mem-entity-supersede`·temporal graph 조회는 플래그와 무관하게 항상 사용 가능합니다. 이 플래그들은 자동 수집·검색 랭킹처럼 "가만히 있어도 동작이 바뀌는" 부분만 게이트합니다.
-
-## 설치 방법
-
-### 1. 의존성 설치
+## Uninstall
 
 ```bash
-cd claude-memory-layer
-npm install
+claude-memory-layer uninstall                # or: claude plugin uninstall memory-layer@claude-memory-layer
+claude-memory-layer codex hooks uninstall    # if you installed the Codex hooks
+claude-memory-layer maintenance uninstall    # if you installed scheduled maintenance
+npm uninstall -g claude-memory-layer
 ```
 
-### 2. 빌드
+These commands remove only hooks and scheduler definitions. Your memory stays in `~/.claude-code/memory/` until you delete that directory.
+
+## Privacy and security
+
+- Memory is stored unencrypted on your machine. Nothing reports usage or errors to a remote service.
+- **Some features do send data off the machine.** LLM session summaries are **on by default**, and so is LLM lesson extraction when the `mem-lesson-candidates` MCP tool is called. Both pass conversation content to the local `claude` (or `codex`) CLI, which sends it to its provider under your account. Use `CLAUDE_MEMORY_SUMMARY_MODE=rule` for rule-based summaries and `CLAUDE_MEMORY_LESSON_MODE=off` to stop lesson extraction. Dashboard chat, Mongo sync, intent rewriting and the market-context tool also send data, but only when you use them.
+- Before storing, the hooks replace `<private>…</private>` blocks with `[PRIVATE]` in prompts, responses and tool output, and mask credential patterns as `[REDACTED]`. The filters are pattern-based. Tool input and tool stderr are not covered by `<private>` tags.
+- The dashboard binds to localhost by default. Without a password its API has no authentication, so set `--password` before binding to `0.0.0.0`.
+
+[SECURITY.md](SECURITY.md) has the full list of what leaves the machine, the masking table and how to report a vulnerability.
+
+## Documentation
+
+| Document | Contents |
+|---|---|
+| [docs/INSTALL.md](docs/INSTALL.md) | Install options, plugin vs `install`, embedding model, maintenance, CUDA 11 troubleshooting |
+| [docs/CLI.md](docs/CLI.md) | CLI commands with examples |
+| [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | Project scope and `.claude-memory-root`, `operations.json` feature flags, environment variables |
+| [docs/IMPORT_AND_MIGRATION.md](docs/IMPORT_AND_MIGRATION.md) | Importing history, moving to a new server |
+| [docs/CODEX_AND_HERMES.md](docs/CODEX_AND_HERMES.md) | Codex lifecycle hooks, Codex and Hermes import |
+| [docs/MCP.md](docs/MCP.md) | MCP setup, tool list, read-only mode, lesson extraction settings |
+| [docs/MCP_TOOL_PROFILES.md](docs/MCP_TOOL_PROFILES.md) | MCP tool profiles |
+| [docs/DASHBOARD.md](docs/DASHBOARD.md) | Web dashboard and health endpoints |
+| [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md) | Architecture, storage and retrieval flow, citations, Endless Mode |
+| [docs/MONGO_SYNC.md](docs/MONGO_SYNC.md) | Optional multi-server sync through MongoDB |
+| [docs/EXTERNAL_MARKET_CONTEXT.md](docs/EXTERNAL_MARKET_CONTEXT.md) | Read-only DART/FRED/Finnhub market context |
+| [docs/OPERATIONS.md](docs/OPERATIONS.md) | Operations runbook |
+| [SECURITY.md](SECURITY.md) | Threat model, data that leaves the machine, vulnerability reports (Korean) |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Development setup, checks, PR and release flow (Korean) |
+| [CHANGELOG.md](CHANGELOG.md) | Release notes |
+
+## Development
 
 ```bash
+npm ci
 npm run build
+npm run verify              # typecheck + lint + test
+npm run check:architecture  # import boundary check
 ```
 
-### 3. Claude Code에 플러그인 등록
-
-Claude Code hook 설정은 CLI가 등록합니다:
-
-```bash
-npx claude-memory-layer install
-```
-
-> 주의: `install` / `uninstall`은 `~/.claude/settings.json`을 수정합니다. 자동 테스트나 임의 실행 대신, 실제 사용자가 설치/해제를 원할 때만 실행하세요.
-
-## 사용 방법
-
-### 자동 동작 (Hooks)
-
-플러그인은 Claude Code 세션에 자동으로 연결되어 동작합니다:
-
-| Hook | 동작 |
-|------|------|
-| **SessionStart** | 세션 시작 시 프로젝트 관련 컨텍스트 로드 |
-| **UserPromptSubmit** | 프롬프트 입력 시 관련 기억 검색 및 저장 |
-| **Stop** | AI 응답 완료 시 응답 내용 저장 |
-| **SessionEnd** | 세션 종료 시 요약 생성 및 저장 |
-
-### Slash 명령어
-
-Claude Code 내에서 사용할 수 있는 명령어:
-
-```bash
-# 메모리 검색 - 관련 기억 찾기
-/memory-search "authentication 구현 방법"
-
-# 대화 기록 보기
-/memory-history
-/memory-history --limit 50
-/memory-history --session <session-id>
-
-# 통계 확인
-/memory-stats
-
-# 기존 대화 기록 임포트
-/memory-import                            # 현재 프로젝트
-/memory-import --all                      # 모든 프로젝트
-/memory-import --project /path/to/project # 특정 프로젝트
-
-# 임포트 가능한 세션 목록
-/memory-list
-
-# 메모리 삭제
-/memory-forget --session <id> --confirm
-```
-
-### 기존 메모리 정리 Import (구조화)
-
-레거시 markdown 메모리를 읽어서 구조화 경로로 재저장(import)할 수 있습니다.
-
-```bash
-# 미리보기(실제 저장 없음)
-claude-memory-layer organize-import /path/to/legacy-memory --dry-run
-
-# 실제 import
-claude-memory-layer organize-import /path/to/legacy-memory --project /path/to/project
-
-# 일부만 import
-claude-memory-layer organize-import /path/to/legacy-memory --limit 100
-
-# source에 markdown이 없으면 자동 bootstrap(코드+git 분석)
-claude-memory-layer organize-import /path/to/empty-dir --project /path/to/project
-
-# bootstrap 강제 실행
-claude-memory-layer organize-import /path/to/memory --force-bootstrap --repo /path/to/project
-
-# 자동 bootstrap 비활성화
-claude-memory-layer organize-import /path/to/empty-dir --no-bootstrap-if-empty
-
-# markdown이 없는 초기 상태면 bootstrap 생성 + import
-claude-memory-layer organize-import /path/to/empty-dir --bootstrap --repo /path/to/codebase
-
-# bootstrap 강제 재생성 (기존 markdown 있어도)
-claude-memory-layer organize-import /path/to/legacy-memory --force-bootstrap --repo /path/to/codebase --out /path/to/legacy-memory/bootstrap-kb
-
-# 증분 bootstrap (기본값): 이전 manifest를 기준으로 변경분 중심 업데이트
-claude-memory-layer organize-import /path/to/legacy-memory --bootstrap --repo /path/to/codebase --incremental
-
-# 전체 재생성 bootstrap
-claude-memory-layer organize-import /path/to/legacy-memory --bootstrap --repo /path/to/codebase --no-incremental
-```
-
-### CLI 명령어
-
-전역 설치 후에는 `claude-memory-layer`를 그대로 쓰고, 로컬 checkout에서는 `npx claude-memory-layer` 또는 `node dist/cli/index.js`를 사용할 수 있습니다.
-
-```bash
-# 메모리 검색 / progressive disclosure
-claude-memory-layer search "React 컴포넌트 패턴" --top-k 10
-claude-memory-layer search "API 에러 처리" --disclosure
-claude-memory-layer expand mem:abc123
-claude-memory-layer source mem:abc123
-
-# 대화 기록 / 통계
-claude-memory-layer history --limit 50 --type user_prompt
-claude-memory-layer stats --project /path/to/project
-
-# Claude Code 세션 import
-claude-memory-layer list --project /path/to/project
-claude-memory-layer import --project /path/to/project --verbose
-
-# Codex/Hermes 세션은 read-only 검증 후 명시적으로 import
-claude-memory-layer codex validate --project /path/to/project --format markdown --anonymize-projects
-claude-memory-layer codex import --project /path/to/project --verbose
-claude-memory-layer hermes validate --project /path/to/project --format markdown
-claude-memory-layer hermes import --project /path/to/project --verbose
-
-# 임베딩/벡터 outbox 처리와 상태 점검
-claude-memory-layer process --project /path/to/project
-claude-memory-layer process --project /path/to/project --dry-run-recovery
-claude-memory-layer vector-status --project /path/to/project
-
-# MCP/semantic daemon의 aggregate-only 런타임 리소스 상태
-claude-memory-layer runtime-status
-claude-memory-layer runtime-status --json
-
-# 머신 전체 프로젝트 저장소의 bounded maintenance
-claude-memory-layer maintenance run
-claude-memory-layer maintenance run --min-free-gb 10
-claude-memory-layer maintenance install --interval 300
-claude-memory-layer maintenance status
-claude-memory-layer maintenance uninstall
-
-# registry/canonical store 분리 상태의 aggregate-only 감사
-claude-memory-layer project scope-audit --days 7
-claude-memory-layer project scope-audit --days 7 --json
-
-# Perspective Memory actor/session membership backfill
-claude-memory-layer actors repair --project /path/to/project --dry-run
-claude-memory-layer actors repair --project /path/to/project --apply
-
-# Memory Operations
-claude-memory-layer facet query --project /path/to/project --dimension workflow
-claude-memory-layer facet tag --project /path/to/project --target-type event --target-id <id> --dimension workflow --value release --actor <actor> --apply
-claude-memory-layer action list --project /path/to/project
-claude-memory-layer frontier --project /path/to/project --limit 20
-claude-memory-layer checkpoint list --project /path/to/project
-claude-memory-layer retention audit --project /path/to/project
-
-# Dashboard
-claude-memory-layer dashboard --no-open
-claude-memory-layer dashboard --bind localhost --port 37777 --password "<local-password>" --no-open
-
-# External read-only market/company context
-claude-memory-layer market-context --company 삼성전자 --dart-corp-code 00126380 --symbol 005930.KS --json
-```
-
-MongoDB 동기화는 선택 기능입니다. 여러 서버에서 같은 프로젝트를 개발할 때, 각 서버의 로컬 SQLite 이벤트를 하나의 MongoDB로 모아 push/pull할 수 있습니다. Pull된 이벤트를 바로 semantic search/context-pack에서 쓰고 싶다면 `--process-after-sync`를 함께 켜서 새 이벤트가 내려온 뒤 pending embedding/vector outbox를 처리하세요.
-
-```bash
-export CLAUDE_MEMORY_MONGO_URI="mongodb://USER:***@HOST:PORT/"
-export CLAUDE_MEMORY_MONGO_DB="claude_memory_layer"
-export CLAUDE_MEMORY_MONGO_PROJECT="my-project"
-claude-memory-layer mongo-sync
-claude-memory-layer mongo-sync --watch --interval 30000
-claude-memory-layer mongo-sync --watch --interval 30000 --process-after-sync --process-interval 120000
-```
-
-`--process-after-sync`는 pull된 이벤트가 있을 때만 실행되며, `--process-interval` 동안 debounce되어 매 sync tick마다 불필요하게 임베딩을 재처리하지 않습니다. 내부적으로 project-scoped `vector-worker.lock`을 사용하므로 별도 `process` worker가 이미 실행 중이면 skip합니다.
-
-서버마다 프로젝트 경로가 달라도 됩니다. Pull된 이벤트는 이 서버의 프로젝트(`--project` 경로의 hash)로 다시 귀속되어 project-scoped 검색에 나오며, 원래 서버의 project scope와 hostname은 `metadata.mongoSync`에 남습니다. 같은 프로젝트를 모으려면 모든 서버에서 `--mongo-project`(또는 `CLAUDE_MEMORY_MONGO_PROJECT`)를 같은 값으로 지정하세요. 기본값은 경로의 마지막 폴더 이름입니다.
-
-Pull 커서는 push한 저장소(origin)마다 따로 둡니다. 각 저장소는 처음 동기화할 때 만든 origin id를 `sync_positions`에 머신 식별값(OS machine id의 해시)과 함께 보관하고, push하는 문서마다 그 origin 안에서의 순번(`originSeq`)을 붙입니다. Pull은 origin별로 마지막에 읽은 `originSeq` 다음부터 읽고, 자기 origin은 건너뜁니다. 한 origin의 예약과 삽입은 저장소 단위 락(`mongo-sync-push.lock`) 아래에서 차례로 일어나므로, push가 오래 멈추거나 서버 간 시계가 어긋나도 커서 아래에 문서가 끼어들지 않습니다. Pull로 받은 이벤트는 다시 push하지 않습니다. 저장소 폴더를 다른 머신으로 복사하거나 백업에서 복원하면, 그 머신에서는 새 origin id를 만들어 원래 저장소와 서로 계속 주고받습니다.
-
-이전 버전이 push한 문서에는 `originSeq`가 없습니다. 이런 문서는 예전처럼 프로젝트 전체 seq 커서로 읽고, 직전 pull보다 30분 앞부터 들어온 문서를 커서 아래까지 다시 읽습니다. 이 경로에서는 서버 간 시계 차이와 push 지연이 30분 안이어야 합니다. 그래서 모든 서버를 새 버전으로 올리는 것이 좋습니다. 새 버전으로 처음 pull할 때 프로젝트 키마다 한 번 전체를 다시 읽어, 예전 커서가 놓친 문서를 채웁니다(이미 가진 이벤트는 건너뜀). `claude-memory-layer mongo-sync audit`로 놓친 문서가 남았는지 확인할 수 있습니다.
-
-### memU-inspired Retrieval 사용 예시
-
-아래 예시는 SDK/서비스 레벨에서 `retrieveMemories()` 호출 시 적용되는 옵션입니다.
-
-```ts
-import { getMemoryServiceForProject } from './src/services/memory-service.js';
-
-const memory = getMemoryServiceForProject('/path/to/project');
-
-// 1) Fast: 키워드 기반 빠른 검색
-const fast = await memory.retrieveMemories('브리핑 포맷', {
-  strategy: 'fast',
-  topK: 5,
-  minScore: 0.6
-});
-
-// 2) Deep: 벡터 검색 + 키워드 오버랩 재정렬
-const deep = await memory.retrieveMemories('브리핑 포맷', {
-  strategy: 'deep',
-  topK: 10,
-  rerankWithKeyword: true
-});
-
-// 3) Scoped filter: 세션/타입/계층형 메타데이터로 범위 제한
-const scoped = await memory.retrieveMemories('아침 브리핑', {
-  strategy: 'deep',
-  scope: {
-    sessionIdPrefix: 'agent:main:',
-    eventTypes: ['user_prompt', 'agent_response'],
-    canonicalKeyPrefix: 'pref/briefing',
-    contentIncludes: ['아침'],
-    metadata: {
-      'scope.project.id': 'alpha'
-    }
-  }
-});
-```
-
-팁:
-- `strategy: 'auto'`는 기본적으로 fallback 체인을 사용해 결과를 찾습니다.
-- 저지연 응답이 중요하면 `fast`, 정확도 우선이면 `deep`를 권장합니다.
-- 프로젝트 서비스(`getMemoryServiceForProject`) 기준 검색 스코프는 기본적으로 project-aware(엄격 모드)로 동작합니다.
-
-## Privacy 기능
-
-### Private Tags
-
-민감한 정보를 메모리에서 제외하려면 `<private>` 태그를 사용합니다:
-
-```markdown
-이 부분은 저장됩니다.
-
-<private>
-API_KEY=sk-xxxx
-SECRET_TOKEN=abc123
-이 내용은 메모리에 저장되지 않습니다.
-</private>
-
-이 부분도 저장됩니다.
-```
-
-저장 결과:
-```
-이 부분은 저장됩니다.
-[PRIVATE]
-이 부분도 저장됩니다.
-```
-
-### 자동 필터링
-
-다음 패턴은 자동으로 마스킹됩니다:
-- `password`, `api_key`, `secret`, `token`
-- Bearer 토큰
-- Private Key 블록
-
-## Citations (인용 시스템)
-
-검색 결과에는 인용 ID가 포함됩니다:
-
-```
-🔍 Search Results:
-
-#1 [mem:a7Bc3x] (score: 0.94)
-   "SQLite/WAL을 사용하여 이벤트 소싱 패턴을..."
-   📅 2026-01-30 | 🔗 Session abc123
-```
-
-원본 확인:
-```bash
-claude-memory-layer source mem:a7Bc3x
-```
-
-## Endless Mode
-
-세션 경계 없이 연속적인 메모리 스트림을 유지합니다:
-
-```bash
-# Endless Mode 활성화
-claude-memory-layer endless enable
-
-# 상태 확인
-claude-memory-layer endless status
-
-# 출력 예시:
-# Mode: Endless
-# Working Set: 47 events (last 18 hours)
-# Continuity Score: 0.85 (seamless)
-# Consolidated: 23 memories
-```
-
-### 모드 비교
-
-| 기존 세션 모드 | Endless Mode |
-|---------------|-------------|
-| 명확한 시작/끝 | 연속적 스트림 |
-| 세션별 요약 | 점진적 통합 |
-| 재시작 시 빈 상태 | 이전 컨텍스트 유지 |
-
-## MCP Desktop Integration
-
-> 현재 상태: MCP server implementation은 `src/extensions/mcp/`로 이동되어 있고,
-> `src/mcp/*`는 compatibility shim입니다. package bin으로
-> `claude-memory-layer-mcp`가 제공됩니다.
-
-Claude Desktop 설정은 CLI로 자동 등록할 수 있습니다:
-
-```bash
-claude-memory-layer mcp install
-# Config: ~/Library/Application Support/Claude/claude_desktop_config.json (macOS)
-```
-
-이 명령은 Claude Desktop config의 기존 값을 보존하면서 다음 MCP server entry를 추가/갱신합니다:
-
-```json
-{
-  "mcpServers": {
-    "claude-memory-layer": {
-      "command": "/absolute/path/to/node",
-      "args": ["/absolute/path/to/claude-memory-layer/dist/mcp/index.js"]
-    }
-  }
-}
-```
-
-`--command`를 주면 그 값을 그대로 기록합니다.
-
-옵션:
-
-```bash
-claude-memory-layer mcp install --dry-run
-claude-memory-layer mcp install --config-path /path/to/claude_desktop_config.json
-claude-memory-layer mcp install --server-name claude-memory-layer --command claude-memory-layer-mcp
-```
-
-설정 후 Claude Desktop을 재시작하면 MCP 서버가 로드됩니다. Codex/Hermes처럼 MCP client가 있는 다른 agent에는 로컬 checkout의 built server를 직접 등록할 수 있습니다:
-
-```bash
-# Codex
-codex mcp add claude-memory-layer -- node /path/to/claude-memory-layer/dist/mcp/index.js
-
-# Hermes
-hermes mcp add claude-memory-layer --command node --args /path/to/claude-memory-layer/dist/mcp/index.js
-```
-
-로컬 checkout에서 서버만 바로 테스트하려면 `npm run build` 후 다음처럼 직접 실행할 수도 있습니다:
-
-```bash
-node dist/mcp/index.js
-```
-
-MCP 서버는 stdio 종료·부모 프로세스 소실 시 함께 종료됩니다. 유휴 상태에서는 기본 10분 후 embedding 모델/native 자원을 반납하고 다음 도구 호출에서 다시 적재합니다. 유휴 해제 시간은 `CLAUDE_MEMORY_MCP_IDLE_RELEASE_MS`(60000~86400000ms)로 조정할 수 있습니다.
-
-MCP 도구 surface는 `CLAUDE_MEMORY_MCP_PROFILE`로 `core`, `operations`, `governance`, `experimental`, `all` 중 하나를 선택할 수 있습니다. 기본값 `all`은 기존 전체 도구 목록과 동작을 보존합니다. 작은 context/search 중심 surface가 필요하면 MCP server entry의 `env`에 `CLAUDE_MEMORY_MCP_PROFILE=core`를 설정하세요. 프로필별 범위, mutation 분류, 롤백 방법은 [`docs/MCP_TOOL_PROFILES.md`](docs/MCP_TOOL_PROFILES.md)를 참고하세요.
-
-쓰기 제한 샌드박스에서 조회할 때는 MCP server entry의 `env`에 `CLAUDE_MEMORY_MCP_READ_ONLY=1`을 설정할 수 있습니다. Happy가 자동 recall을 담당해 `CLAUDE_MEMORY_RECALL_OWNER=host`를 전달하는 native MCP도 이 모드를 사용합니다. 선택한 프로필에서 `mem-context-pack`, `mem-search`, `mem-timeline`, `mem-details`, `mem-project-timeline`, `mem-source-ref`, `mem-stats`, `mem-lesson-get`, `mem-lesson-list`, `external-market-context`만 노출하며, 그 외 도구와 명시적 freshness refresh는 `read_only_runtime` 오류로 거절합니다.
-
-이 모드의 메모리 조회는 임시 SQLite snapshot과 어휘 검색을 사용합니다. 의미 검색용 모델·vector 초기화, 자동 import, 조회 telemetry 기록을 수행하지 않으므로 의미 검색 품질과 usage 집계에 차이가 있습니다. `mem-stats`는 기존 vector index가 있으면 읽기 전용으로 개수를 조회합니다. `mem-context-pack`의 `refreshLatest=false`도 모델 초기화 없이 조회합니다. 원본 메모리 파일을 읽을 권한과 canonical memory 밖의 임시 디렉터리에 쓸 권한은 필요하며, 이 설정이 샌드박스 권한을 늘려주지는 않습니다. 동시 checkpoint 중 snapshot은 최신 데이터를 놓칠 수 있으므로 최신성이 필요하면 조회를 반복하거나 권한이 있는 writable runtime에서 import 후 조회하세요. 새 바이너리 설치 후에는 MCP 프로세스를 재시작해야 적용됩니다.
-
-### 제공되는 MCP 도구
-
-| 범주 | 도구 | 설명 |
-|------|------|------|
-| Search | `mem-search` | 프로젝트/세션 스코프 메모리 검색 |
-| Search | `mem-timeline` / `mem-details` | 검색 결과 주변 타임라인과 상세 내용 조회 |
-| Search | `mem-stats` | aggregate memory/vector/outbox 통계 |
-| Context | `mem-context-pack` | 작업 시작용 relevant memory + recent timeline + follow-up refs; privacy-safe query trace를 기록해 dashboard/replay usage 분석에 포함 |
-| Context | `mem-import-latest` | 최신 Claude/Codex/Hermes 세션을 bounded import 후 context-pack freshness 확보 |
-| Context | `mem-project-timeline` | 최근 프로젝트 메모리를 session/source/count/safe-preview로 요약 |
-| Context | `mem-source-ref` | `mem:`/`event:` ref를 redacted preview와 safe metadata로 해석; `includeNeighbors` + `neighborWindow`로 같은 세션의 전후 이벤트를 bounded/privacy-safe preview로 확장 |
-| Operations | `mem-facet-query` / `mem-facet-tag` | project-scoped facet 조회/태깅 |
-| Operations | `mem-action-list` / `mem-action-update` | 다음 작업/action 상태 조회·갱신 |
-| Operations | `mem-frontier` | blocked/next action frontier와 safe resume hints |
-| Operations | `mem-checkpoint-create` / `mem-checkpoint-list` | resumable action/session checkpoint 관리 |
-| Operations | `mem-retention-audit` | dry-run retention governance audit |
-| Operations | `mem-graph-query` | bounded graph expansion/query diagnostics |
-| Operations | `mem-lesson-list` | 저장된 procedural lesson 조회 |
-| Operations | `mem-lesson-candidates` | 반복 성공 워크플로우에서 아직 저장 안 된 lesson 후보 탐지 (LLM 추출, 그룹별 캐시) |
-| Operations | `mem-lesson-save` | 검토한 lesson을 curated lesson으로 저장 |
-| Perspective | `mem-actor-list` | project-scoped actor 목록 |
-| Perspective | `mem-actor-card-get` / `mem-actor-card-upsert` | observer→observed actor card 조회/갱신 |
-| Perspective | `mem-perspective-query` | observer→observed perspective observation 검색 |
-| Perspective | `mem-perspective-context` | actor card + perspective observations context bundle |
-| Perspective | `mem-perspective-observation-create` / `mem-perspective-observation-delete` | audited observation 생성/soft-delete |
-| External | `external-market-context` | DART/FRED/Finnhub read-only MarketContextSnapshot |
-
-대부분의 project-scoped 도구는 `projectPath`를 지원하거나 요구합니다. mutating 도구는 audit용 `actor`와 evidence/source refs를 요구하고, raw transcript/path/secret 출력은 피합니다.
-
-### LLM lesson 추출 설정
-
-`mem-lesson-candidates`는 반복 성공 패턴 그룹을 결정적으로 채굴한 뒤, 로컬에 로그인된 `claude`(또는 `codex`) CLI 서브프로세스로 lesson 텍스트(name/trigger/steps/failureModes)를 추출합니다. 별도 API 키가 필요 없고, 추출 결과는 후보 그룹별로 캐시되어 재조회·승격 시 동일 텍스트를 반환합니다. 트랜스크립트는 서브프로세스에 넘기기 전에 경로/자격증명 redaction을 거칩니다.
-
-| 환경변수 | 기본값 | 설명 |
-|------|------|------|
-| `CLAUDE_MEMORY_LESSON_MODE` | (켜짐) | `off`면 추출 비활성. 후보 그룹은 계속 채굴되지만 lesson 텍스트 없이 `extraction.skippedNoExtractor`로 보고됨 |
-| `CLAUDE_MEMORY_LESSON_PROVIDER` | `claude` | `codex` 선택 가능 |
-| `CLAUDE_MEMORY_LESSON_MODEL` | claude는 `claude-haiku-4-5-20251001`, codex는 CLI 자체 기본값 | 명시 설정 시 그대로 `--model`로 전달 |
-| `CLAUDE_MEMORY_LESSON_TIMEOUT_MS` | `120000` | 그룹당 추출 타임아웃 |
-
-호출당 신규(미캐시) 추출은 3그룹으로 제한됩니다. 남은 그룹은 응답의 `extraction` 통계와 `note`에 보고되며, 다시 호출하면 캐시된 그룹은 건너뛰고 이어서 추출합니다.
-
-예시 workflow:
-
-```text
-1. 새 작업 시작: mem-context-pack(projectPath, query)
-2. 최근 흐름 확인: mem-project-timeline(projectPath)
-3. 근거가 더 필요할 때: mem-source-ref(projectPath, ids=["mem:abc123"], includeNeighbors=true, neighborWindow=1)
-```
-
-이 workflow는 Hermes/Codex/Claude Code가 같은 project-scoped memory backend를 공유할 때 특히 유용합니다. `mem-source-ref`는 raw transcript를 그대로 덤프하지 않고 allowlisted metadata와 privacy-filtered preview만 반환합니다.
-
-## Web Viewer
-
-브라우저에서 메모리 대시보드를 확인할 수 있습니다:
-
-```bash
-# 웹 서버 시작
-claude-memory-layer dashboard
-
-# 브라우저에서 접속
-# http://localhost:37777
-```
-
-### 주요 기능
-- 실시간 이벤트 스트림과 세션/프로젝트별 탐색
-- 벡터/키워드 검색 인터페이스와 저장소 통계
-- Retrieval Trace: 질의 → 후보/채택 수 → 최종 context IDs, score breakdown(semantic/lexical/recency), lane debug
-- Vector Health: embedding/vector queue pending/processing/failed/stuck, vector count, recovery action 결과
-- Perspective Memory: actor/session membership, observer→observed graph, actor-card counts, observation/contradiction/source-evidence aggregate
-- Dashboard auth hardening: 기본 `localhost` bind, 명시적 `0.0.0.0`, 선택적 password gate
-- API errors/output은 aggregate 중심으로 렌더링하고 raw path, item id, error payload, memory content 노출을 피함
-
-## 기존 대화 기록 임포트
-
-이미 Claude Code를 사용해왔다면, 기존 대화 기록을 임포트하여 바로 활용할 수 있습니다:
-
-```bash
-# 1. 먼저 임포트 가능한 세션 확인
-npx claude-memory-layer list
-
-# 2. 현재 프로젝트의 모든 세션 임포트
-npx claude-memory-layer import
-
-# 3. 또는 모든 프로젝트의 세션 임포트
-npx claude-memory-layer import --all --verbose
-```
-
-### 임포트 결과 예시
-
-```
-📥 Importing all sessions from all projects
-
-⏳ Processing embeddings...
-
-✅ Import Complete
-
-Sessions processed: 15
-Total messages: 342
-Imported prompts: 156
-Imported responses: 186
-Skipped duplicates: 0
-Embeddings processed: 342
-```
-
-### Codex 세션 임포트
-
-Codex CLI 기록(`~/.codex/sessions`)은 기본적으로 read-only validate/replay로 먼저 확인하고, 명시적 import 명령으로 메모리에 저장할 수 있습니다:
-
-```bash
-# 읽기 전용 검증/리포트
-npx claude-memory-layer codex validate --project /path/to/project --format markdown
-
-# 현재 프로젝트 Codex 세션을 프로젝트별 메모리로 import
-cd /path/to/project
-npx claude-memory-layer codex import
-
-# 특정 세션만 import
-npx claude-memory-layer codex import --project /path/to/project --session /path/to/session.jsonl
-
-# 모든 Codex 세션 import (전역 저장소 사용; 필요할 때만)
-npx claude-memory-layer codex import --all --verbose
-```
-
-옵션: `--sessions-dir`, `--limit`, `--force`, `--no-process-embeddings`.
-
-#### Codex 자동 적재와 자동 컨텍스트 주입
-
-Codex lifecycle hook을 opt-in으로 설치하면 프로젝트별 자동 메모리를 사용할 수 있습니다.
-
-```bash
-# 최초 1회
-claude-memory-layer codex hooks install
-
-# Codex를 재시작하고 /hooks에서 정의를 검토·신뢰한 뒤 상태 확인
-claude-memory-layer codex hooks status --project /path/to/project
-
-# 제거 시 다른 Codex 훅은 보존되고 CML 훅만 제거됨
-claude-memory-layer codex hooks uninstall
-```
-
-- `SessionStart`: 해당 프로젝트의 core memory와 최근 작업 메모리 인덱스를 Codex에 주입합니다. 일반 메모리는 제목·짧은 요약·`mem:` source ref·세션/턴 위치만 제공하며, 새 세션뿐 아니라 resume/clear/compact에도 적용됩니다.
-- `UserPromptSubmit`: 질문마다 관련 메모리 인덱스를 검색합니다. Codex는 필요할 때만 `mem-source-ref`/`mem-details`로 원문을 확장하고, 실제로 사용한 경우에만 답변 끝에 `📎 Recalled memories: <title> ([mem:ID])`를 표시합니다.
-- `SessionEnd`: 완료된 현재 transcript 하나만 별도 worker에 전달해 프로젝트 저장소로 적재합니다. Codex 종료, 대화 archive/delete, 또는 열려 있지 않은 대화의 30분 유휴 종료 시 실행됩니다.
-- 자동 import는 콘텐츠 해시로 중복을 건너뛰며, embedding 계산은 hook 제한 시간 밖의 기존 vector worker가 처리합니다.
-- `codex hooks status --project <path>`는 해당 프로젝트의 마지막 자동 import 성공/실패 시각과 집계 결과를 보여줍니다. transcript 본문은 상태 파일에 기록하지 않습니다.
-- Codex transcript 형식은 Codex의 안정된 공개 API가 아니므로, `codex validate`와 importer 회귀 테스트를 함께 유지해야 합니다.
-
-### Hermes 세션 임포트
-
-Hermes Agent 기록(`~/.hermes/state.db`)도 원본 DB를 read-only validate/replay로 먼저 확인하고, 명시적 import 명령으로만 프로젝트별 메모리에 저장합니다. 기본 전략은 live sync가 아니라 **SessionDB → CML explicit derived import**입니다:
-
-```bash
-# 읽기 전용 검증/리포트
-npx claude-memory-layer hermes validate --project /path/to/project --format markdown
-
-# 현재 프로젝트 Hermes 세션을 프로젝트별 메모리로 import
-cd /path/to/project
-npx claude-memory-layer hermes import
-
-# 특정 Hermes session id만 import
-npx claude-memory-layer hermes import --project /path/to/project --session 20260505_010203_abcd1234
-
-# 모든 Hermes 세션 import (전역 저장소 사용; 필요할 때만)
-npx claude-memory-layer hermes import --all --verbose
-```
-
-옵션: `--state-db`, `--limit`, `--force`, `--no-process-embeddings`.
-
-Hermes import는 user/assistant turn만 저장하고 tool/system 메시지는 건너뜁니다. 검증 리포트에는 aggregate count만 포함되며 transcript 본문은 포함하지 않습니다.
-
-### 중복 처리
-
-임포트는 콘텐츠 해시 기반으로 중복을 자동 감지합니다. 여러 번 실행해도 같은 내용이 중복 저장되지 않습니다.
-
-## 동작 원리
-
-### 1. 메모리 저장
-
-```
-사용자 프롬프트 입력
-        ↓
-    EventStore에 저장 (SQLite/WAL, append-only)
-        ↓
-    Outbox에 임베딩 요청 등록
-        ↓
-    Vector Worker가 임베딩 생성
-        ↓
-    VectorStore에 저장 (LanceDB)
-```
-
-### 2. 메모리 검색
-
-```
-새 프롬프트 입력
-        ↓
-    임베딩 생성
-        ↓
-    VectorStore에서 유사 벡터 검색
-        ↓
-    AXIOMMIND Matcher로 신뢰도 계산
-        ↓
-    컨텍스트로 Claude에 제공
-```
-
-### 3. 메모리 승격 (Graduation)
-
-자주 참조되는 메모리는 더 높은 레벨로 승격됩니다:
-
-| Level | 이름 | 설명 | 승격 조건 |
-|-------|------|------|-----------|
-| L0 | EventStore | 원본 이벤트 | 기본 저장 |
-| L1 | Structured | 구조화된 패턴 | 3회 이상 접근 |
-| L2 | Candidates | 검증된 스키마 | 5회 이상, 다중 세션 참조 |
-| L3 | Verified | 교차 검증됨 | 높은 신뢰도 |
-| L4 | Active | 활성 지식 | 10회 이상, 3개 이상 세션 |
-
-## 매칭 신뢰도
-
-검색 결과는 신뢰도에 따라 분류됩니다:
-
-| 신뢰도 | 점수 | Gap | 동작 |
-|--------|------|-----|------|
-| **High** | ≥0.92 | ≥0.03 | 자동으로 컨텍스트에 포함 |
-| **Suggested** | ≥0.75 | <0.03 | 대안 제시 |
-| **None** | <0.75 | - | 매칭 없음 |
-
-## Architecture
-
-### System Overview
-
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│ Agent surfaces                                                       │
-│ Claude Code Hooks │ CLI │ Dashboard │ MCP Clients │ Codex/Hermes import │
-└───────────────────────────────┬──────────────────────────────────────┘
-                                │
-                                ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│ Memory Service / Runtime                                             │
-│ Retrieval Orchestrator │ Disclosure │ Operations │ Perspective Memory │
-│ Evidence/Privacy filters │ Governance audit │ Context-pack assembler │
-└───────────────────────────────┬──────────────────────────────────────┘
-                                │
-          ┌─────────────────────┼─────────────────────┐
-          ▼                     ▼                     ▼
-┌──────────────────┐   ┌──────────────────┐   ┌───────────────────────┐
-│ SQLite EventStore│   │ Operations tables│   │ External read-only ctx │
-│ events/sessions  │   │ facets/actions/  │   │ DART/FRED/Finnhub     │
-│ actor/perspective│   │ checkpoints/...  │   │                       │
-└─────────┬────────┘   └──────────────────┘   └───────────────────────┘
-          │ same transaction
-          ▼
-┌──────────────────┐      worker lock/recovery      ┌──────────────────┐
-│ Vector Outbox V2 │ ─────────────────────────────▶ │ LanceDB vectors  │
-│ itemKind/id/ver  │   versioned delete+add upsert  │ per item/version │
-└──────────────────┘                                └──────────────────┘
-```
-
-핵심 원칙은 SQLite가 canonical source of truth이고, LanceDB는 재생성 가능한 derived accelerator라는 점입니다. 모든 vector write는 outbox를 통해 idempotent하게 처리하며, MCP/dashboard/CLI 출력은 가능한 aggregate 또는 redacted preview만 제공합니다.
-
-### Entity-Edge Model (3-Layer)
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                        edges                                 │
-│  ┌──────────┐    evidence_of    ┌──────────┐               │
-│  │  Entry   │ ─────────────────▶│  Entity  │               │
-│  │ (Fact,   │                   │ (Task,   │               │
-│  │ Decision)│                   │ Artifact)│               │
-│  └──────────┘                   └──────────┘               │
-│       │                              │                       │
-│       │ derived_from                 │ blocked_by           │
-│       ▼                              ▼                       │
-│  ┌──────────┐                   ┌──────────┐               │
-│  │  Entry   │                   │  Entity  │               │
-│  └──────────┘                   └──────────┘               │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### Progressive Disclosure (토큰 효율화)
-
-```
-Layer 1: Search Index (~50-100 tokens/result)
-    │     { id, summary, score }
-    │
-    └──▶ Layer 2: Timeline Context (~200 tokens)
-              │     시간순 전후 맥락
-              │
-              └──▶ Layer 3: Full Details (~500-1000 tokens)
-                        선택된 항목만 전체 로드
-```
-
-### MCP Integration
-
-```
-┌─────────────────────┐         ┌─────────────────────┐
-│   Claude Desktop    │◀────────│ claude-memory-layer │
-│   (MCP Client)      │  stdio  │    (MCP Server)     │
-└─────────────────────┘         └──────────┬──────────┘
-                                           │
-                                           ▼
-                                ┌─────────────────────┐
-                                │   Shared Storage    │
-                                │  ~/.claude-code/    │
-                                └─────────────────────┘
-```
-
-## AXIOMMIND 7 원칙
-
-1. **Single Source of Truth**: SQLite/WAL EventStore가 유일한 진실의 원천
-2. **Append-Only**: 이벤트는 수정/삭제 없이 추가만
-3. **Idempotency**: dedupe_key로 중복 이벤트 감지
-4. **Evidence Alignment**: 주장이 실제 소스에 기반했는지 검증
-5. **Entity-Based Tasks**: canonical_key로 일관된 엔티티 식별
-6. **Vector Store Consistency**: SQLite outbox → LanceDB 단방향 흐름
-7. **Standard JSON**: 모든 데이터는 이식 가능한 JSON 형식
-
-## 저장 위치
-
-메모리는 기본적으로 다음 위치에 저장됩니다:
-
-```
-~/.claude-code/memory/
-├── projects/<hash>/events.sqlite  # 프로젝트별 이벤트 저장소 (primary)
-├── projects/<hash>/vectors/        # 프로젝트별 벡터 임베딩
-└── shared/                         # (옵션) 공유 지식 저장소
-```
-
-Claude Code 세션 기록 위치:
-
-```
-~/.claude/projects/<project-hash>/<session-id>.jsonl
-```
-
-## 개발
-
-```bash
-# 의존성 설치
-npm install
-
-# 빌드
-npm run build
-
-# 테스트
-npm test
-
-# 타입 체크
-npm run typecheck
-
-# 개발 모드 실행
-npm run dev
-```
-
-## 기술 스택
-
-- **SQLite / WAL**: 이벤트 저장소 (canonical append/read model)
-- **LanceDB**: 벡터 저장소 (derived acceleration index)
-- **@huggingface/transformers**: 로컬 임베딩 생성 (lazy import; Embedder는 `src/extensions/vector/`)
-- **Zod**: 런타임 타입 검증
-- **Commander**: CLI 인터페이스
-- **TypeScript**: 타입 안전한 코드
-- **Node.js + Hono**: HTTP 서버 / Web Viewer
-- **Hono**: 경량 라우터
-- **MCP SDK**: Claude Desktop 통합 (`claude-memory-layer-mcp` stdio server)
-
-## Specification Documents
-
-상세 설계 문서는 `specs/` 디렉토리에서 확인할 수 있습니다:
-
-| 문서 | 설명 |
-|------|------|
-| [memory-utilization-improvements/2026-08-31-audit](specs/memory-utilization-improvements/2026-08-31-audit/README.md) | 현재 컴퓨터 감사 기반 MCP read-only, scope, retrieval, vector, retention, telemetry 상세 spec |
-| [agentmemory-inspired-memory-operations](specs/agentmemory-inspired-memory-operations/spec.md) | facets/actions/frontier/checkpoints/retention/lessons 운영형 메모리 |
-| [honcho-inspired-peer-context-memory](specs/honcho-inspired-peer-context-memory/spec.md) | actor card / perspective observation / multi-agent 관점 메모리 |
-| [vector-outbox-v2](specs/vector-outbox-v2/spec.md) | Transactional Outbox, versioned vector upsert, worker recovery |
-| [mcp-desktop-integration](specs/mcp-desktop-integration/spec.md) | MCP 서버 통합 |
-| [progressive-disclosure](specs/progressive-disclosure/spec.md) | 토큰 효율화 검색 |
-| [citations-system](specs/citations-system/spec.md) | 메모리 인용 시스템 |
-| [private-tags](specs/private-tags/spec.md) | 프라이버시 태그 |
-| [entity-edge-model](specs/entity-edge-model/spec.md) | 3-Layer 데이터 모델 |
-| [task-entity-system](specs/task-entity-system/spec.md) | Task Entity 관리 |
-| [evidence-aligner-v2](specs/evidence-aligner-v2/spec.md) | 증거 정렬 시스템 |
-| [post-tool-use-hook](specs/post-tool-use-hook/spec.md) | 도구 사용 기록 |
-| [endless-mode](specs/endless-mode/spec.md) | 연속 세션 모드 |
-| [web-viewer-ui](specs/web-viewer-ui/spec.md) | 웹 대시보드 |
-
-## Roadmap / Current State
-
-### Completed / shipped
-
-- [x] SQLite/WAL Event Store + project registry
-- [x] LanceDB vector store + local embedding backend
-- [x] Claude Code hooks, CLI, dashboard
-- [x] History import for Claude Code, Codex, Hermes
-- [x] Progressive disclosure, citations, source refs, retrieval traces
-- [x] MCP server with project-aware context/search/stat tools
-- [x] Memory Operations layer: facets/actions/frontier/checkpoints/retention/graph/lessons
-- [x] Perspective Memory P0/P1: actors, actor cards, observations, context lanes, dashboard aggregate stats
-- [x] Vector Outbox V2: transactional enqueue, versioned upsert, worker lock, stuck recovery, vector-status/dashboard health
-- [x] Dashboard hardening: localhost default bind, optional password auth, safe error rendering, aggregate-only retrieval/context-pack telemetry
-- [x] External Market Context: DART/FRED/Finnhub read-only snapshot + MCP tool
-
-### Active / experimental
-
-- [ ] Entity-Edge Model productization beyond diagnostic graph expansion
-- [ ] Task Entity System broader productization and UX
-- [ ] Mongo sync operational hardening for multi-server teams
-- [ ] Endless/shared memory UX and default safety policy
-- [ ] Retrieval/replay benchmarks for ranking-changing features before default enablement
-- [ ] Perspective Memory LLM deriver/specialists broader production rollout (currently opt-in/guarded)
-
-## External Market Context (DART/FRED/Finnhub)
-
-`claude-memory-layer market-context` fetches read-only external company and market data from environment-configured providers and returns a structured `MarketContextSnapshot` plus a Markdown analysis report.
-
-Example:
-
-```bash
-export DART_API_KEY=...      # env-only; never commit real keys
-export FRED_API_KEY=...
-export FINNHUB_API_KEY=...
-claude-memory-layer market-context \
-  --company 삼성전자 \
-  --dart-corp-code 00126380 \
-  --symbol 005930.KS \
-  --providers dart,fred,finnhub \
-  --fred-series FEDFUNDS,CPIAUCSL \
-  --json
-```
-
-Security and behavior:
-
-- API keys are read only from `DART_API_KEY`, `FRED_API_KEY`, and `FINNHUB_API_KEY`.
-- `.env*` files are ignored; `.env.example` is placeholder-only.
-- Missing provider keys produce skipped-provider statuses rather than hard failures.
-- Provider requests use bounded timeouts; large FRED series lists are capped to the first 10 unique series.
-- Empty Finnhub profile responses are treated as skipped-provider/no-data results, not profile evidence.
-- Provider errors and rendered reports redact credential-bearing query params such as `crtfc_key`, `api_key`, and `token`.
-- The MCP `external-market-context` tool is read-only and does not initialize or mutate memory storage.
-- `--no-snapshot` / MCP `includeSnapshot: false` disables both `analysis.marketSnapshot` and the DART company snapshot.
-
-`MarketContextSnapshot` includes:
-
-- `schemaVersion: market-context-snapshot.v1`
-- `subject`: company, DART corpCode, ticker symbol
-- `coverage`: DART/FRED/Finnhub provider status and counts
-- `bullCases`, `bearCases`, `risks`, `catalysts`: deterministic evidence-backed insights
-- `watchlist` and `followUpQuestions`
-
-The Markdown report includes a `### MarketContextSnapshot` section with **Bull case**, **Bear case**, **Risks**, and **Catalysts**. DART analysis uses all fetched filings; only the rendered filing list is truncated. If `dartCorpCode` is omitted, company-name fallback is marked low-confidence, so exact DART corp codes are recommended for customer-facing analysis.
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.
 
 ## License
 
-MIT
+[MIT](LICENSE)
