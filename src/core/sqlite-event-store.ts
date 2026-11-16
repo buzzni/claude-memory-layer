@@ -88,7 +88,7 @@ import {
   type MemoryKind
 } from './memory-ref.js';
 import { recordReferenceNavigationOnDb } from './retrieval-navigation.js';
-import { classifyStoredEvent } from './memory-origin.js';
+import { readStoredMetadata } from './memory-origin.js';
 import {
   observeLessonFollowThrough,
   parseToolObservation,
@@ -5522,6 +5522,9 @@ export class SQLiteEventStore {
    * Convert database row to MemoryEvent
    */
   private rowToEvent(row: Record<string, unknown>): MemoryEvent {
+    // One parse for both: an unreadable value leaves metadata undefined but
+    // the origin unknown, so it never reads as a row without metadata.
+    const { metadata, origin } = readStoredMetadata(row.event_type, row.metadata);
     const event: any = {
       id: row.id as string,
       eventType: row.event_type as 'user_prompt' | 'agent_response' | 'session_summary',
@@ -5530,10 +5533,8 @@ export class SQLiteEventStore {
       content: row.content as string,
       canonicalKey: row.canonical_key as string,
       dedupeKey: row.dedupe_key as string,
-      metadata: safeParseMetadataValue(row.metadata),
-      // From the raw columns, before metadata is parsed: an unreadable value
-      // is dropped above and would otherwise look like a row without metadata.
-      origin: classifyStoredEvent(row.event_type, row.metadata)
+      metadata,
+      origin
     };
 
     // Include access tracking fields if present

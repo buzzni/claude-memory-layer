@@ -15,9 +15,10 @@
  *   the answer is `unknown`.
  *
  * Where it is computed: once, by the layer that reads the row from SQLite,
- * from the raw columns (classifyStoredEvent: SQLiteEventStore.rowToEvent puts
- * it on MemoryEvent.origin; the pre-edit check, which reads rows with its own
- * SQL, calls it the same way). Everything after that (disclosure envelopes,
+ * from the raw columns (readStoredMetadata / classifyStoredEvent:
+ * SQLiteEventStore.rowToEvent puts it on MemoryEvent.origin; the working set,
+ * the older EventStore and the pre-edit check, which read rows with their own
+ * SQL, call it the same way). Everything after that (disclosure envelopes,
  * hooks, MCP, CLI) passes the value on with eventOrigin() and never
  * classifies again: by then metadata may have been parsed, dropped or
  * merged, and a "no metadata" row would look trusted. A value reported by
@@ -134,25 +135,41 @@ export function classifyMemoryOrigin(memory: { type: string; metadata?: unknown 
 }
 
 /**
- * The origin of a row as read from SQLite: its `event_type` and `metadata`
- * columns exactly as stored. Absent, NULL or empty metadata means none; text
- * that does not parse, or parses to anything but an object, is unknown.
+ * A row's `metadata` column parsed once, with the row's origin from it and
+ * its `event_type` column. Absent, NULL or empty metadata means none; text
+ * that does not parse, or parses to anything but an object, leaves
+ * `metadata` undefined and makes the origin unknown, so the unreadable value
+ * is not mistaken later for a row without metadata.
  */
-export function classifyStoredEvent(eventType: unknown, rawMetadata: unknown): MemoryOrigin {
-  if (typeof eventType !== 'string') return 'unknown';
-  let metadata: unknown = rawMetadata;
+export function readStoredMetadata(
+  eventType: unknown,
+  rawMetadata: unknown
+): { metadata: Record<string, unknown> | undefined; origin: MemoryOrigin } {
+  let parsed: unknown = rawMetadata;
+  let unreadable = false;
   if (typeof rawMetadata === 'string') {
     if (rawMetadata === '') {
-      metadata = undefined;
+      parsed = undefined;
     } else {
       try {
-        metadata = JSON.parse(rawMetadata);
+        parsed = JSON.parse(rawMetadata);
       } catch {
-        return 'unknown';
+        parsed = undefined;
+        unreadable = true;
       }
     }
   }
-  return classifyMemoryOrigin({ type: eventType, metadata });
+  return {
+    metadata: isRecord(parsed) ? parsed : undefined,
+    origin: typeof eventType !== 'string' || unreadable
+      ? 'unknown'
+      : classifyMemoryOrigin({ type: eventType, metadata: parsed })
+  };
+}
+
+/** The origin of a row as read from SQLite, for readers that parse metadata their own way. */
+export function classifyStoredEvent(eventType: unknown, rawMetadata: unknown): MemoryOrigin {
+  return readStoredMetadata(eventType, rawMetadata).origin;
 }
 
 /** The origin the read layer put on a row or candidate; one that never went through it is unknown. */
