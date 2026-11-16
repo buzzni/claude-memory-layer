@@ -286,14 +286,17 @@ function parseHostAuthority(value: string): HostAuthority | null {
 }
 
 /**
- * Host allow-list: the loopback names on the serving port, plus explicit
- * entries. Malformed entries can never match a request, so they are dropped.
+ * Explicit Host allow-list entries, on top of the loopback names. Malformed
+ * entries can never match a request, so they are dropped.
  */
-function resolveAllowedHosts(port: number, explicit?: string[]): HostAuthority[] {
-  const entries = resolveListOption(explicit, 'DASHBOARD_ALLOWED_HOSTS')
+function resolveExtraAllowedHosts(explicit?: string[]): HostAuthority[] {
+  return resolveListOption(explicit, 'DASHBOARD_ALLOWED_HOSTS')
     .map(parseHostAuthority)
     .filter((entry): entry is HostAuthority => entry !== null);
-  return [...LOOPBACK_HOSTNAMES.map((hostname) => ({ hostname, port })), ...entries];
+}
+
+function loopbackHosts(port: number): HostAuthority[] {
+  return LOOPBACK_HOSTNAMES.map((hostname) => ({ hostname, port }));
 }
 
 /** True when `value` (a Host header or Origin authority) names an allowed host. */
@@ -317,16 +320,26 @@ function isAllowedMutationOrigin(origin: string, allowedOrigins: string[], allow
 }
 
 export function createDashboardApp(options: DashboardAppOptions = {}): Hono {
+  const port = options.port ?? 37777;
+  return buildDashboardApp(options, () => port);
+}
+
+/**
+ * `servingPort` is read per request so startServer can report the port the OS
+ * actually assigned when asked to listen on port 0.
+ */
+function buildDashboardApp(options: DashboardAppOptions, servingPort: () => number): Hono {
   const app = new Hono();
   const authOptions = createAuthOptions(options);
-  const allowedHosts = resolveAllowedHosts(options.port ?? 37777, options.allowedHosts);
+  const extraAllowedHosts = resolveExtraAllowedHosts(options.allowedHosts);
+  const allowedHosts = (): HostAuthority[] => [...loopbackHosts(servingPort()), ...extraAllowedHosts];
 
   // DNS rebinding guard. Rebinding points an attacker's domain at 127.0.0.1, so
   // the browser treats the attacker's page as same-origin with the dashboard,
   // but it still sends the attacker's name as Host. Answer only requests
   // addressed to an allowed host, on every route, with no body to read.
   app.use('*', async (c, next) => {
-    if (!isAllowedHost(c.req.header('host'), allowedHosts)) return c.body(null, 403);
+    if (!isAllowedHost(c.req.header('host'), allowedHosts())) return c.body(null, 403);
     return next();
   });
 
@@ -359,7 +372,7 @@ export function createDashboardApp(options: DashboardAppOptions = {}): Hono {
       return next();
     }
     const origin = c.req.header('origin');
-    if (origin && !isAllowedMutationOrigin(origin, allowedOrigins, allowedHosts)) {
+    if (origin && !isAllowedMutationOrigin(origin, allowedOrigins, allowedHosts())) {
       return c.json({ error: 'Cross-origin request blocked' }, 403);
     }
     return next();
@@ -450,16 +463,19 @@ export function startServer(portOrOptions: number | DashboardServerOptions = 377
 
   const options = normalizeServerOptions(portOrOptions);
   const hostname = normalizeDashboardHost(options.host);
-  const port = options.port;
+  // Port 0 asks the OS for a free port; the Host allow-list follows the real one.
+  let listeningPort = options.port;
 
   serverInstance = serve({
-    fetch: createDashboardApp(options).fetch,
-    port,
+    fetch: buildDashboardApp(options, () => listeningPort).fetch,
+    port: options.port,
     hostname
+  }, (info) => {
+    listeningPort = info.port;
+    console.log(`🧠 Code Memory viewer started at http://${displayHost(hostname)}:${listeningPort}`);
   });
 
-  console.log(`🧠 Code Memory viewer started at http://${displayHost(hostname)}:${port}`);
-  if (hostname === '0.0.0.0' && resolveAllowedHosts(port, options.allowedHosts).length === LOOPBACK_HOSTNAMES.length) {
+  if (hostname === '0.0.0.0' && resolveExtraAllowedHosts(options.allowedHosts).length === 0) {
     console.warn('⚠️  Only requests addressed to localhost, 127.0.0.1 or [::1] are answered. Set DASHBOARD_ALLOWED_HOSTS to reach the dashboard by another name or address.');
   }
 
