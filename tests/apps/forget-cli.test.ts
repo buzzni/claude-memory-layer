@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -11,6 +11,7 @@ import { tsxArgs, tsxCommand } from '../helpers/tsx-process.js';
 interface CliFixture {
   home: string;
   projectDir: string;
+  storagePath: string;
   dbPath: string;
 }
 
@@ -26,7 +27,7 @@ function createFixture(name: string): CliFixture {
   const projectDir = `/opt/cml-forget-cli-${name}-project`;
   const storagePath = path.join(home, '.claude-code', 'memory', 'projects', hashProjectPath(projectDir));
   mkdirSync(storagePath, { recursive: true });
-  return { home, projectDir, dbPath: path.join(storagePath, 'events.sqlite') };
+  return { home, projectDir, storagePath, dbPath: path.join(storagePath, 'events.sqlite') };
 }
 
 async function seed(fixture: CliFixture): Promise<{ a1: string; a2: string; b1: string }> {
@@ -84,6 +85,23 @@ describe('claude-memory-layer forget <eventId> / --session', () => {
     expect(applied.status, applied.stderr).toBe(0);
     expect(applied.stdout).toContain('Events deleted 2');
     expect(await remainingIds(fixture, [ids.a1, ids.a2, ids.b1])).toEqual([ids.b1]);
+  }, 60_000);
+
+  it.skipIf(process.getuid?.() === 0)('exits non-zero when part of the forgotten data could not be removed', async () => {
+    const fixture = createFixture('partial');
+    const ids = await seed(fixture);
+    const mirrorFile = path.join(fixture.storagePath, 'memory', 'default', 'user_prompt', '2026-01-01.md');
+    mkdirSync(path.dirname(mirrorFile), { recursive: true });
+    // A second entry that stays forces a rewrite (a file left empty would just be unlinked).
+    const entry = (id: string, sessionId: string) =>
+      `\n- ts: 2026-01-01T00:00:00.000Z\n  id: ${id}\n  type: user_prompt\n  session: ${sessionId}\n  category: user_prompt\n  content: |\n    text\n`;
+    writeFileSync(mirrorFile, entry(ids.a1, 'session-a') + entry(ids.b1, 'session-b'));
+    chmodSync(mirrorFile, 0o444);
+
+    const result = runForget(fixture, [ids.a1, '--confirm']);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain('Warning: could not rewrite');
+    expect(await remainingIds(fixture, [ids.a1])).toEqual([]);
   }, 60_000);
 
   it('rejects combined selectors with a non-zero exit instead of silently picking one', async () => {

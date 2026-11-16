@@ -1534,7 +1534,10 @@ program
       if (selection.kind === 'before') {
         console.log(formatForgetBeforeReport(await runForgetBefore(storagePath, selection.options)));
       } else {
-        console.log(formatForgetTargetReport(await runForgetTarget(storagePath, selection.options)));
+        const report = await runForgetTarget(storagePath, selection.options);
+        console.log(formatForgetTargetReport(report));
+        // Every warning here means vectors or mirror text of the forgotten data may remain.
+        if (report.applied && report.warnings) process.exitCode = 1;
       }
     } catch (error) {
       console.error(`Forget failed: ${error instanceof Error ? error.message : String(error)}`);
