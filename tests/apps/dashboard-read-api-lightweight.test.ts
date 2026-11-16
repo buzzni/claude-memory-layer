@@ -215,7 +215,27 @@ describe('dashboard read APIs use lightweight services', () => {
     expect(body.totalEvents).toBe(2);
     expect(mocks.getLightweightServiceFromQuery).toHaveBeenCalledTimes(1);
     expect(mocks.getServiceFromQuery).not.toHaveBeenCalled();
-    expect(mocks.service.getEventsByTurn).toHaveBeenCalledWith('turn-1');
+    expect(mocks.service.getEventsByTurn).toHaveBeenCalledWith('turn-1', { sessionId: undefined });
     expect(mocks.service.shutdown).toHaveBeenCalledTimes(1);
+  });
+
+  it('GET /api/turns/:turnId reads the turn within the sessionId query', async () => {
+    const res = await createApp().request('/api/turns/turn-1?project=abc12345&sessionId=s1');
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).sessionId).toBe('s1');
+    expect(mocks.service.getEventsByTurn).toHaveBeenCalledWith('turn-1', { sessionId: 's1' });
+  });
+
+  it('GET /api/turns/:turnId refuses to merge a turn id shared by two sessions', async () => {
+    mocks.service.getEventsByTurn.mockResolvedValue([
+      fixtureEvents[0],
+      { ...fixtureEvents[1], sessionId: 's2' },
+    ]);
+
+    const res = await createApp().request('/api/turns/turn-1?project=abc12345');
+
+    expect(res.status).toBe(409);
+    expect((await res.json()).sessionIds).toEqual(['s1', 's2']);
   });
 });
