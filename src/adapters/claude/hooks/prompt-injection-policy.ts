@@ -466,6 +466,7 @@ export function scoreLessonEvidence(
   return {
     id: lesson.lessonId,
     type: 'lesson',
+    origin: 'derived',
     content: [
       lesson.steps.length > 8 && `[Partial lesson; retrieve the full body with mem-lesson-get lessonId=${lesson.lessonId} before applying]`,
       lesson.scope && `Scope: ${lesson.scope}`,

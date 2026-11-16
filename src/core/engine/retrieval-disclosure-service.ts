@@ -284,13 +284,16 @@ export class RetrievalDisclosureService {
       reasons,
       sourceRef: toDisclosureResultId(event.id),
       sessionId: event.sessionId,
+      // The row's own columns go last: stored metadata is written by whatever
+      // stored the row, tool output included, and must not pose as its id or
+      // type (src/core/memory-origin.ts).
       metadata: {
+        ...event.metadata,
+        ...extraMetadata,
         eventId: event.id,
         eventType: event.eventType,
         timestamp: event.timestamp.toISOString(),
-        canonicalKey: event.canonicalKey,
-        ...event.metadata,
-        ...extraMetadata
+        canonicalKey: event.canonicalKey
       }
     };
   }

@@ -193,9 +193,14 @@ export function memoryEvidencePreview(memory: { type: string; content: string },
     : preview;
 }
 
-/** The lane's classification when it had the stored row, else one from the type alone. */
-export function hookCandidateOrigin(candidate: { type: string; origin?: MemoryOrigin }): MemoryOrigin {
-  return candidate.origin ?? classifyMemoryOrigin({ type: candidate.type });
+/**
+ * The class every lane sets from the stored row (src/core/memory-origin.ts).
+ * A candidate without one was never checked against its row, so it is not
+ * trusted from its `type` alone. Rendering, filtering and telemetry all read
+ * this one value.
+ */
+export function hookCandidateOrigin(candidate: { origin?: MemoryOrigin }): MemoryOrigin {
+  return candidate.origin ?? 'unknown';
 }
 
 export function formatMemoryContext(
@@ -236,6 +241,24 @@ export interface UserPromptSubmitMainOptions {
   deliveryClient?: string;
 }
 
+/**
+ * A daemon started before origins were reported sends none, so the hit is
+ * classified from its stored row. No row, or no way to read it, is `unknown`:
+ * the type the daemon reported is not taken on trust.
+ */
+async function storedRowOrigin(
+  memoryService: Pick<HookSelectionMemoryService, 'getEvent'>,
+  id: string | undefined
+): Promise<MemoryOrigin> {
+  if (!id) return 'unknown';
+  try {
+    const event = await memoryService.getEvent(id);
+    return event ? classifyEventOrigin(event) : 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+
 async function expandEpisodeEvidence(
   memoryService: Pick<HookSelectionMemoryService, 'expandDisclosure' | 'getEventsByTurn'>,
   seeds: HookMemoryCandidate[]
@@ -274,6 +297,8 @@ async function expandEpisodeEvidence(
       }
       const facts = [...(episode?.summaries ?? []), ...(episode?.surroundingFacts ?? [])];
       for (const fact of facts) {
+        // eventType and eventId are the row's own columns: the envelope writes
+        // them after the stored metadata, which cannot replace them.
         const eventType = typeof fact.metadata?.eventType === 'string' ? fact.metadata.eventType : '';
         const eventId = typeof fact.metadata?.eventId === 'string' ? fact.metadata.eventId : undefined;
         const factTurnId = typeof fact.metadata?.turnId === 'string' ? fact.metadata.turnId : undefined;
@@ -554,7 +579,7 @@ export function buildHookOutcomeDiagnostics(counts: HookRetrievalLaneCounts): Re
 
 export type HookSelectionMemoryService = Pick<
   ReturnType<typeof getLightweightMemoryServiceForProject>,
-  'searchGraduatedEvidence' | 'listProjectLessonInjections' | 'keywordSearch' | 'expandDisclosure' | 'getEventsByTurn'
+  'searchGraduatedEvidence' | 'listProjectLessonInjections' | 'keywordSearch' | 'expandDisclosure' | 'getEventsByTurn' | 'getEvent'
 >;
 
 export interface HookSelectionDeps {
@@ -615,13 +640,11 @@ export async function selectHookInjection(
         topK: MAX_MEMORIES,
         minScore
       });
-      mergedMemories = semanticMemories.map(({ origin, ...memory }) => ({
+      mergedMemories = (await Promise.all(semanticMemories.map(async ({ origin, ...memory }) => ({
         ...memory,
         source: 'semantic' as const,
-        // A daemon started before origins were reported sends none; the type
-        // alone then classifies the row, missing only `imported`.
-        origin: normalizeMemoryOrigin(origin) ?? undefined
-      })).filter((memory) => !isExcludedEvaluationSession(memory.sessionId)
+        origin: normalizeMemoryOrigin(origin) ?? await storedRowOrigin(deps.memoryService, memory.id)
+      })))).filter((memory) => !isExcludedEvaluationSession(memory.sessionId)
         && !isCurrentSessionEvent(memory.sessionId, input.sessionId));
       semanticCandidateCount = mergedMemories.length;
     } catch {
@@ -973,8 +996,7 @@ export async function main(options: UserPromptSubmitMainOptions = {}): Promise<s
                     timestamp: event.timestamp,
                     sessionId: event.sessionId,
                     metadata: event.metadata,
-                    // The stored row decides; a candidate's own origin may lack its metadata.
-                    origin: classifyEventOrigin(event),
+                    origin: hookCandidateOrigin(memory),
                     sourceKind: 'event' as const
                   }
                 : { ...memory, origin: hookCandidateOrigin(memory), sourceKind: 'event' as const };

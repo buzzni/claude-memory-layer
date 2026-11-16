@@ -308,7 +308,7 @@ describe('formatMemoryContext', () => {
 
   it('keeps the lines and relative indentation of a direct lesson, indented under its item', () => {
     const content = 'Release lesson\n```python\nif ready:\n    publish()\nelse:\n    abort()\n```';
-    const context = formatMemoryContext([{ type: 'lesson', id: 'lesson-code', content }], 'release');
+    const context = formatMemoryContext([{ type: 'lesson', id: 'lesson-code', content, origin: 'derived' }], 'release');
 
     expect(context).toContain(
       '- [lesson] Release lesson\n  ```python\n  if ready:\n      publish()\n  else:\n      abort()\n  ``` [lesson:lesson-code]'

@@ -27,7 +27,7 @@ import type { VectorStore } from '../../../core/vector-store.js';
 import { MemoryService } from '../../../services/memory-service.js';
 import { DISABLED_SHARED_STORE_CONFIG } from '../../../services/memory-service-config.js';
 import type { SemanticMemory } from './semantic-daemon-client.js';
-import { countMemoryOrigins, MEMORY_ORIGINS, type MemoryOrigin } from '../../../core/memory-origin.js';
+import { classifyEventOrigin, countMemoryOrigins, MEMORY_ORIGINS, type MemoryOrigin } from '../../../core/memory-origin.js';
 import {
   buildRetrievalQuery,
   hookCandidateOrigin,
@@ -384,7 +384,8 @@ function selectionDeps(sources: ReplaySources, turn: ReplayTurn, stats: { semant
         .filter((injection) => injection.value.createdAt.getTime() < turn.asOf.getTime()),
     expandDisclosure: async (resultId, options) =>
       boundExpansion(await sources.service.expandDisclosure(resultId, options), turn.asOf),
-    getEventsByTurn: (turnId) => queryService.getEventsByTurn(turnId)
+    getEventsByTurn: (turnId) => queryService.getEventsByTurn(turnId),
+    getEvent: (id) => store.getEvent(id)
   } as HookSelectionMemoryService;
 
   const retrieveSemantic: HookSelectionDeps['retrieveSemantic'] = async (request) => {
@@ -420,7 +421,9 @@ function selectionDeps(sources: ReplaySources, turn: ReplayTurn, stats: { semant
           content: memory.event.content,
           id: memory.event.id,
           score: memory.score,
-          sessionId: memory.event.sessionId
+          sessionId: memory.event.sessionId,
+          // As the daemon reports it, from the stored row.
+          origin: classifyEventOrigin(memory.event)
         })),
         dropped: result.memories.length - visible.length
       };
@@ -622,6 +625,8 @@ export interface HookReplayFixture {
     timestamp: string;
     content: string;
     metadata?: Record<string, unknown>;
+    /** Memory level other than L0, e.g. a graduated row. */
+    level?: string;
   }>;
   lessons?: Array<{
     lessonId: string;
@@ -665,6 +670,10 @@ export async function buildFixtureStore(fixture: HookReplayFixture, storagePath:
 
   const db = new Database(dbPath);
   try {
+    const setLevel = db.prepare(`UPDATE memory_levels SET level = ? WHERE event_id = ?`);
+    for (const event of fixture.events) {
+      if (event.level) setLevel.run(event.level, idByKey.get(event.key));
+    }
     const insertLesson = db.prepare(`
       INSERT INTO memory_lessons (lesson_id, project_hash, name, trigger, steps_json, confidence, source_class, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, 'curated', ?, ?)
