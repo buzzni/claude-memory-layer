@@ -21,7 +21,8 @@ These scripts are best-effort operational automation for Claude memory DB (`~/.c
 
 The dashboard answers a request only when its `Host` header names an allowed host. This blocks DNS-rebinding pages
 that resolve an attacker's domain to `127.0.0.1`. Rejected requests get an empty `403` on every route, including
-`/health`.
+`/health`. A syntactically invalid `Host` (spaces, `@`, …) or an HTTP/1.1 request without `Host` is answered with
+`400` by Node's HTTP server or the adapter before the allow-list runs.
 
 - **Default:** `localhost`, `127.0.0.1` and `[::1]` on the serving port (for example `localhost:37777`). Case and a
   single trailing dot are ignored. A `Host` without a port counts as port 80. A request with no `Host` is rejected.

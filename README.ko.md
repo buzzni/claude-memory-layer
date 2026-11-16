@@ -931,6 +931,7 @@ claude-memory-layer dashboard
 - Vector Health: embedding/vector queue pending/processing/failed/stuck, vector count, recovery action 결과
 - Perspective Memory: actor/session membership, observer→observed graph, actor-card counts, observation/contradiction/source-evidence aggregate
 - Dashboard auth hardening: 기본 `localhost` bind, 명시적 `0.0.0.0`, 선택적 password gate
+- `0.0.0.0` bind로 LAN에서 접속하거나 리버스 프록시를 거치려면 `DASHBOARD_ALLOWED_HOSTS`도 설정해야 합니다(기본으로는 `localhost`, `127.0.0.1`, `[::1]`로 온 요청만 응답)
 - API errors/output은 aggregate 중심으로 렌더링하고 raw path, item id, error payload, memory content 노출을 피함
 
 ## 기존 대화 기록 임포트

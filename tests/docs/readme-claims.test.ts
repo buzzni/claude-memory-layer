@@ -125,9 +125,10 @@ describe('README claims', () => {
     expect(missing).toEqual([]);
   });
 
-  it('cites only CLAUDE_MEMORY_* env vars that src/ actually mentions', () => {
-    const cited = new Set(code.match(/\bCLAUDE_MEMORY_[A-Z0-9_]+\b/g) ?? []);
+  it('cites only CLAUDE_MEMORY_* and DASHBOARD_* env vars that src/ actually mentions', () => {
+    const cited = new Set(code.match(/\b(?:CLAUDE_MEMORY|DASHBOARD)_[A-Z0-9_]+\b/g) ?? []);
     expect([...cited].some((name) => name.endsWith('_EXPERIMENT'))).toBe(true);
+    expect(cited).toContain('DASHBOARD_ALLOWED_HOSTS');
 
     const sources = readdirSync(path.join(root, 'src'), { recursive: true, encoding: 'utf8' })
       .filter((file) => /\.(ts|tsx|js|mjs|cjs)$/.test(file))

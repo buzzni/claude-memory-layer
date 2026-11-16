@@ -89,5 +89,6 @@ What these send off the machine is described in [SECURITY.md](../SECURITY.md).
 | `CLAUDE_MEMORY_EMBEDDING_MODEL` | Embedding model override (see [INSTALL.md](INSTALL.md#embedding-model)) |
 | `CLAUDE_MEMORY_MCP_PROFILE`, `CLAUDE_MEMORY_MCP_READ_ONLY`, `CLAUDE_MEMORY_MCP_IDLE_RELEASE_MS` | MCP server, see [MCP.md](MCP.md) |
 | `DASHBOARD_PASSWORD`, `DASHBOARD_HOST`, `DASHBOARD_ALLOWED_ORIGINS` | Dashboard, see [DASHBOARD.md](DASHBOARD.md) |
+| `DASHBOARD_ALLOWED_HOSTS` | Extra `Host` names the dashboard answers besides `localhost`/`127.0.0.1`/`[::1]` on its port (comma-separated `hostname` or `hostname:port`). Needed for `0.0.0.0` LAN or reverse-proxy access, see [DASHBOARD.md](DASHBOARD.md#security) |
 | `CLAUDE_MEMORY_MONGO_URI`, `CLAUDE_MEMORY_MONGO_DB`, `CLAUDE_MEMORY_MONGO_PROJECT` | Mongo sync, see [MONGO_SYNC.md](MONGO_SYNC.md) |
 | `CLAUDE_MEMORY_LAYER_SKIP_EMBEDDING_POSTINSTALL` | `1` skips the embedding backend download during install |

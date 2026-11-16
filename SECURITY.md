@@ -25,7 +25,7 @@ Claude Memory Layer는 한 사용자의 머신에서 돌아가는 로컬 도구�
 ### 대시보드
 
 - **기본 bind는 localhost**입니다. `dashboard` 명령과 `DASHBOARD_HOST`는 `localhost`, `127.0.0.1`, `0.0.0.0`만 받고, 지정하지 않으면 `127.0.0.1`에 bind합니다.
-- **Host 헤더를 허용 목록으로 검사**합니다(DNS rebinding 방어). localhost에만 bind해도, 공격자 도메인을 127.0.0.1로 다시 해석시키면 브라우저는 그 도메인의 페이지를 대시보드와 같은 출처로 취급합니다. 이때도 브라우저는 `Host`에 공격자 도메인을 보내므로, 서버는 `Host`가 허용 목록에 없는 요청을 모든 경로(`/health`, `/api/auth/*`, 정적 파일 포함)에서 본문 없이 403으로 거절합니다. 이 검사는 비밀번호 검사보다 먼저 돕니다.
+- **Host 헤더를 허용 목록으로 검사**합니다(DNS rebinding 방어). localhost에만 bind해도, 공격자 도메인을 127.0.0.1로 다시 해석시키면 브라우저는 그 도메인의 페이지를 대시보드와 같은 출처로 취급합니다. 이때도 브라우저는 `Host`에 공격자 도메인을 보내므로, 서버는 `Host`가 허용 목록에 없는 요청을 모든 경로(`/health`, `/api/auth/*`, 정적 파일 포함)에서 본문 없이 403으로 거절합니다. 이 검사는 비밀번호 검사보다 먼저 돕니다. 문법이 잘못된 `Host`(공백·`@` 포함 등)나 HTTP/1.1 요청의 `Host` 누락은 그보다 앞서 Node HTTP 서버나 어댑터가 400으로 거절하므로, 403은 허용 목록 검사까지 도달한 요청에 해당합니다.
   - 기본 허용: `localhost`, `127.0.0.1`, `[::1]` + 실제 포트(예: `localhost:37777`). 대소문자와 끝의 점 하나(`localhost.`)는 무시합니다. 포트가 없는 `Host`는 80번 포트로 봅니다. `Host`가 없는 요청도 거절합니다.
   - 그 밖의 이름이나 주소로 접속하려면 `DASHBOARD_ALLOWED_HOSTS`(쉼표 구분)에 적습니다. `hostname`은 모든 포트, `hostname:port`는 그 포트만 허용합니다. 예: `DASHBOARD_ALLOWED_HOSTS=192.168.0.10:37777,memory.example.com`. 출처 URL(`http://…`) 형식은 받지 않습니다(그런 항목은 무시됩니다).
 - **비밀번호는 선택**입니다. `--password` 또는 `DASHBOARD_PASSWORD`(`CLAUDE_MEMORY_LAYER_DASHBOARD_PASSWORD`)로 켭니다. 켜면 `/health`, `/api/auth/*`를 뺀 모든 경로가 로그인을 요구합니다. 세션 쿠키는 HMAC-SHA256 서명, `HttpOnly`, `SameSite=Lax`이고 기본 30일 뒤 만료됩니다. HTTPS(또는 `X-Forwarded-Proto: https`)로 들어온 요청이면 `Secure`도 붙습니다.

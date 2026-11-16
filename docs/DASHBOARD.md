@@ -29,10 +29,11 @@ claude-memory-layer dashboard --bind localhost --port 37777 --password "<local-p
 ## Security
 
 - Binds to localhost by default. `0.0.0.0` must be chosen explicitly.
-- The password is optional (`--password`, or `DASHBOARD_PASSWORD` / `CLAUDE_MEMORY_LAYER_DASHBOARD_PASSWORD`). **Without a password the API has no authentication**: anything that can reach the port can read stored memory. Always set a password when binding to `0.0.0.0`.
-- Cross-origin reads are blocked unless the origin is listed in `DASHBOARD_ALLOWED_ORIGINS` (comma-separated), and state-changing API requests from another origin are rejected.
+- Answers only requests whose `Host` header names `localhost`, `127.0.0.1` or `[::1]` on the serving port, which blocks DNS-rebinding pages. Every other `Host` gets an empty `403` on every route, including `/health`. To reach the dashboard by another name or address (a `0.0.0.0` bind over the LAN, or a reverse proxy that forwards the public `Host`), list it in `DASHBOARD_ALLOWED_HOSTS` (comma-separated; `hostname` for any port, `hostname:port` for one), e.g. `DASHBOARD_ALLOWED_HOSTS=192.168.0.10:37777,memory.example.com`.
+- The password is optional (`--password`, or `DASHBOARD_PASSWORD` / `CLAUDE_MEMORY_LAYER_DASHBOARD_PASSWORD`). **Without a password the API has no authentication**: anything that can reach the port and send an allowed `Host` can read stored memory. Always set a password when binding to `0.0.0.0`.
+- Cross-origin reads are blocked unless the origin is listed in `DASHBOARD_ALLOWED_ORIGINS` (comma-separated). State-changing API requests are rejected unless their `Origin` names an allowed host or is listed in `DASHBOARD_ALLOWED_ORIGINS`.
 
-Details (cookie settings, Origin checks): [SECURITY.md](../SECURITY.md).
+Details (Host matching rules, cookie settings, Origin checks): [SECURITY.md](../SECURITY.md).
 
 ## Health endpoints
 
