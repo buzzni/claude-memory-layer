@@ -46,6 +46,18 @@ const HOOK_EVENTS = {
   'pre-tool-use': 'PreToolUse'
 };
 
+/**
+ * Files a hook imports from next to itself only when it needs them, so a
+ * build missing one still starts the hook and then silently stores nothing.
+ * Mirrored in REQUIRED_HOOK_FILES (src/apps/cli/claude-settings-hooks.ts).
+ * Required only of a build whose hook file names them: the npm package can
+ * be older than this launcher, with a hook that bundles everything.
+ */
+const HOOK_COMPANIONS = {
+  'post-tool-use': ['post-tool-use-handler.js'],
+  'pre-tool-use': ['pre-tool-use-handler.js']
+};
+
 /** Hooks that apply to some tools only, mirroring PLUGIN_HOOK_MATCHERS; the rest match everything. */
 const HOOK_MATCHERS = {
   'pre-tool-use': 'Write|Edit|MultiEdit|NotebookEdit'
@@ -143,16 +155,34 @@ function packageRootFromBinDir(dir) {
   ].find(isPackageRoot) || null;
 }
 
-/** The built hook file the launcher would run, or null when no package provides it. */
+/** The companion files a built hook file names but that are not next to it. */
+function missingCompanions(target, hookFile) {
+  const expected = HOOK_COMPANIONS[hookFile] || [];
+  if (expected.length === 0) return [];
+  let source;
+  try {
+    source = fs.readFileSync(target, 'utf8');
+  } catch {
+    return [];
+  }
+  return expected.filter((file) => source.includes(file) && !fs.existsSync(path.join(path.dirname(target), file)));
+}
+
+/**
+ * The built hook file the launcher would run, or null when no package
+ * provides it. A build with every companion file wins over an earlier one
+ * without; with none complete, the first is returned for main() to report.
+ */
 function resolveHookTarget(hookFile, { pluginRoot, pathEnv }) {
   const roots = [pluginRoot];
   for (const dir of (pathEnv || '').split(path.delimiter)) {
     if (dir) roots.push(packageRootFromBinDir(dir));
   }
-  return roots
+  const candidates = roots
     .filter(Boolean)
     .map((root) => path.join(root, 'dist', 'hooks', `${hookFile}.js`))
-    .find((candidate) => fs.existsSync(candidate)) || null;
+    .filter((candidate) => fs.existsSync(candidate));
+  return candidates.find((candidate) => missingCompanions(candidate, hookFile).length === 0) || candidates[0] || null;
 }
 
 function hookTimeoutMs() {
@@ -181,6 +211,13 @@ async function main() {
     return;
   }
 
+  const missing = missingCompanions(target, hookFile);
+  if (missing.length > 0) {
+    fail(`${path.dirname(target)} is an incomplete install (no ${missing.join(', ')}), so the ${hookFile} hook did not run. `
+      + `Reinstall: npm install -g ${PACKAGE_NAME}@latest`);
+    return;
+  }
+
   process.on('exit', () => {
     if (process.exitCode === BLOCKING_EXIT_CODE) process.exitCode = 1;
   });
@@ -196,7 +233,7 @@ async function main() {
   await import(pathToFileURL(target).href);
 }
 
-module.exports = { HOOK_EVENTS, HOOK_MATCHERS, resolveHookTarget };
+module.exports = { HOOK_COMPANIONS, HOOK_EVENTS, HOOK_MATCHERS, resolveHookTarget };
 
 if (require.main === module) {
   main().catch((error) => fail(error && error.message ? error.message : String(error)));

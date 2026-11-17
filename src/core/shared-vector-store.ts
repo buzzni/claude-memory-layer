@@ -3,7 +3,7 @@
  * Location: ~/.claude-code/memory/shared/vectors/
  */
 
-import * as lancedb from '@lancedb/lancedb';
+import type * as lancedb from '@lancedb/lancedb';
 import type { SharedEntryType, SharedSearchResult } from './types.js';
 
 export interface SharedVectorRecord {
@@ -29,7 +29,8 @@ export class SharedVectorStore {
   async initialize(): Promise<void> {
     if (this.db) return;
 
-    this.db = await lancedb.connect(this.dbPath);
+    const { connect } = await import('@lancedb/lancedb');
+    this.db = await connect(this.dbPath);
 
     try {
       const tables = await this.db.tableNames();

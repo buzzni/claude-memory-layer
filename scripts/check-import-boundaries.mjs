@@ -13,6 +13,17 @@ const CORE_FORBIDDEN_LAYERS = [
   'src/apps',
   'src/services'
 ];
+// Native code an install can lack (LanceDB's per-platform package, the
+// postinstall-managed embedding backend). The hook bundles share modules with
+// everything else, so loading one when a module loads (a static import, a
+// require() or a module-level import()) can stop capture and keyword recall
+// from loading; import them with await import() inside the function that
+// uses them.
+const NATIVE_BACKEND_PACKAGES = [
+  '@lancedb/lancedb',
+  '@huggingface/transformers',
+  '@xenova/transformers'
+];
 
 class CliError extends Error {
   constructor(message) {
@@ -35,9 +46,12 @@ export async function scanImportBoundaries(options = {}) {
     const source = await readFile(fileAbs, 'utf8');
     const imports = extractStaticImports(source, fileRel);
     for (const importRef of imports) {
-      const targetRel = resolveSourceSpecifier(rootDir, fileRel, importRef.specifier);
+      const nativeBackend = importRef.typeOnly ? null : nativeBackendPackage(importRef.specifier);
+      // Only the native-backend rule looks at loads made at run time.
+      if (RUNTIME_LOAD_KINDS.has(importRef.kind) && !nativeBackend) continue;
+      const targetRel = nativeBackend ?? resolveSourceSpecifier(rootDir, fileRel, importRef.specifier);
       if (!targetRel) continue;
-      const rule = classifyBoundaryRule(fileRel, targetRel);
+      const rule = nativeBackend ? 'no-eager-native-backend' : classifyBoundaryRule(fileRel, targetRel);
       if (!rule) continue;
 
       const violation = {
@@ -132,6 +146,13 @@ function isSourceFile(fileName) {
   return SOURCE_EXTENSIONS.has(path.extname(fileName));
 }
 
+const RUNTIME_LOAD_KINDS = new Set(['require', 'module-level-import']);
+
+/**
+ * Static imports and re-exports, plus the loads that run while the module
+ * itself loads or at an unknown time: require() calls anywhere and import()
+ * calls outside any function. import() inside a function is left out.
+ */
 export function extractStaticImports(source, fileName = 'source.ts') {
   const refs = [];
   const sourceFile = ts.createSourceFile(
@@ -142,25 +163,57 @@ export function extractStaticImports(source, fileName = 'source.ts') {
     scriptKindForFile(fileName)
   );
 
-  function visit(node) {
+  function visit(node, inFunction) {
     if (ts.isImportDeclaration(node) && hasStringModuleSpecifier(node)) {
       refs.push({
         kind: 'import',
         specifier: node.moduleSpecifier.text,
-        index: node.getStart(sourceFile)
+        index: node.getStart(sourceFile),
+        typeOnly: isTypeOnlyImport(node.importClause)
       });
     } else if (ts.isExportDeclaration(node) && hasStringModuleSpecifier(node)) {
       refs.push({
         kind: 'export',
         specifier: node.moduleSpecifier.text,
-        index: node.getStart(sourceFile)
+        index: node.getStart(sourceFile),
+        typeOnly: node.isTypeOnly || isTypeOnlyNamedExports(node.exportClause)
       });
+    } else if (ts.isCallExpression(node) && node.arguments.length > 0 && ts.isStringLiteralLike(node.arguments[0])) {
+      const kind = isRequireCallee(node.expression) ? 'require'
+        : node.expression.kind === ts.SyntaxKind.ImportKeyword && !inFunction ? 'module-level-import'
+          : null;
+      if (kind) refs.push({ kind, specifier: node.arguments[0].text, index: node.getStart(sourceFile), typeOnly: false });
     }
-    ts.forEachChild(node, visit);
+    const childInFunction = inFunction || ts.isFunctionLike(node) || (ts.isPropertyDeclaration(node) && !isStatic(node));
+    ts.forEachChild(node, (child) => visit(child, childInFunction));
   }
 
-  visit(sourceFile);
+  visit(sourceFile, false);
   return refs.sort((a, b) => a.index - b.index || a.specifier.localeCompare(b.specifier));
+}
+
+function isTypeOnlyImport(clause) {
+  if (!clause) return false;
+  if (clause.isTypeOnly) return true;
+  const bindings = clause.namedBindings;
+  return !clause.name && bindings !== undefined && ts.isNamedImports(bindings)
+    && bindings.elements.length > 0 && bindings.elements.every((element) => element.isTypeOnly);
+}
+
+function isTypeOnlyNamedExports(clause) {
+  return clause !== undefined && ts.isNamedExports(clause)
+    && clause.elements.length > 0 && clause.elements.every((element) => element.isTypeOnly);
+}
+
+/** require(...), module.require(...) and createRequire(...)(...). */
+function isRequireCallee(callee) {
+  if (ts.isIdentifier(callee)) return callee.text === 'require';
+  if (ts.isPropertyAccessExpression(callee)) return callee.name.text === 'require';
+  return ts.isCallExpression(callee) && ts.isIdentifier(callee.expression) && callee.expression.text === 'createRequire';
+}
+
+function isStatic(node) {
+  return ts.getModifiers?.(node)?.some((modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword) === true;
 }
 
 function hasStringModuleSpecifier(node) {
@@ -190,6 +243,10 @@ function resolveSourceSpecifier(rootDir, importerRel, specifier) {
   const rel = toRepoRelative(rootDir, resolvedAbs);
   if (rel.startsWith('../') || rel === '..') return null;
   return rel;
+}
+
+function nativeBackendPackage(specifier) {
+  return NATIVE_BACKEND_PACKAGES.find((name) => specifier === name || specifier.startsWith(`${name}/`)) ?? null;
 }
 
 function classifyBoundaryRule(fromRel, toRel) {
@@ -279,6 +336,7 @@ function usage() {
     'Checks Packet A architecture boundaries:',
     '- src/core/** must not import src/extensions/**, src/adapters/**, src/apps/**, or src/services/**.',
     '- src/extensions/** must not import the legacy src/services/memory-service facade.',
+    `- src/** must not load ${NATIVE_BACKEND_PACKAGES.join(', ')} when a module loads (static import, require(), module-level import()); type-only imports and import() inside a function are fine.`,
     '',
     'Known legacy debt must be documented narrowly in scripts/import-boundary-baseline.json.'
   ].join('\n');

@@ -1,0 +1,188 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`PostToolUse stored payload > stores an edit and a Bash failure exactly as before 1`] = `
+{
+  "edges": [
+    {
+      "meta_json": {
+        "action": "write",
+        "sessionId": "session-1",
+        "toolName": "Edit",
+        "weight": 0.8,
+      },
+      "rel_type": "touched_in",
+    },
+  ],
+  "entities": [
+    {
+      "canonical_key": "file:default:<hash>",
+      "entity_type": "source_file",
+      "title": "<HOME>/src/config.ts",
+    },
+  ],
+  "events": [
+    {
+      "content": {
+        "durationMs": 0,
+        "metadata": {
+          "filePath": "<HOME>/src/config.ts",
+          "fileType": "typescript",
+        },
+        "success": true,
+        "toolInput": {
+          "file_path": "<HOME>/src/config.ts",
+          "new_string": "[REDACTED]"",
+          "old_string": "[REDACTED]"",
+        },
+        "toolName": "Edit",
+        "toolOutput": "{"filePath":"<HOME>/src/config.ts"}",
+      },
+      "event_type": "tool_observation",
+      "metadata": {
+        "ingest": {
+          "ingestedAt": "<time>",
+          "occurredAt": "<time>",
+          "operation": "tool_observation",
+          "pipeline": "default",
+          "sourceLagMs": "<varies>",
+          "ts": "<time>",
+        },
+        "success": true,
+        "toolName": "Edit",
+      },
+      "session_id": "session-1",
+    },
+    {
+      "content": {
+        "durationMs": 0,
+        "errorMessage": "Error: expected 1 to be 2 at config.test.ts:4",
+        "metadata": {
+          "command": "npm test",
+        },
+        "success": true,
+        "toolInput": {
+          "command": "npm test -- --token=[REDACTED]",
+        },
+        "toolName": "Bash",
+        "toolOutput": "line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+
+... [52 lines truncated] ...
+
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+line of output
+3 tests failed
+[REDACTED] [stderr] Error: expected 1 to be 2 at config.test.ts:4",
+      },
+      "event_type": "tool_observation",
+      "metadata": {
+        "ingest": {
+          "ingestedAt": "<time>",
+          "occurredAt": "<time>",
+          "operation": "tool_observation",
+          "pipeline": "default",
+          "sourceLagMs": "<varies>",
+          "ts": "<time>",
+        },
+        "success": true,
+        "toolName": "Bash",
+      },
+      "session_id": "session-1",
+    },
+  ],
+}
+`;

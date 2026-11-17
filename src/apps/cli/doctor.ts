@@ -12,6 +12,7 @@
  * filesystem, PATH, or Node process.
  */
 
+import Database from 'better-sqlite3';
 import { spawnSync } from 'child_process';
 import * as fs from 'fs';
 import { createRequire as createNodeRequire } from 'node:module';
@@ -144,29 +145,99 @@ function importInChildProcess(file: string): string | null {
  */
 export function checkSessionEndHandlerLoads(
   pluginPath: string,
-  deps: {
-    existsImpl?: (p: string) => boolean;
-    importImpl?: (file: string) => string | null;
-  } = {}
+  deps: HandlerImportDeps = {}
 ): DoctorCheckResult {
-  const handler = path.join(pluginPath, 'hooks', 'session-end-handler.js');
+  return checkHandlerImports('session-end-handler', 'sessions are not ended', pluginPath, deps);
+}
+
+/**
+ * PostToolUse decides whether to store a call before importing
+ * post-tool-use-handler.js, so an install whose handler fails to import
+ * still runs the hook and drops every call it would have stored. Like
+ * session-end-handler.js it is a library, safe to import here.
+ */
+export function checkPostToolUseHandlerLoads(
+  pluginPath: string,
+  deps: HandlerImportDeps = {}
+): DoctorCheckResult {
+  return checkHandlerImports('post-tool-use-handler', 'tool calls are not stored', pluginPath, deps);
+}
+
+interface HandlerImportDeps {
+  existsImpl?: (p: string) => boolean;
+  importImpl?: (file: string) => string | null;
+}
+
+function checkHandlerImports(
+  name: string,
+  consequence: string,
+  pluginPath: string,
+  deps: HandlerImportDeps
+): DoctorCheckResult {
+  const handler = path.join(pluginPath, 'hooks', `${name}.js`);
   if (!(deps.existsImpl ?? fs.existsSync)(handler)) {
-    return { name: 'session-end-handler', status: 'warn', detail: `${handler} not found; see plugin-files` };
+    return { name, status: 'warn', detail: `${handler} not found; see plugin-files` };
   }
   const error = (deps.importImpl ?? importInChildProcess)(handler);
   if (error) {
     return {
-      name: 'session-end-handler',
+      name,
       status: 'fail',
-      detail: `${handler} fails to load, so sessions are not ended: ${error}`,
+      detail: `${handler} fails to load, so ${consequence}: ${error}`,
       fix: 'Reinstall: npm install -g claude-memory-layer@latest'
     };
   }
   return {
-    name: 'session-end-handler',
+    name,
     status: 'pass',
     detail: 'module imports; native bindings are checked at first use'
   };
+}
+
+function firstLine(error: unknown): string {
+  return (error instanceof Error ? error.message : String(error)).split('\n')[0];
+}
+
+/**
+ * better-sqlite3 loads its native binding at the first open, not on import,
+ * so a binding built for another Node or never built passes every import
+ * check. The hooks then fail open on every event: no error, no capture.
+ */
+export function checkSqliteBinding(
+  openImpl: () => void = () => new Database(':memory:').close()
+): DoctorCheckResult {
+  try {
+    openImpl();
+  } catch (error) {
+    return {
+      name: 'sqlite',
+      status: 'fail',
+      detail: `better-sqlite3 cannot open a database with this Node, so nothing is captured or recalled: ${firstLine(error)}`,
+      fix: 'Reinstall with the Node the hooks run (needed after a Node major upgrade): npm install -g claude-memory-layer@latest'
+    };
+  }
+  return { name: 'sqlite', status: 'pass', detail: 'better-sqlite3 opens a database' };
+}
+
+/**
+ * LanceDB ships its native code as an optional per-platform package, which
+ * an install can skip (--omit=optional, an unsupported platform). Only the
+ * semantic lane needs it; nothing else reports that it is gone.
+ */
+export async function checkVectorStoreModule(
+  importImpl: () => Promise<unknown> = () => import('@lancedb/lancedb')
+): Promise<DoctorCheckResult> {
+  try {
+    await importImpl();
+  } catch (error) {
+    return {
+      name: 'vector-store',
+      status: 'fail',
+      detail: `LanceDB does not load, so semantic search is off; capture and keyword recall still work: ${firstLine(error)}`,
+      fix: 'Reinstall without --omit=optional: npm install -g claude-memory-layer@latest'
+    };
+  }
+  return { name: 'vector-store', status: 'pass', detail: 'LanceDB loads' };
 }
 
 export function checkSessionEndPendingJobs(pending: PendingSessionEndJob[]): DoctorCheckResult {
