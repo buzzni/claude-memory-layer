@@ -404,6 +404,38 @@ describe('lesson files: links, sizes and races', () => {
     expect(readdirSync(dir)).toEqual([]);
   });
 
+  it('reports a file that only redaction pushes past the limits as invalid and imports the rest (reviewer repro)', async () => {
+    const { dir } = await exportedDir(['Release checklist']);
+    const name = 'Grows when redacted';
+    const id = sharedLessonId(name);
+    const step = '--token a x '.repeat(600).trim();
+    expect(step.length).toBeLessThan(8000);
+    writeFileSync(join(dir, sharedLessonFileName(id)), JSON.stringify({
+      format: 'claude-memory-layer/lesson@1', id, name, trigger: 't', steps: [step],
+      failureModes: [], validation: [], validVersions: [], confidence: 1, skillCandidate: false
+    }));
+    const b = await openStore();
+    const plan = importDir(b, PROJECT_B, dir);
+    expect(Object.fromEntries(plan.entries.map((entry) => [entry.file, entry.action]))).toEqual({
+      [sharedLessonFileName(id)]: 'invalid',
+      [sharedLessonFileName(sharedLessonId('Release checklist'))]: 'add'
+    });
+    expect(plan.entries.find((entry) => entry.action === 'invalid')?.reason).toMatch(/^not a valid lesson after redaction: steps/);
+    expect(new LessonRepository(b).getByProjectAndName(PROJECT_B, 'Release checklist')).not.toBeNull();
+  });
+
+  it('rejects exporting a lesson that redaction pushes past the limits and exports the rest', async () => {
+    const a = await openStore();
+    await saveCurated(a, PROJECT_A, 'Release checklist', ['run tests']);
+    sqliteRun(a, `INSERT INTO memory_lessons (lesson_id, project_hash, name, trigger, steps_json, confidence, source_class, created_at, updated_at)
+      VALUES ('00000000-0000-4000-8000-000000000004', ?, 'Grows when redacted', 't', ?, 0.5, 'curated', '2026-11-17T00:00:00.000Z', '2026-11-17T00:00:00.000Z')`,
+    [PROJECT_A, JSON.stringify(['--token a x '.repeat(600).trim()])]);
+    const dir = tempDir('cml-lesson-share-grow-');
+    const plan = await exportAll(a, PROJECT_A, dir);
+    expect(Object.fromEntries(plan.entries.map((entry) => [entry.name, entry.action]))).toEqual({ 'Grows when redacted': 'rejected', 'Release checklist': 'add' });
+    expect(readdirSync(dir)).toEqual([sharedLessonFileName(sharedLessonId('Release checklist'))]);
+  });
+
   it('fails the second of two racing imports as a whole, writing none of it', async () => {
     const { dir } = await exportedDir(['Release checklist', 'Rotate keys']);
     const b = await openStore();

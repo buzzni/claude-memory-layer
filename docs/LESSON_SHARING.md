@@ -80,8 +80,18 @@ lesson file read or overwrite something outside the directory. So:
   through a link. The directory path is checked again right before each
   rename. Prune unlinks, and unlinking never follows a link.
 
-This protects against links committed to the repository. A process that can
-change the directory while the command runs can already write there itself.
+Static links committed to the repository are blocked. Nothing is guaranteed
+against a local process that can change the directory while the command
+runs. Such a process could swap the directory, or one of its parents, for a
+link between the check and the open: `O_NOFOLLOW` protects only the last
+path component. That needs a process already able to write to the checkout,
+and a cloned repository alone cannot do it.
+
+Hard links are regular files to `lstat`, so import reads a hard-linked lesson
+file like any other. Git does not store hard links, so one only exists when
+something on this machine created it. Export never writes through one: the
+rename replaces the directory entry and leaves the other link's file
+untouched.
 
 ### Size limits
 
@@ -94,7 +104,7 @@ before any file is read:
 |---|---|---|
 | One lesson file | 64 KiB | Import: that file is `invalid`. Export: that lesson is `rejected`, so export never writes a file that import refuses |
 | Lesson files in the directory | 1000 | The whole import is refused (exit 1) |
-| All lesson files together | 16 MiB | The whole import is refused (exit 1) |
+| All lesson files together | 16 MiB, counting only regular files of 64 KiB or less (an oversized file is reported on its own and not counted) | The whole import is refused (exit 1) |
 
 A shared set beyond these is more than a team can review. It is also more
 than the per-prompt lesson lane, which scans every enabled lesson, should
@@ -201,8 +211,12 @@ input cannot set it. Trust only goes down:
 - A runbook that absorbs an imported lesson (`lesson consolidate`) is
   `imported` itself. The preview shows each runbook's `sourceClass`.
 - The store refuses any `UPDATE` that would move an imported lesson to
-  another source class. A trigger on `memory_lessons` enforces this, whatever
-  code path issues the update.
+  another source class. A trigger on `memory_lessons`
+  (`memory_lessons_imported_stays_imported`) enforces this for every update
+  this tool's write paths issue. It does not guard against someone who can
+  run arbitrary SQL on the database file. `INSERT OR REPLACE`, a delete
+  followed by an insert, or a renamed column all bypass it. None of the
+  lesson save, import, or consolidate paths issue such SQL.
 
 Where lessons are injected automatically, an imported lesson carries the
 `[low-trust: imported]` label: in the per-prompt lesson lane, in the
@@ -235,6 +249,12 @@ Two lanes leave imported lessons out:
   lesson as `derived`, so the label is lost. If that build saves an imported
   lesson again, the store's trigger rejects the save instead of letting it
   become curated.
-- **Copying the text is not tracked.** Someone who retypes an imported
-  lesson's text under a new name, or proposes it as a new host candidate,
-  makes a new lesson. Its source class is whatever that path writes.
+- **Copying the text is not tracked.** Provenance follows the stored row, not
+  the text. Someone who retypes an imported lesson's text under a new name
+  with `lesson add` makes a `curated` lesson. The same holds when that text
+  is proposed as a new host candidate and the host approves it: approval
+  inserts a new `curated` row.
+- **Hard links and live directory swaps.** See [Symbolic links](#symbolic-links).
+- **Invalid after redaction.** A file whose text is within the limits but
+  grows past them once redacted is `invalid` on import. Export marks such a
+  lesson `rejected`. Other files are still processed.

@@ -1387,8 +1387,10 @@ export class SQLiteEventStore {
     // a lesson that others point at is a runbook.
     this.addColumnIfMissing('memory_lessons', 'absorbed_into', 'TEXT');
     try {
-      // Trust only goes down (memory-origin.ts): no UPDATE, from any code
-      // path, turns an imported lesson into another source class.
+      // Trust only goes down (memory-origin.ts): no UPDATE issued by this
+      // tool's write paths turns an imported lesson into another source
+      // class. It guards those paths, not the file against anyone who can run
+      // arbitrary SQL (INSERT OR REPLACE, DELETE then INSERT, a renamed column).
       sqliteExec(this.db, `CREATE TRIGGER IF NOT EXISTS memory_lessons_imported_stays_imported
         BEFORE UPDATE OF source_class ON memory_lessons
         WHEN OLD.source_class = 'imported' AND NEW.source_class IS NOT 'imported'

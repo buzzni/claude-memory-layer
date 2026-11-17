@@ -90,11 +90,16 @@ interface ShareSafeResult {
   redactedFields: string[];
 }
 
-/** The share-safe file form of a lesson; `lesson` may be a stored lesson or a parsed file. */
+/**
+ * The share-safe file form of a lesson; `lesson` may be a stored lesson or a
+ * parsed file. Redaction can lengthen text past the format's limits or empty a
+ * field, so the result is validated again and a failure is returned as a
+ * reason for that one lesson, never thrown.
+ */
 export function toSharedLesson(lesson: Pick<MemoryLesson, 'name' | 'trigger' | 'steps' | 'failureModes' | 'scope' | 'reconsiderWhen' | 'confidence' | 'skillCandidate'> & {
   validation?: string[];
   validVersions?: string[];
-}): ShareSafeResult {
+}): ShareSafeResult | { reason: string } {
   const redactedFields = new Set<string>();
   const text = (field: string, value: string) => {
     const safe = shareSafeText(value);
@@ -117,7 +122,11 @@ export function toSharedLesson(lesson: Pick<MemoryLesson, 'name' | 'trigger' | '
     confidence: lesson.confidence,
     skillCandidate: lesson.skillCandidate
   };
-  return { lesson: SharedLessonSchema.parse(shared), redactedFields: [...redactedFields] };
+  const parsed = SharedLessonSchema.safeParse(shared);
+  if (!parsed.success) {
+    return { reason: `not a valid lesson after redaction: ${parsed.error.issues.map((issue) => issue.path.join('.') || issue.message).join(', ')}` };
+  }
+  return { lesson: parsed.data, redactedFields: [...redactedFields] };
 }
 
 async function listAllLessons(repository: LessonRepository, projectHash: string): Promise<MemoryLesson[]> {
@@ -300,7 +309,14 @@ export function planLessonExport(lessons: readonly MemoryLesson[], dir: string, 
   const byFile = new Map<string, string>();
   const onDisk = new Map(listJsonFiles(dir).map((entry) => [entry.file, entry]));
   for (const lesson of lessons) {
-    const { lesson: shared, redactedFields } = toSharedLesson(lesson);
+    const converted = toSharedLesson(lesson);
+    if ('reason' in converted) {
+      const name = shareSafeText(lesson.name);
+      const id = sharedLessonId(name);
+      entries.push({ action: 'rejected', id, name, file: sharedLessonFileName(id), reason: converted.reason });
+      continue;
+    }
+    const { lesson: shared, redactedFields } = converted;
     const file = sharedLessonFileName(shared.id);
     const other = byFile.get(file);
     if (other !== undefined) throw new Error(`lessons "${other}" and "${shared.name}" export to the same file ${file}`);
@@ -441,7 +457,12 @@ export function planLessonImport(db: SQLiteDatabase | null, projectHash: string,
       planned.push({ entry: { action: 'add', ...base }, lesson });
       continue;
     }
-    const differing = differingFields(toSharedLesson(local).lesson, lesson);
+    const localShared = toSharedLesson(local);
+    if ('reason' in localShared) {
+      planned.push({ entry: { action: 'conflict', ...base, reason: `the local lesson with this name cannot be compared (${localShared.reason})` }, lesson, local });
+      continue;
+    }
+    const differing = differingFields(localShared.lesson, lesson);
     if (differing.length === 0) {
       planned.push({ entry: { action: 'unchanged', ...base }, lesson, local });
     } else if (local.sourceClass === 'imported' && repository!.lastImportedRevision(local.lessonId) === local.revision) {
