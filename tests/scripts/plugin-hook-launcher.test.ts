@@ -20,15 +20,25 @@ process.stdin.on('data', (chunk) => { input += chunk; });
 process.stdin.on('end', () => { process.stdout.write(JSON.stringify({ ran: __filename, input })); });
 `;
 
-function makeFakePackage(root: string, hookSource = FAKE_HOOK, options: { companions?: boolean } = {}): string {
+/**
+ * A built package. Like current builds, a hook with companions names them in
+ * its source unless `selfContained` (an older build that bundles everything).
+ */
+function makeFakePackage(
+  root: string,
+  hookSource = FAKE_HOOK,
+  options: { companions?: boolean; selfContained?: boolean } = {}
+): string {
   mkdirSync(path.join(root, 'dist', 'hooks'), { recursive: true });
   mkdirSync(path.join(root, 'dist', 'cli'), { recursive: true });
   writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: 'claude-memory-layer' }));
   writeFileSync(path.join(root, 'dist', 'cli', 'index.js'), '');
   for (const hook of HOOK_FILES) {
-    writeFileSync(path.join(root, 'dist', 'hooks', `${hook}.js`), hookSource);
+    const companions = options.selfContained ? [] : HOOK_COMPANIONS[hook] ?? [];
+    const names = companions.map((companion) => `// imports new URL('./${companion}', import.meta.url)\n`).join('');
+    writeFileSync(path.join(root, 'dist', 'hooks', `${hook}.js`), `${hookSource}${names}`);
     if (options.companions === false) continue;
-    for (const companion of HOOK_COMPANIONS[hook] ?? []) {
+    for (const companion of companions) {
       writeFileSync(path.join(root, 'dist', 'hooks', companion), '');
     }
   }
@@ -211,6 +221,17 @@ describe('plugin hook launcher', () => {
 
     expect(ranHook(result)).toBe(path.join(complete, 'dist', 'hooks', 'post-tool-use.js'));
     expect(result.status).toBe(0);
+  });
+
+  it.each(Object.keys(HOOK_COMPANIONS))('runs an older self-contained %s that names no handler file', (hookFile) => {
+    const { home, binDir, env } = makeEnv(`self-contained-${hookFile}`);
+    const packageRoot = makeFakePackage(path.join(home, 'global'), FAKE_HOOK, { companions: false, selfContained: true });
+    installOnPath(binDir, packageRoot);
+
+    const result = runLauncher(env, hookFile);
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(ranHook(result)).toBe(path.join(packageRoot, 'dist', 'hooks', `${hookFile}.js`));
   });
 
   it.each(Object.keys(HOOK_COMPANIONS))('reports an install missing the file %s imports as a non-blocking error', (hookFile) => {

@@ -50,6 +50,8 @@ const HOOK_EVENTS = {
  * Files a hook imports from next to itself only when it needs them, so a
  * build missing one still starts the hook and then silently stores nothing.
  * Mirrored in REQUIRED_HOOK_FILES (src/apps/cli/claude-settings-hooks.ts).
+ * Required only of a build whose hook file names them: the npm package can
+ * be older than this launcher, with a hook that bundles everything.
  */
 const HOOK_COMPANIONS = {
   'post-tool-use': ['post-tool-use-handler.js'],
@@ -153,9 +155,17 @@ function packageRootFromBinDir(dir) {
   ].find(isPackageRoot) || null;
 }
 
-/** The companion files missing next to a built hook file. */
+/** The companion files a built hook file names but that are not next to it. */
 function missingCompanions(target, hookFile) {
-  return (HOOK_COMPANIONS[hookFile] || []).filter((file) => !fs.existsSync(path.join(path.dirname(target), file)));
+  const expected = HOOK_COMPANIONS[hookFile] || [];
+  if (expected.length === 0) return [];
+  let source;
+  try {
+    source = fs.readFileSync(target, 'utf8');
+  } catch {
+    return [];
+  }
+  return expected.filter((file) => source.includes(file) && !fs.existsSync(path.join(path.dirname(target), file)));
 }
 
 /**
