@@ -1235,6 +1235,8 @@ npm run typecheck
 npm run dev
 ```
 
+검색 벤치마크의 재현 명령, 데이터셋, baseline, 한계: [docs/BENCHMARKS.md](docs/BENCHMARKS.md) (영문)
+
 ## 기술 스택
 
 - **SQLite / WAL**: 이벤트 저장소 (canonical append/read model)

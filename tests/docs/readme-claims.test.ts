@@ -28,7 +28,8 @@ const USER_DOCS = [
   'docs/DASHBOARD.md',
   'docs/HOW_IT_WORKS.md',
   'docs/MONGO_SYNC.md',
-  'docs/EXTERNAL_MARKET_CONTEXT.md'
+  'docs/EXTERNAL_MARKET_CONTEXT.md',
+  'docs/BENCHMARKS.md'
 ];
 const readme = USER_DOCS.map(read).join('\n');
 
@@ -83,7 +84,7 @@ function citedCommands(): string[] {
 
 describe('README claims', () => {
   it('cites only npm scripts that exist in package.json', () => {
-    const cited = [...code.matchAll(/npm run ([\w:-]*\w)/g)].map((m) => m[1]);
+    const cited = [...code.matchAll(/npm run (?:--?[\w-]+[ \t]+)*(\w(?:[\w:-]*\w)?)/g)].map((m) => m[1]);
     expect(cited.length).toBeGreaterThan(0);
     expect(cited.filter((name) => !(name in pkg.scripts))).toEqual([]);
   });
@@ -145,7 +146,33 @@ function fencedCommandBlocks(markdown: string): string[][] {
 }
 const blocks = fencedCommandBlocks(readme);
 
+// The TypeScript file a documented command runs and the arguments it gets:
+// `npm run [npm flags] <script> [-- args]` through package.json, or `tsx <file> args`.
+function commandTarget(line: string): { file: string; args: string } | undefined {
+  const npm = line.match(/\bnpm run (?:--?[\w-]+[ \t]+)*(\w(?:[\w:-]*\w)?)(?:\s+--\s+(.*))?/);
+  if (npm) {
+    const script = pkg.scripts[npm[1]]?.match(/^tsx (\S+\.ts)(.*)$/);
+    return script ? { file: script[1], args: `${script[2]} ${npm[2] ?? ''}` } : undefined;
+  }
+  const tsx = line.match(/\btsx ((?:scripts|benchmarks)\/\S+\.ts)(.*)/);
+  return tsx ? { file: tsx[1], args: tsx[2] } : undefined;
+}
+
 describe('README procedures', () => {
+  it('passes only options that the documented TypeScript scripts parse', () => {
+    const targets = blocks.flat().map(commandTarget).filter((target) => target !== undefined);
+    expect(targets.some((target) => target.file === 'benchmarks/public/run.ts')).toBe(true);
+
+    const unknown = targets.flatMap(({ file, args }) => {
+      const source = read(file);
+      return [...args.matchAll(/(?<!\S)--[a-z][\w-]*/g)]
+        .map(([flag]) => flag)
+        .filter((flag) => !source.includes(`'${flag}'`))
+        .map((flag) => `${file} ${flag}`);
+    });
+    expect(unknown).toEqual([]);
+  });
+
   it('shows forget only with --before while event-id and --session forget are unimplemented', () => {
     const cli = read('src/apps/cli/index.ts');
     if (!cli.includes('Forget functionality requires additional implementation')) return;
