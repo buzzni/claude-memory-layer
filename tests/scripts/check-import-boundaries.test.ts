@@ -145,6 +145,30 @@ describe('check-import-boundaries architecture guard', () => {
     expect(result.stderr).not.toContain(root);
   });
 
+  it('fails on static imports of the optional native backends and allows type-only and dynamic ones', () => {
+    const root = makeFixtureRepo('native-backends');
+    writeFileSync(path.join(root, 'src', 'core', 'static-lance.ts'), "import * as lancedb from '@lancedb/lancedb';\nvoid lancedb;\n", 'utf8');
+    writeFileSync(path.join(root, 'src', 'adapters', 'claude', 'static-transformers.ts'), "export { pipeline } from '@huggingface/transformers';\n", 'utf8');
+    writeFileSync(path.join(root, 'src', 'apps', 'cli', 'static-xenova.ts'), "import '@xenova/transformers';\n", 'utf8');
+    writeFileSync(path.join(root, 'src', 'core', 'lazy-lance.ts'), [
+      "import type * as lancedb from '@lancedb/lancedb';",
+      "export type { Table } from '@lancedb/lancedb';",
+      "export async function open(dir: string): Promise<lancedb.Connection> {",
+      "  return (await import('@lancedb/lancedb')).connect(dir);",
+      "}",
+      ""
+    ].join('\n'), 'utf8');
+
+    const result = runChecker(root);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('[no-static-native-backend] src/core/static-lance.ts -> @lancedb/lancedb');
+    expect(result.stderr).toContain('[no-static-native-backend] src/adapters/claude/static-transformers.ts -> @huggingface/transformers');
+    expect(result.stderr).toContain('[no-static-native-backend] src/apps/cli/static-xenova.ts -> @xenova/transformers');
+    expect(result.stderr).not.toContain('lazy-lance');
+    expect(result.stderr).not.toContain(root);
+  });
+
   it('passes for allowed imports and reports active baseline counts without absolute paths', () => {
     const root = makeFixtureRepo('passing');
     const baselinePath = path.join(root, 'import-boundary-baseline.json');

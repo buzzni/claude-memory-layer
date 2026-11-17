@@ -13,6 +13,15 @@ const CORE_FORBIDDEN_LAYERS = [
   'src/apps',
   'src/services'
 ];
+// Native code an install can lack (LanceDB's per-platform package, the
+// postinstall-managed embedding backend). The hook bundles share modules with
+// everything else, so a static import anywhere can stop capture and keyword
+// recall from loading; import them with await import() where they are used.
+const NATIVE_BACKEND_PACKAGES = [
+  '@lancedb/lancedb',
+  '@huggingface/transformers',
+  '@xenova/transformers'
+];
 
 class CliError extends Error {
   constructor(message) {
@@ -35,9 +44,10 @@ export async function scanImportBoundaries(options = {}) {
     const source = await readFile(fileAbs, 'utf8');
     const imports = extractStaticImports(source, fileRel);
     for (const importRef of imports) {
-      const targetRel = resolveSourceSpecifier(rootDir, fileRel, importRef.specifier);
+      const nativeBackend = importRef.typeOnly ? null : nativeBackendPackage(importRef.specifier);
+      const targetRel = nativeBackend ?? resolveSourceSpecifier(rootDir, fileRel, importRef.specifier);
       if (!targetRel) continue;
-      const rule = classifyBoundaryRule(fileRel, targetRel);
+      const rule = nativeBackend ? 'no-static-native-backend' : classifyBoundaryRule(fileRel, targetRel);
       if (!rule) continue;
 
       const violation = {
@@ -147,13 +157,15 @@ export function extractStaticImports(source, fileName = 'source.ts') {
       refs.push({
         kind: 'import',
         specifier: node.moduleSpecifier.text,
-        index: node.getStart(sourceFile)
+        index: node.getStart(sourceFile),
+        typeOnly: node.importClause?.isTypeOnly === true
       });
     } else if (ts.isExportDeclaration(node) && hasStringModuleSpecifier(node)) {
       refs.push({
         kind: 'export',
         specifier: node.moduleSpecifier.text,
-        index: node.getStart(sourceFile)
+        index: node.getStart(sourceFile),
+        typeOnly: node.isTypeOnly
       });
     }
     ts.forEachChild(node, visit);
@@ -190,6 +202,10 @@ function resolveSourceSpecifier(rootDir, importerRel, specifier) {
   const rel = toRepoRelative(rootDir, resolvedAbs);
   if (rel.startsWith('../') || rel === '..') return null;
   return rel;
+}
+
+function nativeBackendPackage(specifier) {
+  return NATIVE_BACKEND_PACKAGES.find((name) => specifier === name || specifier.startsWith(`${name}/`)) ?? null;
 }
 
 function classifyBoundaryRule(fromRel, toRel) {
@@ -279,6 +295,7 @@ function usage() {
     'Checks Packet A architecture boundaries:',
     '- src/core/** must not import src/extensions/**, src/adapters/**, src/apps/**, or src/services/**.',
     '- src/extensions/** must not import the legacy src/services/memory-service facade.',
+    `- src/** must not statically import ${NATIVE_BACKEND_PACKAGES.join(', ')} (type-only and await import() are fine).`,
     '',
     'Known legacy debt must be documented narrowly in scripts/import-boundary-baseline.json.'
   ].join('\n');

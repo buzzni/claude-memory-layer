@@ -3,7 +3,7 @@
  * AXIOMMIND Principle 6: Vector store consistency (DuckDB → outbox → LanceDB unidirectional)
  */
 
-import * as lancedb from '@lancedb/lancedb';
+import type * as lancedb from '@lancedb/lancedb';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { VectorRecord } from './types.js';
@@ -133,7 +133,10 @@ export class VectorStore {
     // service must therefore treat a missing or escaped vector index as empty
     // instead of connecting and mutating canonical storage.
     if (this.readOnly && !isOwnedExistingVectorDirectory(this.dbPath, this.canonicalRoot)) return;
-    this.db = await lancedb.connect(this.dbPath);
+    // Loaded here, not at module load: hooks bundle this file for SQLite-only
+    // paths, and a missing LanceDB native package must not stop them.
+    const { connect } = await import('@lancedb/lancedb');
+    this.db = await connect(this.dbPath);
   }
 
   /**
