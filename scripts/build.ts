@@ -6,19 +6,14 @@
 import * as esbuild from 'esbuild';
 import * as fs from 'fs';
 import * as path from 'path';
+import { fileURLToPath } from 'url';
 
 const outdir = 'dist';
 const packageJson = JSON.parse(fs.readFileSync('package.json', 'utf-8')) as { version?: string };
 const appVersion = packageJson.version ?? '0.0.0';
 
-// Clean output directory
-if (fs.existsSync(outdir)) {
-  fs.rmSync(outdir, { recursive: true });
-}
-fs.mkdirSync(outdir, { recursive: true });
-
-// Common build options
-const commonOptions: esbuild.BuildOptions = {
+// Common build options (exported so tests bundle the hooks exactly as shipped)
+export const commonOptions: esbuild.BuildOptions = {
   bundle: true,
   platform: 'node',
   target: 'node20',
@@ -52,8 +47,38 @@ const __dirname = dirname(__filename);`
   }
 };
 
+/** src/hooks/<name>.ts -> dist/hooks/<name>.js, in build order. */
+export const HOOK_ENTRIES = [
+  'session-start',
+  'user-prompt-submit',
+  // post-tool-use imports post-tool-use-handler only for a call it stores.
+  'post-tool-use-handler',
+  'post-tool-use',
+  'stop',
+  // Before session-end: a hook whose worker cannot load this falls back to
+  // its own bundled copy, but a half-built dist should not need to.
+  'session-end-handler',
+  'session-end',
+  'session-end-worker',
+  'pre-compact',
+  // pre-tool-use imports pre-tool-use-handler only when the pre-edit check is on.
+  'pre-tool-use-handler',
+  'pre-tool-use',
+  'codex-session-start',
+  'codex-user-prompt-submit',
+  'codex-session-end',
+  'codex-session-import-worker',
+  'semantic-daemon'
+];
+
 async function build() {
   console.log('🔨 Building claude-memory-layer plugin...\n');
+
+  // Clean output directory
+  if (fs.existsSync(outdir)) {
+    fs.rmSync(outdir, { recursive: true });
+  }
+  fs.mkdirSync(outdir, { recursive: true });
 
   // Build CLI app
   console.log('📦 Building CLI...');
@@ -73,30 +98,7 @@ async function build() {
 
   // Build hooks
   console.log('📦 Building hooks...');
-  const hooks = [
-    'session-start',
-    'user-prompt-submit',
-    // post-tool-use imports post-tool-use-handler only for a call it stores.
-    'post-tool-use-handler',
-    'post-tool-use',
-    'stop',
-    // Before session-end: a hook whose worker cannot load this falls back to
-    // its own bundled copy, but a half-built dist should not need to.
-    'session-end-handler',
-    'session-end',
-    'session-end-worker',
-    'pre-compact',
-    // pre-tool-use imports pre-tool-use-handler only when the pre-edit check is on.
-    'pre-tool-use-handler',
-    'pre-tool-use',
-    'codex-session-start',
-    'codex-user-prompt-submit',
-    'codex-session-end',
-    'codex-session-import-worker',
-    'semantic-daemon'
-  ];
-
-  for (const hook of hooks) {
+  for (const hook of HOOK_ENTRIES) {
     await esbuild.build({
       ...commonOptions,
       entryPoints: [`src/hooks/${hook}.ts`],
@@ -192,7 +194,9 @@ async function build() {
   console.log('  - skills/');
 }
 
-build().catch((err) => {
-  console.error('Build failed:', err);
-  process.exit(1);
-});
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  build().catch((err) => {
+    console.error('Build failed:', err);
+    process.exit(1);
+  });
+}
