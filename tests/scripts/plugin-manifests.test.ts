@@ -4,7 +4,7 @@ import * as path from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { CLAUDE_PLUGIN_NAME, PLUGIN_HOOK_MATCHERS, PLUGIN_HOOKS } from '../../src/apps/cli/claude-settings-hooks.js';
+import { CLAUDE_PLUGIN_NAME, PLUGIN_HOOK_MATCHERS, PLUGIN_HOOKS, REQUIRED_HOOK_FILES } from '../../src/apps/cli/claude-settings-hooks.js';
 
 const repoRoot = process.cwd();
 
@@ -79,5 +79,14 @@ describe('Claude Code plugin manifests', () => {
         matcher
       ])
     ));
+  });
+
+  it('has doctor require every file the launcher requires next to a hook', () => {
+    const { HOOK_COMPANIONS } = createRequire(import.meta.url)('../../.claude-plugin/hook-launcher.cjs') as {
+      HOOK_COMPANIONS: Record<string, string[]>;
+    };
+    for (const [hook, companions] of Object.entries(HOOK_COMPANIONS)) {
+      expect(REQUIRED_HOOK_FILES, hook).toEqual(expect.arrayContaining([`${hook}.js`, ...companions]));
+    }
   });
 });

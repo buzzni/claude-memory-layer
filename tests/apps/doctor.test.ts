@@ -11,6 +11,7 @@ import {
   checkNodeVersion,
   checkPathConsistency,
   checkPluginFiles,
+  checkPostToolUseHandlerLoads,
   checkProjectStoreAccess,
   checkSessionEndHandlerLoads,
   checkSessionEndPendingJobs,
@@ -106,6 +107,40 @@ describe('checkVectorStoreModule', () => {
     expect(result.detail).toContain('@lancedb/lancedb-darwin-arm64');
     expect(result.detail).not.toContain('Require stack');
     expect(result.fix).toContain('optional');
+  });
+});
+
+describe('checkPostToolUseHandlerLoads', () => {
+  let root = '';
+  afterEach(() => {
+    if (root) rmSync(root, { recursive: true, force: true });
+    root = '';
+  });
+
+  function pluginWithHandler(source: string): string {
+    root = mkdtempSync(join(tmpdir(), 'cml-doctor-ptu-handler-'));
+    mkdirSync(join(root, 'hooks'));
+    writeFileSync(join(root, 'hooks', 'post-tool-use-handler.js'), source);
+    return root;
+  }
+
+  it('passes when the file PostToolUse loads to store a call imports cleanly', () => {
+    expect(checkPostToolUseHandlerLoads(pluginWithHandler('export const captureToolObservation = async () => "{}";')))
+      .toMatchObject({ name: 'post-tool-use-handler', status: 'pass' });
+  });
+
+  it('fails when importing it throws, since every stored tool call is then dropped', () => {
+    const result = checkPostToolUseHandlerLoads(pluginWithHandler("throw new Error(\"Cannot find package 'better-sqlite3'\");"));
+    expect(result.status).toBe('fail');
+    expect(result.detail).toContain('tool calls are not stored');
+    expect(result.detail).toContain("Cannot find package 'better-sqlite3'");
+    expect(result.fix).toContain('npm install');
+  });
+
+  it('leaves a missing handler to the plugin-files check', () => {
+    const result = checkPostToolUseHandlerLoads('/plugin', { existsImpl: () => false, importImpl: () => 'unreachable' });
+    expect(result.status).toBe('warn');
+    expect(result.detail).toContain('plugin-files');
   });
 });
 

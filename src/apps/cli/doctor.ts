@@ -145,26 +145,50 @@ function importInChildProcess(file: string): string | null {
  */
 export function checkSessionEndHandlerLoads(
   pluginPath: string,
-  deps: {
-    existsImpl?: (p: string) => boolean;
-    importImpl?: (file: string) => string | null;
-  } = {}
+  deps: HandlerImportDeps = {}
 ): DoctorCheckResult {
-  const handler = path.join(pluginPath, 'hooks', 'session-end-handler.js');
+  return checkHandlerImports('session-end-handler', 'sessions are not ended', pluginPath, deps);
+}
+
+/**
+ * PostToolUse decides whether to store a call before importing
+ * post-tool-use-handler.js, so an install whose handler fails to import
+ * still runs the hook and drops every call it would have stored. Like
+ * session-end-handler.js it is a library, safe to import here.
+ */
+export function checkPostToolUseHandlerLoads(
+  pluginPath: string,
+  deps: HandlerImportDeps = {}
+): DoctorCheckResult {
+  return checkHandlerImports('post-tool-use-handler', 'tool calls are not stored', pluginPath, deps);
+}
+
+interface HandlerImportDeps {
+  existsImpl?: (p: string) => boolean;
+  importImpl?: (file: string) => string | null;
+}
+
+function checkHandlerImports(
+  name: string,
+  consequence: string,
+  pluginPath: string,
+  deps: HandlerImportDeps
+): DoctorCheckResult {
+  const handler = path.join(pluginPath, 'hooks', `${name}.js`);
   if (!(deps.existsImpl ?? fs.existsSync)(handler)) {
-    return { name: 'session-end-handler', status: 'warn', detail: `${handler} not found; see plugin-files` };
+    return { name, status: 'warn', detail: `${handler} not found; see plugin-files` };
   }
   const error = (deps.importImpl ?? importInChildProcess)(handler);
   if (error) {
     return {
-      name: 'session-end-handler',
+      name,
       status: 'fail',
-      detail: `${handler} fails to load, so sessions are not ended: ${error}`,
+      detail: `${handler} fails to load, so ${consequence}: ${error}`,
       fix: 'Reinstall: npm install -g claude-memory-layer@latest'
     };
   }
   return {
-    name: 'session-end-handler',
+    name,
     status: 'pass',
     detail: 'module imports; native bindings are checked at first use'
   };

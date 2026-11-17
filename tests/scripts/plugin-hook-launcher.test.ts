@@ -7,7 +7,8 @@ import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const launcher = path.join(process.cwd(), '.claude-plugin', 'hook-launcher.cjs');
-const { HOOK_EVENTS, HOOK_MATCHERS } = createRequire(import.meta.url)(launcher) as {
+const { HOOK_COMPANIONS, HOOK_EVENTS, HOOK_MATCHERS } = createRequire(import.meta.url)(launcher) as {
+  HOOK_COMPANIONS: Record<string, string[]>;
   HOOK_EVENTS: Record<string, string>;
   HOOK_MATCHERS: Record<string, string>;
 };
@@ -19,13 +20,17 @@ process.stdin.on('data', (chunk) => { input += chunk; });
 process.stdin.on('end', () => { process.stdout.write(JSON.stringify({ ran: __filename, input })); });
 `;
 
-function makeFakePackage(root: string, hookSource = FAKE_HOOK): string {
+function makeFakePackage(root: string, hookSource = FAKE_HOOK, options: { companions?: boolean } = {}): string {
   mkdirSync(path.join(root, 'dist', 'hooks'), { recursive: true });
   mkdirSync(path.join(root, 'dist', 'cli'), { recursive: true });
   writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: 'claude-memory-layer' }));
   writeFileSync(path.join(root, 'dist', 'cli', 'index.js'), '');
   for (const hook of HOOK_FILES) {
     writeFileSync(path.join(root, 'dist', 'hooks', `${hook}.js`), hookSource);
+    if (options.companions === false) continue;
+    for (const companion of HOOK_COMPANIONS[hook] ?? []) {
+      writeFileSync(path.join(root, 'dist', 'hooks', companion), '');
+    }
   }
   return root;
 }
@@ -194,6 +199,31 @@ describe('plugin hook launcher', () => {
     writeSettingsHook(home, 'PostToolUse', { matcher: settingsHook.matcher, command: settingsHook.command(hookPath) });
 
     expect(ranHook(runLauncher(env, 'post-tool-use'))).toBe(hookPath);
+  });
+
+  it('passes over a build whose hook is there without the handler file it imports', () => {
+    const { home, binDir, pluginRoot, env } = makeEnv('incomplete-plugin-root');
+    makeFakePackage(pluginRoot, FAKE_HOOK, { companions: false });
+    const complete = makeFakePackage(path.join(home, 'global'));
+    installOnPath(binDir, complete);
+
+    const result = runLauncher(env, 'post-tool-use');
+
+    expect(ranHook(result)).toBe(path.join(complete, 'dist', 'hooks', 'post-tool-use.js'));
+    expect(result.status).toBe(0);
+  });
+
+  it.each(Object.keys(HOOK_COMPANIONS))('reports an install missing the file %s imports as a non-blocking error', (hookFile) => {
+    const { home, binDir, env } = makeEnv(`incomplete-${hookFile}`);
+    installOnPath(binDir, makeFakePackage(path.join(home, 'global'), FAKE_HOOK, { companions: false }));
+
+    const result = runLauncher(env, hookFile);
+
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe('');
+    expect(result.stderr.trim().split('\n')).toHaveLength(1);
+    expect(result.stderr).toContain(HOOK_COMPANIONS[hookFile][0]);
+    expect(result.stderr).toContain('npm install -g claude-memory-layer');
   });
 
   it('turns a hook exit code of 2, which would block the prompt, into a non-blocking 1', () => {
