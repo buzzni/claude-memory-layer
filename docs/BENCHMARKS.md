@@ -13,7 +13,7 @@ Retrieval numbers for claude-memory-layer that anyone can rerun, with the comman
 
 ## Summary
 
-Measured 2026-11-17 on `4e6b479`. Details, commands and limits are in the sections below.
+Measured 2026-11-17 on commit `b4b28fc` (the measurement commit). Details, commands and limits are in the sections below.
 
 | set | data | what is scored | result | baseline | who wins |
 |---|---|---|---|---|---|
@@ -40,7 +40,7 @@ curl -L --fail \
 shasum -a 256 /tmp/LongMemEval/data/longmemeval_s_cleaned.json
 # d6f21ea9d60a0d56f34a05b609c79c88a451d2ae03597821ea3d5a9678c3a442
 
-# Every run on this page, 35–37 minutes on the machine below. --download-models fetches
+# Every run on this page, 35–45 minutes on the machine below. --download-models fetches
 # Xenova/multilingual-e5-small at revision 761b726 into --model-cache and .cache/lesson-hybrid-e5.
 npm run --silent benchmark:public -- --out-dir /tmp/cml-bench \
   --model-cache /tmp/cml-models --download-models \
@@ -49,19 +49,19 @@ npm run --silent benchmark:public -- --out-dir /tmp/cml-bench \
 
 `benchmark:public` writes one JSON report per run and `summary.json` (commit, Node version, platform, CPU, dataset hash, model revision and hash, and the metrics this page quotes) into `--out-dir`, which must be empty. It refuses a LongMemEval file with a different hash, and a model cache whose files do not hash to the measured model. Without `--longmemeval` it runs only the committed fixtures; without `--model-cache` it skips the runs that need the embedder and lists them as `not run`. The individual commands are given per set below; use `npm run --silent` when redirecting output, or npm's banner ends up in the JSON.
 
-The `summary.json` of both published runs is committed as [`benchmarks/public/results/2026-11-17-run1.summary.json`](../benchmarks/public/results/2026-11-17-run1.summary.json) and [`2026-11-17-run2.summary.json`](../benchmarks/public/results/2026-11-17-run2.summary.json): aggregates only, no query or memory text.
+The `summary.json` of the measurement run is committed as [`benchmarks/public/results/2026-11-17-b4b28fc.summary.json`](../benchmarks/public/results/2026-11-17-b4b28fc.summary.json), and the two reruns before the last rebase as [`2026-11-17-4e6b479-a.summary.json`](../benchmarks/public/results/2026-11-17-4e6b479-a.summary.json) and [`2026-11-17-4e6b479-b.summary.json`](../benchmarks/public/results/2026-11-17-4e6b479-b.summary.json): aggregates only, no query or memory text.
 
 ### Environment of the published run
 
 | | |
 |---|---|
-| code | `4e6b479`, the branch commit that was measured: main at `1e996cd` plus this page's runner, grep baseline and the grep arm of `scripts/evaluate-rank-fusion.ts`; none of it touches `src/` |
+| code | measurement commit `b4b28fc`: main at `7052fb9` (v2.5.11) plus this page's runner, grep baseline and the grep arm of `scripts/evaluate-rank-fusion.ts`; none of it touches `src/` |
 | machine | Apple M2 Max, 12 cores, 64 GB, macOS 27.0.1 (darwin 27.0.0 arm64); other jobs ran on the machine, so times are approximate |
 | Node | v22.23.1 |
 | embedder | `Xenova/multilingual-e5-small` revision `761b726dd34f` (converted from `intfloat/multilingual-e5-small`, MIT), files `config.json`, `tokenizer.json`, `tokenizer_config.json`, `onnx/model.onnx`; artifact sha256 `a89c5cc413885d7c2af5906da0f77f30d2ce4ef4bb11751fc7e22d652373ec4d` |
 | LongMemEval_S | `xiaowu0162/longmemeval-cleaned` revision `98d7416c24c7`, `longmemeval_s_cleaned.json` sha256 `d6f21ea9…3a442` |
 | clock | the retriever's rerank has a recency term from the wall clock that stops changing once a memory is 60 days old; the LongMemEval memories are dated 2023 and the golden ones 2026-01-01, so the date of a run does not move those results |
-| reruns | `benchmark:public` ran twice on `4e6b479`; every metric was identical in both runs and only times differed. They also equal, metric for metric, two earlier runs on `cfdbdd7` (before rebasing onto `1e996cd`, and before the grep arm, masked run and length counts existed). A still earlier exploratory run of set 1 in a separate process gave CML nDCG@10 0.648 and MRR 0.604 (0.001 higher); no other metric on this page moved |
+| reruns | the measurement run on `b4b28fc`, two runs on `4e6b479` (main `1e996cd`) and two on `cfdbdd7` (main `b99f62f`, before the grep arm, masked run and length counts existed) gave the same value for every metric they share; only times differed. A still earlier exploratory run of set 1 in a separate process gave CML nDCG@10 0.648 and MRR 0.604 (0.001 higher); no other metric on this page moved |
 
 ## 1. LongMemEval_S, production path vs grep
 
@@ -72,7 +72,7 @@ The `summary.json` of both published runs is committed as [`benchmarks/public/re
 - `current` is CML: the production retriever with the semantic daemon's options.
 - `keyword` is the FTS5 lane alone and `vector` the e5 lane alone, each taking its own top 30.
 - `grep` is the grep-level baseline (below) over the same stored text, top 30.
-- The reranker is off. Embedding the corpus takes almost all of the 28–29 minute run, which is why this set is 30 questions.
+- The reranker is off. Embedding the corpus takes almost all of the 28–36 minute run, which is why this set is 30 questions.
 
 **grep baseline.** `benchmarks/public/grep-baseline.ts` scores each memory by how many distinct query terms it contains as a case-insensitive substring (terms: letter/digit runs of 2+ characters minus a short English stopword list) and keeps corpus order on ties. No index, no weighting. It does not see expected ids or answers.
 
@@ -130,10 +130,10 @@ k = 10. recall_any: at least one evidence item in the top 10. recall_all: every 
 | run | memories | recall_any@10 | recall_all@10 | fractional recall@10 | nDCG@10 | MRR | wall time |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | **grep, sessions** | 22,419 | **0.962** | **0.849** | **0.910** | **0.816** | **0.828** | 3 s |
-| replay surrogate, sessions | 22,419 | 0.755 | 0.489 | 0.625 | 0.556 | 0.609 | 32–37 s |
-| replay surrogate, hybrid session + turn with the opt-in flags above | 22,419 sessions, 231,606 turns | 0.881 | 0.740 | 0.816 | 0.749 | 0.771 | 5 min |
-| grep, turns | 231,606 | 0.749 | 0.526 | 0.626 | 0.483 | 0.488 | 12 s |
-| replay surrogate, turns | 231,606 | 0.651 | 0.383 | 0.509 | 0.452 | 0.507 | 25–28 s |
+| replay surrogate, sessions | 22,419 | 0.755 | 0.489 | 0.625 | 0.556 | 0.609 | 32–48 s |
+| replay surrogate, hybrid session + turn with the opt-in flags above | 22,419 sessions, 231,606 turns | 0.881 | 0.740 | 0.816 | 0.749 | 0.771 | 5–7 min |
+| grep, turns | 231,606 | 0.749 | 0.526 | 0.626 | 0.483 | 0.488 | 12–13 s |
+| replay surrogate, turns | 231,606 | 0.651 | 0.383 | 0.509 | 0.452 | 0.507 | 25–35 s |
 
 **Reading.** grep beats every replay-surrogate configuration here, including the tuned hybrid mode, on every metric at session granularity and on every metric except MRR at turn granularity. This says the surrogate's lexical lanes and filters lose evidence that plain substring matching keeps on this data; it does not say how the production path would do on all 470 questions (not measured). Each haystack is small (about 48 sessions), and evidence sessions are longer than the rest (below), which favors a score that counts matched terms. At turn granularity it is the other way round (evidence turns: median 356 characters, other turns: 498), and grep's lead there is smaller.
 
@@ -209,11 +209,11 @@ The first command fills and checks `.cache/lesson-hybrid-e5`, which the lesson e
 | fixture | ranking | recall@3 | precision@3 | false injection on negatives | identifier retention | p95 latency |
 |---|---|---:|---:|---:|---:|---:|
 | release-v1 | CML lexical (default) | 0.217 | 0.722 | 0.00 | 0.00 | 1 ms |
-| release-v1 | hybrid (opt-in) | 0.500 | 0.698 | 0.20 | 0.55 | 12–23 ms |
+| release-v1 | hybrid (opt-in) | 0.500 | 0.698 | 0.20 | 0.55 | 12–71 ms |
 | release-v2 | CML lexical (default) | 0.833 | 0.962 | 0.00 | 1.00 | 1–3 ms |
-| release-v2 | hybrid (opt-in) | 0.983 | 0.908 | 0.10 | 1.00 | 8–13 ms |
+| release-v2 | hybrid (opt-in) | 0.983 | 0.908 | 0.10 | 1.00 | 8–73 ms |
 
-**Reading.** The hybrid ranking recalls more but injects a lesson into 10–20% of prompts that should get none, so it fails its own release gate (false injection ≤ 0.05) on both sets, and on release-v1 it also misses the recall, precision and identifier thresholds. That is why it stays opt-in. On release-v1 the default lexical ranking finds a relevant lesson for only 22% of prompts. Latency ranges span the two runs.
+**Reading.** The hybrid ranking recalls more but injects a lesson into 10–20% of prompts that should get none, so it fails its own release gate (false injection ≤ 0.05) on both sets, and on release-v1 it also misses the recall, precision and identifier thresholds. That is why it stays opt-in. On release-v1 the default lexical ranking finds a relevant lesson for only 22% of prompts. Times and latency ranges span the three runs on `4e6b479` and `b4b28fc`, on a machine that was also running other jobs.
 
 **Limits.** 60 positive prompts per set. The lessons are written software-development scenarios and the prompts are Korean and English paraphrases plus identifier queries, not prompts from real sessions.
 
