@@ -4,11 +4,15 @@
  *
  *   npm run eval:hook-replay
  *   tsx scripts/replay-hook-grounding.ts --store /tmp/copy/projects/<hash> [--label A] [--limit 120] [--semantic off]
+ *   ... --ranking-arms --model-cache <dir> [--reranker mmarco-minilm|bge-m3] [--download-models]
  *
  * --store must point at a COPY of a project store (`sqlite3 events.sqlite ".backup ..."`,
  * plus `vectors/` for the semantic lane). The copy is opened read-only. Output is
  * aggregate-only: no prompt, memory, or response text and no ids. The report is
  * titled with --label (default "store copy"), never the project hash.
+ *
+ * --ranking-arms replaces the flag arms with current, hook order (fidelity check),
+ * rrf, and rrf + cross-encoder (T12); the reranker is loaded from --model-cache.
  */
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -16,13 +20,17 @@ import * as path from 'node:path';
 import Database from 'better-sqlite3';
 import {
   buildFixtureStore,
+  DEFAULT_REPLAY_ARMS,
   formatReplayReport,
   loadReplayTurns,
+  RANKING_REPLAY_ARMS,
   runHookGroundingReplay,
   type HookGroundingReplayOptions,
   type HookReplayFixture
 } from '../src/adapters/claude/hooks/hook-grounding-replay.js';
-import { buildProvenance, countRows, shortHash, warnProvenance, withProvenanceHeader } from './eval-provenance.mjs';
+import { buildProvenance, countRows, pathRef, shortHash, warnProvenance, withProvenanceHeader } from './eval-provenance.mjs';
+import { loadCrossEncoder, modelArtifactSha256 } from './cross-encoder-reranker.js';
+import { DEFAULT_EMBEDDING_MODEL, resolveModelCacheDir } from '../src/extensions/vector/embedder.js';
 
 interface ParsedArgs {
   fixturePath?: string;
@@ -32,6 +40,10 @@ interface ParsedArgs {
   limit?: number;
   semantic?: 'retriever' | 'off';
   format: 'markdown' | 'json';
+  rankingArms: boolean;
+  reranker: string;
+  modelCache?: string;
+  downloadModels: boolean;
 }
 
 class CliError extends Error {
@@ -42,7 +54,7 @@ class CliError extends Error {
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
-  const args: ParsedArgs = { format: 'markdown' };
+  const args: ParsedArgs = { format: 'markdown', rankingArms: false, reranker: 'mmarco-minilm', downloadModels: false };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     const value = () => {
@@ -65,13 +77,18 @@ function parseArgs(argv: string[]): ParsedArgs {
       const format = value();
       if (format !== 'markdown' && format !== 'json') throw new CliError('--format must be markdown or json');
       args.format = format;
-    } else {
+    } else if (arg === '--ranking-arms') args.rankingArms = true;
+    else if (arg === '--reranker') args.reranker = value();
+    else if (arg === '--model-cache') args.modelCache = value();
+    else if (arg === '--download-models') args.downloadModels = true;
+    else {
       throw new CliError(`unknown argument: ${arg}`);
     }
   }
   if (Boolean(args.fixturePath) === Boolean(args.storePath)) {
     throw new CliError('pass exactly one of --fixture or --store');
   }
+  if (args.rankingArms && !args.modelCache) throw new CliError('--ranking-arms needs --model-cache');
   return args;
 }
 
@@ -109,6 +126,12 @@ async function replayWithSnapshots(options: HookGroundingReplayOptions, storeRef
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const env = { ...process.env };
+  const reranker = args.rankingArms
+    ? await loadCrossEncoder(args.reranker, path.resolve(args.modelCache!), { allowDownload: args.downloadModels })
+    : null;
+  const armOptions = reranker
+    ? { arms: [DEFAULT_REPLAY_ARMS[0], ...RANKING_REPLAY_ARMS], reranker: reranker.score }
+    : {};
   let run: Awaited<ReturnType<typeof replayWithSnapshots>>;
   let semantic: 'retriever' | 'off';
   let projectHash: string;
@@ -124,7 +147,8 @@ async function main(): Promise<void> {
         projectHash,
         semantic,
         limit: args.limit,
-        storeLabel: fixture.name
+        storeLabel: fixture.name,
+        ...armOptions
       });
     } finally {
       rmSync(storagePath, { recursive: true, force: true });
@@ -141,7 +165,8 @@ async function main(): Promise<void> {
       projectHash,
       semantic,
       limit: args.limit,
-      storeLabel: args.label
+      storeLabel: args.label,
+      ...armOptions
     }, storagePath);
   }
   const { report } = run;
@@ -149,7 +174,23 @@ async function main(): Promise<void> {
     fixtures: args.fixturePath ? [args.fixturePath] : [],
     store: run.store,
     // Hashed like the report title avoids it: the scope is comparable, the project is not named.
-    flags: { semantic, limit: args.limit, projectHash: shortHash(projectHash) },
+    flags: {
+      semantic,
+      limit: args.limit,
+      projectHash: shortHash(projectHash),
+      ...(semantic === 'retriever'
+        ? { embedderArtifactSha256: await modelArtifactSha256(resolveModelCacheDir(), DEFAULT_EMBEDDING_MODEL) }
+        : {}),
+      ...(reranker
+        ? {
+            rankingArms: true,
+            reranker: reranker.preset.model,
+            rerankerLoadOptions: reranker.preset.loadOptions,
+            rerankerArtifactSha256: await modelArtifactSha256(path.resolve(args.modelCache!), reranker.preset.model),
+            modelCache: pathRef(args.modelCache!)
+          }
+        : {})
+    },
     env
   });
   warnProvenance(provenance);

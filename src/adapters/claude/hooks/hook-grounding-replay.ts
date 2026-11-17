@@ -14,6 +14,11 @@
  * hidden from every lane, including the semantic retriever: reads are
  * over-fetched by the number of later events and filtered, so each list is the
  * one the hook saw then.
+ *
+ * Ranking arms (T12) reorder the hook's eligible pool by RRF over the lanes,
+ * optionally with the RRF head reranked by a local cross-encoder, and then
+ * select exactly as the hook does: the same budget (score cliff and
+ * maxMemories), the answerability gate on that head, the lesson slot.
  */
 import Database from 'better-sqlite3';
 import * as path from 'path';
@@ -28,6 +33,15 @@ import { MemoryService } from '../../../services/memory-service.js';
 import { DISABLED_SHARED_STORE_CONFIG } from '../../../services/memory-service-config.js';
 import type { SemanticMemory } from './semantic-daemon-client.js';
 import { countMemoryOrigins, eventOrigin, MEMORY_ORIGINS, type MemoryOrigin } from '../../../core/memory-origin.js';
+import { reciprocalRankFusion, rerankHead, type RerankScorer } from '../../../core/rank-fusion.js';
+import { latencySummary, pairedBootstrap, type LatencySummary, type PairedDifference } from '../../../core/rank-fusion-eval.js';
+import {
+  getHookInjectionPolicy,
+  planHookInjection,
+  reserveLessonSlot,
+  selectHookInjectionInOrder,
+  type HookMemoryCandidate
+} from './prompt-injection-policy.js';
 import {
   buildRetrievalQuery,
   hookCandidateOrigin,
@@ -37,6 +51,7 @@ import {
   selectHookInjection,
   shouldRunAdherenceCheck,
   type AdherenceDecision,
+  type HookSelection,
   type HookSelectionDeps,
   type HookSelectionMemoryService
 } from './user-prompt-submit.js';
@@ -56,6 +71,11 @@ export interface ReplayArm {
   flags: Record<string, 'true' | undefined>;
   /** operations.json sourceTrust.excludeUntrustedFromAutoInjection for this arm. */
   excludeUntrustedOrigins?: boolean;
+  /**
+   * Reorder the eligible pool, then select by the hook's own rule. 'hook-order'
+   * keeps the hook's order and must reproduce the current arm: a fidelity check.
+   */
+  ranking?: 'hook-order' | 'rrf' | 'rrf+ce';
 }
 
 export const DEFAULT_REPLAY_ARMS: ReplayArm[] = [
@@ -69,6 +89,22 @@ export const DEFAULT_REPLAY_ARMS: ReplayArm[] = [
     excludeUntrustedOrigins: true
   }
 ];
+
+const NO_FLAGS: ReplayArm['flags'] = { [FTS_ABSOLUTE_FLAG]: undefined, [QUERY_SANITIZER_FLAG]: undefined };
+
+/**
+ * Ranking arms for the T12 comparison; 'rrf+ce' needs a reranker in the
+ * options. 'hook order' must match current on every turn, or the arms are not
+ * comparing order alone.
+ */
+export const RANKING_REPLAY_ARMS: ReplayArm[] = [
+  { name: 'hook order', flags: NO_FLAGS, ranking: 'hook-order' },
+  { name: 'rrf', flags: NO_FLAGS, ranking: 'rrf' },
+  { name: 'rrf + cross-encoder', flags: NO_FLAGS, ranking: 'rrf+ce' }
+];
+
+/** Candidates the cross-encoder scores: the RRF head. */
+const DEFAULT_RERANK_DEPTH = 20;
 
 export interface ReplayTurn {
   traceId: string;
@@ -100,6 +136,8 @@ export interface ReplayTurnResult {
   retrievalQuery: string;
   injections: ReplayInjection[];
   semanticDroppedAsFuture: number;
+  /** Cross-encoder time for this turn; set only by the 'rrf+ce' arm when it scored something. */
+  rerankMs?: number;
 }
 
 export interface ReplayMetrics {
@@ -123,6 +161,14 @@ export interface ReplayArmReport {
   historicallyUninjected: ReplayMetrics;
   queryChangedVsCurrent: number;
   selectionChangedVsCurrent: number;
+  /** Per-turn cross-encoder time; only for the 'rrf+ce' arm. */
+  rerankMs?: LatencySummary;
+  /**
+   * Per-turn mean overlap minus the current arm's, over turns where both
+   * injected scored memories. Paired, so it is tighter than comparing the
+   * two mean-overlap intervals. Null for the current arm or with no such turns.
+   */
+  overlapVsCurrent: PairedDifference | null;
   results: ReplayTurnResult[];
 }
 
@@ -147,6 +193,9 @@ export interface HookGroundingReplayOptions {
   limit?: number;
   arms?: ReplayArm[];
   storeLabel?: string;
+  /** Required by an 'rrf+ce' arm. */
+  reranker?: RerankScorer;
+  rerankDepth?: number;
 }
 
 interface TraceRow {
@@ -366,17 +415,39 @@ interface ReplaySources {
   projectHash: string;
   semantic: 'retriever' | 'off';
   semanticCache: Map<string, { memories: SemanticMemory[]; dropped: number }>;
+  reranker?: RerankScorer;
+  rerankDepth: number;
 }
 
-function selectionDeps(sources: ReplaySources, turn: ReplayTurn, stats: { semanticDropped: number }): HookSelectionDeps {
+/** Ids each retrieval lane returned for the turn, in lane order. */
+interface LaneIds {
+  semantic: string[];
+  graduated: string[];
+  keyword: string[];
+}
+
+function selectionDeps(
+  sources: ReplaySources,
+  turn: ReplayTurn,
+  stats: { semanticDropped: number },
+  lanes: LaneIds
+): HookSelectionDeps {
   const asOfIso = turn.asOf.toISOString();
   const laterEventCount = (sources.db.prepare('SELECT count(*) AS n FROM events WHERE timestamp >= ?')
     .get(asOfIso) as { n: number }).n;
   const store = timeBoundEventStore(sources.store, turn.asOf, laterEventCount);
   const queryService = new MemoryQueryService(() => store.initialize(), store);
   const memoryService = {
-    keywordSearch: (query, options) => queryService.keywordSearch(query, options),
-    searchGraduatedEvidence: (query, limit) => queryService.searchGraduatedEvidence(query, limit),
+    keywordSearch: async (query, options) => {
+      const rows = await queryService.keywordSearch(query, options);
+      lanes.keyword = rows.map((row) => row.event.id);
+      return rows;
+    },
+    searchGraduatedEvidence: async (query, limit) => {
+      const rows = await queryService.searchGraduatedEvidence(query, limit);
+      lanes.graduated = rows.map((row) => row.event.id);
+      return rows;
+    },
     listProjectLessonInjections: async (actorId, limit) =>
       // A lesson saved later in the same conversation would otherwise answer
       // its own originating prompt.
@@ -430,6 +501,7 @@ function selectionDeps(sources: ReplaySources, turn: ReplayTurn, stats: { semant
       sources.semanticCache.set(key, cached);
     }
     stats.semanticDropped += cached.dropped;
+    lanes.semantic = cached.memories.flatMap((memory) => (memory.id ? [memory.id] : []));
     return cached.memories;
   };
 
@@ -452,8 +524,48 @@ async function withFlags<T>(flags: ReplayArm['flags'], run: () => Promise<T>): P
   }
 }
 
+/**
+ * The ranking arm's selection: the hook's eligible pool in RRF order over the
+ * lanes (lessons and episode evidence count as lanes of their own), optionally
+ * with the RRF head reranked by the cross-encoder, then the hook's own
+ * selection rule. Only the order differs from the current arm.
+ */
+async function rankingArmSelection(
+  sources: ReplaySources,
+  arm: ReplayArm,
+  selection: HookSelection,
+  lanes: LaneIds,
+  retrievalQuery: string
+): Promise<{ selected: HookMemoryCandidate[]; rerankMs?: number }> {
+  const policy = getHookInjectionPolicy();
+  const plan = planHookInjection(selection.injectionPool, policy, retrievalQuery);
+  const select = (ordered: HookMemoryCandidate[]) =>
+    reserveLessonSlot(selectHookInjectionInOrder(ordered, plan.budget, retrievalQuery), selection.mergedMemories, policy);
+  if (plan.budget === 0 || arm.ranking === 'hook-order') return { selected: select(plan.eligible) };
+
+  const bySource = (source: string) => plan.eligible.flatMap((candidate) => (candidate.source === source && candidate.id ? [candidate.id] : []));
+  const fused = reciprocalRankFusion([lanes.semantic, lanes.graduated, lanes.keyword, bySource('lesson'), bySource('episode')]);
+  const rank = new Map(fused.map((id, index) => [id, index]));
+  // Candidates no lane ranked (none have an id) keep their eligible order after the fused ones.
+  let ordered = plan.eligible
+    .map((candidate, index) => ({ candidate, key: candidate.id !== undefined && rank.has(candidate.id) ? rank.get(candidate.id)! : fused.length + index }))
+    .sort((a, b) => a.key - b.key)
+    .map(({ candidate }) => candidate);
+  let rerankMs: number | undefined;
+  if (arm.ranking === 'rrf+ce') {
+    if (!sources.reranker) throw new Error(`arm ${arm.name} needs a reranker`);
+    const head = ordered.slice(0, sources.rerankDepth);
+    const startedAt = performance.now();
+    const scores = await sources.reranker(retrievalQuery, head.map((candidate) => candidate.content));
+    rerankMs = performance.now() - startedAt;
+    ordered = rerankHead(ordered, scores);
+  }
+  return { selected: select(ordered), rerankMs };
+}
+
 async function replayTurn(sources: ReplaySources, turn: ReplayTurn, arm: ReplayArm): Promise<ReplayTurnResult> {
   const stats = { semanticDropped: 0 };
+  const lanes: LaneIds = { semantic: [], graduated: [], keyword: [] };
   const retrievalQuery = buildRetrievalQuery({
     prompt: turn.prompt,
     currentTurn: turn.currentTurn,
@@ -461,13 +573,16 @@ async function replayTurn(sources: ReplaySources, turn: ReplayTurn, arm: ReplayA
     lastAssistantSnippet: turn.currentTurn > 1 ? turn.lastAssistantSnippet : null,
     adherenceDecision: turn.adherenceDecision
   });
-  const selection = await selectHookInjection(selectionDeps(sources, turn, stats), {
+  const selection = await selectHookInjection(selectionDeps(sources, turn, stats, lanes), {
     prompt: turn.prompt,
     retrievalQuery,
     sessionId: turn.sessionId,
     excludeUntrustedOrigins: arm.excludeUntrustedOrigins === true
   });
-  const injections = selection.injectableMemories
+  const ranked = arm.ranking
+    ? await rankingArmSelection(sources, arm, selection, lanes, retrievalQuery)
+    : { selected: selection.injectableMemories };
+  const injections = ranked.selected
     .filter((memory): memory is typeof memory & { id: string } => Boolean(memory.id))
     .map((memory) => ({
       kind: hookMemoryRefKind(memory),
@@ -477,7 +592,13 @@ async function replayTurn(sources: ReplaySources, turn: ReplayTurn, arm: ReplayA
         ? computeMemoryUsageEvidence(memoryEvidencePreview(memory, retrievalQuery), turn.responses).contentOverlapScore
         : null
     }));
-  return { traceId: turn.traceId, retrievalQuery, injections, semanticDroppedAsFuture: stats.semanticDropped };
+  return {
+    traceId: turn.traceId,
+    retrievalQuery,
+    injections,
+    semanticDroppedAsFuture: stats.semanticDropped,
+    ...(ranked.rerankMs !== undefined ? { rerankMs: ranked.rerankMs } : {})
+  };
 }
 
 /** Deterministic PRNG so the bootstrap interval is reproducible. */
@@ -535,6 +656,20 @@ export function summarizeReplay(turns: ReplayTurn[], results: ReplayTurnResult[]
   };
 }
 
+function meanScoredOverlap(result: ReplayTurnResult): number | null {
+  const scores = result.injections.map((injection) => injection.overlap).filter((overlap): overlap is number => overlap !== null);
+  return scores.length > 0 ? scores.reduce((sum, score) => sum + score, 0) / scores.length : null;
+}
+
+function overlapVsCurrent(results: ReplayTurnResult[], current: ReplayTurnResult[]): PairedDifference | null {
+  const diffs = results.flatMap((result, i) => {
+    const arm = meanScoredOverlap(result);
+    const baseline = meanScoredOverlap(current[i]);
+    return arm === null || baseline === null ? [] : [arm - baseline];
+  });
+  return diffs.length > 0 ? pairedBootstrap(diffs, BOOTSTRAP_SAMPLES) : null;
+}
+
 function sameIds(a: string[], b: string[]): boolean {
   if (a.length !== b.length) return false;
   const set = new Set(a);
@@ -559,7 +694,9 @@ export async function runHookGroundingReplay(options: HookGroundingReplayOptions
     service,
     projectHash: options.projectHash,
     semantic: options.semantic,
-    semanticCache: new Map()
+    semanticCache: new Map(),
+    reranker: options.reranker,
+    rerankDepth: options.rerankDepth ?? DEFAULT_RERANK_DEPTH
   };
   try {
     const turns = loadReplayTurns(db, options.limit);
@@ -585,6 +722,10 @@ export async function runHookGroundingReplay(options: HookGroundingReplayOptions
         result.injections.map((injection) => injection.id),
         current[i].injections.map((injection) => injection.id)
       )).length,
+      overlapVsCurrent: arm === arms[0] ? null : overlapVsCurrent(results, current),
+      ...(arm.ranking === 'rrf+ce'
+        ? { rerankMs: latencySummary(results.flatMap((result) => (result.rerankMs === undefined ? [] : [result.rerankMs]))) }
+        : {}),
       results
     }));
 
@@ -720,6 +861,25 @@ function metricsRow(name: string, m: ReplayMetrics): string {
   return `| ${name} | ${m.turnsWithResponses} | ${m.turnsWithInjection} | ${m.scoredMemories} | ${fmt(m.meanOverlap)} | ${ci} | ${pct(m.groundedMemoryRate)} | ${pct(m.groundedTurnRate)} |`;
 }
 
+function pairedCell(diff: PairedDifference | null): string {
+  if (!diff) return 'n/a';
+  const signed = (value: number) => `${value >= 0 ? '+' : ''}${value.toFixed(3)}`;
+  return `${signed(diff.mean)} (${signed(diff.ci[0])}..${signed(diff.ci[1])})`;
+}
+
+function rerankLatencyLines(arms: ReplayArmReport[]): string[] {
+  const timed = arms.filter((arm) => arm.rerankMs);
+  if (timed.length === 0) return [];
+  return [
+    '## Cross-encoder time per turn (ms)',
+    '',
+    '| arm | turns scored | p50 | p90 | max |',
+    '|---|---:|---:|---:|---:|',
+    ...timed.map(({ arm, rerankMs: s }) => `| ${arm} | ${s!.n} | ${fmt(s!.p50, 1)} | ${fmt(s!.p90, 1)} | ${fmt(s!.max, 1)} |`),
+    ''
+  ];
+}
+
 /** Aggregate-only report: no prompt, memory, or response text and no ids. */
 export function formatReplayReport(report: ReplayReport): string {
   const header = '| arm | turns (with responses) | turns injected | memories scored | mean overlap | 95% CI | grounded memories | turns with a grounded memory |';
@@ -746,9 +906,9 @@ export function formatReplayReport(report: ReplayReport): string {
     '',
     '## Change vs. current',
     '',
-    '| arm | query changed | selection changed |',
-    '|---|---:|---:|',
-    ...report.arms.map((arm) => `| ${arm.arm} | ${arm.queryChangedVsCurrent} | ${arm.selectionChangedVsCurrent} |`),
+    '| arm | query changed | selection changed | paired Δ mean overlap (95% CI) |',
+    '|---|---:|---:|---|',
+    ...report.arms.map((arm) => `| ${arm.arm} | ${arm.queryChangedVsCurrent} | ${arm.selectionChangedVsCurrent} | ${pairedCell(arm.overlapVsCurrent)} |`),
     '',
     '## Injected memories by origin',
     '',
@@ -756,6 +916,7 @@ export function formatReplayReport(report: ReplayReport): string {
     `|---|${MEMORY_ORIGINS.map(() => '---:').join('|')}|`,
     ...report.arms.map((arm) => `| ${arm.arm} | ${MEMORY_ORIGINS.map((origin) => arm.injectedByOrigin[origin] ?? 0).join(' | ')} |`),
     '',
+    ...rerankLatencyLines(report.arms),
     ...report.caveats.flatMap((note) => [note, ''])
   ];
   return lines.join('\n');

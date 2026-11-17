@@ -10,6 +10,7 @@ import {
   buildFixtureStore,
   DEFAULT_REPLAY_ARMS,
   formatReplayReport,
+  RANKING_REPLAY_ARMS,
   runHookGroundingReplay,
   timeBoundEventStore,
   timeBoundVectorStore,
@@ -194,6 +195,55 @@ describe('lesson time bound', () => {
     const lessonId = fixture.lessons![0].lessonId;
     expect(await run('2026-10-01T10:02:00.000Z')).not.toContain(lessonId);
     expect(await run('2026-09-30T00:00:00.000Z')).toContain(lessonId);
+  }, 60_000);
+});
+
+describe('ranking arms (T12)', () => {
+  const rankingRun = async (reranker?: (query: string, docs: string[]) => Promise<number[]>) => runHookGroundingReplay({
+    storagePath,
+    projectHash: fixture.projectHash,
+    semantic: 'off',
+    arms: [DEFAULT_REPLAY_ARMS[0], ...RANKING_REPLAY_ARMS],
+    reranker
+  });
+
+  it('reproduces the current selection when a ranking arm keeps the hook order', async () => {
+    const check = await rankingRun(async (_query, docs) => docs.map(() => 0));
+    expect(check.arms[1].arm).toBe('hook order');
+    expect(check.arms[1].results.map((result) => result.injections)).toEqual(check.arms[0].results.map((result) => result.injections));
+    expect(check.arms[1].selectionChangedVsCurrent).toBe(0);
+  }, 60_000);
+
+  it('reranks only turns with a budget, with the hook query, and times each call', async () => {
+    const calls: Array<{ query: string; docs: number }> = [];
+    // Prefer the last candidate: the opposite of the RRF order.
+    const ranking = await rankingRun(async (query, docs) => {
+      calls.push({ query, docs: docs.length });
+      return docs.map((_, index) => index);
+    });
+    const [current, , rrf, reranked] = ranking.arms;
+    for (const arm of [rrf, reranked]) {
+      for (const result of arm.results) {
+        const ids = result.injections.map((injection) => injection.id);
+        expect(new Set(ids).size).toBe(ids.length);
+      }
+    }
+    expect(calls.length).toBeGreaterThan(0);
+    const queries = new Set(current.results.map((result) => result.retrievalQuery));
+    for (const call of calls) expect(queries.has(call.query)).toBe(true);
+    expect(reranked.rerankMs?.n).toBe(calls.length);
+    expect(rrf.rerankMs).toBeUndefined();
+    expect(formatReplayReport(ranking)).toContain('## Cross-encoder time per turn (ms)');
+  }, 60_000);
+
+  it('matches the rrf arm when the reranker keeps the RRF order', async () => {
+    const ranking = await rankingRun(async (_query, docs) => docs.map((_, index) => -index));
+    const ids = (arm: number) => ranking.arms[arm].results.map((result) => result.injections.map((injection) => injection.id));
+    expect(ids(3)).toEqual(ids(2));
+  }, 60_000);
+
+  it('refuses the cross-encoder arm without a reranker', async () => {
+    await expect(rankingRun()).rejects.toThrow(/needs a reranker/);
   }, 60_000);
 });
 

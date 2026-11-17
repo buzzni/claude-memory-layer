@@ -78,6 +78,35 @@ export function filterHookInjectableMemories(
 }
 
 /**
+ * filterHookInjectableMemories split at its ordering step, for the grounding
+ * replay. `eligible` is every candidate that passed the filters, best first;
+ * `budget` is how many of them the score cliff and maxMemories keep. The hook's
+ * own selection equals `selectHookInjectionInOrder(eligible, budget, query)`,
+ * so a ranking arm can reorder `eligible` and select by the same rule: the
+ * answerability gate runs on the budgeted head, not on the whole pool.
+ */
+export function planHookInjection(
+  candidates: HookMemoryCandidate[],
+  policy: HookInjectionPolicy,
+  query: string
+): { eligible: HookMemoryCandidate[]; budget: number } {
+  const ranked = rankHookCandidates(candidates, policy, query);
+  return {
+    eligible: ranked.map(({ candidate }) => candidate),
+    budget: Math.min(applyScoreCliff(ranked, policy.scoreCliffGap).length, policy.maxMemories)
+  };
+}
+
+/** The first `budget` candidates of `ordered`, through the answerability gate. */
+export function selectHookInjectionInOrder(
+  ordered: HookMemoryCandidate[],
+  budget: number,
+  query: string
+): HookMemoryCandidate[] {
+  return applyAnswerabilityGate(ordered.slice(0, budget), query);
+}
+
+/**
  * specs/lesson-recall-hooks R3 — keep one query-covering lesson alive.
  *
  * Lessons score 0.65-0.8 by design (lexical coverage only) while transcript
