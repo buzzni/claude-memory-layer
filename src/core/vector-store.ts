@@ -248,6 +248,16 @@ export class VectorStore {
     return rows.map((row) => row.eventId as string);
   }
 
+  /** Text and vector of a few rows in the table search reads. */
+  async sampleRows(limit: number): Promise<Array<{ content: string; vector: number[] }>> {
+    await this.initialize();
+    if (!this.db) return [];
+    const table = await this.getExistingTable(this.defaultTableName);
+    if (!table) return [];
+    const rows = await table.query().select({ content: 'content', vector: 'vector' }).limit(limit).toArray();
+    return rows.map((row) => ({ content: row.content as string, vector: Array.from(row.vector as ArrayLike<number>) }));
+  }
+
   /** Event vector tables that search does not read (see deleteEventEverywhere). */
   async listSpareEventTables(): Promise<string[]> {
     await this.initialize();

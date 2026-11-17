@@ -206,7 +206,8 @@ export function createMemoryServiceComposition(
         await engineServices.sqliteStore.enqueueForEmbedding(eventId, content);
       }
     },
-    getVectorWorker: () => runtimeService.getVectorWorker()
+    getVectorWorker: () => runtimeService.getVectorWorker(),
+    embedder: engineServices.embedder
   });
 
   return {

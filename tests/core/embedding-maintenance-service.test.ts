@@ -10,6 +10,9 @@ function event(id: string, content = `content for ${id}`) {
   return { id, content };
 }
 
+/** The current model, for these tests: a vector that depends only on the text. */
+const currentModelVector = (text: string) => [text.length, text.charCodeAt(0) || 0, 1];
+
 function createHarness(options?: {
   currentModel?: string;
   vectorCount?: number;
@@ -17,6 +20,10 @@ function createHarness(options?: {
   workerRunning?: boolean;
   nullWorker?: boolean;
   events?: Array<{ id: string; content: string }>;
+  /** Rows the searched vector table returns as its sample; empty means it cannot be checked. */
+  storedVectors?: Array<{ content: string; vector: number[] }>;
+  /** What the current model makes of a text. */
+  embed?: (text: string) => number[];
 }) {
   const storagePath = '/memory-root/project-a';
   const metaPath = path.join(storagePath, 'embedding-meta.json');
@@ -38,8 +45,10 @@ function createHarness(options?: {
     count: vi.fn(async () => options?.vectorCount ?? 0),
     clearAll: vi.fn(async () => {
       calls.push('clear-vectors');
-    })
+    }),
+    sampleRows: vi.fn(async (limit: number) => (options?.storedVectors ?? []).slice(0, limit))
   };
+  const embedder = { embed: vi.fn(async (text: string) => ({ vector: (options?.embed ?? currentModelVector)(text) })) };
   const events = options?.events ?? [];
   const eventStore = {
     clearEmbeddingOutbox: vi.fn(async () => {
@@ -67,6 +76,7 @@ function createHarness(options?: {
     vectorStore,
     eventStore,
     getVectorWorker: () => (options?.nullWorker ? null : worker),
+    embedder,
     fileSystem
   });
 
@@ -278,5 +288,94 @@ describe('EmbeddingMaintenanceService', () => {
     expect(h.worker.isRunning).not.toHaveBeenCalled();
     expect(h.worker.stop).not.toHaveBeenCalled();
     expect(h.worker.start).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Regression: a store whose vectors predate embedding-meta.json was treated
+ * as "model unknown" on every import, which drops the searched vector table
+ * and re-embeds everything. Three real stores had no metadata file; on one,
+ * that would have discarded 20,434 searchable vectors the current model had
+ * made and queued about an hour of re-embedding.
+ */
+describe('EmbeddingMaintenanceService legacy vectors without metadata', () => {
+  const stored = (text: string, vector = currentModelVector(text)) => ({ content: text, vector });
+
+  it('records the current model instead of migrating when the current model made the stored vectors', async () => {
+    const h = createHarness({
+      vectorCount: 3,
+      events: [event('legacy-1', 'legacy memory')],
+      storedVectors: [stored('release workflow'), stored('rollback checkpoint')]
+    });
+
+    const result = await h.service.ensureEmbeddingModelForImport();
+
+    expect(result).toEqual({
+      changed: false,
+      previousModel: null,
+      currentModel: 'embedding-model-a',
+      enqueued: 0,
+      reason: 'verified-legacy-vectors'
+    });
+    expect(h.calls).toEqual(['initialize']);
+    expect(JSON.parse(h.files.get(h.metaPath)!)).toMatchObject({ model: 'embedding-model-a', updatedAt: expect.any(String) });
+  });
+
+  it('keeps them in a dry run too, since nothing needs migrating', async () => {
+    const h = createHarness({ vectorCount: 3, storedVectors: [stored('release workflow')] });
+
+    const result = await h.service.ensureEmbeddingModelForImport({ autoMigrate: false });
+
+    expect(result).toMatchObject({ changed: false, reason: 'verified-legacy-vectors' });
+    expect(h.vectorStore.clearAll).not.toHaveBeenCalled();
+  });
+
+  it('still migrates when another model made the stored vectors', async () => {
+    const h = createHarness({
+      vectorCount: 3,
+      events: [event('legacy-1', 'legacy memory')],
+      storedVectors: [stored('release workflow', [9, 9, 9])]
+    });
+
+    const result = await h.service.ensureEmbeddingModelForImport();
+
+    expect(result).toMatchObject({ changed: true, enqueued: 1, reason: 'legacy-vectors-without-meta' });
+    expect(h.calls).toEqual(['initialize', 'clear-vectors', 'clear-outbox', 'enqueue:legacy-1']);
+  });
+
+  it('checks only a few stored vectors', async () => {
+    const h = createHarness({
+      vectorCount: 50,
+      storedVectors: Array.from({ length: 50 }, (_, i) => stored(`memory ${i}`))
+    });
+
+    await h.service.ensureEmbeddingModelForImport();
+
+    expect(h.vectorStore.sampleRows).toHaveBeenCalledWith(5);
+  });
+});
+
+describe('VectorStore.sampleRows', () => {
+  it('returns text and vector of rows in the searched table', async () => {
+    const { mkdtempSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { VectorStore } = await import('../../src/core/vector-store.js');
+    const root = mkdtempSync(path.join(tmpdir(), 'cml-vector-sample-'));
+    try {
+      const store = new VectorStore(path.join(root, 'vectors'));
+      const row = (eventId: string, metadata: Record<string, unknown> = {}) => ({
+        id: `vec-${eventId}`, eventId, sessionId: 's', eventType: 'agent_response', content: `text of ${eventId}`,
+        vector: [0.1, 0.2, 0.3], timestamp: '2026-08-31T00:00:00.000Z', metadata
+      });
+      await store.upsertBatch([row('a'), row('b'), row('spare', { itemKind: 'event', embeddingVersion: 'v1' })]);
+
+      const rows = await store.sampleRows(5);
+
+      expect(rows.map((r) => r.content).sort()).toEqual(['text of a', 'text of b']);
+      expect(rows[0].vector).toEqual([expect.closeTo(0.1), expect.closeTo(0.2), expect.closeTo(0.3)]);
+      await expect(new VectorStore(path.join(root, 'missing'), { readOnly: true, canonicalRoot: root }).sampleRows(5)).resolves.toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
