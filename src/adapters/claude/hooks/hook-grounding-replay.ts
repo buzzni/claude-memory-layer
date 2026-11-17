@@ -15,9 +15,10 @@
  * over-fetched by the number of later events and filtered, so each list is the
  * one the hook saw then.
  *
- * Ranking arms (T12) keep the current selection's size and choose that many
- * memories from the same eligible pool by RRF over the lanes, optionally with
- * the RRF head reranked by a local cross-encoder.
+ * Ranking arms (T12) reorder the hook's eligible pool by RRF over the lanes,
+ * optionally with the RRF head reranked by a local cross-encoder, and then
+ * select exactly as the hook does: the same budget (score cliff and
+ * maxMemories), the answerability gate on that head, the lesson slot.
  */
 import Database from 'better-sqlite3';
 import * as path from 'path';
@@ -34,7 +35,13 @@ import type { SemanticMemory } from './semantic-daemon-client.js';
 import { countMemoryOrigins, eventOrigin, MEMORY_ORIGINS, type MemoryOrigin } from '../../../core/memory-origin.js';
 import { reciprocalRankFusion, rerankHead, type RerankScorer } from '../../../core/rank-fusion.js';
 import { latencySummary, pairedBootstrap, type LatencySummary, type PairedDifference } from '../../../core/rank-fusion-eval.js';
-import { getHookInjectionPolicy, rankHookInjectionPool, type HookMemoryCandidate } from './prompt-injection-policy.js';
+import {
+  getHookInjectionPolicy,
+  planHookInjection,
+  reserveLessonSlot,
+  selectHookInjectionInOrder,
+  type HookMemoryCandidate
+} from './prompt-injection-policy.js';
 import {
   buildRetrievalQuery,
   hookCandidateOrigin,
@@ -44,6 +51,7 @@ import {
   selectHookInjection,
   shouldRunAdherenceCheck,
   type AdherenceDecision,
+  type HookSelection,
   type HookSelectionDeps,
   type HookSelectionMemoryService
 } from './user-prompt-submit.js';
@@ -63,8 +71,11 @@ export interface ReplayArm {
   flags: Record<string, 'true' | undefined>;
   /** operations.json sourceTrust.excludeUntrustedFromAutoInjection for this arm. */
   excludeUntrustedOrigins?: boolean;
-  /** Reorder the eligible pool instead of the hook's score ranking, at the hook's budget. */
-  ranking?: 'rrf' | 'rrf+ce';
+  /**
+   * Reorder the eligible pool, then select by the hook's own rule. 'hook-order'
+   * keeps the hook's order and must reproduce the current arm: a fidelity check.
+   */
+  ranking?: 'hook-order' | 'rrf' | 'rrf+ce';
 }
 
 export const DEFAULT_REPLAY_ARMS: ReplayArm[] = [
@@ -81,8 +92,13 @@ export const DEFAULT_REPLAY_ARMS: ReplayArm[] = [
 
 const NO_FLAGS: ReplayArm['flags'] = { [FTS_ABSOLUTE_FLAG]: undefined, [QUERY_SANITIZER_FLAG]: undefined };
 
-/** Ranking arms for the T12 comparison; 'rrf+ce' needs a reranker in the options. */
+/**
+ * Ranking arms for the T12 comparison; 'rrf+ce' needs a reranker in the
+ * options. 'hook order' must match current on every turn, or the arms are not
+ * comparing order alone.
+ */
 export const RANKING_REPLAY_ARMS: ReplayArm[] = [
+  { name: 'hook order', flags: NO_FLAGS, ranking: 'hook-order' },
   { name: 'rrf', flags: NO_FLAGS, ranking: 'rrf' },
   { name: 'rrf + cross-encoder', flags: NO_FLAGS, ranking: 'rrf+ce' }
 ];
@@ -509,36 +525,42 @@ async function withFlags<T>(flags: ReplayArm['flags'], run: () => Promise<T>): P
 }
 
 /**
- * The ranking arm's selection: as many memories as the hook selected, taken
- * from the same eligible pool in RRF order over the lanes (lessons and episode
- * evidence count as lanes of their own), optionally with the RRF head
- * reranked by the cross-encoder.
+ * The ranking arm's selection: the hook's eligible pool in RRF order over the
+ * lanes (lessons and episode evidence count as lanes of their own), optionally
+ * with the RRF head reranked by the cross-encoder, then the hook's own
+ * selection rule. Only the order differs from the current arm.
  */
 async function rankingArmSelection(
   sources: ReplaySources,
   arm: ReplayArm,
-  pool: HookMemoryCandidate[],
-  budget: number,
+  selection: HookSelection,
   lanes: LaneIds,
   retrievalQuery: string
 ): Promise<{ selected: HookMemoryCandidate[]; rerankMs?: number }> {
-  const eligible = rankHookInjectionPool(pool, getHookInjectionPolicy(), retrievalQuery)
-    .filter((candidate): candidate is HookMemoryCandidate & { id: string } => Boolean(candidate.id));
-  if (budget === 0 || eligible.length === 0) return { selected: [] };
-  const bySource = (source: string) => eligible.filter((candidate) => candidate.source === source).map((candidate) => candidate.id);
+  const policy = getHookInjectionPolicy();
+  const plan = planHookInjection(selection.injectionPool, policy, retrievalQuery);
+  const select = (ordered: HookMemoryCandidate[]) =>
+    reserveLessonSlot(selectHookInjectionInOrder(ordered, plan.budget, retrievalQuery), selection.mergedMemories, policy);
+  if (plan.budget === 0 || arm.ranking === 'hook-order') return { selected: select(plan.eligible) };
+
+  const bySource = (source: string) => plan.eligible.flatMap((candidate) => (candidate.source === source && candidate.id ? [candidate.id] : []));
   const fused = reciprocalRankFusion([lanes.semantic, lanes.graduated, lanes.keyword, bySource('lesson'), bySource('episode')]);
-  const byId = new Map(eligible.map((candidate) => [candidate.id, candidate]));
-  let order = fused.filter((id) => byId.has(id));
+  const rank = new Map(fused.map((id, index) => [id, index]));
+  // Candidates no lane ranked (none have an id) keep their eligible order after the fused ones.
+  let ordered = plan.eligible
+    .map((candidate, index) => ({ candidate, key: candidate.id !== undefined && rank.has(candidate.id) ? rank.get(candidate.id)! : fused.length + index }))
+    .sort((a, b) => a.key - b.key)
+    .map(({ candidate }) => candidate);
   let rerankMs: number | undefined;
   if (arm.ranking === 'rrf+ce') {
     if (!sources.reranker) throw new Error(`arm ${arm.name} needs a reranker`);
-    const head = order.slice(0, sources.rerankDepth);
+    const head = ordered.slice(0, sources.rerankDepth);
     const startedAt = performance.now();
-    const scores = await sources.reranker(retrievalQuery, head.map((id) => byId.get(id)!.content));
+    const scores = await sources.reranker(retrievalQuery, head.map((candidate) => candidate.content));
     rerankMs = performance.now() - startedAt;
-    order = rerankHead(order, scores);
+    ordered = rerankHead(ordered, scores);
   }
-  return { selected: order.slice(0, budget).map((id) => byId.get(id)!), rerankMs };
+  return { selected: select(ordered), rerankMs };
 }
 
 async function replayTurn(sources: ReplaySources, turn: ReplayTurn, arm: ReplayArm): Promise<ReplayTurnResult> {
@@ -558,7 +580,7 @@ async function replayTurn(sources: ReplaySources, turn: ReplayTurn, arm: ReplayA
     excludeUntrustedOrigins: arm.excludeUntrustedOrigins === true
   });
   const ranked = arm.ranking
-    ? await rankingArmSelection(sources, arm, selection.injectionPool, selection.injectableMemories.length, lanes, retrievalQuery)
+    ? await rankingArmSelection(sources, arm, selection, lanes, retrievalQuery)
     : { selected: selection.injectableMemories };
   const injections = ranked.selected
     .filter((memory): memory is typeof memory & { id: string } => Boolean(memory.id))

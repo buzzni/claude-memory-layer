@@ -11,8 +11,8 @@
  * aggregate-only: no prompt, memory, or response text and no ids. The report is
  * titled with --label (default "store copy"), never the project hash.
  *
- * --ranking-arms replaces the flag arms with current, rrf, and rrf + cross-encoder
- * (T12); the reranker is loaded from --model-cache.
+ * --ranking-arms replaces the flag arms with current, hook order (fidelity check),
+ * rrf, and rrf + cross-encoder (T12); the reranker is loaded from --model-cache.
  */
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -29,7 +29,8 @@ import {
   type HookReplayFixture
 } from '../src/adapters/claude/hooks/hook-grounding-replay.js';
 import { buildProvenance, countRows, pathRef, shortHash, warnProvenance, withProvenanceHeader } from './eval-provenance.mjs';
-import { loadCrossEncoder } from './cross-encoder-reranker.js';
+import { loadCrossEncoder, modelArtifactSha256 } from './cross-encoder-reranker.js';
+import { DEFAULT_EMBEDDING_MODEL, resolveModelCacheDir } from '../src/extensions/vector/embedder.js';
 
 interface ParsedArgs {
   fixturePath?: string;
@@ -177,7 +178,18 @@ async function main(): Promise<void> {
       semantic,
       limit: args.limit,
       projectHash: shortHash(projectHash),
-      ...(reranker ? { rankingArms: true, reranker: reranker.preset.model, modelCache: pathRef(args.modelCache!) } : {})
+      ...(semantic === 'retriever'
+        ? { embedderArtifactSha256: await modelArtifactSha256(resolveModelCacheDir(), DEFAULT_EMBEDDING_MODEL) }
+        : {}),
+      ...(reranker
+        ? {
+            rankingArms: true,
+            reranker: reranker.preset.model,
+            rerankerLoadOptions: reranker.preset.loadOptions,
+            rerankerArtifactSha256: await modelArtifactSha256(path.resolve(args.modelCache!), reranker.preset.model),
+            modelCache: pathRef(args.modelCache!)
+          }
+        : {})
     },
     env
   });

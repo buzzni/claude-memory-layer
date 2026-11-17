@@ -207,20 +207,26 @@ describe('ranking arms (T12)', () => {
     reranker
   });
 
-  it('injects as many memories as the current ranking, from the same eligible pool', async () => {
+  it('reproduces the current selection when a ranking arm keeps the hook order', async () => {
+    const check = await rankingRun(async (_query, docs) => docs.map(() => 0));
+    expect(check.arms[1].arm).toBe('hook order');
+    expect(check.arms[1].results.map((result) => result.injections)).toEqual(check.arms[0].results.map((result) => result.injections));
+    expect(check.arms[1].selectionChangedVsCurrent).toBe(0);
+  }, 60_000);
+
+  it('reranks only turns with a budget, with the hook query, and times each call', async () => {
     const calls: Array<{ query: string; docs: number }> = [];
     // Prefer the last candidate: the opposite of the RRF order.
     const ranking = await rankingRun(async (query, docs) => {
       calls.push({ query, docs: docs.length });
       return docs.map((_, index) => index);
     });
-    const [current, rrf, reranked] = ranking.arms;
+    const [current, , rrf, reranked] = ranking.arms;
     for (const arm of [rrf, reranked]) {
-      arm.results.forEach((result, i) => {
+      for (const result of arm.results) {
         const ids = result.injections.map((injection) => injection.id);
-        expect(ids).toHaveLength(current.results[i].injections.length);
         expect(new Set(ids).size).toBe(ids.length);
-      });
+      }
     }
     expect(calls.length).toBeGreaterThan(0);
     const queries = new Set(current.results.map((result) => result.retrievalQuery));
@@ -233,7 +239,7 @@ describe('ranking arms (T12)', () => {
   it('matches the rrf arm when the reranker keeps the RRF order', async () => {
     const ranking = await rankingRun(async (_query, docs) => docs.map((_, index) => -index));
     const ids = (arm: number) => ranking.arms[arm].results.map((result) => result.injections.map((injection) => injection.id));
-    expect(ids(2)).toEqual(ids(1));
+    expect(ids(3)).toEqual(ids(2));
   }, 60_000);
 
   it('refuses the cross-encoder arm without a reranker', async () => {
