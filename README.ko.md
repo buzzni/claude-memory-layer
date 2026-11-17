@@ -26,6 +26,7 @@ Claude Memory Layer는 AI 에이전트의 대화와 작업 이벤트를 프로�
 - **Hermes/CML/Headroom 운영 모델**: Hermes built-in memory, `session_search`, CML context-pack, read-only Hermes provider, Headroom reference stance는 [`docs/HERMES_CML_HEADROOM_OPERATING_MODEL.md`](docs/HERMES_CML_HEADROOM_OPERATING_MODEL.md)에 정리되어 있습니다.
 - **npm 설치 안정화**: `@huggingface/transformers`는 보안 버전의 `sharp`를 고정한 격리 backend로 설치하며, CUDA 11 환경에서는 CPU-only ONNX Runtime으로 자동 복구합니다.
 - **코드 에이전트 메모리 4종 (v2.1)**: codify-lite 코드 구조 앵커링(`source_file` 엔티티 + `touched_in` 그래프 + session-file 검색 레인), Letta식 코어 메모리 블록(`mem-core-block-get/update`, SessionStart 상시 주입), Mem0식 사실 조정(`mem-entity-supersede`), Zep/Graphiti식 bitemporal 엣지 히스토리(`mem-graph-query`의 `asOf`/`knownAt`)를 제공합니다.
+- **큐레이션 lesson 공유**: 고른 lesson을 lesson당 JSON 파일 하나로 저장소에 내보내 리뷰·커밋하고, 다른 checkout에서 `imported` 출처로 가져옵니다. [`docs/LESSON_SHARING.md`](docs/LESSON_SHARING.md) 참고.
 - **LLM provider circuit breaker**: 로그아웃되거나 사용량 한도에 걸린 `claude`/`codex` CLI 호출을 건너뛰고, 건너뛴 세션 요약은 보관했다가 회복 후 처리합니다. [`docs/OPERATIONS.md`](docs/OPERATIONS.md#llm-provider-circuit-breaker) 참고.
 - **operations.json 기능 플래그 (v2.2)**: codify-lite 등 옵트인 기능을 `~/.claude-code/memory/operations.json` 파일 하나로 켤 수 있습니다. 아래 [선택 기능 활성화](#선택-기능-활성화-operationsjson) 참고.
 

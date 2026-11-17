@@ -264,6 +264,25 @@ describe('PreToolUse hook (pre-edit check)', () => {
     expect(context).not.toContain('Other file');
   });
 
+  it('labels a lesson imported from a shared export file as imported', async () => {
+    await seedPastSession();
+    const { LessonRepository } = await import('../../src/core/operations/lesson-repository.js');
+    const { hashProjectPath } = await import('../../src/core/registry/project-path.js');
+    const db = new Database(await storePath(project));
+    try {
+      new LessonRepository(db).insertImported({
+        projectHash: hashProjectPath(project), name: 'Team parser rule', trigger: 'Before touching src/parser.ts, read the grammar notes',
+        steps: ['read the notes'], failureModes: [], confidence: 1, skillCandidate: false, validation: [], validVersions: [], actor: 'tester', file: 'x.json'
+      });
+    } finally {
+      db.close();
+    }
+
+    const context = contextOf(await runHook(editInput()));
+
+    expect(context).toContain('- [low-trust: imported] Lesson "Team parser rule"');
+  });
+
   it('marks notes recorded before the file last changed', async () => {
     await seedPastSession();
     setFileTime(LATER.getTime());

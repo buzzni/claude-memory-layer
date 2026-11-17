@@ -35,7 +35,7 @@ import {
   memoryReferenceSummary
 } from '../../../core/memory-reference-context.js';
 import { singleLineRecallText } from '../../../core/recall-sanitizer.js';
-import { countMemoryOrigins, eventOrigin, isAutoInjectionExcludableOrigin, memoryOriginLabel } from '../../../core/memory-origin.js';
+import { countMemoryOrigins, eventOrigin, isAutoInjectionExcludableOrigin, lessonOrigin, memoryOriginLabel } from '../../../core/memory-origin.js';
 import { excludesUntrustedFromAutoInjection } from '../../../services/operations-config-loader.js';
 import type {
   CoreMemoryBlock,
@@ -287,8 +287,14 @@ export function rankSessionStartLessons<T extends { lessonId: string; confidence
     || left.lessonId.localeCompare(right.lessonId));
 }
 
+/** `[low-trust: imported] ` ahead of an imported lesson's name in the index; '' otherwise. */
+export function lessonIndexLabel(lesson: { sourceClass?: string }): string {
+  const label = memoryOriginLabel(lessonOrigin(lesson));
+  return label ? `[${label}] ` : '';
+}
+
 export function formatLessonIndexContext(
-  lessons: ReadonlyArray<{ name: string; trigger: string }>,
+  lessons: ReadonlyArray<{ name: string; trigger: string; sourceClass?: string }>,
   options: { budgetChars: number; totalCount: number; variant?: 'lessons' | 'runbooks' }
 ): string {
   const runbooks = options.variant === 'runbooks';
@@ -308,7 +314,7 @@ export function formatLessonIndexContext(
   const triggerChars = runbooks ? SESSION_START_RUNBOOK_TRIGGER_CHARS : SESSION_START_LESSON_TRIGGER_CHARS;
   const items: string[] = [];
   for (const lesson of lessons) {
-    const line = `- ${singleLineRecallText(lesson.name)} — ${clipLessonTrigger(lesson.trigger, triggerChars)}\n`;
+    const line = `- ${lessonIndexLabel(lesson)}${singleLineRecallText(lesson.name)} — ${clipLessonTrigger(lesson.trigger, triggerChars)}\n`;
     const candidate = header + items.join('') + line + footer(items.length + 1);
     if (candidate.length > options.budgetChars) break;
     items.push(line);
@@ -512,7 +518,7 @@ export async function main(options: SessionStartMainOptions = {}): Promise<strin
           // Recorded so lesson usage becomes measurable: before this, lesson
           // injection left no row in retrieval_traces/memory_helpfulness.
           const shownIds = lessons
-            .filter((lesson) => lessonContext.includes(`- ${lesson.name.trim()} — `))
+            .filter((lesson) => lessonContext.includes(`- ${lessonIndexLabel(lesson)}${lesson.name.trim()} — `))
             .map((lesson) => lesson.lessonId);
           if (!isHookEvaluationMode() && shownIds.length > 0) {
             const lessonTraceId = randomUUID();
@@ -544,8 +550,8 @@ export async function main(options: SessionStartMainOptions = {}): Promise<strin
                 topScore: null,
                 threshold: 0,
                 freshnessState: 'unknown',
-                // Lessons come from the lesson table: always derived.
-                injectedByOrigin: { derived: shownIds.length }
+                // From the lesson table's source class: derived, or imported.
+                injectedByOrigin: countMemoryOrigins(lessons.filter((lesson) => shownIds.includes(lesson.lessonId)).map(lessonOrigin))
               }
             }).catch(() => undefined);
             deliveredTraceIds.push(lessonTraceId);

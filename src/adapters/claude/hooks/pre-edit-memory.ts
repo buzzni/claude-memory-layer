@@ -39,6 +39,7 @@ import { CanonicalMemoryInjectionService } from '../../../core/operations/canoni
 import {
   classifyStoredEvent,
   isAutoInjectionExcludableOrigin,
+  lessonOrigin,
   memoryOriginLabel,
   type MemoryOrigin
 } from '../../../core/memory-origin.js';
@@ -372,7 +373,7 @@ function collectItems(db: SQLiteDatabase, request: PreEditMemoryRequest, target:
   for (const lesson of lessons.slice(0, MAX_LESSONS)) {
     items.push({
       key: `lesson:${lesson.lessonId}@${lesson.revision}`,
-      origin: 'derived',
+      origin: lessonOrigin(lesson),
       line: `- Lesson "${displayText(lesson.name, target, 80)}": ${displayText(lesson.trigger, target, LESSON_CHARS)}${mark(lesson.updatedAt)}`
     });
   }

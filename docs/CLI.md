@@ -28,6 +28,7 @@ After a global install, run `claude-memory-layer`. From a local checkout use `np
 | `maintenance run\|install\|status\|uninstall` | Opt-in periodic maintenance of all local stores ([INSTALL.md](INSTALL.md#maintenance-optional)) |
 | `project identity\|scope-audit\|bootstrap-health` | Inspect project storage identity and scope |
 | `facet`, `action`, `frontier`, `checkpoint`, `lesson`, `retention` | Memory operations |
+| `lesson export` / `lesson import` | Share curated lessons as reviewed files in git; dry-run unless `--apply` ([LESSON_SHARING.md](LESSON_SHARING.md)) |
 | `actors repair` | Backfill perspective memory actors and session memberships |
 | `retrieval selections\|reevaluate` | Read-only retrieval ledger reports |
 | `repair …`, `cleanup …` | Repair legacy metadata, redact stored credentials, clean up CML-owned state (dry-run by default) |

@@ -14,7 +14,7 @@ import {
   UpsertMemoryLessonInputSchema,
   type MemoryLesson
 } from '../types.js';
-import { sanitizeGovernanceAuditValue, writeGovernanceAuditEntry } from './governance-audit.js';
+import { sanitizeGovernanceAuditValue, writeGovernanceAuditEntry, writeGovernanceAuditEntrySync } from './governance-audit.js';
 
 interface MemoryLessonRow {
   lesson_id: string;
@@ -84,6 +84,21 @@ function sanitizeParsedLesson(input: ParsedLessonUpsert): ParsedLessonUpsert {
   };
 }
 
+/** Column values after `name`, in insertImported/updateImported order. */
+function importedFields(input: ImportedLessonInput): unknown[] {
+  return [
+    sanitizeString(input.trigger),
+    JSON.stringify(sanitizeStringArray(input.steps)),
+    input.confidence,
+    JSON.stringify(sanitizeStringArray(input.failureModes)),
+    input.skillCandidate ? 1 : 0,
+    input.scope === undefined ? null : sanitizeString(input.scope),
+    JSON.stringify(sanitizeStringArray(input.validation)),
+    input.reconsiderWhen === undefined ? null : sanitizeString(input.reconsiderWhen),
+    JSON.stringify(sanitizeStringArray(input.validVersions))
+  ];
+}
+
 function rowToLesson(row: MemoryLessonRow): MemoryLesson {
   return MemoryLessonSchema.parse({
     lessonId: row.lesson_id,
@@ -96,7 +111,7 @@ function rowToLesson(row: MemoryLessonRow): MemoryLesson {
     sourceEventIds: parseStringArray(row.source_event_ids),
     failureModes: parseStringArray(row.failure_modes_json),
     skillCandidate: Number(row.skill_candidate) === 1,
-    sourceClass: row.source_class === 'curated' ? 'curated' : 'derived',
+    sourceClass: row.source_class === 'curated' || row.source_class === 'imported' ? row.source_class : 'derived',
     revision: Number(row.revision ?? 1),
     recallEnabled: Number(row.recall_enabled ?? 1) === 1,
     scope: row.scope ?? undefined,
@@ -136,6 +151,24 @@ export function lessonToAuditJson(lesson: MemoryLesson): Record<string, unknown>
 
 export type LessonAuditOperation = 'lesson_promote' | 'lesson_capture';
 
+/** A lesson read from a shared export file; it carries no local source refs. */
+export interface ImportedLessonInput {
+  projectHash: string;
+  name: string;
+  trigger: string;
+  steps: string[];
+  failureModes: string[];
+  confidence: number;
+  skillCandidate: boolean;
+  scope?: string;
+  validation: string[];
+  reconsiderWhen?: string;
+  validVersions: string[];
+  actor: string;
+  /** Path of the file inside the export directory, for the audit row. */
+  file: string;
+}
+
 export class LessonRepository {
   constructor(private readonly db: SQLiteDatabase) {}
 
@@ -161,7 +194,8 @@ export class LessonRepository {
         this.db,
         `UPDATE memory_lessons
          SET name = ?, trigger = ?, steps_json = ?, confidence = ?, source_session_ids = ?,
-             source_event_ids = ?, failure_modes_json = ?, skill_candidate = ?, source_class = ?,
+             source_event_ids = ?, failure_modes_json = ?, skill_candidate = ?,
+             source_class = CASE WHEN source_class = 'imported' THEN source_class ELSE ? END,
              revision = revision + 1, recall_enabled = ?, absorbed_into = CASE WHEN ? = 1 THEN NULL ELSE absorbed_into END,
              scope = ?, validation_json = ?, reconsider_when = ?, valid_versions_json = ?, updated_at = ?
          WHERE lesson_id = ? AND project_hash = ? AND revision = ?`,
@@ -227,6 +261,68 @@ export class LessonRepository {
     const saved = this.require(lessonId);
     await this.auditLessonUpsert(parsed, null, saved, auditOperation);
     return saved;
+  }
+
+  /**
+   * The only writer of `source_class = 'imported'`. Inserts a new lesson; an
+   * existing lesson with the same name is the caller's conflict to report,
+   * so this never overwrites one (the UNIQUE(project_hash, name) insert fails).
+   * Synchronous so an import can run in one transaction.
+   */
+  insertImported(input: ImportedLessonInput): MemoryLesson {
+    const lessonId = randomUUID();
+    const now = new Date().toISOString();
+    sqliteRun(
+      this.db,
+      `INSERT INTO memory_lessons (
+        lesson_id, project_hash, name, trigger, steps_json, confidence,
+        source_session_ids, source_event_ids, failure_modes_json, skill_candidate,
+        source_class, revision, recall_enabled, scope, validation_json, reconsider_when, valid_versions_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, '[]', '[]', ?, ?, 'imported', 1, 1, ?, ?, ?, ?, ?, ?)`,
+      [lessonId, projectHashToStorage(input.projectHash), sanitizeString(input.name), ...importedFields(input), now, now]
+    );
+    const saved = this.require(lessonId);
+    this.auditImport(input, null, saved);
+    return saved;
+  }
+
+  /**
+   * Replace an imported lesson's text with a newer export of it. Only a lesson
+   * still `imported` and still at `expectedRevision` changes; anything else
+   * (a local edit, a switch-off, a consolidation) returns null.
+   */
+  updateImported(lessonId: string, expectedRevision: number, input: ImportedLessonInput): MemoryLesson | null {
+    const before = this.get(lessonId);
+    const result = sqliteRun(
+      this.db,
+      `UPDATE memory_lessons
+       SET trigger = ?, steps_json = ?, confidence = ?, failure_modes_json = ?, skill_candidate = ?,
+           scope = ?, validation_json = ?, reconsider_when = ?, valid_versions_json = ?,
+           revision = revision + 1, updated_at = ?
+       WHERE lesson_id = ? AND project_hash = ? AND source_class = 'imported' AND revision = ?`,
+      [...importedFields(input), new Date().toISOString(), lessonId, projectHashToStorage(input.projectHash), expectedRevision]
+    );
+    if (result.changes !== 1) return null;
+    const saved = this.require(lessonId);
+    this.auditImport(input, before, saved);
+    return saved;
+  }
+
+  /** The revision the last import left a lesson at, from the governance audit. */
+  lastImportedRevision(lessonId: string): number | null {
+    const row = sqliteGet<{ after_json: string | null }>(
+      this.db,
+      `SELECT after_json FROM memory_governance_audit
+       WHERE operation = 'lesson_import' AND target_type = 'lesson' AND target_id = ?
+       ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+      [lessonId]
+    );
+    try {
+      const revision = (JSON.parse(row?.after_json ?? 'null') as { revision?: unknown } | null)?.revision;
+      return typeof revision === 'number' ? revision : null;
+    } catch {
+      return null;
+    }
   }
 
   get(lessonId: string): MemoryLesson | null {
@@ -298,6 +394,18 @@ export class LessonRepository {
     const lesson = this.get(lessonId);
     if (!lesson) throw new Error(`Memory lesson not found: ${lessonId}`);
     return lesson;
+  }
+
+  private auditImport(input: ImportedLessonInput, before: MemoryLesson | null, after: MemoryLesson): void {
+    writeGovernanceAuditEntrySync(this.db, {
+      operation: 'lesson_import',
+      actor: input.actor,
+      projectHash: input.projectHash,
+      targetType: 'lesson',
+      targetId: after.lessonId,
+      beforeJson: before ? lessonToAuditJson(before) : undefined,
+      afterJson: { ...lessonToAuditJson(after), importedFrom: input.file }
+    });
   }
 
   private async auditLessonUpsert(

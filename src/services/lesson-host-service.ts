@@ -159,7 +159,8 @@ export class LessonHostService {
       if (this.now() >= deadline) return { outcome: 'timeout' as const, lessonIds: [], lessons: [] };
       const page = await repo.list({ projectHash: binding.projectHash, limit: 100, offset });
       if (!page.length) break;
-      const allowed = new CanonicalMemoryInjectionService(this.options.db).select({ projectHash: binding.projectHash, actorId: binding.actorId, lane: 'prompt', candidates: page.filter((lesson) => lesson.recallEnabled).map((value) => ({ canonicalType: 'lesson' as const, canonicalId: value.lessonId, value })) }).items;
+      // The host response has no origin field to carry `[low-trust: imported]`, so imported lessons stay out of host recall.
+      const allowed = new CanonicalMemoryInjectionService(this.options.db).select({ projectHash: binding.projectHash, actorId: binding.actorId, lane: 'prompt', candidates: page.filter((lesson) => lesson.recallEnabled && lesson.sourceClass !== 'imported').map((value) => ({ canonicalType: 'lesson' as const, canonicalId: value.lessonId, value })) }).items;
       for (const item of allowed) eligible.push({ lesson: item.value, injectionMode: item.injectionMode });
       if (this.now() >= deadline) return { outcome: 'timeout' as const, lessonIds: [], lessons: [] };
       if (page.length < 100) break;

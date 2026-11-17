@@ -1259,7 +1259,7 @@ function formatLesson(lesson: Omit<MemoryLesson, 'validation' | 'validVersions' 
     trigger: sanitizeOperationString(lesson.trigger, 500),
     confidence: Number(lesson.confidence),
     skillCandidate: Boolean(lesson.skillCandidate),
-    sourceClass: lesson.sourceClass === 'curated' ? 'curated' : 'derived',
+    sourceClass: lesson.sourceClass === 'curated' || lesson.sourceClass === 'imported' ? lesson.sourceClass : 'derived',
     steps: capped(lesson.steps, 500),
     stepsTruncated: lesson.steps.length > LESSON_LIST_FIELD_MAX,
     failureModes: capped(lesson.failureModes, 300),

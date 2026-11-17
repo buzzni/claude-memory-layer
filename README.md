@@ -143,6 +143,7 @@ These commands remove only hooks and scheduler definitions. Your memory stays in
 | [docs/DASHBOARD.md](docs/DASHBOARD.md) | Web dashboard and health endpoints |
 | [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md) | Architecture, storage and retrieval flow, citations, Endless Mode |
 | [docs/MONGO_SYNC.md](docs/MONGO_SYNC.md) | Optional multi-server sync through MongoDB |
+| [docs/LESSON_SHARING.md](docs/LESSON_SHARING.md) | Share curated lessons with a team as reviewed files in git (`lesson export` / `lesson import`) |
 | [docs/EXTERNAL_MARKET_CONTEXT.md](docs/EXTERNAL_MARKET_CONTEXT.md) | Read-only DART/FRED/Finnhub market context |
 | [docs/OPERATIONS.md](docs/OPERATIONS.md) | Operations runbook |
 | [docs/OPERATIONS.md#llm-provider-circuit-breaker](docs/OPERATIONS.md#llm-provider-circuit-breaker) | LLM provider circuit breaker: skipped calls, kept summaries, doctor/audit |
