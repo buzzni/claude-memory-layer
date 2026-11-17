@@ -1,0 +1,507 @@
+{
+  "gitSha": "4e6b47992ce52f327898e8bbe6fe38d16cb88b3e",
+  "gitDirty": false,
+  "node": "v22.23.1",
+  "platform": "darwin 27.0.0 arm64",
+  "cpu": "Apple M2 Max x12",
+  "memoryGb": 64,
+  "longMemEvalSha256": "d6f21ea9d60a0d56f34a05b609c79c88a451d2ae03597821ea3d5a9678c3a442",
+  "embedder": {
+    "model": "Xenova/multilingual-e5-small",
+    "revision": "761b726dd34fb83930e26aab4e9ac3899aa1fa78",
+    "artifactSha256": "a89c5cc413885d7c2af5906da0f77f30d2ce4ef4bb11751fc7e22d652373ec4d"
+  },
+  "results": {
+    "golden-replay": {
+      "status": "measured",
+      "seconds": 0,
+      "positiveQueryCount": 10,
+      "noMatchQueryCount": 8,
+      "recallAtK": {
+        "1": 0.55,
+        "3": 0.65,
+        "5": 0.7
+      },
+      "ndcgAtK": {
+        "1": 0.9429,
+        "3": 0.806,
+        "5": 0.8206
+      },
+      "hitAtK": {
+        "1": 1,
+        "3": 1,
+        "5": 1
+      },
+      "mrr": 1,
+      "noMatchAccuracy": 1,
+      "forbiddenHitCount": 0
+    },
+    "golden-grep": {
+      "status": "measured",
+      "seconds": 0,
+      "positiveQueryCount": 10,
+      "noMatchQueryCount": 8,
+      "recallAtK": {
+        "1": 0.4,
+        "3": 0.55,
+        "5": 0.7
+      },
+      "ndcgAtK": {
+        "1": 0.6429,
+        "3": 0.5912,
+        "5": 0.6526
+      },
+      "hitAtK": {
+        "1": 0.7,
+        "3": 0.7,
+        "5": 0.8
+      },
+      "mrr": 0.725,
+      "noMatchAccuracy": 0.125,
+      "forbiddenHitCount": 7
+    },
+    "golden-lanes": {
+      "status": "measured",
+      "seconds": 4,
+      "queries": 10,
+      "memories": 19,
+      "rerunMaxAbsDelta": 0,
+      "embedder": {
+        "model": "Xenova/multilingual-e5-small",
+        "artifactSha256": "a89c5cc413885d7c2af5906da0f77f30d2ce4ef4bb11751fc7e22d652373ec4d"
+      },
+      "at10": {
+        "current": {
+          "recall": 0.6,
+          "ndcg": 0.7847,
+          "hit": 1,
+          "mrr": 1
+        },
+        "vector": {
+          "recall": 0.95,
+          "ndcg": 0.8143,
+          "hit": 1,
+          "mrr": 0.9125
+        },
+        "keyword": {
+          "recall": 0.7,
+          "ndcg": 0.6457,
+          "hit": 0.8,
+          "mrr": 0.75
+        },
+        "grep": {
+          "recall": 0.75,
+          "ndcg": 0.6789,
+          "hit": 0.8,
+          "mrr": 0.725
+        },
+        "rrf": {
+          "recall": 0.9,
+          "ndcg": 0.7843,
+          "hit": 1,
+          "mrr": 0.9125
+        }
+      },
+      "atBudget": {
+        "current": {
+          "recall": 0.6,
+          "ndcg": 0.8699
+        },
+        "vector": {
+          "recall": 0.55,
+          "ndcg": 0.7533,
+          "vsCurrent": {
+            "recall": {
+              "mean": -0.05,
+              "ci": [
+                -0.2,
+                0.1
+              ]
+            },
+            "ndcg": {
+              "mean": -0.1166,
+              "ci": [
+                -0.3538,
+                0.0993
+              ]
+            }
+          }
+        },
+        "keyword": {
+          "recall": 0.4,
+          "ndcg": 0.5699,
+          "vsCurrent": {
+            "recall": {
+              "mean": -0.2,
+              "ci": [
+                -0.35,
+                -0.05
+              ]
+            },
+            "ndcg": {
+              "mean": -0.3,
+              "ci": [
+                -0.5787,
+                -0.0787
+              ]
+            }
+          }
+        },
+        "grep": {
+          "recall": 0.45,
+          "ndcg": 0.5912,
+          "vsCurrent": {
+            "recall": {
+              "mean": -0.15,
+              "ci": [
+                -0.35,
+                0.05
+              ]
+            },
+            "ndcg": {
+              "mean": -0.2787,
+              "ci": [
+                -0.5574,
+                -0.0361
+              ]
+            }
+          }
+        },
+        "rrf": {
+          "recall": 0.5,
+          "ndcg": 0.7036,
+          "vsCurrent": {
+            "recall": {
+              "mean": -0.1,
+              "ci": [
+                -0.25,
+                0
+              ]
+            },
+            "ndcg": {
+              "mean": -0.1663,
+              "ci": [
+                -0.3851,
+                -0.0213
+              ]
+            }
+          }
+        }
+      }
+    },
+    "lesson-release-v1-independent": {
+      "status": "measured",
+      "seconds": 4,
+      "lexical": {
+        "recallAt3": 0.2167,
+        "precisionAt3": 0.7222,
+        "negativeFalseInjection": 0,
+        "identifierRetention": 0,
+        "p95Ms": 1.3285
+      },
+      "hybrid": {
+        "recallAt3": 0.5,
+        "precisionAt3": 0.6977,
+        "negativeFalseInjection": 0.2,
+        "identifierRetention": 0.55,
+        "p95Ms": 22.9004
+      },
+      "gate": {
+        "passed": false,
+        "failures": [
+          "recallAt3",
+          "precisionAt3",
+          "negativeFalseInjection",
+          "identifierRetention"
+        ]
+      }
+    },
+    "lesson-release-v2-independent": {
+      "status": "measured",
+      "seconds": 4,
+      "lexical": {
+        "recallAt3": 0.8333,
+        "precisionAt3": 0.9615,
+        "negativeFalseInjection": 0,
+        "identifierRetention": 1,
+        "p95Ms": 1.0001
+      },
+      "hybrid": {
+        "recallAt3": 0.9833,
+        "precisionAt3": 0.9077,
+        "negativeFalseInjection": 0.1,
+        "identifierRetention": 1,
+        "p95Ms": 12.5281
+      },
+      "gate": {
+        "passed": false,
+        "failures": [
+          "negativeFalseInjection"
+        ]
+      }
+    },
+    "hook-fixture": {
+      "status": "measured",
+      "seconds": 1,
+      "turns": 8,
+      "selectionReproducedRate": 0.375,
+      "current": {
+        "turns": 8,
+        "turnsWithResponses": 8,
+        "turnsWithInjection": 6,
+        "injectedMemories": 6,
+        "scoredMemories": 6,
+        "meanOverlap": 0.6433,
+        "meanOverlapCi": [
+          0.3833,
+          0.8433
+        ],
+        "groundedMemoryRate": 0.8333,
+        "groundedTurnRate": 0.8333
+      }
+    },
+    "lme-session": {
+      "status": "measured",
+      "seconds": 37,
+      "k": 10,
+      "queryCount": 470,
+      "memoryCount": 22419,
+      "recallAnyAtK": 0.7553,
+      "recallAllAtK": 0.4894,
+      "fractionalRecallAtK": 0.625,
+      "ndcgAtK": 0.556,
+      "mrr": 0.6094
+    },
+    "lme-turn": {
+      "status": "measured",
+      "seconds": 28,
+      "k": 10,
+      "queryCount": 470,
+      "memoryCount": 231606,
+      "recallAnyAtK": 0.6511,
+      "recallAllAtK": 0.383,
+      "fractionalRecallAtK": 0.5087,
+      "ndcgAtK": 0.4522,
+      "mrr": 0.5068
+    },
+    "lme-hybrid": {
+      "status": "measured",
+      "seconds": 326,
+      "k": 10,
+      "queryCount": 470,
+      "memoryCount": 22419,
+      "recallAnyAtK": 0.8809,
+      "recallAllAtK": 0.7404,
+      "fractionalRecallAtK": 0.816,
+      "ndcgAtK": 0.749,
+      "mrr": 0.771
+    },
+    "lme-session-grep": {
+      "status": "measured",
+      "seconds": 3,
+      "k": 10,
+      "queryCount": 470,
+      "memoryCount": 22419,
+      "recallAnyAtK": 0.9617,
+      "recallAllAtK": 0.8489,
+      "fractionalRecallAtK": 0.91,
+      "ndcgAtK": 0.8162,
+      "mrr": 0.8279,
+      "haystackLengths": {
+        "evidence": {
+          "count": 890,
+          "medianChars": 14460.5
+        },
+        "other": {
+          "count": 21529,
+          "medianChars": 10357
+        }
+      }
+    },
+    "lme-session-grep-masked": {
+      "status": "measured",
+      "seconds": 3,
+      "k": 10,
+      "queryCount": 470,
+      "memoryCount": 22419,
+      "recallAnyAtK": 0.9617,
+      "recallAllAtK": 0.8489,
+      "fractionalRecallAtK": 0.91,
+      "ndcgAtK": 0.8162,
+      "mrr": 0.8279,
+      "haystackLengths": {
+        "evidence": {
+          "count": 890,
+          "medianChars": 14460.5
+        },
+        "other": {
+          "count": 21529,
+          "medianChars": 10357
+        }
+      }
+    },
+    "lme-turn-grep": {
+      "status": "measured",
+      "seconds": 12,
+      "k": 10,
+      "queryCount": 470,
+      "memoryCount": 231606,
+      "recallAnyAtK": 0.7489,
+      "recallAllAtK": 0.5255,
+      "fractionalRecallAtK": 0.6265,
+      "ndcgAtK": 0.4827,
+      "mrr": 0.4877,
+      "haystackLengths": {
+        "evidence": {
+          "count": 886,
+          "medianChars": 356
+        },
+        "other": {
+          "count": 230720,
+          "medianChars": 498
+        }
+      }
+    },
+    "lme-turn-30-fixture": {
+      "status": "measured",
+      "seconds": 3,
+      "k": 10,
+      "queryCount": 30,
+      "memoryCount": 15150,
+      "recallAnyAtK": 0.8,
+      "recallAllAtK": 0.8,
+      "fractionalRecallAtK": 0.8,
+      "ndcgAtK": 0.7169,
+      "mrr": 0.6903
+    },
+    "lme-turn-30-lanes": {
+      "status": "measured",
+      "seconds": 1691,
+      "queries": 30,
+      "memories": 15150,
+      "rerunMaxAbsDelta": 0,
+      "embedder": {
+        "model": "Xenova/multilingual-e5-small",
+        "artifactSha256": "a89c5cc413885d7c2af5906da0f77f30d2ce4ef4bb11751fc7e22d652373ec4d"
+      },
+      "at10": {
+        "current": {
+          "recall": 0.8,
+          "ndcg": 0.6468,
+          "hit": 0.8,
+          "mrr": 0.6028
+        },
+        "vector": {
+          "recall": 0.6333,
+          "ndcg": 0.448,
+          "hit": 0.6333,
+          "mrr": 0.401
+        },
+        "keyword": {
+          "recall": 0.75,
+          "ndcg": 0.5518,
+          "hit": 0.7667,
+          "mrr": 0.5034
+        },
+        "grep": {
+          "recall": 0.5833,
+          "ndcg": 0.4037,
+          "hit": 0.6,
+          "mrr": 0.3614
+        },
+        "rrf": {
+          "recall": 0.8167,
+          "ndcg": 0.5825,
+          "hit": 0.8333,
+          "mrr": 0.52
+        }
+      },
+      "atBudget": {
+        "current": {
+          "recall": 0.8,
+          "ndcg": 0.6468
+        },
+        "vector": {
+          "recall": 0.5667,
+          "ndcg": 0.4278,
+          "vsCurrent": {
+            "recall": {
+              "mean": -0.2333,
+              "ci": [
+                -0.4333,
+                0
+              ]
+            },
+            "ndcg": {
+              "mean": -0.219,
+              "ci": [
+                -0.3989,
+                -0.0427
+              ]
+            }
+          }
+        },
+        "keyword": {
+          "recall": 0.7167,
+          "ndcg": 0.5308,
+          "vsCurrent": {
+            "recall": {
+              "mean": -0.0833,
+              "ci": [
+                -0.1833,
+                0
+              ]
+            },
+            "ndcg": {
+              "mean": -0.116,
+              "ci": [
+                -0.217,
+                -0.036
+              ]
+            }
+          }
+        },
+        "grep": {
+          "recall": 0.4833,
+          "ndcg": 0.3654,
+          "vsCurrent": {
+            "recall": {
+              "mean": -0.3167,
+              "ci": [
+                -0.4833,
+                -0.1667
+              ]
+            },
+            "ndcg": {
+              "mean": -0.2814,
+              "ci": [
+                -0.4116,
+                -0.1588
+              ]
+            }
+          }
+        },
+        "rrf": {
+          "recall": 0.7167,
+          "ndcg": 0.5481,
+          "vsCurrent": {
+            "recall": {
+              "mean": -0.0833,
+              "ci": [
+                -0.2667,
+                0.1
+              ]
+            },
+            "ndcg": {
+              "mean": -0.0987,
+              "ci": [
+                -0.2465,
+                0.0371
+              ]
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -147,6 +147,7 @@ These commands remove only hooks and scheduler definitions. Your memory stays in
 | [docs/EXTERNAL_MARKET_CONTEXT.md](docs/EXTERNAL_MARKET_CONTEXT.md) | Read-only DART/FRED/Finnhub market context |
 | [docs/OPERATIONS.md](docs/OPERATIONS.md) | Operations runbook |
 | [docs/OPERATIONS.md#llm-provider-circuit-breaker](docs/OPERATIONS.md#llm-provider-circuit-breaker) | LLM provider circuit breaker: skipped calls, kept summaries, doctor/audit |
+| [docs/BENCHMARKS.md](docs/BENCHMARKS.md) | Retrieval benchmarks: commands, datasets, baselines, limits |
 | [SECURITY.md](SECURITY.md) | Threat model, data that leaves the machine, vulnerability reports (Korean) |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Development setup, checks, PR and release flow (Korean) |
 | [CHANGELOG.md](CHANGELOG.md) | Release notes |
