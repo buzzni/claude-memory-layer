@@ -83,7 +83,7 @@ npx claude-memory-layer doctor
 
 The embedding backend is required at runtime. `postinstall` installs `@huggingface/transformers` into an isolated managed directory inside the package, pins a patched `sharp` there, and installs a CPU-only `onnxruntime-node` on CUDA 11 machines. Contributors who do not touch vector features can skip that download with `CLAUDE_MEMORY_LAYER_SKIP_EMBEDDING_POSTINSTALL=1 npm ci` (see [CONTRIBUTING.md](../CONTRIBUTING.md)).
 
-`claude-memory-layer doctor` checks Node version, the embedding backend, duplicate installs on `PATH`, hooks, MCP client configs and store access. `doctor --fix` reinstalls the managed embedding backend when that check fails and repairing is safe; otherwise it prints why it declined and the manual command. All other checks stay report-only.
+`claude-memory-layer doctor` checks Node version, the SQLite and LanceDB native modules, the embedding backend, duplicate installs on `PATH`, hooks, MCP client configs and store access. `doctor --fix` reinstalls the managed embedding backend when that check fails and repairing is safe; otherwise it prints why it declined and the manual command. All other checks stay report-only.
 
 ### Embedding model
 
@@ -168,3 +168,21 @@ ONNXRUNTIME_NODE_INSTALL_CUDA=skip node scripts/postinstall-embedding-backend.cj
 ```
 
 `npm warn deprecated ...` messages come from transitive dependencies and do not cause install failures.
+
+## Troubleshooting: native modules
+
+Three parts of the package load native code. What still works when one fails to load:
+
+| Missing or broken | Capture and keyword recall | Semantic search, `claude-memory-layer search` | `doctor` check |
+|---|---|---|---|
+| Embedding backend (`@huggingface/transformers`) | work | off | `embedding-backend` |
+| LanceDB platform package (`@lancedb/lancedb-<platform>`, an optional dependency) | work | off | `vector-store` |
+| `better-sqlite3` binding | stop, with no error in the session | off | `sqlite` |
+
+The `better-sqlite3` binding is built for one Node version. After a Node major upgrade, or when its install script could not build it, every hook fails quietly and nothing is stored. Reinstall with the Node that runs the hooks:
+
+```bash
+npm install -g claude-memory-layer@latest
+```
+
+LanceDB is skipped by `npm install --omit=optional` and is not published for every platform; reinstall without `--omit=optional`.
