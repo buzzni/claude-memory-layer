@@ -76,6 +76,8 @@ async function build() {
   const hooks = [
     'session-start',
     'user-prompt-submit',
+    // post-tool-use imports post-tool-use-handler only for a call it stores.
+    'post-tool-use-handler',
     'post-tool-use',
     'stop',
     // Before session-end: a hook whose worker cannot load this falls back to

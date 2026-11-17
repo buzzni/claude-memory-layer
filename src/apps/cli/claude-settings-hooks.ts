@@ -30,6 +30,7 @@ export interface ClaudeSettingsWithHooks {
 export const REQUIRED_HOOK_FILES = [
   'user-prompt-submit.js',
   'post-tool-use.js',
+  'post-tool-use-handler.js',
   'session-start.js',
   'stop.js',
   'session-end.js',
