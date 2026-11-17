@@ -34,6 +34,7 @@ export interface RetrieveMemoriesOptions {
   topK?: number;
   minScore?: number;
   sessionId?: string;
+  excludeSessionId?: string;
   includeShared?: boolean;
   adaptiveRerank?: boolean;
   intentRewrite?: boolean;

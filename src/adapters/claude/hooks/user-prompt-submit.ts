@@ -32,6 +32,7 @@ import {
 import type { MemoryKind } from '../../../core/memory-ref.js';
 import { memoryContentHash } from '../../../core/retrieval-trace-ledger.js';
 import type {
+  RetrievalLaneFailure,
   RetrievalOutcomeDiagnostics,
   RetrievalOutcomeReason
 } from '../../../core/retrieval-telemetry.js';
@@ -110,8 +111,23 @@ function isExcludedEvaluationSession(sessionId: string | undefined): boolean {
  * restores the old behavior; read per call so replay arms can toggle it.
  */
 function isCurrentSessionEvent(eventSessionId: string | undefined, currentSessionId: string | undefined): boolean {
-  if (!currentSessionId || process.env.CLAUDE_MEMORY_INJECT_SAME_SESSION === 'true') return false;
-  return eventSessionId === currentSessionId;
+  const excluded = sessionExcludedFromInjection(currentSessionId);
+  return excluded !== undefined && eventSessionId === excluded;
+}
+
+function sessionExcludedFromInjection(currentSessionId: string | undefined): string | undefined {
+  return currentSessionId && process.env.CLAUDE_MEMORY_INJECT_SAME_SESSION !== 'true' ? currentSessionId : undefined;
+}
+
+/**
+ * The semantic lane is best-effort, but a lane that did not answer is not a
+ * lane that found nothing, and only the difference shows that it is down.
+ */
+function classifySemanticLaneFailure(error: unknown): RetrievalLaneFailure {
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  if (code === 'ETIMEDOUT') return 'timeout';
+  if (code === 'ENOENT' || code === 'ECONNREFUSED' || code === 'EPIPE' || code === 'ECONNRESET') return 'unavailable';
+  return 'error';
 }
 
 export interface AdherenceState {
@@ -538,6 +554,7 @@ export function hookMemoryRefKind(candidate: { source?: string; type?: string })
 
 export interface HookRetrievalLaneCounts {
   semantic: number;
+  semanticFailure?: RetrievalLaneFailure;
   keyword: number;
   graduated: number;
   lesson: number;
@@ -581,6 +598,7 @@ export function buildHookOutcomeDiagnostics(counts: HookRetrievalLaneCounts): Re
       keyword: counts.keyword,
       summary: counts.graduated
     },
+    ...(counts.semanticFailure ? { laneFailures: { vector: counts.semanticFailure } } : {}),
     filteredCounts: {
       threshold: counts.thresholdFiltered,
       quality: counts.qualityFiltered,
@@ -601,7 +619,13 @@ export type HookSelectionMemoryService = Pick<
 export interface HookSelectionDeps {
   memoryService: HookSelectionMemoryService;
   /** Semantic lane; main() routes it through the daemon, the replay through an in-process retriever. */
-  retrieveSemantic: (request: { prompt: string; topK: number; minScore: number }) => Promise<SemanticMemory[]>;
+  retrieveSemantic: (request: {
+    prompt: string;
+    topK: number;
+    minScore: number;
+    /** The prompt's own session, when its events are not injected back into it. */
+    excludeSessionId?: string;
+  }) => Promise<SemanticMemory[]>;
 }
 
 export interface HookSelectionInput {
@@ -621,6 +645,8 @@ export interface HookSelection {
   injectionPool: HookMemoryCandidate[];
   injectableMemories: HookMemoryCandidate[];
   semanticCandidateCount: number;
+  /** Set when the semantic lane did not answer; its count is then 0 for that reason. */
+  semanticLaneFailure?: RetrievalLaneFailure;
   keywordCandidateCount: number;
   graduatedCandidateCount: number;
   lessonCandidateCount: number;
@@ -645,6 +671,7 @@ export async function selectHookInjection(
   // Lane counters feed the honest outcome reason for an empty selection
   // instead of the old runtime_error default (specs R2).
   let semanticCandidateCount = 0;
+  let semanticLaneFailure: RetrievalLaneFailure | undefined;
   let keywordCandidateCount = 0;
   let graduatedCandidateCount = 0;
   let lessonCandidateCount = 0;
@@ -653,17 +680,20 @@ export async function selectHookInjection(
   const canUseSemantic = RETRIEVAL_MODE === 'semantic' || RETRIEVAL_MODE === 'hybrid';
   if (canUseSemantic) {
     try {
+      const excludeSessionId = sessionExcludedFromInjection(input.sessionId);
       const semanticMemories = await deps.retrieveSemantic({
         prompt: retrievalQuery,
         topK: MAX_MEMORIES,
-        minScore
+        minScore,
+        ...(excludeSessionId ? { excludeSessionId } : {})
       });
       mergedMemories = (await Promise.all(semanticMemories.map((hit) => resolveSemanticHit(deps.memoryService, hit))))
         .filter((memory) => !isExcludedEvaluationSession(memory.sessionId)
         && !isCurrentSessionEvent(memory.sessionId, input.sessionId));
       semanticCandidateCount = mergedMemories.length;
-    } catch {
+    } catch (error) {
       // Semantic retrieval is best-effort; fallback below handles the rest
+      semanticLaneFailure = classifySemanticLaneFailure(error);
     }
   }
 
@@ -857,6 +887,7 @@ export async function selectHookInjection(
     injectionPool: trustedPool,
     injectableMemories,
     semanticCandidateCount,
+    ...(semanticLaneFailure ? { semanticLaneFailure } : {}),
     keywordCandidateCount,
     graduatedCandidateCount,
     lessonCandidateCount,
@@ -965,6 +996,7 @@ export async function main(options: UserPromptSubmitMainOptions = {}): Promise<s
         mergedMemories,
         injectableMemories,
         semanticCandidateCount,
+        semanticLaneFailure,
         keywordCandidateCount,
         graduatedCandidateCount,
         lessonCandidateCount,
@@ -1109,6 +1141,7 @@ export async function main(options: UserPromptSubmitMainOptions = {}): Promise<s
         }
         const outcomeDiagnostics = buildHookOutcomeDiagnostics({
           semantic: semanticCandidateCount,
+          semanticFailure: semanticLaneFailure,
           keyword: keywordCandidateCount,
           graduated: graduatedCandidateCount,
           lesson: lessonCandidateCount,

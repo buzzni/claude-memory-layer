@@ -225,9 +225,16 @@ export function emptyUsefulnessAggregateV2(options: {
   };
 }
 
+/** Why a lane produced nothing because it did not run, as opposed to finding nothing. */
+export type RetrievalLaneFailure = 'timeout' | 'unavailable' | 'error';
+
+const RETRIEVAL_LANE_FAILURES = new Set<string>(['timeout', 'unavailable', 'error']);
+
 export interface RetrievalOutcomeDiagnostics {
   outcomeReason: RetrievalOutcomeReason;
   laneCandidateCounts: Record<string, number>;
+  /** Lanes that failed. A lane that ran and found nothing is a 0 in laneCandidateCounts and absent here. */
+  laneFailures?: Record<string, RetrievalLaneFailure>;
   filteredCounts: Record<string, number>;
   topScore: number | null;
   threshold: number;
@@ -270,8 +277,18 @@ export function normalizeRetrievalOutcomeDiagnostics(
       : 'unknown',
     ...(raw.injectedByOrigin && typeof raw.injectedByOrigin === 'object'
       ? { injectedByOrigin: normalizeOriginCounts(raw.injectedByOrigin as Record<string, unknown>) }
-      : {})
+      : {}),
+    ...normalizeLaneFailures(raw.laneFailures)
   };
+}
+
+function normalizeLaneFailures(value: unknown): Pick<RetrievalOutcomeDiagnostics, 'laneFailures'> {
+  if (!value || typeof value !== 'object') return {};
+  const laneFailures = Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .filter(([lane, failure]) => DIAGNOSTIC_COUNT_KEYS.has(lane) && RETRIEVAL_LANE_FAILURES.has(String(failure)))
+  ) as Record<string, RetrievalLaneFailure>;
+  return Object.keys(laneFailures).length > 0 ? { laneFailures } : {};
 }
 
 function normalizeOriginCounts(value: Record<string, unknown>): Partial<Record<MemoryOrigin, number>> {

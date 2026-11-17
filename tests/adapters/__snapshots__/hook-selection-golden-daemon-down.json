@@ -7,7 +7,8 @@
         "projectPath": "/repo/app",
         "prompt": "What happened to SessionStart grounding after PR #55 and PR #57?",
         "topK": 5,
-        "minScore": 0.4
+        "minScore": 0.4,
+        "excludeSessionId": "session-golden"
       },
       2000,
       {}
@@ -119,6 +120,9 @@
             "vector": 0,
             "keyword": 2,
             "summary": 0
+          },
+          "laneFailures": {
+            "vector": "error"
           },
           "filteredCounts": {
             "threshold": 0,

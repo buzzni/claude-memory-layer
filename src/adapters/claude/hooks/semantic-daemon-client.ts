@@ -8,6 +8,8 @@ import { hashProjectPath } from '../../../core/registry/project-path.js';
 
 interface SemanticRequest {
   sessionId: string;
+  /** Search outside this session; without it the daemon searches `sessionId` first. */
+  excludeSessionId?: string;
   /** Authoritative project scope supplied by the hook, independent of registration. */
   projectPath?: string;
   prompt: string;
@@ -28,6 +30,7 @@ export interface SemanticMemory {
 interface SemanticDaemonRequest {
   type: 'retrieve' | 'graduate' | 'summarize';
   sessionId: string;
+  excludeSessionId?: string;
   projectPath?: string;
   prompt?: string;
   topK?: number;
@@ -65,6 +68,7 @@ export async function retrieveSemanticMemories(
   const payload: SemanticDaemonRequest = {
     type: 'retrieve',
     sessionId: request.sessionId,
+    ...(request.excludeSessionId !== undefined ? { excludeSessionId: request.excludeSessionId } : {}),
     ...(request.projectPath !== undefined ? { projectPath: request.projectPath } : {}),
     prompt: request.prompt,
     topK: request.topK,

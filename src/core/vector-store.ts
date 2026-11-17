@@ -182,6 +182,8 @@ export class VectorStore {
       limit?: number;
       minScore?: number;
       sessionId?: string;
+      /** Search outside this session, so its rows cannot use up the limit. */
+      excludeSessionId?: string;
     } = {}
   ): Promise<SearchResult[]> {
     await this.initialize();
@@ -192,7 +194,7 @@ export class VectorStore {
       return [];
     }
 
-    const { limit = 5, minScore = 0.7, sessionId } = options;
+    const { limit = 5, minScore = 0.7, sessionId, excludeSessionId } = options;
 
     // Use cosine distance for semantic similarity
     let query = table
@@ -201,8 +203,12 @@ export class VectorStore {
       .limit(limit * 2); // Get more for filtering
 
     // Apply session filter if specified
-    if (sessionId) {
-      query = query.where(toLanceColumnEquals('sessionId', sessionId));
+    const sessionPredicates = [
+      ...(sessionId ? [toLanceColumnEquals('sessionId', sessionId)] : []),
+      ...(excludeSessionId ? [`\`sessionId\` != ${toLanceSqlString(excludeSessionId)}`] : [])
+    ];
+    if (sessionPredicates.length > 0) {
+      query = query.where(sessionPredicates.join(' AND '));
     }
 
     const results = await query.toArray();

@@ -48,6 +48,10 @@ export interface RetrievalScope {
 }
 
 export type RetrievalStrategy = 'auto' | 'fast' | 'deep';
+
+function withoutSession<T extends { sessionId: string }>(results: T[], excludeSessionId: string | undefined): T[] {
+  return excludeSessionId ? results.filter((result) => result.sessionId !== excludeSessionId) : results;
+}
 export type RetrievalMode = 'event' | 'session-event-hybrid';
 export type ProjectScopeMode = 'strict' | 'prefer' | 'global';
 type DecayPolicy = NonNullable<RetrievalOptions['decayPolicy']>;
@@ -97,6 +101,12 @@ export interface RetrievalOptions {
   topK: number;
   minScore: number;
   sessionId?: string;
+  /**
+   * Search outside this session. Its events are still in the caller's
+   * context, and they are the closest match to whatever is asked next, so
+   * left in they take every result.
+   */
+  excludeSessionId?: string;
   maxTokens: number;
   includeSessionContext: boolean;
   scope?: RetrievalScope;
@@ -270,6 +280,7 @@ export class Retriever {
       topK: opts.topK,
       minScore: opts.minScore,
       sessionId: sessionFilter,
+      excludeSessionId: opts.excludeSessionId,
       scope: opts.scope,
       rerankWithKeyword: opts.rerankWithKeyword !== false,
       rerankWeights: opts.rerankWeights,
@@ -292,6 +303,7 @@ export class Retriever {
         topK: opts.topK,
         minScore: opts.minScore,
         sessionId: sessionFilter,
+        excludeSessionId: opts.excludeSessionId,
         scope: opts.scope,
         rerankWithKeyword: opts.rerankWithKeyword !== false,
         rerankWeights: opts.rerankWeights,
@@ -314,6 +326,7 @@ export class Retriever {
         topK: opts.topK,
         minScore: Math.max(0.5, opts.minScore - 0.15),
         sessionId: undefined,
+        excludeSessionId: opts.excludeSessionId,
         scope: undefined,
         rerankWithKeyword: true,
         rerankWeights: opts.rerankWeights,
@@ -330,7 +343,7 @@ export class Retriever {
 
     // Stage 4: summary fallback
     if (fallbackEnabled && this.shouldFallback(current.matchResult, current.results)) {
-      const summary = await this.buildSummaryFallback(qualityQuery, opts.topK);
+      const summary = withoutSession(await this.buildSummaryFallback(qualityQuery, opts.topK), opts.excludeSessionId);
       const scopedSummary = await this.applyScopeFilters(summary, {
         scope: opts.scope,
         projectScopeMode: opts.projectScopeMode,
@@ -457,6 +470,7 @@ export class Retriever {
       topK: number;
       minScore: number;
       sessionId?: string;
+      excludeSessionId?: string;
       scope?: RetrievalScope;
       rerankWithKeyword?: boolean;
       rerankWeights?: {
@@ -489,7 +503,8 @@ export class Retriever {
       strategy: input.strategy,
       topK: input.topK,
       minScore: input.minScore,
-      sessionId: input.sessionId
+      sessionId: input.sessionId,
+      excludeSessionId: input.excludeSessionId
     });
 
     if (input.intentRewrite && input.strategy === 'deep' && this.queryRewriter) {
@@ -503,7 +518,8 @@ export class Retriever {
           strategy: 'deep',
           topK: input.topK,
           minScore: Math.max(0.5, input.minScore - 0.1),
-          sessionId: input.sessionId
+          sessionId: input.sessionId,
+          excludeSessionId: input.excludeSessionId
         });
         initialResults = this.mergeResults(initialResults, rewrittenResults, input.topK * 3);
       }
@@ -529,9 +545,12 @@ export class Retriever {
         })
       : graphExpandedResults;
 
+    // The expansions follow graph and session links into any session.
+    const visibleResults = withoutSession(expandedResults, input.excludeSessionId);
+
     const rerankedResults = input.rerankWithKeyword
-      ? this.rerankByKeywordOverlap(expandedResults, rerankQuery, input.rerankWeights, input.decayPolicy)
-      : expandedResults;
+      ? this.rerankByKeywordOverlap(visibleResults, rerankQuery, input.rerankWeights, input.decayPolicy)
+      : visibleResults;
 
     const filtered = await this.applyScopeFilters(rerankedResults, {
       scope: input.scope,
@@ -898,14 +917,15 @@ export class Retriever {
 
   private async searchByStrategy(
     query: string,
-    input: { strategy: RetrievalStrategy; topK: number; minScore: number; sessionId?: string }
+    input: { strategy: RetrievalStrategy; topK: number; minScore: number; sessionId?: string; excludeSessionId?: string }
   ): Promise<DebuggableSearchResult[]> {
     const strategy = input.strategy === 'auto' ? 'deep' : input.strategy;
 
     if (strategy === 'fast') {
       const keyword = await this.searchByKeyword(query, {
         limit: Math.max(5, input.topK * 3),
-        sessionId: input.sessionId
+        sessionId: input.sessionId,
+        excludeSessionId: input.excludeSessionId
       });
       return keyword;
     }
@@ -914,7 +934,8 @@ export class Retriever {
     const vectorResults = await this.vectorStore.search(queryEmbedding.vector, {
       limit: Math.max(5, input.topK * 3),
       minScore: input.minScore,
-      sessionId: input.sessionId
+      sessionId: input.sessionId,
+      excludeSessionId: input.excludeSessionId
     });
     return vectorResults.map((result) => withRetrievalLane(result, {
       lane: 'raw_event',
@@ -925,11 +946,12 @@ export class Retriever {
 
   private async searchByKeyword(
     query: string,
-    input: { limit: number; sessionId?: string }
+    input: { limit: number; sessionId?: string; excludeSessionId?: string }
   ): Promise<DebuggableSearchResult[]> {
     if (this.eventStore.keywordSearch) {
       const rows = await this.eventStore.keywordSearch(query, input.limit);
-      const filtered = input.sessionId ? rows.filter((r) => r.event.sessionId === input.sessionId) : rows;
+      const filtered = rows.filter((r) => (input.sessionId ? r.event.sessionId === input.sessionId : true)
+        && r.event.sessionId !== input.excludeSessionId);
       return filtered.map((row, idx) => {
         const score = Math.max(0.4, 1 - idx * 0.04);
         return withRetrievalLane({
@@ -951,6 +973,7 @@ export class Retriever {
       // events several-fold and would crowd them out of the limit window.
       .filter((e) => e.eventType !== 'tool_observation')
       .filter((e) => (input.sessionId ? e.sessionId === input.sessionId : true))
+      .filter((e) => e.sessionId !== input.excludeSessionId)
       .map((e) => ({ e, overlap: this.keywordOverlap(tokens, this.tokenize(e.content)) }))
       .filter((r) => r.overlap > 0)
       .sort((a, b) => b.overlap - a.overlap)
