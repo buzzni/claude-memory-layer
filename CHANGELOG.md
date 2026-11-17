@@ -8,6 +8,21 @@
 
 ## [Unreleased]
 
+## [2.5.12] - 2026-11-17
+
+### Added
+
+- feat(repair): drop-spare-vectors, for event_vectors_* tables search does not read ([#247](https://github.com/buzzni/claude-memory-layer/pull/247))
+
+### Fixed
+
+- fix(repair): backfill-vectors dry run on a store with no vector directory ([#245](https://github.com/buzzni/claude-memory-layer/pull/245))
+- fix(import): keep vectors the current model made when the store has no model metadata ([#246](https://github.com/buzzni/claude-memory-layer/pull/246))
+
+### Changed
+
+- ci(publish): wait up to 15 minutes for the npm registry, not 5 ([#248](https://github.com/buzzni/claude-memory-layer/pull/248))
+
 ## [2.5.11] - 2026-11-17
 
 ### Added
@@ -146,7 +161,8 @@
 - refactor(core): unify harness boilerplate detection into one anchored marker list (T9) ([#129](https://github.com/buzzni/claude-memory-layer/pull/129))
 - chore(release): guard and auto-sync plugin manifest version ([#118](https://github.com/buzzni/claude-memory-layer/pull/118))
 
-[Unreleased]: https://github.com/buzzni/claude-memory-layer/compare/v2.5.11...HEAD
+[Unreleased]: https://github.com/buzzni/claude-memory-layer/compare/v2.5.12...HEAD
+[2.5.12]: https://github.com/buzzni/claude-memory-layer/compare/v2.5.11...v2.5.12
 [2.5.11]: https://github.com/buzzni/claude-memory-layer/compare/v2.5.10...v2.5.11
 [2.5.10]: https://github.com/buzzni/claude-memory-layer/compare/v2.5.9...v2.5.10
 [2.5.9]: https://github.com/buzzni/claude-memory-layer/compare/v2.5.8...v2.5.9
