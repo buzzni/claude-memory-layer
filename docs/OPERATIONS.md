@@ -172,6 +172,7 @@ snapshots mask absolute paths and credential-looking values, so a version restor
 | `repair legacy-project-scope --apply` | Adds repair or quarantine markers to event metadata; content is untouched | Yes | Markers in the metadata only |
 | `vector compact --apply`, `repair prune-tool-observation-vectors --apply` | Compact vector tables; delete `tool_observation` vectors | Yes | No |
 | `repair backfill-vectors --apply` | Only adds. For each event semantic search cannot reach: copies its vector from an unread `event_vectors_*` table when the current model made it and the event text is unchanged, otherwise queues the event for embedding | Yes: vectors are rebuilt from SQLite | No |
+| `repair drop-spare-vectors --apply` | Drops the `event_vectors_*` tables, which search does not read. Refuses unless every event worth searching has a searchable vector or is waiting for the embedding worker, since until `repair backfill-vectors` such a table could hold an event's only vector | **No** | No |
 | `retention audit` | Nothing; reads a read-only snapshot | — | — |
 | `retention apply-lifecycle` | Writes retention scores; deletes no events | Yes | Yes |
 | `lesson consolidate --apply` | Adds a runbook and switches the lessons it absorbs off | Yes: `lesson revert-consolidation --apply` | Yes |
