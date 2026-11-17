@@ -159,6 +159,8 @@ import { emptyTypedSelectionSummary } from '../../core/retrieval-telemetry.js';
 import { pruneToolObservationVectors } from '../../core/operations/tool-observation-vector-backfill.js';
 import { backfillVectorCoverage } from '../../core/operations/vector-coverage-backfill.js';
 import { formatBackfillVectorsResult, resolveBackfillVectorsOptions } from './backfill-vectors-command.js';
+import { dropSpareEventVectorTables } from '../../core/operations/spare-vector-tables.js';
+import { formatDropSpareVectorsResult, resolveDropSpareVectorsOptions } from './drop-spare-vectors-command.js';
 import {
   formatAutoHealToolObservationVectorsResult,
   resolveAutoHealToolObservationVectorsOptions
@@ -1903,6 +1905,58 @@ repairCommand
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`Backfill vectors failed: ${message}`);
+      process.exit(1);
+    }
+  });
+
+repairCommand
+  .command('drop-spare-vectors')
+  .description('Drop event_vectors_* tables search does not read, once every event is searchable (dry-run by default)')
+  .option('-p, --project <path>', 'Project path (defaults to cwd)')
+  .option('--apply', 'Drop the tables (default is a dry-run preview; cannot be undone)')
+  .action(async (options) => {
+    try {
+      const dropOptions = resolveDropSpareVectorsOptions(options);
+      const storagePath = getProjectStoragePath(dropOptions.projectPath);
+      const dbPath = path.join(storagePath, 'events.sqlite');
+
+      if (!fs.existsSync(dbPath)) {
+        console.log(formatDropSpareVectorsResult({
+          dryRun: dropOptions.dryRun, embeddable: 0, searchable: 0, queued: 0, refused: null, tables: [], dropped: []
+        }));
+        return;
+      }
+
+      // The embedding worker writes to the same vector directory.
+      const writerLock = new WorkerLock(path.join(storagePath, 'vector-worker.lock'));
+      if (!dropOptions.dryRun) {
+        const lock = writerLock.acquire();
+        if (!lock.acquired) {
+          console.error(`Another vector worker is running (pid ${lock.holderPid ?? 'unknown'}); try again when it has finished.`);
+          process.exit(1);
+        }
+      }
+
+      const store = new SQLiteEventStore(dbPath, { readonly: dropOptions.dryRun });
+      const vectorStore = new VectorStore(path.join(storagePath, 'vectors'), { readOnly: dropOptions.dryRun });
+      try {
+        const result = await dropSpareEventVectorTables({
+          eventStore: {
+            listEmbeddableEventIds: async () => (await store.getRecentEvents(Number.MAX_SAFE_INTEGER, {
+              eventTypes: EventTypeSchema.options.filter((eventType) => eventType !== 'tool_observation')
+            })).map((event) => event.id),
+            listPendingEmbeddingEventIds: () => store.listPendingEmbeddingEventIds()
+          },
+          vectorStore
+        }, { dryRun: dropOptions.dryRun });
+        console.log(formatDropSpareVectorsResult(result));
+      } finally {
+        await store.close().catch(() => undefined);
+        writerLock.release();
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Drop spare vectors failed: ${message}`);
       process.exit(1);
     }
   });

@@ -255,6 +255,25 @@ export class VectorStore {
     return (await this.db.tableNames()).filter((name) => name.startsWith('event_vectors_'));
   }
 
+  async countTableRows(tableName: string): Promise<number> {
+    await this.initialize();
+    if (!this.db) return 0;
+    const table = await this.getExistingTable(tableName);
+    return table ? table.countRows() : 0;
+  }
+
+  /** Drops one event_vectors_* table; the searched table cannot be dropped here. */
+  async dropSpareEventTable(tableName: string): Promise<void> {
+    this.assertWritable();
+    if (!tableName.startsWith('event_vectors_')) {
+      throw new Error(`${tableName} is not a spare event vector table`);
+    }
+    await this.initialize();
+    if (!this.db) return;
+    await (this.db as unknown as { dropTable(name: string): Promise<void> }).dropTable(tableName);
+    this.tableCache.delete(tableName);
+  }
+
   async readRowsByEventIds(
     tableName: string,
     eventIds: string[]
