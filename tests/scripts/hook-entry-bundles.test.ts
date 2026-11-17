@@ -13,7 +13,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 const repoRoot = process.cwd();
 const hooksDir = path.join(repoRoot, 'src', 'hooks');
 const NATIVE_BACKENDS = ['@lancedb/lancedb', '@huggingface/transformers', '@xenova/transformers'];
-/** Entries that run on every edit or tool call and usually stop before storing anything. */
+/** Entries that run on every edit or tool call and often stop before storing anything. */
 const LIGHT_ENTRIES = ['pre-tool-use', 'post-tool-use'];
 
 let staticImports: Map<string, string[]>;

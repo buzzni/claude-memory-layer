@@ -2,9 +2,9 @@
 /**
  * Entrypoint for the Claude PostToolUse hook.
  *
- * It runs after every tool call and most calls are not stored (excluded
- * tools, quiet Bash output), so it decides that first, before loading SQLite
- * and zod. The storing part is built as a separate file,
+ * It runs after every tool call and about a third of calls are not stored
+ * (excluded tools, quiet Bash output), so it decides that first, before
+ * loading SQLite and zod. The storing part is built as a separate file,
  * post-tool-use-handler.js, and imported only for a call that is stored.
  */
 import { runHook } from '../adapters/claude/hooks/hook-runtime.js';
