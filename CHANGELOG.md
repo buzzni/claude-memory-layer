@@ -8,6 +8,30 @@
 
 ## [Unreleased]
 
+## [2.5.11] - 2026-11-17
+
+### Added
+
+- feat: sanitize recalled memory text at render time (hooks, MCP, dashboard chat) ([#201](https://github.com/buzzni/claude-memory-layer/pull/201))
+- feat: Claude Code plugin marketplace install (memory-layer@claude-memory-layer) ([#197](https://github.com/buzzni/claude-memory-layer/pull/197))
+- feat(hooks): checkpoint the session on PreCompact and re-inject it after compaction ([#212](https://github.com/buzzni/claude-memory-layer/pull/212))
+- feat(llm): provider circuit breaker with kept session summaries ([#220](https://github.com/buzzni/claude-memory-layer/pull/220))
+- feat(hooks): PreToolUse pre-edit check that recalls what earlier sessions left about a file ([#224](https://github.com/buzzni/claude-memory-layer/pull/224))
+- feat(recall): label recalled memories by source trust, with an opt-in filter for automatic injection ([#226](https://github.com/buzzni/claude-memory-layer/pull/226))
+- feat(hooks): opt-in capture policy for subagent and teammate tool calls ([#236](https://github.com/buzzni/claude-memory-layer/pull/236))
+- feat(eval): RRF and local cross-encoder ranking evaluation (T12 stage 1, no ranking change) ([#239](https://github.com/buzzni/claude-memory-layer/pull/239))
+- feat(lesson): share curated lessons through git-tracked files (lesson export / import) ([#243](https://github.com/buzzni/claude-memory-layer/pull/243))
+- feat(repair): backfill-vectors, for events semantic search cannot reach ([#237](https://github.com/buzzni/claude-memory-layer/pull/237))
+
+### Fixed
+
+- fix(hooks): capture without LanceDB, native-module checks in doctor, lighter PostToolUse start ([#242](https://github.com/buzzni/claude-memory-layer/pull/242))
+- fix(hooks): search other sessions in the semantic lane, and record when it fails ([#238](https://github.com/buzzni/claude-memory-layer/pull/238))
+
+### Security
+
+- fix(dashboard): add a Host allow-list (DNS rebinding defense) ([#218](https://github.com/buzzni/claude-memory-layer/pull/218))
+
 ## [2.5.10] - 2026-11-17
 
 ### Added
@@ -122,7 +146,8 @@
 - refactor(core): unify harness boilerplate detection into one anchored marker list (T9) ([#129](https://github.com/buzzni/claude-memory-layer/pull/129))
 - chore(release): guard and auto-sync plugin manifest version ([#118](https://github.com/buzzni/claude-memory-layer/pull/118))
 
-[Unreleased]: https://github.com/buzzni/claude-memory-layer/compare/v2.5.10...HEAD
+[Unreleased]: https://github.com/buzzni/claude-memory-layer/compare/v2.5.11...HEAD
+[2.5.11]: https://github.com/buzzni/claude-memory-layer/compare/v2.5.10...v2.5.11
 [2.5.10]: https://github.com/buzzni/claude-memory-layer/compare/v2.5.9...v2.5.10
 [2.5.9]: https://github.com/buzzni/claude-memory-layer/compare/v2.5.8...v2.5.9
 [2.5.8]: https://github.com/buzzni/claude-memory-layer/compare/v2.5.7...v2.5.8
