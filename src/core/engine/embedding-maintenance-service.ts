@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { MODEL_CHECK_SAMPLE, producedByCurrentModel } from '../embedding-model-check.js';
 
 export interface EmbeddingMaintenanceEvent {
   id: string;
@@ -15,6 +16,8 @@ export interface EmbeddingMaintenanceEventStore {
 export interface EmbeddingMaintenanceVectorStore {
   count(): Promise<number>;
   clearAll(): Promise<void>;
+  /** A few rows of the searched table; without it legacy vectors cannot be checked. */
+  sampleRows?(limit: number): Promise<Array<{ content: string; vector: number[] }>>;
 }
 
 export interface EmbeddingMaintenanceVectorWorker {
@@ -48,6 +51,8 @@ export interface EmbeddingMaintenanceServiceOptions {
   vectorStore: EmbeddingMaintenanceVectorStore;
   eventStore: EmbeddingMaintenanceEventStore;
   getVectorWorker: () => EmbeddingMaintenanceVectorWorker | null;
+  /** The model in use now, to check vectors stored without metadata. */
+  embedder?: { embed(text: string): Promise<{ vector: number[] }> };
   fileSystem?: EmbeddingMaintenanceFileSystem;
 }
 
@@ -93,6 +98,17 @@ class DefaultEmbeddingMaintenanceService implements EmbeddingMaintenanceService 
         JSON.stringify({ model: currentModel, updatedAt: new Date().toISOString() }, null, 2)
       );
       return { changed: false, previousModel: null, currentModel, enqueued: 0, reason: 'initialized-meta' };
+    }
+
+    // Stores written before the metadata file existed have vectors but no
+    // record of their model. If the current model made them there is nothing
+    // to migrate, and dropping them would throw away every searchable vector.
+    if (!previousModel && hasExistingVectors && await this.storedVectorsFromCurrentModel()) {
+      this.fileSystem.writeFileSync(
+        metaPath,
+        JSON.stringify({ model: currentModel, updatedAt: new Date().toISOString() }, null, 2)
+      );
+      return { changed: false, previousModel: null, currentModel, enqueued: 0, reason: 'verified-legacy-vectors' };
     }
 
     const modelChanged = previousModel !== currentModel;
@@ -144,6 +160,14 @@ class DefaultEmbeddingMaintenanceService implements EmbeddingMaintenanceService 
       enqueued,
       reason: legacyUnknownButVectorsExist ? 'legacy-vectors-without-meta' : 'model-mismatch'
     };
+  }
+
+  private async storedVectorsFromCurrentModel(): Promise<boolean> {
+    const { embedder } = this.options;
+    const sampleRows = this.options.vectorStore.sampleRows?.bind(this.options.vectorStore);
+    if (!embedder || !sampleRows) return false;
+    const sample = await sampleRows(MODEL_CHECK_SAMPLE);
+    return sample.length > 0 && producedByCurrentModel(embedder, sample);
   }
 
   private readPreviousModel(metaPath: string): string | null {
