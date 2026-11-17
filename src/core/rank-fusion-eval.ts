@@ -88,16 +88,63 @@ export function summarizeRankArms(
   return { queryCount: queries.length, baseline: options.baseline, arms };
 }
 
+export interface BudgetArmMetrics {
+  recall: number;
+  ndcg: number;
+  vsBaseline?: { recall: PairedDifference; ndcg: PairedDifference };
+}
+
+export interface BudgetSummary {
+  /** Queries where the baseline returned at least one id; the others rank nothing. */
+  queryCount: number;
+  emptyBaseline: number;
+  baseline: string;
+  arms: Record<string, BudgetArmMetrics>;
+}
+
 /**
- * Every arm cut to the length of the baseline's list for the same query. The
- * production retriever filters and abstains, so its lists are short; at equal
- * length the arms differ only in which candidates they put first.
+ * Recall and nDCG at each query's own budget: k is the length of the
+ * baseline's list for that query. The production retriever filters and
+ * abstains, so its lists are short; at its own k every arm fills the same
+ * number of slots and nDCG is normalized by the ideal ranking of that many.
  */
-export function truncateToBaseline(runs: RankArmRun[], baseline: string): RankArmRun[] {
-  return runs.map((run) => {
-    const budget = run[baseline]?.length ?? 0;
-    return Object.fromEntries(Object.entries(run).map(([arm, ids]) => [arm, ids.slice(0, budget)]));
+export function summarizeAtBaselineBudget(
+  queries: RankArmQuery[],
+  runs: RankArmRun[],
+  options: { baseline: string; bootstrapSamples?: number }
+): BudgetSummary {
+  if (runs.length !== queries.length) throw new Error(`${queries.length} queries but ${runs.length} runs`);
+  const scored = queries.flatMap((query, i) => {
+    const budget = runs[i][options.baseline]?.length ?? 0;
+    return budget > 0 ? [{ query, run: runs[i], budget }] : [];
   });
+  const armNames = [...new Set(runs.flatMap((run) => Object.keys(run)))];
+  const atBudget = (arm: string) => scored.map(({ query, run, budget }) => {
+    const metric = computePrecisionRecallAtK([{
+      queryId: query.queryId,
+      expectedIds: query.expectedIds,
+      expectedRelevance: query.expectedRelevance,
+      retrievedIds: run[arm] ?? []
+    }], [budget])[0].at[budget];
+    return { recall: metric.recall, ndcg: metric.ndcg };
+  });
+  const baseline = atBudget(options.baseline);
+  const samples = options.bootstrapSamples ?? DEFAULT_BOOTSTRAP_SAMPLES;
+  const arms: Record<string, BudgetArmMetrics> = {};
+  for (const arm of armNames) {
+    const rows = atBudget(arm);
+    arms[arm] = {
+      recall: average(rows.map((row) => row.recall)),
+      ndcg: average(rows.map((row) => row.ndcg)),
+      ...(arm === options.baseline ? {} : {
+        vsBaseline: {
+          recall: pairedBootstrap(rows.map((row, i) => row.recall - baseline[i].recall), samples),
+          ndcg: pairedBootstrap(rows.map((row, i) => row.ndcg - baseline[i].ndcg), samples)
+        }
+      })
+    };
+  }
+  return { queryCount: scored.length, emptyBaseline: queries.length - scored.length, baseline: options.baseline, arms };
 }
 
 /** Nearest-rank percentiles, in the unit of the samples. */

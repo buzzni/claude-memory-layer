@@ -4,6 +4,11 @@
  * Models are read from (and, with allowDownload, fetched into) the given cache
  * directory only; no fixture or store text leaves the machine.
  */
+import { createHash } from 'node:crypto';
+import { createReadStream, existsSync, readdirSync } from 'node:fs';
+import { join, relative } from 'node:path';
+import { once } from 'node:events';
+
 import type { RerankScorer } from '../src/core/rank-fusion.js';
 
 export interface CrossEncoderPreset {
@@ -92,4 +97,29 @@ export async function loadCrossEncoder(
     return scores;
   };
   return { preset, loadMs, score };
+}
+
+function filesUnder(root: string): string[] {
+  return readdirSync(root, { withFileTypes: true }).flatMap((entry) => {
+    const file = join(root, entry.name);
+    return entry.isDirectory() ? filesUnder(file) : entry.isFile() ? [file] : [];
+  });
+}
+
+/**
+ * sha256 over a cached model's files (relative path and bytes, sorted).
+ * transformers.js does not record which hub revision it downloaded, so this
+ * hash is what pins the model a report was measured with. Null if absent.
+ */
+export async function modelArtifactSha256(cacheDir: string, model: string): Promise<string | null> {
+  const root = join(cacheDir, model);
+  if (!existsSync(root)) return null;
+  const digest = createHash('sha256');
+  for (const file of filesUnder(root).sort()) {
+    digest.update(`${relative(root, file)}\0`);
+    const stream = createReadStream(file);
+    stream.on('data', (chunk) => digest.update(chunk));
+    await once(stream, 'end');
+  }
+  return digest.digest('hex');
 }

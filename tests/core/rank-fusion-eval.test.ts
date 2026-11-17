@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { latencySummary, pairedBootstrap, summarizeRankArms, truncateToBaseline } from '../../src/core/rank-fusion-eval.js';
+import { latencySummary, pairedBootstrap, summarizeAtBaselineBudget, summarizeRankArms } from '../../src/core/rank-fusion-eval.js';
 
 const queries = [
   { queryId: 'q1', expectedIds: ['m1'] },
@@ -49,15 +49,29 @@ describe('summarizeRankArms', () => {
   });
 });
 
-describe('truncateToBaseline', () => {
-  it('cuts every arm to the number of ids the baseline returned for that query', () => {
-    expect(truncateToBaseline([
-      { current: ['m1'], rrf: ['m2', 'm1'] },
-      { current: [], rrf: ['m3'] }
-    ], 'current')).toEqual([
-      { current: ['m1'], rrf: ['m2'] },
-      { current: [], rrf: [] }
-    ]);
+describe('summarizeAtBaselineBudget', () => {
+  it("scores every arm at the baseline's list length for each query, with nDCG normalized at that k", () => {
+    const summary = summarizeAtBaselineBudget([
+      { queryId: 'q1', expectedIds: ['m1', 'm2'] },
+      { queryId: 'q2', expectedIds: ['m3'] },
+      { queryId: 'q3', expectedIds: ['m4'] }
+    ], [
+      { current: ['m1'], rrf: ['m9', 'm1'] },
+      { current: ['m9', 'm3'], rrf: ['m3', 'm9'] },
+      { current: [], rrf: ['m4'] }
+    ], { baseline: 'current', bootstrapSamples: 100 });
+
+    // q3 has no budget: the baseline abstained, so nothing is ranked there.
+    expect(summary.queryCount).toBe(2);
+    expect(summary.emptyBaseline).toBe(1);
+    // q1 at k=1: current finds 1 of 2 with ideal DCG over one slot (nDCG 1); rrf's slot is a miss.
+    // q2 at k=2: current has the hit at rank 2, rrf at rank 1.
+    expect(summary.arms.current.recall).toBeCloseTo((0.5 + 1) / 2);
+    expect(summary.arms.current.ndcg).toBeCloseTo((1 + 1 / Math.log2(3)) / 2);
+    expect(summary.arms.rrf.recall).toBeCloseTo((0 + 1) / 2);
+    expect(summary.arms.rrf.ndcg).toBeCloseTo((0 + 1) / 2);
+    expect(summary.arms.rrf.vsBaseline!.recall.mean).toBeCloseTo(-0.25);
+    expect(summary.arms.current.vsBaseline).toBeUndefined();
   });
 });
 

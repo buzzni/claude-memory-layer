@@ -35,14 +35,14 @@ export function reciprocalRankFusion(lanes: string[][], k: number = RRF_K): stri
 }
 
 /**
- * Reorder the first `scores.length` ids by score (highest first); the rest
+ * Reorder the first `scores.length` items by score (highest first); the rest
  * keep their place after them. A reranker scores only the head of a list.
  */
-export function rerankHead(ids: string[], scores: number[]): string[] {
-  if (scores.length > ids.length) throw new Error(`${scores.length} scores for ${ids.length} ids`);
-  const head = ids.slice(0, scores.length)
-    .map((id, index) => ({ id, index, score: scores[index] }))
+export function rerankHead<T>(items: T[], scores: number[]): T[] {
+  if (scores.length > items.length) throw new Error(`${scores.length} scores for ${items.length} items`);
+  const head = items.slice(0, scores.length)
+    .map((item, index) => ({ item, index, score: scores[index] }))
     .sort((a, b) => b.score - a.score || a.index - b.index)
-    .map(({ id }) => id);
-  return [...head, ...ids.slice(scores.length)];
+    .map(({ item }) => item);
+  return [...head, ...items.slice(scores.length)];
 }

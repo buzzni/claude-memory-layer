@@ -36,6 +36,6 @@ describe('rerankHead', () => {
   });
 
   it('rejects more scores than ids', () => {
-    expect(() => rerankHead(['a'], [1, 2])).toThrow(/2 scores for 1 ids/);
+    expect(() => rerankHead(['a'], [1, 2])).toThrow(/2 scores for 1 items/);
   });
 });

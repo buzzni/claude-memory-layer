@@ -5,23 +5,28 @@
  *   npm run eval:rank-fusion -- --fixture <replay-or-session-qrels.json> --model-cache <dir> [--reranker mmarco-minilm|bge-m3|none]
  *
  * The fixture's memories go into a throwaway SQLite store (the production FTS
- * lane) and are embedded with the production embedder (the vector lane). For
- * each query with expected ids, every arm ranks the same candidate pool:
+ * lane) and are embedded with the production embedder (the vector lane).
+ * `current` is the production retriever called with the semantic daemon's
+ * options. Two comparisons follow, for each query with expected ids:
  *
- * - current: the production retriever, called with the semantic daemon's options
- * - vector / keyword: each lane alone, for reference
- * - rrf: reciprocal rank fusion (k=60) of the vector and keyword lanes
- * - rrf-filtered: the rrf order kept to the candidates the production
- *   retriever's scope and quality filters let through (what an RRF stage
- *   inside the retriever would rank)
- * - rrf+ce: the RRF head reranked by a local cross-encoder
+ * - Pipeline comparison: arms that build their own candidates. vector and
+ *   keyword are each lane alone (top --pool); rrf fuses the two lanes
+ *   (reciprocal rank fusion, k=60); rrf+ce reranks the rrf head with a local
+ *   cross-encoder. These differ from current in candidate generation and
+ *   filtering as well as in order.
+ * - Common-pool comparison: order only. The pool is the retriever's own
+ *   filtered candidate list (its debug candidates, up to max(3*topK, 20)).
+ *   rrf orders that pool by RRF over each candidate's global vector rank and
+ *   FTS rank (top 1000); rrf+ce reranks the head of that order.
  *
- * Queries without expected ids (no-match traps) are scored separately: how
- * often each arm, cut to the production retriever's list length, still
- * returns a memory the fixture forbids.
+ * Both are scored at each query's own budget, the length of current's list
+ * (k varies per query; nDCG is normalized at that k). The pipeline arms are
+ * also scored at fixed k. Queries without expected ids (no-match traps) count
+ * forbidden memories inside current's budget.
  *
- * Output is aggregate-only: metrics, latency, counts. No query, memory or id.
- * --model-cache must already hold the models unless --download-models is passed.
+ * Output is aggregate-only: metrics, latency, counts, model hashes. No query,
+ * memory or id. --model-cache must already hold the models unless
+ * --download-models is passed.
  */
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -30,12 +35,21 @@ import * as path from 'node:path';
 import { createRetrievalServices } from '../src/core/engine/retrieval-services.js';
 import { Matcher } from '../src/core/matcher.js';
 import { reciprocalRankFusion, rerankHead } from '../src/core/rank-fusion.js';
-import { latencySummary, summarizeRankArms, truncateToBaseline, type RankArmQuery, type RankArmRun, type RankArmSummary } from '../src/core/rank-fusion-eval.js';
+import {
+  latencySummary,
+  summarizeAtBaselineBudget,
+  summarizeRankArms,
+  type BudgetSummary,
+  type RankArmQuery,
+  type RankArmRun,
+  type RankArmSummary
+} from '../src/core/rank-fusion-eval.js';
 import { SQLiteEventStore } from '../src/core/sqlite-event-store.js';
 import type { Embedder } from '../src/core/embedder.js';
 import type { MemoryEvent } from '../src/core/types.js';
 import type { SearchResult, VectorStore } from '../src/core/vector-store.js';
-import { CROSS_ENCODER_PRESETS, loadCrossEncoder, type CrossEncoder } from './cross-encoder-reranker.js';
+import { DEFAULT_EMBEDDING_MODEL } from '../src/extensions/vector/embedder.js';
+import { CROSS_ENCODER_PRESETS, loadCrossEncoder, modelArtifactSha256, type CrossEncoder } from './cross-encoder-reranker.js';
 import { buildProvenance, pathRef, redactPaths, warnProvenance } from './eval-provenance.mjs';
 
 interface FixtureMemory {
@@ -81,7 +95,10 @@ interface Args {
 
 class CliError extends Error {}
 
-const ARMS = ['current', 'vector', 'keyword', 'rrf', 'rrf-filtered', 'rrf+ce'] as const;
+const PIPELINE_ARMS = ['current', 'vector', 'keyword', 'rrf', 'rrf+ce'] as const;
+const POOL_ARMS = ['current', 'rrf', 'rrf+ce'] as const;
+/** FTS depth used to give common-pool candidates their keyword-lane rank. */
+const FTS_RANK_DEPTH = 1000;
 const SWEEP_SIZES = [5, 10, 20, 40];
 const SWEEP_QUERIES = 30;
 
@@ -209,15 +226,28 @@ interface QueryTiming {
   rrfMs: number;
   rerankMs: number | null;
   rerankCpuMs: number | null;
-  rerankCandidates: number;
 }
 
 interface PassResult {
-  runs: RankArmRun[];
+  pipeline: RankArmRun[];
+  pool: RankArmRun[];
   timings: QueryTiming[];
   poolSizes: number[];
-  /** Expected ids present anywhere in the pool: the ceiling every arm shares. */
-  poolRecall: number[];
+  /** Queries whose list from current is not the head of its own debug candidates. */
+  currentNotPoolHead: number;
+}
+
+/** Cross-encoder scores for one query, cached by event id so both comparisons share them. */
+function scoreCache(reranker: CrossEncoder, query: string, contentOf: (id: string) => string) {
+  const scores = new Map<string, number>();
+  return async (ids: string[]): Promise<number[]> => {
+    const missing = ids.filter((id) => !scores.has(id));
+    if (missing.length > 0) {
+      const fresh = await reranker.score(query, missing.map(contentOf));
+      missing.forEach((id, i) => scores.set(id, fresh[i]));
+    }
+    return ids.map((id) => scores.get(id)!);
+  };
 }
 
 async function runPass(
@@ -239,7 +269,8 @@ async function runPass(
   const toFixtureIds = (eventIds: string[]) => eventIds
     .map((id) => corpus.fixtureIdByEventId.get(id))
     .filter((id): id is string => Boolean(id));
-  const result: PassResult = { runs: [], timings: [], poolSizes: [], poolRecall: [] };
+  const corpusSize = await corpus.vectorStore.count();
+  const result: PassResult = { pipeline: [], pool: [], timings: [], poolSizes: [], currentNotPoolHead: 0 };
 
   for (const query of queries) {
     let startedAt = performance.now();
@@ -254,6 +285,7 @@ async function runPass(
       includeShared: false
     });
     const currentMs = performance.now() - startedAt;
+    const currentIds = current.memories.map((memory) => memory.event.id);
 
     startedAt = performance.now();
     const queryVector = (await embedder.embed(query.query)).vector;
@@ -268,38 +300,48 @@ async function runPass(
     const fused = reciprocalRankFusion([vectorLane, keywordLane]);
     const rrfMs = performance.now() - startedAt;
 
-    let reranked: string[] | null = null;
-    let rerankMs: number | null = null;
-    let rerankCpuMs: number | null = null;
-    const head = fused.slice(0, args.rerankDepth);
-    if (reranker && head.length > 0) {
-      const cpuBefore = process.cpuUsage();
-      startedAt = performance.now();
-      const scores = await reranker.score(query.query, head.map((id) => corpus.contentByEventId.get(id) ?? ''));
-      rerankMs = performance.now() - startedAt;
-      const cpu = process.cpuUsage(cpuBefore);
-      rerankCpuMs = (cpu.user + cpu.system) / 1000;
-      reranked = rerankHead(fused, scores);
-    }
+    // Common pool: the retriever's filtered candidates in its order, ranked again by
+    // RRF over each candidate's rank in the whole vector lane and a deep FTS lane.
+    const pool = [...new Set((current.candidateDebug ?? []).map((detail) => detail.eventId))];
+    const inPool = new Set(pool);
+    const vectorAll = (await corpus.vectorStore.search(queryVector, { limit: corpusSize })).map((row) => row.eventId);
+    const keywordDeep = (await corpus.store.keywordSearch(query.query, FTS_RANK_DEPTH)).map((row) => row.event.id);
+    const poolFused = reciprocalRankFusion([vectorAll, keywordDeep]).filter((id) => inPool.has(id));
+    if (currentIds.some((id, i) => pool[i] !== id)) result.currentNotPoolHead += 1;
 
-    // candidateDebug is the filtered candidate list the retriever ranked, before its top-k cut.
-    const filtered = (current.candidateDebug ?? []).map((detail) => detail.eventId);
-    const passedFilters = new Set(filtered);
-    const fusedIds = new Set(fused);
-    const run: RankArmRun = {
-      current: toFixtureIds(current.memories.map((memory) => memory.event.id)),
+    const pipelineRun: RankArmRun = {
+      current: toFixtureIds(currentIds),
       vector: toFixtureIds(vectorLane),
       keyword: toFixtureIds(keywordLane),
-      rrf: toFixtureIds(fused),
-      // Filtered candidates outside both lanes (graph or session expansions) keep the retriever's order after them.
-      'rrf-filtered': toFixtureIds([...fused.filter((id) => passedFilters.has(id)), ...filtered.filter((id) => !fusedIds.has(id))])
+      rrf: toFixtureIds(fused)
     };
-    if (reranked) run['rrf+ce'] = toFixtureIds(reranked);
-    result.runs.push(run);
-    result.timings.push({ currentMs, vectorLaneMs, keywordLaneMs, rrfMs, rerankMs, rerankCpuMs, rerankCandidates: head.length });
-    const pool = new Set([...run.current, ...run.rrf, ...run['rrf-filtered']]);
-    result.poolSizes.push(pool.size);
-    if (query.expectedIds.length > 0) result.poolRecall.push(query.expectedIds.filter((id) => pool.has(id)).length / query.expectedIds.length);
+    const poolRun: RankArmRun = { current: toFixtureIds(currentIds), rrf: toFixtureIds(poolFused) };
+
+    let rerankMs: number | null = null;
+    let rerankCpuMs: number | null = null;
+    if (reranker) {
+      const score = scoreCache(reranker, query.query, (id) => corpus.contentByEventId.get(id) ?? '');
+      const head = fused.slice(0, args.rerankDepth);
+      if (head.length > 0) {
+        // Timed on the pipeline head, which the cache has not seen: a full call.
+        const cpuBefore = process.cpuUsage();
+        startedAt = performance.now();
+        const scores = await score(head);
+        rerankMs = performance.now() - startedAt;
+        const cpu = process.cpuUsage(cpuBefore);
+        rerankCpuMs = (cpu.user + cpu.system) / 1000;
+        pipelineRun['rrf+ce'] = toFixtureIds(rerankHead(fused, scores));
+      } else {
+        pipelineRun['rrf+ce'] = [];
+      }
+      const poolHead = poolFused.slice(0, args.rerankDepth);
+      poolRun['rrf+ce'] = toFixtureIds(poolHead.length > 0 ? rerankHead(poolFused, await score(poolHead)) : poolFused);
+    }
+
+    result.pipeline.push(pipelineRun);
+    result.pool.push(poolRun);
+    result.poolSizes.push(pool.length);
+    result.timings.push({ currentMs, vectorLaneMs, keywordLaneMs, rrfMs, rerankMs, rerankCpuMs });
   }
   return result;
 }
@@ -326,24 +368,44 @@ async function rerankSweep(queries: FixtureQuery[], corpus: Corpus, embedder: Em
   return rows;
 }
 
-function maxRerunDelta(first: RankArmSummary, other: RankArmSummary): number {
+interface PassSummary {
+  pipeline: RankArmSummary;
+  pipelineAtBudget: BudgetSummary;
+  poolAtBudget: BudgetSummary;
+}
+
+function summarizePass(queries: RankArmQuery[], pass: PassResult, ks: number[]): PassSummary {
+  return {
+    pipeline: summarizeRankArms(queries, pass.pipeline, { ks, baseline: 'current' }),
+    pipelineAtBudget: summarizeAtBaselineBudget(queries, pass.pipeline, { baseline: 'current' }),
+    poolAtBudget: summarizeAtBaselineBudget(queries, pass.pool, { baseline: 'current' })
+  };
+}
+
+/** Largest absolute difference of any metric between two passes. */
+function maxRerunDelta(first: PassSummary, other: PassSummary): number {
   let delta = 0;
-  for (const [arm, metrics] of Object.entries(first.arms)) {
-    const again = other.arms[arm];
+  for (const [arm, metrics] of Object.entries(first.pipeline.arms)) {
+    const again = other.pipeline.arms[arm];
     for (const key of ['recallAtK', 'ndcgAtK', 'hitAtK'] as const) {
       for (const [k, value] of Object.entries(metrics[key])) delta = Math.max(delta, Math.abs(value - again[key][Number(k)]));
     }
     delta = Math.max(delta, Math.abs(metrics.mrr - again.mrr));
   }
+  for (const key of ['pipelineAtBudget', 'poolAtBudget'] as const) {
+    for (const [arm, metrics] of Object.entries(first[key].arms)) {
+      const again = other[key].arms[arm];
+      delta = Math.max(delta, Math.abs(metrics.recall - again.recall), Math.abs(metrics.ndcg - again.ndcg));
+    }
+  }
   return delta;
 }
 
-/** Per arm, the trap queries whose same-budget list contains a forbidden memory. */
+/** Per arm, the trap queries whose list, cut to current's length, contains a forbidden memory. */
 function forbiddenHits(queries: FixtureQuery[], runs: RankArmRun[]): { queries: number; currentReturnedAny: number; hits: Record<string, number> } {
-  const budgeted = truncateToBaseline(runs, 'current');
   const hits: Record<string, number> = {};
-  for (const arm of ARMS) {
-    hits[arm] = budgeted.filter((run, i) => (run[arm] ?? []).some((id) => queries[i].forbiddenIds!.includes(id))).length;
+  for (const arm of PIPELINE_ARMS) {
+    hits[arm] = runs.filter((run, i) => (run[arm] ?? []).slice(0, run.current.length).some((id) => queries[i].forbiddenIds!.includes(id))).length;
   }
   return { queries: queries.length, currentReturnedAny: runs.filter((run) => run.current.length > 0).length, hits };
 }
@@ -361,12 +423,14 @@ async function main(): Promise<void> {
   const queries = args.limit ? matchQueries.slice(0, args.limit) : matchQueries;
   const trapQueries = fixture.queries.filter((query) => !isMatch(query) && (query.forbiddenIds?.length ?? 0) > 0);
   const cacheDir = path.resolve(args.modelCache);
+  const preset = args.reranker === 'none' ? null : CROSS_ENCODER_PRESETS[args.reranker];
   const provenance = buildProvenance({
     fixtures: [args.fixturePath],
     retrieval: { topK: args.topK, candidatePool: fixture.memories.length },
     flags: {
-      label: args.label, reranker: args.reranker, pool: args.pool, rerankDepth: args.rerankDepth,
-      minScore: args.minScore, repeat: args.repeat, limit: args.limit, modelCache: pathRef(cacheDir)
+      label: args.label, reranker: args.reranker, rerankerLoadOptions: preset?.loadOptions, pool: args.pool,
+      rerankDepth: args.rerankDepth, ftsRankDepth: FTS_RANK_DEPTH, topK: args.topK, minScore: args.minScore,
+      repeat: args.repeat, limit: args.limit, sweep: args.sweep, downloadModels: args.downloadModels, modelCache: pathRef(cacheDir)
     }
   });
   warnProvenance(provenance);
@@ -376,7 +440,7 @@ async function main(): Promise<void> {
   let corpus: Corpus | null = null;
   try {
     corpus = await buildCorpus(fixture, dir, embedder);
-    const reranker = args.reranker === 'none' ? null : await loadCrossEncoder(args.reranker, cacheDir, { allowDownload: args.downloadModels });
+    const reranker = preset ? await loadCrossEncoder(args.reranker, cacheDir, { allowDownload: args.downloadModels }) : null;
     // The first scoring call pays the ONNX session warm-up; time it on its own.
     let firstRerankMs: number | null = null;
     if (reranker && queries.length > 0) {
@@ -387,7 +451,7 @@ async function main(): Promise<void> {
 
     const passes: PassResult[] = [];
     for (let i = 0; i < args.repeat; i++) passes.push(await runPass(queries, corpus, embedder, reranker, args));
-    const summaries = passes.map((pass) => summarizeRankArms(queries as RankArmQuery[], pass.runs, { ks, baseline: 'current' }));
+    const summaries = passes.map((pass) => summarizePass(queries as RankArmQuery[], pass, ks));
     const traps = trapQueries.length > 0 ? await runPass(trapQueries, corpus, embedder, reranker, args) : null;
     const timings = passes.flatMap((pass) => pass.timings);
     const report = {
@@ -396,28 +460,31 @@ async function main(): Promise<void> {
       memories: fixture.memories.length,
       memoriesNotStored: corpus.notStored,
       ks,
-      arms: ARMS.filter((arm) => arm in summaries[0].arms),
-      summary: summaries[0],
-      sameBudget: summarizeRankArms(queries as RankArmQuery[], truncateToBaseline(passes[0].runs, 'current'), { ks: [args.topK], baseline: 'current' }),
-      currentEmpty: passes[0].runs.filter((run) => run.current.length === 0).length,
-      noMatchTraps: traps ? forbiddenHits(trapQueries, traps.runs) : null,
-      rerunMaxAbsDelta: summaries.slice(1).reduce((max, other) => Math.max(max, maxRerunDelta(summaries[0], other)), 0),
-      pool: {
+      pipelineArms: PIPELINE_ARMS.filter((arm) => arm in summaries[0].pipeline.arms),
+      poolArms: POOL_ARMS.filter((arm) => arm in summaries[0].poolAtBudget.arms),
+      ...summaries[0],
+      commonPool: {
         size: latencySummary(passes[0].poolSizes),
-        expectedIdCoverage: passes[0].poolRecall.reduce((sum, value) => sum + value, 0) / Math.max(1, passes[0].poolRecall.length)
+        currentNotPoolHead: passes[0].currentNotPoolHead
       },
-      reranker: reranker
-        ? { name: args.reranker, ...reranker.preset, loadMs: reranker.loadMs, firstCallMs: firstRerankMs, depth: args.rerankDepth }
-        : null,
+      noMatchTraps: traps ? forbiddenHits(trapQueries, traps.pipeline) : null,
+      rerunMaxAbsDelta: summaries.slice(1).reduce((max, other) => Math.max(max, maxRerunDelta(summaries[0], other)), 0),
+      models: {
+        embedder: { model: DEFAULT_EMBEDDING_MODEL, artifactSha256: await modelArtifactSha256(cacheDir, DEFAULT_EMBEDDING_MODEL) },
+        reranker: reranker
+          ? { name: args.reranker, ...reranker.preset, artifactSha256: await modelArtifactSha256(cacheDir, reranker.preset.model) }
+          : null
+      },
       latencyMs: {
         embedCorpus: corpus.embedMs,
+        rerankerLoad: reranker?.loadMs ?? null,
+        rerankerFirstCall: firstRerankMs,
         current: pick(timings, (row) => row.currentMs),
         vectorLane: pick(timings, (row) => row.vectorLaneMs),
         keywordLane: pick(timings, (row) => row.keywordLaneMs),
         rrf: pick(timings, (row) => row.rrfMs),
         rerank: pick(timings, (row) => row.rerankMs),
-        rerankCpu: pick(timings, (row) => row.rerankCpuMs),
-        rerankCandidates: pick(timings, (row) => row.rerankCandidates)
+        rerankCpu: pick(timings, (row) => row.rerankCpuMs)
       },
       rerankSweep: reranker && args.sweep ? await rerankSweep(queries, corpus, embedder, reranker) : null,
       provenance
@@ -430,65 +497,66 @@ async function main(): Promise<void> {
   }
 }
 
-type Report = {
-  label: string; queries: number; memories: number; memoriesNotStored: number; ks: number[]; arms: string[];
-  summary: RankArmSummary; sameBudget: RankArmSummary; currentEmpty: number; rerunMaxAbsDelta: number;
+type Latency = ReturnType<typeof latencySummary>;
+type Report = PassSummary & {
+  label: string; queries: number; memories: number; memoriesNotStored: number; ks: number[];
+  pipelineArms: string[]; poolArms: string[];
+  commonPool: { size: Latency; currentNotPoolHead: number };
   noMatchTraps: { queries: number; currentReturnedAny: number; hits: Record<string, number> } | null;
-  pool: { size: ReturnType<typeof latencySummary>; expectedIdCoverage: number };
-  reranker: { name: string; model: string; loadMs: number; firstCallMs: number | null; depth: number } | null;
-  latencyMs: Record<string, number | ReturnType<typeof latencySummary>>;
-  rerankSweep: Record<number, ReturnType<typeof latencySummary> & { cpuMsMean: number | null }> | null;
+  rerunMaxAbsDelta: number;
+  models: { embedder: { model: string; artifactSha256: string | null }; reranker: { model: string; depth?: number; artifactSha256: string | null } | null };
+  latencyMs: Record<string, number | null | Latency>;
+  rerankSweep: Record<number, Latency & { cpuMsMean: number | null }> | null;
 };
 
 function formatMarkdown(report: Report): string {
   const f = (value: number | null | undefined, digits = 3) => (value === null || value === undefined ? 'n/a' : value.toFixed(digits));
   const signed = (value: number) => `${value >= 0 ? '+' : ''}${(value * 100).toFixed(1)}`;
+  const cell = (x?: { mean: number; ci: [number, number] }) => (x ? `${signed(x.mean)} (${signed(x.ci[0])}..${signed(x.ci[1])})` : '—');
+  const budgetRows = (summary: BudgetSummary, arms: string[]) => arms.map((arm) => {
+    const m = summary.arms[arm];
+    return `| ${arm} | ${f(m.recall)} | ${f(m.ndcg)} | ${cell(m.vsBaseline?.recall)} | ${cell(m.vsBaseline?.ndcg)} |`;
+  });
+  const budgetHeader = ['| arm | recall@budget | nDCG@budget | Δrecall %p (95% CI) | ΔnDCG %p (95% CI) |', '|---|---:|---:|---|---|'];
   const lines = [
     `# Ranking arms: ${report.label}`,
     '',
     `- Queries with expected ids: ${report.queries}; memories: ${report.memories} (not stored: ${report.memoriesNotStored})`,
-    `- Candidate pool per query: p50 ${report.pool.size.p50}, max ${report.pool.size.max}; expected ids inside the pool: ${(report.pool.expectedIdCoverage * 100).toFixed(1)}%`,
+    `- Budget = current's list length per query; ${report.pipelineAtBudget.emptyBaseline} queries where current returned nothing are left out of the budget rows`,
     `- Rerun max |Δ| over all metrics: ${report.rerunMaxAbsDelta.toFixed(4)}`,
-    report.reranker ? `- Reranker: ${report.reranker.model}, depth ${report.reranker.depth}, load ${f(report.reranker.loadMs, 0)} ms, first call ${f(report.reranker.firstCallMs, 0)} ms` : '- Reranker: none',
+    `- Embedder ${report.models.embedder.model} sha256 ${report.models.embedder.artifactSha256?.slice(0, 12) ?? 'n/a'}; reranker ${report.models.reranker ? `${report.models.reranker.model} sha256 ${report.models.reranker.artifactSha256?.slice(0, 12) ?? 'n/a'}` : 'none'}`,
+    '',
+    '## Common pool (order only)',
+    '',
+    `Pool: current's filtered candidates, size p50 ${report.commonPool.size.p50}, max ${report.commonPool.size.max}. Queries where current's list is not the head of that pool: ${report.commonPool.currentNotPoolHead}.`,
+    '',
+    ...budgetHeader,
+    ...budgetRows(report.poolAtBudget, report.poolArms),
+    '',
+    '## Pipeline comparison (candidates and order)',
+    '',
+    ...budgetHeader,
+    ...budgetRows(report.pipelineAtBudget, report.pipelineArms),
     '',
     `| arm | ${report.ks.map((k) => `R@${k}`).join(' | ')} | ${report.ks.map((k) => `nDCG@${k}`).join(' | ')} | MRR |`,
     `|---|${report.ks.map(() => '---:').join('|')}|${report.ks.map(() => '---:').join('|')}|---:|`,
-    ...report.arms.map((arm) => {
-      const m = report.summary.arms[arm];
+    ...report.pipelineArms.map((arm) => {
+      const m = report.pipeline.arms[arm];
       return `| ${arm} | ${report.ks.map((k) => f(m.recallAtK[k])).join(' | ')} | ${report.ks.map((k) => f(m.ndcgAtK[k])).join(' | ')} | ${f(m.mrr)} |`;
     }),
     '',
-    'Paired difference vs current, %p (95% bootstrap CI):',
-    '',
-    `| arm | ${report.ks.map((k) => `ΔR@${k}`).join(' | ')} | ${report.ks.map((k) => `ΔnDCG@${k}`).join(' | ')} |`,
-    `|---|${report.ks.map(() => '---').join('|')}|${report.ks.map(() => '---').join('|')}|`,
-    ...report.arms.filter((arm) => arm !== 'current').map((arm) => {
-      const d = report.summary.arms[arm].vsBaseline!;
-      const cell = (x: { mean: number; ci: [number, number] }) => `${signed(x.mean)} (${signed(x.ci[0])}..${signed(x.ci[1])})`;
-      return `| ${arm} | ${report.ks.map((k) => cell(d.recallAtK[k])).join(' | ')} | ${report.ks.map((k) => cell(d.ndcgAtK[k])).join(' | ')} |`;
-    }),
-    '',
-    `Same budget as current (each arm cut to current's list length; current returned nothing for ${report.currentEmpty} queries):`,
-    '',
-    '| arm | recall | nDCG | Δrecall %p (95% CI) | ΔnDCG %p (95% CI) |',
-    '|---|---:|---:|---|---|',
-    ...report.arms.map((arm) => {
-      const m = report.sameBudget.arms[arm];
-      const k = Number(Object.keys(m.recallAtK)[0]);
-      const cell = (x?: { mean: number; ci: [number, number] }) => (x ? `${signed(x.mean)} (${signed(x.ci[0])}..${signed(x.ci[1])})` : '—');
-      return `| ${arm} | ${f(m.recallAtK[k])} | ${f(m.ndcgAtK[k])} | ${cell(m.vsBaseline?.recallAtK[k])} | ${cell(m.vsBaseline?.ndcgAtK[k])} |`;
-    }),
-    '',
     report.noMatchTraps
-      ? `No-match traps (${report.noMatchTraps.queries} queries, current returned something for ${report.noMatchTraps.currentReturnedAny}); forbidden memory within the same budget: ${report.arms.map((arm) => `${arm} ${report.noMatchTraps!.hits[arm]}`).join(', ')}`
+      ? `No-match traps (${report.noMatchTraps.queries} queries, current returned something for ${report.noMatchTraps.currentReturnedAny}); forbidden memory within current's budget: ${report.pipelineArms.map((arm) => `${arm} ${report.noMatchTraps!.hits[arm]}`).join(', ')}`
       : 'No-match traps: none in this fixture',
     '',
     '| latency (ms) | n | p50 | p90 | max |',
     '|---|---:|---:|---:|---:|',
-    ...Object.entries(report.latencyMs).filter(([, v]) => typeof v !== 'number').map(([name, v]) => {
-      const s = v as ReturnType<typeof latencySummary>;
+    ...Object.entries(report.latencyMs).filter(([, v]) => v !== null && typeof v !== 'number').map(([name, v]) => {
+      const s = v as Latency;
       return `| ${name} | ${s.n} | ${f(s.p50, 1)} | ${f(s.p90, 1)} | ${f(s.max, 1)} |`;
-    })
+    }),
+    '',
+    `Reranker load ${f(report.latencyMs.rerankerLoad as number | null, 0)} ms, first call ${f(report.latencyMs.rerankerFirstCall as number | null, 0)} ms; corpus embedding ${f(report.latencyMs.embedCorpus as number, 0)} ms`
   ];
   if (report.rerankSweep) {
     lines.push('', '| rerank candidates | n | p50 ms | p90 ms | CPU ms (mean) |', '|---:|---:|---:|---:|---:|');
