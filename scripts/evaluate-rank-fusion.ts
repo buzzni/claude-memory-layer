@@ -13,7 +13,8 @@
  *   keyword are each lane alone (top --pool); rrf fuses the two lanes
  *   (reciprocal rank fusion, k=60); rrf+ce reranks the rrf head with a local
  *   cross-encoder. These differ from current in candidate generation and
- *   filtering as well as in order.
+ *   filtering as well as in order. grep is the grep-level baseline of
+ *   benchmarks/public/grep-baseline.ts over the same stored contents (top --pool).
  * - Common-pool comparison: order only. The pool is the retriever's own
  *   filtered candidate list (its debug candidates, up to max(3*topK, 20)).
  *   rrf orders that pool by RRF over each candidate's global vector rank and
@@ -51,6 +52,7 @@ import type { SearchResult, VectorStore } from '../src/core/vector-store.js';
 import { DEFAULT_EMBEDDING_MODEL } from '../src/extensions/vector/embedder.js';
 import { CROSS_ENCODER_PRESETS, loadCrossEncoder, modelArtifactSha256, type CrossEncoder } from './cross-encoder-reranker.js';
 import { buildProvenance, pathRef, redactPaths, warnProvenance } from './eval-provenance.mjs';
+import { grepRank } from '../benchmarks/public/grep-baseline.js';
 
 interface FixtureMemory {
   id: string;
@@ -95,7 +97,7 @@ interface Args {
 
 class CliError extends Error {}
 
-const PIPELINE_ARMS = ['current', 'vector', 'keyword', 'rrf', 'rrf+ce'] as const;
+const PIPELINE_ARMS = ['current', 'vector', 'keyword', 'grep', 'rrf', 'rrf+ce'] as const;
 const POOL_ARMS = ['current', 'rrf', 'rrf+ce'] as const;
 /** FTS depth used to give common-pool candidates their keyword-lane rank. */
 const FTS_RANK_DEPTH = 1000;
@@ -185,6 +187,8 @@ interface Corpus {
   vectorStore: MemoryVectorStore;
   fixtureIdByEventId: Map<string, string>;
   contentByEventId: Map<string, string>;
+  /** Stored contents in insertion order, lower case, for the grep arm. */
+  grepDocs: Array<{ id: string; text: string }>;
   notStored: number;
   embedMs: number;
 }
@@ -216,7 +220,8 @@ async function buildCorpus(fixture: Fixture, dir: string, embedder: Embedder): P
   const vectorStore = new MemoryVectorStore(stored.map(({ eventId, event }, i) => ({
     id: `vector-${eventId}`, eventId, ...event, vector: vectors[i].vector
   })));
-  return { store, vectorStore, fixtureIdByEventId, contentByEventId, notStored, embedMs };
+  const grepDocs = stored.map(({ eventId, event }) => ({ id: eventId, text: event.content.toLowerCase() }));
+  return { store, vectorStore, fixtureIdByEventId, contentByEventId, grepDocs, notStored, embedMs };
 }
 
 interface QueryTiming {
@@ -313,6 +318,7 @@ async function runPass(
       current: toFixtureIds(currentIds),
       vector: toFixtureIds(vectorLane),
       keyword: toFixtureIds(keywordLane),
+      grep: toFixtureIds(grepRank(query.query, corpus.grepDocs, args.pool)),
       rrf: toFixtureIds(fused)
     };
     const poolRun: RankArmRun = { current: toFixtureIds(currentIds), rrf: toFixtureIds(poolFused) };

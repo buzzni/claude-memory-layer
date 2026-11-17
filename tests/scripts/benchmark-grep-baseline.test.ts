@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { evaluateReplayFixture, type ReplayEvaluationFixture } from '../../src/core/replay-evaluator.js';
-import { createGrepRunner, grepTerms } from '../../benchmarks/public/grep-baseline.js';
+import { createGrepRunner, grepRank, grepTerms, haystackLengths, maskSessionHeader } from '../../benchmarks/public/grep-baseline.js';
 
 const fixture = (memories: ReplayEvaluationFixture['memories'], queries: ReplayEvaluationFixture['queries']): ReplayEvaluationFixture => ({
   name: 'grep-test',
@@ -68,7 +68,54 @@ describe('grep baseline', () => {
     expect((await retrieve(data, 1)).retrievedIds).toEqual(['other']);
   });
 
-  it('scores through the replay evaluator, so its metrics use the same definitions as the CML runs', async () => {
+  it('ranks a plain document list the same way, for harnesses that hold their own corpus', () => {
+    const docs = [
+      { id: 'one', text: 'wal enabled' },
+      { id: 'none', text: 'lunch' },
+      { id: 'two', text: 'sqlite in wal mode' }
+    ];
+
+    expect(grepRank('SQLite WAL', docs, 10)).toEqual(['two', 'one']);
+    expect(grepRank('SQLite WAL', docs, 1)).toEqual(['two']);
+  });
+
+  it('masks only the session id in a converted LongMemEval header', () => {
+    expect(maskSessionHeader('[2023/05/20 (Sat) 02:21] session answer_280352e9\nuser: answer me'))
+      .toBe('[2023/05/20 (Sat) 02:21] session #\nuser: answer me');
+    expect(maskSessionHeader('session answer_1 turn 3\nuser: hi')).toBe('session # turn 3\nuser: hi');
+    expect(maskSessionHeader('user: my session ended')).toBe('user: my session ended');
+  });
+
+  it('can score with the session headers masked', async () => {
+    const data = fixture(
+      [
+        { id: 'evidence', content: 'session answer_1\nuser: hello' },
+        { id: 'other', content: 'session other_2\nuser: hello' }
+      ],
+      [{ queryId: 'q', query: 'answer', expectedIds: ['evidence'] }]
+    );
+    const query = data.queries[0];
+
+    expect((await createGrepRunner(data)(query.query, { fixture: data, query, topK: 3, retrievalOptions: {} })).retrievedIds).toEqual(['evidence']);
+    expect((await createGrepRunner(data, { maskSessionHeader: true })(query.query, { fixture: data, query, topK: 3, retrievalOptions: {} })).retrievedIds).toEqual([]);
+  });
+
+  it('reports the median scored length of evidence and other memories', () => {
+    const data = fixture(
+      [
+        { id: 'e1', content: 'aaaa' },
+        { id: 'e2', content: 'aaaaaa', searchContent: 'aaaaaaaa' },
+        { id: 'o1', content: 'aa' },
+        { id: 'o2', content: 'aaa' },
+        { id: 'o3', content: 'a' }
+      ],
+      [{ queryId: 'q', query: 'x', expectedIds: ['e1', 'e2'] }]
+    );
+
+    expect(haystackLengths(data)).toEqual({ evidence: { count: 2, medianChars: 6 }, other: { count: 3, medianChars: 2 } });
+  });
+
+  it('scores through the replay evaluator, so its metrics use the same definitions as the replay runs', async () => {
     const data = fixture(
       [
         { id: 'a', content: 'sqlite wal' },
