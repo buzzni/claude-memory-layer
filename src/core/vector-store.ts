@@ -238,6 +238,43 @@ export class VectorStore {
       });
   }
 
+  /** Event ids that have a vector in the table search reads. */
+  async listEventIds(): Promise<string[]> {
+    await this.initialize();
+    const table = await this.getExistingTable(this.defaultTableName);
+    if (!table) return [];
+    const rows = await table.query().select({ eventId: '`eventId`' }).limit(await table.countRows()).toArray();
+    return rows.map((row) => row.eventId as string);
+  }
+
+  /** Event vector tables that search does not read (see deleteEventEverywhere). */
+  async listSpareEventTables(): Promise<string[]> {
+    await this.initialize();
+    if (!this.db) return [];
+    return (await this.db.tableNames()).filter((name) => name.startsWith('event_vectors_'));
+  }
+
+  async readRowsByEventIds(
+    tableName: string,
+    eventIds: string[]
+  ): Promise<Array<{ eventId: string; content: string; vector: number[] }>> {
+    if (eventIds.length === 0) return [];
+    await this.initialize();
+    const table = await this.getExistingTable(tableName);
+    if (!table) return [];
+    const rows = await table
+      .query()
+      .where(`\`eventId\` IN (${eventIds.map(toLanceSqlString).join(', ')})`)
+      .select({ eventId: '`eventId`', content: 'content', vector: 'vector' })
+      .limit(await table.countRows())
+      .toArray();
+    return rows.map((row) => ({
+      eventId: row.eventId as string,
+      content: row.content as string,
+      vector: Array.from(row.vector as ArrayLike<number>)
+    }));
+  }
+
   /**
    * Delete vector by event ID from the legacy conversations table.
    */
