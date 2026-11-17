@@ -241,6 +241,7 @@ export class VectorStore {
   /** Event ids that have a vector in the table search reads. */
   async listEventIds(): Promise<string[]> {
     await this.initialize();
+    if (!this.db) return [];
     const table = await this.getExistingTable(this.defaultTableName);
     if (!table) return [];
     const rows = await table.query().select({ eventId: '`eventId`' }).limit(await table.countRows()).toArray();
@@ -260,6 +261,7 @@ export class VectorStore {
   ): Promise<Array<{ eventId: string; content: string; vector: number[] }>> {
     if (eventIds.length === 0) return [];
     await this.initialize();
+    if (!this.db) return [];
     const table = await this.getExistingTable(tableName);
     if (!table) return [];
     const rows = await table

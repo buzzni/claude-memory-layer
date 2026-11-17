@@ -153,6 +153,25 @@ describe('backfillVectorCoverage', () => {
 });
 
 describe('vector tables behind the backfill', () => {
+  it('reports an empty table set for a store that has no vector directory yet', async () => {
+    const { existsSync, mkdtempSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const path = await import('node:path');
+    const { VectorStore } = await import('../../src/core/vector-store.js');
+    const root = mkdtempSync(path.join(tmpdir(), 'cml-vector-backfill-missing-'));
+    try {
+      // A dry run opens the store read-only; a store that never embedded anything has no directory.
+      const store = new VectorStore(path.join(root, 'vectors'), { readOnly: true, canonicalRoot: root });
+
+      await expect(store.listEventIds()).resolves.toEqual([]);
+      await expect(store.listSpareEventTables()).resolves.toEqual([]);
+      await expect(store.readRowsByEventIds('event_vectors_v1', ['a'])).resolves.toEqual([]);
+      expect(existsSync(path.join(root, 'vectors'))).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('lists the searched event ids, finds the spare table and reads its rows back', async () => {
     const { mkdtempSync, rmSync } = await import('node:fs');
     const { tmpdir } = await import('node:os');
