@@ -61,6 +61,7 @@ The `summary.json` of the measurement run is committed as [`benchmarks/public/re
 | embedder | `Xenova/multilingual-e5-small` revision `761b726dd34f` (converted from `intfloat/multilingual-e5-small`, MIT), files `config.json`, `tokenizer.json`, `tokenizer_config.json`, `onnx/model.onnx`; artifact sha256 `a89c5cc413885d7c2af5906da0f77f30d2ce4ef4bb11751fc7e22d652373ec4d` |
 | LongMemEval_S | `xiaowu0162/longmemeval-cleaned` revision `98d7416c24c7`, `longmemeval_s_cleaned.json` sha256 `d6f21ea9…3a442` |
 | clock | the retriever's rerank has a recency term from the wall clock that stops changing once a memory is 60 days old; the LongMemEval memories are dated 2023 and the golden ones 2026-01-01, so the date of a run does not move those results |
+| later main | main moved after the measurement commit; its changes in `7052fb9..f03bbbd` do not touch the ranking or evaluation path (only new vector-store maintenance methods and CLI repair commands), so they were not re-measured |
 | reruns | the measurement run on `b4b28fc`, two runs on `4e6b479` (main `1e996cd`) and two on `cfdbdd7` (main `b99f62f`, before the grep arm, masked run and length counts existed) gave the same value for every metric they share; only times differed. A still earlier exploratory run of set 1 in a separate process gave CML nDCG@10 0.648 and MRR 0.604 (0.001 higher); no other metric on this page moved |
 
 ## 1. LongMemEval_S, production path vs grep
