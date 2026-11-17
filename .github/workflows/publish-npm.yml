@@ -135,13 +135,15 @@ jobs:
         run: |
           NAME="$(node -p "require('./package.json').name")"
           VERSION="$(node -p "require('./package.json').version")"
-          for attempt in $(seq 1 20); do
+          # npm can answer a publish with "being processed" and serve the
+          # version minutes later: 5.5 and 11 minutes on the last two releases.
+          for attempt in $(seq 1 60); do
             TARBALL_URL="$(npm view "$NAME@$VERSION" dist.tarball 2>/dev/null || true)"
             if [ -n "$TARBALL_URL" ] && curl -fsI "$TARBALL_URL" >/dev/null; then
               echo "published: $TARBALL_URL"
               exit 0
             fi
-            echo "waiting for npm propagation ($attempt/20)"
+            echo "waiting for npm propagation ($attempt/60)"
             sleep 15
           done
           echo "::error::$NAME@$VERSION did not propagate"
