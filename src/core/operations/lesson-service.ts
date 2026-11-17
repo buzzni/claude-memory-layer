@@ -63,7 +63,7 @@ export const PromoteLessonCandidateInputSchema = z.object({
 });
 export type PromoteLessonCandidateInput = z.input<typeof PromoteLessonCandidateInputSchema>;
 
-const CURATED_PRIVACY_CONFIG: Config['privacy'] = {
+export const CURATED_PRIVACY_CONFIG: Config['privacy'] = {
   excludePatterns: ['password', 'secret', 'api_key', 'api-key', 'token', 'bearer'],
   anonymize: false,
   privateTags: {

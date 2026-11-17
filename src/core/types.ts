@@ -231,8 +231,14 @@ const MemoryLessonStringArraySchema = z.preprocess((value) => {
     .filter((item) => typeof item !== 'string' || item.length > 0);
 }, z.array(MemoryLessonNonEmptyStringSchema)).default([]);
 
-export const MemoryLessonSourceClassSchema = z.enum(['derived', 'curated']);
+/**
+ * `imported` marks a lesson read from a shared export file (`lesson import`).
+ * Only that import path writes it; upsert input cannot select it, and an
+ * upsert of an imported lesson keeps it (LessonRepository.upsert).
+ */
+export const MemoryLessonSourceClassSchema = z.enum(['derived', 'curated', 'imported']);
 export type MemoryLessonSourceClass = z.infer<typeof MemoryLessonSourceClassSchema>;
+const MemoryLessonWritableSourceClassSchema = z.enum(['derived', 'curated']);
 
 export const MemoryLessonSchema = z.object({
   lessonId: z.string().uuid(),
@@ -270,7 +276,7 @@ export const UpsertMemoryLessonInputSchema = z.object({
   sourceEventIds: MemoryLessonStringArraySchema,
   failureModes: MemoryLessonStringArraySchema,
   skillCandidate: z.boolean().default(false),
-  sourceClass: MemoryLessonSourceClassSchema.default('derived'),
+  sourceClass: MemoryLessonWritableSourceClassSchema.default('derived'),
   recallEnabled: z.boolean().optional(),
   scope: MemoryLessonNonEmptyStringSchema.optional(),
   validation: MemoryLessonStringArraySchema.optional(),

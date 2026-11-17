@@ -146,6 +146,21 @@ describe('authenticated lesson host service', () => {
     expect(listed).toMatchObject({ outcome: 'ok', candidates: expect.arrayContaining([expect.objectContaining({ candidateId: first.candidateId })]), nextOffset: null });
   });
 
+  it('keeps imported lessons out of host recall, which has no field for their low-trust label', async () => {
+    const { store, service, cleanup } = fixture();
+    await store.initialize();
+    const repository = new LessonRepository(store.getDatabase());
+    const lesson = { name: 'Verify focused changes', trigger: 'When changing a focused service', steps: ['Run focused tests', 'Run typecheck'], failureModes: [], confidence: 0.9, skillCandidate: false, validation: [], validVersions: [] };
+    const imported = repository.insertImported({ ...lesson, projectHash: 'project-a', actor: 'tester', file: 'x.json' });
+    const recalled = await service.recall({ version: 1, requestId: 'recall-imported', binding: 'reader', turnId: 'turn-imported', query: 'focused service changes' });
+    const direct = await service.get({ version: 1, requestId: 'get-imported', binding: 'reader', lessonId: imported.lessonId });
+    await cleanup();
+
+    expect(recalled).toMatchObject({ outcome: 'no_match', lessonIds: [] });
+    // An explicit lookup still reads it.
+    expect(direct).toMatchObject({ outcome: 'found', lesson: { lessonId: imported.lessonId } });
+  });
+
   it('atomically approves exact reviewed payloads, fences stale generations, and excludes disabled legacy lessons from recall', async () => {
     const { store, service, bindings, cleanup } = fixture();
     await store.initialize();

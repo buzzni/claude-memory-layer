@@ -735,7 +735,8 @@ export async function selectHookInjection(
         validation: injectedLesson.validation,
         reconsiderWhen: injectedLesson.reconsiderWhen,
         validVersions: injectedLesson.validVersions,
-        confidence: Number(injectedLesson.confidence ?? 0)
+        confidence: Number(injectedLesson.confidence ?? 0),
+        sourceClass: lesson.sourceClass
       });
       if (candidate) {
         mergedMemories.push(candidate);

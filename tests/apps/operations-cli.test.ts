@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -10,6 +10,7 @@ import { CheckpointRepository } from '../../src/core/operations/checkpoint-repos
 import { FacetRepository } from '../../src/core/operations/facet-repository.js';
 import { LeaseRepository } from '../../src/core/operations/lease-repository.js';
 import { hashProjectPath } from '../../src/core/registry/project-path.js';
+import { sharedLessonId } from '../../src/core/operations/lesson-share.js';
 import { SQLiteEventStore } from '../../src/core/sqlite-event-store.js';
 import { tsxArgs, tsxCommand } from '../helpers/tsx-process.js';
 
@@ -396,6 +397,92 @@ describe('memory operations CLI commands', () => {
       ]);
       expect(listed).toMatchObject({ operation: 'mem-lesson-list', projectHash: fixture.projectHash, count: 1 });
       expect((listed.lessons as JsonObject[])[0]).toMatchObject({ name: 'Deploy GPU before API', sourceClass: 'curated' });
+    } finally {
+      rmSync(fixture.home, { recursive: true, force: true });
+    }
+  }, SLOW_CLI_TEST_TIMEOUT_MS);
+
+  it('exports curated lessons to files and imports them into another store as imported lessons', () => {
+    // Real project directories: the default lesson directory lives inside the project.
+    const withProject = (fixture: CliFixture): CliFixture => {
+      const projectDir = path.join(fixture.home, 'checkout');
+      mkdirSync(projectDir);
+      const projectHash = hashProjectPath(projectDir);
+      const storagePath = path.join(fixture.home, '.claude-code', 'memory', 'projects', projectHash);
+      return { ...fixture, projectDir, projectHash, storagePath, dbPath: path.join(storagePath, 'events.sqlite') };
+    };
+    const source = withProject(createCliFixture('lesson-export'));
+    const target = withProject(createCliFixture('lesson-import'));
+    const lessonsDir = (fixture: CliFixture) => path.join(fixture.projectDir, '.claude-memory-layer', 'lessons');
+    const filesIn = (dir: string) => Object.fromEntries(readdirSync(dir).sort().map((file) => [file, readFileSync(path.join(dir, file), 'utf8')]));
+    try {
+      expectJsonCommand(source, ['lesson', 'add', '--project', source.projectDir, '--name', 'Deploy GPU before API',
+        '--trigger', 'When rolling out the runtime split', '--steps', 'Roll out GPU,Verify readiness,Roll out API', '--apply', '--json']);
+      const noSelection = expectFailedCommand(source, ['lesson', 'export', '--project', source.projectDir, '--json']);
+      expect(noSelection.stderr).toContain('select lessons with --lesson or --all-curated');
+
+      const exportPreview = expectJsonCommand(source, ['lesson', 'export', '--project', source.projectDir, '--all-curated', '--json']);
+      expect(exportPreview).toMatchObject({ operation: 'lesson-export', dryRun: true, dir: path.join('.claude-memory-layer', 'lessons'), counts: { add: 1 } });
+      expect(existsSync(lessonsDir(source))).toBe(false);
+      expectJsonCommand(source, ['lesson', 'export', '--project', source.projectDir, '--all-curated', '--apply', '--json']);
+
+      // git commit + checkout on the other machine.
+      cpSync(lessonsDir(source), lessonsDir(target), { recursive: true });
+
+      const importPreview = expectJsonCommand(target, ['lesson', 'import', '--project', target.projectDir, '--json']);
+      expect(importPreview).toMatchObject({ operation: 'lesson-import', dryRun: true, counts: { add: 1 } });
+      expect(existsSync(target.dbPath)).toBe(false);
+
+      const imported = expectJsonCommand(target, ['lesson', 'import', '--project', target.projectDir, '--actor', 'teammate', '--apply', '--json']);
+      expect(imported).toMatchObject({ dryRun: false, counts: { add: 1 } });
+      expect(queryCount(target.dbPath, "SELECT COUNT(*) AS count FROM memory_lessons WHERE source_class = 'imported'")).toBe(1);
+      expect(queryCount(target.dbPath, "SELECT COUNT(*) AS count FROM memory_governance_audit WHERE operation = 'lesson_import' AND actor = 'teammate'")).toBe(1);
+      expect(expectJsonCommand(target, ['lesson', 'import', '--project', target.projectDir, '--apply', '--json']))
+        .toMatchObject({ counts: { unchanged: 1 } });
+      const listed = expectJsonCommand(target, ['lesson', 'list', '--project', target.projectDir, '--json']);
+      expect((listed.lessons as JsonObject[])[0]).toMatchObject({ name: 'Deploy GPU before API', sourceClass: 'imported', sourceSessionIds: [] });
+
+      const reexport = expectJsonCommand(target, ['lesson', 'export', '--project', target.projectDir, '--all-curated', '--apply', '--json']);
+      expect(reexport).toMatchObject({ counts: { unchanged: 1 } });
+      expect(filesIn(lessonsDir(target))).toEqual(filesIn(lessonsDir(source)));
+    } finally {
+      rmSync(source.home, { recursive: true, force: true });
+      rmSync(target.home, { recursive: true, force: true });
+    }
+  }, SLOW_CLI_TEST_TIMEOUT_MS);
+
+  it('previews an import against an old store without changing it, and exits 2 when an entry conflicts', () => {
+    const fixture = createCliFixture('lesson-import-old-store');
+    const projectDir = path.join(fixture.home, 'checkout');
+    const lessonsDir = path.join(projectDir, '.claude-memory-layer', 'lessons');
+    // Created before hashing: the CLI hashes the existing directory.
+    mkdirSync(lessonsDir, { recursive: true });
+    const projectHash = hashProjectPath(projectDir);
+    const storagePath = path.join(fixture.home, '.claude-code', 'memory', 'projects', projectHash);
+    const target = { ...fixture, projectDir, projectHash, storagePath, dbPath: path.join(storagePath, 'events.sqlite') };
+    try {
+      mkdirSync(storagePath, { recursive: true });
+      const name = 'Deploy GPU before API';
+      const id = sharedLessonId(name);
+      writeFileSync(path.join(lessonsDir, `${id}.json`), `${JSON.stringify({
+        format: 'claude-memory-layer/lesson@1', id, name, trigger: 'When rolling out', steps: ['Roll out GPU'],
+        failureModes: [], validation: [], validVersions: [], confidence: 1, skillCandidate: true
+      }, null, 2)}\n`);
+      // A store from before source_class, revision and the governance audit existed.
+      const old = new Database(target.dbPath);
+      old.exec(`CREATE TABLE memory_lessons (lesson_id TEXT PRIMARY KEY, project_hash TEXT NOT NULL DEFAULT '', name TEXT NOT NULL, trigger TEXT NOT NULL,
+        steps_json TEXT NOT NULL, confidence REAL NOT NULL, source_session_ids TEXT NOT NULL DEFAULT '[]', source_event_ids TEXT NOT NULL DEFAULT '[]',
+        failure_modes_json TEXT NOT NULL DEFAULT '[]', skill_candidate INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(project_hash, name))`);
+      old.prepare(`INSERT INTO memory_lessons (lesson_id, project_hash, name, trigger, steps_json, confidence, created_at, updated_at)
+        VALUES ('00000000-0000-4000-8000-000000000009', ?, ?, 'When rolling out', '["Something else"]', 1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`).run(projectHash, name);
+      old.close();
+      const before = readFileSync(target.dbPath);
+
+      const result = runCli(target, ['lesson', 'import', '--project', projectDir, '--json']);
+      expect(result.status, result.stderr).toBe(2);
+      expect(JSON.parse(result.stdout)).toMatchObject({ dryRun: true, projectHash, counts: { conflict: 1 } });
+      expect(readFileSync(target.dbPath).equals(before)).toBe(true);
+      expect(readdirSync(storagePath)).toEqual(['events.sqlite']);
     } finally {
       rmSync(fixture.home, { recursive: true, force: true });
     }

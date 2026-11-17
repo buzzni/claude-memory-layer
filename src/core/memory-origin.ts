@@ -38,7 +38,8 @@
  *              cannot be told: a `metadata.mongoSync` object (Mongo sync
  *              stamps every pulled row; pull never returns this store's own
  *              rows), or a string `metadata.importedFrom` that is not an
- *              absolute path.
+ *              absolute path. A lesson whose `source_class` column is
+ *              `imported` (written only by `lesson import`) is imported too.
  *   user       `user_prompt`: what the user typed.
  *   assistant  `agent_response`: what the agent wrote.
  *   derived    `session_summary` and lessons: text this system wrote (an LLM
@@ -71,6 +72,8 @@
  * injected, so trusting graduated rows would let a poisoned row earn trust by
  * being recalled. Lessons stay `derived` whether curated or extracted: both
  * are rewritten text that a person can list and edit, not raw captured bytes.
+ * A lesson read from a shared export file is `imported`: the file is text
+ * from outside this store, whatever review it had where it was committed.
  */
 
 export const MEMORY_ORIGINS = ['user', 'assistant', 'derived', 'imported', 'tool', 'unknown'] as const;
@@ -170,6 +173,15 @@ export function readStoredMetadata(
 /** The origin of a row as read from SQLite, for readers that parse metadata their own way. */
 export function classifyStoredEvent(eventType: unknown, rawMetadata: unknown): MemoryOrigin {
   return readStoredMetadata(eventType, rawMetadata).origin;
+}
+
+/**
+ * A lesson's origin from its stored `source_class` column (MemoryLesson.sourceClass
+ * as read by LessonRepository). Upsert input cannot set `imported` and keeps
+ * it once written, so the value cannot be raised by a caller.
+ */
+export function lessonOrigin(lesson: { sourceClass?: string }): MemoryOrigin {
+  return lesson.sourceClass === 'imported' ? 'imported' : 'derived';
 }
 
 /** The origin the read layer put on a row or candidate; one that never went through it is unknown. */

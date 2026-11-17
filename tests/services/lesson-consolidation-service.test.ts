@@ -60,7 +60,7 @@ describe('planRunbookConsolidation', () => {
     const { db, a, b } = await fixture();
     const plan = planRunbookConsolidation(db, 'project-a', { runbooks: [draft([{ lessonId: a.lessonId, revision: 1 }, { lessonId: b.lessonId, revision: 1 }])] });
     expect(plan.problems).toEqual([]);
-    expect(plan.runbooks).toEqual([{ draftId: 'rb-branch-1', name: 'prepare-and-push-pr-branch', absorbs: [
+    expect(plan.runbooks).toEqual([{ draftId: 'rb-branch-1', name: 'prepare-and-push-pr-branch', sourceClass: 'curated', absorbs: [
       { lessonId: a.lessonId, name: 'rebase-before-push', revision: 1 },
       { lessonId: b.lessonId, name: 'push-rejected-retry', revision: 1 }
     ] }]);

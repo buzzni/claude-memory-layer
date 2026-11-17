@@ -1,4 +1,4 @@
-import type { MemoryOrigin } from '../../../core/memory-origin.js';
+import { lessonOrigin, type MemoryOrigin } from '../../../core/memory-origin.js';
 
 export type HookMemorySource = 'semantic' | 'keyword' | 'graduated' | 'episode' | 'lesson' | 'unknown';
 
@@ -396,6 +396,8 @@ export interface LessonEvidenceInput {
   validation?: string[];
   reconsiderWhen?: string;
   validVersions?: string[];
+  /** The stored lesson's source class; `imported` labels the evidence. */
+  sourceClass?: string;
 }
 
 /**
@@ -495,7 +497,7 @@ export function scoreLessonEvidence(
   return {
     id: lesson.lessonId,
     type: 'lesson',
-    origin: 'derived',
+    origin: lessonOrigin(lesson),
     content: [
       lesson.steps.length > 8 && `[Partial lesson; retrieve the full body with mem-lesson-get lessonId=${lesson.lessonId} before applying]`,
       lesson.scope && `Scope: ${lesson.scope}`,
