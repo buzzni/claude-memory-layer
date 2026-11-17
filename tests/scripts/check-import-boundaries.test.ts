@@ -145,7 +145,7 @@ describe('check-import-boundaries architecture guard', () => {
     expect(result.stderr).not.toContain(root);
   });
 
-  it('fails on static imports of the optional native backends and allows type-only and dynamic ones', () => {
+  it('fails on static imports of the optional native backends and allows type-only and lazy ones', () => {
     const root = makeFixtureRepo('native-backends');
     writeFileSync(path.join(root, 'src', 'core', 'static-lance.ts'), "import * as lancedb from '@lancedb/lancedb';\nvoid lancedb;\n", 'utf8');
     writeFileSync(path.join(root, 'src', 'adapters', 'claude', 'static-transformers.ts'), "export { pipeline } from '@huggingface/transformers';\n", 'utf8');
@@ -162,11 +162,51 @@ describe('check-import-boundaries architecture guard', () => {
     const result = runChecker(root);
 
     expect(result.status).toBe(1);
-    expect(result.stderr).toContain('[no-static-native-backend] src/core/static-lance.ts -> @lancedb/lancedb');
-    expect(result.stderr).toContain('[no-static-native-backend] src/adapters/claude/static-transformers.ts -> @huggingface/transformers');
-    expect(result.stderr).toContain('[no-static-native-backend] src/apps/cli/static-xenova.ts -> @xenova/transformers');
+    expect(result.stderr).toContain('[no-eager-native-backend] src/core/static-lance.ts -> @lancedb/lancedb');
+    expect(result.stderr).toContain('[no-eager-native-backend] src/adapters/claude/static-transformers.ts -> @huggingface/transformers');
+    expect(result.stderr).toContain('[no-eager-native-backend] src/apps/cli/static-xenova.ts -> @xenova/transformers');
     expect(result.stderr).not.toContain('lazy-lance');
     expect(result.stderr).not.toContain(root);
+  });
+
+  it('fails on require() and module-level import() of a native backend', () => {
+    const root = makeFixtureRepo('native-backend-loads');
+    writeFileSync(path.join(root, 'src', 'core', 'required.ts'), "const lance = require('@lancedb/lancedb');\nvoid lance;\n", 'utf8');
+    writeFileSync(path.join(root, 'src', 'core', 'module-require.ts'), "const t = module.require('@huggingface/transformers');\nvoid t;\n", 'utf8');
+    writeFileSync(path.join(root, 'src', 'core', 'top-level-await.ts'), "const lance = await import('@lancedb/lancedb');\nvoid lance;\n", 'utf8');
+    writeFileSync(path.join(root, 'src', 'core', 'top-level-promise.ts'), "export const ready = import('@xenova/transformers');\n", 'utf8');
+    writeFileSync(path.join(root, 'src', 'core', 'lazy-in-function.ts'), [
+      "export async function load() { return import('@lancedb/lancedb'); }",
+      "export const loadLater = async () => (await import('@huggingface/transformers')).pipeline;",
+      "export class Store { async open() { return import('@lancedb/lancedb'); } }",
+      ""
+    ].join('\n'), 'utf8');
+
+    const result = runChecker(root);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("src/core/required.ts -> @lancedb/lancedb (line 1; require '@lancedb/lancedb')");
+    expect(result.stderr).toContain("src/core/module-require.ts -> @huggingface/transformers (line 1; require '@huggingface/transformers')");
+    expect(result.stderr).toContain("src/core/top-level-await.ts -> @lancedb/lancedb (line 1; module-level-import '@lancedb/lancedb')");
+    expect(result.stderr).toContain("src/core/top-level-promise.ts -> @xenova/transformers (line 1; module-level-import '@xenova/transformers')");
+    expect(result.stderr).not.toContain('lazy-in-function');
+  });
+
+  it('treats imports and re-exports whose every name is type-only as type-only', () => {
+    const root = makeFixtureRepo('native-backend-inline-types');
+    writeFileSync(path.join(root, 'src', 'core', 'inline-types.ts'), [
+      "import { type Connection, type Table } from '@lancedb/lancedb';",
+      "export { type Connection as C } from '@lancedb/lancedb';",
+      "export type Pair = [Connection, Table];",
+      ""
+    ].join('\n'), 'utf8');
+    writeFileSync(path.join(root, 'src', 'core', 'mixed.ts'), "import { type Connection, connect } from '@lancedb/lancedb';\nvoid connect;\nexport type C = Connection;\n", 'utf8');
+
+    const result = runChecker(root);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('src/core/mixed.ts -> @lancedb/lancedb');
+    expect(result.stderr).not.toContain('inline-types');
   });
 
   it('passes for allowed imports and reports active baseline counts without absolute paths', () => {
