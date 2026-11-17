@@ -5,8 +5,9 @@ import type { MemoryEvent } from '../../src/core/types.js';
 import {
   filterHookInjectableMemories,
   getHookInjectionPolicy,
-  rankHookInjectionPool,
+  planHookInjection,
   reserveLessonSlot,
+  selectHookInjectionInOrder,
   scoreGraduatedEvidence,
   scoreLessonEvidence,
   selectHookEpisodeSeeds,
@@ -44,21 +45,43 @@ describe('Claude hook prompt injection policy', () => {
     expect(summarizeHookInjectionConfidence([])).toBe('none');
   });
 
-  it('exposes the whole eligible pool that the score cliff and budget then cut', () => {
+  it('splits the hook selection into an eligible order and a budget without changing it', () => {
     const query = 'sqlite fts query latency tail';
-    const candidates: HookMemoryCandidate[] = [
-      { id: 'top', type: 'agent_response', content: 'sqlite fts query latency tail fixed by capping terms', score: 0.9, source: 'semantic' },
-      { id: 'close', type: 'agent_response', content: 'sqlite fts query latency tail measured per store', score: 0.89, source: 'keyword' },
-      { id: 'weak', type: 'agent_response', content: 'sqlite fts query latency', score: 0.3, source: 'semantic' },
-      { id: 'prompt', type: 'user_prompt', content: 'sqlite fts query latency tail again', score: 0.95, source: 'keyword' },
-      { id: 'later', type: 'agent_response', content: 'sqlite fts query latency tail in the daemon', score: 0.75, source: 'semantic' }
-    ];
     const policy = getHookInjectionPolicy({});
+    const cases: Array<{ query: string; candidates: HookMemoryCandidate[] }> = [
+      {
+        query,
+        candidates: [
+          { id: 'top', type: 'agent_response', content: 'sqlite fts query latency tail fixed by capping terms', score: 0.9, source: 'semantic' },
+          { id: 'close', type: 'agent_response', content: 'sqlite fts query latency tail measured per store', score: 0.89, source: 'keyword' },
+          { id: 'weak', type: 'agent_response', content: 'sqlite fts query latency', score: 0.3, source: 'semantic' },
+          { id: 'prompt', type: 'user_prompt', content: 'sqlite fts query latency tail again', score: 0.95, source: 'keyword' },
+          { id: 'later', type: 'agent_response', content: 'sqlite fts query latency tail in the daemon', score: 0.75, source: 'semantic' }
+        ]
+      },
+      {
+        // Review counterexample: on a continuation query the cliff keeps the two prompts and the gate
+        // lets them through because no answer is among them. Gating the whole pool first would leave
+        // only the answer.
+        query: 'continue the sqlite fts latency work',
+        candidates: [
+          { id: 'p1', type: 'user_prompt', content: 'continue the sqlite fts latency work on the hook', score: 1.0, source: 'semantic' },
+          { id: 'p2', type: 'user_prompt', content: 'continue sqlite fts latency work for the daemon', score: 0.99, source: 'semantic' },
+          { id: 'a1', type: 'agent_response', content: 'sqlite fts latency work: capped the query terms', score: 0.66, source: 'semantic' }
+        ]
+      }
+    ];
 
-    // The score cliff falls after 'close'; the answerability gate then drops the prompt.
-    expect(filterHookInjectableMemories(candidates, policy, query).map((c) => c.id)).toEqual(['top', 'close']);
-    // The pool keeps 'later' past the cliff, and still leaves out the below-threshold row and the prompt.
-    expect(rankHookInjectionPool(candidates, policy, query).map((c) => c.id)).toEqual(['top', 'close', 'later']);
+    for (const { query: q, candidates } of cases) {
+      const plan = planHookInjection(candidates, policy, q);
+      expect(selectHookInjectionInOrder(plan.eligible, plan.budget, q)).toEqual(filterHookInjectableMemories(candidates, policy, q));
+    }
+    const [first, continuation] = cases.map(({ query: q, candidates }) => planHookInjection(candidates, policy, q));
+    // The pool keeps the prompt and 'later' past the cliff, and leaves out the below-threshold row.
+    expect(first.eligible.map((c) => c.id)).toEqual(['top', 'close', 'prompt', 'later']);
+    expect(first.budget).toBe(2);
+    expect(filterHookInjectableMemories(cases[1].candidates, policy, cases[1].query).map((c) => c.id)).toEqual(['p1', 'p2']);
+    expect(continuation.budget).toBe(2);
   });
 
   it('limits injected hook memories by highest confidence rather than first passing candidate', () => {

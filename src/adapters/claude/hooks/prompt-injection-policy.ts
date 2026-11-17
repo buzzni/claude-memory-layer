@@ -78,16 +78,32 @@ export function filterHookInjectableMemories(
 }
 
 /**
- * Every candidate filterHookInjectableMemories could inject for the query,
- * best first, before the score cliff and the budget. The grounding replay
- * reorders this pool to compare ranking arms at the same budget.
+ * filterHookInjectableMemories split at its ordering step, for the grounding
+ * replay. `eligible` is every candidate that passed the filters, best first;
+ * `budget` is how many of them the score cliff and maxMemories keep. The hook's
+ * own selection equals `selectHookInjectionInOrder(eligible, budget, query)`,
+ * so a ranking arm can reorder `eligible` and select by the same rule: the
+ * answerability gate runs on the budgeted head, not on the whole pool.
  */
-export function rankHookInjectionPool(
+export function planHookInjection(
   candidates: HookMemoryCandidate[],
   policy: HookInjectionPolicy,
   query: string
+): { eligible: HookMemoryCandidate[]; budget: number } {
+  const ranked = rankHookCandidates(candidates, policy, query);
+  return {
+    eligible: ranked.map(({ candidate }) => candidate),
+    budget: Math.min(applyScoreCliff(ranked, policy.scoreCliffGap).length, policy.maxMemories)
+  };
+}
+
+/** The first `budget` candidates of `ordered`, through the answerability gate. */
+export function selectHookInjectionInOrder(
+  ordered: HookMemoryCandidate[],
+  budget: number,
+  query: string
 ): HookMemoryCandidate[] {
-  return applyAnswerabilityGate(rankHookCandidates(candidates, policy, query).map(({ candidate }) => candidate), query);
+  return applyAnswerabilityGate(ordered.slice(0, budget), query);
 }
 
 /**
