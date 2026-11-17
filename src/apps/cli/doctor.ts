@@ -12,6 +12,7 @@
  * filesystem, PATH, or Node process.
  */
 
+import Database from 'better-sqlite3';
 import { spawnSync } from 'child_process';
 import * as fs from 'fs';
 import { createRequire as createNodeRequire } from 'node:module';
@@ -167,6 +168,52 @@ export function checkSessionEndHandlerLoads(
     status: 'pass',
     detail: 'module imports; native bindings are checked at first use'
   };
+}
+
+function firstLine(error: unknown): string {
+  return (error instanceof Error ? error.message : String(error)).split('\n')[0];
+}
+
+/**
+ * better-sqlite3 loads its native binding at the first open, not on import,
+ * so a binding built for another Node or never built passes every import
+ * check. The hooks then fail open on every event: no error, no capture.
+ */
+export function checkSqliteBinding(
+  openImpl: () => void = () => new Database(':memory:').close()
+): DoctorCheckResult {
+  try {
+    openImpl();
+  } catch (error) {
+    return {
+      name: 'sqlite',
+      status: 'fail',
+      detail: `better-sqlite3 cannot open a database with this Node, so nothing is captured or recalled: ${firstLine(error)}`,
+      fix: 'Reinstall with the Node the hooks run (needed after a Node major upgrade): npm install -g claude-memory-layer@latest'
+    };
+  }
+  return { name: 'sqlite', status: 'pass', detail: 'better-sqlite3 opens a database' };
+}
+
+/**
+ * LanceDB ships its native code as an optional per-platform package, which
+ * an install can skip (--omit=optional, an unsupported platform). Only the
+ * semantic lane needs it; nothing else reports that it is gone.
+ */
+export async function checkVectorStoreModule(
+  importImpl: () => Promise<unknown> = () => import('@lancedb/lancedb')
+): Promise<DoctorCheckResult> {
+  try {
+    await importImpl();
+  } catch (error) {
+    return {
+      name: 'vector-store',
+      status: 'fail',
+      detail: `LanceDB does not load, so semantic search is off; capture and keyword recall still work: ${firstLine(error)}`,
+      fix: 'Reinstall without --omit=optional: npm install -g claude-memory-layer@latest'
+    };
+  }
+  return { name: 'vector-store', status: 'pass', detail: 'LanceDB loads' };
 }
 
 export function checkSessionEndPendingJobs(pending: PendingSessionEndJob[]): DoctorCheckResult {

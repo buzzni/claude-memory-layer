@@ -14,7 +14,9 @@ import {
   checkProjectStoreAccess,
   checkSessionEndHandlerLoads,
   checkSessionEndPendingJobs,
+  checkSqliteBinding,
   checkSummaryProvider,
+  checkVectorStoreModule,
   gatherSummaryProviderFacts,
   doctorExitCode,
   findPathInstalls,
@@ -70,6 +72,40 @@ describe('checkPluginFiles', () => {
     expect(result.status).toBe('fail');
     expect(result.detail).toContain(REQUIRED_HOOK_FILES[0]);
     expect(result.fix).toContain('npm install');
+  });
+});
+
+describe('checkSqliteBinding', () => {
+  it('passes when better-sqlite3 opens a database with this Node', () => {
+    expect(checkSqliteBinding()).toMatchObject({ name: 'sqlite', status: 'pass' });
+  });
+
+  it('fails with the reason when the native binding does not load, which importing alone cannot see', () => {
+    const result = checkSqliteBinding(() => {
+      throw new Error('The module was compiled against a different Node.js version using NODE_MODULE_VERSION 115.\nThis version requires 127.');
+    });
+    expect(result.status).toBe('fail');
+    expect(result.detail).toContain('nothing is captured or recalled');
+    expect(result.detail).toContain('NODE_MODULE_VERSION 115');
+    expect(result.detail).not.toContain('requires 127');
+    expect(result.fix).toContain('npm install -g claude-memory-layer');
+  });
+});
+
+describe('checkVectorStoreModule', () => {
+  it('passes when LanceDB loads', async () => {
+    expect(await checkVectorStoreModule()).toMatchObject({ name: 'vector-store', status: 'pass' });
+  });
+
+  it('fails without claiming capture is down when the platform package is missing', async () => {
+    const result = await checkVectorStoreModule(async () => {
+      throw new Error("Cannot find module '@lancedb/lancedb-darwin-arm64'\nRequire stack:\n- /x/native.js");
+    });
+    expect(result.status).toBe('fail');
+    expect(result.detail).toContain('semantic search is off; capture and keyword recall still work');
+    expect(result.detail).toContain('@lancedb/lancedb-darwin-arm64');
+    expect(result.detail).not.toContain('Require stack');
+    expect(result.fix).toContain('optional');
   });
 });
 

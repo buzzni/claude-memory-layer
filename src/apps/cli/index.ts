@@ -83,7 +83,9 @@ import {
   checkProviderBreaker,
   checkSessionEndHandlerLoads,
   checkSessionEndPendingJobs,
+  checkSqliteBinding,
   checkSummaryProvider,
+  checkVectorStoreModule,
   findClaudeMemoryPackage,
   gatherProviderBreakerFacts,
   gatherSummaryProviderFacts,
@@ -1151,7 +1153,7 @@ program
  */
 program
   .command('doctor')
-  .description('Diagnose the environment: Node version, embedding backend, PATH conflicts, hooks, session-end work, MCP client configs, store access')
+  .description('Diagnose the environment: Node version, native modules, embedding backend, PATH conflicts, hooks, session-end work, MCP client configs, store access')
   .option('--fix', 'Repair the managed embedding backend when its check fails and repairing is safe; other checks stay report-only')
   .action(async (options: { fix?: boolean }) => {
     const pluginPath = getPluginPath();
@@ -1171,6 +1173,8 @@ program
       checkNodeVersion(process.version, readEnginesNodeRange(packageRoot)),
       checkPluginFiles(pluginPath),
       checkSessionEndHandlerLoads(pluginPath),
+      checkSqliteBinding(),
+      await checkVectorStoreModule(),
       checkHooksInstalled(settings, pluginPath, {}, inspectEnabledPlugin(settings)),
       checkSessionEndPendingJobs(listPendingSessionEndJobs()),
       checkEmbeddingBackend(packageRoot, embeddingBackendScript?.isEmbeddingBackendAvailable ?? null),
