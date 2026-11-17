@@ -175,8 +175,8 @@ Three parts of the package load native code. What still works when one fails to 
 
 | Missing or broken | Capture and keyword recall | Semantic search, `claude-memory-layer search` | `doctor` check |
 |---|---|---|---|
-| Embedding backend (`@huggingface/transformers`) | work | off | `embedding-backend` |
-| LanceDB platform package (`@lancedb/lancedb-<platform>`, an optional dependency) | work | off | `vector-store` |
+| Embedding backend (`@huggingface/transformers`) | work | off; `search --strategy fast` still works | `embedding-backend` |
+| LanceDB platform package (`@lancedb/lancedb-<platform>`) | work | off; `search --strategy fast` still works | `vector-store` |
 | `better-sqlite3` binding | stop, with no error in the session | off | `sqlite` |
 
 The `better-sqlite3` binding is built for one Node version. After a Node major upgrade, or when its install script could not build it, every hook fails quietly and nothing is stored. Reinstall with the Node that runs the hooks:
@@ -185,4 +185,6 @@ The `better-sqlite3` binding is built for one Node version. After a Node major u
 npm install -g claude-memory-layer@latest
 ```
 
-LanceDB is skipped by `npm install --omit=optional` and is not published for every platform; reinstall without `--omit=optional`.
+`@lancedb/lancedb` itself is a regular dependency; its native code comes in a per-platform package that npm installs as an optional dependency. `npm install --omit=optional` skips that package, and there is none for some platforms; reinstall without `--omit=optional`.
+
+A hook that cannot load its code (a missing file, or a module that throws while loading) writes one line naming the cause to stderr and exits 1, which Claude Code reports as a non-blocking error; once loaded, a hook that hits an error still answers and exits 0, so neither blocks a prompt, an edit or the session.
