@@ -2436,6 +2436,14 @@ function resolveLessonShareDir(context: OperationProjectContext, dir: string | u
   return { dir: resolved, displayDir: path.relative(context.projectPath, resolved) || '.' };
 }
 
+/** Exit status 2 when some entries were not applied (conflict, invalid, rejected); the rest still were. */
+const LESSON_SHARE_INCOMPLETE_EXIT_CODE = 2;
+function markIncompleteLessonShare(entries: ReadonlyArray<{ action: string }>): void {
+  if (entries.some(({ action }) => action === 'conflict' || action === 'invalid' || action === 'rejected')) {
+    process.exitCode = LESSON_SHARE_INCOMPLETE_EXIT_CODE;
+  }
+}
+
 lessonCommand
   .command('export')
   .description('Write selected lessons as one JSON file each for review and git; dry-run unless --apply')
@@ -2443,7 +2451,7 @@ lessonCommand
   .option('--lesson <selector...>', 'Lesson id, exact name, or shared id to export (repeatable)')
   .option('--all-curated', 'Export every recall-enabled curated or imported lesson')
   .option('--dir <path>', `Export directory, relative to the project (default ${DEFAULT_LESSON_SHARE_DIR})`)
-  .option('--prune', 'Also remove lesson files in the directory that the selection does not include')
+  .option('--prune', 'Also remove unselected files that are valid lesson exports (listed as remove in the preview)')
   .option('--apply', 'Write the files; omitted means dry-run')
   .option('--json', 'Print machine-readable JSON')
   .action((options) => runOperationCli(async () => {
@@ -2452,9 +2460,10 @@ lessonCommand
     if (selectors.length === 0 && !options.allCurated) throw new Error('select lessons with --lesson or --all-curated');
     const { dir, displayDir } = resolveLessonShareDir(context, options.dir);
     const plan = await withOperationExistingDatabase(context, null, ['memory_lessons'], async (db) =>
-      planLessonExport(await selectLessonsForExport(db, context.projectHash, { selectors, allCurated: Boolean(options.allCurated) }), dir, { prune: Boolean(options.prune) }));
+      planLessonExport(await selectLessonsForExport(db, context.projectHash, { selectors, allCurated: Boolean(options.allCurated) }), dir, { prune: Boolean(options.prune), root: context.projectPath }));
     if (!plan) throw new Error('this project has no lesson store');
-    if (options.apply) applyLessonExport(plan, dir);
+    if (options.apply) applyLessonExport(plan, dir, context.projectPath);
+    markIncompleteLessonShare(plan.entries);
     writeOperationOutput({
       operation: 'lesson-export',
       projectHash: context.projectHash,
@@ -2480,12 +2489,13 @@ lessonCommand
     // The preview reads the store as it is; only --apply opens it for writing (and migrates it).
     const plan = options.apply
       ? await withOperationWriteDatabase(context, async (db) => {
-        const planned = planLessonImport(db, context.projectHash, dir);
+        const planned = planLessonImport(db, context.projectHash, dir, context.projectPath);
         applyLessonImport(db, context.projectHash, planned, actor);
         return planned;
       })
-      : await withOperationExistingDatabase(context, null, ['memory_lessons'], async (db) => planLessonImport(db, context.projectHash, dir))
-        ?? planLessonImport(null, context.projectHash, dir);
+      : await withOperationExistingDatabase(context, null, ['memory_lessons'], async (db) => planLessonImport(db, context.projectHash, dir, context.projectPath))
+        ?? planLessonImport(null, context.projectHash, dir, context.projectPath);
+    markIncompleteLessonShare(plan.entries);
     writeOperationOutput({
       operation: 'lesson-import',
       projectHash: context.projectHash,

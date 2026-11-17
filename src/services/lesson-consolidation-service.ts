@@ -80,7 +80,7 @@ export function planRunbookConsolidation(db: SQLiteDatabase, projectHash: string
     const payload = RunbookPayload.safeParse(runbookPayload(draft, found));
     if (payload.success) assertCandidateSafe(payload.data);
     else problems.push(`${draft.lessonId}: runbook payload is invalid: ${payload.error.issues.map((issue) => `${issue.path.join('.')} ${issue.message}`).join(', ')}`);
-    return { draftId: draft.lessonId, name: draft.name, absorbs };
+    return { draftId: draft.lessonId, name: draft.name, sourceClass: runbookSourceClass(found), absorbs };
   });
   return { runbooks: planned, problems };
 }
@@ -99,8 +99,8 @@ export function applyRunbookConsolidation(db: SQLiteDatabase, projectHash: strin
         const lessonId = randomUUID();
         const now = new Date().toISOString();
         sqliteRun(db, `INSERT INTO memory_lessons (lesson_id, project_hash, name, trigger, steps_json, confidence, source_session_ids, source_event_ids, failure_modes_json, skill_candidate, source_class, revision, recall_enabled, scope, validation_json, reconsider_when, valid_versions_json, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'curated', 1, 1, ?, ?, ?, '[]', ?, ?)`,
-        [lessonId, projectHash, payload.name, payload.trigger, JSON.stringify(payload.steps), payload.confidence, JSON.stringify(payload.sourceSessionIds), JSON.stringify(payload.sourceEventIds), JSON.stringify(payload.failureModes), payload.scope, JSON.stringify(payload.validation), payload.reconsiderWhen, now, now]);
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, 1, 1, ?, ?, ?, '[]', ?, ?)`,
+        [lessonId, projectHash, payload.name, payload.trigger, JSON.stringify(payload.steps), payload.confidence, JSON.stringify(payload.sourceSessionIds), JSON.stringify(payload.sourceEventIds), JSON.stringify(payload.failureModes), runbookSourceClass(absorbed), payload.scope, JSON.stringify(payload.validation), payload.reconsiderWhen, now, now]);
         writeGovernanceAuditEntrySync(db, { operation: 'lesson_promote', actor, projectHash, targetType: 'lesson', targetId: lessonId, afterJson: { ...lessonToAuditJson(repository.get(lessonId)!), absorbs: absorbed.map((lesson) => lesson.lessonId) }, sourceEventIds: payload.sourceEventIds });
         for (const lesson of absorbed) {
           const changed = sqliteRun(db, `UPDATE memory_lessons SET recall_enabled = 0, absorbed_into = ?, revision = revision + 1, updated_at = ?
@@ -152,6 +152,11 @@ export function listAbsorbedLessons(db: SQLiteDatabase, projectHash: string, run
 
 export function listRunbookIds(db: SQLiteDatabase, projectHash: string): string[] {
   return new LessonRepository(db).listRunbookIds(projectHash);
+}
+
+/** Trust only goes down: a runbook that absorbs an imported lesson is imported itself. */
+function runbookSourceClass(absorbed: readonly MemoryLesson[]): 'curated' | 'imported' {
+  return absorbed.some((lesson) => lesson.sourceClass === 'imported') ? 'imported' : 'curated';
 }
 
 function runbookPayload(draft: RunbookDraft, absorbed: readonly MemoryLesson[]) {

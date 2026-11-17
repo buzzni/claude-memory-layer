@@ -10,6 +10,7 @@ import { CheckpointRepository } from '../../src/core/operations/checkpoint-repos
 import { FacetRepository } from '../../src/core/operations/facet-repository.js';
 import { LeaseRepository } from '../../src/core/operations/lease-repository.js';
 import { hashProjectPath } from '../../src/core/registry/project-path.js';
+import { sharedLessonId } from '../../src/core/operations/lesson-share.js';
 import { SQLiteEventStore } from '../../src/core/sqlite-event-store.js';
 import { tsxArgs, tsxCommand } from '../helpers/tsx-process.js';
 
@@ -447,6 +448,43 @@ describe('memory operations CLI commands', () => {
     } finally {
       rmSync(source.home, { recursive: true, force: true });
       rmSync(target.home, { recursive: true, force: true });
+    }
+  }, SLOW_CLI_TEST_TIMEOUT_MS);
+
+  it('previews an import against an old store without changing it, and exits 2 when an entry conflicts', () => {
+    const fixture = createCliFixture('lesson-import-old-store');
+    const projectDir = path.join(fixture.home, 'checkout');
+    const lessonsDir = path.join(projectDir, '.claude-memory-layer', 'lessons');
+    // Created before hashing: the CLI hashes the existing directory.
+    mkdirSync(lessonsDir, { recursive: true });
+    const projectHash = hashProjectPath(projectDir);
+    const storagePath = path.join(fixture.home, '.claude-code', 'memory', 'projects', projectHash);
+    const target = { ...fixture, projectDir, projectHash, storagePath, dbPath: path.join(storagePath, 'events.sqlite') };
+    try {
+      mkdirSync(storagePath, { recursive: true });
+      const name = 'Deploy GPU before API';
+      const id = sharedLessonId(name);
+      writeFileSync(path.join(lessonsDir, `${id}.json`), `${JSON.stringify({
+        format: 'claude-memory-layer/lesson@1', id, name, trigger: 'When rolling out', steps: ['Roll out GPU'],
+        failureModes: [], validation: [], validVersions: [], confidence: 1, skillCandidate: true
+      }, null, 2)}\n`);
+      // A store from before source_class, revision and the governance audit existed.
+      const old = new Database(target.dbPath);
+      old.exec(`CREATE TABLE memory_lessons (lesson_id TEXT PRIMARY KEY, project_hash TEXT NOT NULL DEFAULT '', name TEXT NOT NULL, trigger TEXT NOT NULL,
+        steps_json TEXT NOT NULL, confidence REAL NOT NULL, source_session_ids TEXT NOT NULL DEFAULT '[]', source_event_ids TEXT NOT NULL DEFAULT '[]',
+        failure_modes_json TEXT NOT NULL DEFAULT '[]', skill_candidate INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(project_hash, name))`);
+      old.prepare(`INSERT INTO memory_lessons (lesson_id, project_hash, name, trigger, steps_json, confidence, created_at, updated_at)
+        VALUES ('00000000-0000-4000-8000-000000000009', ?, ?, 'When rolling out', '["Something else"]', 1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`).run(projectHash, name);
+      old.close();
+      const before = readFileSync(target.dbPath);
+
+      const result = runCli(target, ['lesson', 'import', '--project', projectDir, '--json']);
+      expect(result.status, result.stderr).toBe(2);
+      expect(JSON.parse(result.stdout)).toMatchObject({ dryRun: true, projectHash, counts: { conflict: 1 } });
+      expect(readFileSync(target.dbPath).equals(before)).toBe(true);
+      expect(readdirSync(storagePath)).toEqual(['events.sqlite']);
+    } finally {
+      rmSync(fixture.home, { recursive: true, force: true });
     }
   }, SLOW_CLI_TEST_TIMEOUT_MS);
 

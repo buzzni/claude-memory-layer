@@ -1386,6 +1386,16 @@ export class SQLiteEventStore {
     // Set on a lesson a runbook absorbed (switched off, kept for provenance);
     // a lesson that others point at is a runbook.
     this.addColumnIfMissing('memory_lessons', 'absorbed_into', 'TEXT');
+    try {
+      // Trust only goes down (memory-origin.ts): no UPDATE, from any code
+      // path, turns an imported lesson into another source class.
+      sqliteExec(this.db, `CREATE TRIGGER IF NOT EXISTS memory_lessons_imported_stays_imported
+        BEFORE UPDATE OF source_class ON memory_lessons
+        WHEN OLD.source_class = 'imported' AND NEW.source_class IS NOT 'imported'
+        BEGIN SELECT RAISE(ABORT, 'an imported lesson stays imported'); END;`);
+    } catch {
+      // table may not exist in partial migrations
+    }
     this.addColumnIfMissing('lesson_host_traces', 'machine_id', `TEXT NOT NULL DEFAULT ''`);
     this.addColumnIfMissing('lesson_host_traces', 'lesson_revisions_json', `TEXT NOT NULL DEFAULT '[]'`);
     this.addColumnIfMissing('lesson_review_candidates', 'duplicate_lesson_ids_json', `TEXT NOT NULL DEFAULT '[]'`);

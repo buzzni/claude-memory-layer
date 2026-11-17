@@ -15,13 +15,13 @@
  * `source_class = 'imported'` (see lessonOrigin). Deleting a file does not
  * delete the lesson where it was imported.
  */
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { z } from 'zod';
 
 import { applyPrivacyFilter } from '../privacy/filter.js';
-import { sqliteTransaction, type SQLiteDatabase } from '../sqlite-wrapper.js';
+import type { SQLiteDatabase } from '../sqlite-wrapper.js';
 import type { MemoryLesson } from '../types.js';
 import { sanitizeGovernanceAuditValue } from './governance-audit.js';
 import { LessonRepository } from './lesson-repository.js';
@@ -154,13 +154,127 @@ export async function selectLessonsForExport(
   return [...selected.values()];
 }
 
-export type LessonExportAction = 'add' | 'update' | 'unchanged' | 'remove';
+/**
+ * Size limits, checked before a file is read. A lesson is a short procedure:
+ * `lesson add` takes at most 100 steps and recall shows the first 8, so a
+ * 100-step lesson of ~600-byte steps is the realistic ceiling. One file may
+ * be 64 KiB; one directory at most 1000 lesson files and 16 MiB in all, more
+ * than a team can review or the per-prompt lesson lane (which scans every
+ * enabled lesson) should carry.
+ */
+export const LESSON_FILE_MAX_BYTES = 64 * 1024;
+export const LESSON_DIR_MAX_FILES = 1000;
+export const LESSON_DIR_MAX_BYTES = 16 * 1024 * 1024;
+
+/**
+ * The lesson directory must be a real directory reached without symbolic
+ * links: every component from `root` (the project) down to `dir` that exists
+ * is checked with lstat. A link committed to the repository (the directory
+ * itself, a parent inside the project, or a lesson file) could otherwise
+ * point reads and writes outside it. For a `dir` outside `root` only `dir`
+ * itself is checked: the caller named that path.
+ */
+export function assertLessonDirectory(root: string, dir: string): void {
+  const relative = path.relative(root, dir);
+  const inside = relative !== '' && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+  const components = inside
+    ? relative.split(path.sep).map((_part, index, parts) => path.join(root, ...parts.slice(0, index + 1)))
+    : [dir];
+  for (const component of components) {
+    let stat: fs.Stats;
+    try {
+      stat = fs.lstatSync(component);
+    } catch {
+      return; // Missing from here down; export creates it.
+    }
+    const shown = inside ? path.relative(root, component) : path.basename(component);
+    if (stat.isSymbolicLink()) throw new Error(`lesson directory path goes through a symbolic link (${shown}); refusing to follow it`);
+    if (!stat.isDirectory()) throw new Error(`lesson directory path is not a directory (${shown})`);
+  }
+}
+
+type FileRead = { text: string } | { reason: string };
+
+/**
+ * A regular file's text, read without following a link (O_NOFOLLOW where the
+ * platform has it; the lstat in listJsonFiles otherwise) and never past the
+ * size limit: the size is checked on the open descriptor before reading.
+ */
+function readRegularFile(file: string): FileRead {
+  let fd: number;
+  try {
+    fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+  } catch (error) {
+    return { reason: (error as NodeJS.ErrnoException).code === 'ELOOP' ? 'a symbolic link, not a regular file' : 'not readable' };
+  }
+  try {
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile()) return { reason: 'not a regular file' };
+    if (stat.size > LESSON_FILE_MAX_BYTES) return { reason: `larger than the ${LESSON_FILE_MAX_BYTES / 1024} KiB file limit` };
+    const buffer = Buffer.alloc(LESSON_FILE_MAX_BYTES + 1);
+    let length = 0;
+    for (let read = -1; read !== 0 && length < buffer.length;) {
+      read = fs.readSync(fd, buffer, length, buffer.length - length, null);
+      length += read;
+    }
+    if (length > LESSON_FILE_MAX_BYTES) return { reason: `larger than the ${LESSON_FILE_MAX_BYTES / 1024} KiB file limit` };
+    return { text: buffer.subarray(0, length).toString('utf8') };
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+interface JsonFileEntry {
+  file: string;
+  /** null: a regular file; otherwise why it is not read. */
+  problem: string | null;
+}
+
+/** `.json` entries of `dir`, by lstat: links and other non-regular entries carry a problem and are never read. */
+function listJsonFiles(dir: string): JsonFileEntry[] {
+  if (!fs.existsSync(dir)) return [];
+  return fs.readdirSync(dir, { withFileTypes: true })
+    .filter((entry) => entry.name.endsWith('.json'))
+    .map((entry) => ({
+      file: entry.name,
+      problem: entry.isSymbolicLink() ? 'a symbolic link, not a regular file' : entry.isFile() ? null : 'not a regular file'
+    }))
+    .sort((left, right) => left.file.localeCompare(right.file));
+}
+
+/**
+ * Write through a new file created exclusively in the same directory, then
+ * rename it over the target. The exclusive create never follows a link, and
+ * rename replaces a directory entry instead of writing through it.
+ */
+function writeFileNoFollow(root: string, dir: string, file: string, content: string): void {
+  const temp = path.join(dir, `.${file}.${randomUUID()}.tmp`);
+  const fd = fs.openSync(temp, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL, 0o644);
+  try {
+    try {
+      fs.writeSync(fd, content);
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+    // The directory chain again, right before the entry is replaced.
+    assertLessonDirectory(root, dir);
+    fs.renameSync(temp, path.join(dir, file));
+  } catch (error) {
+    fs.rmSync(temp, { force: true });
+    throw error;
+  }
+}
+
+export type LessonExportAction = 'add' | 'update' | 'unchanged' | 'remove' | 'keep' | 'rejected';
 
 export interface LessonExportEntry {
   action: LessonExportAction;
   id: string;
   name?: string;
   file: string;
+  /** keep/rejected: why the file is left as it is. */
+  reason?: string;
   redactedFields?: string[];
 }
 
@@ -172,43 +286,70 @@ export interface LessonExportPlan {
   removals: string[];
 }
 
-function sharedFilesIn(dir: string): string[] {
-  if (!fs.existsSync(dir)) return [];
-  return fs.readdirSync(dir).filter((file) => SHARED_FILE.test(file)).sort();
-}
-
 /**
- * Compare the selected lessons with the export directory. With `prune`,
- * lesson files in the directory that the selection does not include are
- * removed; without it they are left alone and not reported.
+ * Compare the selected lessons with the export directory. A target that is
+ * not a regular file (a link, a directory) is `rejected` and never written
+ * through. With `prune`, unselected files are removed only when they read as
+ * a valid lesson export; anything else in the directory is `keep`. Without
+ * `prune`, unselected files are left alone and not reported.
  */
-export function planLessonExport(lessons: readonly MemoryLesson[], dir: string, options: { prune: boolean }): LessonExportPlan {
+export function planLessonExport(lessons: readonly MemoryLesson[], dir: string, options: { prune: boolean; root?: string }): LessonExportPlan {
+  assertLessonDirectory(options.root ?? dir, dir);
   const entries: LessonExportEntry[] = [];
   const writes = new Map<string, string>();
   const byFile = new Map<string, string>();
+  const onDisk = new Map(listJsonFiles(dir).map((entry) => [entry.file, entry]));
   for (const lesson of lessons) {
     const { lesson: shared, redactedFields } = toSharedLesson(lesson);
     const file = sharedLessonFileName(shared.id);
     const other = byFile.get(file);
     if (other !== undefined) throw new Error(`lessons "${other}" and "${shared.name}" export to the same file ${file}`);
     byFile.set(file, shared.name);
+    const base = { id: shared.id, name: shared.name, file, ...(redactedFields.length > 0 ? { redactedFields } : {}) };
     const content = serializeSharedLesson(shared);
-    const target = path.join(dir, file);
-    const existing = fs.existsSync(target) ? fs.readFileSync(target, 'utf8') : null;
-    const action: LessonExportAction = existing === null ? 'add' : existing === content ? 'unchanged' : 'update';
+    if (Buffer.byteLength(content) > LESSON_FILE_MAX_BYTES) {
+      entries.push({ action: 'rejected', ...base, reason: `larger than the ${LESSON_FILE_MAX_BYTES / 1024} KiB file limit` });
+      continue;
+    }
+    const present = onDisk.get(file);
+    const existing = present === undefined ? null : present.problem === null ? readRegularFile(path.join(dir, file)) : { reason: present.problem };
+    if (existing !== null && 'reason' in existing) {
+      entries.push({ action: 'rejected', ...base, reason: `${existing.reason}; refusing to replace it` });
+      continue;
+    }
+    const action: LessonExportAction = existing === null ? 'add' : existing.text === content ? 'unchanged' : 'update';
     if (action !== 'unchanged') writes.set(file, content);
-    entries.push({ action, id: shared.id, name: shared.name, file, ...(redactedFields.length > 0 ? { redactedFields } : {}) });
+    entries.push({ action, ...base });
   }
-  const removals = options.prune ? sharedFilesIn(dir).filter((file) => !byFile.has(file)) : [];
-  for (const file of removals) entries.push({ action: 'remove', id: file.slice(0, -'.json'.length), file });
+  const removals: string[] = [];
+  if (options.prune) {
+    for (const { file, problem } of onDisk.values()) {
+      if (byFile.has(file) || !SHARED_FILE.test(file)) continue;
+      const read = problem === null ? readSharedLessonFile(dir, file) : { reason: problem };
+      if ('reason' in read) {
+        entries.push({ action: 'keep', id: file.slice(0, -'.json'.length), file, reason: `${read.reason}; prune removes only valid lesson exports` });
+      } else {
+        removals.push(file);
+        entries.push({ action: 'remove', id: read.lesson.id, name: read.lesson.name, file });
+      }
+    }
+  }
   entries.sort((left, right) => left.file.localeCompare(right.file));
   return { entries, writes, removals };
 }
 
-export function applyLessonExport(plan: LessonExportPlan, dir: string): void {
-  if (plan.writes.size > 0) fs.mkdirSync(dir, { recursive: true });
-  for (const [file, content] of plan.writes) fs.writeFileSync(path.join(dir, file), content, 'utf8');
-  for (const file of plan.removals) fs.rmSync(path.join(dir, file));
+/** Writes adds and updates and removes pruned files; rejected entries are not in the plan's writes. */
+export function applyLessonExport(plan: LessonExportPlan, dir: string, root: string = dir): void {
+  assertLessonDirectory(root, dir);
+  if (plan.writes.size > 0) {
+    fs.mkdirSync(dir, { recursive: true });
+    assertLessonDirectory(root, dir);
+  }
+  for (const [file, content] of plan.writes) writeFileNoFollow(root, dir, file, content);
+  for (const file of plan.removals) {
+    // unlink removes the entry itself; it never follows a link.
+    if (fs.lstatSync(path.join(dir, file)).isFile()) fs.unlinkSync(path.join(dir, file));
+  }
 }
 
 export type LessonImportAction = 'add' | 'update' | 'unchanged' | 'conflict' | 'invalid';
@@ -237,9 +378,11 @@ export interface LessonImportPlan {
 }
 
 function readSharedLessonFile(dir: string, file: string): { lesson: SharedLesson; redactedFields: string[] } | { reason: string } {
+  const read = readRegularFile(path.join(dir, file));
+  if ('reason' in read) return read;
   let raw: unknown;
   try {
-    raw = JSON.parse(fs.readFileSync(path.join(dir, file), 'utf8'));
+    raw = JSON.parse(read.text);
   } catch {
     return { reason: 'not valid JSON' };
   }
@@ -260,13 +403,33 @@ function differingFields(local: SharedLesson, incoming: SharedLesson): string[] 
   return COMPARED_FIELDS.filter((field) => JSON.stringify(local[field]) !== JSON.stringify(incoming[field]));
 }
 
+/** Refuses the whole directory, before reading any file, when it is over the count or byte limit. */
+function assertDirectoryWithinLimits(dir: string, files: readonly JsonFileEntry[]): void {
+  if (files.length > LESSON_DIR_MAX_FILES) {
+    throw new Error(`lesson directory has ${files.length} .json files; the limit is ${LESSON_DIR_MAX_FILES}`);
+  }
+  let total = 0;
+  for (const { file, problem } of files) {
+    if (problem !== null) continue;
+    const size = fs.lstatSync(path.join(dir, file)).size;
+    // An oversized file is reported on its own and never read; it does not count.
+    if (size <= LESSON_FILE_MAX_BYTES) total += size;
+  }
+  if (total > LESSON_DIR_MAX_BYTES) {
+    throw new Error(`lesson files total ${total} bytes; the limit is ${LESSON_DIR_MAX_BYTES / (1024 * 1024)} MiB`);
+  }
+}
+
 /** `db` may be null when the project has no lesson store yet: every valid file is then an add. */
-export function planLessonImport(db: SQLiteDatabase | null, projectHash: string, dir: string): LessonImportPlan {
+export function planLessonImport(db: SQLiteDatabase | null, projectHash: string, dir: string, root: string = dir): LessonImportPlan {
+  assertLessonDirectory(root, dir);
   if (!fs.existsSync(dir)) throw new Error('lesson directory does not exist');
+  const files = listJsonFiles(dir);
+  assertDirectoryWithinLimits(dir, files);
   const repository = db ? new LessonRepository(db) : null;
   const planned: PlannedImport[] = [];
-  for (const file of fs.readdirSync(dir).filter((name) => name.endsWith('.json')).sort()) {
-    const read = readSharedLessonFile(dir, file);
+  for (const { file, problem } of files) {
+    const read = problem === null ? readSharedLessonFile(dir, file) : { reason: problem };
     if ('reason' in read) {
       planned.push({ entry: { action: 'invalid', file, reason: read.reason } });
       continue;
@@ -294,23 +457,27 @@ export function planLessonImport(db: SQLiteDatabase | null, projectHash: string,
 }
 
 /**
- * Write the plan's adds and updates in one transaction. An update re-checks
- * the revision it was planned against, so a lesson changed in between fails
- * the whole import instead of being overwritten.
+ * Write the plan's adds and updates in one immediate transaction. Each entry
+ * is re-checked inside it: an add whose name now exists, or an update whose
+ * lesson moved past the planned revision (another import, a local edit),
+ * fails the whole import, so nothing is overwritten and nothing is half done.
  */
 export function applyLessonImport(db: SQLiteDatabase, projectHash: string, plan: LessonImportPlan, actor: string): void {
   const repository = new LessonRepository(db);
-  sqliteTransaction(db, () => {
+  db.transaction(() => {
     for (const { entry, lesson, local } of plan.planned) {
       if (!lesson || (entry.action !== 'add' && entry.action !== 'update')) continue;
       const input = { ...lesson, projectHash, actor, file: entry.file };
       if (entry.action === 'add') {
+        if (repository.getByProjectAndName(projectHash, lesson.name)) {
+          throw new Error(`lesson "${lesson.name}" was added while importing; run the import again`);
+        }
         repository.insertImported(input);
       } else if (!repository.updateImported(local!.lessonId, local!.revision, input)) {
         throw new Error(`lesson "${lesson.name}" changed during import; run the import again`);
       }
     }
-  });
+  }).immediate();
 }
 
 export function countActions<T extends string>(entries: ReadonlyArray<{ action: T }>): Partial<Record<T, number>> {

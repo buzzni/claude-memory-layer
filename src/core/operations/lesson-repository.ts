@@ -308,19 +308,20 @@ export class LessonRepository {
     return saved;
   }
 
-  /** The revision the last import left a lesson at, from the governance audit. */
+  /** The revision the last import left a lesson at, from the governance audit; null when unknown. */
   lastImportedRevision(lessonId: string): number | null {
-    const row = sqliteGet<{ after_json: string | null }>(
-      this.db,
-      `SELECT after_json FROM memory_governance_audit
-       WHERE operation = 'lesson_import' AND target_type = 'lesson' AND target_id = ?
-       ORDER BY created_at DESC, rowid DESC LIMIT 1`,
-      [lessonId]
-    );
     try {
+      const row = sqliteGet<{ after_json: string | null }>(
+        this.db,
+        `SELECT after_json FROM memory_governance_audit
+         WHERE operation = 'lesson_import' AND target_type = 'lesson' AND target_id = ?
+         ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+        [lessonId]
+      );
       const revision = (JSON.parse(row?.after_json ?? 'null') as { revision?: unknown } | null)?.revision;
       return typeof revision === 'number' ? revision : null;
     } catch {
+      // A store read before its audit table exists, or an unreadable row: treat as changed (conflict).
       return null;
     }
   }

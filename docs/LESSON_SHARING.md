@@ -33,21 +33,72 @@ claude-memory-layer lesson import -p . --apply
 |---|---|---|
 | `--lesson <selector...>` | export | Lesson id, exact name, or shared id (the file name without `.json`). Repeatable |
 | `--all-curated` | export | Every recall-enabled lesson whose source class is `curated` or `imported` |
-| `--prune` | export | Also remove lesson files in the directory that the selection does not include |
+| `--prune` | export | Also remove unselected lesson files, but only those that read as valid lesson exports. Check the preview's `remove` list first: a teammate's lesson that is not in your selection is removed too |
 | `--dir <path>` | both | Lesson directory, relative to the project. Default `.claude-memory-layer/lessons` |
 | `--actor <actor>` | import | Actor recorded in the governance audit. Default `cml-cli` |
 | `--apply` | both | Write; omitted means dry run |
 | `--json` | both | Machine-readable output |
 
-Export entries have the action `add`, `update`, `unchanged`, or `remove`.
-Import entries have `add`, `update`, `unchanged`, `conflict`, or `invalid`, and
-`counts` totals them. An import with conflicts or invalid files still applies
-its adds and updates. It reports the rest and exits 0, so read `counts` in a
-script. All adds and updates go in one transaction.
+Export entries have the action `add`, `update`, `unchanged`, `remove`,
+`keep` (prune left a file that is not a valid lesson export), or `rejected`
+(a file that cannot be written safely). Import entries have `add`, `update`,
+`unchanged`, `conflict`, or `invalid`. `counts` totals them.
+
+Exit status:
+
+| Status | Meaning |
+|---|---|
+| 0 | Every entry was applied, or needed nothing |
+| 2 | At least one entry is `conflict`, `invalid`, or `rejected`. The other entries were still applied (with `--apply`) and the output lists all of them |
+| 1 | The command failed. Causes: the directory is refused (see below), it is over a limit, or the store changed while importing. An import writes nothing. A refused directory or limit stops either command before it writes. An export that fails partway keeps the files it already wrote |
+
+All adds and updates of one import go in one transaction. Inside it, each
+entry is checked again. An add whose name now exists, or an update whose
+lesson moved past the planned revision (another import, a local edit), fails
+the whole import, so nothing is overwritten and nothing is half done.
 
 The default directory is product-named and inside the repository, so the files
 are committed with the code. It does not collide with `.claude/`, which belongs
 to Claude Code.
+
+### Symbolic links
+
+A repository can contain symbolic links, and a link would let a cloned
+lesson file read or overwrite something outside the directory. So:
+
+- Every component from the project root down to the lesson directory that
+  exists must be a real directory, checked with `lstat`. A link anywhere on
+  that path, the lesson directory itself included, refuses the whole command
+  (exit 1). The project root itself may be a link: you named it. For a
+  `--dir` outside the project, only that directory itself is checked.
+- Only regular files are read or written. A lesson file that is a link is
+  `invalid` on import and `rejected` on export, and its target is never read
+  or written. Reads open the file without following links where the platform
+  supports it, and check the size on the open file.
+- Writes create a new file exclusively in the same directory and rename it
+  over the target. The rename replaces the directory entry and never writes
+  through a link. The directory path is checked again right before each
+  rename. Prune unlinks, and unlinking never follows a link.
+
+This protects against links committed to the repository. A process that can
+change the directory while the command runs can already write there itself.
+
+### Size limits
+
+A lesson is a short procedure. `lesson add` takes at most 100 steps, and
+recall shows the first 8, so a 100-step lesson with steps of about 600 bytes
+is the realistic ceiling. The limits leave room above that and are checked
+before any file is read:
+
+| Limit | Value | When it is exceeded |
+|---|---|---|
+| One lesson file | 64 KiB | Import: that file is `invalid`. Export: that lesson is `rejected`, so export never writes a file that import refuses |
+| Lesson files in the directory | 1000 | The whole import is refused (exit 1) |
+| All lesson files together | 16 MiB | The whole import is refused (exit 1) |
+
+A shared set beyond these is more than a team can review. It is also more
+than the per-prompt lesson lane, which scans every enabled lesson, should
+carry.
 
 ## File format
 
@@ -133,7 +184,7 @@ import shows it as `update`, provided Bob has not changed his copy.
   local curated or derived lesson with that name is never replaced. An
   imported lesson that someone edited, switched off, or consolidated locally
   is not replaced either. Resolve it by renaming one side or by bringing the
-  file and the local lesson back in line.
+  file and the local lesson back in line. The command exits 2.
 
 Every add and update writes a `lesson_import` row to the governance audit:
 actor, before and after snapshots, and the file it came from.
@@ -142,8 +193,16 @@ actor, before and after snapshots, and the file it came from.
 
 An imported lesson's origin is `imported`, read from the stored
 `source_class` column. Only `lesson import` writes that value. Lesson save
-input cannot set it. Saving an imported lesson again through `lesson add` or
-MCP keeps it `imported`, so no caller can raise its trust.
+input cannot set it. Trust only goes down:
+
+- Saving an imported lesson again keeps it `imported`. This covers
+  `lesson add`, MCP `mem-lesson-save`, candidate promotion, and a
+  host-approved update of that lesson.
+- A runbook that absorbs an imported lesson (`lesson consolidate`) is
+  `imported` itself. The preview shows each runbook's `sourceClass`.
+- The store refuses any `UPDATE` that would move an imported lesson to
+  another source class. A trigger on `memory_lessons` enforces this, whatever
+  code path issues the update.
 
 Where lessons are injected automatically, an imported lesson carries the
 `[low-trust: imported]` label: in the per-prompt lesson lane, in the
@@ -173,5 +232,9 @@ Two lanes leave imported lessons out:
   change.
 - **Explicit commands only.** There is no automatic sync, hook, or MCP tool.
 - **Older versions.** A build from before this feature reads an `imported`
-  lesson as `derived`, so the label is lost. Its lesson save does not keep the
-  source class either.
+  lesson as `derived`, so the label is lost. If that build saves an imported
+  lesson again, the store's trigger rejects the save instead of letting it
+  become curated.
+- **Copying the text is not tracked.** Someone who retypes an imported
+  lesson's text under a new name, or proposes it as a new host candidate,
+  makes a new lesson. Its source class is whatever that path writes.
