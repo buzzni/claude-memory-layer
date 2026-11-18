@@ -5694,10 +5694,9 @@ export class SQLiteEventStore {
   /**
    * Delete a single event and everything keyed to it.
    *
-   * Deliberately NOT sharing an implementation with `deleteSessionEvents`: that one deletes
-   * by `session_id` so it is independent of how many events the session holds, while this one
-   * keys on the id. Folding them into one id-list delete would expose the session path to the
-   * SQL variable limit and break large sessions.
+   * Deliberately NOT sharing an implementation with `deleteSessionEvents`: that one picks its
+   * rows by session and source under the write lock and returns their ids, while this one
+   * keys on one id.
    *
    * The trigger-drop -> delete -> FTS-rebuild sequence is the same as the session delete and
    * for the same reason: the synthetic FTS delete can fail (`no such column: T.event_id`) on
@@ -5769,6 +5768,18 @@ export class SQLiteEventStore {
    * rows actually deleted (see `EventDeletionAuditInput`).
    */
   async deleteSessionEvents(sessionId: string, options: DeleteSessionEventsOptions = {}): Promise<number> {
+    return (await this.deleteSessionEventsWithIds(sessionId, options)).deleted;
+  }
+
+  /**
+   * `deleteSessionEvents` that also returns the deleted ids, like
+   * `deleteEventsBefore`: their vectors live in LanceDB, and the caller
+   * deletes them there.
+   */
+  async deleteSessionEventsWithIds(
+    sessionId: string,
+    options: DeleteSessionEventsOptions = {}
+  ): Promise<{ deleted: number; eventIds: string[] }> {
     await this.initialize();
 
     const metadataJson = `CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END`;
@@ -5784,32 +5795,30 @@ export class SQLiteEventStore {
          )`;
     const params = options.importedFrom === undefined ? [sessionId] : [sessionId, options.importedFrom];
 
-    // Get event IDs first for cascading deletes
-    const events = sqliteAll<{ id: string }>(
-      this.db,
-      `SELECT id FROM events WHERE ${where}`,
-      params
-    );
-
-    if (events.length === 0) return 0;
-
-    const eventIds = events.map(e => e.id);
-    const placeholders = eventIds.map(() => '?').join(',');
-
-    // Run the trigger-drop -> delete -> FTS-rebuild -> trigger-recreate sequence
-    // atomically. Outside a transaction, a crash or error after the triggers are
-    // dropped would permanently desync the FTS index, so keyword search would
-    // silently return stale results forever. Inside a transaction any failure
-    // rolls back and the triggers/index stay consistent. We pre-check optional
-    // table existence (instead of swallowing per-statement errors) so a genuine
-    // failure is never mistaken for a benign "table does not exist".
+    // Run the pick -> trigger-drop -> delete -> FTS-rebuild -> trigger-recreate
+    // sequence atomically. Outside a transaction, a crash or error after the
+    // triggers are dropped would permanently desync the FTS index, so keyword
+    // search would silently return stale results forever. Inside a transaction
+    // any failure rolls back and the triggers/index stay consistent. We
+    // pre-check optional table existence (instead of swallowing per-statement
+    // errors) so a genuine failure is never mistaken for a benign "table does
+    // not exist".
     // Only the tables that both exist and key cascades on event_id. (vector_outbox
-    // keys on item_id, not event_id; the previous code swallowed the resulting
-    // error, so it was never cleaned here either — behavior preserved.)
+    // keys on item_id, not event_id; it is cleaned separately below.)
     const relatedTables = ['event_dedup', 'memory_levels', 'embedding_queue', 'embedding_outbox', 'vector_outbox', 'event_citations']
       .filter((table) => this.hasTable(table) && this.hasTableColumn(table, 'event_id'));
+    const hasVectorOutbox = this.hasTable('vector_outbox') && this.hasTableColumn('vector_outbox', 'item_id');
 
-    const runDelete = this.db.transaction((): number => {
+    const runDelete = this.db.transaction((): { deleted: number; eventIds: string[] } => {
+      // Pick the rows under the write lock (IMMEDIATE, below), so no other
+      // connection can mark one as synced or cite it in a lesson before it is
+      // deleted: the related rows, the events, the audit count and the
+      // returned ids (whose vectors the caller deletes) are the same set.
+      const eventIds = sqliteAll<{ id: string }>(this.db, `SELECT id FROM events WHERE ${where}`, params)
+        .map((row) => row.id);
+      if (eventIds.length === 0) return { deleted: 0, eventIds };
+      const placeholders = eventIds.map(() => '?').join(',');
+
       // Drop FTS sync triggers before the bulk delete so the synthetic FTS
       // delete (which can fail with `no such column: T.event_id` on older
       // migrated tables, and risks SQLITE_CORRUPT_VTAB) never fires mid-delete.
@@ -5821,9 +5830,14 @@ export class SQLiteEventStore {
       for (const table of relatedTables) {
         sqliteRun(this.db, `DELETE FROM ${table} WHERE event_id IN (${placeholders})`, eventIds);
       }
+      // A job left for a deleted event would embed nothing, or report a
+      // vector the caller is about to delete as done.
+      if (hasVectorOutbox) {
+        sqliteRun(this.db, `DELETE FROM vector_outbox WHERE item_kind = 'event' AND item_id IN (${placeholders})`, eventIds);
+      }
 
       // Delete events.
-      const result = sqliteRun(this.db, `DELETE FROM events WHERE ${where}`, params);
+      const result = sqliteRun(this.db, `DELETE FROM events WHERE id IN (${placeholders})`, eventIds);
 
       // Recreate the FTS table + triggers from the remaining events. A failure
       // here aborts the whole transaction rather than leaving the index desynced
@@ -5832,10 +5846,10 @@ export class SQLiteEventStore {
 
       const deleted = result.changes || 0;
       this.writeDeletionAudit(options.audit, deleted);
-      return deleted;
+      return { deleted, eventIds };
     });
 
-    return runDelete();
+    return runDelete.immediate();
   }
 
   /**

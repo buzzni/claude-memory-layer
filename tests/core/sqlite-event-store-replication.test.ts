@@ -7,6 +7,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 
+import Database from 'better-sqlite3';
+
 import { SQLiteEventStore } from '../../src/core/sqlite-event-store.js';
 import { LessonRepository } from '../../src/core/operations/lesson-repository.js';
 
@@ -115,8 +117,8 @@ describe('SQLiteEventStore replication helpers', () => {
     const append = (eventType: 'user_prompt' | 'agent_response' | 'session_summary' | 'tool_observation', content: string, metadata?: Record<string, unknown>) =>
       storeA.append({ eventType, sessionId: 'reimport-me', timestamp: new Date(), content, ...(metadata ? { metadata } : {}) });
 
-    await append('user_prompt', 'imported apricot prompt', { importedFrom: source });
-    await append('agent_response', 'imported banana response', { importedFrom: source });
+    const apricot = await append('user_prompt', 'imported apricot prompt', { importedFrom: source });
+    const banana = await append('agent_response', 'imported banana response', { importedFrom: source });
     await append('session_summary', 'hook written fig summary');
     await append('user_prompt', 'hook written grape prompt', { turnId: 'hook-turn' });
     // Another source, a row pulled from another machine, a type no importer
@@ -132,7 +134,10 @@ describe('SQLiteEventStore replication helpers', () => {
     });
     await storeA.append({ eventType: 'user_prompt', sessionId: 'other-session', timestamp: new Date(), content: 'imported cherry prompt', metadata: { importedFrom: source } });
 
-    await expect(storeA.deleteSessionEvents('reimport-me', { importedFrom: source })).resolves.toBe(2);
+    // Exactly the deleted ids, for the caller to delete their vectors (#250).
+    const { deleted, eventIds } = await storeA.deleteSessionEventsWithIds('reimport-me', { importedFrom: source });
+    expect(deleted).toBe(2);
+    expect([...eventIds].sort()).toEqual([apricot.eventId, banana.eventId].sort());
 
     expect((await storeA.getSessionEvents('reimport-me')).map((event) => event.content).sort()).toEqual([
       'cited nectarine response', 'hook written fig summary', 'hook written grape prompt',
@@ -141,6 +146,98 @@ describe('SQLiteEventStore replication helpers', () => {
     expect((await storeA.keywordSearch('fig', 5)).map((result) => result.event.content)).toEqual(['hook written fig summary']);
     await expect(storeA.keywordSearch('apricot', 5)).resolves.toEqual([]);
     expect((await storeA.keywordSearch('cherry', 5)).map((result) => result.event.content)).toEqual(['imported cherry prompt']);
+  });
+
+  // Another connection (mongo-sync, a lesson save) protects a row while the
+  // reimport picks its rows. The ids it returns, the rows it deletes and the
+  // jobs it drops must be the same set: the caller deletes the returned ids'
+  // vectors, so an id of a row that stays would lose that row's vector.
+  for (const [protection, protect] of [
+    ['a mongo-sync marker', (db: Database.Database, eventId: string) => {
+      db.prepare(`UPDATE events SET metadata = json_set(metadata, '$.mongoSync', json('{"remoteId":"r1"}')) WHERE id = ?`).run(eventId);
+    }],
+    ['a lesson citation', (db: Database.Database, eventId: string) => {
+      db.prepare(`INSERT INTO memory_lessons (lesson_id, name, trigger, steps_json, confidence, source_event_ids, created_at, updated_at)
+        VALUES ('racing-lesson', 'Racing lesson', 'When releasing', '["Check the tag"]', 0.8, json_array(?), datetime('now'), datetime('now'))`).run(eventId);
+    }]
+  ] as const) {
+    it(`deleteSessionEvents returns exactly the rows it deleted when another connection adds ${protection} while it picks them`, async () => {
+      const dbPath = path.join(tempDir, 'racing.sqlite');
+      const store = new SQLiteEventStore(dbPath, { vectorOutbox: {} });
+      await store.initialize();
+      const other = new Database(dbPath, { timeout: 0 });
+      const source = '/home/user/.claude/projects/p/racing.jsonl';
+      const append = (content: string) => store.append({
+        eventType: 'user_prompt', sessionId: 'racing', timestamp: new Date(), content, metadata: { importedFrom: source }
+      });
+      try {
+        const doomed = await append('imported damson prompt');
+        const contested = await append('imported elderberry prompt');
+        const db = store.getDatabase();
+        const prepare = db.prepare.bind(db);
+        let otherWrite: unknown = 'not run';
+        db.prepare = ((sql: string) => {
+          const statement = prepare(sql);
+          if (!/^\s*SELECT id FROM events WHERE session_id = \?/.test(sql)) return statement;
+          const all = statement.all.bind(statement);
+          return Object.assign(statement, {
+            all: (...params: unknown[]) => {
+              const rows = all(...params);
+              try {
+                protect(other, contested.eventId!);
+                otherWrite = 'committed';
+              } catch (error) {
+                otherWrite = (error as { code?: string }).code;
+              }
+              return rows;
+            }
+          });
+        }) as typeof db.prepare;
+
+        const { deleted, eventIds } = await store.deleteSessionEventsWithIds('racing', { importedFrom: source });
+
+        const remaining = (await store.getSessionEvents('racing')).map((event) => event.id);
+        const jobs = db.prepare(`SELECT item_id FROM vector_outbox WHERE item_kind = 'event'`).all()
+          .map((row) => (row as { item_id: string }).item_id);
+        expect(deleted).toBe(eventIds.length);
+        expect([...eventIds].sort()).toEqual([doomed.eventId, contested.eventId].sort());
+        expect(remaining).toEqual([]);
+        expect(jobs).toEqual([]);
+        // The other connection waits for the delete instead of changing the rows it picked.
+        expect(otherWrite).toBe('SQLITE_BUSY');
+      } finally {
+        other.close();
+        store.close();
+      }
+    });
+  }
+
+  it('deleteSessionEvents drops the vector outbox jobs of the rows it deletes, and the rows put back are queued again', async () => {
+    const store = new SQLiteEventStore(path.join(tempDir, 'outbox.sqlite'), { vectorOutbox: {} });
+    await store.initialize();
+    const db = store.getDatabase();
+    const jobs = (eventIds: string[]) => db.prepare(
+      `SELECT item_id AS id, status FROM vector_outbox WHERE item_kind = 'event' AND item_id IN (${eventIds.map(() => '?').join(', ')})`
+    ).all(...eventIds);
+    const source = '/home/user/.claude/projects/p/outbox.jsonl';
+    const append = (content: string, importedFrom?: string) => store.append({
+      eventType: 'user_prompt', sessionId: 'outbox', timestamp: new Date(), content, ...(importedFrom ? { metadata: { importedFrom } } : {})
+    });
+    try {
+      const imported = await append('imported plum prompt', source);
+      const hook = await append('hook written pear prompt');
+      db.prepare(`UPDATE vector_outbox SET status = 'done'`).run();
+
+      await expect(store.deleteSessionEvents('outbox', { importedFrom: source })).resolves.toBe(1);
+      expect(jobs([imported.eventId!])).toEqual([]);
+      expect(jobs([hook.eventId!])).toEqual([{ id: hook.eventId, status: 'done' }]);
+
+      const putBack = await append('imported plum prompt', source);
+      expect(putBack).toMatchObject({ success: true, isDuplicate: false });
+      expect(jobs([putBack.eventId!])).toEqual([{ id: putBack.eventId, status: 'pending' }]);
+    } finally {
+      store.close();
+    }
   });
 
   it('deleteSessionEvents with importedFrom still deletes when a lesson lists a null source id', async () => {

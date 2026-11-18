@@ -167,7 +167,7 @@ snapshots mask absolute paths and credential-looking values, so a version restor
 | `forget --before <date> [--type <type>] --confirm` | Deletes the matching events, their vectors and dated mirror files, then runs VACUUM. Without `--confirm` it only previews | No | Yes, one `event_delete` row per run (actor `cli`; cutoff, type, the plan counted before the delete: matching rows and bytes and the number of mirror files to remove, not how many were removed; rows deleted; no text or event ids) |
 | `forget <eventId>`, `forget --session <id>` | Nothing; not implemented (#211) | — | — |
 | Dashboard `DELETE /api/events/:id` | Deletes one event and its vectors; the response names the event (id, type, time, session, content length), not its content | No | Yes, an `event_delete` row (actor `dashboard`; the same fields as the response, no text) |
-| `import --force`, `codex import --force`, `hermes import --force` | Deletes the session's prompts and responses that earlier imports of the same transcript (Hermes: the same `state.db`) wrote, then imports the transcript again. With `--limit`, a session the limit could cut short is skipped, nothing deleted, and the command exits 1. A session whose source has nothing to import again is skipped with a warning (exit 0). See the known limits below for what it keeps | **Partly**: the deleted rows come back from the transcript, with new event ids | Yes, a `session_reimport` row per session with deleted rows (actor `cli`; session id, source, rows deleted; no text) |
+| `import --force`, `codex import --force`, `hermes import --force` | Deletes the session's prompts and responses that earlier imports of the same transcript (Hermes: the same `state.db`) wrote, with their vectors and embedding jobs, then imports the transcript again and queues the rows it puts back for embedding. With `--limit`, a session the limit could cut short is skipped, nothing deleted, and the command exits 1. A session whose source has nothing to import again is skipped with a warning (exit 0). See the known limits below for what it keeps | **Partly**: the deleted rows come back from the transcript, with new event ids | Yes, a `session_reimport` row per session with deleted rows (actor `cli`; session id, source, rows deleted; no text) |
 | `lesson add --apply`, `action update --apply`, `facet tag --apply` | The same changes as `mem-lesson-save`, `mem-action-update` and `mem-facet-tag` above | From the audit's before snapshot | Yes |
 | `repair redact-credentials --apply` | Rewrites credential-looking text in events, helpfulness rows, retrieval traces and the Markdown mirror; deletes the affected vectors and requeues the events | No, by design | **No** |
 | `repair legacy-project-scope --apply` | Adds repair or quarantine markers to event metadata; content is untouched | Yes | Markers in the metadata only |
@@ -205,8 +205,14 @@ Known limits:
 - **Re-created rows get new event ids** (#250). References to the deleted rows (helpfulness and usefulness
   observations, retrieval traces, working set, actions, facets, perspective observations, audit source ids and
   others) are not rewritten and point at missing events; their `memory_levels` entries, citations and embedding jobs
-  are deleted with them, and their vectors stay in LanceDB. Rows the reimport keeps keep their ids, so references to
-  them stay valid.
+  (`embedding_outbox`, `vector_outbox`) are deleted with them. Their vectors are deleted from the legacy
+  `conversations` table and every `event_vectors_*` table right after the rows; the rows put back are embedded again
+  under their new ids, one vector each. If that vector delete fails, the reimport still succeeds and prints a warning,
+  since the rows are already gone: the vectors left behind belong to no event. Semantic search of a project store
+  goes through the retriever, which checks every vector hit against SQLite and drops them, asking for more hits in
+  their place, so they cost vector search rounds and disk until removed. The vector index itself
+  (`VectorStore.search`) still returns them. Vectors that force reimports before this change left behind stay too. Rows
+  the reimport keeps keep their ids and vectors, so references to them stay valid.
 - **Deletes are audited without their content** (#228). `forget --before`, the dashboard delete and force reimport
   write their audit row in the transaction that deletes the rows, so a delete never commits without it; a delete
   that removes nothing writes no row. The row records scope and counts, never the deleted text, so it shows when,
