@@ -28,7 +28,7 @@ import { createSharedEventStore } from '../../core/shared-event-store.js';
 import { createSharedStore, type SharedActorIdentity } from '../../core/shared-store.js';
 import { EntityRepo } from '../../core/entity-repo.js';
 import { createSQLiteDatabase, sqliteClose, sqliteGet, type SQLiteDatabase } from '../../core/sqlite-wrapper.js';
-import { createSessionHistoryImporter, type ImportResult } from '../../services/session-history-importer.js';
+import { createSessionHistoryImporter, forceSkipReason, type ImportResult } from '../../services/session-history-importer.js';
 import { createCodexSessionHistoryImporter } from '../../services/codex-session-history-importer.js';
 import { createHermesSessionHistoryImporter } from '../../services/hermes-session-history-importer.js';
 import {
@@ -2650,14 +2650,13 @@ async function handleMemContextPack(memoryService: MemoryService, args: Record<s
     && projectPath !== undefined
     && path.isAbsolute(projectPath);
   const retrievalTopK = Math.min(topK * 3, 12);
-  const freshnessRefused = (explicitFreshnessRefresh || autoFreshnessRefresh) && args.refreshForce === true;
-  const freshnessRun = (explicitFreshnessRefresh || autoFreshnessRefresh) && !freshnessRefused
+  const freshnessRun = explicitFreshnessRefresh || autoFreshnessRefresh
     ? await runLatestImport(memoryService, {
       projectPath: projectPath || '',
       sources: sourceListArg(args.refreshSources),
       sessionLimit: numberArg(args.refreshSessionLimit, 1, 1, 10),
       messageLimit: numberArg(args.refreshMessageLimit, 200, 1, 1000),
-      force: false,
+      force: args.refreshForce === true,
       processEmbeddings: args.refreshEmbeddings === true,
       sessionsDir: optionalString(args.sessionsDir),
       stateDb: optionalString(args.stateDb)
@@ -2721,9 +2720,6 @@ async function handleMemContextPack(memoryService: MemoryService, args: Record<s
     `- Recent sessions shown: ${Math.min(sessionLimit, sessions.length)}`
   ];
 
-  if (freshnessRefused) {
-    lines.push(`- Freshness refresh: refused, nothing imported (refreshForce: ${MCP_FORCE_REIMPORT_REFUSAL})`);
-  }
   if (freshnessRun) {
     const refreshMode = autoFreshnessRefresh ? 'auto' : 'attempted';
     lines.push(
@@ -2763,7 +2759,7 @@ async function handleMemContextPack(memoryService: MemoryService, args: Record<s
     lines.push('### Freshness Refresh', '');
     for (const summary of freshnessRun.summaries) {
       if (summary.result) {
-        lines.push(formatImportSummary(summary.source, summary.result));
+        lines.push(formatImportSummary(summary.source, summary.result), ...formatForceSkips(summary.source, summary.result));
       } else {
         lines.push(`- ${summary.source}: failed (${summary.error ?? 'details suppressed'})`);
       }
@@ -2990,23 +2986,11 @@ async function runLatestImport(memoryService: MemoryService, options: LatestImpo
   };
 }
 
-/**
- * The MCP imports always apply a message limit, and a force reimport stops at
- * it: the events past the limit would be deleted and not imported again.
- */
-const MCP_FORCE_REIMPORT_REFUSAL = 'a force reimport is refused because this tool always applies a message limit, and the events past the limit would be deleted and not imported again. Run `claude-memory-layer import --force` (or `codex import --force`, `hermes import --force`) without --limit instead.';
-
 async function handleMemImportLatest(memoryService: MemoryService, args: Record<string, unknown>): Promise<ToolResult> {
   const projectPath = optionalString(args.projectPath);
   if (!projectPath) {
     return {
       content: [{ type: 'text', text: 'Error: mem-import-latest requires an explicit projectPath.' }],
-      isError: true
-    };
-  }
-  if (args.force === true) {
-    return {
-      content: [{ type: 'text', text: `Error: mem-import-latest: ${MCP_FORCE_REIMPORT_REFUSAL}` }],
       isError: true
     };
   }
@@ -3016,7 +3000,7 @@ async function handleMemImportLatest(memoryService: MemoryService, args: Record<
     sources: sourceListArg(args.sources),
     sessionLimit: numberArg(args.sessionLimit, 1, 1, 10),
     messageLimit: numberArg(args.messageLimit, 200, 1, 1000),
-    force: false,
+    force: args.force === true,
     processEmbeddings: args.processEmbeddings === true,
     sessionsDir: optionalString(args.sessionsDir),
     stateDb: optionalString(args.stateDb)
@@ -3038,7 +3022,7 @@ async function handleMemImportLatest(memoryService: MemoryService, args: Record<
 
   for (const summary of importRun.summaries) {
     if (summary.result) {
-      lines.push(formatImportSummary(summary.source, summary.result));
+      lines.push(formatImportSummary(summary.source, summary.result), ...formatForceSkips(summary.source, summary.result));
     } else {
       lines.push(`- ${summary.source}: failed (${summary.error ?? 'details suppressed'})`);
     }
@@ -3962,6 +3946,16 @@ function sourceListArg(value: unknown): LatestImportSource[] {
 
 function formatImportSummary(source: LatestImportSource, result: ImportResult): string {
   return `- ${source}: sessions=${result.totalSessions} messages=${result.totalMessages} prompts=${result.importedPrompts} responses=${result.importedResponses} skipped=${result.skippedDuplicates} errors=${result.errors.length}`;
+}
+
+/** One line per reason a source skipped a session's force reimport; the error lines' paths stay out. */
+function formatForceSkips(source: LatestImportSource, result: ImportResult): string[] {
+  const skipped = new Map<string, number>();
+  for (const error of result.errors) {
+    const reason = forceSkipReason(error);
+    if (reason !== undefined) skipped.set(reason, (skipped.get(reason) ?? 0) + 1);
+  }
+  return [...skipped].map(([reason, sessions]) => `- ${source}: force reimport skipped for ${sessions} session(s), nothing deleted (${reason})`);
 }
 
 function safeErrorSummary(error: unknown): string {

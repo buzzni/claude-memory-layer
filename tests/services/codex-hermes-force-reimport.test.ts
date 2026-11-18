@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Database = require('better-sqlite3');
-import { appendFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 
@@ -57,18 +57,22 @@ afterEach(async () => {
   rmSync(root, { recursive: true, force: true });
 });
 
+function writeCodexSession(file: string, sessionId: string, cwd: string, pairs: number): void {
+  appendFileSync(file, `${JSON.stringify({ type: 'session_meta', payload: { id: sessionId, cwd } })}\n`);
+  for (let i = 0; i < pairs; i++) {
+    const at = (second: number) => new Date(Date.UTC(2026, 9, 1, 9, 0, 0) + (i * 60 + second) * 1000).toISOString();
+    appendFileSync(file, `${JSON.stringify({ type: 'response_item', timestamp: at(0), payload: { type: 'message', role: 'user', content: `please review ${sessionId} release step number ${i}` } })}\n`);
+    appendFileSync(file, `${JSON.stringify({ type: 'response_item', timestamp: at(30), payload: { type: 'message', role: 'assistant', content: answer(i) } })}\n`);
+  }
+}
+
 describe('Codex force reimport', () => {
   const sessionId = 'codex-force-session';
   let file = '';
 
   beforeEach(() => {
     file = path.join(root, `rollout-2026-10-01T09-00-00-${sessionId}.jsonl`);
-    appendFileSync(file, `${JSON.stringify({ type: 'session_meta', payload: { id: sessionId, cwd: root } })}\n`);
-    for (let i = 0; i < PAIRS; i++) {
-      const at = (second: number) => new Date(Date.UTC(2026, 9, 1, 9, 0, 0) + (i * 60 + second) * 1000).toISOString();
-      appendFileSync(file, `${JSON.stringify({ type: 'response_item', timestamp: at(0), payload: { type: 'message', role: 'user', content: `please review release step number ${i}` } })}\n`);
-      appendFileSync(file, `${JSON.stringify({ type: 'response_item', timestamp: at(30), payload: { type: 'message', role: 'assistant', content: answer(i) } })}\n`);
-    }
+    writeCodexSession(file, sessionId, root, PAIRS);
   });
 
   it('with limit 200 deletes nothing and says why', async () => {
@@ -94,6 +98,49 @@ describe('Codex force reimport', () => {
 
     expect(result).toMatchObject({ importedPrompts: PAIRS, importedResponses: PAIRS, errors: [] });
     expect(await counts(sessionId)).toEqual(before);
+  });
+
+  it('with a limit the session cannot reach replaces the imported rows and keeps the hook rows', async () => {
+    const importer = createCodexSessionHistoryImporter(memoryService, { sessionsDir: root });
+    await importer.importSessionFile(file);
+    await storeHookRows(sessionId);
+    const before = await counts(sessionId);
+
+    const result = await importer.importSessionFile(file, { force: true, limit: 2 * PAIRS + 1 });
+
+    expect(result).toMatchObject({ importedPrompts: PAIRS, importedResponses: PAIRS, errors: [] });
+    expect(await counts(sessionId)).toEqual(before);
+  });
+
+  it.each([
+    [120, 'refuses every session', true],
+    [121, 'replaces every session', false]
+  ])('across two 30-pair sessions, limit %i %s', async (limit, _label, refused) => {
+    const projectPath = path.join(root, 'project');
+    const sessionsDir = path.join(root, 'project-sessions');
+    mkdirSync(projectPath);
+    mkdirSync(sessionsDir);
+    for (const id of ['codex-a', 'codex-b']) {
+      writeCodexSession(path.join(sessionsDir, `rollout-2026-10-01T09-00-00-${id}.jsonl`), id, projectPath, 30);
+    }
+    const importer = createCodexSessionHistoryImporter(memoryService, { sessionsDir });
+    await importer.importProject(projectPath);
+    await storeHookRows('codex-a');
+    await storeHookRows('codex-b');
+    const before = [await counts('codex-a'), await counts('codex-b')];
+
+    const result = await importer.importProject(projectPath, { force: true, limit });
+
+    if (refused) {
+      expect(result.errors).toEqual([
+        expect.stringContaining('Skipped force reimport (a message limit'),
+        expect.stringContaining('Skipped force reimport (a message limit')
+      ]);
+      expect(result).toMatchObject({ importedPrompts: 0, importedResponses: 0 });
+    } else {
+      expect(result).toMatchObject({ importedPrompts: 60, importedResponses: 60, errors: [] });
+    }
+    expect([await counts('codex-a'), await counts('codex-b')]).toEqual(before);
   });
 });
 
@@ -143,6 +190,22 @@ describe('Hermes force reimport', () => {
     const result = await importer.importSession(sessionId, { force: true });
 
     expect(result).toMatchObject({ importedPrompts: PAIRS, importedResponses: PAIRS, errors: [] });
+    expect(await counts(memorySessionId)).toEqual(before);
+  });
+
+  it.each([
+    [2 * PAIRS, true],
+    [2 * PAIRS + 1, false]
+  ])('with limit %i refuses only when the limit can be reached', async (limit, refused) => {
+    const importer = createHermesSessionHistoryImporter(memoryService, { stateDbPath });
+    await importer.importSession(sessionId);
+    await storeHookRows(memorySessionId);
+    const before = await counts(memorySessionId);
+
+    const result = await importer.importSession(sessionId, { force: true, limit });
+
+    if (refused) expect(result.errors).toEqual([expect.stringContaining('Skipped force reimport (a message limit')]);
+    else expect(result).toMatchObject({ importedPrompts: PAIRS, importedResponses: PAIRS, errors: [] });
     expect(await counts(memorySessionId)).toEqual(before);
   });
 });

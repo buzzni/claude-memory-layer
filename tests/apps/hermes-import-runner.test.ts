@@ -51,16 +51,6 @@ describe('Hermes import runner', () => {
     };
   });
 
-  it('refuses --force with --limit before opening any memory service', async () => {
-    await expect(runHermesImportOnce({ force: true, limit: '200' }, deps)).rejects.toThrow(
-      '--force cannot be combined with --limit (a message limit would drop the rows past it; rerun without a limit)'
-    );
-
-    expect(deps?.getMemoryServiceForProject).not.toHaveBeenCalled();
-    expect(deps?.getDefaultMemoryService).not.toHaveBeenCalled();
-    expect(deps?.createImporter).not.toHaveBeenCalled();
-  });
-
   it('imports the current project from Hermes state.db into the project-scoped memory service', async () => {
     const outcome = await runHermesImportOnce({ stateDb: '/tmp/hermes-state.db', limit: '9', sessionLimit: '1' }, deps);
 

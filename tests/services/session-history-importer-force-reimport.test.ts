@@ -192,6 +192,30 @@ describe('Claude force reimport', () => {
     expect(await counts()).toEqual(before);
   });
 
+  it('runs a force reimport the limit cannot cut short and keeps the hook rows', async () => {
+    writeTranscript();
+    await importSession();
+    await storeHookRows();
+    const before = await counts();
+
+    // 30 prompts and 30 responses count 60 against the limit.
+    const result = await importSession({ force: true, limit: 2 * PAIRS + 1 });
+
+    expect(result).toMatchObject({ importedPrompts: PAIRS, importedResponses: PAIRS, errors: [] });
+    expect(await counts()).toEqual(before);
+  });
+
+  it('refuses a force reimport the limit would reach, even at exactly the count', async () => {
+    writeTranscript();
+    await importSession();
+    const before = await counts();
+
+    const result = await importSession({ force: true, limit: 2 * PAIRS });
+
+    expect(result.errors).toEqual([expect.stringContaining('Skipped force reimport (a message limit')]);
+    expect(await counts()).toEqual(before);
+  });
+
   it('refuses to run with a message limit and deletes nothing', async () => {
     writeTranscript();
     await importSession();

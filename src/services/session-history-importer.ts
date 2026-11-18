@@ -40,16 +40,15 @@ export interface ImportOptions {
 }
 
 /**
- * Why a force reimport does not run under a message limit: the reimport stops
- * at the limit, so the rows past it would be deleted and not put back.
+ * Why a force reimport does not run under a message limit it can reach: the
+ * reimport stops at the limit, so the rows past it would be deleted and not
+ * put back.
  */
 export const FORCE_REIMPORT_LIMIT_REFUSAL = 'a message limit would drop the rows past it; rerun without a limit';
 
-/** Why an import command refuses `--force` with `--limit`, before it opens the store. */
-export function forceWithLimitRefusal(options: { force?: boolean; limit?: string }): string | undefined {
-  return options.force && options.limit !== undefined
-    ? `--force cannot be combined with --limit (${FORCE_REIMPORT_LIMIT_REFUSAL})`
-    : undefined;
+/** The reason in an import error for a session whose force reimport was skipped; it holds no path. */
+export function forceSkipReason(error: string): string | undefined {
+  return /^Skipped force reimport \(([^)]*)\)/.exec(error)?.[1];
 }
 
 export interface ImportResult {
@@ -273,6 +272,55 @@ export class SessionHistoryImporter {
     }
   }
 
+  /**
+   * The most the import loop below can count against its message limit for
+   * this file: one per prompt it stores or recognizes, one per response it
+   * flushes. It follows the loop's parsing and turn rules; where the loop's
+   * count depends on the store (hook responses stored, a copied-in prompt
+   * skipped, an empty merge), it counts as if the loop counted.
+   */
+  private async countImportUpperBound(filePath: string): Promise<number> {
+    const rl = readline.createInterface({ input: fs.createReadStream(filePath), crlfDelay: Infinity });
+    let count = 0;
+    let inTurn = false;
+    let trigger: TurnTrigger = 'user';
+    let buffered = false;
+    const flush = () => {
+      if (buffered && inTurn) { count++; buffered = false; }
+    };
+    try {
+      for await (const line of rl) {
+        let entry: ClaudeMessage;
+        try { entry = JSON.parse(line) as ClaudeMessage; } catch { continue; }
+        const msgClass = classifyEntry(entry);
+        if (msgClass === 'user_prompt') {
+          flush();
+          const content = this.extractContent(entry);
+          if (!content) continue;
+          const plan = planPromptStorage(content);
+          if (plan.normalized.kind !== 'user') {
+            inTurn = true;
+            trigger = plan.normalized.kind;
+            continue;
+          }
+          if (!isWorthStoringPrompt(plan.normalized.requestText)) {
+            if (trigger !== 'user') { inTurn = true; trigger = 'user'; }
+            continue;
+          }
+          inTurn = true;
+          trigger = 'user';
+          count++;
+        } else if (msgClass === 'agent_text' && this.extractContent(entry)) {
+          buffered = true;
+        }
+      }
+    } finally {
+      rl.close();
+    }
+    flush();
+    return count;
+  }
+
   async importSessionFile(filePath: string, options: ImportOptions = {}): Promise<ImportResult> {
     const result: ImportResult = {
       totalSessions: 1,
@@ -294,17 +342,19 @@ export class SessionHistoryImporter {
     // Force reimport: delete only the rows an import from this file wrote.
     // Rows the hooks and the daemon wrote (prompts, responses, summaries, tool
     // observations) are not put back from the transcript, and a message limit
-    // stops the re-import before the end of it, so neither could be put back.
-    // Validate that the source file is readable and has at least one parseable
-    // record BEFORE the destructive delete, so a corrupt/empty/unreadable file
-    // can never wipe the existing session with nothing to re-import in its place.
+    // the import can reach stops it before the end of the transcript, so
+    // neither could be put back. Validate that the source file is readable and
+    // has at least one parseable record BEFORE the destructive delete, so a
+    // corrupt/empty/unreadable file can never wipe the existing session with
+    // nothing to re-import in its place.
     if (options.force) {
-      if (Number.isFinite(options.limit || Infinity)) {
-        result.errors.push(`Skipped force reimport (${FORCE_REIMPORT_LIMIT_REFUSAL}): ${filePath}`);
-        return result;
-      }
       if (!(await this.hasParseableContent(filePath))) {
         result.errors.push(`Skipped force reimport (no parseable records): ${filePath}`);
+        return result;
+      }
+      const limit = options.limit || Infinity;
+      if (Number.isFinite(limit) && await this.countImportUpperBound(filePath) >= limit) {
+        result.errors.push(`Skipped force reimport (${FORCE_REIMPORT_LIMIT_REFUSAL}): ${filePath}`);
         return result;
       }
       const deleted = await this.memoryService.deleteSessionEvents(sessionId, { importedFrom: filePath });

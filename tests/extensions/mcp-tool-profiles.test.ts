@@ -17,12 +17,13 @@ import { tools as compatibilityTools } from '../../src/extensions/mcp/tools.js';
 // Baseline re-pinned 2026-08-19 after folding main's post-branch tools.ts
 // drift into the registry: telemetry notes on mem-details/mem-source-ref
 // descriptions and the read_only mutation _meta on mem-stats (#71/#74).
-// Re-pinned 2026-11-18: force/refreshForce descriptions say the tools refuse
-// a force reimport, because they always apply a message limit (#227).
+// Re-pinned 2026-11-18: force/refreshForce descriptions say what a force
+// reimport keeps and that a session the message limit could cut short is
+// skipped (#227).
 const ALL_BASELINE = {
   count: 45,
-  bytes: 49_128,
-  sha256: '015ae9b2d878f60df409b0fe9b49e304a4e9f64a46ce732516ad5babbe2449c8',
+  bytes: 49_347,
+  sha256: 'aa1faf79483b4000f4404c9c8f692cc82ea7de737784e0cab5c58cf4d5b1e2b3',
   names: [
     'external-market-context',
     'mem-search',

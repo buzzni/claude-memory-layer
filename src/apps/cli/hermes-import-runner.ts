@@ -8,12 +8,7 @@ import {
   getMemoryServiceForProject,
   type MemoryService
 } from '../../services/memory-service.js';
-import {
-  forceWithLimitRefusal,
-  type ImportOptions,
-  type ImportResult,
-  type ProgressEvent
-} from '../../services/session-history-importer.js';
+import type { ImportOptions, ImportResult, ProgressEvent } from '../../services/session-history-importer.js';
 
 export interface HermesImportCommandOptions {
   project?: string;
@@ -79,8 +74,6 @@ export async function runHermesImportOnce(
   options: HermesImportCommandOptions,
   deps: HermesImportRunnerDeps = realDeps
 ): Promise<HermesImportOutcome> {
-  const refusal = forceWithLimitRefusal(options);
-  if (refusal) throw new Error(refusal);
   const targetProjectPath = options.project || deps.cwd();
   const useGlobalStorage = shouldUseGlobalStorage(options);
   const memoryService = useGlobalStorage
