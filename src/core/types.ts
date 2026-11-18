@@ -767,6 +767,26 @@ export interface PostToolUseInput {
   permission_mode: string;
 }
 
+// PostToolUseFailure Hook Input: a tool call that started and then failed.
+// No tool_response; `error` is the text Claude received as the result.
+export interface PostToolUseFailureInput {
+  session_id: string;
+  hook_event_name: string;
+  /** Present only when the hook fires inside a subagent. */
+  agent_id?: string;
+  agent_type?: string;
+  tool_name: string;
+  tool_input: Record<string, unknown>;
+  tool_use_id: string;
+  error?: string;
+  /** True when the failure reached Claude Code as an abort rather than as an error the tool reported. */
+  is_interrupt?: boolean;
+  duration_ms?: number;
+  cwd: string;
+  transcript_path: string;
+  permission_mode: string;
+}
+
 // ============================================================
 // Tool Observation Types
 // ============================================================

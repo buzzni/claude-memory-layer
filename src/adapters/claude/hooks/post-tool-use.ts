@@ -1,6 +1,7 @@
 /**
  * PostToolUse Hook
- * Called after each tool execution - stores tool observations
+ * Called after each tool execution - stores tool observations. Also stores
+ * the calls PostToolUseFailure reports (captureToolFailure).
  *
  * Actual Claude Code input format:
  * {
@@ -16,7 +17,7 @@ import { extractMetadata } from '../../../core/metadata-extractor.js';
 import { readTurnState } from '../../../core/turn-state.js';
 import { decideCapture, loadCapturePolicy } from './capture-policy.js';
 import { DEFAULT_CONFIG, extractToolOutput, isToolSuccess, readToolObservationInput } from './post-tool-use-filter.js';
-import type { PostToolUseInput, ToolObservationPayload, Config } from '../../../core/types.js';
+import type { PostToolUseFailureInput, PostToolUseInput, ToolObservationPayload, Config } from '../../../core/types.js';
 
 const DEFAULT_PRIVACY_CONFIG: Config['privacy'] = {
   excludePatterns: ['password', 'secret', 'api_key', 'token', 'bearer'],
@@ -40,6 +41,21 @@ export async function captureToolObservation(input: PostToolUseInput): Promise<s
     toolOutput: extractToolOutput(input.tool_response),
     success: isToolSuccess(input.tool_response),
     errorMessage: input.tool_response?.stderr || undefined
+  });
+}
+
+/**
+ * Stores a failed tool call that readToolFailureInput let through. Claude Code
+ * sends a call that started and then failed here instead of to PostToolUse, so
+ * the two never store the same call. Its `error` is both the output and the
+ * error message, each through the same privacy filter and truncation.
+ */
+export async function captureToolFailure(input: PostToolUseFailureInput): Promise<string> {
+  const error = typeof input.error === 'string' ? input.error : '';
+  return storeToolCall(input, {
+    toolOutput: error,
+    success: false,
+    errorMessage: maskToolOutput(error) || undefined
   });
 }
 

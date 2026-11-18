@@ -151,10 +151,10 @@ export function checkSessionEndHandlerLoads(
 }
 
 /**
- * PostToolUse decides whether to store a call before importing
- * post-tool-use-handler.js, so an install whose handler fails to import
- * still runs the hook and drops every call it would have stored. Like
- * session-end-handler.js it is a library, safe to import here.
+ * PostToolUse and PostToolUseFailure decide whether to store a call before
+ * importing post-tool-use-handler.js, so an install whose handler fails to
+ * import still runs the hooks and drops every call they would have stored.
+ * Like session-end-handler.js it is a library, safe to import here.
  */
 export function checkPostToolUseHandlerLoads(
   pluginPath: string,

@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**
- * src/hooks/post-tool-use.ts loads the storing part only for a call it
- * stores. A wiring mistake there would fail open and store nothing, so run
- * the entry itself.
+ * src/hooks/post-tool-use.ts and post-tool-use-failure.ts load the storing
+ * part only for a call they store. A wiring mistake there would fail open and
+ * store nothing, so run the entries themselves.
  */
 
 const fixture = vi.hoisted(() => ({
@@ -13,6 +13,7 @@ const fixture = vi.hoisted(() => ({
   handlerLoadError: null as null | Error
 }));
 const capture = vi.hoisted(() => vi.fn(async () => '{"stored":true}'));
+const captureFailure = vi.hoisted(() => vi.fn(async () => '{"storedFailure":true}'));
 
 vi.mock('../../src/adapters/claude/hooks/hook-runtime.js', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../src/adapters/claude/hooks/hook-runtime.js')>(),
@@ -30,9 +31,10 @@ beforeEach(() => {
   vi.doMock('../../src/adapters/claude/hooks/post-tool-use.js', () => {
     if (fixture.handlerLoadError) throw fixture.handlerLoadError;
     fixture.handlerLoaded = true;
-    return { captureToolObservation: capture };
+    return { captureToolObservation: capture, captureToolFailure: captureFailure };
   });
   capture.mockClear();
+  captureFailure.mockClear();
   fixture.run = null;
   fixture.handlerLoaded = false;
   fixture.handlerLoadError = null;
@@ -48,9 +50,14 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-async function runEntry(input: Record<string, unknown>): Promise<string> {
+const ENTRIES = {
+  'post-tool-use': () => import('../../src/hooks/post-tool-use.js'),
+  'post-tool-use-failure': () => import('../../src/hooks/post-tool-use-failure.js')
+};
+
+async function runEntry(input: Record<string, unknown>, entry: keyof typeof ENTRIES = 'post-tool-use'): Promise<string> {
   fixture.input = JSON.stringify(input);
-  await import('../../src/hooks/post-tool-use.js');
+  await ENTRIES[entry]();
   expect(fixture.run).not.toBeNull();
   return fixture.run!();
 }
@@ -78,6 +85,35 @@ describe('PostToolUse hook entry', () => {
     expect(process.exitCode).toBe(1);
     expect(stderr).toHaveLength(1);
     expect(stderr[0]).toContain('post-tool-use-handler.js');
+    expect(stderr[0]).toContain('not stored');
+  });
+});
+
+const FAILED = { session_id: 's', tool_name: 'Bash', tool_input: { command: 'false' }, error: 'Exit code 1', is_interrupt: false };
+
+describe('PostToolUseFailure hook entry', () => {
+  it('hands a failed call it stores to the shared handler file', async () => {
+    expect(await runEntry(FAILED, 'post-tool-use-failure')).toBe('{"storedFailure":true}');
+    expect(captureFailure).toHaveBeenCalledWith(FAILED);
+    expect(capture).not.toHaveBeenCalled();
+    expect(fixture.handlerLoaded).toBe(true);
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('answers a failed call it drops without loading the handler', async () => {
+    expect(await runEntry({ ...FAILED, tool_name: 'Read', tool_input: { file_path: '/x' } }, 'post-tool-use-failure')).toBe('{}');
+    expect(fixture.handlerLoaded).toBe(false);
+  });
+
+  it('says in one line why a failed call was not stored when the handler cannot load, and exits 1, not 2', async () => {
+    fixture.handlerLoadError = new Error("Cannot find package 'better-sqlite3' imported from /x/handler.js\n    at stack");
+
+    expect(await runEntry(FAILED, 'post-tool-use-failure')).toBe('{}');
+
+    // Exit 2 from PostToolUseFailure would show stderr to Claude as feedback on its call.
+    expect(process.exitCode).toBe(1);
+    expect(stderr).toHaveLength(1);
+    expect(stderr[0]).toContain('claude-memory-layer post-tool-use-failure: cannot load post-tool-use-handler.js');
     expect(stderr[0]).toContain('not stored');
   });
 });

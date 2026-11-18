@@ -20,7 +20,7 @@ import { commonOptions, HOOK_ENTRIES } from '../../scripts/build.js';
 const repoRoot = process.cwd();
 const NATIVE_BACKENDS = ['@lancedb/lancedb', '@huggingface/transformers', '@xenova/transformers'];
 /** Entries that run on every edit or tool call and often stop before storing anything. */
-const LIGHT_ENTRIES = ['pre-tool-use', 'post-tool-use'];
+const LIGHT_ENTRIES = ['pre-tool-use', 'post-tool-use', 'post-tool-use-failure'];
 const LOAD_KINDS = new Set(['import-statement', 'require-call']);
 
 let root: string;
@@ -161,7 +161,7 @@ describe('built Claude hooks with the native backends unloadable', () => {
     return check();
   }
 
-  it('run all seven hooks, store the session and recall it by keyword in the next one', async () => {
+  it('run all eight hooks, store the session and recall it by keyword in the next one', async () => {
     const answer = 'The monorepo builds with pnpm workspaces; the yarn lockfile was removed.';
     const edit = { file_path: path.join(project, 'package.json'), old_string: 'yarn', new_string: 'pnpm' };
     const runs = [
@@ -169,6 +169,7 @@ describe('built Claude hooks with the native backends unloadable', () => {
       await runHook('user-prompt-submit', { session_id: 'first', prompt: 'Should this monorepo build with pnpm workspaces or yarn?' }),
       await runHook('pre-tool-use', { session_id: 'first', tool_name: 'Edit', tool_input: edit }, { CLAUDE_MEMORY_OPERATIONS_CONFIG_PATH: path.join(root, 'pre-edit-on.json') }),
       await runHook('post-tool-use', { session_id: 'first', tool_name: 'Edit', tool_use_id: 'toolu_1', tool_input: edit, tool_response: { content: 'Switched packageManager to pnpm' } }),
+      await runHook('post-tool-use-failure', { session_id: 'first', tool_name: 'Bash', tool_use_id: 'toolu_2', tool_input: { command: 'pnpm install --frozen-lockfile' }, error: 'Exit code 1', is_interrupt: false }),
       await runHook('pre-compact', { session_id: 'first', transcript_path: transcript, trigger: 'auto' })
     ];
     writeFileSync(transcript, `${JSON.stringify({
@@ -180,10 +181,12 @@ describe('built Claude hooks with the native backends unloadable', () => {
     runs.push(await runHook('stop', { session_id: 'first', transcript_path: transcript, permission_mode: 'default', stop_hook_active: false }));
     runs.push(await runHook('session-end', { session_id: 'first', transcript_path: transcript, reason: 'exit' }));
 
-    expect(runs.map((run) => run.code)).toEqual([0, 0, 0, 0, 0, 0, 0]);
+    expect(runs.map((run) => run.code)).toEqual([0, 0, 0, 0, 0, 0, 0, 0]);
     expect(runs.map((run) => run.stderr).join('')).not.toContain('Cannot find module');
     expect(await waitFor(() => storedTypes().includes('session_summary'), 15_000)).toBe(true);
     expect(storedTypes()).toEqual(expect.arrayContaining(['user_prompt', 'tool_observation', 'agent_response', 'session_summary']));
+    // The edit and the failed Bash call.
+    expect(storedTypes().filter((type) => type === 'tool_observation')).toHaveLength(2);
 
     const next = await runHook('session-start', { session_id: 'second', source: 'startup' });
     expect(next.code).toBe(0);

@@ -67,7 +67,7 @@ describe('Claude Code hook settings helpers', () => {
     const merged = mergePluginHooksIntoSettings({}, '/plugin/dist');
 
     expect(Object.keys(merged.hooks ?? {}).sort()).toEqual(
-      ['PostToolUse', 'PreCompact', 'PreToolUse', 'SessionEnd', 'SessionStart', 'Stop', 'UserPromptSubmit']
+      ['PostToolUse', 'PostToolUseFailure', 'PreCompact', 'PreToolUse', 'SessionEnd', 'SessionStart', 'Stop', 'UserPromptSubmit']
     );
     expect(merged.hooks?.PreCompact).toEqual([
       { matcher: '', hooks: [{ type: 'command', command: "node '/plugin/dist/hooks/pre-compact.js'" }] }
@@ -106,6 +106,23 @@ describe('Claude Code hook settings helpers', () => {
     expect(merged.hooks?.PreToolUse).toEqual([userPreToolUse, ...getHooksConfig('/plugin/dist').PreToolUse!]);
 
     expect(removePluginHooksFromSettings(merged, '/plugin/dist').hooks).toEqual({ PreToolUse: [userPreToolUse] });
+  });
+
+  it('registers PostToolUseFailure for every tool, since a failed call never reaches PostToolUse', () => {
+    const merged = mergePluginHooksIntoSettings({}, '/plugin/dist');
+
+    expect(merged.hooks?.PostToolUseFailure).toEqual([
+      { matcher: '', hooks: [{ type: 'command', command: "node '/plugin/dist/hooks/post-tool-use-failure.js'" }] }
+    ]);
+  });
+
+  it('adds PostToolUseFailure when install runs again over an earlier install, and uninstall removes it', () => {
+    const { PostToolUseFailure: _added, ...earlierHooks } = getHooksConfig('/plugin/dist');
+
+    const merged = mergePluginHooksIntoSettings({ hooks: earlierHooks }, '/plugin/dist');
+    expect(merged.hooks).toEqual(getHooksConfig('/plugin/dist'));
+
+    expect(removePluginHooksFromSettings(merged, '/plugin/dist').hooks).toBeUndefined();
   });
 
   it('uninstall removes PreCompact with the other hooks', () => {
@@ -165,7 +182,7 @@ describe('Claude Code hook settings helpers', () => {
       existsImpl: (target) => { targets.push(target); return true; },
       realpathImpl: (target) => target
     });
-    expect(checks).toHaveLength(7);
+    expect(checks).toHaveLength(8);
     expect(checks.every((check) => check.status === 'current')).toBe(true);
     expect(targets.every((target) => target.startsWith(`${pluginPath}/hooks/`))).toBe(true);
   });
@@ -213,7 +230,7 @@ describe('Claude Code hook settings helpers', () => {
     });
     expect(checks.filter((check) => check.status === 'unverifiable').map((check) => check.hookName))
       .toEqual(['Stop', 'SessionEnd']);
-    expect(checkedTargets).toHaveLength(5);
+    expect(checkedTargets).toHaveLength(6);
   });
 
   it('does not declare unquoted glob or brace expansion targets current', () => {

@@ -76,7 +76,7 @@ Claude Code 2.1.275 이상에서는 `/plugin install memory-layer --marketplace 
 - 플러그인만 설치하면 훅이 동작하지 않습니다. 플러그인의 훅은 전역 설치된 npm 패키지를 실행하므로 `npm install -g claude-memory-layer@latest`가 필요합니다. 패키지가 없으면 세션 시작 때 설치 안내 한 줄만 보여 주고 아무것도 하지 않습니다.
 - 플러그인 이름은 npm 패키지 이름(`claude-memory-layer`)과 다른 `memory-layer`입니다. Claude Code가 `claude-`로 시작하는 이름을 예약하기 때문입니다. 플러그인 ID는 `memory-layer@claude-memory-layer`이고, 컴포넌트 이름 앞에는 `memory-layer:`가 붙습니다. 예전에 `--plugin-dir`로 이전 이름을 쓰던 경우 `enabledPlugins` 키와 호출명이 바뀝니다.
 
-**`claude-memory-layer install`과 플러그인 중 하나만 쓰세요.** 둘 다 같은 훅 일곱 개(SessionStart, UserPromptSubmit, PostToolUse, PreToolUse, PreCompact, Stop, SessionEnd)를 등록합니다.
+**`claude-memory-layer install`과 플러그인 중 하나만 쓰세요.** 둘 다 같은 훅 여덟 개(SessionStart, UserPromptSubmit, PostToolUse, PostToolUseFailure, PreToolUse, PreCompact, Stop, SessionEnd)를 등록합니다.
 
 - 플러그인만 쓰려면: `claude-memory-layer uninstall` (settings.json의 훅 제거)
 - settings.json 방식만 쓰려면: `claude plugin uninstall memory-layer@claude-memory-layer`
@@ -527,10 +527,19 @@ npx claude-memory-layer install
 | **SessionStart** | 세션 시작 시 프로젝트 관련 컨텍스트 로드 |
 | **UserPromptSubmit** | 프롬프트 입력 시 관련 기억 검색 및 저장 |
 | **PostToolUse** | 도구 사용 결과(도구 입력·출력)를 저장 |
+| **PostToolUseFailure** | 실행 중 실패한 도구 호출을 `success: false`와 오류 텍스트로 저장 (아래 참고) |
 | **PreToolUse** | 편집 도구 실행 직전에 그 파일에 대한 과거 기억을 넣음. `preEditCheck`를 켰을 때만 (아래 참고) |
 | **PreCompact** | 컨텍스트 압축 직전에 세션 체크포인트 저장 (아래 참고) |
 | **Stop** | AI 응답 완료 시 응답 내용 저장 |
 | **SessionEnd** | 세션 종료 시 요약 생성 및 저장 |
+
+### PostToolUseFailure (실패한 도구 호출)
+
+Claude Code는 실행을 시작했다가 실패한 도구 호출을 PostToolUse가 아니라 PostToolUseFailure로 보내므로, 한 호출은 둘 중 하나에만 옵니다. 이 훅은 그 호출을 `success: false`인 도구 관찰로 저장하고, Claude가 받은 `error` 텍스트를 출력이자 오류 메시지로 씁니다. PostToolUse와 같은 제외 도구(`CLAUDE_MEMORY_TOOL_BLOCKLIST` 포함), 캡처 정책, privacy 필터(자격증명, `<private>` 구간), 길이 제한을 거칩니다. 실패는 한 줄(`Exit code 1`)인 경우가 많아 PostToolUse의 출력 길이 필터는 적용하지 않습니다. 저장 여부를 SQLite를 불러오기 전에 정하고, 오류가 나도 아무것도 저장하지 않을 뿐 도구 흐름을 막지 않습니다.
+
+Claude Code 2.1.325로 확인한 범위: 0이 아닌 코드로 끝난 Bash 명령(`Exit code N`과 출력)과 쓰는 도중 실패한 파일 편집(예: `EACCES`)은 여기로 옵니다. hooks 문서에 따르면 오류를 돌려준 MCP 도구도 옵니다. 실행 전에 거절된 호출, 예를 들어 `old_string`이 파일에 없는 Edit이나 입력 검증에 실패한 호출은 어떤 훅도 부르지 않으므로 저장되지 않습니다. 실행 중 취소된 호출은 예전처럼 PostToolUse에 `interrupted`로 옵니다.
+
+이 훅이 생기기 전에 설치했다면 `claude-memory-layer install`을 다시 실행하면 추가되고, 빠져 있는 동안은 `doctor`가 알려 줍니다. 플러그인은 업데이트되면 함께 등록됩니다.
 
 ### PreCompact (압축 전 체크포인트)
 
@@ -545,7 +554,7 @@ Claude Code가 컨텍스트를 압축하기 직전에 현재 세션이 어디까
 - **"(file changed since)"**: 파일이 기록 뒤에 확실히 바뀌었을 때만 붙입니다. 기준은 파일 수정 시각(밀리초 단위로 내림)이 기록 시각(요약은 요약 자신의 시각, 실패는 그 실행 시각, lesson은 마지막 갱신 시각)보다 뒤인 경우입니다. 같은 밀리초 안의 변경이나, 기록과 변경 사이에 시스템 시계가 뒤로 간 경우에는 표시가 빠질 수 있습니다.
 - **출력**: 프로젝트 안 경로는 상대 경로로, 그 밖의 절대 경로는 `[path]`로 바꿉니다. 저장된 텍스트는 privacy 필터와 출력 sanitizer를 거치고, sanitizer를 거친 최종 문자열 기준으로 1500자를 넘지 않습니다. 찾은 것이 없으면 아무것도 출력하지 않습니다.
 - **중복 억제**: 같은 세션에서 같은 파일에 이미 보여 준 항목은 다시 넣지 않습니다. 항목마다 빈 표식 파일을 배타 생성(`projects/<hash>/pre-edit-check/<세션>/`)해 예약하므로, 같은 세션의 병렬 편집에서도 한 번만 나갑니다. 표식은 보여 준 항목마다 빈 파일 하나이고, 메모를 찾은 실행이 7일 동안 없던 세션의 표식은 다른 세션의 첫 실행이 지웁니다.
-- **알려진 한계**: 실패한 도구 호출은 PostToolUseFailure를 수집하기 전까지([#222](https://github.com/buzzni/claude-memory-layer/issues/222)) 대부분 저장되지 않습니다. PostToolUse는 중단된 호출만 실패로 기록하므로, 그때까지 "실패한 도구 실행" 항목은 거의 비어 있습니다.
+- **알려진 한계**: "실패한 도구 실행"은 PostToolUseFailure가 저장한 것이고, 편집은 쓰는 도중 실패한 경우(예: `EACCES`)만 여기에 옵니다. 가장 흔한 편집 실패인 `old_string` 불일치는 도구가 실행되기 전에 거절되어 어떤 훅도 부르지 않으므로 이 목록에 나오지 않습니다.
 - **비용**: 편집을 막지 않습니다. 권한 결정을 내지 않고, 오류·타임아웃·저장소 없음에서는 아무것도 출력하지 않고 종료 코드 0으로 끝납니다. 훅은 항상 등록되며, 꺼져 있으면 SQLite를 불러오기 전에 끝나서 Node 시작(26ms) 대비 약 3–5ms만 더 듭니다(macOS 실측). 켜면 요약 30만 개·파일 링크 20만 개 저장소에서 Node 시작 포함 약 105–115ms, 최근 관찰 2000개가 모두 64KiB에 가까운 경우 약 300ms입니다.
 
 ### Slash 명령어

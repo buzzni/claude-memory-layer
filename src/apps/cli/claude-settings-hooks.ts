@@ -14,6 +14,7 @@ export interface ClaudeHookEntry {
 export interface ClaudeSettingsHooks {
   UserPromptSubmit?: ClaudeHookEntry[];
   PostToolUse?: ClaudeHookEntry[];
+  PostToolUseFailure?: ClaudeHookEntry[];
   SessionStart?: ClaudeHookEntry[];
   Stop?: ClaudeHookEntry[];
   SessionEnd?: ClaudeHookEntry[];
@@ -30,6 +31,7 @@ export interface ClaudeSettingsWithHooks {
 export const REQUIRED_HOOK_FILES = [
   'user-prompt-submit.js',
   'post-tool-use.js',
+  'post-tool-use-failure.js',
   'post-tool-use-handler.js',
   'session-start.js',
   'stop.js',
@@ -45,6 +47,7 @@ export const PLUGIN_HOOKS = {
   SessionStart: 'session-start.js',
   UserPromptSubmit: 'user-prompt-submit.js',
   PostToolUse: 'post-tool-use.js',
+  PostToolUseFailure: 'post-tool-use-failure.js',
   Stop: 'stop.js',
   SessionEnd: 'session-end.js',
   PreCompact: 'pre-compact.js',

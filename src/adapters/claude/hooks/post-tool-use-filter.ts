@@ -1,11 +1,11 @@
 /**
- * Which PostToolUse calls are worth storing, decided from the hook input
- * alone. Kept apart from post-tool-use.ts, which loads the store, so the
- * hook entry can drop the rest without loading it.
+ * Which PostToolUse and PostToolUseFailure calls are worth storing, decided
+ * from the hook input alone. Kept apart from post-tool-use.ts, which loads
+ * the store, so the hook entries can drop the rest without loading it.
  */
 
 import { readStdin, readNumberEnv } from './hook-runtime.js';
-import type { PostToolUseInput, Config } from '../../../core/types.js';
+import type { PostToolUseFailureInput, PostToolUseInput, Config } from '../../../core/types.js';
 
 // Default config
 export const DEFAULT_CONFIG: Config['toolObservation'] = {
@@ -168,5 +168,29 @@ export async function readToolObservationInput(): Promise<PostToolUseInput | nul
     return null;
   }
 
+  return input;
+}
+
+/**
+ * Reads the PostToolUseFailure input and returns it when the failed call is
+ * worth storing, or null when it is not (malformed input included). The same
+ * tools are stored as for PostToolUse, but without the output-level filter:
+ * a failure is worth keeping even when its error is one line ("Exit code 1").
+ */
+export async function readToolFailureInput(): Promise<PostToolUseFailureInput | null> {
+  let input: PostToolUseFailureInput;
+  try {
+    input = JSON.parse(await readStdin());
+  } catch {
+    return null;
+  }
+  if (!input || typeof input.session_id !== 'string' || typeof input.tool_name !== 'string') {
+    return null;
+  }
+
+  const config = observedToolConfig(input.tool_name);
+  if (!config || config.storeOnlyOnSuccess) {
+    return null;
+  }
   return input;
 }

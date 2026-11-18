@@ -1,5 +1,6 @@
 /**
- * The storing part of the Claude PostToolUse hook, loaded by post-tool-use.js
- * for a tool call it stores. A library, not an executable.
+ * The storing part of the Claude PostToolUse and PostToolUseFailure hooks,
+ * loaded by post-tool-use.js and post-tool-use-failure.js for a tool call they
+ * store. A library, not an executable.
  */
-export { captureToolObservation } from '../adapters/claude/hooks/post-tool-use.js';
+export { captureToolFailure, captureToolObservation } from '../adapters/claude/hooks/post-tool-use.js';
