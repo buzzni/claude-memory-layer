@@ -929,6 +929,29 @@ export interface ProjectScopeRepairResult {
   samples: ProjectScopeRepairSample[];
 }
 
+export interface SessionSummarySupersedeOptions {
+  /** Inspect and count changes without mutating event metadata. */
+  dryRun?: boolean;
+  /** Test hook for deterministic repair metadata. */
+  now?: Date;
+}
+
+export interface SessionSummarySupersedeSample {
+  sessionId: string;
+  keptEventId: string;
+  /** In the order they ranked behind the kept one. */
+  supersededEventIds: string[];
+}
+
+export interface SessionSummarySupersedeResult {
+  dryRun: boolean;
+  /** Sessions that held two or more visible summaries. */
+  sessions: number;
+  /** Summaries hidden (or, in a dry run, that would be). */
+  superseded: number;
+  samples: SessionSummarySupersedeSample[];
+}
+
 // ============================================================
 // Entity Types (Task, Condition, Artifact)
 // ============================================================
