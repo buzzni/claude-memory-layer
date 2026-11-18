@@ -31,17 +31,16 @@ const TAG_PATTERNS: Record<string, RegExp> = {
   comment: /<!--\s*private\s*-->([\s\S]*?)<!--\s*\/private\s*-->/gi
 };
 
-const OPENING_TAG_PATTERNS: Record<string, RegExp> = {
+/**
+ * Opening tags that mask to the end of the text when left unclosed. Not the
+ * bracket format: its `[private]` is also the `[PRIVATE]` marker stored rows
+ * carry, so failing closed on it would cut every stored row read back with
+ * that format enabled at its first marker.
+ */
+const UNCLOSED_OPENING_PATTERNS: Record<string, RegExp> = {
   xml: /<private>/i,
-  bracket: /\[private\]/i,
   comment: /<!--\s*private\s*-->/i
 };
-
-/**
- * Stands in for a removed section until the unclosed-tag check has run, so a
- * `[PRIVATE]` marker is never read as the bracket format's opening tag.
- */
-const SECTION_PLACEHOLDER = '\u0000PRIVATE_SECTION\u0000';
 
 /**
  * Parse and remove private tags from text
@@ -83,22 +82,20 @@ export function parsePrivateTags(
     filtered = filtered.replace(replacePattern, (_match, content: string) => {
       // Empty tags are completely removed
       if (!content.trim()) return '';
-      return SECTION_PLACEHOLDER;
+      return options.marker;
     });
   }
 
   // An opening tag left now has no end: fail closed and mask from it to the
   // end of the text, with a marker that says why.
   const unclosedAt = Math.min(...options.formats.map((format) => {
-    const index = OPENING_TAG_PATTERNS[format] ? filtered.search(OPENING_TAG_PATTERNS[format]) : -1;
+    const index = UNCLOSED_OPENING_PATTERNS[format] ? filtered.search(UNCLOSED_OPENING_PATTERNS[format]) : -1;
     return index === -1 ? Infinity : index;
   }));
   const hasUnclosed = unclosedAt !== Infinity;
   if (hasUnclosed) {
     filtered = filtered.slice(0, unclosedAt) + options.marker.replace(/\]$/, ': unclosed]');
   }
-
-  filtered = filtered.split(SECTION_PLACEHOLDER).join(options.marker);
 
   return {
     filtered,
