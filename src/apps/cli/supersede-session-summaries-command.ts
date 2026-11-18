@@ -35,7 +35,9 @@ export function formatSupersedeSessionSummariesResult(result: SessionSummarySupe
   }
   lines.push(
     `Sessions with 2+ visible summaries: ${result.sessions}`,
-    `${result.dryRun ? 'Would hide' : 'Hidden'}: ${result.superseded} summaries (each session keeps its newest LLM summary, else its newest)`
+    `${result.dryRun ? 'Would hide' : 'Hidden'}: ${result.superseded} summaries (each session keeps its newest LLM summary, else its newest)`,
+    `Kept by kind: ${formatKinds(result.keptByKind)}`,
+    `Hidden by kind: ${formatKinds(result.supersededByKind)}`
   );
   for (const sample of result.samples) {
     lines.push(`  ${sample.sessionId}: keep ${sample.keptEventId}, hide ${sample.supersededEventIds.join(', ')}`);
@@ -47,4 +49,18 @@ export function formatSupersedeSessionSummariesResult(result: SessionSummarySupe
     ? 'Dry-run only. Re-run with --apply to hide them. Rows are quarantined as superseded, not deleted.'
     : 'Rows are quarantined as superseded, not deleted; each has a governance audit row.');
   return lines.join('\n');
+}
+
+export function formatSupersedeSessionSummariesFailure(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return [
+    `Supersede session summaries failed: ${message}`,
+    'Nothing was changed: the summaries are hidden in one transaction, rolled back on failure. Run the command again; '
+      + 'if the store was busy, run it when no session is being written.'
+  ].join('\n');
+}
+
+/** `metadata.generated` values in name order, e.g. "llm 1, unlabeled 2". */
+function formatKinds(kinds: Record<string, number>): string {
+  return Object.keys(kinds).sort().map((kind) => `${kind} ${kinds[kind]}`).join(', ');
 }

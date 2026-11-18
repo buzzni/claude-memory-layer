@@ -162,6 +162,7 @@ import { formatBackfillVectorsResult, resolveBackfillVectorsOptions } from './ba
 import { dropSpareEventVectorTables } from '../../core/operations/spare-vector-tables.js';
 import { formatDropSpareVectorsResult, resolveDropSpareVectorsOptions } from './drop-spare-vectors-command.js';
 import {
+  formatSupersedeSessionSummariesFailure,
   formatSupersedeSessionSummariesResult,
   resolveSupersedeSessionSummariesOptions
 } from './supersede-session-summaries-command.js';
@@ -1979,7 +1980,7 @@ repairCommand
 
       if (!fs.existsSync(dbPath)) {
         console.log(formatSupersedeSessionSummariesResult({
-          dryRun: supersedeOptions.dryRun, sessions: 0, superseded: 0, samples: []
+          dryRun: supersedeOptions.dryRun, sessions: 0, superseded: 0, keptByKind: {}, supersededByKind: {}, samples: []
         }));
         return;
       }
@@ -1992,8 +1993,7 @@ repairCommand
         await store.close().catch(() => undefined);
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.error(`Supersede session summaries failed: ${message}`);
+      console.error(formatSupersedeSessionSummariesFailure(error));
       process.exit(1);
     }
   });
