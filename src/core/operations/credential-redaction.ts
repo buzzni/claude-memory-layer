@@ -334,27 +334,59 @@ export function planMarkdownRedaction(
 
   const changes: RedactionFileChange[] = [];
   for (const filePath of files) {
-    let original: string;
+    let fd: number;
     try {
-      original = fs.readFileSync(filePath, 'utf8');
+      fd = fs.openSync(filePath, 'r');
     } catch {
       continue;
     }
-    const redacted = redactText(original);
-    if (redacted === original) continue;
-
-    const occurrences = redacted.split('[REDACTED]').length - original.split('[REDACTED]').length;
-    changes.push({ filePath, occurrences: Math.max(1, occurrences) });
-    if (options.apply) {
+    try {
+      let original: string;
       try {
-        fs.writeFileSync(filePath, redacted, 'utf8');
+        original = fs.readFileSync(fd, 'utf8');
       } catch {
-        // A write failure must not abort the rest; it is reported per file.
-        changes[changes.length - 1].writeFailed = true;
+        continue;
       }
+      const redacted = redactText(original);
+      if (redacted === original) continue;
+
+      const occurrences = redacted.split('[REDACTED]').length - original.split('[REDACTED]').length;
+      changes.push({ filePath, occurrences: Math.max(1, occurrences) });
+      if (options.apply) {
+        try {
+          replaceMirrorFile(filePath, fd, redacted);
+        } catch {
+          // A write failure must not abort the rest; it is reported per file.
+          changes[changes.length - 1].writeFailed = true;
+        }
+      }
+    } finally {
+      fs.closeSync(fd);
     }
   }
   return changes;
+}
+
+/**
+ * Hooks append to mirror files with no lock, so truncating and rewriting one in
+ * place drops every entry appended after it was read. The redacted copy
+ * replaces the file by rename instead: hooks that open the path afterwards
+ * append to the copy, and `fd`, still on the replaced file and positioned where
+ * the read stopped, picks up whatever was appended to it before the swap.
+ */
+function replaceMirrorFile(filePath: string, fd: number, redacted: string): void {
+  // Rename ignores the file's own permissions; keep refusing read-only files.
+  fs.accessSync(filePath, fs.constants.W_OK);
+  const stagingPath = `${filePath}.${randomUUID()}.tmp`;
+  try {
+    fs.writeFileSync(stagingPath, redacted, { encoding: 'utf8', mode: fs.fstatSync(fd).mode & 0o777, flag: 'wx' });
+    fs.renameSync(stagingPath, filePath);
+  } catch (error) {
+    fs.rmSync(stagingPath, { force: true });
+    throw error;
+  }
+  const appended = fs.readFileSync(fd, 'utf8');
+  if (appended.length > 0) fs.appendFileSync(filePath, redactText(appended), 'utf8');
 }
 
 /**
