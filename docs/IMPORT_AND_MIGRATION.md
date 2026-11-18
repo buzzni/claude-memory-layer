@@ -21,14 +21,14 @@ claude-memory-layer import                   # import this project's sessions, t
 | `-a, --all` | Import all sessions from all projects |
 | `-l, --limit <number>` | Limit messages per session |
 | `--session-limit <number>` | Limit recent matching sessions to import |
-| `-f, --force` | Delete every existing event of each imported session, then reimport it |
+| `-f, --force` | Replace the prompts and responses earlier imports of each session wrote, then reimport it (hook rows, summaries, tool observations and lesson sources stay; a session `--limit` could cut short is skipped) |
 | `--embedding-model <name>` | Embedding model override (see [INSTALL.md](INSTALL.md#embedding-model)) |
 | `-v, --verbose` | Show detailed progress |
 
 Notes:
 
 - Repeat the same flow in each project. Every project gets its own store under `~/.claude-code/memory/projects/<hash>`; see [CONFIGURATION.md](CONFIGURATION.md#project-scope) for how worktrees and workspace roots are grouped.
-- Import skips duplicates by content hash, so running it again does not store the same content twice. `--force` deletes every event of each imported session, including rows the hooks wrote, and imports only what the transcript holds again: session summaries, tool observations and messages past `--limit` are lost ([OPERATIONS.md](OPERATIONS.md#what-unattended-work-changes-and-what-it-does-not), #227).
+- Import skips duplicates by content hash, so running it again does not store the same content twice. `--force` deletes only the prompts and responses that earlier imports of the same transcript wrote, then imports the transcript again. Rows the hooks wrote (prompts, responses, session summaries, tool observations), rows `mongo-sync` pulled and lesson sources stay. With `--limit`, a session the limit could cut short is skipped and nothing of it is deleted ([OPERATIONS.md](OPERATIONS.md#what-unattended-work-changes-and-what-it-does-not), #227).
 - `import --all` imports every Claude Code session into the global store. If per-project context quality matters, run `import --project <path>` in each repository instead. The same applies to `codex import --all` and `hermes import --all`.
 
 ### Import legacy Markdown memory
