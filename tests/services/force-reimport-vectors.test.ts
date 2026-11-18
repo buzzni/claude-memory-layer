@@ -28,6 +28,20 @@ vi.mock('../../src/adapters/claude/hooks/semantic-daemon-client.js', () => ({
 }));
 vi.mock('../../src/adapters/llm/session-summary-llm.js', () => ({ isLlmSummaryEnabled: () => false }));
 
+// The vector outbox (event_vectors_* tables) is an opt-in SQLiteEventStore
+// option nothing in MemoryService turns on; this turns it on for every
+// writable store a test opens, the service's included.
+const fixture = vi.hoisted(() => ({ vectorOutbox: false }));
+vi.mock('../../src/core/sqlite-event-store.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/core/sqlite-event-store.js')>();
+  class SQLiteEventStore extends actual.SQLiteEventStore {
+    constructor(dbPath: string, options?: ConstructorParameters<typeof actual.SQLiteEventStore>[1]) {
+      super(dbPath, fixture.vectorOutbox && !options?.readonly ? { ...options, vectorOutbox: options?.vectorOutbox ?? {} } : options);
+    }
+  }
+  return { ...actual, SQLiteEventStore };
+});
+
 const SESSION = 'force-reimport-vectors';
 const PAIRS = 3;
 
@@ -46,7 +60,7 @@ const embedder = {
 let root = '';
 let storagePath = '';
 let transcriptPath = '';
-let service: MemoryService;
+let service: MemoryService | undefined;
 
 beforeEach(async () => {
   root = mkdtempSync(path.join(tmpdir(), 'cml-force-reimport-vectors-'));
@@ -54,13 +68,8 @@ beforeEach(async () => {
   transcriptPath = path.join(root, `${SESSION}.jsonl`);
   vi.stubEnv('HOME', root);
   knownIds.clear();
-  service = new MemoryService({
-    storagePath,
-    projectHash: 'force-reimport-vectors-project',
-    lightweightMode: true,
-    analyticsEnabled: false,
-    sharedStoreConfig: DISABLED_SHARED_STORE_CONFIG
-  });
+  fixture.vectorOutbox = false;
+  service = undefined;
   for (let i = 0; i < PAIRS; i++) {
     appendFileSync(transcriptPath, `${JSON.stringify({
       sessionId: SESSION, type: 'user', timestamp: new Date(Date.UTC(2026, 9, 1, 9, i, 0)).toISOString(),
@@ -74,14 +83,26 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  await service.shutdown();
+  await service?.shutdown();
   vi.unstubAllEnvs();
   vi.restoreAllMocks();
   rmSync(root, { recursive: true, force: true });
 });
 
+function startService(options: { vectorOutbox?: boolean } = {}): MemoryService {
+  fixture.vectorOutbox = options.vectorOutbox ?? false;
+  service = new MemoryService({
+    storagePath,
+    projectHash: 'force-reimport-vectors-project',
+    lightweightMode: true,
+    analyticsEnabled: false,
+    sharedStoreConfig: DISABLED_SHARED_STORE_CONFIG
+  });
+  return service;
+}
+
 function importSession(options: { force?: boolean } = {}) {
-  return new SessionHistoryImporter(service).importSessionFile(transcriptPath, options);
+  return new SessionHistoryImporter(service!).importSessionFile(transcriptPath, options);
 }
 
 /** A second connection to the same store, as the daemon or another hook has. */
@@ -144,12 +165,13 @@ function jobsFor(eventIds: string[]): Promise<Array<{ queue: string; id: string 
 /**
  * The imported session, the rows the hooks wrote, a row pulled from another
  * machine and a row a lesson cites, each with a vector in conversations and,
- * as on a store that had the vector outbox on, in event_vectors_*.
+ * as on a store that has or once had the vector outbox on, in event_vectors_*.
  */
-async function seedEmbeddedSession() {
+async function seedEmbeddedSession(options: { vectorOutbox?: boolean } = {}) {
+  const memoryService = startService(options);
   expect(await importSession()).toMatchObject({ importedPrompts: PAIRS, importedResponses: PAIRS, errors: [] });
-  await service.storeSessionSummary(SESSION, 'Reviewed every release step and fixed the tag guard.');
-  await service.storeToolObservation(SESSION, { toolName: 'Bash', toolInput: {}, toolOutput: 'ok', durationMs: 1, success: true });
+  await memoryService.storeSessionSummary(SESSION, 'Reviewed every release step and fixed the tag guard.');
+  await memoryService.storeToolObservation(SESSION, { toolName: 'Bash', toolInput: {}, toolOutput: 'ok', durationMs: 1, success: true });
   await withStore(async (store) => {
     const append = async (content: string, metadata: Record<string, unknown>) => {
       const result = await store.append({ eventType: 'agent_response', sessionId: SESSION, timestamp: new Date(), content, metadata });
@@ -180,45 +202,47 @@ async function seedEmbeddedSession() {
 }
 
 describe('force reimport and vectors (#250)', () => {
-  it('deletes the vectors and jobs of exactly the rows it deleted, keeps the others, and embeds the new rows once', async () => {
-    const { before, reimported, kept } = await seedEmbeddedSession();
-    const vectorsBefore = await vectorIdsByTable();
-    // Tool observations are never embedded: the summary and the two kept responses are.
-    const embeddedKept = kept.filter((row) => row.eventType !== 'tool_observation');
-    const eventTables = Object.keys(vectorsBefore).filter((table) => table.startsWith('event_vectors_'));
-    expect(eventTables).toHaveLength(1);
-    expect(vectorsBefore).toEqual({
-      conversations: [...reimported, ...embeddedKept].map((row) => row.id).sort(),
-      [eventTables[0]]: [...reimported, ...embeddedKept].map((row) => row.id).sort()
+  for (const vectorOutbox of [false, true]) {
+    it(`deletes the vectors and jobs of exactly the rows it deleted, keeps the others, and embeds the new rows once (vector outbox ${vectorOutbox ? 'on' : 'off'})`, async () => {
+      const { before, reimported, kept } = await seedEmbeddedSession({ vectorOutbox });
+      const vectorsBefore = await vectorIdsByTable();
+      // Tool observations are never embedded: the summary and the two kept responses are.
+      const embeddedKept = kept.filter((row) => row.eventType !== 'tool_observation');
+      const eventTables = Object.keys(vectorsBefore).filter((table) => table.startsWith('event_vectors_'));
+      expect(eventTables).toHaveLength(1);
+      expect(vectorsBefore).toEqual({
+        conversations: [...reimported, ...embeddedKept].map((row) => row.id).sort(),
+        [eventTables[0]]: [...reimported, ...embeddedKept].map((row) => row.id).sort()
+      });
+
+      expect(await importSession({ force: true })).toMatchObject({ importedPrompts: PAIRS, importedResponses: PAIRS, errors: [] });
+
+      const after = await rows();
+      const recreated = after.filter((row) => !before.some((old) => old.id === row.id));
+      expect(recreated.map((row) => row.content).sort()).toEqual(reimported.map((row) => row.content).sort());
+      expect(after.filter((row) => before.some((old) => old.id === row.id)).map((row) => row.id).sort())
+        .toEqual(kept.map((row) => row.id).sort());
+
+      // No vector and no job left for a deleted row; the kept rows' vectors are untouched.
+      expect(await vectorIdsByTable()).toEqual({
+        conversations: embeddedKept.map((row) => row.id).sort(),
+        [eventTables[0]]: embeddedKept.map((row) => row.id).sort()
+      });
+      expect(await jobsFor(reimported.map((row) => row.id))).toEqual([]);
+      // The rows put back are queued for embedding like any new row, in the vector outbox too when it is on.
+      const recreatedJobs = await jobsFor(recreated.map((row) => row.id));
+      expect(recreatedJobs.filter((job) => job.queue === 'embedding_outbox')).toHaveLength(recreated.length);
+      expect(recreatedJobs.filter((job) => job.queue === 'vector_outbox')).toHaveLength(vectorOutbox ? recreated.length : 0);
+
+      await embedPending();
+
+      // One vector per event: as many as before the reimport, the new ids in place of the old.
+      const vectorsAfter = await vectorIdsByTable();
+      expect(vectorsAfter.conversations).toEqual([...recreated, ...embeddedKept].map((row) => row.id).sort());
+      expect(vectorsAfter.conversations).toHaveLength(vectorsBefore.conversations.length);
+      expect(vectorsAfter[eventTables[0]]).toEqual((vectorOutbox ? [...recreated, ...embeddedKept] : embeddedKept).map((row) => row.id).sort());
     });
-
-    expect(await importSession({ force: true })).toMatchObject({ importedPrompts: PAIRS, importedResponses: PAIRS, errors: [] });
-
-    const after = await rows();
-    const recreated = after.filter((row) => !before.some((old) => old.id === row.id));
-    expect(recreated.map((row) => row.content).sort()).toEqual(reimported.map((row) => row.content).sort());
-    expect(after.filter((row) => before.some((old) => old.id === row.id)).map((row) => row.id).sort())
-      .toEqual(kept.map((row) => row.id).sort());
-
-    // No vector and no job left for a deleted row; the kept rows' vectors are untouched.
-    expect(await vectorIdsByTable()).toEqual({
-      conversations: embeddedKept.map((row) => row.id).sort(),
-      [eventTables[0]]: embeddedKept.map((row) => row.id).sort()
-    });
-    expect(await jobsFor(reimported.map((row) => row.id))).toEqual([]);
-    // The rows put back are queued for embedding like any new row.
-    expect((await jobsFor(recreated.map((row) => row.id))).filter((job) => job.queue === 'embedding_outbox'))
-      .toHaveLength(recreated.length);
-
-    await embedPending();
-
-    // One vector per event in the searched table: as many as before the reimport, the new ids in place of the old.
-    const vectorsAfter = await vectorIdsByTable();
-    expect(vectorsAfter.conversations).toEqual([...recreated, ...embeddedKept].map((row) => row.id).sort());
-    expect(vectorsAfter.conversations).toHaveLength(vectorsBefore.conversations.length);
-    // This store has the vector outbox off, so the new rows are not queued there.
-    expect(vectorsAfter[eventTables[0]]).toEqual(embeddedKept.map((row) => row.id).sort());
-  });
+  }
 
   it('does not fail the reimport when the vectors cannot be deleted, and search does not return the vectors left behind', async () => {
     const { reimported } = await seedEmbeddedSession();

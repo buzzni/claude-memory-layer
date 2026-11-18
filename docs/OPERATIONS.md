@@ -208,8 +208,10 @@ Known limits:
   (`embedding_outbox`, `vector_outbox`) are deleted with them. Their vectors are deleted from the legacy
   `conversations` table and every `event_vectors_*` table right after the rows; the rows put back are embedded again
   under their new ids, one vector each. If that vector delete fails, the reimport still succeeds and prints a warning,
-  since the rows are already gone: the vectors left behind belong to no event, search skips them, and they take disk
-  and vector search rounds until removed. Vectors that force reimports before this change left behind stay too. Rows
+  since the rows are already gone: the vectors left behind belong to no event. Semantic search of a project store
+  goes through the retriever, which checks every vector hit against SQLite and drops them, asking for more hits in
+  their place, so they cost vector search rounds and disk until removed. The vector index itself
+  (`VectorStore.search`) still returns them. Vectors that force reimports before this change left behind stay too. Rows
   the reimport keeps keep their ids and vectors, so references to them stay valid.
 - **Deletes are audited without their content** (#228). `forget --before`, the dashboard delete and force reimport
   write their audit row in the transaction that deletes the rows, so a delete never commits without it; a delete

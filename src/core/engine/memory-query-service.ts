@@ -432,8 +432,10 @@ export class MemoryQueryService {
       .deleteSessionEventsWithIds(sessionId, options);
     // A force reimport puts the rows back under new ids and queues them for
     // embedding, so a vector left here would belong to no event. The rows are
-    // already gone: a vector delete that fails must not fail the reimport, and
-    // search skips a vector whose event is gone.
+    // already gone: a vector delete that fails must not fail the reimport.
+    // Retriever.searchVisibleVectors drops a hit whose event is gone, so the
+    // vectors left behind cost search rounds and disk; VectorStore.search
+    // itself does not filter them.
     try {
       await this.deps?.vectorStore.deleteEvents?.(eventIds);
     } catch (error) {
