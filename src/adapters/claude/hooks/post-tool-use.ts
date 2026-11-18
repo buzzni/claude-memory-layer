@@ -36,10 +36,32 @@ export async function main(): Promise<string> {
 
 /** Stores a tool call that readToolObservationInput let through. */
 export async function captureToolObservation(input: PostToolUseInput): Promise<string> {
-  const config = DEFAULT_CONFIG;
-  const privacyConfig = DEFAULT_PRIVACY_CONFIG;
-  const toolOutput = extractToolOutput(input.tool_response);
-  const success = isToolSuccess(input.tool_response);
+  return storeToolCall(input, {
+    toolOutput: extractToolOutput(input.tool_response),
+    success: isToolSuccess(input.tool_response),
+    errorMessage: input.tool_response?.stderr || undefined
+  });
+}
+
+/** Privacy-filters and truncates tool output text before it is stored (steps 6-7). */
+function maskToolOutput(text: string): string {
+  // 6. Apply privacy filter to output
+  const filterResult = applyPrivacyFilter(text, DEFAULT_PRIVACY_CONFIG);
+  const maskedOutput = filterResult.content;
+
+  // 7. Truncate output
+  return truncateOutput(maskedOutput, {
+    maxLength: DEFAULT_CONFIG.maxOutputLength,
+    maxLines: DEFAULT_CONFIG.maxOutputLines
+  });
+}
+
+/** Stores one tool call as a tool_observation, through the capture policy (steps 4.6-10). */
+async function storeToolCall(
+  input: Pick<PostToolUseInput, 'session_id' | 'agent_id' | 'agent_type' | 'tool_name' | 'tool_input'>,
+  call: { toolOutput: string; success: boolean; errorMessage?: string }
+): Promise<string> {
+  const { toolOutput, success } = call;
 
   try {
     const memoryService = getLightweightMemoryService(input.session_id);
@@ -54,15 +76,8 @@ export async function captureToolObservation(input: PostToolUseInput): Promise<s
     // 5. Mask sensitive data in input
     const maskedInput = maskSensitiveInput(input.tool_input);
 
-    // 6. Apply privacy filter to output
-    const filterResult = applyPrivacyFilter(toolOutput, privacyConfig);
-    const maskedOutput = filterResult.content;
-
-    // 7. Truncate output
-    const truncatedOutput = truncateOutput(maskedOutput, {
-      maxLength: config.maxOutputLength,
-      maxLines: config.maxOutputLines
-    });
+    // 6-7. Apply privacy filter to output and truncate it
+    const truncatedOutput = maskToolOutput(toolOutput);
 
     // 8. Extract metadata
     const metadata = extractMetadata(
@@ -82,7 +97,7 @@ export async function captureToolObservation(input: PostToolUseInput): Promise<s
       toolOutput: truncatedOutput,
       durationMs: 0, // Claude Code doesn't provide timing info
       success,
-      errorMessage: input.tool_response?.stderr || undefined,
+      errorMessage: call.errorMessage,
       metadata: {
         ...metadata,
         ...(turnId ? { turnId } : {})

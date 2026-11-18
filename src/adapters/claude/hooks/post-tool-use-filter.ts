@@ -107,19 +107,10 @@ export function isToolSuccess(response: PostToolUseInput['tool_response']): bool
 }
 
 /**
- * Reads the hook input and returns it when the call is worth storing, or
- * null when it is not (malformed input included).
+ * DEFAULT_CONFIG with the env blocklist override applied, or null when calls
+ * of this tool are not stored at all.
  */
-export async function readToolObservationInput(): Promise<PostToolUseInput | null> {
-  // Read input from stdin. Guard the parse so a malformed/empty body still emits
-  // a valid envelope instead of throwing past the hook into an unhandled rejection.
-  let input: PostToolUseInput;
-  try {
-    input = JSON.parse(await readStdin());
-  } catch {
-    return null;
-  }
-
+function observedToolConfig(toolName: string): Config['toolObservation'] | null {
   const config = { ...DEFAULT_CONFIG };
 
   // Allow env-based blocklist override
@@ -134,7 +125,29 @@ export async function readToolObservationInput(): Promise<PostToolUseInput | nul
   }
 
   // 2. Check if tool is excluded
-  if (config.excludedTools?.includes(input.tool_name)) {
+  if (config.excludedTools?.includes(toolName)) {
+    return null;
+  }
+
+  return config;
+}
+
+/**
+ * Reads the hook input and returns it when the call is worth storing, or
+ * null when it is not (malformed input included).
+ */
+export async function readToolObservationInput(): Promise<PostToolUseInput | null> {
+  // Read input from stdin. Guard the parse so a malformed/empty body still emits
+  // a valid envelope instead of throwing past the hook into an unhandled rejection.
+  let input: PostToolUseInput;
+  try {
+    input = JSON.parse(await readStdin());
+  } catch {
+    return null;
+  }
+
+  const config = observedToolConfig(input.tool_name);
+  if (!config) {
     return null;
   }
 
