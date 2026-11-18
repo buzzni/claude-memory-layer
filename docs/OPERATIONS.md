@@ -169,7 +169,7 @@ snapshots mask absolute paths and credential-looking values, so a version restor
 | Dashboard `DELETE /api/events/:id` | Deletes one event and its vectors; the response names the event (id, type, time, session, content length), not its content | No | Yes, an `event_delete` row (actor `dashboard`; the same fields as the response, no text) |
 | `import --force`, `codex import --force`, `hermes import --force` | Deletes the session's prompts and responses that earlier imports of the same transcript (Hermes: the same `state.db`) wrote, with their vectors and embedding jobs, then imports the transcript again and queues the rows it puts back for embedding. With `--limit`, a session the limit could cut short is skipped, nothing deleted, and the command exits 1. A session whose source has nothing to import again is skipped with a warning (exit 0). See the known limits below for what it keeps | **Partly**: the deleted rows come back from the transcript, with new event ids | Yes, a `session_reimport` row per session with deleted rows (actor `cli`; session id, source, rows deleted; no text) |
 | `lesson add --apply`, `action update --apply`, `facet tag --apply` | The same changes as `mem-lesson-save`, `mem-action-update` and `mem-facet-tag` above | From the audit's before snapshot | Yes |
-| `repair redact-credentials --apply` | Rewrites credential-looking text in events, helpfulness rows, retrieval traces and the Markdown mirror; deletes the affected vectors and requeues the events | No, by design | **No** |
+| `repair redact-credentials --apply` | Rewrites credential-looking text in events, helpfulness rows, retrieval traces and the Markdown mirror; deletes the affected vectors and requeues the events. What it could not finish is printed under `NOT FINISHED` and the command exits 1 ([below](#credential-redaction-runs-and-what-it-leaves-undone)) | No, by design | Yes, `credential_redact` rows that share a run id: one per committed batch of up to 100 rows (rows redacted per table and column, rows skipped, the batch's event ids) and a closing row with the run's totals and the mirror outcome; actor `cli`; no secret, text or preview |
 | `repair legacy-project-scope --apply` | Adds repair or quarantine markers to event metadata; content is untouched | Yes | Markers in the metadata only |
 | `vector compact --apply`, `repair prune-tool-observation-vectors --apply` | Compact vector tables; delete `tool_observation` vectors | Yes | No |
 | `repair backfill-vectors --apply` | Only adds. For each event semantic search cannot reach: copies its vector from an unread `event_vectors_*` table when the current model made it and the event text is unchanged, otherwise queues the event for embedding | Yes: vectors are rebuilt from SQLite | No |
@@ -216,7 +216,63 @@ Known limits:
 - **Deletes are audited without their content** (#228). `forget --before`, the dashboard delete and force reimport
   write their audit row in the transaction that deletes the rows, so a delete never commits without it; a delete
   that removes nothing writes no row. The row records scope and counts, never the deleted text, so it shows when,
-  by whom and how much was deleted, not what. `repair redact-credentials` still writes **no audit record**.
+  by whom and how much was deleted, not what. `repair redact-credentials --apply` writes each batch's
+  `credential_redact` row in the transaction that rewrites that batch's rows; a dry run writes none.
+
+## Credential redaction runs and what it leaves undone
+
+`repair redact-credentials --apply` works in this order:
+
+1. It scans SQLite without taking the write lock. Every 100 values that need redacting are written as one batch: a
+   short transaction with the batch's updates, the removal of the changed events' queued embedding jobs (they carry
+   their own copy of the old text) and the batch's audit row. The write lock is held one batch at a time, never for
+   the scan. Measured on one machine with every value changing, the longest write transaction of a run (batch,
+   re-queue or closing row) was about 15 to 115 ms: 100 values of 4 to 14 KB each, with up to 115,000 jobs already in
+   the embedding queue, against the hooks' 5 s busy timeout. That is a measurement, not a guarantee for every store
+   and machine. The output prints the longest committed batch of the run.
+2. Right after a batch commits, it deletes the old vectors of the batch's events and queues them for re-embedding.
+3. It rewrites the Markdown mirror files, whatever happened in SQLite.
+4. It writes a closing audit row with the run's totals and the mirror outcome.
+
+Each SQLite update applies only while the value still matches what the scan read. A value a hook or another command
+changed in between is left as it is, never overwritten with the redacted form of its old text. Batches that
+committed stay committed whatever happens later. When a run cannot finish, it says so under `NOT FINISHED` and
+exits 1:
+
+| What happened | What is left | What to do |
+|---|---|---|
+| Values changed or deleted after the scan read them | The changed values, which may still hold a credential | Run `--apply` again; the next run redacts them |
+| A batch failed (an update, the removal of its queued embedding jobs, or its audit row could not be written) | The batch is retried one value at a time, so only the values that still fail keep their text (and their queued jobs), with no audit row | Run `--apply` again once the cause is fixed |
+| SQLite stayed busy past the busy timeout, in a batch or in a re-queue | The values the run had not reached, and in a re-queue that batch's events without a queued job. The SQLite pass stops; the mirror is still rewritten | Run `--apply` again; `repair backfill-vectors --apply` for events left without a vector |
+| A mirror file could not be rewritten | That file, unchanged; the run carries on | Fix the file's permissions, then run `--apply` again |
+| An old vector could not be deleted | That vector, which may hold the credential. The event is redacted, so a re-run does not retry the delete | No command retries it yet. The run lists the events in `redact-credentials-<runId>-vector-delete-failures.txt` in the project store (readable by you only) and prints its path. An event id that looks like it holds a credential is listed as `events rowid <n>` instead; read it with `SELECT id FROM events WHERE rowid = <n>` before the next VACUUM (`forget` runs one) |
+| Queuing for re-embedding failed | The batch's redacted events with no queued job: the old jobs went with the update. Their old vectors may or may not have been deleted | `repair backfill-vectors --apply` queues events that have no vector |
+| The closing audit row could not be written | The batch rows; the totals and mirror counts are only in the output | — |
+
+Row ids in the output (dry run and apply), in the failure file and in the audit rows' `source_event_ids` are the ids
+themselves, except an id that looks like it holds a credential, which imported events can have: it is given as
+`<table> rowid <n>` instead.
+
+Reading the audit: every `credential_redact` row of one run has the same `runId` in `after_json`; batch rows carry
+`batch`, the closing row `summary: true`. Batch rows without a closing row mean the run did not finish. A closing
+row does not mean it succeeded: check its `rowsFailed`, `rowsSkipped`, `stoppedBusy`, `mirrorFilesFailed`,
+`vectorDeleteFailures` and `requeueFailures`.
+
+Known limits:
+
+- A run that is interrupted (killed, or the machine stops) loses the batch it was building: up to 99 values it had
+  already scanned stay unredacted, where committing every value on its own would have kept them. Nothing is printed
+  in that case, and a re-run picks the values up.
+- A value is redacted only together with the removal of its event's queued embedding jobs and with its audit row,
+  in one transaction. If either of those cannot be written, the value keeps its text (with a retry per value), where
+  a commit per value without them would have redacted it. That is the price of never committing a redaction without
+  its audit row, and never leaving a queued job with the old text behind a redacted event.
+- A run interrupted before its first batch committed leaves no audit row, and neither does one interrupted while
+  only the mirror had changed, since the mirror is recorded in the closing row. The audit cannot show such runs.
+- An embedding worker that took a job before the run removed it can still write a vector of the old text after the
+  run deleted the event's vectors. The command has always had this race; nothing in the run detects it.
+- A mirror directory or file that cannot be read is skipped without a message, as before: it is neither counted nor
+  reported, so a run can finish with exit 0 while such a file still holds a credential.
 
 ## Older sessions with more than one summary
 

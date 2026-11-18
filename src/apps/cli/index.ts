@@ -50,10 +50,11 @@ import {
   type MemoryCheckpoint,
   type MemoryFacetAssignment,
   type PerspectiveSessionActorBackfillResult,
+  applyCredentialRedaction,
+  credentialRedactionExitCode,
   formatRedactionPlan,
   planMarkdownRedaction,
-  planSqliteRedaction,
-  requeueEmbeddings
+  planSqliteRedaction
 } from '../../core/operations/index.js';
 import { applyRetentionLifecycle } from '../../core/operations/retention-lifecycle.js';
 import {
@@ -2055,30 +2056,28 @@ repairCommand
       }
 
       const store = new SQLiteEventStore(dbPath, { readonly: dryRun });
-      let vectorsDeleted = 0;
-      let embeddingsRequeued = 0;
       try {
         await store.initialize();
         const db = store.getDatabase();
-        const { rowChanges, affectedEventIds } = planSqliteRedaction(db, { apply: !dryRun });
-        const fileChanges = planMarkdownRedaction(storagePath, { apply: !dryRun });
-
-        if (!dryRun && affectedEventIds.length > 0) {
-          // Lance rows cannot be edited in place, so the stale vectors are
-          // dropped and the redacted content is queued for re-embedding.
-          const vectorStore = new VectorStore(path.join(storagePath, 'vectors'));
-          for (const eventId of affectedEventIds) {
-            try {
-              await vectorStore.deleteEventEverywhere(eventId);
-              vectorsDeleted += 1;
-            } catch { /* a missing vector is not an error here */ }
-          }
-          embeddingsRequeued = requeueEmbeddings(db, affectedEventIds, { apply: true });
+        if (dryRun) {
+          const { rowChanges, affectedEventIds } = planSqliteRedaction(db);
+          const fileChanges = planMarkdownRedaction(storagePath, { apply: false });
+          console.log(formatRedactionPlan({
+            dryRun, rowChanges, fileChanges, affectedEventIds, vectorsDeleted: 0, embeddingsRequeued: 0
+          }));
+          return;
         }
 
-        console.log(formatRedactionPlan({
-          dryRun, rowChanges, fileChanges, affectedEventIds, vectorsDeleted, embeddingsRequeued
-        }));
+        // Lance rows cannot be edited in place, so the stale vectors are
+        // dropped and the redacted content is queued for re-embedding.
+        let vectorStore: VectorStore | undefined;
+        const plan = await applyCredentialRedaction(db, storagePath, {
+          actor: 'cli',
+          deleteEventVectors: (eventIds) =>
+            (vectorStore ??= new VectorStore(path.join(storagePath, 'vectors'))).deleteEvents(eventIds)
+        });
+        console.log(formatRedactionPlan(plan));
+        process.exitCode = credentialRedactionExitCode(plan);
       } finally {
         await store.close().catch(() => undefined);
       }
