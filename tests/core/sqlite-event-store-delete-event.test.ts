@@ -96,4 +96,31 @@ describe('SQLiteEventStore.deleteEventById', () => {
     expect(await store.getEvent(other.eventId!)).not.toBeNull();
     await store.close();
   });
+
+  // vector_outbox 는 event_id 가 아니라 item_id 로 키를 잡아서 관련 테이블 목록에서 빠졌었다.
+  // 남은 done 작업은 통계에 잡히고, pending 작업은 워커가 집어 들어 내용 없는 이벤트를 만난다.
+  it('drops the deleted event\'s vector outbox jobs and keeps the others', async () => {
+    const store = new SQLiteEventStore(tempDbPath(), { vectorOutbox: {} });
+    await store.initialize();
+    const kept = await store.append({
+      eventType: 'user_prompt', sessionId: 's1', timestamp: new Date(), content: 'keep my embedding job'
+    });
+    const doomed = await store.append({
+      eventType: 'user_prompt', sessionId: 's1', timestamp: new Date(), content: 'drop my embedding job'
+    });
+    const db = store.getDatabase();
+    // 같은 id 를 쓰는 다른 종류의 작업은 이벤트 삭제와 무관하다.
+    db.prepare(`INSERT INTO vector_outbox (job_id, item_kind, item_id, embedding_version) VALUES ('other-kind', 'task', ?, 'v1')`)
+      .run(doomed.eventId!);
+    const jobs = (itemId: string) => db
+      .prepare('SELECT item_kind FROM vector_outbox WHERE item_id = ? ORDER BY item_kind')
+      .all(itemId);
+    expect(jobs(doomed.eventId!)).toEqual([{ item_kind: 'event' }, { item_kind: 'task' }]);
+
+    await store.deleteEventById(doomed.eventId!);
+
+    expect(jobs(doomed.eventId!)).toEqual([{ item_kind: 'task' }]);
+    expect(jobs(kept.eventId!)).toEqual([{ item_kind: 'event' }]);
+    await store.close();
+  });
 });
