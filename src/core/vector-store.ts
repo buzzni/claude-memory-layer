@@ -356,6 +356,30 @@ export class VectorStore {
       `\`timestamp\` < ${toLanceSqlString(before.toISOString())}`,
       ...(eventType === undefined ? [] : [`\`eventType\` = ${toLanceSqlString(eventType)}`])
     ].join(' AND ');
+    await this.deleteFromEventTables([predicate]);
+  }
+
+  /**
+   * Delete the vectors of these events from the legacy and event_vectors_*
+   * tables, a few hundred ids per predicate, with the same commit-conflict
+   * retry as `deleteEventsBefore`. Idempotent like it.
+   */
+  async deleteEvents(eventIds: readonly string[]): Promise<void> {
+    if (eventIds.length === 0) return;
+    this.assertWritable();
+    await this.initialize();
+    if (!this.db) return;
+
+    const predicates: string[] = [];
+    for (let offset = 0; offset < eventIds.length; offset += MAX_DELETE_PREDICATE_IDS) {
+      const chunk = eventIds.slice(offset, offset + MAX_DELETE_PREDICATE_IDS);
+      predicates.push(`\`eventId\` IN (${chunk.map(toLanceSqlString).join(', ')})`);
+    }
+    await this.deleteFromEventTables(predicates);
+  }
+
+  private async deleteFromEventTables(predicates: readonly string[]): Promise<void> {
+    if (!this.db) return;
     const tableNames = await this.db.tableNames();
     const targetTables = tableNames.filter(
       (name) => name === this.defaultTableName || name.startsWith('event_vectors_')
@@ -364,17 +388,19 @@ export class VectorStore {
     for (const tableName of targetTables) {
       let table = await this.getExistingTable(tableName);
       if (!table) continue;
-      for (let attempt = 1; attempt <= MAX_LANCE_COMMIT_ATTEMPTS; attempt++) {
-        try {
-          await table.delete(predicate);
-          break;
-        } catch (error) {
-          if (!isLanceCommitConflict(error) || attempt === MAX_LANCE_COMMIT_ATTEMPTS) {
-            throw error;
+      for (const predicate of predicates) {
+        for (let attempt = 1; attempt <= MAX_LANCE_COMMIT_ATTEMPTS; attempt++) {
+          try {
+            await table.delete(predicate);
+            break;
+          } catch (error) {
+            if (!isLanceCommitConflict(error) || attempt === MAX_LANCE_COMMIT_ATTEMPTS) {
+              throw error;
+            }
+            this.tableCache.delete(tableName);
+            await delay(LANCE_COMMIT_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1));
+            table = await this.openTable(tableName);
           }
-          this.tableCache.delete(tableName);
-          await delay(LANCE_COMMIT_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1));
-          table = await this.openTable(tableName);
         }
       }
     }

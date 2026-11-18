@@ -5769,6 +5769,18 @@ export class SQLiteEventStore {
    * rows actually deleted (see `EventDeletionAuditInput`).
    */
   async deleteSessionEvents(sessionId: string, options: DeleteSessionEventsOptions = {}): Promise<number> {
+    return (await this.deleteSessionEventsWithIds(sessionId, options)).deleted;
+  }
+
+  /**
+   * `deleteSessionEvents` that also returns the deleted ids, like
+   * `deleteEventsBefore`: their vectors live in LanceDB, and the caller
+   * deletes them there.
+   */
+  async deleteSessionEventsWithIds(
+    sessionId: string,
+    options: DeleteSessionEventsOptions = {}
+  ): Promise<{ deleted: number; eventIds: string[] }> {
     await this.initialize();
 
     const metadataJson = `CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END`;
@@ -5791,7 +5803,7 @@ export class SQLiteEventStore {
       params
     );
 
-    if (events.length === 0) return 0;
+    if (events.length === 0) return { deleted: 0, eventIds: [] };
 
     const eventIds = events.map(e => e.id);
     const placeholders = eventIds.map(() => '?').join(',');
@@ -5804,10 +5816,10 @@ export class SQLiteEventStore {
     // table existence (instead of swallowing per-statement errors) so a genuine
     // failure is never mistaken for a benign "table does not exist".
     // Only the tables that both exist and key cascades on event_id. (vector_outbox
-    // keys on item_id, not event_id; the previous code swallowed the resulting
-    // error, so it was never cleaned here either — behavior preserved.)
+    // keys on item_id, not event_id; it is cleaned separately below.)
     const relatedTables = ['event_dedup', 'memory_levels', 'embedding_queue', 'embedding_outbox', 'vector_outbox', 'event_citations']
       .filter((table) => this.hasTable(table) && this.hasTableColumn(table, 'event_id'));
+    const hasVectorOutbox = this.hasTable('vector_outbox') && this.hasTableColumn('vector_outbox', 'item_id');
 
     const runDelete = this.db.transaction((): number => {
       // Drop FTS sync triggers before the bulk delete so the synthetic FTS
@@ -5820,6 +5832,11 @@ export class SQLiteEventStore {
       // Delete from related tables first.
       for (const table of relatedTables) {
         sqliteRun(this.db, `DELETE FROM ${table} WHERE event_id IN (${placeholders})`, eventIds);
+      }
+      // A job left for a deleted event would embed nothing, or report a
+      // vector the caller is about to delete as done.
+      if (hasVectorOutbox) {
+        sqliteRun(this.db, `DELETE FROM vector_outbox WHERE item_kind = 'event' AND item_id IN (${placeholders})`, eventIds);
       }
 
       // Delete events.
@@ -5835,7 +5852,7 @@ export class SQLiteEventStore {
       return deleted;
     });
 
-    return runDelete();
+    return { deleted: runDelete(), eventIds };
   }
 
   /**

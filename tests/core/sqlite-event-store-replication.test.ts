@@ -115,8 +115,8 @@ describe('SQLiteEventStore replication helpers', () => {
     const append = (eventType: 'user_prompt' | 'agent_response' | 'session_summary' | 'tool_observation', content: string, metadata?: Record<string, unknown>) =>
       storeA.append({ eventType, sessionId: 'reimport-me', timestamp: new Date(), content, ...(metadata ? { metadata } : {}) });
 
-    await append('user_prompt', 'imported apricot prompt', { importedFrom: source });
-    await append('agent_response', 'imported banana response', { importedFrom: source });
+    const apricot = await append('user_prompt', 'imported apricot prompt', { importedFrom: source });
+    const banana = await append('agent_response', 'imported banana response', { importedFrom: source });
     await append('session_summary', 'hook written fig summary');
     await append('user_prompt', 'hook written grape prompt', { turnId: 'hook-turn' });
     // Another source, a row pulled from another machine, a type no importer
@@ -132,7 +132,10 @@ describe('SQLiteEventStore replication helpers', () => {
     });
     await storeA.append({ eventType: 'user_prompt', sessionId: 'other-session', timestamp: new Date(), content: 'imported cherry prompt', metadata: { importedFrom: source } });
 
-    await expect(storeA.deleteSessionEvents('reimport-me', { importedFrom: source })).resolves.toBe(2);
+    // Exactly the deleted ids, for the caller to delete their vectors (#250).
+    const { deleted, eventIds } = await storeA.deleteSessionEventsWithIds('reimport-me', { importedFrom: source });
+    expect(deleted).toBe(2);
+    expect([...eventIds].sort()).toEqual([apricot.eventId, banana.eventId].sort());
 
     expect((await storeA.getSessionEvents('reimport-me')).map((event) => event.content).sort()).toEqual([
       'cited nectarine response', 'hook written fig summary', 'hook written grape prompt',
@@ -141,6 +144,34 @@ describe('SQLiteEventStore replication helpers', () => {
     expect((await storeA.keywordSearch('fig', 5)).map((result) => result.event.content)).toEqual(['hook written fig summary']);
     await expect(storeA.keywordSearch('apricot', 5)).resolves.toEqual([]);
     expect((await storeA.keywordSearch('cherry', 5)).map((result) => result.event.content)).toEqual(['imported cherry prompt']);
+  });
+
+  it('deleteSessionEvents drops the vector outbox jobs of the rows it deletes, and the rows put back are queued again', async () => {
+    const store = new SQLiteEventStore(path.join(tempDir, 'outbox.sqlite'), { vectorOutbox: {} });
+    await store.initialize();
+    const db = store.getDatabase();
+    const jobs = (eventIds: string[]) => db.prepare(
+      `SELECT item_id AS id, status FROM vector_outbox WHERE item_kind = 'event' AND item_id IN (${eventIds.map(() => '?').join(', ')})`
+    ).all(...eventIds);
+    const source = '/home/user/.claude/projects/p/outbox.jsonl';
+    const append = (content: string, importedFrom?: string) => store.append({
+      eventType: 'user_prompt', sessionId: 'outbox', timestamp: new Date(), content, ...(importedFrom ? { metadata: { importedFrom } } : {})
+    });
+    try {
+      const imported = await append('imported plum prompt', source);
+      const hook = await append('hook written pear prompt');
+      db.prepare(`UPDATE vector_outbox SET status = 'done'`).run();
+
+      await expect(store.deleteSessionEvents('outbox', { importedFrom: source })).resolves.toBe(1);
+      expect(jobs([imported.eventId!])).toEqual([]);
+      expect(jobs([hook.eventId!])).toEqual([{ id: hook.eventId, status: 'done' }]);
+
+      const putBack = await append('imported plum prompt', source);
+      expect(putBack).toMatchObject({ success: true, isDuplicate: false });
+      expect(jobs([putBack.eventId!])).toEqual([{ id: putBack.eventId, status: 'pending' }]);
+    } finally {
+      store.close();
+    }
   });
 
   it('deleteSessionEvents with importedFrom still deletes when a lesson lists a null source id', async () => {

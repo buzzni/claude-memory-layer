@@ -75,7 +75,7 @@ interface QueryMaintenanceStore extends QueryStore {
   getDailyEventCounts(sinceIso: string): Promise<Array<{ day: string; total: number; prompts: number; responses: number; tools: number }>>;
   countSessionTurns(sessionId: string): Promise<number>;
   backfillTurnIds(): Promise<number>;
-  deleteSessionEvents(sessionId: string, options?: DeleteSessionEventsOptions): Promise<number>;
+  deleteSessionEventsWithIds(sessionId: string, options?: DeleteSessionEventsOptions): Promise<{ deleted: number; eventIds: string[] }>;
   hasSessionUserPrompt(sessionId: string, contents: readonly string[]): Promise<boolean>;
   getDerivationLiveness(projectHash?: string): Promise<DerivationLiveness>;
 }
@@ -88,6 +88,7 @@ interface MemoryQueryServiceDeps {
     optimizeAll(options?: VectorOptimizeOptions): Promise<VectorOptimizeResult>;
     createReadSmokeVerifier?(): Promise<() => Promise<boolean>>;
     persistOptimizeResult?(result: VectorOptimizeResult): void;
+    deleteEvents?(eventIds: readonly string[]): Promise<void>;
   };
   graduation: { getStats(): Promise<Array<{ level: string; count: number }>> };
 }
@@ -427,7 +428,21 @@ export class MemoryQueryService {
 
   async deleteSessionEvents(sessionId: string, options?: DeleteSessionEventsOptions): Promise<number> {
     await this.initialize();
-    return this.getMaintenanceStore('deleteSessionEvents').deleteSessionEvents(sessionId, options);
+    const { deleted, eventIds } = await this.getMaintenanceStore('deleteSessionEventsWithIds')
+      .deleteSessionEventsWithIds(sessionId, options);
+    // A force reimport puts the rows back under new ids and queues them for
+    // embedding, so a vector left here would belong to no event. The rows are
+    // already gone: a vector delete that fails must not fail the reimport, and
+    // search skips a vector whose event is gone.
+    try {
+      await this.deps?.vectorStore.deleteEvents?.(eventIds);
+    } catch (error) {
+      console.warn(
+        `[MemoryQueryService] could not delete the vectors of ${eventIds.length} deleted events of session ${sessionId}; orphaned vectors remain:`,
+        error instanceof Error ? error.message : error
+      );
+    }
+    return deleted;
   }
 
   async hasSessionUserPrompt(sessionId: string, contents: readonly string[]): Promise<boolean> {
