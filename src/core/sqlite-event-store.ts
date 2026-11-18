@@ -5890,16 +5890,20 @@ export class SQLiteEventStore {
   ): Promise<{ deleted: number; eventIds: string[] }> {
     await this.initialize();
     const { where, params } = eventsBeforeFilter(before, eventType);
-    const eventIds = sqliteAll<{ id: string }>(this.db, `SELECT id FROM events WHERE ${where}`, params)
-      .map((row) => row.id);
-    if (eventIds.length === 0) return { deleted: 0, eventIds };
 
     const relatedTables = ['event_dedup', 'memory_levels', 'embedding_queue', 'embedding_outbox', 'vector_outbox', 'event_citations']
       .filter((table) => this.hasTable(table) && this.hasTableColumn(table, 'event_id'));
     // vector_outbox keys on item_id, not event_id, so the list above skips it.
     const hasVectorOutbox = this.hasTable('vector_outbox') && this.hasTableColumn('vector_outbox', 'item_id');
 
-    const runDelete = this.db.transaction((): number => {
+    const runDelete = this.db.transaction((): { deleted: number; eventIds: string[] } => {
+      // Pick the rows under the write lock (IMMEDIATE, below), so no other connection can move
+      // a row across the cutoff before it is deleted: the subqueries below, the events, the
+      // audit count and the returned ids are the same set.
+      const eventIds = sqliteAll<{ id: string }>(this.db, `SELECT id FROM events WHERE ${where}`, params)
+        .map((row) => row.id);
+      if (eventIds.length === 0) return { deleted: 0, eventIds };
+
       for (const triggerName of ['events_fts_delete', 'events_fts_update', 'events_fts_insert']) {
         sqliteRun(this.db, `DROP TRIGGER IF EXISTS ${triggerName}`);
       }
@@ -5917,10 +5921,10 @@ export class SQLiteEventStore {
       this.recreateEventsFtsTable();
       const deleted = result.changes || 0;
       this.writeDeletionAudit(audit, deleted);
-      return deleted;
+      return { deleted, eventIds };
     });
 
-    return { deleted: runDelete(), eventIds };
+    return runDelete.immediate();
   }
 
   /** Must run inside the delete transaction so the delete and its audit row commit together. */
