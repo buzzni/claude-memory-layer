@@ -19,7 +19,9 @@ import {
   OutboxRecoveryResult,
   ProjectScopeRepairOptions,
   ProjectScopeRepairResult,
-  ProjectScopeRepairSample
+  ProjectScopeRepairSample,
+  SessionSummarySupersedeOptions,
+  SessionSummarySupersedeResult
 } from './types.js';
 import { makeCanonicalKey, makeDedupeKey } from './canonical-key.js';
 import { generateCitationId } from './citation-generator.js';
@@ -105,6 +107,7 @@ import {
   writeTraceItems,
   type TraceItemBackfillResult
 } from './retrieval-trace-ledger.js';
+import { writeGovernanceAuditEntrySync } from './operations/governance-audit.js';
 
 export interface SQLiteEventStoreOptions extends SQLiteOptions {
   markdownMirrorRoot?: string;
@@ -2475,6 +2478,80 @@ export class SQLiteEventStore {
     }
 
     return result;
+  }
+
+  /**
+   * Hide all but one visible session_summary of each session: the newest LLM
+   * summary, else the newest one. Some legacy sessions hold an LLM summary next
+   * to a later template summary ("Session with N user prompts..."), and keeping
+   * the template would hide the decisions the LLM summary recorded.
+   *
+   * Sessions summarized before summaries were refreshed in place can hold two
+   * or more, and retrieval returned all of them. The others get the
+   * quarantine status every read path already filters on, under the
+   * `superseded` category, plus a governance audit row: hidden, not deleted.
+   */
+  async supersedeDuplicateSessionSummaries(options: SessionSummarySupersedeOptions = {}): Promise<SessionSummarySupersedeResult> {
+    await this.initialize();
+
+    const dryRun = options.dryRun === true;
+    const nowIso = (options.now || new Date()).toISOString();
+    const visibleSummary = `event_type = 'session_summary' AND ${notActiveQuarantinedSql()}`;
+
+    const run = (): SessionSummarySupersedeResult => {
+      const rows = sqliteAll<{ id: string; session_id: string; metadata: string | null }>(
+        this.db,
+        `SELECT id, session_id, metadata FROM events
+         WHERE ${visibleSummary}
+           AND session_id IN (
+             SELECT session_id FROM events WHERE ${visibleSummary}
+             GROUP BY session_id HAVING COUNT(*) > 1
+           )
+         ORDER BY session_id,
+           COALESCE(json_extract(CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END, '$.generated'), '') = 'llm' DESC,
+           timestamp DESC, rowid DESC`
+      );
+
+      const result: SessionSummarySupersedeResult = { dryRun, sessions: 0, superseded: 0, samples: [] };
+      let current: { sessionId: string; keptEventId: string; supersededEventIds: string[] } | undefined;
+      for (const row of rows) {
+        if (current?.sessionId !== row.session_id) {
+          current = { sessionId: row.session_id, keptEventId: row.id, supersededEventIds: [] };
+          result.sessions++;
+          if (result.samples.length < 10) result.samples.push(current);
+          continue;
+        }
+        current.supersededEventIds.push(row.id);
+        result.superseded++;
+        if (dryRun) continue;
+
+        const metadata = safeParseMetadataValue(row.metadata) ?? {};
+        const before = isRecord(metadata.quarantine) ? metadata.quarantine : null;
+        metadata.quarantine = {
+          ...(before ?? {}),
+          status: 'active',
+          category: 'superseded',
+          reason: 'superseded by another summary of the same session',
+          supersededBy: current.keptEventId,
+          detectedAt: nowIso
+        };
+        addMetadataTag(metadata, 'quarantine:superseded');
+        sqliteRun(this.db, `UPDATE events SET metadata = ? WHERE id = ?`, [JSON.stringify(metadata), row.id]);
+        writeGovernanceAuditEntrySync(this.db, {
+          operation: 'quarantine',
+          actor: 'repair:supersede-session-summaries',
+          projectHash: metadataProjectHash(metadata),
+          targetType: 'event',
+          targetId: row.id,
+          beforeJson: { quarantine: before },
+          afterJson: { quarantine: metadata.quarantine as Record<string, unknown> },
+          sourceEventIds: [current.keptEventId]
+        });
+      }
+      return result;
+    };
+
+    return dryRun ? run() : this.db.transaction(run)();
   }
 
   /**
