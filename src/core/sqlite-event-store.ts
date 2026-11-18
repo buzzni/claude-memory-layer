@@ -263,6 +263,15 @@ interface QuarantineReadOptions {
   includeQuarantined?: boolean;
 }
 
+/** A row of retired_event_ids: the id and per-event state a deleted row had. */
+interface RetiredEventRow {
+  event_id: string;
+  level: string | null;
+  promoted_at: string | null;
+  access_count: number | null;
+  last_accessed_at: string | null;
+}
+
 export interface RecentEventsReadOptions extends QuarantineReadOptions {
   /** Restrict to these event types. An empty/omitted list means "any type". */
   eventTypes?: EventType[];
@@ -482,6 +491,19 @@ export class SQLiteEventStore {
         event_id TEXT PRIMARY KEY,
         level TEXT NOT NULL DEFAULT 'L0',
         promoted_at TEXT DEFAULT (datetime('now'))
+      );
+
+      -- Ids of rows a force reimport deleted, keyed by the dedupe key the row
+      -- would get today. append() gives a row that comes back its old id, so
+      -- the references to it stay valid.
+      CREATE TABLE IF NOT EXISTS retired_event_ids (
+        dedupe_key TEXT PRIMARY KEY,
+        event_id TEXT NOT NULL,
+        level TEXT,
+        promoted_at TEXT,
+        access_count INTEGER,
+        last_accessed_at TEXT,
+        retired_at TEXT DEFAULT (datetime('now'))
       );
 
       -- Entries (immutable memory units)
@@ -1500,7 +1522,6 @@ export class SQLiteEventStore {
       };
     }
 
-    const id = randomUUID();
     const timestamp = toSQLiteTimestamp(input.timestamp);
 
     try {
@@ -1510,8 +1531,8 @@ export class SQLiteEventStore {
 
       // Use transaction for atomicity
       const insertEvent = this.db.prepare(`
-        INSERT INTO events (id, event_type, session_id, timestamp, content, canonical_key, dedupe_key, metadata, turn_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO events (id, event_type, session_id, timestamp, content, canonical_key, dedupe_key, metadata, turn_id, access_count, last_accessed_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
 
       const insertDedup = this.db.prepare(`
@@ -1519,10 +1540,14 @@ export class SQLiteEventStore {
       `);
 
       const insertLevel = this.db.prepare(`
-        INSERT INTO memory_levels (event_id, level) VALUES (?, 'L0')
+        INSERT INTO memory_levels (event_id, level, promoted_at) VALUES (?, ?, COALESCE(?, datetime('now')))
       `);
 
-      const transaction = this.db.transaction(() => {
+      const transaction = this.db.transaction((): string => {
+        // A row a force reimport deleted comes back under its old id, with
+        // the level and access count it had (see deleteSessionEvents).
+        const retired = this.takeRetiredEventId(dedupeKey);
+        const id = retired?.event_id ?? randomUUID();
         insertEvent.run(
           id,
           input.eventType,
@@ -1532,14 +1557,17 @@ export class SQLiteEventStore {
           canonicalKey,
           dedupeKey,
           JSON.stringify(metadata),
-          turnId
+          turnId,
+          retired?.access_count ?? 0,
+          retired?.last_accessed_at ?? null
         );
         insertDedup.run(dedupeKey, id);
-        insertLevel.run(id);
+        insertLevel.run(id, retired?.level ?? 'L0', retired?.promoted_at ?? null);
         this.enqueueVectorOutboxEventSync(id, input.eventType);
+        return id;
       });
 
-      transaction();
+      const id = transaction();
 
       if (this.markdownMirror) {
         const event: MemoryEvent = {
@@ -1564,6 +1592,21 @@ export class SQLiteEventStore {
         error: error instanceof Error ? error.message : String(error)
       };
     }
+  }
+
+  /**
+   * Remove the retired id recorded for this dedupe key and return it, unless a
+   * row holds that id again (replication can bring the old row back first).
+   */
+  private takeRetiredEventId(dedupeKey: string): RetiredEventRow | undefined {
+    const retired = sqliteGet<RetiredEventRow>(
+      this.db,
+      `SELECT event_id, level, promoted_at, access_count, last_accessed_at FROM retired_event_ids WHERE dedupe_key = ?`,
+      [dedupeKey]
+    );
+    if (!retired) return undefined;
+    sqliteRun(this.db, `DELETE FROM retired_event_ids WHERE dedupe_key = ?`, [dedupeKey]);
+    return sqliteGet(this.db, `SELECT 1 FROM events WHERE id = ?`, [retired.event_id]) ? undefined : retired;
   }
 
   /**
@@ -5453,9 +5496,12 @@ export class SQLiteEventStore {
     await this.initialize();
 
     // Get event IDs first for cascading deletes
-    const events = sqliteAll<{ id: string }>(
+    const events = sqliteAll<{ id: string; event_type: string; content: string } & Omit<RetiredEventRow, 'event_id'>>(
       this.db,
-      `SELECT id FROM events WHERE session_id = ?`,
+      `SELECT e.id, e.event_type, e.content, e.access_count, e.last_accessed_at, ml.level, ml.promoted_at
+       FROM events e LEFT JOIN memory_levels ml ON ml.event_id = e.id
+       WHERE e.session_id = ?
+       ORDER BY e.rowid`,
       [sessionId]
     );
 
@@ -5483,6 +5529,24 @@ export class SQLiteEventStore {
       // migrated tables, and risks SQLITE_CORRUPT_VTAB) never fires mid-delete.
       for (const triggerName of ['events_fts_delete', 'events_fts_update', 'events_fts_insert']) {
         sqliteRun(this.db, `DROP TRIGGER IF EXISTS ${triggerName}`);
+      }
+
+      // The reimport appends these rows again. Record each id under the
+      // dedupe key the row will come back with, so append() gives it back
+      // and the references to it stay valid.
+      const retire = this.db.prepare(
+        `INSERT OR REPLACE INTO retired_event_ids (dedupe_key, event_id, level, promoted_at, access_count, last_accessed_at)
+         VALUES (?, ?, ?, ?, ?, ?)`
+      );
+      for (const event of events) {
+        retire.run(
+          makeDedupeKey(event.content, sessionId, event.event_type),
+          event.id,
+          event.level,
+          event.promoted_at,
+          event.access_count,
+          event.last_accessed_at
+        );
       }
 
       // Delete from related tables first.
