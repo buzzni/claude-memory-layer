@@ -239,7 +239,9 @@ Known limits:
    the embedding queue, against the hooks' 5 s busy timeout. That is a measurement, not a guarantee for every store
    and machine. The output prints the longest committed batch of the run.
 2. Right after a batch commits, it deletes the old vectors of the batch's events and queues them for re-embedding.
-3. It rewrites the Markdown mirror files, whatever happened in SQLite.
+3. It rewrites the Markdown mirror files, whatever happened in SQLite. Each file is replaced by a redacted copy
+   rather than rewritten in place, and what the hooks appended to it while the copy was made is redacted and added
+   to the copy, so the run does not drop entries the hooks write meanwhile (#267).
 4. It writes a closing audit row with the run's totals and the mirror outcome.
 
 Each SQLite update applies only while the value still matches what the scan read. A value a hook or another command
@@ -281,6 +283,11 @@ Known limits:
   run deleted the event's vectors. The command has always had this race; nothing in the run detects it.
 - A mirror directory or file that cannot be read is skipped without a message, as before: it is neither counted nor
   reported, so a run can finish with exit 0 while such a file still holds a credential.
+- A hook that opened a mirror file before the run replaced it, but writes only after the run has read what was
+  appended to the replaced file, loses that entry from the mirror; its SQLite row is not affected. A hook opens and
+  writes at once, so this takes a hook stalled between the two. If adding the appended entries to the copy fails,
+  the file is reported as not rewritten although its earlier text is redacted. A replaced file is a new file: hard
+  links to it keep the old text, and it belongs to the user who ran the command.
 
 ## Older sessions with more than one summary
 
