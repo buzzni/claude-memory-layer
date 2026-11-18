@@ -17,11 +17,13 @@
  * them from the redacted SQLite content.
  */
 
+import { randomUUID } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 
 import { sqliteAll, sqliteRun, type SQLiteDatabase } from '../sqlite-wrapper.js';
 import { applyPrivacyFilter } from '../privacy/filter.js';
+import { sanitizeGovernanceAuditValue, writeGovernanceAuditEntrySync } from './governance-audit.js';
 import type { Config } from '../types.js';
 
 const REDACTION_PRIVACY_CONFIG: Config['privacy'] = {
@@ -53,11 +55,15 @@ export interface RedactionRowChange {
   column: string;
   /** Already-redacted preview, safe to print. */
   preview: string;
+  /** How output names the row, safe to print: its id, or `<table> rowid <n>` (see rowReference). */
+  rowRef: string;
 }
 
 export interface RedactionFileChange {
   filePath: string;
   occurrences: number;
+  /** The apply could not rewrite the file, so it still holds the credential. */
+  writeFailed?: boolean;
 }
 
 export interface CredentialRedactionPlan {
@@ -68,6 +74,35 @@ export interface CredentialRedactionPlan {
   affectedEventIds: string[];
   vectorsDeleted: number;
   embeddingsRequeued: number;
+  /** Shared by every audit row of one apply. */
+  runId?: string;
+  /** Transactions the apply committed, one `credential_redact` audit row each. */
+  batchesCommitted?: number;
+  /** Longest time a committed batch held the write lock, in milliseconds. */
+  longestBatchLockMs?: number;
+  /** Rows that changed or were deleted after the scan read them; left for the next run. */
+  rowsSkipped?: number;
+  /** Rows whose update failed even on its own; they keep their text. */
+  rowsFailed?: number;
+  /** The first error behind `rowsFailed`. */
+  rowError?: string;
+  /** SQLite stayed busy, so the apply stopped before the rows it had not reached. */
+  sqliteBusy?: string;
+  /**
+   * Events whose old vectors could not be deleted, as eventReference names
+   * them: the event id, or its events rowid when the id itself looks like it
+   * holds a credential.
+   */
+  vectorDeleteFailures?: string[];
+  /** How many of `vectorDeleteFailures` are rowids standing in for a hidden id. */
+  vectorDeleteFailuresHidden?: number;
+  /** File holding every entry of `vectorDeleteFailures`, one per line, readable by the user only. */
+  vectorDeleteFailuresFile?: string;
+  /** Redacted events that could not be queued for re-embedding. */
+  requeueFailures?: string[];
+  requeueError?: string;
+  /** The closing audit row of the run could not be written. */
+  summaryAuditError?: string;
 }
 
 export function redactText(value: string): string {
@@ -93,17 +128,51 @@ function columnExists(db: SQLiteDatabase, table: string, column: string): boolea
   return rows.some((row) => row.name === column);
 }
 
-/**
- * Scan SQLite for values the privacy filter would change, and optionally write
- * the redacted form back.
- */
-export function planSqliteRedaction(
-  db: SQLiteDatabase,
-  options: { apply: boolean }
-): { rowChanges: RedactionRowChange[]; affectedEventIds: string[] } {
-  const rowChanges: RedactionRowChange[] = [];
-  const affectedEventIds = new Set<string>();
+interface PendingRowRedaction {
+  change: RedactionRowChange;
+  idColumn: string;
+  original: string;
+  redacted: string;
+}
 
+/**
+ * Rows the apply writes per transaction. Each batch is one short IMMEDIATE
+ * transaction holding its guarded updates and its own audit row, which bounds
+ * three things by this number: the work done while hooks wait on the write
+ * lock (100 long rows with their FTS reindex and the audit row stay in the
+ * tens of milliseconds, far under the hooks' 5 s busy timeout), the redactions
+ * an interrupted run loses compared with committing every row on its own, and
+ * the ids in one audit row's `sourceEventIds`.
+ */
+export const REDACTION_BATCH_SIZE = 100;
+
+/**
+ * Scan SQLite for values the privacy filter would change. Reads only, outside
+ * any write transaction, so hooks keep writing while the filter runs.
+ */
+export function planSqliteRedaction(db: SQLiteDatabase): { rowChanges: RedactionRowChange[]; affectedEventIds: string[] } {
+  const pending = Array.from(scanSqliteRedaction(db));
+  return { rowChanges: pending.map(({ change }) => change), affectedEventIds: eventIdsOf(pending) };
+}
+
+function eventIdsOf(rows: PendingRowRedaction[]): string[] {
+  const ids = new Set<string>();
+  for (const { change } of rows) {
+    if (change.table === 'events') ids.add(change.rowId);
+  }
+  return Array.from(ids);
+}
+
+/** The changed events as rowReference names them, so an id that may hold a credential is never stored. */
+function eventReferencesOf(rows: PendingRowRedaction[]): string[] {
+  const refs = new Set<string>();
+  for (const { change } of rows) {
+    if (change.table === 'events') refs.add(change.rowRef);
+  }
+  return Array.from(refs);
+}
+
+function* scanSqliteRedaction(db: SQLiteDatabase): Generator<PendingRowRedaction> {
   for (const target of SQLITE_TARGETS) {
     if (!tableExists(db, target.table)) continue;
     for (const column of target.columns) {
@@ -111,7 +180,7 @@ export function planSqliteRedaction(
 
       const rows = sqliteAll<Record<string, unknown>>(
         db,
-        `SELECT ${target.idColumn} AS row_id, ${column} AS value
+        `SELECT ${target.idColumn} AS row_id, rowid AS row_rowid, ${column} AS value
          FROM ${target.table}
          WHERE ${column} IS NOT NULL AND ${column} <> ''`
       );
@@ -124,26 +193,115 @@ export function planSqliteRedaction(
         const redacted = redactText(value);
         if (redacted === value) continue;
 
-        rowChanges.push({
-          table: target.table,
-          rowId,
-          column,
-          preview: previewOf(redacted)
-        });
-        if (target.table === 'events') affectedEventIds.add(rowId);
-
-        if (options.apply) {
-          sqliteRun(
-            db,
-            `UPDATE ${target.table} SET ${column} = ? WHERE ${target.idColumn} = ?`,
-            [redacted, rowId]
-          );
-        }
+        yield {
+          change: {
+            table: target.table,
+            rowId,
+            column,
+            preview: previewOf(redacted),
+            rowRef: rowReference(target.table, rowId, Number(row.row_rowid)).ref
+          },
+          idColumn: target.idColumn,
+          original: value,
+          redacted
+        };
       }
     }
   }
+}
 
-  return { rowChanges, affectedEventIds: Array.from(affectedEventIds) };
+interface BatchAudit {
+  actor: string;
+  runId: string;
+  batch: number;
+}
+
+/**
+ * One batch: the guarded updates, the removal of the changed events' queued
+ * embedding jobs (which still carry the old text) and the batch's audit row,
+ * committed or rolled back together. An update applies only while the value
+ * still matches what the scan read, so a row that changed or was deleted in
+ * between is skipped instead of overwritten with the redacted form of its old
+ * text. The audit row holds counts and event ids only — never a secret, the
+ * text it was replaced in, or a preview — and is written only when a row
+ * changed.
+ */
+function commitBatch(
+  db: SQLiteDatabase,
+  rows: PendingRowRedaction[],
+  audit: BatchAudit
+): { applied: PendingRowRedaction[]; lockMs: number } {
+  let lockedAt = 0;
+  const applied = db.transaction(() => {
+    lockedAt = performance.now();
+    const changed = rows.filter(({ change, idColumn, original, redacted }) => sqliteRun(
+      db,
+      `UPDATE ${change.table} SET ${change.column} = ? WHERE ${idColumn} = ? AND ${change.column} = ?`,
+      [redacted, change.rowId, original]
+    ).changes > 0);
+    if (changed.length > 0) {
+      const rowsByColumn: Record<string, number> = {};
+      for (const { change } of changed) {
+        const key = `${change.table}.${change.column}`;
+        rowsByColumn[key] = (rowsByColumn[key] ?? 0) + 1;
+      }
+      const eventIds = eventIdsOf(changed);
+      // A queued embedding job carries its own copy of the old text, and the worker embeds that copy.
+      // Dropping it with the update means no failure later in the run can leave it queued.
+      deleteQueuedJobs(db, eventIds);
+      writeGovernanceAuditEntrySync(db, {
+        operation: 'credential_redact',
+        actor: audit.actor,
+        targetType: 'store',
+        targetId: 'redact-credentials',
+        afterJson: {
+          runId: audit.runId,
+          batch: audit.batch,
+          rowsRedacted: changed.length,
+          rowsByColumn,
+          rowsSkipped: rows.length - changed.length,
+          eventsAffected: eventIds.length
+        },
+        // At most one batch of rows, so at most REDACTION_BATCH_SIZE ids. Named as rowReference names
+        // them: the audit sanitizer does not know every token shape the privacy filter does (`ghp_…`).
+        sourceEventIds: eventReferencesOf(changed)
+      });
+    }
+    return changed;
+  }).immediate();
+  return { applied, lockMs: performance.now() - lockedAt };
+}
+
+/** True when the audit sanitizer or the privacy filter would change this id, so it may hold a credential. */
+function idMayHoldCredential(id: string): boolean {
+  return sanitizeGovernanceAuditValue(id) !== id || redactText(id) !== id;
+}
+
+/**
+ * How output, the vector-failure file and the audit's `sourceEventIds` name a
+ * row. Most ids are UUIDs, but imported events keep whatever id they came with.
+ * One that may hold a credential is named by its rowid instead, which stays
+ * valid until the next VACUUM (`forget` runs one).
+ */
+function rowReference(table: string, rowId: string, rowid: number | undefined): { ref: string; hidden: boolean } {
+  if (!idMayHoldCredential(rowId)) return { ref: rowId, hidden: false };
+  return { ref: rowid === undefined ? `a row no longer in ${table}` : `${table} rowid ${rowid}`, hidden: true };
+}
+
+function eventReference(db: SQLiteDatabase, eventId: string): { ref: string; hidden: boolean } {
+  const rowid = idMayHoldCredential(eventId)
+    ? sqliteAll<{ rowid: number }>(db, 'SELECT rowid FROM events WHERE id = ?', [eventId])[0]?.rowid
+    : undefined;
+  return rowReference('events', eventId, rowid);
+}
+
+function isBusyError(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === 'string' && (code.startsWith('SQLITE_BUSY') || code.startsWith('SQLITE_LOCKED'));
+}
+
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function walkMarkdown(dir: string, found: string[]): void {
@@ -191,11 +349,27 @@ export function planMarkdownRedaction(
       try {
         fs.writeFileSync(filePath, redacted, 'utf8');
       } catch {
-        // Reported as a planned change; a write failure must not abort the rest.
+        // A write failure must not abort the rest; it is reported per file.
+        changes[changes.length - 1].writeFailed = true;
       }
     }
   }
   return changes;
+}
+
+/**
+ * Delete the events' embedding jobs in one statement. `embedding_outbox` has no
+ * index on `event_id`, so every DELETE scans the whole queue: one per batch
+ * keeps a long backlog from stretching the write lock, where one per event
+ * held it for seconds on a 15,000-job queue.
+ */
+function deleteQueuedJobs(db: SQLiteDatabase, eventIds: string[]): void {
+  if (eventIds.length === 0 || !tableExists(db, 'embedding_outbox')) return;
+  sqliteRun(
+    db,
+    `DELETE FROM embedding_outbox WHERE event_id IN (${eventIds.map(() => '?').join(', ')})`,
+    eventIds
+  );
 }
 
 /**
@@ -209,6 +383,7 @@ export function requeueEmbeddings(
 ): number {
   if (eventIds.length === 0 || !tableExists(db, 'embedding_outbox')) return 0;
 
+  if (options.apply) deleteQueuedJobs(db, eventIds);
   let queued = 0;
   for (const eventId of eventIds) {
     const rows = sqliteAll<{ content: string }>(
@@ -221,7 +396,6 @@ export function requeueEmbeddings(
     queued += 1;
     if (!options.apply) continue;
 
-    sqliteRun(db, `DELETE FROM embedding_outbox WHERE event_id = ?`, [eventId]);
     sqliteRun(
       db,
       `INSERT INTO embedding_outbox (id, event_id, content, status, retry_count, created_at)
@@ -230,6 +404,226 @@ export function requeueEmbeddings(
     );
   }
   return queued;
+}
+
+/**
+ * The whole apply. It keeps the order the command always had — SQLite, then the
+ * Markdown mirror — but commits SQLite in batches of `batchSize` rows as the
+ * scan finds them, so a failure or an interruption never takes back more than
+ * the batch in flight:
+ *
+ * 1. Each batch commits its guarded updates and its audit row together
+ *    (commitBatch), then deletes the batch's old vectors and queues its events
+ *    for re-embedding, in that order: queued first, the embedding worker could
+ *    write a fresh vector the delete then removes.
+ * 2. A batch that fails is retried row by row, so one row that cannot be
+ *    written keeps only itself unredacted, as it would have with a commit per
+ *    row; earlier batches stay committed. A busy database stops the SQLite
+ *    pass instead, since every retry would wait out the busy timeout again.
+ * 3. The mirror is rewritten whatever happened to SQLite.
+ * 4. A closing audit row records the run's totals and the mirror outcome; a run
+ *    with batch rows but no closing row did not finish.
+ *
+ * Failures come back in the plan instead of being thrown, so the caller can
+ * print what did and did not change; credentialRedactionExitCode turns any of
+ * them into a non-zero exit.
+ */
+export async function applyCredentialRedaction(
+  db: SQLiteDatabase,
+  storagePath: string,
+  options: {
+    actor: string;
+    deleteEventVectors: (eventIds: string[]) => Promise<void>;
+    batchSize?: number;
+  }
+): Promise<CredentialRedactionPlan> {
+  const batchSize = options.batchSize ?? REDACTION_BATCH_SIZE;
+  if (!Number.isInteger(batchSize) || batchSize < 1 || batchSize > REDACTION_BATCH_SIZE) {
+    // The bound is what keeps the write lock and an audit row's event ids small.
+    throw new RangeError(`batchSize must be an integer from 1 to ${REDACTION_BATCH_SIZE}`);
+  }
+  const runId = randomUUID();
+  const plan: CredentialRedactionPlan = {
+    dryRun: false, rowChanges: [], fileChanges: [], affectedEventIds: [], vectorsDeleted: 0, embeddingsRequeued: 0,
+    runId, batchesCommitted: 0, longestBatchLockMs: 0, rowsSkipped: 0, rowsFailed: 0,
+    vectorDeleteFailures: [], requeueFailures: []
+  };
+  const vectorDeleteFailures: string[] = [];
+  const requeueFailures: string[] = [];
+
+  const afterCommit = async (applied: PendingRowRedaction[]): Promise<void> => {
+    plan.rowChanges.push(...applied.map(({ change }) => change));
+    const eventIds = eventIdsOf(applied);
+    if (eventIds.length === 0) return;
+    plan.affectedEventIds.push(...eventIds);
+    try {
+      await options.deleteEventVectors(eventIds);
+      plan.vectorsDeleted += eventIds.length;
+    } catch {
+      vectorDeleteFailures.push(...eventIds);
+    }
+    try {
+      plan.embeddingsRequeued += db.transaction(() => requeueEmbeddings(db, eventIds, { apply: true })).immediate();
+    } catch (error) {
+      requeueFailures.push(...eventIds);
+      plan.requeueError ??= messageOf(error);
+      // A busy store stops the SQLite pass here too, as it does for a batch.
+      if (isBusyError(error)) throw error;
+    }
+  };
+
+  const flush = async (rows: PendingRowRedaction[]): Promise<void> => {
+    if (rows.length === 0) return;
+    let outcome: { applied: PendingRowRedaction[]; lockMs: number };
+    try {
+      outcome = commitBatch(db, rows, { actor: options.actor, runId, batch: plan.batchesCommitted! + 1 });
+    } catch (error) {
+      if (isBusyError(error)) throw error;
+      if (rows.length > 1) {
+        for (const row of rows) await flush([row]);
+      } else {
+        plan.rowsFailed! += 1;
+        plan.rowError ??= messageOf(error);
+      }
+      return;
+    }
+    plan.longestBatchLockMs = Math.max(plan.longestBatchLockMs!, outcome.lockMs);
+    plan.rowsSkipped! += rows.length - outcome.applied.length;
+    if (outcome.applied.length > 0) plan.batchesCommitted! += 1;
+    await afterCommit(outcome.applied);
+  };
+
+  try {
+    let batch: PendingRowRedaction[] = [];
+    for (const row of scanSqliteRedaction(db)) {
+      batch.push(row);
+      if (batch.length < batchSize) continue;
+      await flush(batch);
+      batch = [];
+    }
+    await flush(batch);
+  } catch (error) {
+    if (!isBusyError(error)) throw error;
+    plan.sqliteBusy = messageOf(error);
+  }
+
+  plan.fileChanges = planMarkdownRedaction(storagePath, { apply: true });
+  const mirrorFilesFailed = plan.fileChanges.filter((change) => change.writeFailed).length;
+  const mirrorFilesRedacted = plan.fileChanges.length - mirrorFilesFailed;
+
+  if (plan.batchesCommitted! > 0 || mirrorFilesRedacted > 0) {
+    try {
+      db.transaction(() => writeGovernanceAuditEntrySync(db, {
+        operation: 'credential_redact',
+        actor: options.actor,
+        targetType: 'store',
+        targetId: 'redact-credentials',
+        afterJson: {
+          runId,
+          summary: true,
+          batches: plan.batchesCommitted,
+          rowsRedacted: plan.rowChanges.length,
+          rowsSkipped: plan.rowsSkipped,
+          rowsFailed: plan.rowsFailed,
+          stoppedBusy: plan.sqliteBusy !== undefined,
+          eventsAffected: plan.affectedEventIds.length,
+          mirrorFilesRedacted,
+          mirrorFilesFailed,
+          vectorDeleteFailures: vectorDeleteFailures.length,
+          requeueFailures: requeueFailures.length
+        }
+      })).immediate();
+    } catch (error) {
+      plan.summaryAuditError = messageOf(error);
+    }
+  }
+
+  const references = vectorDeleteFailures.map((eventId) => eventReference(db, eventId));
+  plan.vectorDeleteFailures = references.map(({ ref }) => ref);
+  plan.vectorDeleteFailuresHidden = references.filter(({ hidden }) => hidden).length;
+  plan.requeueFailures = requeueFailures;
+  if (references.length > 0) {
+    const file = path.join(storagePath, `redact-credentials-${runId}-vector-delete-failures.txt`);
+    try {
+      fs.writeFileSync(file, `${plan.vectorDeleteFailures.join('\n')}\n`, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+      plan.vectorDeleteFailuresFile = file;
+    } catch {
+      // The output then lists every entry instead.
+    }
+  }
+  return plan;
+}
+
+/** Each way an apply can stop short, worded for the person who ran it. */
+function unfinishedRedaction(plan: CredentialRedactionPlan): string[] {
+  const notes: string[] = [];
+  const failedFiles = plan.fileChanges.filter((change) => change.writeFailed);
+
+  if (plan.sqliteBusy !== undefined) {
+    notes.push(
+      `SQLite stayed busy (${plan.sqliteBusy}), so the run stopped after ${plan.batchesCommitted ?? 0} ` +
+      'committed batch(es); values it had not reached still hold their credentials. Re-run with --apply.'
+    );
+  }
+  if ((plan.rowsFailed ?? 0) > 0) {
+    notes.push(
+      `${plan.rowsFailed} SQLite value(s) could not be updated (${plan.rowError}) and still hold the ` +
+      'credential; the run went on with the rest. Re-run with --apply.'
+    );
+  }
+  if ((plan.rowsSkipped ?? 0) > 0) {
+    notes.push(
+      `${plan.rowsSkipped} SQLite value(s) changed or were deleted after the scan read them and were left as ` +
+      'they are, so they may still hold a credential. Re-run with --apply to redact them.'
+    );
+  }
+  if (failedFiles.length > 0) {
+    notes.push(
+      `${failedFiles.length} Markdown file(s) could not be rewritten and still hold the credential; ` +
+      'fix their permissions and re-run with --apply:'
+    );
+    for (const change of failedFiles.slice(0, 10)) notes.push(`    ${change.filePath}`);
+    if (failedFiles.length > 10) notes.push(`    … and ${failedFiles.length - 10} more`);
+  }
+  const vectorFailures = plan.vectorDeleteFailures ?? [];
+  if (vectorFailures.length > 0) {
+    notes.push(
+      `The old vectors of ${vectorFailures.length} event(s) could not be deleted and may still hold the ` +
+      'credential. The events themselves are redacted, so a re-run of this command does not retry the delete. ' +
+      (plan.vectorDeleteFailuresFile
+        ? `Every event is listed in ${plan.vectorDeleteFailuresFile}`
+        : 'The events:')
+    );
+    if (!plan.vectorDeleteFailuresFile) {
+      for (const ref of vectorFailures) notes.push(`    ${ref}`);
+    }
+    if ((plan.vectorDeleteFailuresHidden ?? 0) > 0) {
+      notes.push(
+        `${plan.vectorDeleteFailuresHidden} of those event ids look like they hold a credential, so they are ` +
+        'given as `events rowid <n>`; read such an id with `SELECT id FROM events WHERE rowid = <n>` before the ' +
+        'next VACUUM (`forget` runs one) renumbers the rows.'
+      );
+    }
+  }
+  const requeueFailures = plan.requeueFailures ?? [];
+  if (requeueFailures.length > 0) {
+    notes.push(
+      `${requeueFailures.length} redacted event(s) could not be queued for re-embedding ` +
+      `(${plan.requeueError}), so they may have no vector now. Run \`repair backfill-vectors --apply\` to queue them.`
+    );
+  }
+  if (plan.summaryAuditError !== undefined) {
+    notes.push(
+      `The run's closing audit row could not be written (${plan.summaryAuditError}). The batch audit rows are ` +
+      'there; the run totals and the Markdown counts are only in this output.'
+    );
+  }
+  return notes;
+}
+
+/** 1 whenever an apply left something undone, so scripts cannot read it as clean. */
+export function credentialRedactionExitCode(plan: CredentialRedactionPlan): number {
+  return unfinishedRedaction(plan).length > 0 ? 1 : 0;
 }
 
 export function formatRedactionPlan(plan: CredentialRedactionPlan): string {
@@ -241,8 +635,12 @@ export function formatRedactionPlan(plan: CredentialRedactionPlan): string {
   lines.push(`Markdown files to redact: ${plan.fileChanges.length}`);
   lines.push(`Events needing re-embed : ${plan.affectedEventIds.length}`);
   if (!plan.dryRun) {
+    lines.push(`Changed since the scan  : ${plan.rowsSkipped ?? 0}`);
     lines.push(`Vectors deleted         : ${plan.vectorsDeleted}`);
     lines.push(`Embeddings re-queued    : ${plan.embeddingsRequeued}`);
+    lines.push(`Batches committed       : ${plan.batchesCommitted ?? 0}`);
+    lines.push(`Longest committed batch : ${Math.round(plan.longestBatchLockMs ?? 0)} ms holding the write lock`);
+    if (plan.runId) lines.push(`Audit run id            : ${plan.runId}`);
   }
 
   if (plan.rowChanges.length > 0) {
@@ -255,7 +653,8 @@ export function formatRedactionPlan(plan: CredentialRedactionPlan): string {
       lines.push(`  ${key}: ${count}`);
     }
     for (const change of plan.rowChanges.slice(0, 5)) {
-      lines.push(`  - ${change.table}.${change.column} [${change.rowId.slice(0, 8)}] ${change.preview}`);
+      const row = change.rowRef === change.rowId ? change.rowId.slice(0, 8) : change.rowRef;
+      lines.push(`  - ${change.table}.${change.column} [${row}] ${change.preview}`);
     }
     if (plan.rowChanges.length > 5) lines.push(`  … and ${plan.rowChanges.length - 5} more`);
   }
@@ -263,13 +662,18 @@ export function formatRedactionPlan(plan: CredentialRedactionPlan): string {
   if (plan.fileChanges.length > 0) {
     lines.push('', 'Markdown files:');
     for (const change of plan.fileChanges.slice(0, 10)) {
-      lines.push(`  - ${change.filePath}`);
+      lines.push(`  - ${change.filePath}${change.writeFailed ? ' (write failed)' : ''}`);
     }
     if (plan.fileChanges.length > 10) lines.push(`  … and ${plan.fileChanges.length - 10} more`);
   }
 
   if (plan.dryRun && (plan.rowChanges.length > 0 || plan.fileChanges.length > 0)) {
     lines.push('', 'Re-run with --apply to write these changes.');
+  }
+  const unfinished = unfinishedRedaction(plan);
+  if (unfinished.length > 0) {
+    lines.push('', 'NOT FINISHED — credentials may remain:');
+    for (const note of unfinished) lines.push(note.startsWith('    ') ? note : `  - ${note}`);
   }
   lines.push(
     '',

@@ -27,7 +27,8 @@ export const MEMORY_GOVERNANCE_AUDIT_OPERATIONS = [
   'memory_asset_bind',
   'memory_asset_grant_set',
   'event_delete',
-  'session_reimport'
+  'session_reimport',
+  'credential_redact'
 ] as const;
 
 export type MemoryGovernanceAuditOperation = typeof MEMORY_GOVERNANCE_AUDIT_OPERATIONS[number];
