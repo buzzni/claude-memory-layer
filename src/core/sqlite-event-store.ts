@@ -5715,6 +5715,8 @@ export class SQLiteEventStore {
 
     const relatedTables = ['event_dedup', 'memory_levels', 'embedding_queue', 'embedding_outbox', 'vector_outbox', 'event_citations']
       .filter((table) => this.hasTable(table) && this.hasTableColumn(table, 'event_id'));
+    // vector_outbox keys on item_id, not event_id, so the list above skips it.
+    const hasVectorOutbox = this.hasTable('vector_outbox') && this.hasTableColumn('vector_outbox', 'item_id');
 
     const runDelete = this.db.transaction((): number => {
       for (const triggerName of ['events_fts_delete', 'events_fts_update', 'events_fts_insert']) {
@@ -5723,6 +5725,9 @@ export class SQLiteEventStore {
 
       for (const table of relatedTables) {
         sqliteRun(this.db, `DELETE FROM ${table} WHERE event_id = ?`, [eventId]);
+      }
+      if (hasVectorOutbox) {
+        sqliteRun(this.db, `DELETE FROM vector_outbox WHERE item_kind = 'event' AND item_id = ?`, [eventId]);
       }
 
       const result = sqliteRun(this.db, `DELETE FROM events WHERE id = ?`, [eventId]);
@@ -5877,6 +5882,8 @@ export class SQLiteEventStore {
 
     const relatedTables = ['event_dedup', 'memory_levels', 'embedding_queue', 'embedding_outbox', 'vector_outbox', 'event_citations']
       .filter((table) => this.hasTable(table) && this.hasTableColumn(table, 'event_id'));
+    // vector_outbox keys on item_id, not event_id, so the list above skips it.
+    const hasVectorOutbox = this.hasTable('vector_outbox') && this.hasTableColumn('vector_outbox', 'item_id');
 
     const runDelete = this.db.transaction((): number => {
       for (const triggerName of ['events_fts_delete', 'events_fts_update', 'events_fts_insert']) {
@@ -5884,6 +5891,13 @@ export class SQLiteEventStore {
       }
       for (const table of relatedTables) {
         sqliteRun(this.db, `DELETE FROM ${table} WHERE event_id IN (SELECT id FROM events WHERE ${where})`, params);
+      }
+      if (hasVectorOutbox) {
+        sqliteRun(
+          this.db,
+          `DELETE FROM vector_outbox WHERE item_kind = 'event' AND item_id IN (SELECT id FROM events WHERE ${where})`,
+          params
+        );
       }
       const result = sqliteRun(this.db, `DELETE FROM events WHERE ${where}`, params);
       this.recreateEventsFtsTable();
