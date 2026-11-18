@@ -150,7 +150,7 @@ snapshots mask absolute paths and credential-looking values, so a version restor
 
 | Tool call | What it removes or changes | Recoverable | Audit |
 |---|---|---|---|
-| `mem-import-latest` with `force: true`; `mem-context-pack` with `refreshForce: true` when its freshness refresh runs (with `refreshLatest: true`, or automatically for a generic continuation query without a `sessionId` unless `refreshLatest: false`) | Deletes every event of the most recent session of each source (`hermes` and `codex` by default, `claude` when asked), then imports it again up to the message limit (default 200). Without `force`/`refreshForce` an import or refresh only adds events | **Partly**; see the known limits below | **No** |
+| `mem-import-latest` with `force: true`; `mem-context-pack` with `refreshForce: true` when its freshness refresh runs (with `refreshLatest: true`, or automatically for a generic continuation query without a `sessionId` unless `refreshLatest: false`) | Nothing. Both tools always apply a message limit (default 200), and a force reimport under a limit would delete the events past it, so they refuse it: `mem-import-latest` returns an error and imports nothing; the context pack skips its refresh, says why, and still answers. Without `force`/`refreshForce` an import or refresh only adds events | — | — |
 | `mem-entity-supersede` | Marks the entity superseded and adds a `supersedes` edge | Yes; the entity stays | Yes |
 | `mem-lesson-save` with an existing lesson's name | Replaces that lesson | From the audit's before snapshot | Yes |
 | `mem-action-update` | Replaces an action's title, status, priority, source event ids, related entities, checkpoint or lease | From the audit's before snapshot | Yes |
@@ -166,7 +166,7 @@ snapshots mask absolute paths and credential-looking values, so a version restor
 | `forget --before <date> [--type <type>] --confirm` | Deletes the matching events, their vectors and dated mirror files, then runs VACUUM. Without `--confirm` it only previews | No | **No** |
 | `forget <eventId>`, `forget --session <id>` | Nothing; not implemented (#211) | — | — |
 | Dashboard `DELETE /api/events/:id` | Deletes one event and its vectors; the response names the event (id, type, time, session, content length), not its content | No | **No** |
-| `import --force`, `codex import --force`, `hermes import --force` | Same as the MCP `force` argument above; `--limit` caps what is imported again | **Partly** | **No** |
+| `import --force`, `codex import --force`, `hermes import --force` | Deletes the session's prompts and responses that earlier imports of the same transcript (Hermes: the same `state.db`) wrote, then imports the transcript again. Refused with `--limit`. See the known limits below for what it keeps | **Partly**: the deleted rows come back from the transcript, with new event ids | **No** |
 | `lesson add --apply`, `action update --apply`, `facet tag --apply` | The same changes as `mem-lesson-save`, `mem-action-update` and `mem-facet-tag` above | From the audit's before snapshot | Yes |
 | `repair redact-credentials --apply` | Rewrites credential-looking text in events, helpfulness rows, retrieval traces and the Markdown mirror; deletes the affected vectors and requeues the events | No, by design | **No** |
 | `repair legacy-project-scope --apply` | Adds repair or quarantine markers to event metadata; content is untouched | Yes | Markers in the metadata only |
@@ -182,12 +182,25 @@ snapshots mask absolute paths and credential-looking values, so a version restor
 
 Known limits:
 
-- **Force reimport loses rows** (#227). It deletes every event of the session, then imports again only the prompts and
-  responses the transcript holds, up to the message limit. Session summaries and tool observations are not imported
-  from the transcript, so they are gone for good. Messages past the limit come back only by importing again without a
-  limit, and only while the transcript still exists and is readable. A 600-line Claude transcript plus one summary and
-  one tool observation went from 602 events to 201 after a force reimport with the limit at 200. Before deleting, the
-  Claude importer only checks that the transcript has a readable record, the Codex importer skips the delete when the
-  session has rows written by the Codex host, and the Hermes importer checks nothing.
+- **Force reimport replaces only rows it can put back** (#227). It deletes a row only when all of these hold: it is a
+  prompt or a response, its `metadata.importedFrom` is the transcript (Hermes: the `state.db`) being imported again,
+  it has no `metadata.mongoSync` marker, and no lesson lists it in `source_event_ids`. Everything else stays: rows the
+  hooks and the daemon wrote (prompts, responses, session summaries, tool observations), rows another source or
+  another path wrote, rows `mongo-sync` pulled, and lesson sources. The Claude hooks' prompts and responses that stay
+  are not stored a second time: the append dedupe key and the SessionEnd reconcile recognize them. Before deleting, every
+  importer checks that the source has something to import again (Claude: a record that parses; Codex: a message line
+  that parses; Hermes: a user message), and the Codex importer still skips the delete when the Codex host wrote rows
+  for the session. With a message limit the reimport would stop before the end of the session, so `--limit` refuses
+  it, and the MCP tools, which always apply a limit, refuse `force`/`refreshForce`.
+  Limits: the rule reads `importedFrom` from metadata. Only the importers write it, but a row whose metadata names
+  the same path is treated as imported, including a row pulled by `mongo-sync` before every pull was stamped, from
+  a machine where the transcript had the same path. Such a row is deleted and imported again from the local
+  transcript. A row imported from the same transcript under another path (a relative `--session` path, a moved
+  transcript) is kept; the append dedupe key skips a new copy with the same content.
+- **Re-created rows get new event ids** (#250). References to the deleted rows (helpfulness and usefulness
+  observations, retrieval traces, working set, actions, facets, perspective observations, audit source ids and
+  others) are not rewritten and point at missing events; their `memory_levels` entries, citations and embedding jobs
+  are deleted with them, and their vectors stay in LanceDB. Rows the reimport keeps keep their ids, so references to
+  them stay valid.
 - **No audit record** for `forget`, the dashboard delete, force reimport and `repair redact-credentials` (#228).
   Afterwards nothing in the store shows when, by whom or how much was deleted.
