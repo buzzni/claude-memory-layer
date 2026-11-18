@@ -4,13 +4,15 @@ import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 
 import type { MemoryService } from '../../src/services/memory-service.js';
+import { VectorStore } from '../../src/core/vector-store.js';
 
 /**
  * #250: `import --force` deletes the session's rows and imports the
  * transcript again. The rows it re-created got new event ids, so whatever
  * pointed at the old ids (helpfulness and usefulness observations, retrieval
  * traces, actions, facets, ...) pointed at nothing. A re-created row must keep
- * its id, and still take the turn grouping of the new import.
+ * its id, and still take the turn grouping of the new import. Its old vector
+ * is deleted: the row is queued for embedding again under the same id.
  */
 
 const fixture = vi.hoisted(() => ({ storagePath: '', service: null as unknown }));
@@ -90,6 +92,7 @@ describe('Claude session force reimport', () => {
     expect(await importSession()).toMatchObject({ importedPrompts: 2, importedResponses: 2, errors: [] });
     const before = await rows();
     expect(before.size).toBe(4);
+    const deleteVectors = vi.spyOn(VectorStore.prototype, 'deleteEvents');
 
     expect(await importSession({ force: true })).toMatchObject({ importedPrompts: 2, importedResponses: 2, errors: [] });
     const after = await rows();
@@ -100,5 +103,7 @@ describe('Claude session force reimport', () => {
       // The force reimport still regroups the turns.
       expect(after.get(content)!.turnId).not.toBe(row.turnId);
     }
+    expect(deleteVectors).toHaveBeenCalledTimes(1);
+    expect([...deleteVectors.mock.calls[0][0]].sort()).toEqual([...before.values()].map((row) => row.id).sort());
   });
 });

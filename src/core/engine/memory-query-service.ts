@@ -75,7 +75,7 @@ interface QueryMaintenanceStore extends QueryStore {
   getDailyEventCounts(sinceIso: string): Promise<Array<{ day: string; total: number; prompts: number; responses: number; tools: number }>>;
   countSessionTurns(sessionId: string): Promise<number>;
   backfillTurnIds(): Promise<number>;
-  deleteSessionEvents(sessionId: string): Promise<number>;
+  deleteSessionEventsWithIds(sessionId: string): Promise<{ deleted: number; eventIds: string[] }>;
   hasSessionUserPrompt(sessionId: string, contents: readonly string[]): Promise<boolean>;
   getDerivationLiveness(projectHash?: string): Promise<DerivationLiveness>;
 }
@@ -88,6 +88,7 @@ interface MemoryQueryServiceDeps {
     optimizeAll(options?: VectorOptimizeOptions): Promise<VectorOptimizeResult>;
     createReadSmokeVerifier?(): Promise<() => Promise<boolean>>;
     persistOptimizeResult?(result: VectorOptimizeResult): void;
+    deleteEvents?(eventIds: string[]): Promise<void>;
   };
   graduation: { getStats(): Promise<Array<{ level: string; count: number }>> };
 }
@@ -427,7 +428,17 @@ export class MemoryQueryService {
 
   async deleteSessionEvents(sessionId: string): Promise<number> {
     await this.initialize();
-    return this.getMaintenanceStore('deleteSessionEvents').deleteSessionEvents(sessionId);
+    const { deleted, eventIds } = await this.getMaintenanceStore('deleteSessionEventsWithIds').deleteSessionEventsWithIds(sessionId);
+    // The reimport appends these rows again under the same ids and queues
+    // them for embedding, so a vector left here would be a second copy. The
+    // rows are already gone; a vector that cannot be deleted must not fail
+    // the reimport.
+    try {
+      await this.deps?.vectorStore.deleteEvents?.(eventIds);
+    } catch (error) {
+      console.warn(`[MemoryQueryService] could not delete the vectors of session ${sessionId}:`, error instanceof Error ? error.message : error);
+    }
+    return deleted;
   }
 
   async hasSessionUserPrompt(sessionId: string, contents: readonly string[]): Promise<boolean> {

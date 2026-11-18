@@ -44,7 +44,7 @@ describe('SQLiteEventStore ids across a force reimport', () => {
     await store.incrementAccessCount([answer.eventId!]);
     await store.incrementAccessCount([answer.eventId!]);
 
-    await expect(store.deleteSessionEvents('reimported')).resolves.toBe(2);
+    await expect(store.deleteSessionEventsWithIds('reimported')).resolves.toEqual({ deleted: 2, eventIds: [prompt.eventId, answer.eventId] });
     await expect(store.getEvent(answer.eventId!)).resolves.toBeNull();
 
     const prompt2 = await store.append(row('please fix the release guard', 'user_prompt', 'reimported', 'turn-new'));
@@ -80,6 +80,25 @@ describe('SQLiteEventStore ids across a force reimport', () => {
     await store.deleteSessionEvents('reimported');
     expect((await store.append(row('please audit the vector store'))).eventId).toBe(prompt.eventId);
     expect(await store.append(row('please audit the vector store'))).toMatchObject({ isDuplicate: true, eventId: prompt.eventId });
+  });
+
+  it('queues a re-created row for embedding again when the vector outbox is on', async () => {
+    const outboxStore = new SQLiteEventStore(path.join(tempDir, 'outbox.sqlite'), { vectorOutbox: {} });
+    await outboxStore.initialize();
+    const db = outboxStore.getDatabase();
+    const jobs = (eventId: string) => db.prepare(`SELECT status FROM vector_outbox WHERE item_kind = 'event' AND item_id = ?`).all(eventId);
+    try {
+      const prompt = await outboxStore.append(row('please embed the release guard prompt'));
+      db.prepare(`UPDATE vector_outbox SET status = 'done'`).run();
+
+      await outboxStore.deleteSessionEvents('reimported');
+      expect(jobs(prompt.eventId!)).toEqual([]);
+
+      expect((await outboxStore.append(row('please embed the release guard prompt'))).eventId).toBe(prompt.eventId);
+      expect(jobs(prompt.eventId!)).toEqual([{ status: 'pending' }]);
+    } finally {
+      outboxStore.close();
+    }
   });
 
   it('does not reuse an id that is already back in the store', async () => {

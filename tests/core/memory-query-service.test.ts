@@ -61,12 +61,13 @@ function createService() {
     getEventsByTurn: vi.fn(async () => events),
     countSessionTurns: vi.fn(async () => 11),
     backfillTurnIds: vi.fn(async () => 13),
-    deleteSessionEvents: vi.fn(async () => 17),
+    deleteSessionEventsWithIds: vi.fn(async () => ({ deleted: 17, eventIds: ['event-a', 'event-b'] })),
     countEvents: vi.fn(async () => 31)
   };
   const vectorStore = {
     count: vi.fn(async () => 19),
-    countAll: vi.fn(async () => 99)
+    countAll: vi.fn(async () => 99),
+    deleteEvents: vi.fn<(eventIds: string[]) => Promise<void>>(async () => {})
   };
   const graduation = {
     getStats: vi.fn(async () => [{ level: 'working', count: 23 }])
@@ -113,7 +114,20 @@ describe('MemoryQueryService', () => {
     expect(queryStore.getEventsByTurn).toHaveBeenCalledWith('turn-1');
     expect(queryStore.countSessionTurns).toHaveBeenCalledWith('session-1');
     expect(queryStore.backfillTurnIds).toHaveBeenCalledOnce();
-    expect(queryStore.deleteSessionEvents).toHaveBeenCalledWith('session-1');
+    expect(queryStore.deleteSessionEventsWithIds).toHaveBeenCalledWith('session-1');
+  });
+
+  it('deletes the vectors of the events a session delete removed, and does not fail on them', async () => {
+    const { service, vectorStore } = createService();
+
+    await expect(service.deleteSessionEvents('session-1')).resolves.toBe(17);
+    expect(vectorStore.deleteEvents).toHaveBeenCalledWith(['event-a', 'event-b']);
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vectorStore.deleteEvents.mockRejectedValueOnce(new Error('lance is locked'));
+    await expect(service.deleteSessionEvents('session-1')).resolves.toBe(17);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('session-1'), 'lance is locked');
+    warn.mockRestore();
   });
 
   it('composes memory statistics from event, vector, and graduation stores', async () => {

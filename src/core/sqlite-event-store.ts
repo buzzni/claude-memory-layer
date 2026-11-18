@@ -5493,6 +5493,14 @@ export class SQLiteEventStore {
    * Delete all events for a session (for force reimport)
    */
   async deleteSessionEvents(sessionId: string): Promise<number> {
+    return (await this.deleteSessionEventsWithIds(sessionId)).deleted;
+  }
+
+  /**
+   * `deleteSessionEvents` that also returns the deleted ids: their vectors
+   * live in LanceDB, and the caller deletes them there.
+   */
+  async deleteSessionEventsWithIds(sessionId: string): Promise<{ deleted: number; eventIds: string[] }> {
     await this.initialize();
 
     // Get event IDs first for cascading deletes
@@ -5505,7 +5513,7 @@ export class SQLiteEventStore {
       [sessionId]
     );
 
-    if (events.length === 0) return 0;
+    if (events.length === 0) return { deleted: 0, eventIds: [] };
 
     const eventIds = events.map(e => e.id);
     const placeholders = eventIds.map(() => '?').join(',');
@@ -5518,10 +5526,10 @@ export class SQLiteEventStore {
     // table existence (instead of swallowing per-statement errors) so a genuine
     // failure is never mistaken for a benign "table does not exist".
     // Only the tables that both exist and key cascades on event_id. (vector_outbox
-    // keys on item_id, not event_id; the previous code swallowed the resulting
-    // error, so it was never cleaned here either — behavior preserved.)
+    // keys on item_id, not event_id; it is cleaned separately below.)
     const relatedTables = ['event_dedup', 'memory_levels', 'embedding_queue', 'embedding_outbox', 'vector_outbox', 'event_citations']
       .filter((table) => this.hasTable(table) && this.hasTableColumn(table, 'event_id'));
+    const hasVectorOutbox = this.hasTable('vector_outbox') && this.hasTableColumn('vector_outbox', 'item_id');
 
     const runDelete = this.db.transaction((): number => {
       // Drop FTS sync triggers before the bulk delete so the synthetic FTS
@@ -5553,6 +5561,11 @@ export class SQLiteEventStore {
       for (const table of relatedTables) {
         sqliteRun(this.db, `DELETE FROM ${table} WHERE event_id IN (${placeholders})`, eventIds);
       }
+      // A row that comes back under its id must get a new embedding job; a
+      // done one left here would make its enqueue a no-op.
+      if (hasVectorOutbox) {
+        sqliteRun(this.db, `DELETE FROM vector_outbox WHERE item_kind = 'event' AND item_id IN (${placeholders})`, eventIds);
+      }
 
       // Delete events.
       const result = sqliteRun(this.db, `DELETE FROM events WHERE session_id = ?`, [sessionId]);
@@ -5565,7 +5578,7 @@ export class SQLiteEventStore {
       return result.changes || 0;
     });
 
-    return runDelete();
+    return { deleted: runDelete(), eventIds };
   }
 
   /**
