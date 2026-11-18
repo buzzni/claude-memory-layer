@@ -31,8 +31,8 @@ exports[`PostToolUse stored payload > stores an edit and a Bash failure exactly 
         "success": true,
         "toolInput": {
           "file_path": "<HOME>/src/config.ts",
-          "new_string": "[REDACTED] "",
-          "old_string": "[REDACTED] "",
+          "new_string": "[REDACTED]"",
+          "old_string": "[REDACTED]"",
         },
         "toolName": "Edit",
         "toolOutput": "{"filePath":"<HOME>/src/config.ts"}",
@@ -61,7 +61,7 @@ exports[`PostToolUse stored payload > stores an edit and a Bash failure exactly 
         },
         "success": true,
         "toolInput": {
-          "command": "npm test -- --token=[REDACTED] ",
+          "command": "npm test -- --token=[REDACTED]",
         },
         "toolName": "Bash",
         "toolOutput": "line of output

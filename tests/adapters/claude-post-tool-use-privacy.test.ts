@@ -91,6 +91,27 @@ function linesWithPrivateAcrossTruncation(): string {
   return lines.join('\n');
 }
 
+/** One line over 10000 characters with a `<private>` section across the 5000-character head the truncation keeps. */
+function charsWithPrivateAcrossTruncation(): string {
+  return `${'a'.repeat(4900)}<private>${'codename-orchid '.repeat(20)}</private>${'z'.repeat(8000)}`;
+}
+
+/**
+ * A multi-line edit with a token and a `<private>` section on their own lines.
+ * Stored, the markers keep the lines and indentation around them, so the code
+ * after a redacted comment is not pulled onto the comment's line.
+ */
+const MULTILINE_EDIT = {
+  file_path: '/tmp/client.ts',
+  old_string: `  // ${GITHUB_TOKEN}\n  return 41;\n`,
+  new_string: `  // ${GITHUB_TOKEN}\n  return 42;\n    <private>codename-orchid</private>\n  done();\n`
+};
+
+function expectMultilineEditKeepsLines(toolInput: Record<string, unknown>): void {
+  expect(toolInput.old_string).toBe('  // [REDACTED]\n  return 41;\n');
+  expect(toolInput.new_string).toBe('  // [REDACTED]\n  return 42;\n    [PRIVATE]\n  done();\n');
+}
+
 const PRIVATE_INPUT = {
   file_path: '/tmp/notes.md',
   content: 'public intro\n<private>internal-hostname-42</private>\npublic outro',
@@ -137,7 +158,17 @@ describe('PostToolUse privacy filtering', () => {
     expect(stored.toolOutput).not.toContain(GITHUB_TOKEN);
   });
 
-  it('truncates stderr like the output, after masking, so a cut never opens a <private> section', async () => {
+  it('keeps the lines and indentation around masked parts of a multi-line edit', async () => {
+    const stored = await runPostToolUse({
+      tool_name: 'Edit',
+      tool_input: MULTILINE_EDIT,
+      tool_response: { filePath: MULTILINE_EDIT.file_path }
+    });
+
+    expectMultilineEditKeepsLines(stored.toolInput);
+  });
+
+  it('truncates stderr like the output, after masking, so a line cut never opens a <private> section', async () => {
     const stderr = linesWithPrivateAcrossTruncation();
     const stored = await runPostToolUse({
       tool_name: 'Bash',
@@ -149,6 +180,20 @@ describe('PostToolUse privacy filtering', () => {
     expect(stored.errorMessage).toContain('[PRIVATE]');
     expect(stored.errorMessage).toContain('lines truncated');
     expect(stored.errorMessage).toContain('line 149');
+  });
+
+  it('truncates stderr like the output, after masking, so a character cut never opens a <private> section', async () => {
+    const stored = await runPostToolUse({
+      tool_name: 'Bash',
+      tool_input: { command: 'npm test' },
+      tool_response: { stdout: '', stderr: charsWithPrivateAcrossTruncation() }
+    });
+
+    for (const text of [stored.toolOutput, stored.errorMessage ?? '']) {
+      expect(text).not.toContain('codename-orchid');
+      expect(text).toContain('[PRIVATE]');
+      expect(text).toContain('characters truncated');
+    }
   });
 
   it('leaves errorMessage undefined when the tool wrote nothing to stderr', async () => {
@@ -174,17 +219,30 @@ describe('PostToolUseFailure privacy filtering', () => {
     expectPrivateInputMasked(stored.toolInput);
   });
 
-  it('masks the error before truncating it, so a cut never opens a <private> section', async () => {
+  it('keeps the lines and indentation around masked parts of a failed multi-line edit', async () => {
+    const stored = await runPostToolUseFailure({
+      tool_name: 'Edit',
+      tool_input: MULTILINE_EDIT,
+      error: 'String to replace not found in file.'
+    });
+
+    expectMultilineEditKeepsLines(stored.toolInput);
+  });
+
+  it.each([
+    ['line', linesWithPrivateAcrossTruncation],
+    ['character', charsWithPrivateAcrossTruncation]
+  ])('masks the error before truncating it, so a %s cut never opens a <private> section', async (unit, error) => {
     const stored = await runPostToolUseFailure({
       tool_name: 'Bash',
       tool_input: { command: 'npm test' },
-      error: linesWithPrivateAcrossTruncation()
+      error: error()
     });
 
     for (const text of [stored.toolOutput, stored.errorMessage ?? '']) {
       expect(text).not.toContain('codename-orchid');
       expect(text).toContain('[PRIVATE]');
-      expect(text).toContain('lines truncated');
+      expect(text).toContain(`${unit}s truncated`);
     }
   });
 });
