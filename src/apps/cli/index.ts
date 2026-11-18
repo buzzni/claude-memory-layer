@@ -162,6 +162,10 @@ import { formatBackfillVectorsResult, resolveBackfillVectorsOptions } from './ba
 import { dropSpareEventVectorTables } from '../../core/operations/spare-vector-tables.js';
 import { formatDropSpareVectorsResult, resolveDropSpareVectorsOptions } from './drop-spare-vectors-command.js';
 import {
+  formatSupersedeSessionSummariesResult,
+  resolveSupersedeSessionSummariesOptions
+} from './supersede-session-summaries-command.js';
+import {
   formatAutoHealToolObservationVectorsResult,
   resolveAutoHealToolObservationVectorsOptions
 } from './auto-heal-tool-observation-vectors-command.js';
@@ -1958,6 +1962,37 @@ repairCommand
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`Drop spare vectors failed: ${message}`);
+      process.exit(1);
+    }
+  });
+
+repairCommand
+  .command('supersede-session-summaries')
+  .description('Keep one visible summary per session (newest LLM summary, else newest) and hide the rest (dry-run by default)')
+  .option('-p, --project <path>', 'Project path (defaults to cwd)')
+  .option('--apply', 'Hide the other summaries (default is a dry-run preview)')
+  .action(async (options) => {
+    try {
+      const supersedeOptions = resolveSupersedeSessionSummariesOptions(options);
+      const dbPath = path.join(getProjectStoragePath(supersedeOptions.projectPath), 'events.sqlite');
+
+      if (!fs.existsSync(dbPath)) {
+        console.log(formatSupersedeSessionSummariesResult({
+          dryRun: supersedeOptions.dryRun, sessions: 0, superseded: 0, samples: []
+        }));
+        return;
+      }
+
+      const store = new SQLiteEventStore(dbPath, { readonly: supersedeOptions.dryRun });
+      try {
+        const result = await store.supersedeDuplicateSessionSummaries({ dryRun: supersedeOptions.dryRun });
+        console.log(formatSupersedeSessionSummariesResult(result));
+      } finally {
+        await store.close().catch(() => undefined);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Supersede session summaries failed: ${message}`);
       process.exit(1);
     }
   });
