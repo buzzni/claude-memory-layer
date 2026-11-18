@@ -51,9 +51,11 @@ const __dirname = dirname(__filename);`
 export const HOOK_ENTRIES = [
   'session-start',
   'user-prompt-submit',
-  // post-tool-use imports post-tool-use-handler only for a call it stores.
+  // post-tool-use and post-tool-use-failure import post-tool-use-handler
+  // only for a call they store.
   'post-tool-use-handler',
   'post-tool-use',
+  'post-tool-use-failure',
   'stop',
   // Before session-end: a hook whose worker cannot load this falls back to
   // its own bundled copy, but a half-built dist should not need to.

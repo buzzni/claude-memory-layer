@@ -206,12 +206,13 @@ describe('checkSessionEndPendingJobs', () => {
 });
 
 describe('checkHooksInstalled', () => {
-  it('passes when all seven hooks are present', () => {
+  it('passes when all eight hooks are present', () => {
     const settings: ClaudeSettingsWithHooks = {
       hooks: {
         SessionStart: [{ hooks: [{ type: 'command', command: 'node hooks/session-start.js' }] }],
         UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'node hooks/user-prompt-submit.js' }] }],
         PostToolUse: [{ hooks: [{ type: 'command', command: 'node hooks/post-tool-use.js' }] }],
+        PostToolUseFailure: [{ hooks: [{ type: 'command', command: 'node hooks/post-tool-use-failure.js' }] }],
         Stop: [{ hooks: [{ type: 'command', command: 'node hooks/stop.js' }] }],
         SessionEnd: [{ hooks: [{ type: 'command', command: 'node hooks/session-end.js' }] }],
         PreCompact: [{ hooks: [{ type: 'command', command: 'node hooks/pre-compact.js' }] }],
@@ -226,6 +227,14 @@ describe('checkHooksInstalled', () => {
     const result = checkHooksInstalled({ hooks: earlierInstall });
     expect(result.status).toBe('fail');
     expect(result.detail).toBe('Not installed in Claude settings: PreToolUse');
+  });
+
+  it('names PostToolUseFailure for an install made before that hook existed', () => {
+    const { PostToolUseFailure: _added, ...earlierInstall } = getHooksConfig('/active/claude-memory-layer/dist');
+    const result = checkHooksInstalled({ hooks: earlierInstall });
+    expect(result.status).toBe('fail');
+    expect(result.detail).toBe('Not installed in Claude settings: PostToolUseFailure');
+    expect(result.fix).toBe('claude-memory-layer install');
   });
 
   it('names PreCompact for an install made before that hook existed', () => {

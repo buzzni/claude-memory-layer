@@ -11,7 +11,7 @@ Everything is stored on your machine under `~/.claude-code/memory/`, in a separa
 | What | Captured by | Where |
 |---|---|---|
 | Your prompts and the assistant's responses | Claude Code hooks (UserPromptSubmit, Stop), Codex hooks, history import | `projects/<hash>/events.sqlite` |
-| Tool observations (tool input and output) | Claude Code PostToolUse hook | `projects/<hash>/events.sqlite` |
+| Tool observations (tool input and output) | Claude Code PostToolUse and PostToolUseFailure hooks | `projects/<hash>/events.sqlite` |
 | Session summaries | Session hooks (LLM-written by default, see [Privacy](#privacy-and-security)) | `projects/<hash>/events.sqlite` |
 | Compaction checkpoints (where a session stood before Claude Code compacted it) | Claude Code PreCompact hook | `projects/<hash>/events.sqlite` |
 | Facets, actions, checkpoints, lessons, actor cards | CLI and MCP tools | `projects/<hash>/events.sqlite` |
@@ -64,11 +64,11 @@ claude-memory-layer stats
 claude-memory-layer dashboard  # local web dashboard on http://localhost:37777
 ```
 
-After that the hooks work on their own. SessionStart loads project context, UserPromptSubmit searches related memories for each prompt, and UserPromptSubmit, PostToolUse, Stop and SessionEnd store what happened. Before Claude Code compacts the conversation, PreCompact saves a checkpoint of where the session stood, and the SessionStart that follows the compaction puts it back first. PreToolUse can add what earlier sessions left about a file before it is edited; it stays off until `preEditCheck` is enabled in `operations.json` ([pre-edit check](docs/HOW_IT_WORKS.md#pre-edit-check)).
+After that the hooks work on their own. SessionStart loads project context, UserPromptSubmit searches related memories for each prompt, and UserPromptSubmit, PostToolUse, PostToolUseFailure (tool calls that failed), Stop and SessionEnd store what happened. Before Claude Code compacts the conversation, PreCompact saves a checkpoint of where the session stood, and the SessionStart that follows the compaction puts it back first. PreToolUse can add what earlier sessions left about a file before it is edited; it stays off until `preEditCheck` is enabled in `operations.json` ([pre-edit check](docs/HOW_IT_WORKS.md#pre-edit-check)).
 
 ## Features
 
-- **Automatic capture and recall** in Claude Code through seven lifecycle hooks, with one store per project.
+- **Automatic capture and recall** in Claude Code through eight lifecycle hooks, with one store per project.
 - **Hybrid retrieval**: keyword and semantic search, progressive disclosure (`search --disclosure`, then `expand` and `source`), and `[mem:…]` citations that MCP tools resolve back to the source event.
 - **History import** for Claude Code, Codex and Hermes sessions, with a read-only validation report before any Codex or Hermes import.
 - **MCP server** (`claude-memory-layer-mcp`) with a context pack for starting work, a project timeline and privacy-filtered source refs, plus tool profiles and a read-only mode.

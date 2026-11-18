@@ -41,10 +41,19 @@ SQLite is the canonical source of truth and LanceDB is a derived accelerator tha
 | SessionStart | Loads project context for the new session |
 | UserPromptSubmit | Stores the prompt and searches related memories to inject |
 | PostToolUse | Stores tool observations (tool input and output) |
+| PostToolUseFailure | Stores a tool call that failed while running, as a tool observation with `success: false` and the error text ([below](#failed-tool-calls)) |
 | PreCompact | Saves a checkpoint of where the session stood right before Claude Code compacts the context ([below](#compaction-checkpoint)) |
 | PreToolUse | Edit tools only, off unless `preEditCheck` is enabled: before a file is edited, adds what earlier sessions left about it ([below](#pre-edit-check)) |
 | Stop | Stores the assistant's response |
 | SessionEnd | Finishes the session (summary and storage) |
+
+## Failed tool calls
+
+Claude Code reports a tool call that started and then failed to PostToolUseFailure, never to PostToolUse, so each call reaches one of the two. PostToolUseFailure stores it as a tool observation with `success: false`; the `error` text Claude received is both its output and its error message. It goes through what PostToolUse applies: the same tools are left out (including `CLAUDE_MEMORY_TOOL_BLOCKLIST`), the [capture policy](CONFIGURATION.md#capture-policy), the privacy filter (credentials, `<private>` sections) and truncation. PostToolUse's output-length filter does not apply, since a failure is often one line (`Exit code 1`). Like PostToolUse, it decides before loading SQLite and never blocks: on any error it stores nothing and the tool flow goes on.
+
+What reaches it, checked with Claude Code 2.1.325: a Bash command that exits non-zero (`Exit code N` plus its output) and a file edit that fails while writing (for example `EACCES`); by the hooks reference, also an MCP tool that returns an error. What does not: a call Claude Code rejects before running it, such as an Edit whose `old_string` is not in the file or input that fails validation. That rejection fires no hook at all, so it is not stored. A call cancelled while running reaches PostToolUse with `interrupted`, as before.
+
+An install made before this hook existed gets it by running `claude-memory-layer install` again; `claude-memory-layer doctor` names it while it is missing. The plugin picks it up when it updates.
 
 ## Compaction checkpoint
 
@@ -75,7 +84,7 @@ It reads only the project store, never calls an LLM or the semantic daemon, and 
 
 **Not repeating itself.** An item shown for a file is not shown again for that file in the same session. Each shown item is reserved by creating an empty marker file exclusively under `projects/<hash>/pre-edit-check/<session>/`, so parallel edits in one session show it once. That costs one empty file per item shown. A session's markers are deleted 7 days after the last run in that session that found notes, by the first run of another session.
 
-**Known limit.** Failed tool calls are mostly missing from the store until PostToolUseFailure is captured ([#222](https://github.com/buzzni/claude-memory-layer/issues/222)): PostToolUse records a call as failed only when it was interrupted. Until then the failed-runs list is almost always empty.
+**Known limit.** Failed runs come from [PostToolUseFailure](#failed-tool-calls), which sees an edit only when it fails while writing (for example `EACCES`). The most common failed edit, an `old_string` that is not in the file, is rejected before the tool runs and fires no hook, so it never appears here.
 
 **Cost.** The hook never blocks the edit: it returns no permission decision, and on any error, timeout or missing store it prints nothing and exits 0. It is always registered; while the flag is off its entry exits before loading SQLite (about 3–5 ms over a bare Node start of 26 ms, measured on macOS). When on, a run takes about 105–115 ms including Node start, on a store with 300,000 summaries and 200,000 links to the file; when the 2000 newest observations are all just under 64 KiB, about 300 ms.
 

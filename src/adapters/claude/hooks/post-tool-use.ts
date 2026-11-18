@@ -1,6 +1,7 @@
 /**
  * PostToolUse Hook
- * Called after each tool execution - stores tool observations
+ * Called after each tool execution - stores tool observations. Also stores
+ * the calls PostToolUseFailure reports (captureToolFailure).
  *
  * Actual Claude Code input format:
  * {
@@ -16,7 +17,7 @@ import { extractMetadata } from '../../../core/metadata-extractor.js';
 import { readTurnState } from '../../../core/turn-state.js';
 import { decideCapture, loadCapturePolicy } from './capture-policy.js';
 import { DEFAULT_CONFIG, extractToolOutput, isToolSuccess, readToolObservationInput } from './post-tool-use-filter.js';
-import type { PostToolUseInput, ToolObservationPayload, Config } from '../../../core/types.js';
+import type { PostToolUseFailureInput, PostToolUseInput, ToolObservationPayload, Config } from '../../../core/types.js';
 
 const DEFAULT_PRIVACY_CONFIG: Config['privacy'] = {
   excludePatterns: ['password', 'secret', 'api_key', 'token', 'bearer'],
@@ -36,10 +37,50 @@ export async function main(): Promise<string> {
 
 /** Stores a tool call that readToolObservationInput let through. */
 export async function captureToolObservation(input: PostToolUseInput): Promise<string> {
-  const config = DEFAULT_CONFIG;
-  const privacyConfig = DEFAULT_PRIVACY_CONFIG;
-  const toolOutput = extractToolOutput(input.tool_response);
-  const success = isToolSuccess(input.tool_response);
+  return storeToolCall(input, {
+    toolOutput: extractToolOutput(input.tool_response),
+    success: isToolSuccess(input.tool_response),
+    errorMessage: input.tool_response?.stderr || undefined
+  });
+}
+
+/**
+ * Stores a failed tool call that readToolFailureInput let through. Claude Code
+ * sends a call that started and then failed here instead of to PostToolUse, so
+ * the two never store the same call. Its `error` is both the output and the
+ * error message, each through the same privacy filter and truncation.
+ */
+export async function captureToolFailure(input: PostToolUseFailureInput): Promise<string> {
+  const error = typeof input.error === 'string' ? input.error : '';
+  return storeToolCall(input, {
+    toolOutput: error,
+    success: false,
+    errorMessage: maskToolOutput(error) || undefined,
+    durationMs: typeof input.duration_ms === 'number' && Number.isFinite(input.duration_ms) && input.duration_ms >= 0
+      ? input.duration_ms
+      : 0
+  });
+}
+
+/** Privacy-filters and truncates tool output text before it is stored (steps 6-7). */
+function maskToolOutput(text: string): string {
+  // 6. Apply privacy filter to output
+  const filterResult = applyPrivacyFilter(text, DEFAULT_PRIVACY_CONFIG);
+  const maskedOutput = filterResult.content;
+
+  // 7. Truncate output
+  return truncateOutput(maskedOutput, {
+    maxLength: DEFAULT_CONFIG.maxOutputLength,
+    maxLines: DEFAULT_CONFIG.maxOutputLines
+  });
+}
+
+/** Stores one tool call as a tool_observation, through the capture policy (steps 4.6-10). */
+async function storeToolCall(
+  input: Pick<PostToolUseInput, 'session_id' | 'agent_id' | 'agent_type' | 'tool_name' | 'tool_input'>,
+  call: { toolOutput: string; success: boolean; errorMessage?: string; durationMs?: number }
+): Promise<string> {
+  const { toolOutput, success } = call;
 
   try {
     const memoryService = getLightweightMemoryService(input.session_id);
@@ -54,15 +95,8 @@ export async function captureToolObservation(input: PostToolUseInput): Promise<s
     // 5. Mask sensitive data in input
     const maskedInput = maskSensitiveInput(input.tool_input);
 
-    // 6. Apply privacy filter to output
-    const filterResult = applyPrivacyFilter(toolOutput, privacyConfig);
-    const maskedOutput = filterResult.content;
-
-    // 7. Truncate output
-    const truncatedOutput = truncateOutput(maskedOutput, {
-      maxLength: config.maxOutputLength,
-      maxLines: config.maxOutputLines
-    });
+    // 6-7. Apply privacy filter to output and truncate it
+    const truncatedOutput = maskToolOutput(toolOutput);
 
     // 8. Extract metadata
     const metadata = extractMetadata(
@@ -80,9 +114,11 @@ export async function captureToolObservation(input: PostToolUseInput): Promise<s
       toolName: input.tool_name,
       toolInput: maskedInput,
       toolOutput: truncatedOutput,
-      durationMs: 0, // Claude Code doesn't provide timing info
+      // Claude Code sends duration_ms (optional) to both hooks; only the
+      // failure path stores it so far, PostToolUse still stores 0.
+      durationMs: call.durationMs ?? 0,
       success,
-      errorMessage: input.tool_response?.stderr || undefined,
+      errorMessage: call.errorMessage,
       metadata: {
         ...metadata,
         ...(turnId ? { turnId } : {})
