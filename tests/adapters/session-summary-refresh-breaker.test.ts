@@ -53,7 +53,6 @@ describe('summary refresh while the provider circuit is open', () => {
     const service = new MemoryIngestService({
       initialize: async () => {},
       eventStore: store,
-      markdownMirror: { append: async () => {} },
       createToolEmbedding: () => '',
       llmSummaryGenerator: (events) => generateLlmSessionSummary(events)
     });

@@ -43,7 +43,6 @@ describe('LLM session summary refresh on a real store', () => {
     const service = new MemoryIngestService({
       initialize: async () => {},
       eventStore: store,
-      markdownMirror: { append: async () => {} },
       createToolEmbedding: () => '',
       llmSummaryGenerator: generator
     });
@@ -275,7 +274,6 @@ describe('session summary judgment shared by Stop, the pending retries and the s
     const backfill = new MemoryIngestService({
       initialize: async () => {},
       eventStore: store,
-      markdownMirror: { append: async () => {} },
       createToolEmbedding: () => '',
       now: () => now
     });
@@ -287,7 +285,6 @@ describe('session summary judgment shared by Stop, the pending retries and the s
       const service = new MemoryIngestService({
         initialize: async () => {},
         eventStore: store,
-        markdownMirror: { append: async () => {} },
         createToolEmbedding: () => '',
         llmSummaryGenerator: async () => {
           called.push(sessionId);
@@ -311,7 +308,6 @@ describe('session summary judgment shared by Stop, the pending retries and the s
     const service = new MemoryIngestService({
       initialize: async () => {},
       eventStore: store,
-      markdownMirror: { append: async () => {} },
       createToolEmbedding: () => '',
       now: () => now
     });
@@ -352,7 +348,6 @@ describe('a refresh whose replacement fails', () => {
     const service = new MemoryIngestService({
       initialize: async () => {},
       eventStore: store,
-      markdownMirror: { append: async () => {} },
       createToolEmbedding: () => '',
       llmSummaryGenerator: generator,
       now: () => now
@@ -397,7 +392,6 @@ describe('a refresh that repeats an earlier summary', () => {
     const service = new MemoryIngestService({
       initialize: async () => {},
       eventStore: store,
-      markdownMirror: { append: async () => {} },
       createToolEmbedding: () => '',
       llmSummaryGenerator: generator
     });

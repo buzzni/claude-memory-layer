@@ -86,7 +86,7 @@ describe('summary refresh across processes', () => {
       `await store.initialize();`,
       `let called = false;`,
       `const service = new MemoryIngestService({`,
-      `  initialize: async () => {}, eventStore: store, markdownMirror: { append: async () => {} }, createToolEmbedding: () => '',`,
+      `  initialize: async () => {}, eventStore: store, createToolEmbedding: () => '',`,
       `  llmSummaryGenerator: async () => {`,
       `    called = true;`,
       `    await new Promise((resolve) => setTimeout(resolve, 300));`,
