@@ -1,117 +1,185 @@
-import { spawnSync } from 'node:child_process';
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+// @load-sensitive: loads the whole CLI module graph in-process (about 5s cold) to run
+// the registered import commands; under parallel load that nears the unit timeout.
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
-import Database = require('better-sqlite3');
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { tsxArgs, tsxCommand } from '../helpers/tsx-process.js';
+import { Command } from 'commander';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { importExitCode } from '../../src/apps/cli/import-exit-code.js';
+import { FORCE_REIMPORT_LIMIT_REFUSAL, type ImportResult } from '../../src/services/session-history-importer.js';
 
 /**
  * #227: a force reimport the --limit could cut short is skipped and the
- * command exits 1; one the limit cannot reach runs (exit 0); one skipped
- * because the source has nothing to read stays a warning (exit 0).
- * Each source below holds 3 prompts and 3 responses, so it counts 6.
+ * command exits 1; one skipped because the source has nothing to read stays a
+ * warning (exit 0). `import`, `codex import` and `hermes import` all end
+ * through printImportSummary, which takes its exit code from importExitCode.
+ * The importers' own skip decisions are covered without a process in
+ * tests/services/*force-reimport* and tests/core/*validation*.
  */
 
-const LIMIT_SKIP = 'Skipped force reimport (a message limit';
-const UNREADABLE_SKIP = 'Skipped force reimport (no parseable records)';
-const answer = (i: number) => `Step ${i}: ${'The release guard checks the tag against the package version. '.repeat(3)}`;
-
-let home = '';
-let project = '';
-
-function cli(...args: string[]): { status: number | null; output: string } {
-  const result = spawnSync(tsxCommand, tsxArgs('src/apps/cli/index.ts', ...args), {
-    cwd: process.cwd(),
-    env: { ...process.env, HOME: home },
-    encoding: 'utf8'
-  });
-  return { status: result.status, output: `${result.stdout}\n${result.stderr}` };
-}
-
-beforeEach(() => {
-  home = mkdtempSync(path.join(tmpdir(), 'cml-import-force-exit-'));
-  project = path.join(home, 'work', 'app');
-  mkdirSync(project, { recursive: true });
-});
-
-afterEach(() => {
-  rmSync(home, { recursive: true, force: true });
-});
+const limitSkip = (source: string) => `Skipped force reimport (${FORCE_REIMPORT_LIMIT_REFUSAL}): ${source}`;
+const unreadableSkip = (source: string) => `Skipped force reimport (no parseable records): ${source}`;
 
 describe('import --force exit codes', () => {
-  it('claude import', () => {
-    const dir = path.join(home, '.claude', 'projects', project.replace(/[\\/]/g, '-'));
-    mkdirSync(dir, { recursive: true });
-    for (let i = 0; i < 3; i++) {
-      appendFileSync(path.join(dir, 'exit-session.jsonl'), [
-        { type: 'user', message: { role: 'user', content: `please review release step number ${i}` } },
-        { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: answer(i) }] } }
-      ].map((line) => `${JSON.stringify({ sessionId: 'exit-session', timestamp: new Date(Date.UTC(2026, 9, 1, 9, i)).toISOString(), ...line })}\n`).join(''));
-    }
-    const torn = path.join(home, 'torn-session.jsonl');
-    writeFileSync(torn, '{"type":"user","mess\n');
+  it('exits 0 when every session imported', () => {
+    expect(importExitCode({ errors: [] })).toBe(0);
+  });
 
-    const reached = cli('import', '--project', project, '--force', '--limit', '6');
-    expect(reached.status).toBe(1);
-    expect(reached.output).toContain(LIMIT_SKIP);
-    expect(cli('import', '--project', project, '--force', '--limit', '7').status).toBe(0);
-    const unreadable = cli('import', '--project', project, '--session', torn, '--force');
-    expect(unreadable.status).toBe(0);
-    expect(unreadable.output).toContain(UNREADABLE_SKIP);
-  }, 120_000);
+  it('exits 1 when a force reimport was skipped for the message limit', () => {
+    expect(importExitCode({ errors: [limitSkip('/sessions/exit-session.jsonl')] })).toBe(1);
+  });
 
-  it('codex import', () => {
-    const sessionsDir = path.join(home, 'codex-sessions');
-    mkdirSync(sessionsDir);
-    const lines: Array<Record<string, unknown>> = [{ type: 'session_meta', payload: { id: 'codex-exit', cwd: project } }];
-    for (let i = 0; i < 3; i++) {
-      lines.push({ type: 'response_item', payload: { type: 'message', role: 'user', content: `please review release step number ${i}` } });
-      lines.push({ type: 'response_item', payload: { type: 'message', role: 'assistant', content: answer(i) } });
-    }
-    writeFileSync(path.join(sessionsDir, 'rollout-2026-10-01T09-00-00-codex-exit.jsonl'), lines.map((line) => `${JSON.stringify(line)}\n`).join(''));
-    const torn = path.join(home, 'rollout-2026-10-01T09-00-00-codex-torn.jsonl');
-    writeFileSync(torn, `${JSON.stringify({ type: 'session_meta', payload: { id: 'codex-torn', cwd: project } })}\n{"type":"response_item","pay\n`);
-    const codex = (...args: string[]) => cli('codex', 'import', '--project', project, '--sessions-dir', sessionsDir, '--no-process-embeddings', ...args);
+  it('exits 0 when a force reimport was skipped for having no parseable records', () => {
+    expect(importExitCode({ errors: [unreadableSkip('/sessions/torn-session.jsonl')] })).toBe(0);
+  });
 
-    const reached = codex('--force', '--limit', '6');
-    expect(reached.status).toBe(1);
-    expect(reached.output).toContain(LIMIT_SKIP);
-    expect(codex('--force', '--limit', '7').status).toBe(0);
-    const unreadable = codex('--session', torn, '--force');
-    expect(unreadable.status).toBe(0);
-    expect(unreadable.output).toContain(UNREADABLE_SKIP);
-  }, 120_000);
+  it('exits 0 for other import errors', () => {
+    expect(importExitCode({ errors: ['File not found: /sessions/gone.jsonl', 'Failed to import /sessions/a.jsonl: boom'] })).toBe(0);
+  });
 
-  it('hermes import', () => {
-    const stateDb = path.join(home, 'state.db');
-    const db = new Database(stateDb);
-    db.exec(`
-      CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT NOT NULL, user_id TEXT, model TEXT, model_config TEXT,
-        system_prompt TEXT, parent_session_id TEXT, started_at REAL NOT NULL, ended_at REAL, end_reason TEXT,
-        message_count INTEGER DEFAULT 0, tool_call_count INTEGER DEFAULT 0, title TEXT);
-      CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, role TEXT NOT NULL,
-        content TEXT, tool_call_id TEXT, tool_calls TEXT, tool_name TEXT, timestamp REAL NOT NULL);
-    `);
-    const insertSession = db.prepare('INSERT INTO sessions (id, source, started_at) VALUES (?, ?, ?)');
-    const insert = db.prepare('INSERT INTO messages (session_id, role, content, tool_name, timestamp) VALUES (?, ?, ?, ?, ?)');
-    insertSession.run('hermes-exit', 'cli', 1_790_000_000);
-    for (let i = 0; i < 3; i++) {
-      insert.run('hermes-exit', 'user', `please review release step number ${i}`, null, 1_790_000_000 + i * 2);
-      insert.run('hermes-exit', 'assistant', answer(i), null, 1_790_000_001 + i * 2);
-    }
-    insertSession.run('hermes-tools', 'cli', 1_790_000_100);
-    insert.run('hermes-tools', 'tool', 'terminal output', 'terminal', 1_790_000_101);
-    db.close();
-    const hermes = (...args: string[]) => cli('hermes', 'import', '--project', project, '--state-db', stateDb, '--no-process-embeddings', ...args);
+  it('exits 0 when the limit refusal text only appears in another error or a file name', () => {
+    expect(importExitCode({
+      errors: [
+        `Failed to import /sessions/a.jsonl: ${limitSkip('/sessions/a.jsonl')}`,
+        unreadableSkip(`/sessions/Skipped force reimport (${FORCE_REIMPORT_LIMIT_REFUSAL}).jsonl`)
+      ]
+    })).toBe(0);
+  });
 
-    const reached = hermes('--session', 'hermes-exit', '--force', '--limit', '6');
-    expect(reached.status).toBe(1);
-    expect(reached.output).toContain(LIMIT_SKIP);
-    expect(hermes('--session', 'hermes-exit', '--force', '--limit', '7').status).toBe(0);
-    const unreadable = hermes('--session', 'hermes-tools', '--force');
-    expect(unreadable.status).toBe(0);
-    expect(unreadable.output).toContain(UNREADABLE_SKIP);
-  }, 120_000);
+  it('exits 1 when one limit skip sits among other skips and errors', () => {
+    expect(importExitCode({
+      errors: [
+        unreadableSkip('hermes-tools'),
+        'Failed to import /sessions/a.jsonl: boom',
+        limitSkip('hermes-exit'),
+        unreadableSkip('/sessions/torn-session.jsonl')
+      ]
+    })).toBe(1);
+  });
+});
+
+// The registered commands run in this process with the memory service,
+// importers, runners and worker lock replaced, so no CLI process starts and
+// no embedding model loads.
+const fakes = vi.hoisted(() => ({ result: undefined as unknown as ImportResult }));
+
+vi.mock('../../src/services/memory-service.js', async (importOriginal) => {
+  const service = {
+    initialize: async () => {},
+    getEmbeddingModelName: () => 'fake-embedder',
+    ensureEmbeddingModelForImport: async () => ({ changed: false }),
+    processPendingEmbeddings: async () => 0,
+    shutdown: async () => {}
+  };
+  return {
+    ...await importOriginal<object>(),
+    getDefaultMemoryService: () => service,
+    getMemoryServiceForProject: () => service
+  };
+});
+
+vi.mock('../../src/services/session-history-importer.js', async (importOriginal) => ({
+  ...await importOriginal<object>(),
+  createSessionHistoryImporter: () => ({
+    importSessionFile: async () => fakes.result,
+    importProject: async () => fakes.result,
+    importAll: async () => fakes.result
+  })
+}));
+
+vi.mock('../../src/apps/cli/codex-import-runner.js', () => ({
+  runCodexImportOnce: async () => ({ mode: 'project', storageScope: 'project', result: fakes.result, embedCount: 0 })
+}));
+
+vi.mock('../../src/apps/cli/hermes-import-runner.js', () => ({
+  runHermesImportOnce: async () => ({ mode: 'project', storageScope: 'project', result: fakes.result, embedCount: 0 })
+}));
+
+vi.mock('../../src/core/worker-lock.js', () => ({
+  WorkerLock: class {
+    acquire() { return { acquired: true }; }
+    release() {}
+  }
+}));
+
+const importResult = (errors: string[]): ImportResult => ({
+  totalSessions: 1,
+  totalMessages: 6,
+  importedPrompts: 3,
+  importedResponses: 3,
+  skippedDuplicates: 0,
+  errors
+});
+
+let home = '';
+let log: ReturnType<typeof vi.spyOn>;
+let error: ReturnType<typeof vi.spyOn>;
+
+// Commander 12 keeps option values across parses, so every run loads the CLI
+// afresh and catches the program at the module's own program.parse(). A run
+// that fails before the summary would set exit code 1 on its own, so each run
+// must reach the summary without an error.
+async function runCli(...args: string[]): Promise<void> {
+  vi.resetModules();
+  const parse = vi.spyOn(Command.prototype, 'parse').mockImplementationOnce(function (this: Command) {
+    return this;
+  });
+  let program: Command;
+  try {
+    await import('../../src/apps/cli/index.js');
+    program = parse.mock.contexts[0] as Command;
+  } finally {
+    parse.mockRestore();
+  }
+  await program.parseAsync(args, { from: 'user' });
+  expect(error).not.toHaveBeenCalled();
+  expect(log).toHaveBeenCalledWith(expect.stringContaining('Import Complete'));
+}
+
+describe('import commands end with the import exit code', () => {
+  beforeEach(() => {
+    home = mkdtempSync(path.join(tmpdir(), 'cml-import-exit-wiring-'));
+    vi.stubEnv('HOME', home);
+    log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    process.exitCode = undefined;
+  });
+
+  afterEach(() => {
+    process.exitCode = undefined;
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  const project = () => path.join(home, 'work', 'app');
+  const commands: Array<[string, () => string[]]> = [
+    ['import --project', () => ['import', '--project', project(), '--force', '--limit', '6']],
+    ['import --all', () => ['import', '--all', '--force', '--limit', '6']],
+    ['codex import', () => ['codex', 'import', '--project', project(), '--force', '--limit', '6', '--no-process-embeddings']],
+    ['hermes import', () => ['hermes', 'import', '--project', project(), '--force', '--limit', '6', '--no-process-embeddings']]
+  ];
+
+  describe.each(commands)('%s', (_name, args) => {
+    it('exits 1 when a force reimport was skipped for the message limit', async () => {
+      fakes.result = importResult([limitSkip('exit-session')]);
+      await runCli(...args());
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('exits 0 when every session imported', async () => {
+      fakes.result = importResult([]);
+      await runCli(...args());
+      expect(process.exitCode ?? 0).toBe(0);
+    });
+
+    it('keeps an earlier failure exit code', async () => {
+      fakes.result = importResult([unreadableSkip('torn-session')]);
+      process.exitCode = 1;
+      await runCli(...args());
+      expect(process.exitCode).toBe(1);
+    });
+  });
 });
