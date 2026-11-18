@@ -949,6 +949,10 @@ export interface SessionSummarySupersedeResult {
   sessions: number;
   /** Summaries hidden (or, in a dry run, that would be). */
   superseded: number;
+  /** Summaries kept, by `metadata.generated` ("unlabeled" when absent). */
+  keptByKind: Record<string, number>;
+  /** Summaries hidden (or that would be), by `metadata.generated`. */
+  supersededByKind: Record<string, number>;
   samples: SessionSummarySupersedeSample[];
 }
 
