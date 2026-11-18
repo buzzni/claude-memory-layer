@@ -115,14 +115,17 @@ describe('LLM session summary refresh on a real store', () => {
   });
 });
 
-describe('SQLiteEventStore.markEventsSuperseded', () => {
-  it('hides the events from by-id, recent and session reads, but never the replacing event', async () => {
+describe('SQLiteEventStore.append replacing earlier events', () => {
+  const replaces = (eventIds: string[]) => ({ replaces: { eventIds, metadataOnDuplicate: {} } });
+
+  it('hides them from by-id, recent and session reads in the same transaction, never the new event', async () => {
     const store = new SQLiteEventStore(tempDbPath());
     await store.initialize();
     const old = await store.append({ eventType: 'session_summary', sessionId: 's', timestamp: new Date(), content: '- old', metadata: { generated: 'llm' } });
-    const next = await store.append({ eventType: 'session_summary', sessionId: 's', timestamp: new Date(), content: '- new' });
-
-    await expect(store.markEventsSuperseded([old.eventId!, next.eventId!], next.eventId!)).resolves.toBe(1);
+    const next = await store.append(
+      { eventType: 'session_summary', sessionId: 's', timestamp: new Date(), content: '- new' },
+      replaces([old.eventId!])
+    );
 
     expect(await store.getEvent(old.eventId!)).toBeNull();
     expect((await store.getEvents([old.eventId!, next.eventId!])).map((e) => e.id)).toEqual([next.eventId]);
@@ -132,9 +135,6 @@ describe('SQLiteEventStore.markEventsSuperseded', () => {
       generated: 'llm',
       quarantine: { status: 'active', category: 'superseded', supersededBy: next.eventId }
     });
-
-    // Idempotent: an already-hidden event is not rewritten.
-    await expect(store.markEventsSuperseded([old.eventId!], 'another')).resolves.toBe(0);
 
     // One audit row for the one change, without the event's text (#228).
     const audit = sqliteAll<{ operation: string; target_id: string; after_json: string; source_event_ids: string }>(
@@ -152,7 +152,64 @@ describe('SQLiteEventStore.markEventsSuperseded', () => {
 
     await store.close();
   });
+
+  it('stores nothing and hides nothing when hiding fails', async () => {
+    const store = new SQLiteEventStore(tempDbPath());
+    await store.initialize();
+    const old = await store.append({ eventType: 'session_summary', sessionId: 's', timestamp: new Date(), content: '- old' });
+    failSuperseding(store);
+
+    const result = await store.append(
+      { eventType: 'session_summary', sessionId: 's', timestamp: new Date(), content: '- new' },
+      replaces([old.eventId!])
+    );
+
+    expect(result.success).toBe(false);
+    expect((await store.getSessionEvents('s')).map((e) => e.content)).toEqual(['- old']);
+    expect(await store.getSessionEvents('s', { includeQuarantined: true })).toHaveLength(1);
+
+    await store.close();
+  });
+
+  it('keeps an event hidden for another reason hidden when the new content repeats it', async () => {
+    const store = new SQLiteEventStore(tempDbPath());
+    await store.initialize();
+    const secret = await store.append({
+      eventType: 'session_summary',
+      sessionId: 's',
+      timestamp: new Date(1),
+      content: '- 같은 문구',
+      metadata: { quarantine: { status: 'active', category: 'privacy' } }
+    });
+    const current = await store.append({ eventType: 'session_summary', sessionId: 's', timestamp: new Date(2), content: '- 지금 요약' });
+
+    const result = await store.append(
+      { eventType: 'session_summary', sessionId: 's', timestamp: new Date(3), content: '- 같은 문구' },
+      { replaces: { eventIds: [current.eventId!], metadataOnDuplicate: { summarizedExchangeCount: 9 } } }
+    );
+
+    expect(result).toMatchObject({ success: true, eventId: secret.eventId, isDuplicate: true });
+    const visible = await store.getSessionEvents('s');
+    expect(visible.map((e) => e.id)).toEqual([current.eventId]);
+    expect(visible[0].metadata).toMatchObject({ summarizedExchangeCount: 9 });
+
+    await store.close();
+  });
 });
+
+/** Every update that would hide an event as superseded fails, as a busy or full disk would. */
+function failSuperseding(store: SQLiteEventStore): void {
+  store.getDatabase().exec(`
+    CREATE TRIGGER fail_superseding BEFORE UPDATE OF metadata ON events
+    WHEN json_extract(NEW.metadata, '$.quarantine.category') = 'superseded'
+      AND json_extract(NEW.metadata, '$.quarantine.status') = 'active'
+    BEGIN SELECT RAISE(ABORT, 'disk I/O error'); END;
+  `);
+}
+
+function recoverSuperseding(store: SQLiteEventStore): void {
+  store.getDatabase().exec('DROP TRIGGER fail_superseding');
+}
 
 describe('session summary judgment shared by Stop, the pending retries and the session-start backfill', () => {
   const now = new Date('2026-11-18T00:00:00.000Z');
@@ -266,11 +323,11 @@ describe('session summary judgment shared by Stop, the pending retries and the s
     const store = new SQLiteEventStore(tempDbPath());
     await store.initialize();
     await seed(store, 's', { at: daysAgo(1), exchangesBefore: 2, exchangesAfter: MIN_NEW, summary: { summarizedExchangeCount: 2 } });
+    const hiddenMetadata = { quarantine: { status: 'active', category: 'superseded' } };
     // Newer than the visible summary: read it and the coverage would be wrong.
-    const stray = await store.append({ eventType: 'session_summary', sessionId: 's', timestamp: daysAgo(1, 60_000), content: '- 가려진 요약' });
-    await store.markEventsSuperseded([stray.eventId!], 'elsewhere');
+    await store.append({ eventType: 'session_summary', sessionId: 's', timestamp: daysAgo(1, 60_000), content: '- 가려진 요약', metadata: hiddenMetadata });
     const prompt = (await store.getSessionEvents('s')).find((e) => e.eventType === 'user_prompt' && e.content.includes('대화'))!;
-    await store.markEventsSuperseded([prompt.id], 'elsewhere');
+    store.getDatabase().prepare('UPDATE events SET metadata = ? WHERE id = ?').run(JSON.stringify(hiddenMetadata), prompt.id);
     await store.append({ eventType: 'user_prompt', sessionId: 's', timestamp: daysAgo(1, 500), content: '   ' });
 
     const [candidate] = await store.getLlmSummaryCandidates('current', { limit: 5, refreshSince: daysAgo(7) });
@@ -283,17 +340,19 @@ describe('session summary judgment shared by Stop, the pending retries and the s
   });
 });
 
-describe('a refresh whose superseding fails', () => {
-  it('leaves both summaries visible, never none, and the next run hides the old one without a provider call', async () => {
+describe('a refresh whose replacement fails', () => {
+  it('leaves the old summary as the only one, and the session-start backfill picks the session up again', async () => {
     const store = new SQLiteEventStore(tempDbPath());
     await store.initialize();
+    const now = new Date('2026-11-18T00:00:00.000Z');
     const generator = vi.fn(async () => ({ text: '- 결정: 새 요약', metadata: { generated: 'llm' } }));
     const service = new MemoryIngestService({
       initialize: async () => {},
       eventStore: store,
       markdownMirror: { append: async () => {} },
       createToolEmbedding: () => '',
-      llmSummaryGenerator: generator
+      llmSummaryGenerator: generator,
+      now: () => now
     });
     let tick = Date.parse('2026-11-17T00:00:00.000Z');
     const exchange = async (n: number) => {
@@ -309,15 +368,69 @@ describe('a refresh whose superseding fails', () => {
       .filter((e) => e.eventType === 'session_summary')
       .map((e) => e.content);
 
-    const supersede = vi.spyOn(store, 'markEventsSuperseded').mockRejectedValueOnce(new Error('SQLITE_BUSY'));
-    await expect(service.generateLlmSessionSummary('s')).resolves.toBe(true);
-    expect(await summaries()).toEqual(['- 결정: 첫 요약', '- 결정: 새 요약']);
+    failSuperseding(store);
+    await expect(service.generateLlmSessionSummary('s')).rejects.toThrow('disk I/O error');
+    expect(await summaries()).toEqual(['- 결정: 첫 요약']);
+    recoverSuperseding(store);
+
+    // The session-start backfill, then the daemon run it schedules.
+    const due = await service.getSessionsDueForLlmSummary('another-session', 5);
+    expect(due).toEqual(['s']);
+    for (const sessionId of due) await service.generateLlmSessionSummary(sessionId);
+
+    expect(generator).toHaveBeenCalledTimes(2);
+    expect(await summaries()).toEqual(['- 결정: 새 요약']);
+
+    await store.close();
+  });
+});
+
+describe('a refresh that repeats an earlier summary', () => {
+  it('shows that earlier summary again instead of keeping the one in between (A, B, then A)', async () => {
+    const store = new SQLiteEventStore(tempDbPath());
+    await store.initialize();
+    const answers = ['- 결정: aneedle 방식', '- 결정: bneedle 방식', '- 결정: aneedle 방식'];
+    const generator = vi.fn(async () => ({ text: answers.shift()!, metadata: { generated: 'llm' } }));
+    const service = new MemoryIngestService({
+      initialize: async () => {},
+      eventStore: store,
+      markdownMirror: { append: async () => {} },
+      createToolEmbedding: () => '',
+      llmSummaryGenerator: generator
+    });
+    let tick = Date.parse('2026-11-17T00:00:00.000Z');
+    const exchange = async (n: number) => {
+      for (let i = 0; i < n; i++) {
+        await store.append({ eventType: i % 2 ? 'agent_response' : 'user_prompt', sessionId: 's', timestamp: new Date(tick++), content: `대화 ${tick}` });
+      }
+    };
+    const visible = async () => (await store.getSessionEvents('s')).filter((e) => e.eventType === 'session_summary');
 
     await exchange(2);
+    await store.append({ eventType: 'tool_observation', sessionId: 's', timestamp: new Date(tick++), content: '{}' });
+    await service.generateLlmSessionSummary('s');
+    const first = (await visible())[0];
+    await exchange(MIN_NEW);
+    await service.generateLlmSessionSummary('s');
+    expect((await visible()).map((e) => e.content)).toEqual(['- 결정: bneedle 방식']);
+    await exchange(MIN_NEW);
+    await expect(service.generateLlmSessionSummary('s')).resolves.toBe(true);
+
+    const shown = await visible();
+    expect(shown.map((e) => e.id)).toEqual([first.id]);
+    expect(shown[0].metadata).toMatchObject({
+      summarizedExchangeCount: 2 + 2 * MIN_NEW,
+      summaryRefreshes: 2,
+      quarantine: { status: 'released' }
+    });
+    expect(shown[0].metadata?.tags ?? []).not.toContain('quarantine:superseded');
+    expect(await store.keywordSearch('bneedle')).toHaveLength(0);
+    expect((await store.keywordSearch('aneedle')).map((row) => row.event.id)).toEqual([first.id]);
+
+    // Coverage moved with it: the next turn does not call the provider.
+    await exchange(2);
     await expect(service.generateLlmSessionSummary('s')).resolves.toBe(false);
-    expect(generator).toHaveBeenCalledOnce();
-    expect(supersede).toHaveBeenCalledTimes(2);
-    expect(await summaries()).toEqual(['- 결정: 새 요약']);
+    expect(generator).toHaveBeenCalledTimes(3);
 
     await store.close();
   });

@@ -269,6 +269,21 @@ export interface RecentEventsReadOptions extends QuarantineReadOptions {
   eventTypes?: EventType[];
 }
 
+/**
+ * Events an appended one replaces (a refreshed session summary replaces the session's
+ * visible ones), oldest first. append hides them in the transaction that stores the new
+ * event, so the replacement happens entirely or not at all.
+ */
+export interface EventReplacement {
+  eventIds: string[];
+  /** Merged into the event that ends up replacing them when the content is a duplicate. */
+  metadataOnDuplicate: Record<string, unknown>;
+}
+
+export interface AppendOptions {
+  replaces?: EventReplacement;
+}
+
 /** A session the LLM summary backfill may have to summarize (getLlmSummaryCandidates). */
 export interface SessionSummaryCandidate {
   sessionId: string;
@@ -1484,7 +1499,7 @@ export class SQLiteEventStore {
   /**
    * Append event to store (Append-only, Idempotent)
    */
-  async append(input: MemoryEventInput): Promise<AppendResult> {
+  async append(input: MemoryEventInput, options: AppendOptions = {}): Promise<AppendResult> {
     await this.initialize();
 
     const canonicalKey = makeCanonicalKey(input.content);
@@ -1502,6 +1517,10 @@ export class SQLiteEventStore {
     if (existing) {
       try {
         await this.enqueueVectorOutboxEvent(existing.event_id, input.eventType);
+        const replaces = options.replaces;
+        if (replaces) {
+          this.db.transaction(() => this.adoptDuplicateSync(existing.event_id, replaces, new Date().toISOString()))();
+        }
       } catch (error) {
         return {
           success: false,
@@ -1552,6 +1571,7 @@ export class SQLiteEventStore {
         insertDedup.run(dedupeKey, id);
         insertLevel.run(id);
         this.enqueueVectorOutboxEventSync(id, input.eventType);
+        if (options.replaces) this.supersedeEventsSync(options.replaces.eventIds, id, new Date().toISOString());
       });
 
       transaction();
@@ -5471,73 +5491,104 @@ export class SQLiteEventStore {
   }
 
   /**
-   * Hide events that a newer event replaces (a refreshed session summary) from every read
-   * path, by setting the quarantine status those paths already filter on under its own
-   * category. Not a delete: that rebuilds the whole FTS index and would run on every refresh,
-   * and the row, its text and its vectors stay, so clearing the status brings it back.
-   * Each hidden event gets a governance audit row in the same transaction (no event text).
-   * Returns how many events were newly hidden.
-   */
-  async markEventsSuperseded(eventIds: string[], supersededBy: string): Promise<number> {
-    await this.initialize();
-    const targets = eventIds.filter((id) => id !== supersededBy);
-    if (targets.length === 0) return 0;
-
-    const nowIso = new Date().toISOString();
-    const runUpdate = this.db.transaction((): number => {
-      let changed = 0;
-      for (const id of targets) {
-        const row = sqliteGet<{ event_type: string; metadata: unknown }>(
-          this.db,
-          `SELECT event_type, metadata FROM events WHERE id = ?`,
-          [id]
-        );
-        if (!row) continue;
-        const metadata = safeParseMetadataValue(row.metadata) ?? {};
-        if (isActiveQuarantinedMetadata(metadata)) continue;
-        const before = isRecord(metadata.quarantine) ? metadata.quarantine : undefined;
-        metadata.quarantine = {
-          ...(before ?? {}),
-          status: 'active',
-          category: 'superseded',
-          reason: 'superseded by a newer event',
-          supersededBy,
-          detectedAt: nowIso
-        };
-        addMetadataTag(metadata, 'quarantine:superseded');
-        const updated = sqliteRun(this.db, `UPDATE events SET metadata = ? WHERE id = ?`, [JSON.stringify(metadata), id]).changes || 0;
-        if (updated === 0) continue;
-        writeGovernanceAuditEntrySync(this.db, {
-          operation: 'quarantine',
-          actor: 'cml-core',
-          projectHash: metadataProjectHash(metadata),
-          targetType: 'event',
-          targetId: id,
-          beforeJson: { eventType: row.event_type, quarantine: before ?? null },
-          afterJson: { eventType: row.event_type, quarantine: metadata.quarantine as Record<string, unknown> },
-          sourceEventIds: [supersededBy]
-        });
-        changed += updated;
-      }
-      return changed;
-    });
-
-    return runUpdate();
-  }
-
-  /**
    * Shallow-merge `patch` into one event's metadata. Returns false when the event does not exist.
    */
   async mergeEventMetadata(eventId: string, patch: Record<string, unknown>): Promise<boolean> {
     await this.initialize();
-    const runUpdate = this.db.transaction((): boolean => {
-      const row = sqliteGet<{ metadata: unknown }>(this.db, `SELECT metadata FROM events WHERE id = ?`, [eventId]);
-      if (!row) return false;
-      const metadata = { ...(safeParseMetadataValue(row.metadata) ?? {}), ...patch };
-      return (sqliteRun(this.db, `UPDATE events SET metadata = ? WHERE id = ?`, [JSON.stringify(metadata), eventId]).changes || 0) > 0;
-    });
+    return this.db.transaction((): boolean => this.mergeEventMetadataSync(eventId, patch))();
+  }
 
-    return runUpdate();
+  private mergeEventMetadataSync(eventId: string, patch: Record<string, unknown>): boolean {
+    const row = sqliteGet<{ metadata: unknown }>(this.db, `SELECT metadata FROM events WHERE id = ?`, [eventId]);
+    if (!row) return false;
+    const metadata = { ...(safeParseMetadataValue(row.metadata) ?? {}), ...patch };
+    return (sqliteRun(this.db, `UPDATE events SET metadata = ? WHERE id = ?`, [JSON.stringify(metadata), eventId]).changes || 0) > 0;
+  }
+
+  /**
+   * Transaction held: hides events a newer one replaces from every read path, by setting
+   * the quarantine status those paths already filter on, under its own category. Not a
+   * delete: that rebuilds the whole FTS index and would run on every refresh, and the row,
+   * its text and its vectors stay, so clearing the status brings it back. Each hidden
+   * event gets a governance audit row (no event text). Already hidden events are skipped.
+   */
+  private supersedeEventsSync(eventIds: string[], supersededBy: string, nowIso: string): void {
+    for (const id of eventIds) {
+      if (id === supersededBy) continue;
+      const row = sqliteGet<{ event_type: string; metadata: unknown }>(
+        this.db,
+        `SELECT event_type, metadata FROM events WHERE id = ?`,
+        [id]
+      );
+      if (!row) continue;
+      const metadata = safeParseMetadataValue(row.metadata) ?? {};
+      if (isActiveQuarantinedMetadata(metadata)) continue;
+      const before = isRecord(metadata.quarantine) ? metadata.quarantine : undefined;
+      metadata.quarantine = {
+        ...(before ?? {}),
+        status: 'active',
+        category: 'superseded',
+        reason: 'superseded by a newer event',
+        supersededBy,
+        detectedAt: nowIso
+      };
+      addMetadataTag(metadata, 'quarantine:superseded');
+      sqliteRun(this.db, `UPDATE events SET metadata = ? WHERE id = ?`, [JSON.stringify(metadata), id]);
+      this.auditQuarantineChange(id, row.event_type, metadata, before, supersededBy);
+    }
+  }
+
+  /**
+   * Transaction held: a replacement whose text an earlier row of the session already has
+   * (dedupe found it) makes that row the replacement. It is shown again if it was hidden
+   * only as superseded (a decision that went back to an earlier wording), takes the
+   * replacement's metadata, and the other replaced events are hidden. A row hidden for any
+   * other reason stays hidden; the current event (the last replaced one) takes the
+   * metadata instead and stays visible.
+   */
+  private adoptDuplicateSync(existingId: string, replaces: EventReplacement, nowIso: string): void {
+    const row = sqliteGet<{ event_type: string; metadata: unknown }>(
+      this.db,
+      `SELECT event_type, metadata FROM events WHERE id = ?`,
+      [existingId]
+    );
+    if (!row) return;
+    const metadata = safeParseMetadataValue(row.metadata) ?? {};
+    const quarantine = isRecord(metadata.quarantine) ? metadata.quarantine : undefined;
+    const hidden = isActiveQuarantinedMetadata(metadata);
+    if (hidden && quarantine?.category !== 'superseded') {
+      const current = replaces.eventIds.at(-1);
+      if (current) this.mergeEventMetadataSync(current, replaces.metadataOnDuplicate);
+      return;
+    }
+
+    const adopted: Record<string, unknown> = { ...metadata, ...replaces.metadataOnDuplicate };
+    if (hidden) {
+      adopted.quarantine = { ...quarantine, status: 'released', releasedAt: nowIso, releaseReason: 'repeated by its replacement' };
+      if (Array.isArray(adopted.tags)) adopted.tags = adopted.tags.filter((tag) => tag !== 'quarantine:superseded');
+    }
+    sqliteRun(this.db, `UPDATE events SET metadata = ? WHERE id = ?`, [JSON.stringify(adopted), existingId]);
+    if (hidden) this.auditQuarantineChange(existingId, row.event_type, adopted, quarantine, existingId);
+    this.supersedeEventsSync(replaces.eventIds, existingId, nowIso);
+  }
+
+  private auditQuarantineChange(
+    eventId: string,
+    eventType: string,
+    metadata: Record<string, unknown>,
+    before: Record<string, unknown> | undefined,
+    sourceEventId: string
+  ): void {
+    writeGovernanceAuditEntrySync(this.db, {
+      operation: 'quarantine',
+      actor: 'cml-core',
+      projectHash: metadataProjectHash(metadata),
+      targetType: 'event',
+      targetId: eventId,
+      beforeJson: { eventType, quarantine: before ?? null },
+      afterJson: { eventType, quarantine: metadata.quarantine as Record<string, unknown> },
+      sourceEventIds: [sourceEventId]
+    });
   }
 
   /**

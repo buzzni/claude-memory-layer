@@ -5,7 +5,7 @@ import {
 } from '../ingest-interceptor.js';
 import { normalizeTags } from '../tag-taxonomy.js';
 import { createSummaryDeriver, type SummaryDeriver } from '../derive/summary-deriver.js';
-import type { SessionSummaryCandidate } from '../sqlite-event-store.js';
+import type { AppendOptions, EventReplacement, SessionSummaryCandidate } from '../sqlite-event-store.js';
 import type {
   AppendResult,
   MemoryEvent,
@@ -48,10 +48,9 @@ interface SessionUpsertStore {
 }
 
 interface IngestEventStore extends SessionUpsertStore {
-  append(input: MemoryEventInput): Promise<AppendResult>;
+  append(input: MemoryEventInput, options?: AppendOptions): Promise<AppendResult>;
   enqueueForEmbedding(eventId: string, content: string): Promise<unknown>;
   recordCaptureSkipped?(reason: string): Promise<void>;
-  markEventsSuperseded(eventIds: string[], supersededBy: string): Promise<number>;
   mergeEventMetadata(eventId: string, patch: Record<string, unknown>): Promise<boolean>;
 }
 
@@ -266,10 +265,12 @@ export class MemoryIngestService {
     });
   }
 
+  /** `replaces`: the summaries this one replaces, hidden in the same transaction (see EventReplacement). */
   async storeSessionSummary(
     sessionId: string,
     summary: string,
-    metadata?: Record<string, unknown>
+    metadata?: Record<string, unknown>,
+    replaces?: EventReplacement
   ): Promise<AppendResult> {
     return this.ingestEvent({
       operation: 'session_summary',
@@ -280,7 +281,8 @@ export class MemoryIngestService {
         content: summary,
         metadata
       },
-      embeddingContent: summary
+      embeddingContent: summary,
+      appendOptions: replaces ? { replaces } : undefined
     });
   }
 
@@ -367,72 +369,41 @@ export class MemoryIngestService {
       latestSummary.metadata,
       events.slice(0, events.indexOf(latestSummary)).filter(isExchangeEvent).length
     );
-    if (!isLlmSessionSummaryDue({ exchangeCount, summary: coverage }, this.summaryRefresh)) {
-      await this.hideSummariesLeftBehind(previousSummaries);
-      return false;
-    }
+    if (!isLlmSessionSummaryDue({ exchangeCount, summary: coverage }, this.summaryRefresh)) return false;
 
-    // Recorded on the new summary, or on the current one when the refresh
+    // Recorded on the new summary, or on the one that stays when the refresh
     // brings nothing new; otherwise every later turn would call the provider
     // again, and an empty answer would never count toward the cap.
     const covered = {
       summarizedExchangeCount: exchangeCount,
       ...(coverage ? { summaryRefreshes: coverage.refreshes + 1 } : {})
     };
-    const markLatestCovered = async () => {
-      if (!latestSummary) return;
-      await this.eventStore.mergeEventMetadata(latestSummary.id, covered);
-    };
 
     const summary = await this.llmSummaryGenerator(
       events.map((event) => ({ eventType: event.eventType, content: event.content }))
     );
     if (!summary) {
-      await markLatestCovered();
+      if (latestSummary) await this.eventStore.mergeEventMetadata(latestSummary.id, covered);
       return false;
     }
 
     // The store reports write failures as a result, not an exception; true
     // must mean the summary is on disk (or already was), because callers
-    // treat it as done and stop retrying.
-    const stored = await this.storeSessionSummary(sessionId, summary.text, {
-      ...summary.metadata,
-      ...covered
-    });
+    // treat it as done and stop retrying. The old summaries are hidden in the
+    // transaction that stores the new one, so a failure changes nothing and
+    // the session stays due. A summary the session already has (the current
+    // one, or an earlier one the conversation went back to) becomes the
+    // current one instead of a second copy.
+    const stored = await this.storeSessionSummary(
+      sessionId,
+      summary.text,
+      { ...summary.metadata, ...covered },
+      { eventIds: previousSummaries.map((event) => event.id), metadataOnDuplicate: covered }
+    );
     if (!stored.success) {
       throw new Error(`session summary could not be stored: ${stored.error}`);
     }
-    // A duplicate means the provider repeated a summary this session already
-    // has; superseding around it could hide the only one left.
-    if (stored.isDuplicate || !stored.eventId) {
-      await markLatestCovered();
-    } else if (previousSummaries.length > 0) {
-      // Only after the new one is stored, so a failure leaves two summaries
-      // visible, never none. The new one is on disk either way, so this still
-      // reports success; the next run hides what was left behind.
-      try {
-        await this.eventStore.markEventsSuperseded(
-          previousSummaries.map((event) => event.id),
-          stored.eventId
-        );
-      } catch {
-        // see hideSummariesLeftBehind
-      }
-    }
     return true;
-  }
-
-  /**
-   * A refresh whose superseding failed leaves older summaries visible beside
-   * the one it stored. Hides them, without a provider call, but only behind a
-   * summary this class wrote (it records summarizedExchangeCount); sessions
-   * that held several summaries before refreshes existed are left as they are
-   * until their next refresh.
-   */
-  private async hideSummariesLeftBehind(summaries: MemoryEvent[]): Promise<void> {
-    const latest = summaries.at(-1);
-    if (summaries.length < 2 || typeof latest?.metadata?.summarizedExchangeCount !== 'number') return;
-    await this.eventStore.markEventsSuperseded(summaries.slice(0, -1).map((event) => event.id), latest.id);
   }
 
   /** Counts a hook input the capture policy kept out of the store. */
@@ -503,6 +474,7 @@ export class MemoryIngestService {
     operation: IngestOperation;
     input: MemoryEventInput;
     embeddingContent?: string;
+    appendOptions?: AppendOptions;
   }): Promise<AppendResult> {
     const normalizedInput = this.normalizeInput(options.operation, options.input);
 
@@ -513,7 +485,7 @@ export class MemoryIngestService {
     });
 
     try {
-      const result = await this.eventStore.append(normalizedInput);
+      const result = await this.eventStore.append(normalizedInput, options.appendOptions);
       if (result.success === false) {
         await this.ingestInterceptors.run('error', {
           operation: options.operation,

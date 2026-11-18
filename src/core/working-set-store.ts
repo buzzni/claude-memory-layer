@@ -14,6 +14,7 @@ import type {
 } from './types.js';
 import { EventStore } from './event-store.js';
 import { classifyStoredEvent } from './memory-origin.js';
+import { notActiveQuarantinedSql } from './sqlite-event-store.js';
 
 export class WorkingSetStore {
   constructor(
@@ -63,6 +64,7 @@ export class WorkingSetStore {
       `SELECT ws.*, e.*
        FROM working_set ws
        JOIN events e ON ws.event_id = e.id
+       WHERE ${notActiveQuarantinedSql('e.metadata')}
        ORDER BY ws.relevance_score DESC, ws.added_at DESC
        LIMIT ?`,
       [this.config.workingSet.maxEvents]

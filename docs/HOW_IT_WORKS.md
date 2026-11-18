@@ -72,12 +72,17 @@ in [CONFIGURATION.md](CONFIGURATION.md#llm-summaries-and-lessons).
   sessions with a prompt or answer in the last 7 days; an older session is refreshed when its next turn ends. Tune or turn
   it off with `sessionSummaryRefresh` in [`operations.json`](CONFIGURATION.md#optional-features-operationsjson).
 - **One summary per session**: the new summary replaces the old one. The old row is not deleted: it is marked with
-  `quarantine.status: "active"` and category `superseded`, which every search, injection, dashboard and MCP read path
-  already leaves out, and a governance audit row records the change (event id and status only, no text). Clearing that
-  status brings it back. The old one is hidden only after the new one is stored, so a failure leaves two summaries
-  visible, never none; the next run hides the leftover without calling the provider. A failed call, or a call the
-  [provider circuit breaker](OPERATIONS.md#llm-provider-circuit-breaker) skipped, changes nothing, and the old summary
-  stays.
+  `quarantine.status: "active"` and category `superseded`, which the store's reads leave out, and a governance audit row
+  records the change (event id and status only, no text). Clearing that status brings it back. Search, injection, the
+  dashboard API, MCP tools and the Endless Mode working set read through those filters; vector search drops hits of
+  hidden events before ranking and asks the index for more in their place.
+- **All or nothing**: the new summary is stored and the old one hidden in one SQLite transaction. If that fails, nothing
+  changes: the old summary stays the only one and the session stays due, so the next Stop or the SessionStart backfill
+  tries again. A failed call, or a call the [provider circuit breaker](OPERATIONS.md#llm-provider-circuit-breaker)
+  skipped, also changes nothing.
+- **Repeated wording**: if the new summary is word for word the current one, it stays and only its coverage moves. If it
+  repeats an earlier summary that was replaced (the conversation went back to an earlier decision), that earlier row is
+  shown again as the current one and the others are hidden, in the same kind of transaction.
 - **Same rule everywhere**: Stop, the retries of skipped summaries and the SessionStart backfill decide with the same
   function (`isLlmSessionSummaryDue` in `src/core/engine/memory-ingest-service.ts`).
 

@@ -7,7 +7,7 @@ import {
   SUMMARY_REFRESH_BACKFILL_WINDOW_MS,
   type SessionSummaryRefreshPolicy
 } from '../../src/core/engine/memory-ingest-service.js';
-import type { SessionSummaryCandidate } from '../../src/core/sqlite-event-store.js';
+import type { AppendOptions, SessionSummaryCandidate } from '../../src/core/sqlite-event-store.js';
 import type { AppendResult, MemoryEvent, MemoryEventInput, ToolObservationPayload } from '../../src/core/types.js';
 
 const SUMMARY_REFRESH_MIN_NEW_EXCHANGES = DEFAULT_SESSION_SUMMARY_REFRESH.minNewExchanges;
@@ -53,12 +53,11 @@ function createService(options: CreateServiceOptions = {}) {
       _currentSessionId: string,
       _options: { limit: number; refreshSince?: Date }
     ): Promise<SessionSummaryCandidate[]> => []),
-    append: vi.fn(async (input: MemoryEventInput): Promise<AppendResult> => {
+    append: vi.fn(async (input: MemoryEventInput, _options?: AppendOptions): Promise<AppendResult> => {
       appended.push(input);
       return options.appendResult ?? { success: true, eventId: `event-${appended.length}`, isDuplicate: false };
     }),
     enqueueForEmbedding: vi.fn(async (_eventId: string, _content: string) => {}),
-    markEventsSuperseded: vi.fn(async (eventIds: string[], _supersededBy: string) => eventIds.length),
     mergeEventMetadata: vi.fn(async (_eventId: string, _patch: Record<string, unknown>) => true)
   };
   const markdownMirror = {
@@ -492,7 +491,13 @@ describe('MemoryIngestService LLM session summary', () => {
       summarizedExchangeCount: 2 + SUMMARY_REFRESH_MIN_NEW_EXCHANGES,
       summaryRefreshes: 1
     });
-    expect(store.markEventsSuperseded).toHaveBeenCalledWith(['old-summary'], 'event-1');
+    // Replaced in the transaction that stores the new one.
+    expect(store.append.mock.calls[0][1]).toEqual({
+      replaces: {
+        eventIds: ['old-summary'],
+        metadataOnDuplicate: { summarizedExchangeCount: 2 + SUMMARY_REFRESH_MIN_NEW_EXCHANGES, summaryRefreshes: 1 }
+      }
+    });
   });
 
   it('waits for the full refresh bound before calling the provider again', async () => {
@@ -505,7 +510,6 @@ describe('MemoryIngestService LLM session summary', () => {
     await expect(service.generateLlmSessionSummary('s')).resolves.toBe(false);
     expect(generator).not.toHaveBeenCalled();
     expect(appended).toHaveLength(0);
-    expect(store.markEventsSuperseded).not.toHaveBeenCalled();
   });
 
   it('measures growth from the recorded count, not from where the summary row sorts', async () => {
@@ -522,7 +526,7 @@ describe('MemoryIngestService LLM session summary', () => {
     expect(generator).toHaveBeenCalledOnce();
   });
 
-  it('supersedes nothing when the provider repeats a summary the session already has', async () => {
+  it('leaves a repeated summary to the store, which keeps it in one transaction', async () => {
     const { service, store } = createService({
       eventsBySession: { s: grownSession({}, SUMMARY_REFRESH_MIN_NEW_EXCHANGES) },
       appendResult: { success: true, eventId: 'old-summary', isDuplicate: true },
@@ -530,12 +534,11 @@ describe('MemoryIngestService LLM session summary', () => {
     });
 
     await expect(service.generateLlmSessionSummary('s')).resolves.toBe(true);
-    expect(store.markEventsSuperseded).not.toHaveBeenCalled();
-    // Counted as covered, so the next turn does not ask the provider again.
-    expect(store.mergeEventMetadata).toHaveBeenCalledWith('old-summary', {
+    expect(store.append.mock.calls[0][1]?.replaces?.metadataOnDuplicate).toEqual({
       summarizedExchangeCount: 2 + SUMMARY_REFRESH_MIN_NEW_EXCHANGES,
       summaryRefreshes: 1
     });
+    expect(store.mergeEventMetadata).not.toHaveBeenCalled();
   });
 
   it('keeps the old summary, counted as covered, when the refresh finds nothing durable', async () => {
@@ -545,7 +548,7 @@ describe('MemoryIngestService LLM session summary', () => {
     });
 
     await expect(service.generateLlmSessionSummary('s')).resolves.toBe(false);
-    expect(store.markEventsSuperseded).not.toHaveBeenCalled();
+    expect(store.append).not.toHaveBeenCalled();
     expect(store.mergeEventMetadata).toHaveBeenCalledWith('old-summary', {
       summarizedExchangeCount: 2 + SUMMARY_REFRESH_MIN_NEW_EXCHANGES,
       summaryRefreshes: 1
@@ -564,7 +567,6 @@ describe('MemoryIngestService LLM session summary', () => {
     await expect(service.generateLlmSessionSummary('s')).resolves.toBe(false);
     expect(generator).not.toHaveBeenCalled();
     expect(appended).toHaveLength(0);
-    expect(store.markEventsSuperseded).not.toHaveBeenCalled();
   });
 
   it('counts each refresh toward the cap, the empty ones included', async () => {
@@ -608,19 +610,17 @@ describe('MemoryIngestService LLM session summary', () => {
 
     await expect(service.generateLlmSessionSummary('s')).rejects.toBe(circuitOpen);
     expect(appended).toHaveLength(0);
-    expect(store.markEventsSuperseded).not.toHaveBeenCalled();
     expect(store.mergeEventMetadata).not.toHaveBeenCalled();
   });
 
-  it('still reports the stored summary when hiding the old one fails', async () => {
-    const { service, appended, store } = createService({
+  it('throws when the store could not replace the summary, so the session stays due', async () => {
+    const { service } = createService({
       eventsBySession: { s: grownSession({}, SUMMARY_REFRESH_MIN_NEW_EXCHANGES) },
+      appendResult: { success: false, error: 'SQLITE_BUSY' },
       llmSummaryGenerator: async () => ({ text: '- 결정: 새 요약', metadata: {} })
     });
-    store.markEventsSuperseded.mockRejectedValueOnce(new Error('SQLITE_BUSY'));
 
-    await expect(service.generateLlmSessionSummary('s')).resolves.toBe(true);
-    expect(appended).toHaveLength(1);
+    await expect(service.generateLlmSessionSummary('s')).rejects.toThrow('SQLITE_BUSY');
   });
 
   it('records nothing when a first summary finds nothing durable', async () => {
