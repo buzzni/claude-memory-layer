@@ -49,6 +49,15 @@ function ftsTriggers(store: SQLiteEventStore): string[] {
   ).map((row) => row.name);
 }
 
+function relatedRowCounts(store: SQLiteEventStore, eventId: string): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const table of ['events', 'events_fts', 'event_dedup', 'memory_levels', 'embedding_outbox', 'event_citations']) {
+    const column = table === 'events' ? 'id' : 'event_id';
+    counts[table] = sqliteAll<{ n: number }>(store.getDatabase(), `SELECT COUNT(*) AS n FROM ${table} WHERE ${column} = ?`, [eventId])[0].n;
+  }
+  return counts;
+}
+
 const SECRET_CONTENT = 'deploy with token sk-live-do-not-keep';
 
 describe('event deletes write a governance audit row in the same transaction', () => {
@@ -145,26 +154,35 @@ describe('event deletes write a governance audit row in the same transaction', (
 
   it.each([
     ['deleteEventById', async (store: SQLiteEventStore, eventId: string) => store.deleteEventById(eventId, {
-      operation: 'event_delete', actor: ' ', targetType: 'event', targetId: eventId
+      operation: 'event_delete', actor: 'dashboard', targetType: 'event', targetId: eventId
     })],
     ['deleteSessionEvents', async (store: SQLiteEventStore) => store.deleteSessionEvents('s1', {
-      audit: { operation: 'session_reimport', actor: ' ', targetType: 'session', targetId: 's1' }
+      audit: { operation: 'session_reimport', actor: 'cli', targetType: 'session', targetId: 's1' }
     })],
     ['deleteEventsBefore', async (store: SQLiteEventStore) => store.deleteEventsBefore(new Date('2026-02-01T00:00:00.000Z'), undefined, {
-      operation: 'event_delete', actor: ' ', targetType: 'events_before', targetId: '2026-02-01'
+      operation: 'event_delete', actor: 'cli', targetType: 'events_before', targetId: '2026-02-01'
     })]
-  ])('%s rolls the delete back when the audit row cannot be written', async (_name, runDelete) => {
+  ])('%s rolls the delete back when the audit INSERT fails', async (_name, runDelete) => {
     const store = await openStore();
+    const db = store.getDatabase();
     const { eventId } = await store.append({
       eventType: 'user_prompt', sessionId: 's1', timestamp: new Date('2026-01-01T00:00:00.000Z'), content: 'keep me'
     });
+    // Every table the delete cleans up holds a row for the event.
+    db.prepare(`INSERT OR IGNORE INTO embedding_outbox (id, event_id, content, status, retry_count) VALUES ('outbox-1', ?, 'keep me', 'pending', 0)`).run(eventId);
+    db.prepare(`INSERT OR IGNORE INTO event_citations (event_id, citation_id) VALUES (?, 'cite-1')`).run(eventId);
+    const before = relatedRowCounts(store, eventId!);
+    expect(Object.values(before).every((count) => count > 0)).toBe(true);
     const triggersBefore = ftsTriggers(store);
     expect(triggersBefore).toHaveLength(3);
 
-    // An empty actor is rejected by the audit writer, inside the delete transaction.
-    await expect(runDelete(store, eventId!)).rejects.toThrow('actor is required');
+    // The audit INSERT itself fails, inside the delete transaction.
+    db.exec(`CREATE TRIGGER block_audit BEFORE INSERT ON memory_governance_audit BEGIN SELECT RAISE(ABORT, 'audit write blocked'); END`);
+    await expect(runDelete(store, eventId!)).rejects.toThrow('audit write blocked');
+    db.exec('DROP TRIGGER block_audit');
 
     expect(await store.getEvent(eventId!)).not.toBeNull();
+    expect(relatedRowCounts(store, eventId!)).toEqual(before);
     expect(deletionAuditRows(store)).toEqual([]);
     // The FTS triggers dropped inside the rolled-back transaction are back, and still sync.
     expect(ftsTriggers(store)).toEqual(triggersBefore);
