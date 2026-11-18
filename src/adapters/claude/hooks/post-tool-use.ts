@@ -55,7 +55,10 @@ export async function captureToolFailure(input: PostToolUseFailureInput): Promis
   return storeToolCall(input, {
     toolOutput: error,
     success: false,
-    errorMessage: maskToolOutput(error) || undefined
+    errorMessage: maskToolOutput(error) || undefined,
+    durationMs: typeof input.duration_ms === 'number' && Number.isFinite(input.duration_ms) && input.duration_ms >= 0
+      ? input.duration_ms
+      : 0
   });
 }
 
@@ -75,7 +78,7 @@ function maskToolOutput(text: string): string {
 /** Stores one tool call as a tool_observation, through the capture policy (steps 4.6-10). */
 async function storeToolCall(
   input: Pick<PostToolUseInput, 'session_id' | 'agent_id' | 'agent_type' | 'tool_name' | 'tool_input'>,
-  call: { toolOutput: string; success: boolean; errorMessage?: string }
+  call: { toolOutput: string; success: boolean; errorMessage?: string; durationMs?: number }
 ): Promise<string> {
   const { toolOutput, success } = call;
 
@@ -111,7 +114,9 @@ async function storeToolCall(
       toolName: input.tool_name,
       toolInput: maskedInput,
       toolOutput: truncatedOutput,
-      durationMs: 0, // Claude Code doesn't provide timing info
+      // Claude Code sends duration_ms (optional) to both hooks; only the
+      // failure path stores it so far, PostToolUse still stores 0.
+      durationMs: call.durationMs ?? 0,
       success,
       errorMessage: call.errorMessage,
       metadata: {

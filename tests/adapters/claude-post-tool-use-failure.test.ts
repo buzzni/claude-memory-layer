@@ -74,6 +74,7 @@ interface StoredObservation {
     toolName: string;
     toolInput: Record<string, unknown>;
     toolOutput: string;
+    durationMs: number;
     success: boolean;
     errorMessage?: string;
     metadata?: Record<string, unknown>;
@@ -112,6 +113,7 @@ describe('PostToolUseFailure hook', () => {
       toolName: 'Bash',
       toolInput: { command: 'npm test' },
       toolOutput: 'Exit code 1',
+      durationMs: 12,
       success: false,
       errorMessage: 'Exit code 1'
     });
@@ -149,17 +151,35 @@ describe('PostToolUseFailure hook', () => {
     }
   });
 
-  it('truncates a long error the way PostToolUse truncates output', async () => {
-    const error = `Exit code 1\n${Array.from({ length: 500 }, (_, i) => `line ${i} ${'x'.repeat(80)}`).join('\n')}`;
-    await runFailureHook(failure({ tool_name: 'Bash', tool_input: { command: 'npm test' }, error }));
+  it('keeps the first and last 50 lines of an error longer than 100 lines, like PostToolUse output', async () => {
+    const lines = ['Exit code 1', ...Array.from({ length: 299 }, (_, i) => `line ${i}`)];
+    await runFailureHook(failure({ tool_name: 'Bash', tool_input: { command: 'npm test' }, error: lines.join('\n') }));
 
     const [stored] = storedObservations();
-    expect(stored.content.toolOutput.startsWith('Exit code 1\nline 0 ')).toBe(true);
-    expect(stored.content.toolOutput.length).toBeLessThan(error.length);
+    const marker = '\n... [200 lines truncated] ...\n';
+    expect(stored.content.toolOutput).toBe([...lines.slice(0, 50), marker, ...lines.slice(-50)].join('\n'));
     expect(stored.content.errorMessage).toBe(stored.content.toolOutput);
   });
 
-  it('stores an aborted call (is_interrupt) once, as a failure without an error message when it has none', async () => {
+  it('keeps the first and last 5000 characters of an error longer than 10000 characters, like PostToolUse output', async () => {
+    const error = `Exit code 1\n${'a'.repeat(8000)}${'z'.repeat(8000)}`;
+    await runFailureHook(failure({ tool_name: 'Bash', tool_input: { command: 'npm test' }, error }));
+
+    const [stored] = storedObservations();
+    const marker = `\n... [${error.length - 10_000} characters truncated] ...\n`;
+    expect(stored.content.toolOutput).toBe(`${error.slice(0, 5000)}${marker}${error.slice(-5000)}`);
+    expect(stored.content.errorMessage).toBe(stored.content.toolOutput);
+  });
+
+  it('stores the duration Claude Code reports, and 0 when it is missing or not a number', async () => {
+    await runFailureHook(failure({ tool_name: 'Bash', tool_input: { command: 'a' }, error: 'Exit code 1', duration_ms: 4187 }));
+    await runFailureHook(failure({ tool_name: 'Bash', tool_input: { command: 'b' }, error: 'Exit code 1', duration_ms: '4187' }));
+    await runFailureHook(failure({ tool_name: 'Bash', tool_input: { command: 'c' }, error: 'Exit code 1', duration_ms: undefined }));
+
+    expect(storedObservations().map((stored) => stored.content.durationMs)).toEqual([4187, 0, 0]);
+  });
+
+  it('stores one row for one aborted call (is_interrupt), with no error message when it has none', async () => {
     await runFailureHook(failure({ tool_name: 'Bash', tool_input: { command: 'sleep 100' }, is_interrupt: true }));
 
     const stored = storedObservations();
