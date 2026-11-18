@@ -77,7 +77,8 @@ describe('VectorStore V2 upsert', () => {
 
     expect(mocks.connect).toHaveBeenCalledWith('/tmp/cml-vectors');
     expect(mocks.db.openTable).toHaveBeenCalledWith('conversations');
-    expect(table.delete).toHaveBeenCalledWith("id = 'record-''one'");
+    // The legacy table also drops other rows of the same event: one vector per event.
+    expect(table.delete).toHaveBeenCalledWith("id = 'record-''one' OR `eventId` IN ('event-1')");
     expect(table.add).toHaveBeenCalledWith([
       expect.objectContaining({
         id: "record-'one",
@@ -86,6 +87,29 @@ describe('VectorStore V2 upsert', () => {
         metadata: '{}'
       })
     ]);
+  });
+
+  it('writes one row per event of a default-table batch, the last one, and keeps every row without an event', async () => {
+    const table = mocks.makeTable('conversations');
+    const store = new VectorStore('/tmp/cml-vectors');
+
+    await store.upsertBatch([
+      record({ id: 'vec_job-1', eventId: 'event-1', content: 'first embedding' }),
+      record({ id: 'vec_other', eventId: 'event-2' }),
+      record({ id: 'vec_job-2', eventId: 'event-1', content: 'queued later' }),
+      record({ id: 'vec_free-1', eventId: '' }),
+      record({ id: 'vec_free-2', eventId: '' })
+    ]);
+
+    expect(table.add).toHaveBeenCalledWith([
+      expect.objectContaining({ id: 'vec_other', eventId: 'event-2' }),
+      expect.objectContaining({ id: 'vec_job-2', eventId: 'event-1', content: 'queued later' }),
+      expect.objectContaining({ id: 'vec_free-1' }),
+      expect.objectContaining({ id: 'vec_free-2' })
+    ]);
+    expect(table.delete).toHaveBeenCalledWith(
+      "id IN ('vec_other', 'vec_job-2', 'vec_free-1', 'vec_free-2') OR `eventId` IN ('event-2', 'event-1')"
+    );
   });
 
   it('uses deterministic item-kind/version table names for vector outbox records', async () => {

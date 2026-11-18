@@ -172,7 +172,7 @@ describe('createMemoryEngineServices', () => {
           scope: { project: { hash: 'project-1', path: '/workspace/project' } },
           tags: ['proj:project-1']
         })
-      }));
+      }), undefined);
       expect(sqliteStore.enqueueForEmbedding).toHaveBeenCalledWith('event:user_prompt', 'remember factory wiring');
       expect(mdMirror.append).toHaveBeenCalledWith(expect.any(Object), 'event:user_prompt');
 

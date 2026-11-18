@@ -3,6 +3,8 @@ import * as net from 'net';
 import * as os from 'os';
 import * as path from 'path';
 import { DISABLED_SHARED_STORE_CONFIG, MemoryService } from '../../../services/memory-service.js';
+import { DISABLED_MEMORY_OPERATIONS_CONFIG } from '../../../services/memory-service-config.js';
+import { loadMemoryOperationsConfig } from '../../../services/operations-config-loader.js';
 import { getProjectStoragePath, hashProjectPath, resolveProjectAnchorPath } from '../../../core/registry/project-path.js';
 import { getSessionProject } from '../../../core/registry/session-registry.js';
 import { WorkerLock } from '../../../core/worker-lock.js';
@@ -300,6 +302,13 @@ async function runSessionSummaryWithWriterLock(sessionId: string): Promise<Summa
     readOnly: false,
     analyticsEnabled: false,
     sharedStoreConfig: DISABLED_SHARED_STORE_CONFIG,
+    // Only the summary refresh policy from operations.json; every other
+    // operations flag stays off here, as it was before the policy existed.
+    operations: {
+      ...DISABLED_MEMORY_OPERATIONS_CONFIG,
+      sessionSummaryRefresh: loadMemoryOperationsConfig()?.sessionSummaryRefresh
+        ?? DISABLED_MEMORY_OPERATIONS_CONFIG.sessionSummaryRefresh
+    },
     llmSummaryGenerator: (events) => {
       providerCalled = true;
       return generateLlmSessionSummary(events);

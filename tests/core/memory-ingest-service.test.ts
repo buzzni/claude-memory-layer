@@ -1,7 +1,16 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { MemoryIngestService } from '../../src/core/engine/memory-ingest-service.js';
+import {
+  DEFAULT_SESSION_SUMMARY_REFRESH,
+  isLlmSessionSummaryDue,
+  MemoryIngestService,
+  SUMMARY_REFRESH_BACKFILL_WINDOW_MS,
+  type SessionSummaryRefreshPolicy
+} from '../../src/core/engine/memory-ingest-service.js';
+import type { AppendOptions, SessionSummaryCandidate } from '../../src/core/sqlite-event-store.js';
 import type { AppendResult, MemoryEvent, MemoryEventInput, ToolObservationPayload } from '../../src/core/types.js';
+
+const SUMMARY_REFRESH_MIN_NEW_EXCHANGES = DEFAULT_SESSION_SUMMARY_REFRESH.minNewExchanges;
 
 function event(overrides: Partial<MemoryEvent>): MemoryEvent {
   return {
@@ -28,6 +37,8 @@ interface CreateServiceOptions {
   llmSummaryGenerator?: (
     events: Array<{ eventType: string; content: string }>
   ) => Promise<{ text: string; metadata: Record<string, unknown> } | null>;
+  summaryRefresh?: SessionSummaryRefreshPolicy;
+  now?: () => Date;
 }
 
 function createService(options: CreateServiceOptions = {}) {
@@ -38,11 +49,16 @@ function createService(options: CreateServiceOptions = {}) {
     upsertSession: vi.fn(async () => {}),
     getSessionEvents: vi.fn(async (sessionId: string) => eventsBySession[sessionId] ?? []),
     getSessionsWithoutSummary: vi.fn(async () => Object.keys(eventsBySession)),
-    append: vi.fn(async (input: MemoryEventInput): Promise<AppendResult> => {
+    getLlmSummaryCandidates: vi.fn(async (
+      _currentSessionId: string,
+      _options: { limit: number; refreshSince?: Date }
+    ): Promise<SessionSummaryCandidate[]> => []),
+    append: vi.fn(async (input: MemoryEventInput, _options?: AppendOptions): Promise<AppendResult> => {
       appended.push(input);
       return options.appendResult ?? { success: true, eventId: `event-${appended.length}`, isDuplicate: false };
     }),
-    enqueueForEmbedding: vi.fn(async (_eventId: string, _content: string) => {})
+    enqueueForEmbedding: vi.fn(async (_eventId: string, _content: string) => {}),
+    mergeEventMetadata: vi.fn(async (_eventId: string, _patch: Record<string, unknown>) => true)
   };
   const markdownMirror = {
     append: vi.fn(async (_input: MemoryEventInput, _eventId?: string) => {})
@@ -58,7 +74,9 @@ function createService(options: CreateServiceOptions = {}) {
       getProjectHash: () => options.projectHash ?? null,
       getProjectPath: () => options.projectPath ?? null,
       perspectiveDeriver: options.perspectiveDeriver,
-      llmSummaryGenerator: options.llmSummaryGenerator
+      llmSummaryGenerator: options.llmSummaryGenerator,
+      summaryRefresh: options.summaryRefresh,
+      now: options.now
     }),
     initialize,
     store,
@@ -417,7 +435,7 @@ describe('MemoryIngestService LLM session summary', () => {
     expect(appended).toHaveLength(0);
   });
 
-  it('skips sessions that already have a summary', async () => {
+  it('skips sessions whose summary already covers the conversation', async () => {
     const generator = vi.fn(async () => ({ text: '- x', metadata: {} }));
     const { service, appended } = createService({
       eventsBySession: {
@@ -431,6 +449,190 @@ describe('MemoryIngestService LLM session summary', () => {
     expect(appended).toHaveLength(0);
   });
 
+  function grownSession(previousSummary: Partial<MemoryEvent>, laterExchanges: number): MemoryEvent[] {
+    const later = Array.from({ length: laterExchanges }, (_, i) => event({
+      id: `later-${i}`,
+      sessionId: 's',
+      eventType: i % 2 === 0 ? 'user_prompt' : 'agent_response',
+      content: `후속 ${i}`
+    }));
+    return [
+      ...sessionEvents,
+      event({ id: 'old-summary', sessionId: 's', eventType: 'session_summary', content: '- 결정: 첫 요약', ...previousSummary }),
+      ...later
+    ];
+  }
+
+  it('records how many prompt/answer events the summary was built from', async () => {
+    const { service, appended } = createService({
+      eventsBySession: { s: sessionEvents },
+      llmSummaryGenerator: async () => ({ text: '- 결정: x', metadata: { generated: 'llm' } })
+    });
+
+    await service.generateLlmSessionSummary('s');
+    expect(appended[0].metadata).toMatchObject({ generated: 'llm', summarizedExchangeCount: 2 });
+  });
+
+  it('refreshes a summary once the session has gained enough conversation, and supersedes the old one', async () => {
+    const generator = vi.fn(async (_events: Array<{ eventType: string; content: string }>) => ({
+      text: '- 결정: 새 요약',
+      metadata: { generated: 'llm' }
+    }));
+    const { service, appended, store } = createService({
+      eventsBySession: { s: grownSession({}, SUMMARY_REFRESH_MIN_NEW_EXCHANGES) },
+      llmSummaryGenerator: generator
+    });
+
+    await expect(service.generateLlmSessionSummary('s')).resolves.toBe(true);
+    // The old summary goes to the generator as prior findings.
+    expect(generator.mock.calls[0][0]).toContainEqual({ eventType: 'session_summary', content: '- 결정: 첫 요약' });
+    expect(appended).toHaveLength(1);
+    expect(appended[0].metadata).toMatchObject({
+      summarizedExchangeCount: 2 + SUMMARY_REFRESH_MIN_NEW_EXCHANGES,
+      summaryRefreshes: 1
+    });
+    // Replaced in the transaction that stores the new one.
+    expect(store.append.mock.calls[0][1]).toEqual({
+      replaces: {
+        eventIds: ['old-summary'],
+        metadataOnDuplicate: { summarizedExchangeCount: 2 + SUMMARY_REFRESH_MIN_NEW_EXCHANGES, summaryRefreshes: 1 }
+      }
+    });
+  });
+
+  it('waits for the full refresh bound before calling the provider again', async () => {
+    const generator = vi.fn(async () => ({ text: '- x', metadata: {} }));
+    const { service, appended, store } = createService({
+      eventsBySession: { s: grownSession({}, SUMMARY_REFRESH_MIN_NEW_EXCHANGES - 1) },
+      llmSummaryGenerator: generator
+    });
+
+    await expect(service.generateLlmSessionSummary('s')).resolves.toBe(false);
+    expect(generator).not.toHaveBeenCalled();
+    expect(appended).toHaveLength(0);
+  });
+
+  it('measures growth from the recorded count, not from where the summary row sorts', async () => {
+    // Recorded at 2 exchanges, but every later event sorts before the summary
+    // row (e.g. imported with its original timestamps).
+    const events = grownSession({}, SUMMARY_REFRESH_MIN_NEW_EXCHANGES);
+    const summary = events.find((e) => e.id === 'old-summary')!;
+    summary.metadata = { summarizedExchangeCount: 2 };
+    const reordered = [...events.filter((e) => e !== summary), summary];
+    const generator = vi.fn(async () => ({ text: '- x', metadata: {} }));
+    const { service } = createService({ eventsBySession: { s: reordered }, llmSummaryGenerator: generator });
+
+    await expect(service.generateLlmSessionSummary('s')).resolves.toBe(true);
+    expect(generator).toHaveBeenCalledOnce();
+  });
+
+  it('leaves a repeated summary to the store, which keeps it in one transaction', async () => {
+    const { service, store } = createService({
+      eventsBySession: { s: grownSession({}, SUMMARY_REFRESH_MIN_NEW_EXCHANGES) },
+      appendResult: { success: true, eventId: 'old-summary', isDuplicate: true },
+      llmSummaryGenerator: async () => ({ text: '- 결정: 첫 요약', metadata: {} })
+    });
+
+    await expect(service.generateLlmSessionSummary('s')).resolves.toBe(true);
+    expect(store.append.mock.calls[0][1]?.replaces?.metadataOnDuplicate).toEqual({
+      summarizedExchangeCount: 2 + SUMMARY_REFRESH_MIN_NEW_EXCHANGES,
+      summaryRefreshes: 1
+    });
+    expect(store.mergeEventMetadata).not.toHaveBeenCalled();
+  });
+
+  it('keeps the old summary, counted as covered, when the refresh finds nothing durable', async () => {
+    const { service, store } = createService({
+      eventsBySession: { s: grownSession({}, SUMMARY_REFRESH_MIN_NEW_EXCHANGES) },
+      llmSummaryGenerator: async () => null
+    });
+
+    await expect(service.generateLlmSessionSummary('s')).resolves.toBe(false);
+    expect(store.append).not.toHaveBeenCalled();
+    expect(store.mergeEventMetadata).toHaveBeenCalledWith('old-summary', {
+      summarizedExchangeCount: 2 + SUMMARY_REFRESH_MIN_NEW_EXCHANGES,
+      summaryRefreshes: 1
+    });
+  });
+
+  it('stops refreshing at the per-session cap', async () => {
+    const generator = vi.fn(async () => ({ text: '- x', metadata: {} }));
+    const { service, appended, store } = createService({
+      eventsBySession: {
+        s: grownSession({ metadata: { summarizedExchangeCount: 2, summaryRefreshes: DEFAULT_SESSION_SUMMARY_REFRESH.maxRefreshesPerSession } }, 4 * SUMMARY_REFRESH_MIN_NEW_EXCHANGES)
+      },
+      llmSummaryGenerator: generator
+    });
+
+    await expect(service.generateLlmSessionSummary('s')).resolves.toBe(false);
+    expect(generator).not.toHaveBeenCalled();
+    expect(appended).toHaveLength(0);
+  });
+
+  it('counts each refresh toward the cap, the empty ones included', async () => {
+    const { service, store } = createService({
+      eventsBySession: { s: grownSession({ metadata: { summarizedExchangeCount: 2, summaryRefreshes: 1 } }, SUMMARY_REFRESH_MIN_NEW_EXCHANGES) },
+      llmSummaryGenerator: async () => null
+    });
+
+    await service.generateLlmSessionSummary('s');
+    expect(store.mergeEventMetadata).toHaveBeenCalledWith('old-summary', {
+      summarizedExchangeCount: 2 + SUMMARY_REFRESH_MIN_NEW_EXCHANGES,
+      summaryRefreshes: 2
+    });
+  });
+
+  it('follows the configured policy', async () => {
+    const generator = vi.fn(async () => ({ text: '- x', metadata: {} }));
+    const fourLater = grownSession({}, 4);
+    const tuned = createService({
+      eventsBySession: { s: fourLater },
+      llmSummaryGenerator: generator,
+      summaryRefresh: { enabled: true, minNewExchanges: 4, maxRefreshesPerSession: 1 }
+    });
+    await expect(tuned.service.generateLlmSessionSummary('s')).resolves.toBe(true);
+
+    const off = createService({
+      eventsBySession: { s: grownSession({}, 4 * SUMMARY_REFRESH_MIN_NEW_EXCHANGES) },
+      llmSummaryGenerator: generator,
+      summaryRefresh: { ...DEFAULT_SESSION_SUMMARY_REFRESH, enabled: false }
+    });
+    await expect(off.service.generateLlmSessionSummary('s')).resolves.toBe(false);
+    expect(generator).toHaveBeenCalledOnce();
+  });
+
+  it('changes nothing when the provider call fails, so the old summary stays and the session stays due', async () => {
+    const circuitOpen = Object.assign(new Error('skipped'), { code: 'provider-circuit-open' });
+    const { service, appended, store } = createService({
+      eventsBySession: { s: grownSession({}, SUMMARY_REFRESH_MIN_NEW_EXCHANGES) },
+      llmSummaryGenerator: async () => { throw circuitOpen; }
+    });
+
+    await expect(service.generateLlmSessionSummary('s')).rejects.toBe(circuitOpen);
+    expect(appended).toHaveLength(0);
+    expect(store.mergeEventMetadata).not.toHaveBeenCalled();
+  });
+
+  it('throws when the store could not replace the summary, so the session stays due', async () => {
+    const { service } = createService({
+      eventsBySession: { s: grownSession({}, SUMMARY_REFRESH_MIN_NEW_EXCHANGES) },
+      appendResult: { success: false, error: 'SQLITE_BUSY' },
+      llmSummaryGenerator: async () => ({ text: '- 결정: 새 요약', metadata: {} })
+    });
+
+    await expect(service.generateLlmSessionSummary('s')).rejects.toThrow('SQLITE_BUSY');
+  });
+
+  it('records nothing when a first summary finds nothing durable', async () => {
+    const { service, store } = createService({
+      eventsBySession: { s: sessionEvents },
+      llmSummaryGenerator: async () => null
+    });
+
+    await expect(service.generateLlmSessionSummary('s')).resolves.toBe(false);
+    expect(store.mergeEventMetadata).not.toHaveBeenCalled();
+  });
+
   it('is inert when no generator is configured', async () => {
     const { service, appended } = createService({ eventsBySession: { s: sessionEvents } });
     await expect(service.generateLlmSessionSummary('s')).resolves.toBe(false);
@@ -438,14 +640,87 @@ describe('MemoryIngestService LLM session summary', () => {
   });
 });
 
-describe('MemoryIngestService.getSessionsWithoutSummary', () => {
-  it('delegates to the event store without generating a rule-based summary', async () => {
-    const { service, store } = createService({
-      eventsBySession: { s: [] }
-    });
-    store.getSessionsWithoutSummary = vi.fn(async () => ['a', 'b']);
+describe('isLlmSessionSummaryDue', () => {
+  const policy = DEFAULT_SESSION_SUMMARY_REFRESH;
+  const summarized = (exchangeCount: number, coveredExchanges: number, refreshes = 0) =>
+    ({ exchangeCount, summary: { coveredExchanges, refreshes } });
 
-    await expect(service.getSessionsWithoutSummary('current', 5)).resolves.toEqual(['a', 'b']);
-    expect(store.getSessionsWithoutSummary).toHaveBeenCalledWith('current', 5);
+  it('is due for a session without a summary, whatever the refresh policy', () => {
+    expect(isLlmSessionSummaryDue({ exchangeCount: 2 }, policy)).toBe(true);
+    expect(isLlmSessionSummaryDue({ exchangeCount: 2 }, { ...policy, enabled: false })).toBe(true);
+  });
+
+  it('is due once the session has gained minNewExchanges since its summary, not one before', () => {
+    expect(isLlmSessionSummaryDue(summarized(2 + policy.minNewExchanges - 1, 2), policy)).toBe(false);
+    expect(isLlmSessionSummaryDue(summarized(2 + policy.minNewExchanges, 2), policy)).toBe(true);
+  });
+
+  it('stops at maxRefreshesPerSession, and never refreshes when turned off', () => {
+    const grown = 2 + 10 * policy.minNewExchanges;
+    expect(isLlmSessionSummaryDue(summarized(grown, 2, policy.maxRefreshesPerSession - 1), policy)).toBe(true);
+    expect(isLlmSessionSummaryDue(summarized(grown, 2, policy.maxRefreshesPerSession), policy)).toBe(false);
+    expect(isLlmSessionSummaryDue(summarized(grown, 2), { ...policy, enabled: false })).toBe(false);
+    expect(isLlmSessionSummaryDue(summarized(grown, 2), { ...policy, maxRefreshesPerSession: 0 })).toBe(false);
+  });
+});
+
+describe('MemoryIngestService.getSessionsDueForLlmSummary', () => {
+  const now = new Date('2026-11-18T00:00:00.000Z');
+  const candidates: SessionSummaryCandidate[] = [
+    { sessionId: 'unsummarized', lastEventAt: '2026-11-17T05:00:00.000Z' },
+    {
+      sessionId: 'grown',
+      lastEventAt: '2026-11-17T04:00:00.000Z',
+      summary: { exchangeCount: 12, exchangesBeforeSummary: 2, metadata: { summarizedExchangeCount: 2 } }
+    },
+    {
+      sessionId: 'not-grown-enough',
+      lastEventAt: '2026-11-17T03:00:00.000Z',
+      summary: { exchangeCount: 11, exchangesBeforeSummary: 2, metadata: { summarizedExchangeCount: 2 } }
+    },
+    {
+      sessionId: 'capped',
+      lastEventAt: '2026-11-17T02:00:00.000Z',
+      summary: { exchangeCount: 60, exchangesBeforeSummary: 2, metadata: { summarizedExchangeCount: 2, summaryRefreshes: 3 } }
+    },
+    {
+      // Written before refreshes existed: coverage is what was stored before it.
+      sessionId: 'legacy-grown',
+      lastEventAt: '2026-11-17T01:00:00.000Z',
+      summary: { exchangeCount: 12, exchangesBeforeSummary: 2, metadata: { generated: 'llm' } }
+    }
+  ];
+
+  it('lists sessions without a summary and summaries due for a refresh, most recent first, up to the limit', async () => {
+    const { service, store } = createService({ now: () => now });
+    store.getLlmSummaryCandidates.mockResolvedValue(candidates);
+
+    await expect(service.getSessionsDueForLlmSummary('current', 5)).resolves.toEqual(['unsummarized', 'grown', 'legacy-grown']);
+    await expect(service.getSessionsDueForLlmSummary('current', 2)).resolves.toEqual(['unsummarized', 'grown']);
+    expect(store.getLlmSummaryCandidates).toHaveBeenCalledWith('current', {
+      limit: 5,
+      refreshSince: new Date(now.getTime() - SUMMARY_REFRESH_BACKFILL_WINDOW_MS)
+    });
+  });
+
+  it('asks only for unsummarized sessions when refreshes are off', async () => {
+    const { service, store } = createService({
+      now: () => now,
+      summaryRefresh: { ...DEFAULT_SESSION_SUMMARY_REFRESH, enabled: false }
+    });
+    store.getLlmSummaryCandidates.mockResolvedValue(candidates);
+
+    await expect(service.getSessionsDueForLlmSummary('current', 5)).resolves.toEqual(['unsummarized']);
+    expect(store.getLlmSummaryCandidates).toHaveBeenCalledWith('current', { limit: 5, refreshSince: undefined });
+  });
+
+  it('never generates a summary itself', async () => {
+    const generator = vi.fn(async () => ({ text: '- x', metadata: {} }));
+    const { service, store, appended } = createService({ llmSummaryGenerator: generator });
+    store.getLlmSummaryCandidates.mockResolvedValue(candidates);
+
+    await service.getSessionsDueForLlmSummary('current', 5);
+    expect(generator).not.toHaveBeenCalled();
+    expect(appended).toHaveLength(0);
   });
 });

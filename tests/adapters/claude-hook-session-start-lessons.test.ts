@@ -53,7 +53,7 @@ function createService(usage: () => Promise<Map<string, { exposures: number; eng
   return {
     startSession: vi.fn().mockResolvedValue(undefined),
     evaluatePendingSessions: vi.fn().mockResolvedValue(undefined),
-    getSessionsWithoutSummary: vi.fn().mockResolvedValue([]),
+    getSessionsDueForLlmSummary: vi.fn().mockResolvedValue([]),
     backfillMissingSummaries: vi.fn().mockResolvedValue(undefined),
     getCoreMemoryBlockInjections: vi.fn().mockResolvedValue([]),
     listProjectLessonInjections: vi.fn().mockResolvedValue([

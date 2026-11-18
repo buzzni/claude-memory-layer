@@ -48,7 +48,7 @@ function answer(id: string, sessionId: string, content: string, timestamp: Date)
 function createService(recentEvents: unknown[]) {
   return {
     startSession: vi.fn().mockResolvedValue(undefined),
-    getSessionsWithoutSummary: vi.fn().mockResolvedValue([]),
+    getSessionsDueForLlmSummary: vi.fn().mockResolvedValue([]),
     backfillMissingSummaries: vi.fn().mockResolvedValue(undefined),
     getCoreMemoryBlockInjections: vi.fn().mockResolvedValue([]),
     listProjectLessonInjections: vi.fn().mockResolvedValue([]),

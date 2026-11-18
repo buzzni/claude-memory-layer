@@ -44,7 +44,7 @@ SQLite is the canonical source of truth and LanceDB is a derived accelerator tha
 | PostToolUseFailure | Stores a tool call that failed while running, as a tool observation with `success: false` and the error text ([below](#failed-tool-calls)) |
 | PreCompact | Saves a checkpoint of where the session stood right before Claude Code compacts the context ([below](#compaction-checkpoint)) |
 | PreToolUse | Edit tools only, off unless `preEditCheck` is enabled: before a file is edited, adds what earlier sessions left about it ([below](#pre-edit-check)) |
-| Stop | Stores the assistant's response |
+| Stop | Stores the assistant's response and asks the semantic daemon for a [session summary](#session-summaries) |
 | SessionEnd | Finishes the session (summary and storage) |
 
 ## Failed tool calls
@@ -54,6 +54,41 @@ Claude Code reports a tool call that started and then failed to PostToolUseFailu
 What reaches it, checked with Claude Code 2.1.325: a Bash command that exits non-zero (`Exit code N` plus its output) and a file edit that fails while writing (for example `EACCES`); by the hooks reference, also an MCP tool that returns an error. What does not: a call Claude Code rejects before running it, such as an Edit whose `old_string` is not in the file or input that fails validation. That rejection fires no hook at all, so it is not stored. A call cancelled while running reaches PostToolUse with `interrupted`, as before.
 
 An install made before this hook existed gets it by running `claude-memory-layer install` again; `claude-memory-layer doctor` names it while it is missing. The plugin picks it up when it updates.
+
+## Session summaries
+
+A session summary keeps what a later session can reuse: decisions and why, failed attempts and their cause, constraints
+found. The semantic daemon writes it in the background through the local `claude` (or `codex`) CLI, so no hook waits
+for it. It sends the session's last 40 prompts and answers; tool output is never sent. Settings and turning it off are
+in [CONFIGURATION.md](CONFIGURATION.md#llm-summaries-and-lessons).
+
+- **When**: after every turn, Stop asks the daemon. The first summary is written once the session has at least two
+  prompts or answers and three events. SessionStart also asks for the 5 most recent other sessions of the project that
+  are due for one, which catches sessions whose last turns ended without Stop (crash, force-close).
+- **Refresh**: the summary is written again once the session has gained 10 more prompts and answers (about five turns)
+  since the last one, at most 3 times per session. The previous summary goes into the request as earlier findings, since
+  the last 40 events may no longer contain what it was drawn from. An answer with nothing worth keeping still counts as
+  a refresh and moves the starting point, so the next turn does not ask again. SessionStart looks for refreshes only in
+  sessions with a prompt or answer in the last 7 days; an older session is refreshed when its next turn ends. Tune or turn
+  it off with `sessionSummaryRefresh` in [`operations.json`](CONFIGURATION.md#optional-features-operationsjson).
+- **One summary per session**: the new summary replaces the old one. The old row is not deleted: it is marked with
+  `quarantine.status: "active"` and category `superseded`, which the store's reads leave out, and a governance audit row
+  records the change (event id and status only, no text). Clearing that status brings it back. Search, injection, the
+  dashboard API, MCP tools and the Endless Mode working set read through those filters; vector search drops hits of
+  hidden events before ranking and asks the index for more in their place.
+- **All or nothing**: the new summary is stored and the old one hidden in one SQLite transaction. If that fails, nothing
+  changes: the old summary stays the only one and the session stays due, so the next Stop or the SessionStart backfill
+  tries again. A failed call, or a call the [provider circuit breaker](OPERATIONS.md#llm-provider-circuit-breaker)
+  skipped, also changes nothing.
+- **Repeated wording**: if the new summary is word for word the current one, it stays and only its coverage moves. If it
+  repeats an earlier summary that was replaced (the conversation went back to an earlier decision), that earlier row is
+  shown again as the current one and the others are hidden, in the same kind of transaction. That row is embedded
+  again then, since its vector may be gone (the embedding workers cannot read a hidden row, and an embedding model change
+  re-embeds only visible ones); the new vector replaces any old one of the same event.
+- **One run at a time**: the daemon summarizes under a per-store lock (`summary-worker.lock`), so concurrent Stops,
+  retries and backfills of the same session make one provider call and store one summary.
+- **Same rule everywhere**: Stop, the retries of skipped summaries and the SessionStart backfill decide with the same
+  function (`isLlmSessionSummaryDue` in `src/core/engine/memory-ingest-service.ts`).
 
 ## Compaction checkpoint
 

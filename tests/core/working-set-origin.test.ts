@@ -66,3 +66,22 @@ describe('origin from the working set and the older EventStore', () => {
     }
   });
 });
+
+describe('working-set reads', () => {
+  it('leave out events that are quarantined, as every SQLiteEventStore read does', async () => {
+    const { store, ids } = await seeded();
+    try {
+      await dbRun(store.getDatabase(), `UPDATE events SET metadata = ? WHERE id = ?`, [
+        JSON.stringify({ quarantine: { status: 'active', category: 'superseded' } }),
+        ids.answer
+      ]);
+      const workingSet = createWorkingSetStore(store, EndlessModeConfigSchema.parse({}));
+      for (const id of Object.values(ids)) await workingSet.add(id);
+      const shown = (await workingSet.get()).recentEvents.map((event) => event.id);
+      expect(shown).not.toContain(ids.answer);
+      expect(shown).toContain(ids.pulled);
+    } finally {
+      await store.close();
+    }
+  });
+});

@@ -27,7 +27,7 @@ touch <workspace-root>/.claude-memory-root
 
 ## Optional features: `operations.json`
 
-Features that change search ranking or collect data in the background are opt-in, controlled by one file, `~/.claude-code/memory/operations.json` (v2.2.0+):
+Features that change search ranking or collect data in the background are opt-in, controlled by one file, `~/.claude-code/memory/operations.json` (v2.2.0+). The same file tunes the session summary refresh, which is on by default:
 
 ```bash
 mkdir -p ~/.claude-code/memory
@@ -53,6 +53,9 @@ Flags (the full schema is `MemoryOperationsConfigSchema` in `src/core/types.ts`)
 | `preEditCheck.enabled` | `false` | Before an edit tool runs, adds lessons, failed tool runs and session summaries about that file ([pre-edit check](HOW_IT_WORKS.md#pre-edit-check)). Adds about 100 ms to each edit while on. |
 | `graphExpansion.enabled` | `false` | Graph-expansion search lane based on entities extracted from the query. Its effect on ranking has not been validated; keep the default. |
 | `sourceTrust.excludeUntrustedFromAutoInjection` | `false` | Keeps tool-output and unknown-origin memories out of automatic injection (SessionStart and UserPromptSubmit hooks, Claude and Codex; in the pre-edit check, the failed tool runs). MCP tools and CLI `search` still return them, labelled; imported memories stay injected, labelled. The filter runs before ranking, so other memories can take the freed slots and the result is not a subset of the flag-off injection. The "Hook-injected memories by origin" table of `memory-audit` shows how many injections it would remove. See [HOW_IT_WORKS.md](HOW_IT_WORKS.md#source-trust-labels). |
+| `sessionSummaryRefresh.enabled` | `true` | Writes a session's LLM summary again as the session grows, replacing the old one ([session summaries](HOW_IT_WORKS.md#session-summaries)). Independent of the top-level `enabled`. `false` keeps the first summary as the only one. Each refresh is one more summary call to the provider |
+| `sessionSummaryRefresh.minNewExchanges` | `10` | Prompts and answers a session must gain after its summary before the next refresh (2–1000; 10 is about five turns) |
+| `sessionSummaryRefresh.maxRefreshesPerSession` | `3` | Refreshes per session after the first summary (0–100). Answers with nothing worth keeping count too |
 | `capturePolicy.skipSubagentTypes` | `[]` | Types (`agent_type`, e.g. `"Explore"`) of **subagents and in-process agent-team teammates** whose tool calls the PostToolUse and PostToolUseFailure hooks do not store. See [Capture policy](#capture-policy) below for what it covers and how types match. |
 | `retention.enabled`, `lessons.enabled`, `perspectiveMemory.*` | `false` | Retention audit, lessons and perspective memory sub-features, as needed. |
 | `facets.enabled`, `actions.enabled` | `true` | Facets and actions. |
@@ -97,6 +100,8 @@ Core memory blocks, `mem-entity-supersede` and temporal graph queries are always
 | `CLAUDE_MEMORY_LLM_BREAKER_THRESHOLD` | `3` | Consecutive auth/usage-limit failures that open the breaker |
 | `CLAUDE_MEMORY_LLM_BREAKER_COOLDOWN_MS` | `300000` | Wait before the first probe |
 | `CLAUDE_MEMORY_LLM_BREAKER_MAX_COOLDOWN_MS` | `3600000` | Cap for the cooldown, which doubles after each failed probe |
+
+How often a summary is written again as the session grows is set in `operations.json` (`sessionSummaryRefresh`, above).
 
 Both CLI timeouts are capped at `1800000` (30 minutes); a larger value runs with the cap. `doctor` warns about a larger
 value set in the shell it runs in; a value that reaches only the daemon (`settings.json` `env`) is not visible to it.

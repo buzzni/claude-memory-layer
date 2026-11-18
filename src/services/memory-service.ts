@@ -252,9 +252,9 @@ export class MemoryService {
     return this.ingestService.backfillMissingSummaries(currentSessionId, limit);
   }
 
-  /** Session ids missing a summary; see MemoryIngestService.getSessionsWithoutSummary. */
-  async getSessionsWithoutSummary(currentSessionId: string, limit = 5): Promise<string[]> {
-    return this.ingestService.getSessionsWithoutSummary(currentSessionId, limit);
+  /** Session ids an LLM summary call is due for; see MemoryIngestService.getSessionsDueForLlmSummary. */
+  async getSessionsDueForLlmSummary(currentSessionId: string, limit = 5): Promise<string[]> {
+    return this.ingestService.getSessionsDueForLlmSummary(currentSessionId, limit);
   }
 
   /**

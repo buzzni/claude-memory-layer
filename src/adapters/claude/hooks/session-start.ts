@@ -403,7 +403,8 @@ export async function main(options: SessionStartMainOptions = {}): Promise<strin
     stage = 'retrieval';
 
     // Backfill session summaries for recent sessions that ended without Stop hook
-    // (crash, force-close, etc.). Run in background - non-blocking.
+    // (crash, force-close, etc.), including summaries due for a refresh. Run in
+    // background - non-blocking.
     //
     // Routed through the same daemon-scheduled LLM path Stop uses, not the
     // local rule-based generator: this backfill previously called
@@ -412,7 +413,7 @@ export async function main(options: SessionStartMainOptions = {}): Promise<strin
     // every session that needed a backfill.
     if (!isHookEvaluationMode() && options.maintenance !== false) {
       if (isLlmSummaryEnabled()) {
-        memoryService.getSessionsWithoutSummary(input.session_id, 5)
+        memoryService.getSessionsDueForLlmSummary(input.session_id, 5)
           .then((sessionIds) => Promise.all(
             sessionIds.map((sessionId) => scheduleSessionSummary(sessionId).catch(() => {}))
           ))

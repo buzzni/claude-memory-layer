@@ -91,7 +91,7 @@ const DEFAULT_VERSION_RETENTION_MS = 60 * 60 * 1000;
 const DEFAULT_MAX_OPTIMIZE_TABLES = 32;
 const DEFAULT_OPTIMIZE_BUDGET_MS = 10 * 60 * 1000;
 
-/** Lance parses the whole predicate string, so chunk oversized `id IN (...)` deletes. */
+/** Lance parses the whole predicate string, so chunk oversized `id IN (...)` deletes (200 rows' ids and event ids). */
 const MAX_DELETE_PREDICATE_IDS = 200;
 
 type VectorRow = {
@@ -478,10 +478,11 @@ export class VectorStore {
     return results.length > 0;
   }
 
-  private async upsertRows(tableName: string, rows: VectorRow[]): Promise<void> {
+  private async upsertRows(tableName: string, batch: VectorRow[]): Promise<void> {
     if (!this.db) {
       throw new Error('Database not initialized');
     }
+    const rows = tableName === this.defaultTableName ? lastRowPerEvent(batch) : batch;
 
     const existingTable = await this.getExistingTable(tableName);
     if (existingTable) {
@@ -507,7 +508,7 @@ export class VectorStore {
     rows: VectorRow[]
   ): Promise<void> {
     let table = initialTable;
-    const deletePredicates = buildIdDeletePredicates(rows.map(row => row.id));
+    const deletePredicates = buildRowDeletePredicates(rows, { sameEvent: tableName === this.defaultTableName });
 
     for (let attempt = 1; attempt <= MAX_LANCE_COMMIT_ATTEMPTS; attempt++) {
       try {
@@ -701,18 +702,38 @@ export class VectorStore {
 }
 
 /**
- * One `id IN (...)` delete per chunk instead of one delete per row: each Lance
- * delete is its own commit, so per-row deletes made a 32-record batch cost 33
- * versions instead of 2.
+ * What an upsert replaces: rows with the same id and, in the legacy conversations
+ * table (`sameEvent`), any other row of the same event. That table holds one
+ * vector per event, but the legacy worker names rows after its job, so embedding
+ * an event again (a summary shown again after it was hidden) would otherwise
+ * leave the old row beside the new one. The versioned tables already name rows
+ * after their item, and some hold several rows per event.
+ *
+ * One delete per chunk instead of one per row: each Lance delete is its own
+ * commit, so per-row deletes made a 32-record batch cost 33 versions instead of 2.
  */
-function buildIdDeletePredicates(ids: string[]): string[] {
-  if (ids.length === 0) return [];
-  if (ids.length === 1) return [`id = ${toLanceSqlString(ids[0])}`];
+/**
+ * The legacy table keeps one row per event (see buildRowDeletePredicates), and so does
+ * one batch written to it: of several rows of the same event, the last one stays. The
+ * worker builds its batch in queue order, so that is the most recently queued embedding.
+ * Rows without an event are all kept.
+ */
+function lastRowPerEvent(rows: VectorRow[]): VectorRow[] {
+  const lastIndex = new Map<string, number>();
+  rows.forEach((row, index) => { if (row.eventId) lastIndex.set(row.eventId, index); });
+  return rows.filter((row, index) => !row.eventId || lastIndex.get(row.eventId) === index);
+}
 
+function buildRowDeletePredicates(rows: VectorRow[], options: { sameEvent: boolean }): string[] {
   const predicates: string[] = [];
-  for (let offset = 0; offset < ids.length; offset += MAX_DELETE_PREDICATE_IDS) {
-    const chunk = ids.slice(offset, offset + MAX_DELETE_PREDICATE_IDS);
-    predicates.push(`id IN (${chunk.map(toLanceSqlString).join(', ')})`);
+  for (let offset = 0; offset < rows.length; offset += MAX_DELETE_PREDICATE_IDS) {
+    const chunk = rows.slice(offset, offset + MAX_DELETE_PREDICATE_IDS);
+    const ids = chunk.map((row) => toLanceSqlString(row.id));
+    const eventIds = options.sameEvent
+      ? [...new Set(chunk.map((row) => row.eventId).filter((eventId) => eventId))].map(toLanceSqlString)
+      : [];
+    const byId = ids.length === 1 ? `id = ${ids[0]}` : `id IN (${ids.join(', ')})`;
+    predicates.push(eventIds.length === 0 ? byId : `${byId} OR \`eventId\` IN (${eventIds.join(', ')})`);
   }
   return predicates;
 }

@@ -170,6 +170,9 @@ export interface UnifiedRetrievalResult extends RetrievalResult {
   sharedMemories?: SharedTroubleshootingEntry[];
 }
 
+/** Vector searches searchVisibleVectors runs at most to make up for hidden or deleted events. */
+const VISIBLE_VECTOR_SEARCH_ROUNDS = 3;
+
 const DEFAULT_OPTIONS: RetrievalOptions = {
   topK: 5,
   minScore: 0.7,
@@ -931,7 +934,7 @@ export class Retriever {
     }
 
     const queryEmbedding = await this.embedder.embed(query);
-    const vectorResults = await this.vectorStore.search(queryEmbedding.vector, {
+    const vectorResults = await this.searchVisibleVectors(queryEmbedding.vector, {
       limit: Math.max(5, input.topK * 3),
       minScore: input.minScore,
       sessionId: input.sessionId,
@@ -942,6 +945,30 @@ export class Retriever {
       reason: 'vector_search',
       score: result.score
     }));
+  }
+
+  /**
+   * Vector hits whose event the store still returns. The vector index keeps the
+   * rows of events that were hidden (quarantined, such as a superseded session
+   * summary) or deleted; dropped only after ranking, one took a topK slot and
+   * the match while a visible hit behind it was cut. Each dropped hit is made up
+   * for by asking for one more, a few rounds at most.
+   */
+  private async searchVisibleVectors(
+    vector: number[],
+    options: { limit: number; minScore: number; sessionId?: string; excludeSessionId?: string }
+  ): Promise<SearchResult[]> {
+    let limit = options.limit;
+    for (let round = 1; ; round++) {
+      const results = await this.vectorStore.search(vector, { ...options, limit });
+      const events = await this.fetchEventsByIds(results.map((result) => result.eventId));
+      const visible = results.filter((result) => events.has(result.eventId));
+      const exhausted = results.length < limit;
+      if (visible.length >= options.limit || exhausted || round === VISIBLE_VECTOR_SEARCH_ROUNDS) {
+        return visible.slice(0, options.limit);
+      }
+      limit += results.length - visible.length;
+    }
   }
 
   private async searchByKeyword(
