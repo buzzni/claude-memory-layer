@@ -270,8 +270,10 @@ import {
 } from './cleanup-command.js';
 import {
   formatForgetBeforeReport,
-  resolveForgetBeforeOptions,
-  runForgetBefore
+  formatForgetTargetReport,
+  resolveForgetSelection,
+  runForgetBefore,
+  runForgetTarget
 } from './forget-command.js';
 
 // ============================================================
@@ -1557,48 +1559,27 @@ vectorMaintenanceCmd
  */
 program
   .command('forget [eventId]')
-  .description('Remove memories from storage')
+  .description('Remove memories from storage (dry-run unless --confirm)')
   .option('--session <id>', 'Forget all events from a session')
-  .option('--before <date>', 'Forget events before date (YYYY-MM-DD); dry-run unless --confirm')
+  .option('--before <date>', 'Forget events before date (YYYY-MM-DD)')
   .option('--type <eventType>', 'With --before: only this event type (e.g. tool_observation)')
-  .option('--confirm', 'Skip confirmation')
+  .option('--confirm', 'Apply the deletion (default is a dry-run preview)')
   .option('-p, --project <path>', 'Project path (defaults to cwd)')
   .action(async (eventId: string | undefined, options) => {
     const projectPath = options.project || process.cwd();
-
-    if (options.before && !eventId && !options.session) {
-      try {
-        const forgetOptions = resolveForgetBeforeOptions(options);
-        const report = await runForgetBefore(getProjectStoragePath(projectPath), forgetOptions);
-        console.log(formatForgetBeforeReport(report));
-      } catch (error) {
-        console.error(`Forget failed: ${error instanceof Error ? error.message : String(error)}`);
-        process.exit(1);
-      }
-      return;
-    }
-
-    const service = getMemoryServiceForProject(projectPath);
-
     try {
-      if (!eventId && !options.session && !options.before) {
-        console.error('Please specify an event ID, --session, or --before option');
-        process.exit(1);
+      const selection = resolveForgetSelection(eventId, options);
+      const storagePath = getProjectStoragePath(projectPath);
+      if (selection.kind === 'before') {
+        console.log(formatForgetBeforeReport(await runForgetBefore(storagePath, selection.options)));
+      } else {
+        const report = await runForgetTarget(storagePath, selection.options);
+        console.log(formatForgetTargetReport(report));
+        // Every warning here means vectors or mirror text of the forgotten data may remain.
+        if (report.applied && report.warnings) process.exitCode = 1;
       }
-
-      if (!options.confirm) {
-        console.log('⚠️  This will remove memories from storage.');
-        console.log('Add --confirm to proceed.');
-        process.exit(0);
-      }
-
-      // Note: Full forget implementation would require additional EventStore methods
-      console.log('🗑️  Forget functionality requires additional implementation.');
-      console.log('Events are append-only; soft-delete markers would be added.');
-
-      await service.shutdown();
     } catch (error) {
-      console.error('Forget failed:', error);
+      console.error(`Forget failed: ${error instanceof Error ? error.message : String(error)}`);
       process.exit(1);
     }
   });

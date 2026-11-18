@@ -5858,6 +5858,20 @@ export class SQLiteEventStore {
   }
 
   /**
+   * Count every event of one session (quarantined ones too) and the UTF-8 byte size of their
+   * content without touching them: what `deleteSessionEvents` without `importedFrom` removes.
+   */
+  async countSessionEvents(sessionId: string): Promise<{ rows: number; contentBytes: number }> {
+    await this.initialize();
+    const row = sqliteGet<{ rows: number; content_bytes: number | null }>(
+      this.db,
+      `SELECT COUNT(*) AS rows, COALESCE(SUM(LENGTH(CAST(content AS BLOB))), 0) AS content_bytes FROM events WHERE session_id = ?`,
+      [sessionId]
+    );
+    return { rows: row?.rows ?? 0, contentBytes: row?.content_bytes ?? 0 };
+  }
+
+  /**
    * Count events older than `before` (optionally of one event type) without touching them.
    * Returns the row count and the UTF-8 byte size of their content so a caller can show a
    * retention plan before deleting anything.

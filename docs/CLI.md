@@ -17,7 +17,7 @@ After a global install, run `claude-memory-layer`. From a local checkout use `np
 | `stats` | Read-only store statistics |
 | `health` | Read-only aggregate health reports |
 | `audit` | Read-only per-project memory audit |
-| `forget --before <YYYY-MM-DD>` | Delete events older than a date, optionally only one `--type`; dry-run unless `--confirm`. Deleting by event id or `--session` is not implemented yet (see [below](#forget)) |
+| `forget <eventId>`, `forget --session <id>`, `forget --before <YYYY-MM-DD>` | Delete one event, every event of a session, or events older than a date (optionally only one `--type`); dry-run unless `--confirm` (see [below](#forget)) |
 | `list` / `import` | List / import Claude Code sessions ([IMPORT_AND_MIGRATION.md](IMPORT_AND_MIGRATION.md)) |
 | `organize-import [sourceDir]` | Import legacy Markdown memory or bootstrap knowledge docs from code and git |
 | `codex …` | Codex hooks, validate, replay, import ([CODEX_AND_HERMES.md](CODEX_AND_HERMES.md)) |
@@ -112,20 +112,23 @@ Context injected by the hooks and MCP results cite memories as `[mem:…]`. The 
 
 ## Forget
 
-Only deletion by date is implemented. It removes the matching events from SQLite, purges their vectors and removes the matching Markdown mirror files.
+Pick exactly one of an event id, `--session <id>` or `--before <date>`; giving more than one exits 1. Without `--confirm` the command only previews what matches.
 
 ```bash
-# preview what would be deleted
+# one event: preview, then delete
+claude-memory-layer forget <eventId>
+claude-memory-layer forget <eventId> --confirm
+# every event of a session, whatever wrote it (hooks, imports, summaries)
+claude-memory-layer forget --session <sessionId> --confirm
+# by date: preview, only tool observations, delete
 claude-memory-layer forget --before 2026-01-01
-# only tool observations
 claude-memory-layer forget --before 2026-01-01 --type tool_observation
-# delete
 claude-memory-layer forget --before 2026-01-01 --confirm
 ```
 
-The command also accepts an event id (`forget <eventId>`) and `--session <id>`, but those paths are **not implemented**: with `--confirm` they print a "requires additional implementation" message and delete nothing.
+`forget <eventId>` and `forget --session` delete the events and their dependent rows and pending embedding jobs from SQLite, the vectors of exactly the deleted events, and their entries in the store's Markdown mirror (other entries in the same day file stay). The second Markdown mirror the hooks write under the project directory (`<project>/memory/`) is not cleaned by any `forget` (#274). If a vector or mirror entry could not be removed, the command says so and exits 1; re-running `forget <eventId>` finishes the cleanup, while a session's vectors are picked by the ids the delete removed, so a re-run of `--session` cannot find them again. `forget --before` removes whole dated mirror files and runs VACUUM; the other two do not, so the database file shrinks only on a later vacuum.
 
-The deletion cannot be undone. It writes one governance audit row (`event_delete`, actor `cli`) in the same transaction, with the cutoff, type, rows deleted and the planned row, byte and mirror-file counts (mirror files to remove, not how many were removed) but none of the deleted text (#228); [OPERATIONS.md](OPERATIONS.md#what-unattended-work-changes-and-what-it-does-not) lists what each command and unattended job removes.
+The deletion cannot be undone. Each run writes one governance audit row (`event_delete`, actor `cli`) in the same transaction as the delete, with the scope (event id, session id, or cutoff and type), the planned counts and the rows deleted, but none of the deleted text (#228); [OPERATIONS.md](OPERATIONS.md#what-unattended-work-changes-and-what-it-does-not) lists what each command and unattended job removes.
 
 ## Endless Mode
 

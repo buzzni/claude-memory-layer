@@ -164,8 +164,8 @@ snapshots mask absolute paths and credential-looking values, so a version restor
 
 | Command | What it removes or changes | Recoverable | Audit |
 |---|---|---|---|
-| `forget --before <date> [--type <type>] --confirm` | Deletes the matching events, their vectors and dated mirror files, then runs VACUUM. Without `--confirm` it only previews | No | Yes, one `event_delete` row per run (actor `cli`; cutoff, type, the plan counted before the delete: matching rows and bytes and the number of mirror files to remove, not how many were removed; rows deleted; no text or event ids) |
-| `forget <eventId>`, `forget --session <id>` | Nothing; not implemented (#211) | — | — |
+| `forget --before <date> [--type <type>] --confirm` | Deletes the matching events, their vectors and dated mirror files in the store, then runs VACUUM. The project directory's `memory/` mirror is not cleaned (#274). Without `--confirm` it only previews | No | Yes, one `event_delete` row per run (actor `cli`; cutoff, type, the plan counted before the delete: matching rows and bytes and the number of mirror files to remove, not how many were removed; rows deleted; no text or event ids) |
+| `forget <eventId> --confirm`, `forget --session <id> --confirm` | Deletes the event, or every event of the session whatever wrote it, with dependent rows and pending embedding jobs, the vectors of the deleted ids and their entries in the store's Markdown mirror; the project directory's `memory/` mirror is not cleaned (#274). Exits 1 if a vector or mirror entry was left. Without `--confirm` it only previews | No | Yes, one `event_delete` row per run (actor `cli`; target `event` or `session` and its id, the planned row, byte and mirror-entry counts, rows deleted; no text) |
 | Dashboard `DELETE /api/events/:id` | Deletes one event and its vectors; the response names the event (id, type, time, session, content length), not its content | No | Yes, an `event_delete` row (actor `dashboard`; the same fields as the response, no text) |
 | `import --force`, `codex import --force`, `hermes import --force` | Deletes the session's prompts and responses that earlier imports of the same transcript (Hermes: the same `state.db`) wrote, with their vectors and embedding jobs, then imports the transcript again and queues the rows it puts back for embedding. With `--limit`, a session the limit could cut short is skipped, nothing deleted, and the command exits 1. A session whose source has nothing to import again is skipped with a warning (exit 0). See the known limits below for what it keeps | **Partly**: the deleted rows come back from the transcript, with new event ids | Yes, a `session_reimport` row per session with deleted rows (actor `cli`; session id, source, rows deleted; no text) |
 | `lesson add --apply`, `action update --apply`, `facet tag --apply` | The same changes as `mem-lesson-save`, `mem-action-update` and `mem-facet-tag` above | From the audit's before snapshot | Yes |
@@ -213,7 +213,7 @@ Known limits:
   their place, so they cost vector search rounds and disk until removed. The vector index itself
   (`VectorStore.search`) still returns them. Vectors that force reimports before this change left behind stay too. Rows
   the reimport keeps keep their ids and vectors, so references to them stay valid.
-- **Deletes are audited without their content** (#228). `forget --before`, the dashboard delete and force reimport
+- **Deletes are audited without their content** (#228). `forget`, the dashboard delete and force reimport
   write their audit row in the transaction that deletes the rows, so a delete never commits without it; a delete
   that removes nothing writes no row. The row records scope and counts, never the deleted text, so it shows when,
   by whom and how much was deleted, not what. `repair redact-credentials --apply` writes each batch's
