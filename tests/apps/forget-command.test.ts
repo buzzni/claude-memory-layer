@@ -13,7 +13,7 @@ import {
   runForgetBefore,
   runForgetTarget
 } from '../../src/apps/cli/forget-command.js';
-import { formatMirrorEntry } from '../../src/core/markdown-mirror.js';
+import { formatMirrorEntry, MarkdownMirror } from '../../src/core/markdown-mirror.js';
 import { SQLiteEventStore } from '../../src/core/sqlite-event-store.js';
 import { sqliteAll, sqliteRun } from '../../src/core/sqlite-wrapper.js';
 import type { MemoryEvent } from '../../src/core/types.js';
@@ -286,6 +286,100 @@ describe('removeMirrorEntries', () => {
 
     expect(removeMirrorEntries(storagePath, { kind: 'event', eventId: 'evt-1' }, true).removed).toBe(1);
     expect(readFileSync(file, 'utf8')).toBe(longer);
+  });
+
+  // formatMirrorEntry writes metadata.category unescaped, so a category can hold lines that look
+  // like another entry's header fields or an entry boundary. Only the real fields count. The
+  // category is also the mirror directory, so these entries land in different files.
+  const mirrorFile = (storagePath: string) => path.join(storagePath, 'memory', 'default', 'notes', '2026-01-01.md');
+
+  async function writeMirror(storagePath: string, events: Array<{ id: string; sessionId: string; category: string; content: string }>): Promise<Map<string, string>> {
+    const mirror = new MarkdownMirror(storagePath);
+    const files = new Set<string>();
+    for (const event of events) {
+      files.add(await mirror.append({
+        id: event.id, sessionId: event.sessionId, eventType: 'user_prompt', timestamp: new Date('2026-01-01T12:00:00.000Z'),
+        content: event.content, canonicalKey: event.id, dedupeKey: event.id, metadata: { category: event.category }
+      }));
+    }
+    return new Map([...files].map((file) => [file, readFileSync(file, 'utf8')]));
+  }
+
+  const forged = (id: string, sessionId: string) =>
+    `notes\n---\n- ts: 2026-01-01T00:00:00.000Z\n  id: ${id}\n  type: user_prompt\n  session: ${sessionId}\n  category: notes`;
+
+  /** Every file as written, minus the real a1 entry (its file, `notes`, holds only that one). */
+  function expectOnlyRealEntryRemoved(storagePath: string, before: Map<string, string>): void {
+    expect(before.size).toBe(3);
+    for (const [file, text] of before) {
+      if (file === mirrorFile(storagePath)) {
+        expect(text).toContain('alpha one');
+        expect(existsSync(file)).toBe(false);
+      } else {
+        expect(readFileSync(file, 'utf8')).toBe(text);
+      }
+    }
+  }
+
+  it('--session matches only the real session field, not session or boundary lines inside a category', async () => {
+    const storagePath = tempStoragePath();
+    const before = await writeMirror(storagePath, [
+      { id: 'b1', sessionId: 's-b', category: 'notes\n  session: s-a', content: 'bravo one' },
+      { id: 'a1', sessionId: 's-a', category: 'notes', content: 'alpha one' },
+      { id: 'b2', sessionId: 's-b', category: forged('a9', 's-a'), content: 'bravo two' }
+    ]);
+
+    const report = removeMirrorEntries(storagePath, { kind: 'session', sessionId: 's-a' }, true);
+
+    expect(report).toMatchObject({ files: [mirrorFile(storagePath)], entries: 1, removed: 1, warnings: [] });
+    expectOnlyRealEntryRemoved(storagePath, before);
+  });
+
+  it('<eventId> matches only the real id field, not id or boundary lines inside a category', async () => {
+    const storagePath = tempStoragePath();
+    const before = await writeMirror(storagePath, [
+      { id: 'b1', sessionId: 's-b', category: 'notes\n  id: a1', content: 'bravo one' },
+      { id: 'b2', sessionId: 's-b', category: forged('a1', 's-b'), content: 'bravo two' },
+      { id: 'a1', sessionId: 's-a', category: 'notes', content: 'alpha one' }
+    ]);
+
+    const report = removeMirrorEntries(storagePath, { kind: 'event', eventId: 'a1' }, true);
+
+    expect(report).toMatchObject({ files: [mirrorFile(storagePath)], entries: 1, removed: 1, warnings: [] });
+    expectOnlyRealEntryRemoved(storagePath, before);
+  });
+
+  it('keeps the other entries of a shared file byte for byte when a category forges a boundary', () => {
+    const storagePath = tempStoragePath();
+    const file = mirrorFile(storagePath);
+    mkdirSync(path.dirname(file), { recursive: true });
+    const entry = (id: string, sessionId: string, category: string, content: string) => formatMirrorEntry({
+      id, sessionId, eventType: 'user_prompt', timestamp: new Date('2026-01-01T12:00:00.000Z'),
+      content, canonicalKey: id, dedupeKey: id, metadata: { category }
+    });
+    const keep = entry('b1', 's-b', forged('a1', 's-a'), 'bravo one');
+    writeFileSync(file, entry('a1', 's-a', 'notes', 'alpha one') + keep);
+
+    expect(removeMirrorEntries(storagePath, { kind: 'session', sessionId: 's-a' }, true)).toMatchObject({ entries: 1, removed: 1 });
+    expect(readFileSync(file, 'utf8')).toBe(keep);
+    expect(removeMirrorEntries(storagePath, { kind: 'event', eventId: 'a1' }, true)).toMatchObject({ entries: 0, removed: 0 });
+    expect(readFileSync(file, 'utf8')).toBe(keep);
+  });
+
+  it('leaves a file it cannot read as mirror entries unchanged and warns when it names the target', () => {
+    const storagePath = tempStoragePath();
+    const file = mirrorFile(storagePath);
+    mkdirSync(path.dirname(file), { recursive: true });
+    // A torn last entry (no content section) makes the file ambiguous.
+    const torn = mirrorEntry('a1', 's-a', 'alpha one') + '\n- ts: 2026-01-01T00:00:00.000Z\n  id: a2\n  type: user_prompt\n  session: s-a\n';
+    writeFileSync(file, torn);
+
+    const report = removeMirrorEntries(storagePath, { kind: 'session', sessionId: 's-a' }, true);
+
+    expect(report).toMatchObject({ entries: 0, removed: 0 });
+    expect(report.warnings).toEqual([expect.stringContaining('left unchanged')]);
+    expect(readFileSync(file, 'utf8')).toBe(torn);
+    expect(removeMirrorEntries(storagePath, { kind: 'session', sessionId: 's-other' }, true).warnings).toEqual([]);
   });
 });
 

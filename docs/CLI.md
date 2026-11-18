@@ -128,7 +128,7 @@ claude-memory-layer forget --before 2026-01-01 --confirm
 
 `forget <eventId>` and `forget --session` delete the events and their dependent rows and pending embedding jobs from SQLite, the vectors of exactly the deleted events, and their entries in the store's Markdown mirror (other entries in the same day file stay). The second Markdown mirror the hooks write under the project directory (`<project>/memory/`) is not cleaned by any `forget` (#274). If a vector or mirror entry could not be removed, the command says so and exits 1; re-running `forget <eventId>` finishes the cleanup, while a session's vectors are picked by the ids the delete removed, so a re-run of `--session` cannot find them again. `forget --before` removes whole dated mirror files and runs VACUUM; the other two do not, so the database file shrinks only on a later vacuum.
 
-The deletion cannot be undone. Each run writes one governance audit row (`event_delete`, actor `cli`) in the same transaction as the delete, with the scope (event id, session id, or cutoff and type), the planned counts and the rows deleted, but none of the deleted text (#228); [OPERATIONS.md](OPERATIONS.md#what-unattended-work-changes-and-what-it-does-not) lists what each command and unattended job removes.
+The deletion cannot be undone. Each run that deletes SQLite rows writes one governance audit row (`event_delete`, actor `cli`) in the same transaction as the delete, with the scope (event id, session id, or cutoff and type), the planned counts and the rows deleted, but none of the deleted text (#228); [OPERATIONS.md](OPERATIONS.md#what-unattended-work-changes-and-what-it-does-not) lists what each command and unattended job removes.
 
 ## Endless Mode
 

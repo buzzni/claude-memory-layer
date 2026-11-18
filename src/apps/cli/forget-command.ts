@@ -225,13 +225,68 @@ export function resolveForgetSelection(
   return { kind: 'target', options: { target, apply: options.confirm === true } };
 }
 
+interface MirrorEntrySpan {
+  start: number;
+  end: number;
+  id: string;
+  session: string;
+}
+
+const MIRROR_TS_LINE = /^- ts: \d{4}-\d{2}-\d{2}T\S*Z$/;
+
+/**
+ * Split a store mirror file into the entries `formatMirrorEntry` wrote, or null when the text is
+ * not exactly a run of such entries. Each entry is a blank line, then `- ts:`, `  id:`, `  type:`,
+ * `  session:` and `  category:` on fixed lines, then `  content: |` and the content lines, each
+ * indented four spaces. The category is written unescaped and may span lines that look like
+ * header fields or a new entry, so it runs to the `  content: |` line and only the fields on the
+ * fixed lines are read. A category that itself holds a `  content: |` line followed by indented
+ * lines and a whole forged entry still parses as two entries; telling those apart needs the
+ * writer to escape the category.
+ */
+function parseMirrorEntries(text: string): MirrorEntrySpan[] | null {
+  const lines = text.split('\n');
+  const lineStart: number[] = [];
+  let offset = 0;
+  for (const line of lines) {
+    lineStart.push(offset);
+    offset += line.length + 1;
+  }
+
+  const field = (index: number, name: string): string | null => {
+    const line = lines[index];
+    return line !== undefined && line.startsWith(`  ${name}: `) ? line.slice(name.length + 4) : null;
+  };
+
+  const entries: MirrorEntrySpan[] = [];
+  let i = 0;
+  if (lines[0] !== '') return null;
+  while (i < lines.length - 1) {
+    if (!MIRROR_TS_LINE.test(lines[i + 1])) return null;
+    const id = field(i + 2, 'id');
+    const session = field(i + 4, 'session');
+    if (id === null || field(i + 3, 'type') === null || session === null || field(i + 5, 'category') === null) return null;
+
+    let j = i + 6;
+    while (j < lines.length && lines[j] !== '  content: |') j++;
+    let k = j + 1;
+    while (k < lines.length && lines[k].startsWith('    ')) k++;
+    // At least one content line, then the blank line that ends this entry and starts the next.
+    if (j >= lines.length || k === j + 1 || lines[k] !== '') return null;
+
+    entries.push({ start: lineStart[i + 1] - 1, end: lineStart[k], id, session });
+    i = k;
+  }
+  return entries;
+}
+
 /**
  * Remove the markdown mirror entries written for one event or one session. Mirror files are
  * day-keyed and shared by every session, so entries are cut out of the file instead of the file
  * being removed; a file left with no entries is removed. Every file is scanned rather than only
- * the event's day because the mirror day is the writer's local date. Entry headers come from
- * `formatMirrorEntry`, whose content lines are indented four spaces, so a `\n- ts: ` line only
- * ever starts an entry.
+ * the event's day because the mirror day is the writer's local date. Entries are matched on the
+ * `id` or `session` field `parseMirrorEntries` reads, never on text elsewhere in the entry; a
+ * file that does not parse is left unchanged, with a warning when it names the target.
  *
  * The rewrite is read-then-write: a hook entry appended to the same file in between is lost
  * (the same race as #267).
@@ -245,7 +300,9 @@ export function removeMirrorEntries(
   const result = { files: [] as string[], entries: 0, removed: 0, warnings: [] as string[] };
   if (!fs.existsSync(memoryRoot)) return result;
 
-  const headerLine = target.kind === 'event' ? `  id: ${target.eventId}` : `  session: ${target.sessionId}`;
+  const targetValue = target.kind === 'event' ? target.eventId : target.sessionId;
+  const matches = (entry: MirrorEntrySpan) =>
+    (target.kind === 'event' ? entry.id : entry.session) === targetValue;
   const pending = [memoryRoot];
   const files: string[] = [];
   while (pending.length > 0) {
@@ -265,23 +322,22 @@ export function removeMirrorEntries(
       result.warnings.push(`could not read ${file}: ${error instanceof Error ? error.message : String(error)}`);
       continue;
     }
-    if (!text.includes(headerLine)) continue;
+    if (!text.includes(targetValue)) continue;
 
-    const chunks = text.split(/(?=\n- ts: )/);
-    const kept = chunks.filter((chunk) => {
-      if (!chunk.startsWith('\n- ts: ')) return true;
-      const contentStart = chunk.indexOf('\n  content: |');
-      const header = (contentStart === -1 ? chunk : chunk.slice(0, contentStart)).split('\n');
-      return !header.includes(headerLine);
-    });
-    const removed = chunks.length - kept.length;
+    const entries = parseMirrorEntries(text);
+    if (entries === null) {
+      result.warnings.push(`could not read ${file} as mirror entries; left unchanged`);
+      continue;
+    }
+    const kept = entries.filter((entry) => !matches(entry));
+    const removed = entries.length - kept.length;
     if (removed === 0) continue;
 
     result.files.push(file);
     result.entries += removed;
     if (!apply) continue;
     try {
-      const rest = kept.join('');
+      const rest = kept.map((entry) => text.slice(entry.start, entry.end)).join('');
       if (rest.trim() === '') fs.unlinkSync(file);
       else fs.writeFileSync(file, rest, 'utf8');
       result.removed += removed;
