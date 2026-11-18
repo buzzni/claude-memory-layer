@@ -48,7 +48,7 @@ function createService(project: string) {
   return {
     startSession: vi.fn().mockResolvedValue(undefined),
     evaluatePendingSessions: vi.fn().mockResolvedValue(undefined),
-    getSessionsWithoutSummary: vi.fn().mockResolvedValue([]),
+    getSessionsDueForLlmSummary: vi.fn().mockResolvedValue([]),
     backfillMissingSummaries: vi.fn().mockResolvedValue(undefined),
     getCoreMemoryBlockInjections: vi.fn().mockResolvedValue([]),
     listProjectLessonInjections: vi.fn().mockResolvedValue([]),
@@ -192,7 +192,7 @@ describe('cwd-authoritative automatic recall', () => {
     expect(service.recordQueryTrace).toHaveBeenCalledWith(expect.objectContaining({ deliveryClient: 'codex-host' }));
     expect(fixture.ensureDaemonRunning).not.toHaveBeenCalled();
     expect(fixture.autoHeal).not.toHaveBeenCalled();
-    expect(service.getSessionsWithoutSummary).not.toHaveBeenCalled();
+    expect(service.getSessionsDueForLlmSummary).not.toHaveBeenCalled();
     expect(service.backfillMissingSummaries).not.toHaveBeenCalled();
   });
 

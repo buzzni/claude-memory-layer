@@ -85,6 +85,11 @@ exports[`core/types schema defaults > fills the same defaults for undefined and 
           "enabled": false,
           "policyVersion": "v1",
         },
+        "sessionSummaryRefresh": {
+          "enabled": true,
+          "maxRefreshesPerSession": 3,
+          "minNewExchanges": 10,
+        },
         "sourceTrust": {
           "excludeUntrustedFromAutoInjection": false,
         },
@@ -213,6 +218,11 @@ exports[`core/types schema defaults > fills the same defaults for undefined and 
         "enabled": false,
         "policyVersion": "v1",
       },
+      "sessionSummaryRefresh": {
+        "enabled": true,
+        "maxRefreshesPerSession": 3,
+        "minNewExchanges": 10,
+      },
       "sourceTrust": {
         "excludeUntrustedFromAutoInjection": false,
       },
@@ -265,6 +275,11 @@ exports[`core/types schema defaults > fills the same defaults for undefined and 
       "retention": {
         "enabled": false,
         "policyVersion": "v1",
+      },
+      "sessionSummaryRefresh": {
+        "enabled": true,
+        "maxRefreshesPerSession": 3,
+        "minNewExchanges": 10,
       },
       "sourceTrust": {
         "excludeUntrustedFromAutoInjection": false,

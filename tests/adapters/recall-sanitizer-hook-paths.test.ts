@@ -56,7 +56,7 @@ const HOSTILE_EVENT = {
 function createService() {
   return {
     startSession: vi.fn().mockResolvedValue(undefined),
-    getSessionsWithoutSummary: vi.fn().mockResolvedValue([]),
+    getSessionsDueForLlmSummary: vi.fn().mockResolvedValue([]),
     backfillMissingSummaries: vi.fn().mockResolvedValue(undefined),
     getCoreMemoryBlockInjections: vi.fn().mockResolvedValue([]),
     listProjectLessonInjections: vi.fn().mockResolvedValue([]),

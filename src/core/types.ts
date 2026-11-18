@@ -192,6 +192,14 @@ export const MemoryOperationsConfigSchema = z.object({
     /** `agent_type` values of subagents and in-process teammates whose tool calls PostToolUse does not store; '*' matches all. */
     skipSubagentTypes: z.array(z.string().trim().min(1)).max(50).default([])
   }).prefault({}),
+  /** Regenerate a session's LLM summary as the session grows (src/core/engine/memory-ingest-service.ts). On by default. */
+  sessionSummaryRefresh: z.object({
+    enabled: z.boolean().default(true),
+    /** Prompt/answer events a session must gain after its summary before it is summarized again. */
+    minNewExchanges: z.number().int().min(2).max(1000).default(10),
+    /** Regenerations per session after the first summary; each one is one provider call. */
+    maxRefreshesPerSession: z.number().int().min(0).max(100).default(3)
+  }).prefault({}),
   perspectiveMemory: z.object({
     enabled: z.boolean().default(false),
     deriver: z.object({

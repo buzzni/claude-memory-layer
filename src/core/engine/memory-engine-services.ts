@@ -165,7 +165,8 @@ export function createMemoryEngineServices(options: MemoryEngineServicesOptions)
     getProjectPath: options.getProjectPath,
     perspectiveDeriver,
     sourceFileDeriver,
-    llmSummaryGenerator: options.llmSummaryGenerator
+    llmSummaryGenerator: options.llmSummaryGenerator,
+    summaryRefresh: options.memoryOperationsConfig?.sessionSummaryRefresh
   });
   const queryService = new MemoryQueryService(
     () => sqliteStore.initialize(),

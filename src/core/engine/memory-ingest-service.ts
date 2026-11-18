@@ -5,7 +5,14 @@ import {
 } from '../ingest-interceptor.js';
 import { normalizeTags } from '../tag-taxonomy.js';
 import { createSummaryDeriver, type SummaryDeriver } from '../derive/summary-deriver.js';
-import type { AppendResult, MemoryEvent, MemoryEventInput, ToolObservationPayload } from '../types.js';
+import type { SessionSummaryCandidate } from '../sqlite-event-store.js';
+import type {
+  AppendResult,
+  MemoryEvent,
+  MemoryEventInput,
+  MemoryOperationsConfig,
+  ToolObservationPayload
+} from '../types.js';
 
 export interface PerspectiveDeriverLike {
   deriveFromEvent(
@@ -34,6 +41,10 @@ interface SessionUpsertStore {
   upsertSession(session: SessionRecord): Promise<void>;
   getSessionEvents(sessionId: string): Promise<MemoryEvent[]>;
   getSessionsWithoutSummary(currentSessionId: string, limit?: number): Promise<string[]>;
+  getLlmSummaryCandidates(
+    currentSessionId: string,
+    options: { limit: number; refreshSince?: Date }
+  ): Promise<SessionSummaryCandidate[]>;
 }
 
 interface IngestEventStore extends SessionUpsertStore {
@@ -50,13 +61,53 @@ interface IngestMarkdownMirror {
 
 export type IngestOperation = 'user_prompt' | 'agent_response' | 'session_summary' | 'tool_observation';
 
+/** operations.json `sessionSummaryRefresh`. */
+export type SessionSummaryRefreshPolicy = MemoryOperationsConfig['sessionSummaryRefresh'];
+
 /**
- * Prompt/answer events a session must gain after its stored LLM summary before
- * that summary is regenerated (about five turns). Without a refresh the first
- * turn's summary was the only one a session ever got (#221); the bound keeps a
- * long session from paying a provider call on every turn.
+ * Without a refresh the first turn's summary was the only one a session ever
+ * got (#221). Ten prompt/answer events is about five turns; three refreshes
+ * cover a session that grows by up to 39 after its first summary, which 94% of
+ * summarized sessions in the measured stores did not exceed, and stop a longer
+ * session at three refreshes.
  */
-export const SUMMARY_REFRESH_MIN_NEW_EXCHANGES = 10;
+export const DEFAULT_SESSION_SUMMARY_REFRESH: SessionSummaryRefreshPolicy = {
+  enabled: true,
+  minNewExchanges: 10,
+  maxRefreshesPerSession: 3
+};
+
+/**
+ * How far back the session-start backfill looks for summaries due for a
+ * refresh. Stop refreshes a live session; the backfill only catches sessions
+ * whose last turns ended without it, so a week (the summary-pending queue's
+ * limit too) is enough and keeps its query off every session in the store.
+ */
+export const SUMMARY_REFRESH_BACKFILL_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** Where a session stands against its newest summary; `summary` is absent when it has none. */
+export interface SessionSummaryProgress {
+  exchangeCount: number;
+  summary?: {
+    /** Prompt/answer events the summary, or the last refresh attempt, covered. */
+    coveredExchanges: number;
+    /** Refresh attempts the provider answered, the empty ones included. */
+    refreshes: number;
+  };
+}
+
+/**
+ * The one judgment of whether a session needs an LLM summary call: Stop,
+ * the summary-pending retries and the session-start backfill all go through it.
+ */
+export function isLlmSessionSummaryDue(
+  progress: SessionSummaryProgress,
+  policy: SessionSummaryRefreshPolicy
+): boolean {
+  if (!progress.summary) return true;
+  if (!policy.enabled || progress.summary.refreshes >= policy.maxRefreshesPerSession) return false;
+  return progress.exchangeCount - progress.summary.coveredExchanges >= policy.minNewExchanges;
+}
 
 function isExchangeEvent(event: MemoryEvent): boolean {
   return (event.eventType === 'user_prompt' || event.eventType === 'agent_response')
@@ -65,13 +116,19 @@ function isExchangeEvent(event: MemoryEvent): boolean {
 }
 
 /**
- * Prompt/answer events the summary was built from: recorded on summaries since
- * #221, otherwise the ones stored before it.
+ * Reads a summary's coverage. Summaries written before refreshes existed carry
+ * no count; for them it is the prompt/answer events stored before the summary.
  */
-function summarizedExchangeCount(summary: MemoryEvent, events: MemoryEvent[]): number {
-  const recorded = summary.metadata?.summarizedExchangeCount;
-  if (typeof recorded === 'number' && Number.isFinite(recorded)) return recorded;
-  return events.slice(0, events.indexOf(summary)).filter(isExchangeEvent).length;
+function summaryCoverage(
+  metadata: Record<string, unknown> | undefined,
+  exchangesBeforeSummary: number
+): NonNullable<SessionSummaryProgress['summary']> {
+  const recorded = metadata?.summarizedExchangeCount;
+  const refreshes = metadata?.summaryRefreshes;
+  return {
+    coveredExchanges: typeof recorded === 'number' && Number.isFinite(recorded) ? recorded : exchangesBeforeSummary,
+    refreshes: typeof refreshes === 'number' && Number.isFinite(refreshes) ? refreshes : 0
+  };
 }
 
 export interface MemoryIngestServiceOptions {
@@ -90,6 +147,9 @@ export interface MemoryIngestServiceOptions {
    * than fall back to the rule-based text.
    */
   llmSummaryGenerator?: LlmSummaryGenerator;
+  /** operations.json `sessionSummaryRefresh`; DEFAULT_SESSION_SUMMARY_REFRESH when absent. */
+  summaryRefresh?: SessionSummaryRefreshPolicy;
+  now?: () => Date;
 }
 
 export interface LlmSummaryGenerated {
@@ -119,6 +179,8 @@ export class MemoryIngestService {
   private readonly perspectiveDeriver?: PerspectiveDeriverLike;
   private readonly sourceFileDeriver?: SourceFileDeriverLike;
   private readonly llmSummaryGenerator?: LlmSummaryGenerator;
+  private readonly summaryRefresh: SessionSummaryRefreshPolicy;
+  private readonly now: () => Date;
   private readonly ingestInterceptors = new IngestInterceptorRegistry();
 
   constructor(options: MemoryIngestServiceOptions) {
@@ -132,6 +194,8 @@ export class MemoryIngestService {
     this.perspectiveDeriver = options.perspectiveDeriver;
     this.sourceFileDeriver = options.sourceFileDeriver;
     this.llmSummaryGenerator = options.llmSummaryGenerator;
+    this.summaryRefresh = options.summaryRefresh ?? DEFAULT_SESSION_SUMMARY_REFRESH;
+    this.now = options.now ?? (() => new Date());
   }
 
   registerIngestBefore(interceptor: IngestInterceptor): () => void {
@@ -238,13 +302,27 @@ export class MemoryIngestService {
   }
 
   /**
-   * Session ids missing a summary, for callers that want to backfill through
-   * the LLM path (see semantic-daemon-client's scheduleSessionSummary) rather
-   * than this class's own rule-based generateSessionSummary.
+   * Session ids an LLM summary call is due for (isLlmSessionSummaryDue), most
+   * recent first, for callers that backfill through the LLM path (see
+   * semantic-daemon-client's scheduleSessionSummary) rather than this class's
+   * own rule-based generateSessionSummary: sessions without a summary, and
+   * sessions active within SUMMARY_REFRESH_BACKFILL_WINDOW_MS whose summary is
+   * due for a refresh.
    */
-  async getSessionsWithoutSummary(currentSessionId: string, limit = 5): Promise<string[]> {
+  async getSessionsDueForLlmSummary(currentSessionId: string, limit = 5): Promise<string[]> {
     await this.initialize();
-    return this.eventStore.getSessionsWithoutSummary(currentSessionId, limit);
+    const refreshSince = this.summaryRefresh.enabled
+      ? new Date(this.now().getTime() - SUMMARY_REFRESH_BACKFILL_WINDOW_MS)
+      : undefined;
+    const candidates = await this.eventStore.getLlmSummaryCandidates(currentSessionId, { limit, refreshSince });
+    return candidates
+      .filter((candidate) => isLlmSessionSummaryDue({
+        exchangeCount: candidate.summary?.exchangeCount ?? 0,
+        summary: candidate.summary
+          && summaryCoverage(candidate.summary.metadata, candidate.summary.exchangesBeforeSummary)
+      }, this.summaryRefresh))
+      .slice(0, limit)
+      .map((candidate) => candidate.sessionId);
   }
 
   /**
@@ -270,10 +348,11 @@ export class MemoryIngestService {
    * attempt. It deliberately does not fall back to the rule-based text, whose
    * table-of-contents shape is the reason this path exists.
    *
-   * A session that already has a summary is summarized again once it has
-   * gained SUMMARY_REFRESH_MIN_NEW_EXCHANGES prompt/answer events since. The
-   * generator then also receives the previous summary, and the new one
-   * supersedes it so retrieval does not return both.
+   * A session that already has a summary is summarized again when
+   * isLlmSessionSummaryDue says so (the summaryRefresh policy). The generator
+   * then also receives the previous summary, and the new one supersedes it so
+   * retrieval does not return both. A failed call (an open provider circuit
+   * included) throws and changes nothing, so the old summary stays.
    */
   async generateLlmSessionSummary(sessionId: string): Promise<boolean> {
     await this.initialize();
@@ -284,19 +363,25 @@ export class MemoryIngestService {
     const previousSummaries = events.filter((event) => event.eventType === 'session_summary');
     const exchangeCount = events.filter(isExchangeEvent).length;
     const latestSummary = previousSummaries.at(-1);
-    if (
-      latestSummary
-      && exchangeCount - summarizedExchangeCount(latestSummary, events) < SUMMARY_REFRESH_MIN_NEW_EXCHANGES
-    ) {
+    const coverage = latestSummary && summaryCoverage(
+      latestSummary.metadata,
+      events.slice(0, events.indexOf(latestSummary)).filter(isExchangeEvent).length
+    );
+    if (!isLlmSessionSummaryDue({ exchangeCount, summary: coverage }, this.summaryRefresh)) {
+      await this.hideSummariesLeftBehind(previousSummaries);
       return false;
     }
 
-    // A refresh that yields nothing new keeps the current summary but counts
-    // the conversation as covered; otherwise every later turn would call the
-    // provider again.
+    // Recorded on the new summary, or on the current one when the refresh
+    // brings nothing new; otherwise every later turn would call the provider
+    // again, and an empty answer would never count toward the cap.
+    const covered = {
+      summarizedExchangeCount: exchangeCount,
+      ...(coverage ? { summaryRefreshes: coverage.refreshes + 1 } : {})
+    };
     const markLatestCovered = async () => {
       if (!latestSummary) return;
-      await this.eventStore.mergeEventMetadata(latestSummary.id, { summarizedExchangeCount: exchangeCount });
+      await this.eventStore.mergeEventMetadata(latestSummary.id, covered);
     };
 
     const summary = await this.llmSummaryGenerator(
@@ -312,7 +397,7 @@ export class MemoryIngestService {
     // treat it as done and stop retrying.
     const stored = await this.storeSessionSummary(sessionId, summary.text, {
       ...summary.metadata,
-      summarizedExchangeCount: exchangeCount
+      ...covered
     });
     if (!stored.success) {
       throw new Error(`session summary could not be stored: ${stored.error}`);
@@ -322,12 +407,32 @@ export class MemoryIngestService {
     if (stored.isDuplicate || !stored.eventId) {
       await markLatestCovered();
     } else if (previousSummaries.length > 0) {
-      await this.eventStore.markEventsSuperseded(
-        previousSummaries.map((event) => event.id),
-        stored.eventId
-      );
+      // Only after the new one is stored, so a failure leaves two summaries
+      // visible, never none. The new one is on disk either way, so this still
+      // reports success; the next run hides what was left behind.
+      try {
+        await this.eventStore.markEventsSuperseded(
+          previousSummaries.map((event) => event.id),
+          stored.eventId
+        );
+      } catch {
+        // see hideSummariesLeftBehind
+      }
     }
     return true;
+  }
+
+  /**
+   * A refresh whose superseding failed leaves older summaries visible beside
+   * the one it stored. Hides them, without a provider call, but only behind a
+   * summary this class wrote (it records summarizedExchangeCount); sessions
+   * that held several summaries before refreshes existed are left as they are
+   * until their next refresh.
+   */
+  private async hideSummariesLeftBehind(summaries: MemoryEvent[]): Promise<void> {
+    const latest = summaries.at(-1);
+    if (summaries.length < 2 || typeof latest?.metadata?.summarizedExchangeCount !== 'number') return;
+    await this.eventStore.markEventsSuperseded(summaries.slice(0, -1).map((event) => event.id), latest.id);
   }
 
   /** Counts a hook input the capture policy kept out of the store. */

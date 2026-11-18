@@ -71,6 +71,8 @@ export const DISABLED_MEMORY_OPERATIONS_CONFIG: MemoryOperationsConfig = {
   preEditCheck: { enabled: false },
   sourceTrust: { excludeUntrustedFromAutoInjection: false },
   capturePolicy: { skipSubagentTypes: [] },
+  // Not part of the operations layer: on by default, as in the schema.
+  sessionSummaryRefresh: { enabled: true, minNewExchanges: 10, maxRefreshesPerSession: 3 },
   perspectiveMemory: {
     enabled: false,
     deriver: { enabled: false, maxEventsPerBatch: 20, maxObserversPerSession: 5 },

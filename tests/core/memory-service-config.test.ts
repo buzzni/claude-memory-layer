@@ -57,6 +57,7 @@ describe('memory-service-config', () => {
       preEditCheck: { enabled: false },
       sourceTrust: { excludeUntrustedFromAutoInjection: false },
       capturePolicy: { skipSubagentTypes: [] },
+      sessionSummaryRefresh: { enabled: true, minNewExchanges: 10, maxRefreshesPerSession: 3 },
       perspectiveMemory: {
         enabled: false,
         deriver: { enabled: false, maxEventsPerBatch: 20, maxObserversPerSession: 5 },
