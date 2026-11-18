@@ -5545,6 +5545,10 @@ export class SQLiteEventStore {
    * replacement's metadata, and the other replaced events are hidden. A row hidden for any
    * other reason stays hidden; the current event (the last replaced one) takes the
    * metadata instead and stays visible.
+   *
+   * The embedding workers cannot read a hidden event, so a job of the shown row that was
+   * still queued when it was hidden failed for good; it is queued again here. With no job
+   * left, the row was embedded (finished jobs are deleted) and its vectors are still there.
    */
   private adoptDuplicateSync(existingId: string, replaces: EventReplacement, nowIso: string): void {
     const row = sqliteGet<{ event_type: string; metadata: unknown }>(
@@ -5568,7 +5572,21 @@ export class SQLiteEventStore {
       if (Array.isArray(adopted.tags)) adopted.tags = adopted.tags.filter((tag) => tag !== 'quarantine:superseded');
     }
     sqliteRun(this.db, `UPDATE events SET metadata = ? WHERE id = ?`, [JSON.stringify(adopted), existingId]);
-    if (hidden) this.auditQuarantineChange(existingId, row.event_type, adopted, quarantine, existingId);
+    if (hidden) {
+      this.auditQuarantineChange(existingId, row.event_type, adopted, quarantine, existingId);
+      sqliteRun(
+        this.db,
+        `UPDATE embedding_outbox SET status = 'pending', retry_count = 0, error_message = NULL
+         WHERE event_id = ? AND status = 'failed'`,
+        [existingId]
+      );
+      sqliteRun(
+        this.db,
+        `UPDATE vector_outbox SET status = 'pending', retry_count = 0, error = NULL, updated_at = ?
+         WHERE item_kind = 'event' AND item_id = ? AND status = 'failed'`,
+        [nowIso, existingId]
+      );
+    }
     this.supersedeEventsSync(replaces.eventIds, existingId, nowIso);
   }
 

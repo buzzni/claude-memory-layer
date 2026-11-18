@@ -82,7 +82,11 @@ in [CONFIGURATION.md](CONFIGURATION.md#llm-summaries-and-lessons).
   skipped, also changes nothing.
 - **Repeated wording**: if the new summary is word for word the current one, it stays and only its coverage moves. If it
   repeats an earlier summary that was replaced (the conversation went back to an earlier decision), that earlier row is
-  shown again as the current one and the others are hidden, in the same kind of transaction.
+  shown again as the current one and the others are hidden, in the same kind of transaction. The embedding workers
+  cannot read a hidden row, so if its embedding was still queued when it was hidden and failed for good, it is queued
+  again then.
+- **One run at a time**: the daemon summarizes under a per-store lock (`summary-worker.lock`), so concurrent Stops,
+  retries and backfills of the same session make one provider call and store one summary.
 - **Same rule everywhere**: Stop, the retries of skipped summaries and the SessionStart backfill decide with the same
   function (`isLlmSessionSummaryDue` in `src/core/engine/memory-ingest-service.ts`).
 
