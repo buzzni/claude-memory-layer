@@ -15,7 +15,7 @@ import { applyPrivacyFilter, truncateOutput } from '../core/privacy/index.js';
 import { registerTerminalSession } from '../core/registry/session-registry.js';
 import type { Config } from '../core/types.js';
 import { MemoryService } from './memory-service.js';
-import { isWorthStoringPrompt, type ImportOptions, type ImportResult } from './session-history-importer.js';
+import { FORCE_REIMPORT_LIMIT_REFUSAL, isWorthStoringPrompt, type ImportOptions, type ImportResult } from './session-history-importer.js';
 import { mergeAgentResponseBlocks } from './turn-buffering.js';
 import { normalizeUserPrompt, promptClassifierMetadata, type NormalizedPrompt } from '../core/prompt-normalizer.js';
 import type { TurnTrigger } from '../core/turn-state.js';
@@ -631,13 +631,18 @@ export class HermesSessionHistoryImporter {
 
     if (options.force) {
       // A message limit stops the re-import before the end of the session, so
-      // the rows past it would be deleted and never put back.
+      // the rows past it would be deleted and never put back; a session with
+      // no message to read would put nothing back.
       if (Number.isFinite(options.limit ?? Infinity)) {
-        result.errors.push(`Skipped force reimport (a message limit would drop the rows past it; rerun without a limit): ${memorySessionId}`);
+        result.errors.push(`Skipped force reimport (${FORCE_REIMPORT_LIMIT_REFUSAL}): ${memorySessionId}`);
         return result;
       }
-      // Only the rows an import wrote; the hooks' rows are not in state.db.
-      const deleted = await this.memoryService.deleteSessionEvents(memorySessionId, { importedOnly: true });
+      if (!hasImportableHermesMessages(db, session.id)) {
+        result.errors.push(`Skipped force reimport (no parseable records): ${memorySessionId}`);
+        return result;
+      }
+      // Only the rows an import from this state.db wrote; nothing else is put back.
+      const deleted = await this.memoryService.deleteSessionEvents(memorySessionId, { importedFrom: this.stateDbPath });
       if (options.verbose && deleted > 0) {
         console.log(`  Deleted ${deleted} existing events for session ${memorySessionId}`);
       }

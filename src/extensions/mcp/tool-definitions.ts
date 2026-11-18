@@ -234,7 +234,7 @@ export const toolDefinitions: Tool[] = [
         },
         refreshForce: {
           type: 'boolean',
-          description: 'Force reimport during refresh: replace the rows earlier imports wrote; hook rows are kept. Refused under a message limit, which this tool always applies; use CLI import --force (default: false)'
+          description: 'Refused; the refresh then imports nothing and the pack says why. This tool always applies a message limit, and a force reimport under one would delete the events past it. Use CLI `import --force` (or `codex`/`hermes import --force`) without --limit (default: false)'
         },
         refreshEmbeddings: {
           type: 'boolean',
@@ -305,7 +305,7 @@ export const toolDefinitions: Tool[] = [
         },
         force: {
           type: 'boolean',
-          description: 'Force reimport: replace the rows earlier imports wrote; hook rows are kept. Refused under a message limit, which this tool always applies; use CLI import --force (default: false)'
+          description: 'Refused with an error. This tool always applies a message limit, and a force reimport under one would delete the events past it. Use CLI `import --force` (or `codex`/`hermes import --force`) without --limit (default: false)'
         },
         processEmbeddings: {
           type: 'boolean',

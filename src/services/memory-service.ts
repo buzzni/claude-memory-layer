@@ -838,10 +838,10 @@ export class MemoryService {
   }
 
   /**
-   * Delete a session's events (for force reimport); `importedOnly` keeps the
-   * rows no importer wrote.
+   * Delete a session's events (for force reimport); with `importedFrom`, only
+   * the rows a reimport from that source puts back.
    */
-  async deleteSessionEvents(sessionId: string, options?: { importedOnly?: boolean }): Promise<number> {
+  async deleteSessionEvents(sessionId: string, options?: { importedFrom?: string }): Promise<number> {
     return this.queryService.deleteSessionEvents(sessionId, options);
   }
 

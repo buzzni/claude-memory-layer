@@ -13,7 +13,7 @@ import * as readline from 'readline';
 import { createHash, randomUUID } from 'crypto';
 import { MemoryService } from './memory-service.js';
 import { registerTerminalSession } from '../core/registry/session-registry.js';
-import type { ImportOptions, ImportResult } from './session-history-importer.js';
+import { FORCE_REIMPORT_LIMIT_REFUSAL, type ImportOptions, type ImportResult } from './session-history-importer.js';
 import { mergeAgentResponseBlocks, truncateAgentResponse } from './turn-buffering.js';
 import { planPromptStorage, promptClassifierMetadata, redactPromptForStorage } from '../core/prompt-normalizer.js';
 import type { TurnTrigger } from '../core/turn-state.js';
@@ -593,6 +593,34 @@ async function hasCompleteHostTurn(
   }
 }
 
+/**
+ * Pre-flight check before a destructive force reimport: true only if the file
+ * can be read and holds at least one message line that parses. session_meta
+ * alone does not count; a reimport would put nothing back from it.
+ */
+async function hasParseableCodexMessage(filePath: string): Promise<boolean> {
+  let stream: fs.ReadStream | undefined;
+  let rl: readline.Interface | undefined;
+  try {
+    stream = fs.createReadStream(filePath, { encoding: 'utf-8' });
+    rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+    for await (const line of rl) {
+      try {
+        const entry = JSON.parse(line) as CodexLogLine;
+        if (entry.type === 'response_item' && isRecord(entry.payload) && entry.payload.type === 'message') return true;
+      } catch {
+        // Keep scanning; a later line may be valid.
+      }
+    }
+    return false;
+  } catch {
+    return false;
+  } finally {
+    rl?.close();
+    stream?.close();
+  }
+}
+
 function isSessionScaffold(text: string): boolean {
   let rest = text.trim();
   if (rest.startsWith('# AGENTS.md instructions for ')) {
@@ -831,7 +859,7 @@ export class CodexSessionHistoryImporter {
     // A message limit stops the re-import before the end of the session, so
     // the rows past it would be deleted and never put back.
     if (options.force && Number.isFinite(options.limit || Infinity)) {
-      result.errors.push(`Skipped force reimport (a message limit would drop the rows past it; rerun without a limit): ${filePath}`);
+      result.errors.push(`Skipped force reimport (${FORCE_REIMPORT_LIMIT_REFUSAL}): ${filePath}`);
       return result;
     }
 
@@ -846,8 +874,13 @@ export class CodexSessionHistoryImporter {
       })
       : false;
     if (options.force && !hasHostManagedRows) {
-      // Only the rows an import wrote; the hooks' rows are not in the file.
-      const deleted = await this.memoryService.deleteSessionEvents(sessionId, { importedOnly: true });
+      // A file with no message to read would put nothing back.
+      if (!(await hasParseableCodexMessage(filePath))) {
+        result.errors.push(`Skipped force reimport (no parseable records): ${filePath}`);
+        return result;
+      }
+      // Only the rows an import from this file wrote; nothing else is put back.
+      const deleted = await this.memoryService.deleteSessionEvents(sessionId, { importedFrom: filePath });
       if (options.verbose && deleted > 0) {
         console.log(`  Deleted ${deleted} existing events for session ${sessionId}`);
       }

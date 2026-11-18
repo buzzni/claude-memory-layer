@@ -211,6 +211,30 @@ describe('Hermes SessionDB validation/import', () => {
     expect(result.errors).toEqual([expect.stringContaining('Skipped force reimport (a message limit')]);
   });
 
+  it('refuses a force reimport of a session with no message to read and deletes nothing', async () => {
+    const dir = tempDir();
+    const stateDbPath = join(dir, 'state.db');
+    createHermesStateDb(stateDbPath, join(dir, 'project-a'), join(dir, 'project-b'));
+    const db = new Database(stateDbPath);
+    db.prepare(`INSERT INTO sessions (id, source, started_at) VALUES ('session-tools', 'cli', 1779000300)`).run();
+    db.prepare(`INSERT INTO messages (session_id, role, content, tool_name, timestamp) VALUES ('session-tools', 'tool', 'terminal output', 'terminal', 1779000301)`).run();
+    db.close();
+
+    const memoryService = {
+      startSession: vi.fn(async (_sessionId: string, _projectPath?: string) => undefined),
+      endSession: vi.fn(async (_sessionId: string) => undefined),
+      deleteSessionEvents: vi.fn(async (_sessionId: string) => 0),
+      storeUserPrompt: vi.fn(async () => ({ success: true, isDuplicate: false })),
+      storeAgentResponse: vi.fn(async () => ({ success: true, isDuplicate: false }))
+    };
+
+    const importer = createHermesSessionHistoryImporter(memoryService as never, { stateDbPath });
+    const result = await importer.importSession('session-tools', { force: true });
+
+    expect(memoryService.deleteSessionEvents).not.toHaveBeenCalled();
+    expect(result.errors).toEqual([expect.stringContaining('Skipped force reimport (no parseable records)')]);
+  });
+
   it('imports only matched user/assistant turns, redacts secrets, and skips tool messages', async () => {
     const dir = tempDir();
     const stateDbPath = join(dir, 'state.db');
@@ -238,7 +262,7 @@ describe('Hermes SessionDB validation/import', () => {
     const importer = createHermesSessionHistoryImporter(memoryService as never, { stateDbPath });
     const result = await importer.importProject(projectA, { force: true });
 
-    expect(memoryService.deleteSessionEvents).toHaveBeenCalledWith('hermes:session-a', { importedOnly: true });
+    expect(memoryService.deleteSessionEvents).toHaveBeenCalledWith('hermes:session-a', { importedFrom: stateDbPath });
     expect(memoryService.startSession).toHaveBeenCalledWith('hermes:session-a', projectA);
     expect(memoryService.endSession).toHaveBeenCalledWith('hermes:session-a');
     expect(memoryService.evaluateSessionHelpfulness).toHaveBeenCalledWith('hermes:session-a');

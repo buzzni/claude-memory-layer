@@ -358,7 +358,6 @@ describe('MCP project context tools', () => {
       sources: ['hermes', 'codex'],
       sessionLimit: 2,
       messageLimit: 50,
-      force: true,
       processEmbeddings: true,
       stateDb: '/tmp/local-hermes-state.db',
       sessionsDir: '/tmp/local-codex-sessions'
@@ -373,13 +372,13 @@ describe('MCP project context tools', () => {
       projectPath: '/repo/app',
       sessionLimit: 2,
       limit: 50,
-      force: true
+      force: false
     });
     expect(mocks.codexImporter.importProject).toHaveBeenCalledWith('/repo/app', {
       projectPath: '/repo/app',
       sessionLimit: 2,
       limit: 50,
-      force: true
+      force: false
     });
     expect(mocks.projectService.processPendingEmbeddings).toHaveBeenCalledTimes(1);
     expect(text).toContain('## Latest Session Import');
@@ -390,6 +389,22 @@ describe('MCP project context tools', () => {
     expect(text).toContain('Embeddings: processed 5');
     expect(text).not.toContain('/tmp/local-hermes-state.db');
     expect(text).not.toContain('/tmp/local-codex-sessions');
+  });
+
+  it('refuses mem-import-latest with force before importing anything, and says why (#227)', async () => {
+    const result = await handleToolCall('mem-import-latest', {
+      projectPath: '/repo/app',
+      sources: ['claude', 'hermes', 'codex'],
+      messageLimit: 1000,
+      force: true
+    });
+
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toContain('this tool always applies a message limit');
+    expect(textOf(result)).toContain('claude-memory-layer import --force');
+    expect(mocks.claudeImporter.importProject).not.toHaveBeenCalled();
+    expect(mocks.codexImporter.importProject).not.toHaveBeenCalled();
+    expect(mocks.hermesImporter.importProject).not.toHaveBeenCalled();
   });
 
   it('rejects mem-import-latest without an absolute projectPath before opening project storage', async () => {
@@ -592,6 +607,29 @@ describe('MCP project context tools', () => {
     expect(textOf(result)).not.toContain('Freshness refresh');
   });
 
+  it.each([
+    ['explicit', { query: 'continue', refreshLatest: true }],
+    ['automatic', { query: '남은 추가 작업 있어?' }]
+  ])('refuses a %s freshness refresh with refreshForce and still builds the pack (#227)', async (_mode, args) => {
+    mocks.projectService.getRecentEvents.mockResolvedValue([]);
+
+    const result = await handleToolCall('mem-context-pack', {
+      projectPath: '/repo/app',
+      refreshSources: ['claude', 'hermes', 'codex'],
+      refreshMessageLimit: 1000,
+      refreshForce: true,
+      ...args
+    });
+
+    const text = textOf(result);
+    expect(result.isError).not.toBe(true);
+    expect(mocks.claudeImporter.importProject).not.toHaveBeenCalled();
+    expect(mocks.codexImporter.importProject).not.toHaveBeenCalled();
+    expect(mocks.hermesImporter.importProject).not.toHaveBeenCalled();
+    expect(text).toContain('- Freshness refresh: refused, nothing imported (refreshForce: a force reimport is refused because this tool always applies a message limit');
+    expect(text).toContain('## Project Context Pack');
+  });
+
   it('refreshes latest sessions before building a context pack when explicitly requested', async () => {
     mocks.hermesImporter.importProject.mockResolvedValue({
       totalSessions: 1,
@@ -619,7 +657,6 @@ describe('MCP project context tools', () => {
       refreshSources: ['hermes'],
       refreshSessionLimit: 2,
       refreshMessageLimit: 50,
-      refreshForce: true,
       refreshEmbeddings: true,
       stateDb: '/tmp/local-hermes-state.db'
     });
@@ -631,7 +668,7 @@ describe('MCP project context tools', () => {
       projectPath: '/repo/app',
       sessionLimit: 2,
       limit: 50,
-      force: true
+      force: false
     });
     expect(mocks.projectService.processPendingEmbeddings).toHaveBeenCalledTimes(1);
     expect(mocks.hermesImporter.importProject.mock.invocationCallOrder[0]).toBeLessThan(
@@ -641,7 +678,7 @@ describe('MCP project context tools', () => {
       mocks.projectService.getRecentEvents.mock.invocationCallOrder[0]
     );
     expect(text).toContain('- Freshness refresh: attempted before retrieval (hermes)');
-    expect(text).toContain('- Refresh limits: sessions=2 messages=50 force=yes embeddings=processed 3');
+    expect(text).toContain('- Refresh limits: sessions=2 messages=50 force=no embeddings=processed 3');
     expect(text).toContain('- hermes: sessions=1 messages=2 prompts=1 responses=1 skipped=0 errors=0');
     expect(text).toContain('Freshly imported context-pack auto-refresh implementation checkpoint.');
     expect(text).not.toContain('/repo/app');

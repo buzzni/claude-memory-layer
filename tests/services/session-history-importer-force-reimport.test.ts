@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { appendFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 
@@ -38,6 +38,8 @@ vi.mock('../../src/adapters/llm/session-summary-llm.js', () => ({ isLlmSummaryEn
 
 const SESSION = 'importer-force-reimport';
 const PAIRS = 30;
+// The #227 measurement: 300 prompt/response pairs, 600 transcript lines.
+const ISSUE_PAIRS = 300;
 
 let root = '';
 let transcriptPath = '';
@@ -47,8 +49,8 @@ async function service(): Promise<MemoryService> {
   return memoryService.getLightweightMemoryServiceForProject(root);
 }
 
-function writeTranscript(): void {
-  for (let i = 0; i < PAIRS; i++) {
+function writeTranscript(pairs = PAIRS): void {
+  for (let i = 0; i < pairs; i++) {
     appendFileSync(transcriptPath, `${JSON.stringify({
       sessionId: SESSION, type: 'user', timestamp: new Date(Date.UTC(2026, 9, 1, 9, i, 0)).toISOString(),
       message: { role: 'user', content: `please review release step number ${i}` }
@@ -63,6 +65,11 @@ function writeTranscript(): void {
 async function importSession(options: { limit?: number; force?: boolean } = {}) {
   const { SessionHistoryImporter } = await import('../../src/services/session-history-importer.js');
   return new SessionHistoryImporter(await service()).importSessionFile(transcriptPath, options);
+}
+
+async function contentsOf(eventType: string): Promise<string[]> {
+  const events = await (await service()).getSessionHistory(SESSION);
+  return events.filter((event) => event.eventType === eventType).map((event) => event.content).sort();
 }
 
 async function counts(): Promise<Record<string, number>> {
@@ -87,7 +94,6 @@ beforeEach(() => {
   // The importer takes the session id from the file name.
   transcriptPath = path.join(root, `${SESSION}.jsonl`);
   vi.stubEnv('HOME', root);
-  writeTranscript();
 });
 
 afterEach(async () => {
@@ -99,7 +105,21 @@ afterEach(async () => {
 });
 
 describe('Claude force reimport', () => {
+  it('reproduces #227: force with limit 200 keeps the summary, the observation and the rows past the limit', async () => {
+    writeTranscript(ISSUE_PAIRS);
+    await importSession();
+    await storeHookRows();
+    const before = await counts();
+    expect(before).toEqual({ total: 602, user_prompt: 300, agent_response: 300, session_summary: 1, tool_observation: 1 });
+
+    const result = await importSession({ force: true, limit: 200 });
+
+    expect(result.errors).toEqual([expect.stringContaining('Skipped force reimport (a message limit')]);
+    expect(await counts()).toEqual(before);
+  });
+
   it('keeps the session summary and tool observations the hooks wrote', async () => {
+    writeTranscript();
     await importSession();
     await storeHookRows();
     const before = await counts();
@@ -113,6 +133,7 @@ describe('Claude force reimport', () => {
   });
 
   it('does not duplicate a prompt the hook stored', async () => {
+    writeTranscript();
     await (await service()).storeUserPrompt(SESSION, 'please review release step number 0', { turnId: 'hook-turn' });
     await importSession();
     const before = await counts();
@@ -123,7 +144,56 @@ describe('Claude force reimport', () => {
     expect(await counts()).toEqual(before);
   });
 
+  it('does not duplicate responses the Stop hook stored', async () => {
+    writeTranscript();
+    const memoryService = await service();
+    await memoryService.storeUserPrompt(SESSION, 'please review release step number 0', { turnId: 'hook-turn' });
+    await memoryService.storeAgentResponse(
+      SESSION,
+      `Step 0: ${'The release guard checks the tag against the package version. '.repeat(3)}`,
+      { turnId: 'hook-turn' }
+    );
+    await importSession();
+    const before = await counts();
+    const responses = await contentsOf('agent_response');
+    expect(before).toMatchObject({ user_prompt: PAIRS, agent_response: PAIRS });
+
+    await importSession({ force: true });
+
+    expect(await counts()).toEqual(before);
+    expect(await contentsOf('agent_response')).toEqual(responses);
+  });
+
+  it('keeps an imported response a lesson cites, without a second copy', async () => {
+    writeTranscript();
+    await importSession();
+    const memoryService = await service();
+    const cited = (await memoryService.getSessionHistory(SESSION)).find((event) => event.eventType === 'agent_response');
+    if (!cited) throw new Error('no imported response');
+    const { LessonRepository } = await import('../../src/core/operations/lesson-repository.js');
+    const { SQLiteEventStore } = await import('../../src/core/sqlite-event-store.js');
+    const store = new SQLiteEventStore(path.join(fixture.storagePath, 'events.sqlite'));
+    await store.initialize();
+    try {
+      await new LessonRepository(store.getDatabase()).upsert({
+        projectHash: 'importer-force-reimport-project', name: 'Release guard', trigger: 'When tagging a release',
+        steps: ['Check the tag against the package version'], confidence: 0.8, sourceSessionIds: [SESSION],
+        sourceEventIds: [cited.id], failureModes: [], skillCandidate: false, actor: 'tester'
+      });
+    } finally {
+      store.close();
+    }
+    const before = await counts();
+
+    await importSession({ force: true });
+
+    const after = await memoryService.getSessionHistory(SESSION);
+    expect(after.some((event) => event.id === cited.id)).toBe(true);
+    expect(await counts()).toEqual(before);
+  });
+
   it('refuses to run with a message limit and deletes nothing', async () => {
+    writeTranscript();
     await importSession();
     await storeHookRows();
     const before = await counts();
@@ -133,5 +203,18 @@ describe('Claude force reimport', () => {
     expect(result.errors).toEqual([expect.stringContaining('Skipped force reimport (a message limit')]);
     expect(result).toMatchObject({ importedPrompts: 0, importedResponses: 0 });
     expect(await counts()).toEqual(before);
+  });
+
+  it('reports the refusal from a project import, where the MCP and CLI read it', async () => {
+    const projectPath = path.join(root, 'work', 'app');
+    const projectDir = path.join(root, '.claude', 'projects', projectPath.replace(/[\\/]/g, '-'));
+    mkdirSync(projectDir, { recursive: true });
+    transcriptPath = path.join(projectDir, `${SESSION}.jsonl`);
+    writeTranscript();
+    const { SessionHistoryImporter } = await import('../../src/services/session-history-importer.js');
+
+    const result = await new SessionHistoryImporter(await service()).importProject(projectPath, { force: true, limit: 20 });
+
+    expect(result.errors).toEqual([expect.stringContaining('Skipped force reimport (a message limit')]);
   });
 });

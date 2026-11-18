@@ -100,7 +100,7 @@ describe('MemoryQueryService', () => {
     await expect(service.getEventsByTurn('turn-1')).resolves.toEqual(events);
     await expect(service.countSessionTurns('session-1')).resolves.toBe(11);
     await expect(service.backfillTurnIds()).resolves.toBe(13);
-    await expect(service.deleteSessionEvents('session-1', { importedOnly: true })).resolves.toBe(17);
+    await expect(service.deleteSessionEvents('session-1', { importedFrom: '/tmp/session.jsonl' })).resolves.toBe(17);
 
     expect(initialize).toHaveBeenCalledTimes(11);
     expect(queryStore.rebuildFtsIndex).toHaveBeenCalledOnce();
@@ -113,7 +113,7 @@ describe('MemoryQueryService', () => {
     expect(queryStore.getEventsByTurn).toHaveBeenCalledWith('turn-1');
     expect(queryStore.countSessionTurns).toHaveBeenCalledWith('session-1');
     expect(queryStore.backfillTurnIds).toHaveBeenCalledOnce();
-    expect(queryStore.deleteSessionEvents).toHaveBeenCalledWith('session-1', { importedOnly: true });
+    expect(queryStore.deleteSessionEvents).toHaveBeenCalledWith('session-1', { importedFrom: '/tmp/session.jsonl' });
   });
 
   it('composes memory statistics from event, vector, and graduation stores', async () => {

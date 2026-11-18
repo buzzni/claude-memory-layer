@@ -75,7 +75,7 @@ interface QueryMaintenanceStore extends QueryStore {
   getDailyEventCounts(sinceIso: string): Promise<Array<{ day: string; total: number; prompts: number; responses: number; tools: number }>>;
   countSessionTurns(sessionId: string): Promise<number>;
   backfillTurnIds(): Promise<number>;
-  deleteSessionEvents(sessionId: string, options?: { importedOnly?: boolean }): Promise<number>;
+  deleteSessionEvents(sessionId: string, options?: { importedFrom?: string }): Promise<number>;
   hasSessionUserPrompt(sessionId: string, contents: readonly string[]): Promise<boolean>;
   getDerivationLiveness(projectHash?: string): Promise<DerivationLiveness>;
 }
@@ -425,7 +425,7 @@ export class MemoryQueryService {
     return this.getMaintenanceStore('backfillTurnIds').backfillTurnIds();
   }
 
-  async deleteSessionEvents(sessionId: string, options?: { importedOnly?: boolean }): Promise<number> {
+  async deleteSessionEvents(sessionId: string, options?: { importedFrom?: string }): Promise<number> {
     await this.initialize();
     return this.getMaintenanceStore('deleteSessionEvents').deleteSessionEvents(sessionId, options);
   }

@@ -2650,13 +2650,14 @@ async function handleMemContextPack(memoryService: MemoryService, args: Record<s
     && projectPath !== undefined
     && path.isAbsolute(projectPath);
   const retrievalTopK = Math.min(topK * 3, 12);
-  const freshnessRun = explicitFreshnessRefresh || autoFreshnessRefresh
+  const freshnessRefused = (explicitFreshnessRefresh || autoFreshnessRefresh) && args.refreshForce === true;
+  const freshnessRun = (explicitFreshnessRefresh || autoFreshnessRefresh) && !freshnessRefused
     ? await runLatestImport(memoryService, {
       projectPath: projectPath || '',
       sources: sourceListArg(args.refreshSources),
       sessionLimit: numberArg(args.refreshSessionLimit, 1, 1, 10),
       messageLimit: numberArg(args.refreshMessageLimit, 200, 1, 1000),
-      force: args.refreshForce === true,
+      force: false,
       processEmbeddings: args.refreshEmbeddings === true,
       sessionsDir: optionalString(args.sessionsDir),
       stateDb: optionalString(args.stateDb)
@@ -2720,6 +2721,9 @@ async function handleMemContextPack(memoryService: MemoryService, args: Record<s
     `- Recent sessions shown: ${Math.min(sessionLimit, sessions.length)}`
   ];
 
+  if (freshnessRefused) {
+    lines.push(`- Freshness refresh: refused, nothing imported (refreshForce: ${MCP_FORCE_REIMPORT_REFUSAL})`);
+  }
   if (freshnessRun) {
     const refreshMode = autoFreshnessRefresh ? 'auto' : 'attempted';
     lines.push(
@@ -2986,11 +2990,23 @@ async function runLatestImport(memoryService: MemoryService, options: LatestImpo
   };
 }
 
+/**
+ * The MCP imports always apply a message limit, and a force reimport stops at
+ * it: the events past the limit would be deleted and not imported again.
+ */
+const MCP_FORCE_REIMPORT_REFUSAL = 'a force reimport is refused because this tool always applies a message limit, and the events past the limit would be deleted and not imported again. Run `claude-memory-layer import --force` (or `codex import --force`, `hermes import --force`) without --limit instead.';
+
 async function handleMemImportLatest(memoryService: MemoryService, args: Record<string, unknown>): Promise<ToolResult> {
   const projectPath = optionalString(args.projectPath);
   if (!projectPath) {
     return {
       content: [{ type: 'text', text: 'Error: mem-import-latest requires an explicit projectPath.' }],
+      isError: true
+    };
+  }
+  if (args.force === true) {
+    return {
+      content: [{ type: 'text', text: `Error: mem-import-latest: ${MCP_FORCE_REIMPORT_REFUSAL}` }],
       isError: true
     };
   }
@@ -3000,7 +3016,7 @@ async function handleMemImportLatest(memoryService: MemoryService, args: Record<
     sources: sourceListArg(args.sources),
     sessionLimit: numberArg(args.sessionLimit, 1, 1, 10),
     messageLimit: numberArg(args.messageLimit, 200, 1, 1000),
-    force: args.force === true,
+    force: false,
     processEmbeddings: args.processEmbeddings === true,
     sessionsDir: optionalString(args.sessionsDir),
     stateDb: optionalString(args.stateDb)

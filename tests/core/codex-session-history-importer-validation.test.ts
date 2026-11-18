@@ -173,8 +173,29 @@ describe('Codex session validation replay', () => {
     expect(memoryService.storeUserPrompt).not.toHaveBeenCalled();
 
     await importer.importSessionFile(file, { force: true });
-    expect(memoryService.deleteSessionEvents).toHaveBeenCalledWith('session-force', { importedOnly: true });
+    expect(memoryService.deleteSessionEvents).toHaveBeenCalledWith('session-force', { importedFrom: file });
     expect(memoryService.storeUserPrompt).toHaveBeenCalledTimes(1);
+  });
+
+  it('force reimport deletes nothing when the file has no message that parses', async () => {
+    const sessionsDir = tempDir();
+    const file = join(sessionsDir, 'rollout-2026-05-05T00-10-00-session-torn.jsonl');
+    writeFileSync(file, `${JSON.stringify({ type: 'session_meta', payload: { id: 'session-torn', cwd: sessionsDir } })}\n{"type":"response_item","payload":{"type":"mess\n`);
+
+    const memoryService = {
+      startSession: vi.fn(async (_sessionId: string, _projectPath?: string) => undefined),
+      endSession: vi.fn(async (_sessionId: string) => undefined),
+      getSessionHistory: vi.fn(async (_sessionId: string) => []),
+      deleteSessionEvents: vi.fn(async (_sessionId: string) => 0),
+      storeUserPrompt: vi.fn(async () => ({ success: true, isDuplicate: false })),
+      storeAgentResponse: vi.fn(async () => ({ success: true, isDuplicate: false }))
+    };
+    const importer = createCodexSessionHistoryImporter(memoryService as never, { sessionsDir });
+
+    const result = await importer.importSessionFile(file, { force: true });
+
+    expect(result.errors).toEqual([expect.stringContaining('Skipped force reimport (no parseable records)')]);
+    expect(memoryService.deleteSessionEvents).not.toHaveBeenCalled();
   });
 
   it('applies Codex import limit across selected matching sessions', async () => {

@@ -21,7 +21,7 @@ import { applyRunbookConsolidation, parseConsolidationDrafts, planRunbookConsoli
 import { getProjectStoragePath, resolveProjectStoragePath, hashProjectPath } from '../../core/registry/project-path.js';
 import { resolveCanonicalRepoIdentity } from '../../core/registry/repo-identity.js';
 import { resolveExistingStore } from '../../core/registry/existing-store.js';
-import { createSessionHistoryImporter, type ProgressEvent } from '../../services/session-history-importer.js';
+import { createSessionHistoryImporter, forceWithLimitRefusal, type ProgressEvent } from '../../services/session-history-importer.js';
 import {
   createCodexSessionHistoryImporter,
   validateCodexSessions
@@ -3311,7 +3311,7 @@ program
   .option('-a, --all', 'Import all sessions from all projects')
   .option('-l, --limit <number>', 'Limit messages per session')
   .option('--session-limit <number>', 'Limit recent matching sessions to import')
-  .option('-f, --force', 'Force reimport: delete the events earlier imports wrote and reimport with turn_id grouping (hook events are kept; not allowed with --limit)')
+  .option('-f, --force', 'Force reimport: replace the prompts and responses earlier imports of this transcript wrote, with turn_id grouping (events from hooks, summaries, tools and lesson sources are kept; not allowed with --limit)')
   .option('--embedding-model <name>', `Embedding model override (default: ${DEFAULT_EMBEDDING_MODEL}, or env CLAUDE_MEMORY_EMBEDDING_MODEL; fallback: ${DEFAULT_EMBEDDING_FALLBACK_MODEL} or env CLAUDE_MEMORY_EMBEDDING_FALLBACK_MODEL)`)
   .option('--lock-path <path>', 'Override vector worker lock path (advanced)')
   .option('-v, --verbose', 'Show detailed progress')
@@ -3335,6 +3335,13 @@ program
       verbose: options.verbose,
       onProgress: renderProgress
     };
+
+    const refusal = forceWithLimitRefusal(options);
+    if (refusal) {
+      console.error(`\n❌ Import refused: ${refusal}`);
+      process.exitCode = 1;
+      return;
+    }
 
     try {
       const lockOptions = resolveImportCommandLockOptions(options);
@@ -3367,7 +3374,7 @@ program
       }
 
       if (options.force) {
-        console.log('🔄 Force mode: imported events will be deleted and reimported with turn_id grouping\n');
+        console.log('🔄 Force mode: events earlier imports wrote will be replaced with turn_id grouping; other events are kept\n');
       }
 
       let result;
@@ -3640,7 +3647,7 @@ codexCmd
   .option('--sessions-dir <path>', 'Codex sessions directory (default: ~/.codex/sessions)')
   .option('-l, --limit <number>', 'Limit memories imported across selected matching sessions')
   .option('--session-limit <number>', 'Limit recent matching sessions to import')
-  .option('-f, --force', 'Delete the events earlier imports wrote for each imported session before reimporting (hook events are kept; not allowed with --limit)')
+  .option('-f, --force', 'Replace the prompts and responses earlier imports of each session wrote (events from hooks, summaries, tools and lesson sources are kept; not allowed with --limit)')
   .option('-v, --verbose', 'Show detailed progress')
   .option('--lock-path <path>', 'Override vector worker lock path (advanced)')
   .option('--no-process-embeddings', 'Skip processing pending embeddings after import')
@@ -3738,7 +3745,7 @@ hermesCmd
   .option('--state-db <path>', 'Hermes state database path (default: ~/.hermes/state.db)')
   .option('-l, --limit <number>', 'Limit messages imported per selected Hermes session')
   .option('--session-limit <number>', 'Limit recent matching sessions to import')
-  .option('-f, --force', 'Delete the events earlier imports wrote for each imported session before reimporting (hook events are kept; not allowed with --limit)')
+  .option('-f, --force', 'Replace the prompts and responses earlier imports of each session wrote (events from hooks, summaries, tools and lesson sources are kept; not allowed with --limit)')
   .option('-v, --verbose', 'Show detailed progress')
   .option('--lock-path <path>', 'Override vector worker lock path (advanced)')
   .option('--no-process-embeddings', 'Skip processing pending embeddings after import')
