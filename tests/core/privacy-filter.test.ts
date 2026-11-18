@@ -265,13 +265,12 @@ describe('unclosed private tags', () => {
     expect(applyPrivacyFilter(block, privacy).content).toBe(block);
   });
 
-  it('masks an unclosed bracket or comment tag when those formats are enabled', () => {
+  it('masks an unclosed comment tag when that format is enabled', () => {
     const allFormats: Config['privacy'] = {
       ...privacy,
       privateTags: { ...privacy.privateTags, marker: '[REDACTED]', supportedFormats: ['xml', 'bracket', 'comment'] }
     };
 
-    expect(applyPrivacyFilter('a [private]orchid', allFormats).content).toBe('a [REDACTED: unclosed]');
     expect(applyPrivacyFilter('a <!-- private -->orchid', allFormats).content).toBe('a [REDACTED: unclosed]');
   });
 
@@ -282,5 +281,15 @@ describe('unclosed private tags', () => {
     };
 
     expect(applyPrivacyFilter('a <private>orchid</private> b', xmlAndBracket).content).toBe('a [PRIVATE]\nb');
+  });
+
+  it('keeps the text after a [PRIVATE] marker in a stored row read back with the bracket format enabled', () => {
+    const readBack: Config['privacy'] = {
+      ...privacy,
+      privateTags: { ...privacy.privateTags, marker: '[REDACTED]', supportedFormats: ['xml', 'bracket', 'comment'] }
+    };
+
+    expect(applyPrivacyFilter('Fixed parsing [PRIVATE]\nand moved on to the dashboard', readBack).content)
+      .toBe('Fixed parsing [PRIVATE]\nand moved on to the dashboard');
   });
 });
