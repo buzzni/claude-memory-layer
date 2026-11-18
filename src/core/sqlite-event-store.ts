@@ -2589,7 +2589,8 @@ export class SQLiteEventStore {
    * Hide all but one visible session_summary of each session: the newest LLM
    * summary, else the newest one. Some legacy sessions hold an LLM summary next
    * to a later template summary ("Session with N user prompts..."), and keeping
-   * the template would hide the decisions the LLM summary recorded.
+   * the template would hide the decisions the LLM summary recorded. Older LLM
+   * summaries of the session are hidden too; their texts are not compared.
    *
    * Sessions summarized before summaries were refreshed in place can hold two
    * or more, and retrieval returned all of them. The others are hidden the way a

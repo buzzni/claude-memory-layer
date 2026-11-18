@@ -287,4 +287,66 @@ describe('SQLiteEventStore.supersedeDuplicateSessionSummaries', () => {
 
     await store.close();
   });
+  it('keeps only the newest of two LLM summaries, also over a later template summary', async () => {
+    const store = new SQLiteEventStore(tempDbPath());
+    await store.initialize();
+    const at = (iso: string) => new Date(`2026-08-01T${iso}.000Z`);
+    const olderLlm = await store.append({ eventType: 'session_summary', sessionId: 'two-llm', timestamp: at('00:01:00'), content: '- older llm', metadata: { generated: 'llm' } });
+    const newerLlm = await store.append({ eventType: 'session_summary', sessionId: 'two-llm', timestamp: at('00:02:00'), content: '- newer llm', metadata: { generated: 'llm' } });
+    const template = await store.append({ eventType: 'session_summary', sessionId: 'two-llm', timestamp: at('00:03:00'), content: 'Session with 4 user prompts and 4 responses.' });
+
+    const result = await store.supersedeDuplicateSessionSummaries();
+
+    // The older LLM summary is hidden whatever it holds: texts are not compared.
+    expect(result.samples).toEqual([{ sessionId: 'two-llm', keptEventId: newerLlm.eventId, supersededEventIds: [olderLlm.eventId, template.eventId] }]);
+    expect(result).toMatchObject({ keptByKind: { llm: 1 }, supersededByKind: { llm: 1, unlabeled: 1 } });
+    expect(await visibleSummaries(store, 'two-llm')).toEqual(['- newer llm']);
+
+    await store.close();
+  });
+
+  it('leaves summaries quarantined for another reason, and other event types, as they were', async () => {
+    const { store, oldest, middle, newest } = await setup();
+    const blocked = await store.append({
+      eventType: 'session_summary', sessionId: 'legacy', timestamp: new Date('2026-08-01T00:04:00.000Z'), content: '- blocked',
+      metadata: { generated: 'llm', quarantine: { status: 'active', category: 'credential', reason: 'secret' }, tags: ['quarantine:credential'] }
+    });
+    const metadataOf = (where: string) => sqliteAll<{ id: string; metadata: string }>(
+      dbOf(store), `SELECT id, metadata FROM events WHERE ${where} ORDER BY id`
+    );
+    const blockedBefore = metadataOf(`id = '${blocked.eventId}'`);
+    const othersBefore = metadataOf(`event_type != 'session_summary'`);
+
+    const result = await store.supersedeDuplicateSessionSummaries();
+
+    expect(result.samples).toEqual([{ sessionId: 'legacy', keptEventId: newest, supersededEventIds: [middle, oldest] }]);
+    expect(metadataOf(`id = '${blocked.eventId}'`)).toEqual(blockedBefore);
+    expect(metadataOf(`event_type != 'session_summary'`)).toEqual(othersBefore);
+    expect(othersBefore).toHaveLength(1);
+
+    await store.close();
+  });
+
+  it('queues a hidden summary whose embedding failed again when a refresh shows it again', async () => {
+    const { store, middle, newest } = await setup();
+    await store.supersedeDuplicateSessionSummaries();
+    const db = dbOf(store);
+    db.prepare(`DELETE FROM vector_outbox WHERE item_kind = 'event' AND item_id = ?`).run(middle);
+    db.prepare(`INSERT INTO vector_outbox (job_id, item_kind, item_id, embedding_version, status, retry_count) VALUES ('vjob-middle', 'event', ?, 'v1', 'failed', 3)`).run(middle);
+    db.prepare(`DELETE FROM embedding_outbox WHERE event_id = ?`).run(middle);
+    db.prepare(`INSERT INTO embedding_outbox (id, event_id, content, status, retry_count) VALUES ('job-middle', ?, '- middleneedle 요약', 'failed', 3)`).run(middle);
+
+    await store.append(
+      { eventType: 'session_summary', sessionId: 'legacy', timestamp: new Date('2026-08-02T00:00:00.000Z'), content: '- middleneedle 요약', metadata: { generated: 'llm' } },
+      { replaces: { eventIds: [newest], metadataOnDuplicate: {} } }
+    );
+
+    expect(sqliteAll(db, `SELECT status, retry_count FROM embedding_outbox WHERE event_id = ?`, [middle]))
+      .toEqual([{ status: 'pending', retry_count: 0 }]);
+    expect(sqliteAll(db, `SELECT status, retry_count FROM vector_outbox WHERE item_kind = 'event' AND item_id = ?`, [middle]))
+      .toEqual([{ status: 'pending', retry_count: 0 }]);
+    expect(await visibleSummaries(store, 'legacy')).toEqual(['- middleneedle 요약']);
+
+    await store.close();
+  });
 });
