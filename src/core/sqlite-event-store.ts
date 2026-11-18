@@ -5546,14 +5546,16 @@ export class SQLiteEventStore {
    * other reason stays hidden; the current event (the last replaced one) takes the
    * metadata instead and stays visible.
    *
-   * The embedding workers cannot read a hidden event, so a job of the shown row that was
-   * still queued when it was hidden failed for good; it is queued again here. With no job
-   * left, the row was embedded (finished jobs are deleted) and its vectors are still there.
+   * The shown row is embedded again: whether its vector is still in the current index is
+   * not known here. A job the workers failed while the row was hidden (they cannot read
+   * a hidden event) is queued again; with no job left, a new one is queued, since an
+   * embedding model change drops every vector and queues only visible events. The legacy
+   * table replaces the event's old row, so this never leaves two.
    */
   private adoptDuplicateSync(existingId: string, replaces: EventReplacement, nowIso: string): void {
-    const row = sqliteGet<{ event_type: string; metadata: unknown }>(
+    const row = sqliteGet<{ event_type: string; content: string; metadata: unknown }>(
       this.db,
-      `SELECT event_type, metadata FROM events WHERE id = ?`,
+      `SELECT event_type, content, metadata FROM events WHERE id = ?`,
       [existingId]
     );
     if (!row) return;
@@ -5580,6 +5582,13 @@ export class SQLiteEventStore {
          WHERE event_id = ? AND status = 'failed'`,
         [existingId]
       );
+      if (!sqliteGet(this.db, `SELECT 1 FROM embedding_outbox WHERE event_id = ? LIMIT 1`, [existingId])) {
+        sqliteRun(
+          this.db,
+          `INSERT INTO embedding_outbox (id, event_id, content, status, retry_count) VALUES (?, ?, ?, 'pending', 0)`,
+          [randomUUID(), existingId, row.content]
+        );
+      }
       sqliteRun(
         this.db,
         `UPDATE vector_outbox SET status = 'pending', retry_count = 0, error = NULL, updated_at = ?

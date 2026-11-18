@@ -77,7 +77,8 @@ describe('VectorStore V2 upsert', () => {
 
     expect(mocks.connect).toHaveBeenCalledWith('/tmp/cml-vectors');
     expect(mocks.db.openTable).toHaveBeenCalledWith('conversations');
-    expect(table.delete).toHaveBeenCalledWith("id = 'record-''one'");
+    // The legacy table also drops other rows of the same event: one vector per event.
+    expect(table.delete).toHaveBeenCalledWith("id = 'record-''one' OR `eventId` IN ('event-1')");
     expect(table.add).toHaveBeenCalledWith([
       expect.objectContaining({
         id: "record-'one",

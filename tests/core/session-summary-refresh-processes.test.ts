@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -32,15 +32,25 @@ afterEach(() => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+const children = new Set<ChildProcess>();
+
+afterEach(() => {
+  // A child left waiting for the go file after a failure would outlive the test.
+  for (const child of children) child.kill('SIGKILL');
+  children.clear();
+});
+
 function runEntry<T>(entry: string, ...args: string[]): Promise<T> {
   return new Promise((resolve, reject) => {
     const child = spawn(tsxCommand, tsxArgs(entry, ...args), { stdio: ['ignore', 'pipe', 'pipe'] });
+    children.add(child);
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
     child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
     child.on('error', reject);
     child.on('close', (code) => {
+      children.delete(child);
       if (code === 0) resolve(JSON.parse(stdout) as T);
       else reject(new Error(`child exited ${code}: ${stderr}`));
     });
@@ -84,7 +94,8 @@ describe('summary refresh across processes', () => {
       `  }`,
       `});`,
       `fs.writeFileSync(goFile + '.' + process.pid, '');`,
-      `while (!fs.existsSync(goFile)) { /* spin */ }`,
+      `const deadline = Date.now() + 100_000;`,
+      `while (!fs.existsSync(goFile)) { if (Date.now() > deadline) process.exit(2); }`,
       `const lock = new WorkerLock(lockPath);`,
       `const acquired = lock.acquire().acquired;`,
       `if (acquired) { try { await service.generateLlmSessionSummary('s'); } finally { lock.release(); } }`,

@@ -10,6 +10,8 @@ import {
 import { SQLiteEventStore } from '../../src/core/sqlite-event-store.js';
 import { sqliteAll } from '../../src/core/sqlite-wrapper.js';
 import { VectorWorker } from '../../src/core/vector-worker.js';
+import { VectorStore } from '../../src/core/vector-store.js';
+import { createEmbeddingMaintenanceService } from '../../src/core/engine/embedding-maintenance-service.js';
 
 const MIN_NEW = DEFAULT_SESSION_SUMMARY_REFRESH.minNewExchanges;
 
@@ -439,19 +441,32 @@ describe('a refresh that repeats an earlier summary', () => {
 
 describe('vectors of a summary shown again', () => {
   async function setup() {
-    const store = new SQLiteEventStore(tempDbPath());
+    const dir = mkdtempSync(join(tmpdir(), 'cml-summary-vectors-'));
+    tempDirs.push(dir);
+    const store = new SQLiteEventStore(join(dir, 'events.sqlite'));
     await store.initialize();
-    const upserted: string[] = [];
+    const vectors = new VectorStore(join(dir, 'vectors'));
     const worker = new VectorWorker(
       store as never,
-      { upsertBatch: async (records: Array<{ eventId: string }>) => { upserted.push(...records.map((r) => r.eventId)); } } as never,
-      { embedBatch: async (texts: string[]) => texts.map(() => ({ vector: [0.1, 0.2] })) } as never
+      vectors,
+      { embedBatch: async (texts: string[]) => texts.map((text) => ({ vector: [text.length, 1, 0.5] })) } as never
     );
+    let model = 'model-a';
+    const maintenance = createEmbeddingMaintenanceService({
+      storagePath: dir,
+      initialize: async () => {},
+      getEmbeddingModelName: () => model,
+      vectorStore: vectors,
+      eventStore: store as never,
+      getVectorWorker: () => null
+    });
+    await maintenance.ensureEmbeddingModelForImport({ autoMigrate: true });
     const embeddingJobs = (eventId: string) => sqliteAll<{ status: string; retry_count: number }>(
       store.getDatabase(),
       `SELECT status, retry_count FROM embedding_outbox WHERE event_id = ?`,
       [eventId]
     );
+    const vectorRows = async (eventId: string) => (await vectors.readRowsByEventIds('conversations', [eventId])).length;
     const summarize = async (content: string, replaced: string[]) => {
       const result = await store.append(
         { eventType: 'session_summary', sessionId: 's', timestamp: new Date(), content },
@@ -462,39 +477,66 @@ describe('vectors of a summary shown again', () => {
       if (!result.isDuplicate) await store.enqueueForEmbedding(result.eventId, content);
       return result.eventId;
     };
-    return { store, worker, upserted, embeddingJobs, summarize };
+    const changeModel = async (next: string) => {
+      model = next;
+      return maintenance.ensureEmbeddingModelForImport({ autoMigrate: true });
+    };
+    return { store, vectors, worker, embeddingJobs, vectorRows, summarize, changeModel };
   }
 
   it('are queued again when the embedding failed for good while the summary was hidden', async () => {
-    const { store, worker, upserted, embeddingJobs, summarize } = await setup();
+    const { store, worker, embeddingJobs, vectorRows, summarize } = await setup();
     const a = await summarize('- 결정: A 방식', []);
     const b = await summarize('- 결정: B 방식', [a]);
     // A was hidden before the worker got to it: every try fails until the job gives up.
     for (let i = 0; i < 4; i++) await worker.processBatch();
     expect(embeddingJobs(a)).toEqual([{ status: 'failed', retry_count: 4 }]);
-    expect(upserted).toEqual([b]);
+    expect(await vectorRows(a)).toBe(0);
+    expect(await vectorRows(b)).toBe(1);
 
     expect(await summarize('- 결정: A 방식', [b])).toBe(a);
     expect(embeddingJobs(a)).toEqual([{ status: 'pending', retry_count: 0 }]);
     await worker.processBatch();
-    expect(upserted).toEqual([b, a]);
+    expect(await vectorRows(a)).toBe(1);
     expect(embeddingJobs(a)).toEqual([]);
 
     await store.close();
   });
 
-  it('are left alone when the summary was embedded before it was hidden', async () => {
-    const { store, worker, upserted, embeddingJobs, summarize } = await setup();
+  it('come back after an embedding model change dropped them while the summary was hidden', async () => {
+    const { store, vectors, worker, embeddingJobs, vectorRows, summarize, changeModel } = await setup();
     const a = await summarize('- 결정: A 방식', []);
     await worker.processBatch();
     const b = await summarize('- 결정: B 방식', [a]);
     await worker.processBatch();
-    expect(upserted).toEqual([a, b]);
+    expect(await vectorRows(a)).toBe(1);
+
+    // Drops every vector and queues the visible events again: B, not the hidden A.
+    await expect(changeModel('model-b')).resolves.toMatchObject({ changed: true, enqueued: 1 });
+    await worker.processBatch();
+    expect(await vectorRows(a)).toBe(0);
+    expect(await vectorRows(b)).toBe(1);
+    expect(embeddingJobs(a)).toEqual([]);
 
     expect(await summarize('- 결정: A 방식', [b])).toBe(a);
-    expect(embeddingJobs(a)).toEqual([]);
     await worker.processBatch();
-    expect(upserted).toEqual([a, b]);
+    expect(await vectorRows(a)).toBe(1);
+    expect(await vectors.count()).toBe(2);
+
+    await store.close();
+  });
+
+  it('are not doubled when the summary was embedded before it was hidden', async () => {
+    const { store, vectors, worker, vectorRows, summarize } = await setup();
+    const a = await summarize('- 결정: A 방식', []);
+    await worker.processBatch();
+    const b = await summarize('- 결정: B 방식', [a]);
+    await worker.processBatch();
+
+    expect(await summarize('- 결정: A 방식', [b])).toBe(a);
+    await worker.processBatch();
+    expect(await vectorRows(a)).toBe(1);
+    expect(await vectors.count()).toBe(2);
 
     await store.close();
   });
