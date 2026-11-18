@@ -95,7 +95,22 @@ export async function runForgetBefore(
     }
 
     const warnings: string[] = [];
-    const { deleted } = await store.deleteEventsBefore(options.before, options.eventType);
+    const cutoff = options.before.toISOString().slice(0, 10);
+    // One audit row for the whole purge, committed with the delete. Scope and counts only.
+    const { deleted } = await store.deleteEventsBefore(options.before, options.eventType, {
+      operation: 'event_delete',
+      actor: 'cli',
+      targetType: 'events_before',
+      targetId: options.eventType ? `${cutoff}:${options.eventType}` : cutoff,
+      beforeJson: {
+        command: 'forget --before',
+        before: cutoff,
+        eventType: options.eventType ?? null,
+        matchingRows: rows,
+        contentBytes,
+        mirrorFiles: mirrorFiles.length
+      }
+    });
 
     let vectorsPurged = false;
     const vectorStore = deps.vectorStore ?? new VectorStore(path.join(storagePath, 'vectors'));

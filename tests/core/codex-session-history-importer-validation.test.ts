@@ -161,7 +161,7 @@ describe('Codex session validation replay', () => {
       startSession: vi.fn(async (_sessionId: string, _projectPath?: string) => undefined),
       endSession: vi.fn(async (_sessionId: string) => undefined),
       getSessionHistory: vi.fn(async (_sessionId: string) => []),
-      deleteSessionEvents: vi.fn(async (_sessionId: string) => 0),
+      deleteSessionEvents: vi.fn(async (_sessionId: string, _options?: unknown) => 0),
       storeUserPrompt: vi.fn(async () => ({ success: true, isDuplicate: false })),
       storeAgentResponse: vi.fn(async () => ({ success: true, isDuplicate: false }))
     };
@@ -172,8 +172,11 @@ describe('Codex session validation replay', () => {
     expect(memoryService.deleteSessionEvents).not.toHaveBeenCalled();
     expect(memoryService.storeUserPrompt).not.toHaveBeenCalled();
 
-    await importer.importSessionFile(file, { force: true });
-    expect(memoryService.deleteSessionEvents).toHaveBeenCalledWith('session-force', { importedFrom: file });
+    await importer.importSessionFile(file, { force: true, auditActor: 'mcp' });
+    expect(memoryService.deleteSessionEvents).toHaveBeenCalledWith('session-force', {
+      importedFrom: file,
+      audit: { operation: 'session_reimport', actor: 'mcp', targetType: 'session', targetId: 'session-force', beforeJson: { source: 'codex' } }
+    });
     expect(memoryService.storeUserPrompt).toHaveBeenCalledTimes(1);
   });
 

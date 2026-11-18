@@ -10,6 +10,7 @@ import {
   runForgetBefore
 } from '../../src/apps/cli/forget-command.js';
 import { SQLiteEventStore } from '../../src/core/sqlite-event-store.js';
+import { sqliteAll } from '../../src/core/sqlite-wrapper.js';
 
 const roots: string[] = [];
 
@@ -51,6 +52,19 @@ function seedMirror(storagePath: string): Record<string, string> {
     writeFileSync(file, '- mirror entry\n');
   }
   return files;
+}
+
+async function readDeletionAuditRows(storagePath: string): Promise<Array<Record<string, string>>> {
+  const store = new SQLiteEventStore(path.join(storagePath, 'events.sqlite'));
+  await store.initialize();
+  try {
+    return sqliteAll<Record<string, string>>(
+      store.getDatabase(),
+      `SELECT * FROM memory_governance_audit WHERE operation = 'event_delete'`
+    );
+  } finally {
+    await store.close();
+  }
 }
 
 describe('forget --before options', () => {
@@ -128,6 +142,59 @@ describe('runForgetBefore', () => {
     expect(await store.getEvent(ids.newTool)).not.toBeNull();
     expect(await store.getEvent(ids.oldPrompt)).not.toBeNull();
     await store.close();
+  });
+
+  it('apply records one governance audit row for the purge, with scope and counts but no content or event ids', async () => {
+    const storagePath = tempStoragePath();
+    const ids = await seedStore(storagePath);
+    seedMirror(storagePath);
+
+    await runForgetBefore(storagePath, {
+      before: new Date('2026-02-01T00:00:00.000Z'), eventType: 'tool_observation', apply: true
+    }, { vectorStore: { deleteEventsBefore: async () => {} } });
+
+    const rows = await readDeletionAuditRows(storagePath);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ operation: 'event_delete', actor: 'cli', target_type: 'events_before', target_id: '2026-02-01:tool_observation' });
+    expect(JSON.parse(rows[0].before_json)).toEqual({
+      command: 'forget --before',
+      before: '2026-02-01',
+      eventType: 'tool_observation',
+      matchingRows: 1,
+      contentBytes: Buffer.byteLength('old tool output'),
+      mirrorFiles: 1
+    });
+    expect(JSON.parse(rows[0].after_json)).toEqual({ deletedEvents: 1 });
+    expect(JSON.parse(rows[0].source_event_ids)).toEqual([]);
+    expect(JSON.stringify(rows[0])).not.toContain('old tool output');
+    expect(JSON.stringify(rows[0])).not.toContain(ids.oldTool);
+  });
+
+  it('records a purge of every type with a null type and the date alone as its target', async () => {
+    const storagePath = tempStoragePath();
+    await seedStore(storagePath);
+
+    await runForgetBefore(storagePath, {
+      before: new Date('2026-02-01T00:00:00.000Z'), apply: true
+    }, { vectorStore: { deleteEventsBefore: async () => {} } });
+
+    const rows = await readDeletionAuditRows(storagePath);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].target_id).toBe('2026-02-01');
+    expect(JSON.parse(rows[0].before_json)).toMatchObject({ eventType: null, matchingRows: 2, mirrorFiles: 0 });
+    expect(JSON.parse(rows[0].after_json)).toEqual({ deletedEvents: 2 });
+  });
+
+  it('dry-run, and an apply that matches nothing, write no audit row', async () => {
+    const storagePath = tempStoragePath();
+    await seedStore(storagePath);
+
+    await runForgetBefore(storagePath, { before: new Date('2026-02-01T00:00:00.000Z'), apply: false });
+    await runForgetBefore(storagePath, {
+      before: new Date('2025-01-01T00:00:00.000Z'), apply: true
+    }, { vectorStore: { deleteEventsBefore: async () => {} } });
+
+    expect(await readDeletionAuditRows(storagePath)).toEqual([]);
   });
 
   it('reports an empty plan when there is no store', async () => {

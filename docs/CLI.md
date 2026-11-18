@@ -125,7 +125,7 @@ claude-memory-layer forget --before 2026-01-01 --confirm
 
 The command also accepts an event id (`forget <eventId>`) and `--session <id>`, but those paths are **not implemented**: with `--confirm` they print a "requires additional implementation" message and delete nothing.
 
-The deletion cannot be undone and leaves no governance audit record (#228); [OPERATIONS.md](OPERATIONS.md#what-unattended-work-changes-and-what-it-does-not) lists what each command and unattended job removes.
+The deletion cannot be undone. It writes one governance audit row (`event_delete`, actor `cli`) in the same transaction, with the cutoff, type, rows deleted and the planned row, byte and mirror-file counts (mirror files to remove, not how many were removed) but none of the deleted text (#228); [OPERATIONS.md](OPERATIONS.md#what-unattended-work-changes-and-what-it-does-not) lists what each command and unattended job removes.
 
 ## Endless Mode
 

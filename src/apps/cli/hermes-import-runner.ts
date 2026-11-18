@@ -85,6 +85,7 @@ export async function runHermesImportOnce(
     limit: parsePositiveInteger(options.limit, 'limit'),
     sessionLimit: parsePositiveInteger(options.sessionLimit, 'session-limit'),
     force: options.force,
+    auditActor: 'cli',
     verbose: options.verbose,
     onProgress: deps.onProgress
   };

@@ -4,6 +4,8 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { isHarnessBoilerplate } from '../../src/core/harness-boilerplate.js';
+import { SQLiteEventStore } from '../../src/core/sqlite-event-store.js';
+import { sqliteAll } from '../../src/core/sqlite-wrapper.js';
 import {
   isWorthStoringPrompt,
   SessionHistoryImporter,
@@ -103,8 +105,9 @@ describe('session history importer prompt filtering', () => {
 
     const calls: string[] = [];
     const evaluateSessionHelpfulness = vi.fn(async () => {});
+    const deleteSessionEvents = vi.fn(async (_sessionId: string, _options?: unknown) => { calls.push('delete'); return 2; });
     const importer = new SessionHistoryImporter({
-      deleteSessionEvents: vi.fn(async () => { calls.push('delete'); return 2; }),
+      deleteSessionEvents,
       startSession: vi.fn(async () => { calls.push('start'); }),
       getSessionHistory: vi.fn(async () => []),
       storeUserPrompt: vi.fn(async () => ({ success: true, isDuplicate: false, eventId: 'e1' })),
@@ -113,11 +116,54 @@ describe('session history importer prompt filtering', () => {
       evaluateSessionHelpfulness
     } as never);
 
-    await importer.importSessionFile(file, { force: true });
+    await importer.importSessionFile(file, { force: true, auditActor: 'cli' });
 
     // The destructive delete must run, and only after the file passed pre-flight.
     expect(calls[0]).toBe('delete');
+    expect(deleteSessionEvents).toHaveBeenCalledWith('valid-session', {
+      importedFrom: file,
+      audit: { operation: 'session_reimport', actor: 'cli', targetType: 'session', targetId: 'valid-session', beforeJson: { source: 'claude' } }
+    });
     expect(calls).toContain('start');
     expect(evaluateSessionHelpfulness).toHaveBeenCalledTimes(1);
+  });
+
+  it('a forced reimport leaves one session_reimport audit row in a real store, with the deleted count and no content or path', async () => {
+    const dir = tempDir();
+    const file = join(dir, 'real-session.jsonl');
+    writeFileSync(
+      file,
+      '{"type":"user","timestamp":"2026-05-01T00:00:00Z","message":{"role":"user","content":"hello"}}\n',
+      'utf8'
+    );
+    const store = new SQLiteEventStore(join(dir, 'events.sqlite'));
+    await store.initialize();
+    await store.append({ eventType: 'user_prompt', sessionId: 'real-session', timestamp: new Date(), content: 'imported papaya prompt', metadata: { importedFrom: file } });
+    await store.append({ eventType: 'agent_response', sessionId: 'real-session', timestamp: new Date(), content: 'imported guava response', metadata: { importedFrom: file } });
+    await store.append({ eventType: 'session_summary', sessionId: 'real-session', timestamp: new Date(), content: 'hook summary stays' });
+
+    try {
+      const importer = new SessionHistoryImporter({
+        deleteSessionEvents: (sessionId: string, options?: Parameters<SQLiteEventStore['deleteSessionEvents']>[1]) =>
+          store.deleteSessionEvents(sessionId, options),
+        startSession: vi.fn(async () => {}),
+        getSessionHistory: vi.fn(async () => []),
+        storeUserPrompt: vi.fn(async () => ({ success: true, isDuplicate: false, eventId: 'e1' })),
+        storeAgentResponse: vi.fn(async () => ({ success: true, isDuplicate: false, eventId: 'e2' })),
+        endSession: vi.fn(async () => {}),
+        evaluateSessionHelpfulness: vi.fn(async () => {})
+      } as never);
+
+      await importer.importSessionFile(file, { force: true, auditActor: 'mcp' });
+
+      const rows = sqliteAll<Record<string, string>>(store.getDatabase(), `SELECT * FROM memory_governance_audit WHERE operation = 'session_reimport'`);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ actor: 'mcp', target_type: 'session', target_id: 'real-session' });
+      expect(JSON.parse(rows[0].before_json)).toEqual({ source: 'claude' });
+      expect(JSON.parse(rows[0].after_json)).toEqual({ deletedEvents: 2 });
+      expect(JSON.stringify(rows[0])).not.toMatch(/papaya|guava|real-session\.jsonl/);
+    } finally {
+      await store.close();
+    }
   });
 });

@@ -43,7 +43,7 @@ import {
 } from '../core/engine/embedding-maintenance-service.js';
 import type { MemoryRuntimeService } from '../core/engine/memory-runtime-service.js';
 import type { GraduationRunResult } from '../core/graduation-worker.js';
-import type { DerivationLiveness, RecentEventsReadOptions } from '../core/sqlite-event-store.js';
+import type { DeleteSessionEventsOptions, DerivationLiveness, RecentEventsReadOptions } from '../core/sqlite-event-store.js';
 import type { IngestInterceptor } from '../core/ingest-interceptor.js';
 import type { MemoryIngestService } from '../core/engine/memory-ingest-service.js';
 import type { MemoryQueryService } from '../core/engine/memory-query-service.js';
@@ -839,9 +839,10 @@ export class MemoryService {
 
   /**
    * Delete a session's events (for force reimport); with `importedFrom`, only
-   * the rows a reimport from that source puts back.
+   * the rows a reimport from that source puts back. `audit` is recorded in the
+   * same transaction as the delete.
    */
-  async deleteSessionEvents(sessionId: string, options?: { importedFrom?: string }): Promise<number> {
+  async deleteSessionEvents(sessionId: string, options?: DeleteSessionEventsOptions): Promise<number> {
     return this.queryService.deleteSessionEvents(sessionId, options);
   }
 

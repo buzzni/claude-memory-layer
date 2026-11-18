@@ -151,7 +151,7 @@ snapshots mask absolute paths and credential-looking values, so a version restor
 
 | Tool call | What it removes or changes | Recoverable | Audit |
 |---|---|---|---|
-| `mem-import-latest` with `force: true`; `mem-context-pack` with `refreshForce: true` when its freshness refresh runs (with `refreshLatest: true`, or automatically for a generic continuation query without a `sessionId` unless `refreshLatest: false`) | Force reimport of the most recent session of each source (`hermes` and `codex` by default, `claude` when asked), as the CLI `--force` below, under the tool's message limit (default 200, at most 1000). A session the limit could cut short is skipped, nothing deleted, and the result says why. Without `force`/`refreshForce` an import or refresh only adds events | **Partly**: the deleted rows come back from the transcript, with new event ids | **No** |
+| `mem-import-latest` with `force: true`; `mem-context-pack` with `refreshForce: true` when its freshness refresh runs (with `refreshLatest: true`, or automatically for a generic continuation query without a `sessionId` unless `refreshLatest: false`) | Force reimport of the most recent session of each source (`hermes` and `codex` by default, `claude` when asked), as the CLI `--force` below, under the tool's message limit (default 200, at most 1000). A session the limit could cut short is skipped, nothing deleted, and the result says why. Without `force`/`refreshForce` an import or refresh only adds events | **Partly**: the deleted rows come back from the transcript, with new event ids | Yes, a `session_reimport` row per session with deleted rows (actor `mcp`; session id, source, rows deleted; no text) |
 | `mem-entity-supersede` | Marks the entity superseded and adds a `supersedes` edge | Yes; the entity stays | Yes |
 | `mem-lesson-save` with an existing lesson's name | Replaces that lesson | From the audit's before snapshot | Yes |
 | `mem-action-update` | Replaces an action's title, status, priority, source event ids, related entities, checkpoint or lease | From the audit's before snapshot | Yes |
@@ -164,10 +164,10 @@ snapshots mask absolute paths and credential-looking values, so a version restor
 
 | Command | What it removes or changes | Recoverable | Audit |
 |---|---|---|---|
-| `forget --before <date> [--type <type>] --confirm` | Deletes the matching events, their vectors and dated mirror files, then runs VACUUM. Without `--confirm` it only previews | No | **No** |
+| `forget --before <date> [--type <type>] --confirm` | Deletes the matching events, their vectors and dated mirror files, then runs VACUUM. Without `--confirm` it only previews | No | Yes, one `event_delete` row per run (actor `cli`; cutoff, type, the plan counted before the delete: matching rows and bytes and the number of mirror files to remove, not how many were removed; rows deleted; no text or event ids) |
 | `forget <eventId>`, `forget --session <id>` | Nothing; not implemented (#211) | — | — |
-| Dashboard `DELETE /api/events/:id` | Deletes one event and its vectors; the response names the event (id, type, time, session, content length), not its content | No | **No** |
-| `import --force`, `codex import --force`, `hermes import --force` | Deletes the session's prompts and responses that earlier imports of the same transcript (Hermes: the same `state.db`) wrote, then imports the transcript again. With `--limit`, a session the limit could cut short is skipped, nothing deleted, and the command exits 1. A session whose source has nothing to import again is skipped with a warning (exit 0). See the known limits below for what it keeps | **Partly**: the deleted rows come back from the transcript, with new event ids | **No** |
+| Dashboard `DELETE /api/events/:id` | Deletes one event and its vectors; the response names the event (id, type, time, session, content length), not its content | No | Yes, an `event_delete` row (actor `dashboard`; the same fields as the response, no text) |
+| `import --force`, `codex import --force`, `hermes import --force` | Deletes the session's prompts and responses that earlier imports of the same transcript (Hermes: the same `state.db`) wrote, then imports the transcript again. With `--limit`, a session the limit could cut short is skipped, nothing deleted, and the command exits 1. A session whose source has nothing to import again is skipped with a warning (exit 0). See the known limits below for what it keeps | **Partly**: the deleted rows come back from the transcript, with new event ids | Yes, a `session_reimport` row per session with deleted rows (actor `cli`; session id, source, rows deleted; no text) |
 | `lesson add --apply`, `action update --apply`, `facet tag --apply` | The same changes as `mem-lesson-save`, `mem-action-update` and `mem-facet-tag` above | From the audit's before snapshot | Yes |
 | `repair redact-credentials --apply` | Rewrites credential-looking text in events, helpfulness rows, retrieval traces and the Markdown mirror; deletes the affected vectors and requeues the events | No, by design | **No** |
 | `repair legacy-project-scope --apply` | Adds repair or quarantine markers to event metadata; content is untouched | Yes | Markers in the metadata only |
@@ -207,8 +207,10 @@ Known limits:
   others) are not rewritten and point at missing events; their `memory_levels` entries, citations and embedding jobs
   are deleted with them, and their vectors stay in LanceDB. Rows the reimport keeps keep their ids, so references to
   them stay valid.
-- **No audit record** for `forget`, the dashboard delete, force reimport and `repair redact-credentials` (#228).
-  Afterwards nothing in the store shows when, by whom or how much was deleted.
+- **Deletes are audited without their content** (#228). `forget --before`, the dashboard delete and force reimport
+  write their audit row in the transaction that deletes the rows, so a delete never commits without it; a delete
+  that removes nothing writes no row. The row records scope and counts, never the deleted text, so it shows when,
+  by whom and how much was deleted, not what. `repair redact-credentials` still writes **no audit record**.
 
 ## Older sessions with more than one summary
 

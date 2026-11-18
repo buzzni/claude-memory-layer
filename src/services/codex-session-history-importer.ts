@@ -13,7 +13,7 @@ import * as readline from 'readline';
 import { createHash, randomUUID } from 'crypto';
 import { MemoryService } from './memory-service.js';
 import { registerTerminalSession } from '../core/registry/session-registry.js';
-import { FORCE_REIMPORT_LIMIT_REFUSAL, type ImportOptions, type ImportResult } from './session-history-importer.js';
+import { FORCE_REIMPORT_LIMIT_REFUSAL, sessionReimportAudit, type ImportOptions, type ImportResult } from './session-history-importer.js';
 import { mergeAgentResponseBlocks, truncateAgentResponse } from './turn-buffering.js';
 import { planPromptStorage, promptClassifierMetadata, redactPromptForStorage } from '../core/prompt-normalizer.js';
 import type { TurnTrigger } from '../core/turn-state.js';
@@ -966,7 +966,10 @@ export class CodexSessionHistoryImporter {
         return result;
       }
       // Only the rows an import from this file wrote; nothing else is put back.
-      const deleted = await this.memoryService.deleteSessionEvents(sessionId, { importedFrom: filePath });
+      const deleted = await this.memoryService.deleteSessionEvents(sessionId, {
+        importedFrom: filePath,
+        audit: sessionReimportAudit(sessionId, 'codex', options)
+      });
       if (options.verbose && deleted > 0) {
         console.log(`  Deleted ${deleted} existing events for session ${sessionId}`);
       }

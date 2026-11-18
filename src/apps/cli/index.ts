@@ -3361,6 +3361,7 @@ program
       limit: parsePositiveIntegerOption(options.limit, 'limit'),
       sessionLimit: parsePositiveIntegerOption(options.sessionLimit, 'session-limit'),
       force: options.force,
+      auditActor: 'cli',
       verbose: options.verbose,
       onProgress: renderProgress
     };
