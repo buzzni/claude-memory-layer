@@ -478,10 +478,11 @@ export class VectorStore {
     return results.length > 0;
   }
 
-  private async upsertRows(tableName: string, rows: VectorRow[]): Promise<void> {
+  private async upsertRows(tableName: string, batch: VectorRow[]): Promise<void> {
     if (!this.db) {
       throw new Error('Database not initialized');
     }
+    const rows = tableName === this.defaultTableName ? lastRowPerEvent(batch) : batch;
 
     const existingTable = await this.getExistingTable(tableName);
     if (existingTable) {
@@ -711,6 +712,18 @@ export class VectorStore {
  * One delete per chunk instead of one per row: each Lance delete is its own
  * commit, so per-row deletes made a 32-record batch cost 33 versions instead of 2.
  */
+/**
+ * The legacy table keeps one row per event (see buildRowDeletePredicates), and so does
+ * one batch written to it: of several rows of the same event, the last one stays. The
+ * worker builds its batch in queue order, so that is the most recently queued embedding.
+ * Rows without an event are all kept.
+ */
+function lastRowPerEvent(rows: VectorRow[]): VectorRow[] {
+  const lastIndex = new Map<string, number>();
+  rows.forEach((row, index) => { if (row.eventId) lastIndex.set(row.eventId, index); });
+  return rows.filter((row, index) => !row.eventId || lastIndex.get(row.eventId) === index);
+}
+
 function buildRowDeletePredicates(rows: VectorRow[], options: { sameEvent: boolean }): string[] {
   const predicates: string[] = [];
   for (let offset = 0; offset < rows.length; offset += MAX_DELETE_PREDICATE_IDS) {
