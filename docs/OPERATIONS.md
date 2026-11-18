@@ -227,7 +227,14 @@ claude-memory-layer repair supersede-session-summaries --project /path/to/projec
   same session are hidden too, without comparing what they say, so anything only an older one recorded is no longer
   returned. On a tie in time, the row stored last stays.
 - **The preview writes nothing**: without `--apply` the command reads a temporary copy of the store, as the read-only
-  diagnostics do, so the store and its `-wal`/`-shm` files are not created or touched.
+  diagnostics do, so the store and its `-wal`/`-shm` files are not created or touched. The copy is not a consistent
+  point-in-time read: a checkpoint during the copy can make the preview a little stale or, rarely, fail (run it again).
+  `--apply` decides again from the store itself.
+- **Symlinks**: a project path that is a symlink is resolved first, so it reaches the same store as its target. A store
+  reached through a symlink in the store path itself (the memory root `~/.claude-code/memory`, `projects/`, the project
+  directory or `events.sqlite`) cannot be previewed: the copy refuses it, as for the read-only diagnostics, and the
+  command fails with `SQLITE_SNAPSHOT_UNSAFE_SOURCE` and changes nothing. `--apply` opens the store through the link
+  and changes it without a preview, so back up the project directory first.
 - **How they are hidden**: as the refresh does, with `quarantine` metadata in category `superseded` and a governance
   audit row each. Nothing is deleted. The preview prints the number of sessions and summaries and how many of each kind
   (`metadata.generated`, `unlabeled` when absent) it keeps and hides.

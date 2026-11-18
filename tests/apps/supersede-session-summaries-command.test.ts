@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { createHash } from 'crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
@@ -10,6 +10,7 @@ import {
   resolveSupersedeSessionSummariesOptions,
   runSupersedeSessionSummaries
 } from '../../src/apps/cli/supersede-session-summaries-command.js';
+import { getProjectStoragePath } from '../../src/core/registry/project-path.js';
 import { SQLiteEventStore } from '../../src/core/sqlite-event-store.js';
 
 describe('repair supersede-session-summaries options', () => {
@@ -69,6 +70,17 @@ describe('repair supersede-session-summaries failure', () => {
         + 'if the store was busy, run it when no session is being written.'
     ].join('\n'));
   });
+
+  it('says why a preview of a store reached through a symlink is refused and what to do instead', () => {
+    const unsafe = Object.assign(new Error('Source database path must not traverse symlinks'), { code: 'SQLITE_SNAPSHOT_UNSAFE_SOURCE' });
+    expect(formatSupersedeSessionSummariesFailure(unsafe)).toBe([
+      'Supersede session summaries failed: Source database path must not traverse symlinks',
+      'Nothing was changed. The preview reads a temporary copy of the store and does not copy a store reached through '
+        + 'a symlink under ~/.claude-code/memory. Running it again gives the same result. --apply still works on this '
+        + 'store but hides the summaries without a preview, so back up the project directory under '
+        + '~/.claude-code/memory/projects first.'
+    ].join('\n'));
+  });
 });
 
 describe('repair supersede-session-summaries run', () => {
@@ -126,5 +138,35 @@ describe('repair supersede-session-summaries run', () => {
       dryRun: true, sessions: 0, superseded: 0, keptByKind: {}, supersededByKind: {}, samples: []
     });
     expect(existsSync(join(root, 'projects'))).toBe(false);
+  });
+  // The preview's snapshot refuses a store reached through a symlink (the read-only
+  // diagnostics' policy); --apply opens the store itself and follows the link.
+  it('refuses to preview a store whose directory is a symlink, while --apply changes the store it points to', async () => {
+    const realStorage = await storeWithDuplicates();
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'cml-supersede-link-')));
+    roots.push(root);
+    const linked = join(root, 'projects', 'abc123');
+    mkdirSync(join(root, 'projects'));
+    const target = join(root, 'elsewhere');
+    renameSync(realStorage, target);
+    symlinkSync(target, linked);
+    const before = storeFiles(target);
+
+    await expect(runSupersedeSessionSummaries(linked, true)).rejects.toMatchObject({ code: 'SQLITE_SNAPSHOT_UNSAFE_SOURCE' });
+    expect(storeFiles(target)).toEqual(before);
+
+    expect(await runSupersedeSessionSummaries(linked, false)).toMatchObject({ dryRun: false, superseded: 1 });
+    const store = new SQLiteEventStore(join(target, 'events.sqlite'));
+    expect((await store.getSessionEvents('s')).map((event) => event.content)).toEqual(['- new']);
+    await store.close();
+  });
+
+  it('uses the same store for a project path that is a symlink as for its target', () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'cml-supersede-project-')));
+    roots.push(root);
+    mkdirSync(join(root, 'project'));
+    symlinkSync(join(root, 'project'), join(root, 'project-link'));
+
+    expect(getProjectStoragePath(join(root, 'project-link'))).toBe(getProjectStoragePath(join(root, 'project')));
   });
 });

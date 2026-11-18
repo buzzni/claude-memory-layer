@@ -77,11 +77,15 @@ export function formatSupersedeSessionSummariesResult(result: SessionSummarySupe
 
 export function formatSupersedeSessionSummariesFailure(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
-  return [
-    `Supersede session summaries failed: ${message}`,
-    'Nothing was changed: the summaries are hidden in one transaction, rolled back on failure. Run the command again; '
-      + 'if the store was busy, run it when no session is being written.'
-  ].join('\n');
+  // The snapshot policy of the read-only diagnostics: running again cannot help.
+  const hint = (error as { code?: unknown } | null)?.code === 'SQLITE_SNAPSHOT_UNSAFE_SOURCE'
+    ? 'Nothing was changed. The preview reads a temporary copy of the store and does not copy a store reached through '
+      + 'a symlink under ~/.claude-code/memory. Running it again gives the same result. --apply still works on this '
+      + 'store but hides the summaries without a preview, so back up the project directory under '
+      + '~/.claude-code/memory/projects first.'
+    : 'Nothing was changed: the summaries are hidden in one transaction, rolled back on failure. Run the command again; '
+      + 'if the store was busy, run it when no session is being written.';
+  return [`Supersede session summaries failed: ${message}`, hint].join('\n');
 }
 
 /** `metadata.generated` values in name order, e.g. "llm 1, unlabeled 2". */
