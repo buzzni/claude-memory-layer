@@ -150,7 +150,7 @@ snapshots mask absolute paths and credential-looking values, so a version restor
 
 | Tool call | What it removes or changes | Recoverable | Audit |
 |---|---|---|---|
-| `mem-import-latest` with `force: true`; `mem-context-pack` with `refreshForce: true` when its freshness refresh runs (with `refreshLatest: true`, or automatically for a generic continuation query without a `sessionId` unless `refreshLatest: false`) | Nothing. Both tools always apply a message limit (default 200), and a force reimport under a limit would delete the events past it, so they refuse it: `mem-import-latest` returns an error and imports nothing; the context pack skips its refresh, says why, and still answers. Without `force`/`refreshForce` an import or refresh only adds events | — | — |
+| `mem-import-latest` with `force: true`; `mem-context-pack` with `refreshForce: true` when its freshness refresh runs (with `refreshLatest: true`, or automatically for a generic continuation query without a `sessionId` unless `refreshLatest: false`) | Force reimport of the most recent session of each source (`hermes` and `codex` by default, `claude` when asked), as the CLI `--force` below, under the tool's message limit (default 200, at most 1000). A session the limit could cut short is skipped, nothing deleted, and the result says why. Without `force`/`refreshForce` an import or refresh only adds events | **Partly**: the deleted rows come back from the transcript, with new event ids | **No** |
 | `mem-entity-supersede` | Marks the entity superseded and adds a `supersedes` edge | Yes; the entity stays | Yes |
 | `mem-lesson-save` with an existing lesson's name | Replaces that lesson | From the audit's before snapshot | Yes |
 | `mem-action-update` | Replaces an action's title, status, priority, source event ids, related entities, checkpoint or lease | From the audit's before snapshot | Yes |
@@ -166,7 +166,7 @@ snapshots mask absolute paths and credential-looking values, so a version restor
 | `forget --before <date> [--type <type>] --confirm` | Deletes the matching events, their vectors and dated mirror files, then runs VACUUM. Without `--confirm` it only previews | No | **No** |
 | `forget <eventId>`, `forget --session <id>` | Nothing; not implemented (#211) | — | — |
 | Dashboard `DELETE /api/events/:id` | Deletes one event and its vectors; the response names the event (id, type, time, session, content length), not its content | No | **No** |
-| `import --force`, `codex import --force`, `hermes import --force` | Deletes the session's prompts and responses that earlier imports of the same transcript (Hermes: the same `state.db`) wrote, then imports the transcript again. Refused with `--limit`. See the known limits below for what it keeps | **Partly**: the deleted rows come back from the transcript, with new event ids | **No** |
+| `import --force`, `codex import --force`, `hermes import --force` | Deletes the session's prompts and responses that earlier imports of the same transcript (Hermes: the same `state.db`) wrote, then imports the transcript again. With `--limit`, a session the limit could cut short is skipped, nothing deleted, and the command exits 1. See the known limits below for what it keeps | **Partly**: the deleted rows come back from the transcript, with new event ids | **No** |
 | `lesson add --apply`, `action update --apply`, `facet tag --apply` | The same changes as `mem-lesson-save`, `mem-action-update` and `mem-facet-tag` above | From the audit's before snapshot | Yes |
 | `repair redact-credentials --apply` | Rewrites credential-looking text in events, helpfulness rows, retrieval traces and the Markdown mirror; deletes the affected vectors and requeues the events | No, by design | **No** |
 | `repair legacy-project-scope --apply` | Adds repair or quarantine markers to event metadata; content is untouched | Yes | Markers in the metadata only |
@@ -190,8 +190,11 @@ Known limits:
   are not stored a second time: the append dedupe key and the SessionEnd reconcile recognize them. Before deleting, every
   importer checks that the source has something to import again (Claude: a record that parses; Codex: a message line
   that parses; Hermes: a user message), and the Codex importer still skips the delete when the Codex host wrote rows
-  for the session. With a message limit the reimport would stop before the end of the session, so `--limit` refuses
-  it, and the MCP tools, which always apply a limit, refuse `force`/`refreshForce`.
+  for the session. A message limit stops the reimport before the end of the session, so before deleting, the importer
+  counts the most the session can count against the limit, with the import's own parsing and turn rules, and skips
+  the session when that reaches the limit. Where the count depends on the store (duplicates, hook responses, turns
+  the Codex host completed) it assumes the import counts, so it may skip a session that would have fit, never the
+  other way round. Codex shares its limit across the selected sessions, so it adds them up and skips all of them.
   Limits: the rule reads `importedFrom` from metadata. Only the importers write it, but a row whose metadata names
   the same path is treated as imported, including a row pulled by `mongo-sync` before every pull was stamped, from
   a machine where the transcript had the same path. Such a row is deleted and imported again from the local
