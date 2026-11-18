@@ -5447,16 +5447,35 @@ export class SQLiteEventStore {
   }
 
   /**
-   * Delete all events for a session (for force reimport)
+   * Delete a session's events (for force reimport). With `importedFrom`, only
+   * the rows a reimport from that source puts back are deleted: prompts and
+   * responses whose `metadata.importedFrom` is that path. The importers write
+   * that value; the hooks, the daemon and the other importers never write this
+   * path, so their rows stay. Rows pulled from another machine
+   * (`metadata.mongoSync`) and rows a lesson cites stay too, so a lesson keeps
+   * its source. A row whose metadata cannot be read is kept.
    */
-  async deleteSessionEvents(sessionId: string): Promise<number> {
+  async deleteSessionEvents(sessionId: string, options: { importedFrom?: string } = {}): Promise<number> {
     await this.initialize();
+
+    const metadataJson = `CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END`;
+    const where = options.importedFrom === undefined
+      ? 'session_id = ?'
+      : `session_id = ? AND event_type IN ('user_prompt', 'agent_response')
+         AND json_extract(${metadataJson}, '$.importedFrom') = ?
+         AND json_type(${metadataJson}, '$.mongoSync') IS NULL
+         AND NOT EXISTS (
+           SELECT 1 FROM memory_lessons,
+             json_each(CASE WHEN json_valid(source_event_ids) THEN source_event_ids ELSE '[]' END) AS cited
+           WHERE cited.value = events.id
+         )`;
+    const params = options.importedFrom === undefined ? [sessionId] : [sessionId, options.importedFrom];
 
     // Get event IDs first for cascading deletes
     const events = sqliteAll<{ id: string }>(
       this.db,
-      `SELECT id FROM events WHERE session_id = ?`,
-      [sessionId]
+      `SELECT id FROM events WHERE ${where}`,
+      params
     );
 
     if (events.length === 0) return 0;
@@ -5491,7 +5510,7 @@ export class SQLiteEventStore {
       }
 
       // Delete events.
-      const result = sqliteRun(this.db, `DELETE FROM events WHERE session_id = ?`, [sessionId]);
+      const result = sqliteRun(this.db, `DELETE FROM events WHERE ${where}`, params);
 
       // Recreate the FTS table + triggers from the remaining events. A failure
       // here aborts the whole transaction rather than leaving the index desynced

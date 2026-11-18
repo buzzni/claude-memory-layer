@@ -234,7 +234,7 @@ export const toolDefinitions: Tool[] = [
         },
         refreshForce: {
           type: 'boolean',
-          description: 'Force reimport during refresh by deleting existing events for imported sessions first (default: false)'
+          description: 'Force reimport during refresh: replace the prompts and responses earlier imports of each session wrote; hook, summary, tool and lesson-source rows are kept. A session refreshMessageLimit could cut short is skipped, nothing deleted, and the pack says why; raise the limit (max 1000) or use CLI `import --force` without --limit (default: false)'
         },
         refreshEmbeddings: {
           type: 'boolean',
@@ -305,7 +305,7 @@ export const toolDefinitions: Tool[] = [
         },
         force: {
           type: 'boolean',
-          description: 'Force reimport by deleting existing events for imported sessions first (default: false)'
+          description: 'Force reimport: replace the prompts and responses earlier imports of each session wrote; hook, summary, tool and lesson-source rows are kept. A session messageLimit could cut short (Codex: the selected sessions together) is skipped, nothing deleted, and the result says why; raise messageLimit (max 1000) or use CLI `import --force` without --limit (default: false)'
         },
         processEmbeddings: {
           type: 'boolean',

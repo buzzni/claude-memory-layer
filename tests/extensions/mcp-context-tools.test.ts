@@ -58,7 +58,8 @@ vi.mock('../../src/services/memory-service.js', () => ({
   shutdownMemoryServices: vi.fn(async () => undefined)
 }));
 
-vi.mock('../../src/services/session-history-importer.js', () => ({
+vi.mock('../../src/services/session-history-importer.js', async (importOriginal) => ({
+  forceSkipReason: (await importOriginal<typeof import('../../src/services/session-history-importer.js')>()).forceSkipReason,
   createSessionHistoryImporter: mocks.createSessionHistoryImporter
 }));
 
@@ -390,6 +391,35 @@ describe('MCP project context tools', () => {
     expect(text).toContain('Embeddings: processed 5');
     expect(text).not.toContain('/tmp/local-hermes-state.db');
     expect(text).not.toContain('/tmp/local-codex-sessions');
+  });
+
+  it.each([
+    ['mem-import-latest', { force: true }],
+    ['mem-context-pack (explicit refresh)', { refreshForce: true, refreshLatest: true, query: 'continue' }],
+    ['mem-context-pack (automatic refresh)', { refreshForce: true, query: '남은 추가 작업 있어?' }]
+  ])('%s says why a session force reimport was skipped, without its path (#227)', async (label, args) => {
+    const refused = {
+      totalSessions: 1,
+      totalMessages: 0,
+      importedPrompts: 0,
+      importedResponses: 0,
+      skippedDuplicates: 0,
+      errors: ['Skipped force reimport (a message limit would drop the rows past it; rerun without a limit): /tmp/private/session-x.jsonl']
+    };
+    mocks.claudeImporter.importProject.mockResolvedValue(refused);
+    mocks.projectService.getRecentEvents.mockResolvedValue([]);
+
+    const result = await handleToolCall(label.split(' ')[0], {
+      projectPath: '/repo/app',
+      sources: ['claude'],
+      refreshSources: ['claude'],
+      ...args
+    });
+
+    const text = textOf(result);
+    expect(mocks.claudeImporter.importProject).toHaveBeenCalledWith('/repo/app', expect.objectContaining({ force: true, limit: 200 }));
+    expect(text).toContain('- claude: force reimport skipped for 1 session(s), nothing deleted (a message limit would drop the rows past it; rerun without a limit)');
+    expect(text).not.toContain('/tmp/private');
   });
 
   it('rejects mem-import-latest without an absolute projectPath before opening project storage', async () => {

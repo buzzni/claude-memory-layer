@@ -39,6 +39,18 @@ export interface ImportOptions {
   onProgress?: (event: ProgressEvent) => void;
 }
 
+/**
+ * Why a force reimport does not run under a message limit it can reach: the
+ * reimport stops at the limit, so the rows past it would be deleted and not
+ * put back.
+ */
+export const FORCE_REIMPORT_LIMIT_REFUSAL = 'a message limit would drop the rows past it; rerun without a limit';
+
+/** The reason in an import error for a session whose force reimport was skipped; it holds no path. */
+export function forceSkipReason(error: string): string | undefined {
+  return /^Skipped force reimport \(([^)]*)\)/.exec(error)?.[1];
+}
+
 export interface ImportResult {
   totalSessions: number;
   totalMessages: number;
@@ -212,6 +224,7 @@ export class SessionHistoryImporter {
         result.importedPrompts += sessionResult.importedPrompts;
         result.importedResponses += sessionResult.importedResponses;
         result.skippedDuplicates += sessionResult.skippedDuplicates;
+        result.errors.push(...sessionResult.errors);
         onProgress?.({
           phase: 'session-done', sessionIndex: i,
           importedPrompts: sessionResult.importedPrompts,
@@ -259,6 +272,55 @@ export class SessionHistoryImporter {
     }
   }
 
+  /**
+   * The most the import loop below can count against its message limit for
+   * this file: one per prompt it stores or recognizes, one per response it
+   * flushes. It follows the loop's parsing and turn rules; where the loop's
+   * count depends on the store (hook responses stored, a copied-in prompt
+   * skipped, an empty merge), it counts as if the loop counted.
+   */
+  private async countImportUpperBound(filePath: string): Promise<number> {
+    const rl = readline.createInterface({ input: fs.createReadStream(filePath), crlfDelay: Infinity });
+    let count = 0;
+    let inTurn = false;
+    let trigger: TurnTrigger = 'user';
+    let buffered = false;
+    const flush = () => {
+      if (buffered && inTurn) { count++; buffered = false; }
+    };
+    try {
+      for await (const line of rl) {
+        let entry: ClaudeMessage;
+        try { entry = JSON.parse(line) as ClaudeMessage; } catch { continue; }
+        const msgClass = classifyEntry(entry);
+        if (msgClass === 'user_prompt') {
+          flush();
+          const content = this.extractContent(entry);
+          if (!content) continue;
+          const plan = planPromptStorage(content);
+          if (plan.normalized.kind !== 'user') {
+            inTurn = true;
+            trigger = plan.normalized.kind;
+            continue;
+          }
+          if (!isWorthStoringPrompt(plan.normalized.requestText)) {
+            if (trigger !== 'user') { inTurn = true; trigger = 'user'; }
+            continue;
+          }
+          inTurn = true;
+          trigger = 'user';
+          count++;
+        } else if (msgClass === 'agent_text' && this.extractContent(entry)) {
+          buffered = true;
+        }
+      }
+    } finally {
+      rl.close();
+    }
+    flush();
+    return count;
+  }
+
   async importSessionFile(filePath: string, options: ImportOptions = {}): Promise<ImportResult> {
     const result: ImportResult = {
       totalSessions: 1,
@@ -277,16 +339,25 @@ export class SessionHistoryImporter {
     // Extract session ID from filename
     const sessionId = path.basename(filePath, '.jsonl');
 
-    // Force reimport: delete existing events for this session. Validate that the
-    // source file is readable and has at least one parseable record BEFORE the
-    // destructive delete, so a corrupt/empty/unreadable file can never wipe the
-    // existing session with nothing to re-import in its place.
+    // Force reimport: delete only the rows an import from this file wrote.
+    // Rows the hooks and the daemon wrote (prompts, responses, summaries, tool
+    // observations) are not put back from the transcript, and a message limit
+    // the import can reach stops it before the end of the transcript, so
+    // neither could be put back. Validate that the source file is readable and
+    // has at least one parseable record BEFORE the destructive delete, so a
+    // corrupt/empty/unreadable file can never wipe the existing session with
+    // nothing to re-import in its place.
     if (options.force) {
       if (!(await this.hasParseableContent(filePath))) {
         result.errors.push(`Skipped force reimport (no parseable records): ${filePath}`);
         return result;
       }
-      const deleted = await this.memoryService.deleteSessionEvents(sessionId);
+      const limit = options.limit || Infinity;
+      if (Number.isFinite(limit) && await this.countImportUpperBound(filePath) >= limit) {
+        result.errors.push(`Skipped force reimport (${FORCE_REIMPORT_LIMIT_REFUSAL}): ${filePath}`);
+        return result;
+      }
+      const deleted = await this.memoryService.deleteSessionEvents(sessionId, { importedFrom: filePath });
       if (options.verbose && deleted > 0) {
         console.log(`  Deleted ${deleted} existing events for session ${sessionId}`);
       }
@@ -345,7 +416,8 @@ export class SessionHistoryImporter {
 
       // Earlier imports stored the merged response without the privacy
       // filter; a re-import must not add the filtered copy beside it. A force
-      // re-import deletes the session first, so it replaces that row.
+      // re-import deletes that row first (unless a lesson cites it), so it
+      // replaces it.
       const unfiltered = truncateAgentResponse(merged);
       if (unfiltered !== truncated && storedResponses.has(unfiltered)) {
         result.skippedDuplicates++;

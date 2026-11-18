@@ -8,6 +8,7 @@ import * as path from 'path';
 import * as os from 'os';
 
 import { SQLiteEventStore } from '../../src/core/sqlite-event-store.js';
+import { LessonRepository } from '../../src/core/operations/lesson-repository.js';
 
 describe('SQLiteEventStore replication helpers', () => {
   let tempDir: string;
@@ -107,6 +108,51 @@ describe('SQLiteEventStore replication helpers', () => {
     const results = await storeA.keywordSearch('dragonfruit', 5);
 
     expect(results.map((result) => result.event.content)).toEqual(['fresh dragonfruit memory']);
+  });
+
+  it('deleteSessionEvents with importedFrom deletes only the rows a reimport from that source puts back', async () => {
+    const source = '/home/user/.claude/projects/p/reimport-me.jsonl';
+    const append = (eventType: 'user_prompt' | 'agent_response' | 'session_summary' | 'tool_observation', content: string, metadata?: Record<string, unknown>) =>
+      storeA.append({ eventType, sessionId: 'reimport-me', timestamp: new Date(), content, ...(metadata ? { metadata } : {}) });
+
+    await append('user_prompt', 'imported apricot prompt', { importedFrom: source });
+    await append('agent_response', 'imported banana response', { importedFrom: source });
+    await append('session_summary', 'hook written fig summary');
+    await append('user_prompt', 'hook written grape prompt', { turnId: 'hook-turn' });
+    // Another source, a row pulled from another machine, a type no importer
+    // writes, and a row a lesson cites are not put back by this reimport.
+    await append('user_prompt', 'other source kiwi prompt', { importedFrom: '/home/user/.hermes/state.db' });
+    await append('agent_response', 'pulled lemon response', { importedFrom: source, mongoSync: { remoteId: 'r1' } });
+    await append('tool_observation', 'tool mango output', { importedFrom: source });
+    const cited = await append('agent_response', 'cited nectarine response', { importedFrom: source });
+    if (!cited.success) throw new Error('append failed');
+    await new LessonRepository(storeA.getDatabase()).upsert({
+      projectHash: 'project-1', name: 'Cited lesson', trigger: 'When releasing', steps: ['Check the tag'],
+      confidence: 0.8, sourceSessionIds: ['reimport-me'], sourceEventIds: [cited.eventId], failureModes: [], skillCandidate: false, actor: 'tester'
+    });
+    await storeA.append({ eventType: 'user_prompt', sessionId: 'other-session', timestamp: new Date(), content: 'imported cherry prompt', metadata: { importedFrom: source } });
+
+    await expect(storeA.deleteSessionEvents('reimport-me', { importedFrom: source })).resolves.toBe(2);
+
+    expect((await storeA.getSessionEvents('reimport-me')).map((event) => event.content).sort()).toEqual([
+      'cited nectarine response', 'hook written fig summary', 'hook written grape prompt',
+      'other source kiwi prompt', 'pulled lemon response', 'tool mango output'
+    ]);
+    expect((await storeA.keywordSearch('fig', 5)).map((result) => result.event.content)).toEqual(['hook written fig summary']);
+    await expect(storeA.keywordSearch('apricot', 5)).resolves.toEqual([]);
+    expect((await storeA.keywordSearch('cherry', 5)).map((result) => result.event.content)).toEqual(['imported cherry prompt']);
+  });
+
+  it('deleteSessionEvents with importedFrom still deletes when a lesson lists a null source id', async () => {
+    const source = '/home/user/.claude/projects/p/null-cite.jsonl';
+    await storeA.append({ eventType: 'user_prompt', sessionId: 'null-cite', timestamp: new Date(), content: 'imported quince prompt', metadata: { importedFrom: source } });
+    await new LessonRepository(storeA.getDatabase()).upsert({
+      projectHash: 'project-1', name: 'Other lesson', trigger: 'When releasing', steps: ['Check the tag'],
+      confidence: 0.8, sourceSessionIds: [], sourceEventIds: ['some-other-event'], failureModes: [], skillCandidate: false, actor: 'tester'
+    });
+    storeA.getDatabase().prepare(`UPDATE memory_lessons SET source_event_ids = '["some-other-event", null]'`).run();
+
+    await expect(storeA.deleteSessionEvents('null-cite', { importedFrom: source })).resolves.toBe(1);
   });
 
   it('supports event updates and deletes on a fresh FTS table before manual rebuild', async () => {

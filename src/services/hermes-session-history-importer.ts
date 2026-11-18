@@ -15,7 +15,7 @@ import { applyPrivacyFilter, truncateOutput } from '../core/privacy/index.js';
 import { registerTerminalSession } from '../core/registry/session-registry.js';
 import type { Config } from '../core/types.js';
 import { MemoryService } from './memory-service.js';
-import { isWorthStoringPrompt, type ImportOptions, type ImportResult } from './session-history-importer.js';
+import { FORCE_REIMPORT_LIMIT_REFUSAL, isWorthStoringPrompt, type ImportOptions, type ImportResult } from './session-history-importer.js';
 import { mergeAgentResponseBlocks } from './turn-buffering.js';
 import { normalizeUserPrompt, promptClassifierMetadata, type NormalizedPrompt } from '../core/prompt-normalizer.js';
 import type { TurnTrigger } from '../core/turn-state.js';
@@ -325,6 +325,45 @@ function hasImportableHermesMessages(db: Database, sessionId: string): boolean {
   });
 }
 
+/**
+ * The most the import loop can count against its per-session limit for these
+ * messages: one per user prompt, one per response it flushes. It follows the
+ * loop's turn rules; an empty merge, which the loop does not count, is counted.
+ */
+function countImportUpperBound(messages: readonly HermesMessageRow[]): number {
+  let count = 0;
+  let inTurn = false;
+  let trigger: TurnTrigger = 'user';
+  let buffered = false;
+  const flush = () => {
+    if (buffered && inTurn) { count++; buffered = false; }
+  };
+  for (const message of messages) {
+    const normalized = normalizeHermesMessage(message);
+    if (normalized === 'unsupported' || normalized === 'empty-assistant') continue;
+    if (normalized === 'trivial-user') {
+      if (trigger !== 'user') { flush(); inTurn = true; trigger = 'user'; }
+      continue;
+    }
+    if ('automated' in normalized) {
+      flush();
+      inTurn = true;
+      trigger = normalized.automated;
+      continue;
+    }
+    if (normalized.role === 'user') {
+      flush();
+      inTurn = true;
+      trigger = 'user';
+      count++;
+    } else {
+      buffered = true;
+    }
+  }
+  flush();
+  return count;
+}
+
 function selectImportableHermesSessions(db: Database, sessions: HermesSessionRow[], sessionLimit: number): HermesSessionRow[] {
   if (!Number.isFinite(sessionLimit) || sessionLimit <= 0) return sessions;
 
@@ -629,8 +668,23 @@ export class HermesSessionHistoryImporter {
     const result = { ...createEmptyImportResult(), totalSessions: 1 };
     const effectiveProjectPath = options.projectPath;
 
+    const messages = listHermesMessages(db, session.id);
+
     if (options.force) {
-      const deleted = await this.memoryService.deleteSessionEvents(memorySessionId);
+      // A message limit the import can reach stops it before the end of the
+      // session, so the rows past it would be deleted and never put back; a
+      // session with no message to read would put nothing back.
+      const limit = options.limit ?? Infinity;
+      if (Number.isFinite(limit) && countImportUpperBound(messages) >= limit) {
+        result.errors.push(`Skipped force reimport (${FORCE_REIMPORT_LIMIT_REFUSAL}): ${memorySessionId}`);
+        return result;
+      }
+      if (!hasImportableHermesMessages(db, session.id)) {
+        result.errors.push(`Skipped force reimport (no parseable records): ${memorySessionId}`);
+        return result;
+      }
+      // Only the rows an import from this state.db wrote; nothing else is put back.
+      const deleted = await this.memoryService.deleteSessionEvents(memorySessionId, { importedFrom: this.stateDbPath });
       if (options.verbose && deleted > 0) {
         console.log(`  Deleted ${deleted} existing events for session ${memorySessionId}`);
       }
@@ -638,7 +692,6 @@ export class HermesSessionHistoryImporter {
 
     await this.memoryService.startSession(memorySessionId, effectiveProjectPath);
 
-    const messages = listHermesMessages(db, session.id);
     let currentTurnId: string | null = null;
     let currentTurnTrigger: TurnTrigger = 'user';
     let textBuffer: Array<{ content: string; row: HermesMessageRow }> = [];

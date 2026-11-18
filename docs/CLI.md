@@ -55,7 +55,8 @@ claude-memory-layer stats --project /path/to/project
 # Claude Code session import
 claude-memory-layer list --project /path/to/project
 claude-memory-layer import --project /path/to/project --verbose
-# --force deletes the session's events first; rows not in the transcript are lost (docs/OPERATIONS.md, #227)
+# --force replaces only the prompts and responses earlier imports of the transcript wrote; hook rows stay,
+# and a session --limit could cut short is skipped (docs/OPERATIONS.md, #227)
 
 # Codex/Hermes: read-only validation first, then an explicit import
 claude-memory-layer codex validate --project /path/to/project --format markdown --anonymize-projects

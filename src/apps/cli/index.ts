@@ -21,7 +21,7 @@ import { applyRunbookConsolidation, parseConsolidationDrafts, planRunbookConsoli
 import { getProjectStoragePath, resolveProjectStoragePath, hashProjectPath } from '../../core/registry/project-path.js';
 import { resolveCanonicalRepoIdentity } from '../../core/registry/repo-identity.js';
 import { resolveExistingStore } from '../../core/registry/existing-store.js';
-import { createSessionHistoryImporter, type ProgressEvent } from '../../services/session-history-importer.js';
+import { createSessionHistoryImporter, FORCE_REIMPORT_LIMIT_REFUSAL, forceSkipReason, type ProgressEvent } from '../../services/session-history-importer.js';
 import {
   createCodexSessionHistoryImporter,
   validateCodexSessions
@@ -3111,6 +3111,10 @@ function printImportSummary(result: import('../../services/session-history-impor
   console.log(`│  Embeddings queued:   ${String(embedCount).padStart(8)} │`);
   console.log('└─────────────────────────────────┘');
 
+  // A force reimport the message limit could cut short was asked for and
+  // skipped, so the command fails; other skips stay warnings.
+  if (result.errors.some((error) => forceSkipReason(error) === FORCE_REIMPORT_LIMIT_REFUSAL)) process.exitCode = 1;
+
   if (result.errors.length > 0) {
     console.log(`\n⚠️  Errors (${result.errors.length}):`);
     for (const error of result.errors.slice(0, 5)) {
@@ -3311,7 +3315,7 @@ program
   .option('-a, --all', 'Import all sessions from all projects')
   .option('-l, --limit <number>', 'Limit messages per session')
   .option('--session-limit <number>', 'Limit recent matching sessions to import')
-  .option('-f, --force', 'Force reimport: delete existing events and reimport with turn_id grouping')
+  .option('-f, --force', 'Force reimport: replace the prompts and responses earlier imports of this transcript wrote, with turn_id grouping (events from hooks, summaries, tools and lesson sources are kept; a session --limit could cut short is skipped)')
   .option('--embedding-model <name>', `Embedding model override (default: ${DEFAULT_EMBEDDING_MODEL}, or env CLAUDE_MEMORY_EMBEDDING_MODEL; fallback: ${DEFAULT_EMBEDDING_FALLBACK_MODEL} or env CLAUDE_MEMORY_EMBEDDING_FALLBACK_MODEL)`)
   .option('--lock-path <path>', 'Override vector worker lock path (advanced)')
   .option('-v, --verbose', 'Show detailed progress')
@@ -3367,7 +3371,7 @@ program
       }
 
       if (options.force) {
-        console.log('🔄 Force mode: existing events will be deleted and reimported with turn_id grouping\n');
+        console.log('🔄 Force mode: events earlier imports wrote will be replaced with turn_id grouping; other events are kept\n');
       }
 
       let result;
@@ -3640,7 +3644,7 @@ codexCmd
   .option('--sessions-dir <path>', 'Codex sessions directory (default: ~/.codex/sessions)')
   .option('-l, --limit <number>', 'Limit memories imported across selected matching sessions')
   .option('--session-limit <number>', 'Limit recent matching sessions to import')
-  .option('-f, --force', 'Delete existing events for each imported session before reimporting')
+  .option('-f, --force', 'Replace the prompts and responses earlier imports of each session wrote (events from hooks, summaries, tools and lesson sources are kept; a session --limit could cut short is skipped)')
   .option('-v, --verbose', 'Show detailed progress')
   .option('--lock-path <path>', 'Override vector worker lock path (advanced)')
   .option('--no-process-embeddings', 'Skip processing pending embeddings after import')
@@ -3738,7 +3742,7 @@ hermesCmd
   .option('--state-db <path>', 'Hermes state database path (default: ~/.hermes/state.db)')
   .option('-l, --limit <number>', 'Limit messages imported per selected Hermes session')
   .option('--session-limit <number>', 'Limit recent matching sessions to import')
-  .option('-f, --force', 'Delete existing events for each imported session before reimporting')
+  .option('-f, --force', 'Replace the prompts and responses earlier imports of each session wrote (events from hooks, summaries, tools and lesson sources are kept; a session --limit could cut short is skipped)')
   .option('-v, --verbose', 'Show detailed progress')
   .option('--lock-path <path>', 'Override vector worker lock path (advanced)')
   .option('--no-process-embeddings', 'Skip processing pending embeddings after import')

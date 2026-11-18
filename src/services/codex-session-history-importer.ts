@@ -13,7 +13,7 @@ import * as readline from 'readline';
 import { createHash, randomUUID } from 'crypto';
 import { MemoryService } from './memory-service.js';
 import { registerTerminalSession } from '../core/registry/session-registry.js';
-import type { ImportOptions, ImportResult } from './session-history-importer.js';
+import { FORCE_REIMPORT_LIMIT_REFUSAL, type ImportOptions, type ImportResult } from './session-history-importer.js';
 import { mergeAgentResponseBlocks, truncateAgentResponse } from './turn-buffering.js';
 import { planPromptStorage, promptClassifierMetadata, redactPromptForStorage } from '../core/prompt-normalizer.js';
 import type { TurnTrigger } from '../core/turn-state.js';
@@ -593,6 +593,103 @@ async function hasCompleteHostTurn(
   }
 }
 
+/**
+ * Pre-flight check before a destructive force reimport: true only if the file
+ * can be read and holds at least one message line that parses. session_meta
+ * alone does not count; a reimport would put nothing back from it.
+ */
+async function hasParseableCodexMessage(filePath: string): Promise<boolean> {
+  let stream: fs.ReadStream | undefined;
+  let rl: readline.Interface | undefined;
+  try {
+    stream = fs.createReadStream(filePath, { encoding: 'utf-8' });
+    rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+    for await (const line of rl) {
+      try {
+        const entry = JSON.parse(line) as CodexLogLine;
+        if (entry.type === 'response_item' && isRecord(entry.payload) && entry.payload.type === 'message') return true;
+      } catch {
+        // Keep scanning; a later line may be valid.
+      }
+    }
+    return false;
+  } catch {
+    return false;
+  } finally {
+    rl?.close();
+    stream?.close();
+  }
+}
+
+/**
+ * The most the import loop can count for this file, in the unit the shared
+ * limit across sessions uses (countStoredEntries), which is never below the
+ * per-file count: one per user message with text (stored, recognized, or
+ * skipped as scaffold or automated), one per response it flushes. It follows
+ * the loop's parsing and turn rules; where the count depends on the store (a
+ * turn the Codex host completed), it counts as if the loop counted.
+ */
+async function countImportUpperBound(filePath: string): Promise<number> {
+  const rl = readline.createInterface({ input: fs.createReadStream(filePath, { encoding: 'utf-8' }), crlfDelay: Infinity });
+  let count = 0;
+  let turnId: string | null = null;
+  let nativeTurnId: string | null = null;
+  let buffered = false;
+  const flush = () => {
+    if (buffered && turnId) count++;
+    buffered = false;
+  };
+  try {
+    for await (const line of rl) {
+      let entry: CodexLogLine;
+      try { entry = JSON.parse(line) as CodexLogLine; } catch { continue; }
+      if (entry.type === 'event_msg' && isRecord(entry.payload)) {
+        const eventPayload = entry.payload;
+        if (eventPayload.type === 'task_started') {
+          flush();
+          nativeTurnId = typeof eventPayload.turn_id === 'string' && eventPayload.turn_id.trim() ? eventPayload.turn_id : null;
+          turnId = null;
+        } else if (eventPayload.type === 'turn_aborted' && (!eventPayload.turn_id || eventPayload.turn_id === nativeTurnId)) {
+          nativeTurnId = null;
+          turnId = null;
+          buffered = false;
+        }
+        if (eventPayload.type === 'task_complete' && !buffered
+          && typeof eventPayload.last_agent_message === 'string' && eventPayload.last_agent_message.trim()) {
+          buffered = true;
+        }
+        continue;
+      }
+      if (entry.type !== 'response_item' || !isRecord(entry.payload)) continue;
+      const payload = entry.payload as CodexResponseItemMessagePayload;
+      if (payload.type !== 'message' || typeof payload.role !== 'string') continue;
+      if (payload.role === 'user') {
+        flush();
+        if (!extractTextFromContent(payload.content)) continue;
+        turnId = nativeTurnId ?? 'turn';
+        count++;
+      } else if (payload.role === 'assistant') {
+        if (payload.phase !== undefined && payload.phase !== null && payload.phase !== 'final_answer') continue;
+        if (extractTextFromContent(payload.content)) buffered = true;
+      }
+    }
+  } finally {
+    rl.close();
+  }
+  flush();
+  return count;
+}
+
+/** Whether the sessions together can reach a limit they share. */
+async function reachesSharedLimit(files: readonly string[], limit: number): Promise<boolean> {
+  let total = 0;
+  for (const file of files) {
+    total += await countImportUpperBound(file);
+    if (total >= limit) return true;
+  }
+  return false;
+}
+
 function isSessionScaffold(text: string): boolean {
   let rest = text.trim();
   if (rest.startsWith('# AGENTS.md instructions for ')) {
@@ -705,6 +802,14 @@ export class CodexSessionHistoryImporter {
 
     const effectiveProjectPath = options.projectPath ?? projectPath;
     const totalLimit = normalizePositiveImportLimit(options.limit);
+    // The limit is shared by the selected sessions; a force reimport any of
+    // them could be cut short in is refused for all of them.
+    if (options.force && totalLimit !== undefined && await reachesSharedLimit(selectedFiles, totalLimit)) {
+      for (const filePath of selectedFiles) {
+        result.errors.push(`Skipped force reimport (${FORCE_REIMPORT_LIMIT_REFUSAL}): ${filePath}`);
+      }
+      return result;
+    }
     let storedAcrossSessions = 0;
 
     for (let i = 0; i < selectedFiles.length; i++) {
@@ -766,6 +871,14 @@ export class CodexSessionHistoryImporter {
     onProgress?.({ phase: 'scan', message: `Found ${sessionFiles.length} Codex session file(s)` });
 
     const totalLimit = normalizePositiveImportLimit(options.limit);
+    // The limit is shared by the selected sessions; a force reimport any of
+    // them could be cut short in is refused for all of them.
+    if (options.force && totalLimit !== undefined && await reachesSharedLimit(selectedFiles, totalLimit)) {
+      for (const filePath of selectedFiles) {
+        result.errors.push(`Skipped force reimport (${FORCE_REIMPORT_LIMIT_REFUSAL}): ${filePath}`);
+      }
+      return result;
+    }
     let storedAcrossSessions = 0;
 
     for (let i = 0; i < selectedFiles.length; i++) {
@@ -828,6 +941,14 @@ export class CodexSessionHistoryImporter {
 
     const effectiveProjectPath = options.projectPath ?? meta.cwd ?? undefined;
 
+    // A message limit the import can reach stops it before the end of the
+    // session, so the rows past it would be deleted and never put back.
+    const limit = options.limit || Infinity;
+    if (options.force && Number.isFinite(limit) && await countImportUpperBound(filePath) >= limit) {
+      result.errors.push(`Skipped force reimport (${FORCE_REIMPORT_LIMIT_REFUSAL}): ${filePath}`);
+      return result;
+    }
+
     // Keep host-owned rows intact on a forced legacy refresh: the legacy parser
     // cannot recreate the host's final-answer/privacy contract. Plain legacy
     // sessions retain the historical delete-then-reimport behavior.
@@ -839,7 +960,13 @@ export class CodexSessionHistoryImporter {
       })
       : false;
     if (options.force && !hasHostManagedRows) {
-      const deleted = await this.memoryService.deleteSessionEvents(sessionId);
+      // A file with no message to read would put nothing back.
+      if (!(await hasParseableCodexMessage(filePath))) {
+        result.errors.push(`Skipped force reimport (no parseable records): ${filePath}`);
+        return result;
+      }
+      // Only the rows an import from this file wrote; nothing else is put back.
+      const deleted = await this.memoryService.deleteSessionEvents(sessionId, { importedFrom: filePath });
       if (options.verbose && deleted > 0) {
         console.log(`  Deleted ${deleted} existing events for session ${sessionId}`);
       }
@@ -853,7 +980,6 @@ export class CodexSessionHistoryImporter {
     const onProgress = options.onProgress;
     const sessionIndex = (options as ImportOptions & { _sessionIndex?: number })._sessionIndex ?? 0;
     let lastProgressAt = 0;
-    const limit = options.limit || Infinity;
     let storedCount = 0;
 
     let currentTurnId: string | null = null;

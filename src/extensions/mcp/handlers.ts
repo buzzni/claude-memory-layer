@@ -28,7 +28,7 @@ import { createSharedEventStore } from '../../core/shared-event-store.js';
 import { createSharedStore, type SharedActorIdentity } from '../../core/shared-store.js';
 import { EntityRepo } from '../../core/entity-repo.js';
 import { createSQLiteDatabase, sqliteClose, sqliteGet, type SQLiteDatabase } from '../../core/sqlite-wrapper.js';
-import { createSessionHistoryImporter, type ImportResult } from '../../services/session-history-importer.js';
+import { createSessionHistoryImporter, forceSkipReason, type ImportResult } from '../../services/session-history-importer.js';
 import { createCodexSessionHistoryImporter } from '../../services/codex-session-history-importer.js';
 import { createHermesSessionHistoryImporter } from '../../services/hermes-session-history-importer.js';
 import {
@@ -2759,7 +2759,7 @@ async function handleMemContextPack(memoryService: MemoryService, args: Record<s
     lines.push('### Freshness Refresh', '');
     for (const summary of freshnessRun.summaries) {
       if (summary.result) {
-        lines.push(formatImportSummary(summary.source, summary.result));
+        lines.push(formatImportSummary(summary.source, summary.result), ...formatForceSkips(summary.source, summary.result));
       } else {
         lines.push(`- ${summary.source}: failed (${summary.error ?? 'details suppressed'})`);
       }
@@ -3022,7 +3022,7 @@ async function handleMemImportLatest(memoryService: MemoryService, args: Record<
 
   for (const summary of importRun.summaries) {
     if (summary.result) {
-      lines.push(formatImportSummary(summary.source, summary.result));
+      lines.push(formatImportSummary(summary.source, summary.result), ...formatForceSkips(summary.source, summary.result));
     } else {
       lines.push(`- ${summary.source}: failed (${summary.error ?? 'details suppressed'})`);
     }
@@ -3946,6 +3946,16 @@ function sourceListArg(value: unknown): LatestImportSource[] {
 
 function formatImportSummary(source: LatestImportSource, result: ImportResult): string {
   return `- ${source}: sessions=${result.totalSessions} messages=${result.totalMessages} prompts=${result.importedPrompts} responses=${result.importedResponses} skipped=${result.skippedDuplicates} errors=${result.errors.length}`;
+}
+
+/** One line per reason a source skipped a session's force reimport; the error lines' paths stay out. */
+function formatForceSkips(source: LatestImportSource, result: ImportResult): string[] {
+  const skipped = new Map<string, number>();
+  for (const error of result.errors) {
+    const reason = forceSkipReason(error);
+    if (reason !== undefined) skipped.set(reason, (skipped.get(reason) ?? 0) + 1);
+  }
+  return [...skipped].map(([reason, sessions]) => `- ${source}: force reimport skipped for ${sessions} session(s), nothing deleted (${reason})`);
 }
 
 function safeErrorSummary(error: unknown): string {
