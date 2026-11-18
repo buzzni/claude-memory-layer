@@ -217,13 +217,17 @@ context packs return several summaries of one session (#254). The refresh hides 
 sessions stay as they are. After upgrading, run this once per project store:
 
 ```bash
-claude-memory-layer repair supersede-session-summaries --project /path/to/project          # preview, read-only
+claude-memory-layer repair supersede-session-summaries --project /path/to/project          # preview
 claude-memory-layer repair supersede-session-summaries --project /path/to/project --apply  # hide the others
 ```
 
 - **Which summary stays**: the newest summary written by the LLM (`metadata.generated: "llm"`), else the newest. Some
-  older sessions hold an LLM summary next to a later template summary (`Session with N user prompts…`), and keeping
-  the template would hide what the LLM summary recorded. On a tie in time, the row stored last stays.
+  older sessions hold an LLM summary next to a later template summary (`Session with N user prompts…`); the LLM
+  summary stays and the template is hidden. Only the newest LLM summary of a session stays: older LLM summaries of the
+  same session are hidden too, without comparing what they say, so anything only an older one recorded is no longer
+  returned. On a tie in time, the row stored last stays.
+- **The preview writes nothing**: without `--apply` the command reads a temporary copy of the store, as the read-only
+  diagnostics do, so the store and its `-wal`/`-shm` files are not created or touched.
 - **How they are hidden**: as the refresh does, with `quarantine` metadata in category `superseded` and a governance
   audit row each. Nothing is deleted. The preview prints the number of sessions and summaries and how many of each kind
   (`metadata.generated`, `unlabeled` when absent) it keeps and hides.
