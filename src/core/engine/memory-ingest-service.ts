@@ -60,10 +60,6 @@ interface IngestEventStore extends SessionUpsertStore {
   mergeEventMetadata(eventId: string, patch: Record<string, unknown>): Promise<boolean>;
 }
 
-interface IngestMarkdownMirror {
-  append(event: MemoryEventInput, eventId?: string): Promise<void>;
-}
-
 export type IngestOperation = 'user_prompt' | 'agent_response' | 'session_summary' | 'tool_observation';
 
 /** operations.json `sessionSummaryRefresh`. */
@@ -164,7 +160,6 @@ function emptyVerdictCoverage(exchanges: MemoryEvent[]): SessionSummaryProgress[
 export interface MemoryIngestServiceOptions {
   initialize: () => Promise<void>;
   eventStore: IngestEventStore;
-  markdownMirror: IngestMarkdownMirror;
   createToolEmbedding: (payload: ToolObservationPayload) => string;
   getProjectHash?: () => string | null;
   getProjectPath?: () => string | null;
@@ -201,7 +196,6 @@ export type LlmSummaryGenerator = (
 export class MemoryIngestService {
   private readonly initialize: () => Promise<void>;
   private readonly eventStore: IngestEventStore;
-  private readonly markdownMirror: IngestMarkdownMirror;
   private readonly createToolEmbedding: (payload: ToolObservationPayload) => string;
   private readonly getProjectHash: () => string | null;
   private readonly getProjectPath: () => string | null;
@@ -216,7 +210,6 @@ export class MemoryIngestService {
   constructor(options: MemoryIngestServiceOptions) {
     this.initialize = options.initialize;
     this.eventStore = options.eventStore;
-    this.markdownMirror = options.markdownMirror;
     this.createToolEmbedding = options.createToolEmbedding;
     this.getProjectHash = options.getProjectHash ?? (() => null);
     this.getProjectPath = options.getProjectPath ?? (() => null);
@@ -549,11 +542,6 @@ export class MemoryIngestService {
         // parallel legacy embedding_outbox path; it must skip the same way.
         if (options.embeddingContent && options.operation !== 'tool_observation') {
           await this.eventStore.enqueueForEmbedding(result.eventId, options.embeddingContent);
-        }
-        try {
-          await this.markdownMirror.append(normalizedInput, result.eventId);
-        } catch {
-          // non-breaking markdown mirror write
         }
         await this.runPerspectiveDeriver(normalizedInput, result.eventId, options.operation);
       }

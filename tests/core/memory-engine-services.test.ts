@@ -79,7 +79,6 @@ describe('createMemoryEngineServices', () => {
       marker: 'graduation',
       getStats: vi.fn(async () => [{ level: 'working', count: 2 }])
     };
-    const mdMirror = { marker: 'mirror', append: vi.fn(async (_input: MemoryEventInput, _eventId?: string) => {}) };
     const retrievalBundle = {
       retriever: { marker: 'retriever' },
       retrievalOrchestrator: { marker: 'orchestrator' },
@@ -106,10 +105,6 @@ describe('createMemoryEngineServices', () => {
         throw new Error('custom model should use createEmbedder');
       }),
       getDefaultMatcher: vi.fn(() => matcher as any),
-      createMarkdownMirror: vi.fn((cwd: string) => {
-        expect(cwd).toBe('/workspace/project');
-        return mdMirror as any;
-      }),
       createGraduationPipeline: vi.fn((store) => {
         expect(store).toBe(sqliteStore);
         return graduation as any;
@@ -125,7 +120,6 @@ describe('createMemoryEngineServices', () => {
         storagePath,
         readOnly: false,
         embeddingModel: 'custom-embedding-model',
-        cwd: '/workspace/project',
         initialize,
         getProjectHash: () => 'project-1',
         getProjectPath: () => '/workspace/project',
@@ -143,7 +137,6 @@ describe('createMemoryEngineServices', () => {
         embedder,
         matcher,
         graduation,
-        mdMirror,
         retriever: retrievalBundle.retriever,
         retrievalOrchestrator: retrievalBundle.retrievalOrchestrator,
         retrievalDisclosureService: retrievalBundle.retrievalDisclosureService,
@@ -174,7 +167,6 @@ describe('createMemoryEngineServices', () => {
         })
       }), undefined);
       expect(sqliteStore.enqueueForEmbedding).toHaveBeenCalledWith('event:user_prompt', 'remember factory wiring');
-      expect(mdMirror.append).toHaveBeenCalledWith(expect.any(Object), 'event:user_prompt');
 
       await services.queryService.getRecentEvents(3);
       expect(sqliteStore.getRecentEvents).toHaveBeenCalledWith(3, undefined);
@@ -204,7 +196,6 @@ describe('createMemoryEngineServices', () => {
       createVectorStore: vi.fn(() => ({}) as any),
       getDefaultEmbedder: vi.fn(() => ({}) as any),
       getDefaultMatcher: vi.fn(() => ({}) as any),
-      createMarkdownMirror: vi.fn(() => ({}) as any),
       createGraduationPipeline: vi.fn(() => ({}) as any),
       createRetrievalServices: vi.fn(() => ({
         retriever: {},
@@ -219,7 +210,6 @@ describe('createMemoryEngineServices', () => {
         storagePath,
         readOnly: true,
         snapshotReads: true,
-        cwd: '/workspace/project',
         initialize: async () => {},
         getProjectHash: () => null,
         hasSharedStore: () => false,

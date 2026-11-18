@@ -60,16 +60,12 @@ function createService(options: CreateServiceOptions = {}) {
     enqueueForEmbedding: vi.fn(async (_eventId: string, _content: string) => {}),
     mergeEventMetadata: vi.fn(async (_eventId: string, _patch: Record<string, unknown>) => true)
   };
-  const markdownMirror = {
-    append: vi.fn(async (_input: MemoryEventInput, _eventId?: string) => {})
-  };
   const createToolEmbedding = vi.fn((payload: ToolObservationPayload) => `${payload.toolName}:${payload.success}`);
 
   return {
     service: new MemoryIngestService({
       initialize,
       eventStore: store,
-      markdownMirror,
       createToolEmbedding,
       getProjectHash: () => options.projectHash ?? null,
       getProjectPath: () => options.projectPath ?? null,
@@ -80,15 +76,14 @@ function createService(options: CreateServiceOptions = {}) {
     }),
     initialize,
     store,
-    markdownMirror,
     createToolEmbedding,
     appended
   };
 }
 
 describe('MemoryIngestService ingest pipeline', () => {
-  it('normalizes metadata, runs interceptors, appends, enqueues embeddings, and mirrors successful events', async () => {
-    const { service, store, markdownMirror, appended } = createService({
+  it('normalizes metadata, runs interceptors, appends, and enqueues embeddings for successful events', async () => {
+    const { service, store, appended } = createService({
       projectHash: 'project-hash-1',
       projectPath: '/workspace/project'
     });
@@ -135,12 +130,11 @@ describe('MemoryIngestService ingest pipeline', () => {
       ts: expect.any(String)
     });
     expect(store.enqueueForEmbedding).toHaveBeenCalledWith('event-1', 'remember this');
-    expect(markdownMirror.append).toHaveBeenCalledWith(appended[0], 'event-1');
     expect(stages).toEqual(['before:user_prompt', 'after:user_prompt']);
   });
 
-  it('does not enqueue embeddings or mirror duplicate append results', async () => {
-    const { service, store, markdownMirror } = createService({
+  it('does not enqueue embeddings for duplicate append results', async () => {
+    const { service, store } = createService({
       appendResult: { success: true, eventId: 'duplicate-event', isDuplicate: true }
     });
 
@@ -151,21 +145,6 @@ describe('MemoryIngestService ingest pipeline', () => {
     });
 
     expect(store.enqueueForEmbedding).not.toHaveBeenCalled();
-    expect(markdownMirror.append).not.toHaveBeenCalled();
-  });
-
-  it('keeps markdown mirror failures non-breaking after a successful append', async () => {
-    const { service, store, markdownMirror } = createService();
-    markdownMirror.append.mockRejectedValueOnce(new Error('mirror is read-only'));
-
-    await expect(service.storeSessionSummary('session-1', 'summary')).resolves.toEqual({
-      success: true,
-      eventId: 'event-1',
-      isDuplicate: false
-    });
-
-    expect(store.enqueueForEmbedding).toHaveBeenCalledWith('event-1', 'summary');
-    expect(markdownMirror.append).toHaveBeenCalledOnce();
   });
 
   it('keeps perspective derivation failures non-blocking after a successful append', async () => {
@@ -174,7 +153,7 @@ describe('MemoryIngestService ingest pipeline', () => {
         throw new Error('optional perspective deriver unavailable');
       })
     };
-    const { service, store, markdownMirror } = createService({
+    const { service, store } = createService({
       projectHash: 'project-1',
       projectPath: '/workspace/project',
       perspectiveDeriver
@@ -188,7 +167,6 @@ describe('MemoryIngestService ingest pipeline', () => {
 
     expect(store.append).toHaveBeenCalledOnce();
     expect(store.enqueueForEmbedding).toHaveBeenCalledWith('event-1', 'derive this safely');
-    expect(markdownMirror.append).toHaveBeenCalledOnce();
     expect(perspectiveDeriver.deriveFromEvent).toHaveBeenCalledWith(expect.objectContaining({
       id: 'event-1',
       eventType: 'user_prompt',
@@ -198,7 +176,7 @@ describe('MemoryIngestService ingest pipeline', () => {
   });
 
   it('runs error interceptors and skips side effects when append returns a failure result', async () => {
-    const { service, store, markdownMirror } = createService({
+    const { service, store } = createService({
       appendResult: { success: false, error: 'sqlite append failed' }
     });
     const stages: string[] = [];
@@ -221,11 +199,10 @@ describe('MemoryIngestService ingest pipeline', () => {
     expect(errors.map((error) => error.message)).toEqual(['sqlite append failed']);
     expect(stages).toEqual(['error']);
     expect(store.enqueueForEmbedding).not.toHaveBeenCalled();
-    expect(markdownMirror.append).not.toHaveBeenCalled();
   });
 
   it('runs error interceptors and skips side effects when append throws', async () => {
-    const { service, store, markdownMirror } = createService();
+    const { service, store } = createService();
     const error = new Error('sqlite unavailable');
     store.append.mockRejectedValueOnce(error);
     const errors: Error[] = [];
@@ -245,7 +222,6 @@ describe('MemoryIngestService ingest pipeline', () => {
 
     expect(errors).toEqual([error]);
     expect(store.enqueueForEmbedding).not.toHaveBeenCalled();
-    expect(markdownMirror.append).not.toHaveBeenCalled();
   });
 
   it('never enqueues tool_observation for embedding on a successful append, even though the legacy outbox path would otherwise embed every operation', async () => {
@@ -255,7 +231,7 @@ describe('MemoryIngestService ingest pipeline', () => {
     // reach unconditionally via `embeddingContent`, which kept re-polluting
     // semantic search with raw tool output (including full Agent/Task
     // subagent responses) after every "fix".
-    const { service, store, markdownMirror, createToolEmbedding } = createService();
+    const { service, store, createToolEmbedding } = createService();
 
     const result = await service.storeToolObservation('session-1', {
       toolName: 'Agent',
@@ -267,7 +243,6 @@ describe('MemoryIngestService ingest pipeline', () => {
     expect(result).toEqual({ success: true, eventId: 'event-1', isDuplicate: false });
     expect(createToolEmbedding).toHaveBeenCalledOnce();
     expect(store.enqueueForEmbedding).not.toHaveBeenCalled();
-    expect(markdownMirror.append).toHaveBeenCalledOnce();
   });
 });
 

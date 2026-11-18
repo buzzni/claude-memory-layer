@@ -226,6 +226,12 @@ Known limits:
   that removes nothing writes no row. The row records scope and counts, never the deleted text, so it shows when,
   by whom and how much was deleted, not what. `repair redact-credentials --apply` writes each batch's
   `credential_redact` row in the transaction that rewrites that batch's rows; a dry run writes none.
+- **Project directories can hold an old copy of event text** (#274). Before this change every stored event was also
+  appended to `<project>/memory/<type>/…/YYYY-MM-DD.md` and listed in `<project>/memory/_index.md`, in the project
+  directory itself (a worktree's main checkout, or the directory a `.claude-memory-root` marker names). Nothing reads
+  that copy and none of the commands above touches it, so text they deleted or redacted can still be there. Ingest
+  no longer writes it; delete those files by hand. The store's own mirror under `~/.claude-code/memory/projects/<hash>/memory/`
+  is unchanged.
 
 ## Credential redaction runs and what it leaves undone
 
