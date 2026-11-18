@@ -1,3 +1,7 @@
+import * as fs from 'fs';
+import * as path from 'path';
+
+import { SQLiteEventStore } from '../../core/sqlite-event-store.js';
 import type { SessionSummarySupersedeResult } from '../../core/types.js';
 
 export interface SupersedeSessionSummariesCommandOptions {
@@ -21,6 +25,26 @@ export function resolveSupersedeSessionSummariesOptions(
     projectPath: options.project ?? cwd,
     dryRun: options.apply !== true
   };
+}
+
+export async function runSupersedeSessionSummaries(
+  storagePath: string,
+  dryRun: boolean
+): Promise<SessionSummarySupersedeResult> {
+  const dbPath = path.join(storagePath, 'events.sqlite');
+  if (!fs.existsSync(dbPath)) {
+    return { dryRun, sessions: 0, superseded: 0, keptByKind: {}, supersededByKind: {}, samples: [] };
+  }
+  // A read-only connection still creates -wal/-shm next to a WAL store, so the
+  // dry run reads a temporary copy, as the read-only diagnostics do.
+  const store = new SQLiteEventStore(dbPath, dryRun
+    ? { readonly: true, snapshot: true, canonicalMemoryRoot: path.dirname(path.dirname(storagePath)) }
+    : {});
+  try {
+    return await store.supersedeDuplicateSessionSummaries({ dryRun });
+  } finally {
+    await store.close().catch(() => undefined);
+  }
 }
 
 export function formatSupersedeSessionSummariesResult(result: SessionSummarySupersedeResult): string {

@@ -164,7 +164,8 @@ import { formatDropSpareVectorsResult, resolveDropSpareVectorsOptions } from './
 import {
   formatSupersedeSessionSummariesFailure,
   formatSupersedeSessionSummariesResult,
-  resolveSupersedeSessionSummariesOptions
+  resolveSupersedeSessionSummariesOptions,
+  runSupersedeSessionSummaries
 } from './supersede-session-summaries-command.js';
 import {
   formatAutoHealToolObservationVectorsResult,
@@ -1976,22 +1977,11 @@ repairCommand
   .action(async (options) => {
     try {
       const supersedeOptions = resolveSupersedeSessionSummariesOptions(options);
-      const dbPath = path.join(getProjectStoragePath(supersedeOptions.projectPath), 'events.sqlite');
-
-      if (!fs.existsSync(dbPath)) {
-        console.log(formatSupersedeSessionSummariesResult({
-          dryRun: supersedeOptions.dryRun, sessions: 0, superseded: 0, keptByKind: {}, supersededByKind: {}, samples: []
-        }));
-        return;
-      }
-
-      const store = new SQLiteEventStore(dbPath, { readonly: supersedeOptions.dryRun });
-      try {
-        const result = await store.supersedeDuplicateSessionSummaries({ dryRun: supersedeOptions.dryRun });
-        console.log(formatSupersedeSessionSummariesResult(result));
-      } finally {
-        await store.close().catch(() => undefined);
-      }
+      const result = await runSupersedeSessionSummaries(
+        getProjectStoragePath(supersedeOptions.projectPath),
+        supersedeOptions.dryRun
+      );
+      console.log(formatSupersedeSessionSummariesResult(result));
     } catch (error) {
       console.error(formatSupersedeSessionSummariesFailure(error));
       process.exit(1);

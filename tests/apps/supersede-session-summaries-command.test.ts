@@ -1,10 +1,16 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
+import { createHash } from 'crypto';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
 
 import {
   formatSupersedeSessionSummariesFailure,
   formatSupersedeSessionSummariesResult,
-  resolveSupersedeSessionSummariesOptions
+  resolveSupersedeSessionSummariesOptions,
+  runSupersedeSessionSummaries
 } from '../../src/apps/cli/supersede-session-summaries-command.js';
+import { SQLiteEventStore } from '../../src/core/sqlite-event-store.js';
 
 describe('repair supersede-session-summaries options', () => {
   it('previews by default and writes only with --apply', () => {
@@ -62,5 +68,63 @@ describe('repair supersede-session-summaries failure', () => {
       'Nothing was changed: the summaries are hidden in one transaction, rolled back on failure. Run the command again; '
         + 'if the store was busy, run it when no session is being written.'
     ].join('\n'));
+  });
+});
+
+describe('repair supersede-session-summaries run', () => {
+  const roots: string[] = [];
+  afterEach(() => {
+    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  });
+
+  async function storeWithDuplicates(): Promise<string> {
+    // realpath: the snapshot refuses a source path that goes through a symlink (/var on macOS).
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'cml-supersede-run-')));
+    roots.push(root);
+    const storagePath = join(root, 'projects', 'abc123');
+    mkdirSync(storagePath, { recursive: true });
+    const store = new SQLiteEventStore(join(storagePath, 'events.sqlite'));
+    await store.initialize();
+    await store.append({ eventType: 'session_summary', sessionId: 's', timestamp: new Date('2026-08-01T00:00:00.000Z'), content: '- old' });
+    await store.append({ eventType: 'session_summary', sessionId: 's', timestamp: new Date('2026-08-01T00:01:00.000Z'), content: '- new' });
+    await store.close();
+    return storagePath;
+  }
+
+  const fileState = (file: string) => existsSync(file)
+    ? { size: statSync(file).size, mtimeMs: statSync(file).mtimeMs, sha256: createHash('sha256').update(readFileSync(file)).digest('hex') }
+    : null;
+  const storeFiles = (storagePath: string) => Object.fromEntries(
+    ['events.sqlite', 'events.sqlite-wal', 'events.sqlite-shm'].map((name) => [name, fileState(join(storagePath, name))])
+  );
+
+  // A read-only SQLite connection still creates -wal/-shm next to a WAL database.
+  it('previews from a copy, leaving the store file untouched and creating no sidecars', async () => {
+    const storagePath = await storeWithDuplicates();
+    const before = storeFiles(storagePath);
+    expect(before['events.sqlite-wal']).toBeNull();
+    expect(before['events.sqlite-shm']).toBeNull();
+
+    const preview = await runSupersedeSessionSummaries(storagePath, true);
+
+    expect(preview).toMatchObject({ dryRun: true, sessions: 1, superseded: 1 });
+    expect(storeFiles(storagePath)).toEqual(before);
+  });
+
+  it('hides the summaries in the store itself with --apply', async () => {
+    const storagePath = await storeWithDuplicates();
+
+    expect(await runSupersedeSessionSummaries(storagePath, false)).toMatchObject({ dryRun: false, superseded: 1 });
+    expect(await runSupersedeSessionSummaries(storagePath, true)).toMatchObject({ sessions: 0, superseded: 0 });
+  });
+
+  it('reports nothing to hide when the project has no store', async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'cml-supersede-run-')));
+    roots.push(root);
+
+    expect(await runSupersedeSessionSummaries(join(root, 'projects', 'none'), true)).toEqual({
+      dryRun: true, sessions: 0, superseded: 0, keptByKind: {}, supersededByKind: {}, samples: []
+    });
+    expect(existsSync(join(root, 'projects'))).toBe(false);
   });
 });
