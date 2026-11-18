@@ -1,3 +1,5 @@
+// @load-sensitive: imports 600-line sessions twice into a real sqlite store (#227 repro);
+// under a loaded parallel run one test can pass the 15s unit timeout.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { appendFileSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -240,5 +242,36 @@ describe('Claude force reimport', () => {
     const result = await new SessionHistoryImporter(await service()).importProject(projectPath, { force: true, limit: 20 });
 
     expect(result.errors).toEqual([expect.stringContaining('Skipped force reimport (a message limit')]);
+  });
+
+  it('counts a mixed transcript exactly as the import loop does', async () => {
+    // Tool calls, thinking, an automated notification, a short reply after it,
+    // and a short response: the pre-count must match what the loop counts.
+    const at = (minute: number) => new Date(Date.UTC(2026, 9, 1, 9, minute, 0)).toISOString();
+    const long = (label: string) => `${label}: ${'The release guard checks the tag against the package version. '.repeat(3)}`;
+    const lines = [
+      { type: 'user', message: { role: 'user', content: 'please review release step number 0' } },
+      { type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', name: 'Bash' }] } },
+      { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tool-1' }] } },
+      { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: long('First answer') }] } },
+      { type: 'assistant', message: { role: 'assistant', content: [{ type: 'thinking' }] } },
+      { type: 'user', message: { role: 'user', content: '<task-notification>background job finished</task-notification>' } },
+      { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'Noted.' }] } },
+      { type: 'user', message: { role: 'user', content: 'ok' } },
+      { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: long('Follow-up') }] } },
+      { type: 'user', message: { role: 'user', content: 'please check the second release step' } },
+      { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: long('Second answer') }] } }
+    ];
+    lines.forEach((line, i) => appendFileSync(transcriptPath, `${JSON.stringify({ sessionId: SESSION, timestamp: at(i), ...line })}\n`));
+    const first = await importSession();
+    const counted = first.importedPrompts + first.importedResponses;
+    expect(counted).toBe(6);
+    const before = await counts();
+
+    const atCount = await importSession({ force: true, limit: counted });
+    expect(atCount.errors).toEqual([expect.stringContaining('Skipped force reimport (a message limit')]);
+    const aboveCount = await importSession({ force: true, limit: counted + 1 });
+    expect(aboveCount).toMatchObject({ importedPrompts: first.importedPrompts, importedResponses: first.importedResponses, errors: [] });
+    expect(await counts()).toEqual(before);
   });
 });

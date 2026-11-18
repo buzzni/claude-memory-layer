@@ -1,3 +1,5 @@
+// @load-sensitive: imports 600-line sessions twice into a real sqlite store (#227 repro);
+// under a loaded parallel run one test can pass the 15s unit timeout.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { appendFileSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

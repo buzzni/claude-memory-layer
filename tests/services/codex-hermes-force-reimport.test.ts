@@ -1,3 +1,5 @@
+// @load-sensitive: imports 600-line sessions twice into a real sqlite store (#227 repro);
+// under a loaded parallel run one test can pass the 15s unit timeout.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Database = require('better-sqlite3');
 import { appendFileSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
@@ -144,6 +146,46 @@ describe('Codex force reimport', () => {
   });
 });
 
+describe('Codex force reimport pre-count', () => {
+  it('counts task start, abort and completion, scaffolds and notifications as the import does', async () => {
+    const sessionId = 'codex-mixed';
+    const file = path.join(root, `rollout-2026-10-01T09-00-00-${sessionId}.jsonl`);
+    const event = (payload: Record<string, unknown>) => ({ type: 'event_msg', payload });
+    const message = (role: string, content: string, phase?: string) => ({
+      type: 'response_item', payload: { type: 'message', role, content, ...(phase ? { phase } : {}) }
+    });
+    const lines = [
+      { type: 'session_meta', payload: { id: sessionId, cwd: root } },
+      event({ type: 'task_started', turn_id: 't1' }),
+      message('user', 'please review the first release step'),
+      message('assistant', 'Looking at the guard first.', 'commentary'),
+      message('assistant', answer(1), 'final_answer'),
+      event({ type: 'task_complete', turn_id: 't1', last_agent_message: answer(1) }),
+      event({ type: 'task_started', turn_id: 't2' }),
+      message('user', '<environment_context>\n  <cwd>/repo</cwd>\n</environment_context>'),
+      message('user', 'please check the second release step'),
+      message('assistant', answer(2)),
+      event({ type: 'turn_aborted', turn_id: 't2' }),
+      event({ type: 'task_started', turn_id: 't3' }),
+      message('user', '<task-notification>background job finished</task-notification>'),
+      event({ type: 'task_complete', turn_id: 't3', last_agent_message: 'Background job finished and the results look good.' })
+    ];
+    lines.forEach((line, i) => appendFileSync(file, `${JSON.stringify({ timestamp: new Date(Date.UTC(2026, 9, 1, 9, i)).toISOString(), ...line })}\n`));
+    const importer = createCodexSessionHistoryImporter(memoryService, { sessionsDir: root });
+    const first = await importer.importSessionFile(file);
+    // The unit of the limit Codex sessions share: stored, recognized and skipped entries.
+    const counted = first.importedPrompts + first.importedResponses + first.skippedDuplicates;
+    expect(first).toMatchObject({ importedPrompts: 2, importedResponses: 2, skippedDuplicates: 2 });
+    const before = await counts(sessionId);
+
+    const atCount = await importer.importSessionFile(file, { force: true, limit: counted });
+    expect(atCount.errors).toEqual([expect.stringContaining('Skipped force reimport (a message limit')]);
+    const aboveCount = await importer.importSessionFile(file, { force: true, limit: counted + 1 });
+    expect(aboveCount).toMatchObject({ importedPrompts: 2, importedResponses: 2, errors: [] });
+    expect(await counts(sessionId)).toEqual(before);
+  });
+});
+
 describe('Hermes force reimport', () => {
   const sessionId = 'hermes-force-session';
   const memorySessionId = `hermes:${sessionId}`;
@@ -207,5 +249,35 @@ describe('Hermes force reimport', () => {
     if (refused) expect(result.errors).toEqual([expect.stringContaining('Skipped force reimport (a message limit')]);
     else expect(result).toMatchObject({ importedPrompts: PAIRS, importedResponses: PAIRS, errors: [] });
     expect(await counts(memorySessionId)).toEqual(before);
+  });
+
+  it('counts notifications, short replies, tool and empty messages as the import does', async () => {
+    const mixed = 'hermes-mixed';
+    const db = new Database(stateDbPath);
+    db.prepare('INSERT INTO sessions (id, source, started_at) VALUES (?, ?, ?)').run(mixed, 'cli', 1_790_100_000);
+    const insert = db.prepare('INSERT INTO messages (session_id, role, content, tool_name, timestamp) VALUES (?, ?, ?, ?, ?)');
+    [
+      ['user', 'please review the first release step', null],
+      ['tool', 'terminal output', 'terminal'],
+      ['assistant', answer(1), null],
+      ['user', '<task-notification>background job finished</task-notification>', null],
+      ['assistant', 'Noted.', null],
+      ['user', 'ok', null],
+      ['assistant', '', null],
+      ['user', 'please check the second release step', null],
+      ['assistant', answer(2), null]
+    ].forEach(([role, content, tool], i) => insert.run(mixed, role, content, tool, 1_790_100_000 + i));
+    db.close();
+    const importer = createHermesSessionHistoryImporter(memoryService, { stateDbPath });
+    const first = await importer.importSession(mixed);
+    const counted = first.importedPrompts + first.importedResponses;
+    expect(counted).toBe(5);
+    const before = await counts(`hermes:${mixed}`);
+
+    const atCount = await importer.importSession(mixed, { force: true, limit: counted });
+    expect(atCount.errors).toEqual([expect.stringContaining('Skipped force reimport (a message limit')]);
+    const aboveCount = await importer.importSession(mixed, { force: true, limit: counted + 1 });
+    expect(aboveCount).toMatchObject({ importedPrompts: first.importedPrompts, importedResponses: first.importedResponses, errors: [] });
+    expect(await counts(`hermes:${mixed}`)).toEqual(before);
   });
 });

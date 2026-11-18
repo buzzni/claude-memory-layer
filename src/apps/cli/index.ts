@@ -21,7 +21,7 @@ import { applyRunbookConsolidation, parseConsolidationDrafts, planRunbookConsoli
 import { getProjectStoragePath, resolveProjectStoragePath, hashProjectPath } from '../../core/registry/project-path.js';
 import { resolveCanonicalRepoIdentity } from '../../core/registry/repo-identity.js';
 import { resolveExistingStore } from '../../core/registry/existing-store.js';
-import { createSessionHistoryImporter, forceSkipReason, type ProgressEvent } from '../../services/session-history-importer.js';
+import { createSessionHistoryImporter, FORCE_REIMPORT_LIMIT_REFUSAL, forceSkipReason, type ProgressEvent } from '../../services/session-history-importer.js';
 import {
   createCodexSessionHistoryImporter,
   validateCodexSessions
@@ -3111,8 +3111,9 @@ function printImportSummary(result: import('../../services/session-history-impor
   console.log(`│  Embeddings queued:   ${String(embedCount).padStart(8)} │`);
   console.log('└─────────────────────────────────┘');
 
-  // A force reimport that was asked for and skipped fails the command.
-  if (result.errors.some((error) => forceSkipReason(error) !== undefined)) process.exitCode = 1;
+  // A force reimport the message limit could cut short was asked for and
+  // skipped, so the command fails; other skips stay warnings.
+  if (result.errors.some((error) => forceSkipReason(error) === FORCE_REIMPORT_LIMIT_REFUSAL)) process.exitCode = 1;
 
   if (result.errors.length > 0) {
     console.log(`\n⚠️  Errors (${result.errors.length}):`);

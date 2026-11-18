@@ -371,7 +371,7 @@ claude-memory-layer process --project "$NEW_PROJECT"
 - `claude-memory-layer import --all`은 모든 Claude Code 세션을 전역 저장소로 가져옵니다. 프로젝트별 컨텍스트 품질이 중요하면 각 repo에서 `--project <path>` 방식으로 반복하는 것을 권장합니다.
 - `codex import --all`, `hermes import --all`도 의도적으로 전역 메모리를 만들 때만 사용하세요.
 - import/validate/list 결과에는 대화 내용 일부나 로컬 경로가 포함될 수 있습니다. 외부 공유 전에는 민감정보와 경로를 제거하고, Codex validate 리포트는 필요하면 `--anonymize-projects`를 함께 사용하세요.
-- import는 콘텐츠 해시 기반으로 중복을 건너뛰므로 여러 번 실행해도 같은 내용이 중복 저장되지 않습니다. `--force`는 같은 transcript를 가져온 이전 import가 쓴 prompt/response만 지우고 다시 가져옵니다. 훅·daemon이 쓴 행(세션 요약, 도구 관측 포함), 다른 source가 쓴 행, lesson의 출처 행은 남습니다. `--limit`이 세션을 중간에서 자를 수 있으면 그 세션의 force는 아무것도 지우지 않고 건너뛰며, 명령은 종료 코드 1로 끝납니다. 다시 가져온 행은 새 이벤트 id를 받으므로 옛 id를 가리키던 참조는 끊깁니다(#227, #250).
+- import는 콘텐츠 해시 기반으로 중복을 건너뛰므로 여러 번 실행해도 같은 내용이 중복 저장되지 않습니다. `--force`는 같은 transcript를 가져온 이전 import가 쓴 prompt/response만 지우고 다시 가져옵니다. 훅·daemon이 쓴 행(세션 요약, 도구 관측 포함), 다른 source가 쓴 행, lesson의 출처 행은 남습니다. `--limit`이 세션을 중간에서 자를 수 있으면 그 세션의 force는 아무것도 지우지 않고 건너뛰며, 명령은 종료 코드 1로 끝납니다(transcript에 다시 가져올 내용이 없어 건너뛴 세션은 경고만 남고 종료 코드 0). 다시 가져온 행은 새 이벤트 id를 받으므로 옛 id를 가리키던 참조는 끊깁니다(#227, #250).
 
 ### 4) 검증
 
