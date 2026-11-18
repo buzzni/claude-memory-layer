@@ -1572,9 +1572,16 @@ export class SQLiteEventStore {
    */
   async getSessionsWithoutSummary(currentSessionId: string, limit = 5): Promise<string[]> {
     await this.initialize();
-    const rows = sqliteAll<{ session_id: string }>(
+    return this.sessionsWithoutSummary(currentSessionId, limit).map((r) => r.session_id);
+  }
+
+  private sessionsWithoutSummary(
+    currentSessionId: string,
+    limit: number
+  ): Array<{ session_id: string; last_event_at: string }> {
+    return sqliteAll<{ session_id: string; last_event_at: string }>(
       this.db,
-      `SELECT DISTINCT e.session_id
+      `SELECT e.session_id, MAX(e.timestamp) AS last_event_at
        FROM events e
        WHERE e.session_id != ?
          AND e.event_type != 'session_summary'
@@ -1587,7 +1594,6 @@ export class SQLiteEventStore {
        LIMIT ?`,
       [currentSessionId, limit]
     );
-    return rows.map((r) => r.session_id);
   }
 
   /**
