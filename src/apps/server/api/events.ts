@@ -159,7 +159,20 @@ eventsRouter.delete('/:id', async (c) => {
     const event = await store.getEvent(id);
     if (!event) return c.json({ error: 'Event not found' }, 404);
 
-    const deleted = await store.deleteEventById(id);
+    // 지운 내용은 감사 기록에 남기지 않는다 — 범위와 크기만 남긴다.
+    const deleted = await store.deleteEventById(id, {
+      operation: 'event_delete',
+      actor: 'dashboard',
+      targetType: 'event',
+      targetId: id,
+      beforeJson: {
+        eventType: event.eventType,
+        sessionId: event.sessionId,
+        timestamp: event.timestamp,
+        contentLength: event.content.length
+      },
+      sourceEventIds: [id]
+    });
     if (!deleted) return c.json({ error: 'Event not found' }, 404);
 
     // 벡터는 LanceDB 에 따로 있다. CLI redact 경로와 같은 규약으로 best-effort 로 지운다 —

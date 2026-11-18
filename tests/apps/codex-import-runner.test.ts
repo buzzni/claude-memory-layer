@@ -87,7 +87,8 @@ describe('Codex import runner', () => {
     expect(deps?.getMemoryServiceForProject).toHaveBeenCalledWith('/repo/selected');
     expect(importer.importSessionFile).toHaveBeenCalledWith('/tmp/session.jsonl', expect.objectContaining({
       projectPath: '/repo/selected',
-      force: true
+      force: true,
+      auditActor: 'cli'
     }));
   });
 

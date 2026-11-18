@@ -2940,7 +2940,8 @@ async function runLatestImport(memoryService: MemoryService, options: LatestImpo
             projectPath: options.projectPath,
             sessionLimit: options.sessionLimit,
             limit: options.messageLimit,
-            force: options.force
+            force: options.force,
+            auditActor: 'mcp'
           })
         });
       } else if (source === 'codex') {
@@ -2951,7 +2952,8 @@ async function runLatestImport(memoryService: MemoryService, options: LatestImpo
             projectPath: options.projectPath,
             sessionLimit: options.sessionLimit,
             limit: options.messageLimit,
-            force: options.force
+            force: options.force,
+            auditActor: 'mcp'
           })
         });
       } else {
@@ -2962,7 +2964,8 @@ async function runLatestImport(memoryService: MemoryService, options: LatestImpo
             projectPath: options.projectPath,
             sessionLimit: options.sessionLimit,
             limit: options.messageLimit,
-            force: options.force
+            force: options.force,
+            auditActor: 'mcp'
           })
         });
       }

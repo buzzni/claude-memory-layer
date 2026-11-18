@@ -1,5 +1,11 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import * as path from 'node:path';
+
+import { SQLiteEventStore } from '../../src/core/sqlite-event-store.js';
+import { sqliteAll } from '../../src/core/sqlite-wrapper.js';
 
 const mocks = vi.hoisted(() => {
   const store = {
@@ -44,6 +50,12 @@ const existingEvent = {
   metadata: {}
 };
 
+const tempDirs: string[] = [];
+
+afterEach(() => {
+  for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
+
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.store.getEvent.mockResolvedValue(existingEvent);
@@ -61,7 +73,16 @@ describe('DELETE /api/events/:id', () => {
       vectorDeleted: true,
       event: { id: 'evt-1', sessionId: 's1', contentLength: 'to be removed'.length }
     });
-    expect(mocks.store.deleteEventById).toHaveBeenCalledWith('evt-1');
+    expect(mocks.store.deleteEventById).toHaveBeenCalledWith('evt-1', {
+      operation: 'event_delete',
+      actor: 'dashboard',
+      targetType: 'event',
+      targetId: 'evt-1',
+      beforeJson: { eventType: 'user_prompt', sessionId: 's1', timestamp: existingEvent.timestamp, contentLength: 'to be removed'.length },
+      sourceEventIds: ['evt-1']
+    });
+    // 감사 기록에는 지운 본문이 들어가면 안 된다.
+    expect(JSON.stringify(mocks.store.deleteEventById.mock.calls[0])).not.toContain('to be removed');
     expect(mocks.vectorStore.deleteEventEverywhere).toHaveBeenCalledWith('evt-1');
     // 열어 둔 스토어는 반드시 닫는다 — 안 닫으면 SQLite 핸들이 샌다.
     expect(mocks.store.close).toHaveBeenCalled();
@@ -96,5 +117,35 @@ describe('DELETE /api/events/:id', () => {
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({ deleted: true, vectorDeleted: false });
+  });
+
+  // 실제 SQLite 로 끝까지: 삭제와 같은 트랜잭션에 dashboard 감사 행이 남고, 본문은 남지 않는다.
+  it('leaves one dashboard audit row in a real store, without the deleted content', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'cml-events-delete-'));
+    tempDirs.push(dir);
+    const dbPath = path.join(dir, 'events.sqlite');
+    const seed = new SQLiteEventStore(dbPath);
+    await seed.initialize();
+    const { eventId } = await seed.append({
+      eventType: 'user_prompt', sessionId: 's1', timestamp: new Date('2026-01-01T00:00:00.000Z'), content: 'password=hunter2 secret body'
+    });
+    await seed.close();
+    mocks.getWritableEventStoreFromQuery.mockReturnValue({ store: new SQLiteEventStore(dbPath), storagePath: undefined } as never);
+
+    const response = await app().request(`/api/events/${eventId}`, { method: 'DELETE' });
+    expect(response.status).toBe(200);
+
+    const check = new SQLiteEventStore(dbPath);
+    await check.initialize();
+    const rows = sqliteAll<Record<string, string>>(check.getDatabase(), `SELECT * FROM memory_governance_audit WHERE operation = 'event_delete'`);
+    expect(await check.getEvent(eventId!)).toBeNull();
+    await check.close();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ actor: 'dashboard', target_type: 'event', target_id: eventId });
+    expect(JSON.parse(rows[0].before_json)).toEqual({
+      eventType: 'user_prompt', sessionId: 's1', timestamp: '2026-01-01T00:00:00.000Z', contentLength: 'password=hunter2 secret body'.length
+    });
+    expect(JSON.parse(rows[0].after_json)).toEqual({ deletedEvents: 1 });
+    expect(JSON.stringify(rows[0])).not.toMatch(/hunter2|secret body/);
   });
 });

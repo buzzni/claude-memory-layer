@@ -92,7 +92,7 @@ import {
 } from './memory-ref.js';
 import { recordReferenceNavigationOnDb } from './retrieval-navigation.js';
 import { readStoredMetadata } from './memory-origin.js';
-import { writeGovernanceAuditEntrySync } from './operations/governance-audit.js';
+import { writeGovernanceAuditEntrySync, type EventDeletionAuditInput } from './operations/governance-audit.js';
 import {
   observeLessonFollowThrough,
   parseToolObservation,
@@ -270,6 +270,13 @@ interface QuarantineReadOptions {
 export interface RecentEventsReadOptions extends QuarantineReadOptions {
   /** Restrict to these event types. An empty/omitted list means "any type". */
   eventTypes?: EventType[];
+}
+
+export interface DeleteSessionEventsOptions {
+  /** Delete only the prompts and responses an import from this source path wrote. */
+  importedFrom?: string;
+  /** Written in the delete transaction; see `EventDeletionAuditInput`. */
+  audit?: EventDeletionAuditInput;
 }
 
 /**
@@ -5700,8 +5707,10 @@ export class SQLiteEventStore {
    * Returns whether a row was actually removed, so callers can answer 404 for unknown ids.
    * Vectors live in LanceDB and are not touched here — callers that need them gone must also
    * call `VectorStore.deleteEventEverywhere` (see the CLI redact path).
+   *
+   * `audit`, when given, is written in the same transaction (see `EventDeletionAuditInput`).
    */
-  async deleteEventById(eventId: string): Promise<boolean> {
+  async deleteEventById(eventId: string, audit?: EventDeletionAuditInput): Promise<boolean> {
     await this.initialize();
 
     const relatedTables = ['event_dedup', 'memory_levels', 'embedding_queue', 'embedding_outbox', 'vector_outbox', 'event_citations']
@@ -5720,7 +5729,9 @@ export class SQLiteEventStore {
 
       this.recreateEventsFtsTable();
 
-      return result.changes || 0;
+      const deleted = result.changes || 0;
+      this.writeDeletionAudit(audit, deleted);
+      return deleted;
     });
 
     return runDelete() > 0;
@@ -5753,8 +5764,11 @@ export class SQLiteEventStore {
    * path, so their rows stay. Rows pulled from another machine
    * (`metadata.mongoSync`) and rows a lesson cites stay too, so a lesson keeps
    * its source. A row whose metadata cannot be read is kept.
+   *
+   * `audit`, when given, is written in the same transaction with the count of
+   * rows actually deleted (see `EventDeletionAuditInput`).
    */
-  async deleteSessionEvents(sessionId: string, options: { importedFrom?: string } = {}): Promise<number> {
+  async deleteSessionEvents(sessionId: string, options: DeleteSessionEventsOptions = {}): Promise<number> {
     await this.initialize();
 
     const metadataJson = `CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END`;
@@ -5816,7 +5830,9 @@ export class SQLiteEventStore {
       // with its triggers permanently dropped.
       this.recreateEventsFtsTable();
 
-      return result.changes || 0;
+      const deleted = result.changes || 0;
+      this.writeDeletionAudit(options.audit, deleted);
+      return deleted;
     });
 
     return runDelete();
@@ -5845,8 +5861,14 @@ export class SQLiteEventStore {
    * reason. Related tables are cleaned through a subquery instead of an id list so a large
    * purge never hits the SQL variable limit. Vectors live in LanceDB and are not touched here;
    * callers pass the returned ids (or the same cutoff) to the VectorStore.
+   *
+   * `audit`, when given, is written in the same transaction as one row for the whole purge.
    */
-  async deleteEventsBefore(before: Date, eventType?: string): Promise<{ deleted: number; eventIds: string[] }> {
+  async deleteEventsBefore(
+    before: Date,
+    eventType?: string,
+    audit?: EventDeletionAuditInput
+  ): Promise<{ deleted: number; eventIds: string[] }> {
     await this.initialize();
     const { where, params } = eventsBeforeFilter(before, eventType);
     const eventIds = sqliteAll<{ id: string }>(this.db, `SELECT id FROM events WHERE ${where}`, params)
@@ -5865,10 +5887,18 @@ export class SQLiteEventStore {
       }
       const result = sqliteRun(this.db, `DELETE FROM events WHERE ${where}`, params);
       this.recreateEventsFtsTable();
-      return result.changes || 0;
+      const deleted = result.changes || 0;
+      this.writeDeletionAudit(audit, deleted);
+      return deleted;
     });
 
     return { deleted: runDelete(), eventIds };
+  }
+
+  /** Must run inside the delete transaction so the delete and its audit row commit together. */
+  private writeDeletionAudit(audit: EventDeletionAuditInput | undefined, deleted: number): void {
+    if (!audit || deleted === 0) return;
+    writeGovernanceAuditEntrySync(this.db, { ...audit, afterJson: { deletedEvents: deleted } });
   }
 
   /**

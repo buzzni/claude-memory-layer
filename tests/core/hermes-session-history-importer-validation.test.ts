@@ -262,7 +262,11 @@ describe('Hermes SessionDB validation/import', () => {
     const importer = createHermesSessionHistoryImporter(memoryService as never, { stateDbPath });
     const result = await importer.importProject(projectA, { force: true });
 
-    expect(memoryService.deleteSessionEvents).toHaveBeenCalledWith('hermes:session-a', { importedFrom: stateDbPath });
+    // No actor given: the audit row names the importer itself.
+    expect(memoryService.deleteSessionEvents).toHaveBeenCalledWith('hermes:session-a', {
+      importedFrom: stateDbPath,
+      audit: { operation: 'session_reimport', actor: 'import', targetType: 'session', targetId: 'hermes:session-a', beforeJson: { source: 'hermes' } }
+    });
     expect(memoryService.startSession).toHaveBeenCalledWith('hermes:session-a', projectA);
     expect(memoryService.endSession).toHaveBeenCalledWith('hermes:session-a');
     expect(memoryService.evaluateSessionHelpfulness).toHaveBeenCalledWith('hermes:session-a');

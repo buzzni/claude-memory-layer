@@ -87,7 +87,8 @@ describe('Hermes import runner', () => {
     expect(deps?.getMemoryServiceForProject).toHaveBeenCalledWith('/repo/selected');
     expect(importer.importSession).toHaveBeenCalledWith('20260505_010203_abcd1234', expect.objectContaining({
       projectPath: '/repo/selected',
-      force: true
+      force: true,
+      auditActor: 'cli'
     }));
   });
 

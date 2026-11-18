@@ -374,13 +374,15 @@ describe('MCP project context tools', () => {
       projectPath: '/repo/app',
       sessionLimit: 2,
       limit: 50,
-      force: true
+      force: true,
+      auditActor: 'mcp'
     });
     expect(mocks.codexImporter.importProject).toHaveBeenCalledWith('/repo/app', {
       projectPath: '/repo/app',
       sessionLimit: 2,
       limit: 50,
-      force: true
+      force: true,
+      auditActor: 'mcp'
     });
     expect(mocks.projectService.processPendingEmbeddings).toHaveBeenCalledTimes(1);
     expect(text).toContain('## Latest Session Import');
@@ -417,7 +419,7 @@ describe('MCP project context tools', () => {
     });
 
     const text = textOf(result);
-    expect(mocks.claudeImporter.importProject).toHaveBeenCalledWith('/repo/app', expect.objectContaining({ force: true, limit: 200 }));
+    expect(mocks.claudeImporter.importProject).toHaveBeenCalledWith('/repo/app', expect.objectContaining({ force: true, limit: 200, auditActor: 'mcp' }));
     expect(text).toContain('- claude: force reimport skipped for 1 session(s), nothing deleted (a message limit would drop the rows past it; rerun without a limit)');
     expect(text).not.toContain('/tmp/private');
   });
@@ -511,13 +513,15 @@ describe('MCP project context tools', () => {
       projectPath: '/repo/app',
       sessionLimit: 1,
       limit: 200,
-      force: false
+      force: false,
+      auditActor: 'mcp'
     });
     expect(mocks.codexImporter.importProject).toHaveBeenCalledWith('/repo/app', {
       projectPath: '/repo/app',
       sessionLimit: 1,
       limit: 200,
-      force: false
+      force: false,
+      auditActor: 'mcp'
     });
     expect(mocks.hermesImporter.importProject.mock.invocationCallOrder[0]).toBeLessThan(
       mocks.projectService.retrieveMemories.mock.invocationCallOrder[0]
@@ -661,7 +665,8 @@ describe('MCP project context tools', () => {
       projectPath: '/repo/app',
       sessionLimit: 2,
       limit: 50,
-      force: true
+      force: true,
+      auditActor: 'mcp'
     });
     expect(mocks.projectService.processPendingEmbeddings).toHaveBeenCalledTimes(1);
     expect(mocks.hermesImporter.importProject.mock.invocationCallOrder[0]).toBeLessThan(

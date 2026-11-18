@@ -9,7 +9,7 @@ import type {
   ProjectScopeRepairOptions,
   ProjectScopeRepairResult
 } from '../types.js';
-import type { DerivationLiveness, RecentEventsReadOptions } from '../sqlite-event-store.js';
+import type { DeleteSessionEventsOptions, DerivationLiveness, RecentEventsReadOptions } from '../sqlite-event-store.js';
 import type { SQLiteDatabase } from '../sqlite-wrapper.js';
 import type { VectorOptimizeOptions, VectorOptimizeResult, VectorPhysicalHealth } from '../vector-store.js';
 import { LessonRepository } from '../operations/lesson-repository.js';
@@ -75,7 +75,7 @@ interface QueryMaintenanceStore extends QueryStore {
   getDailyEventCounts(sinceIso: string): Promise<Array<{ day: string; total: number; prompts: number; responses: number; tools: number }>>;
   countSessionTurns(sessionId: string): Promise<number>;
   backfillTurnIds(): Promise<number>;
-  deleteSessionEvents(sessionId: string, options?: { importedFrom?: string }): Promise<number>;
+  deleteSessionEvents(sessionId: string, options?: DeleteSessionEventsOptions): Promise<number>;
   hasSessionUserPrompt(sessionId: string, contents: readonly string[]): Promise<boolean>;
   getDerivationLiveness(projectHash?: string): Promise<DerivationLiveness>;
 }
@@ -425,7 +425,7 @@ export class MemoryQueryService {
     return this.getMaintenanceStore('backfillTurnIds').backfillTurnIds();
   }
 
-  async deleteSessionEvents(sessionId: string, options?: { importedFrom?: string }): Promise<number> {
+  async deleteSessionEvents(sessionId: string, options?: DeleteSessionEventsOptions): Promise<number> {
     await this.initialize();
     return this.getMaintenanceStore('deleteSessionEvents').deleteSessionEvents(sessionId, options);
   }
