@@ -212,3 +212,17 @@ describe('process.env references are not mistaken for credentials', () => {
     expect(applyPrivacyFilter(source, privacy).content).toContain('[REDACTED]');
   });
 });
+
+describe('marker cleanup', () => {
+  const source = '  // password=fixturePwForTest\n  return 42;\n    <private>internal-host</private>\n  done();\n';
+
+  it('merges each marker with the whitespace after it by default, as stored tool output has it', () => {
+    expect(applyPrivacyFilter(source, privacy).content)
+      .toBe('  // [REDACTED] return 42;\n    [PRIVATE]\ndone();\n');
+  });
+
+  it('keeps the lines and indentation around each marker with collapseMarkers: false', () => {
+    expect(applyPrivacyFilter(source, privacy, { collapseMarkers: false }).content)
+      .toBe('  // [REDACTED]\n  return 42;\n    [PRIVATE]\n  done();\n');
+  });
+});

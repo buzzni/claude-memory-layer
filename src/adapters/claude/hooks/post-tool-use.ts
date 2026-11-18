@@ -40,7 +40,7 @@ export async function captureToolObservation(input: PostToolUseInput): Promise<s
   return storeToolCall(input, {
     toolOutput: extractToolOutput(input.tool_response),
     success: isToolSuccess(input.tool_response),
-    errorMessage: input.tool_response?.stderr || undefined
+    errorMessage: maskToolOutput(input.tool_response?.stderr ?? '') || undefined
   });
 }
 
@@ -62,7 +62,11 @@ export async function captureToolFailure(input: PostToolUseFailureInput): Promis
   });
 }
 
-/** Privacy-filters and truncates tool output text before it is stored (steps 6-7). */
+/**
+ * Privacy-filters and truncates tool output text before it is stored (steps 6-7).
+ * Filter first: a cut made before it could drop a `<private>` section's closing
+ * tag and leave the section's content unmasked.
+ */
 function maskToolOutput(text: string): string {
   // 6. Apply privacy filter to output
   const filterResult = applyPrivacyFilter(text, DEFAULT_PRIVACY_CONFIG);
@@ -92,8 +96,8 @@ async function storeToolCall(
       return JSON.stringify({});
     }
 
-    // 5. Mask sensitive data in input
-    const maskedInput = maskSensitiveInput(input.tool_input);
+    // 5. Mask sensitive data in input, through the same privacy filter as the output
+    const maskedInput = maskSensitiveInput(input.tool_input, DEFAULT_PRIVACY_CONFIG);
 
     // 6-7. Apply privacy filter to output and truncate it
     const truncatedOutput = maskToolOutput(toolOutput);
