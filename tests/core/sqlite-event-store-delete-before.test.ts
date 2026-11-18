@@ -78,4 +78,30 @@ describe('SQLiteEventStore.deleteEventsBefore', () => {
     expect(indexed(ids.newTool)).toBe(1);
     await store.close();
   });
+
+  // vector_outbox 는 item_id 로 키를 잡아 관련 테이블 목록에서 빠졌었다. tool_observation 은
+  // 큐에 들어가지 않으므로 프롬프트로 본다.
+  it('drops the vector outbox jobs of the deleted events and keeps the rest', async () => {
+    const store = new SQLiteEventStore(tempDbPath(), { vectorOutbox: {} });
+    await store.initialize();
+    const oldPrompt = await store.append({
+      eventType: 'user_prompt', sessionId: 's1', timestamp: new Date('2026-01-01T00:00:00.000Z'), content: 'old prompt'
+    });
+    const newPrompt = await store.append({
+      eventType: 'user_prompt', sessionId: 's1', timestamp: new Date('2026-03-01T00:00:00.000Z'), content: 'new prompt'
+    });
+    const db = store.getDatabase();
+    db.prepare(`INSERT INTO vector_outbox (job_id, item_kind, item_id, embedding_version) VALUES ('other-kind', 'task', ?, 'v1')`)
+      .run(oldPrompt.eventId!);
+    const jobs = (itemId: string) => db
+      .prepare('SELECT item_kind FROM vector_outbox WHERE item_id = ? ORDER BY item_kind')
+      .all(itemId);
+    expect(jobs(oldPrompt.eventId!)).toEqual([{ item_kind: 'event' }, { item_kind: 'task' }]);
+
+    await store.deleteEventsBefore(new Date('2026-02-01T00:00:00.000Z'));
+
+    expect(jobs(oldPrompt.eventId!)).toEqual([{ item_kind: 'task' }]);
+    expect(jobs(newPrompt.eventId!)).toEqual([{ item_kind: 'event' }]);
+    await store.close();
+  });
 });
