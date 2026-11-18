@@ -226,3 +226,61 @@ describe('marker cleanup', () => {
       .toBe('  // [REDACTED]\n  return 42;\n    [PRIVATE]\n  done();\n');
   });
 });
+
+describe('unclosed private tags', () => {
+  // #269: an opening tag without its end used to be flagged in metadata and
+  // nothing else, so everything after it was stored as written.
+  it('masks everything from an unclosed <private> tag to the end of the text', () => {
+    const result = applyPrivacyFilter('public intro <private>codename-orchid and the rest of the note', privacy);
+
+    expect(result.content).toBe('public intro [PRIVATE: unclosed]');
+    expect(result.metadata.hasUnmatchedTags).toBe(true);
+    expect(result.metadata.hasPrivateTags).toBe(true);
+  });
+
+  it('masks a closed section as before and an unclosed one after it to the end', () => {
+    const result = applyPrivacyFilter('a <private>first-orchid</private> b <private>second-orchid tail', privacy);
+
+    expect(result.content).toBe('a [PRIVATE]\nb [PRIVATE: unclosed]');
+    expect(result.metadata.privateTagCount).toBe(2);
+  });
+
+  it('leaves closed sections and the text after them as they were', () => {
+    const result = applyPrivacyFilter('a <private>orchid</private> b', privacy);
+
+    expect(result.content).toBe('a [PRIVATE]\nb');
+    expect(result.metadata.hasUnmatchedTags).toBe(false);
+  });
+
+  it('keeps the lines before an unclosed tag with collapseMarkers: false', () => {
+    expect(applyPrivacyFilter('line 1\n  <private>orchid\nline 3', privacy, { collapseMarkers: false }).content)
+      .toBe('line 1\n  [PRIVATE: unclosed]');
+  });
+
+  it('does not treat <private> in inline code or a code block as a tag', () => {
+    const inline = 'wrap it in `<private>` and the rest is kept';
+    const block = 'before\n```\n<private>\n```\nafter';
+
+    expect(applyPrivacyFilter(inline, privacy).content).toBe(inline);
+    expect(applyPrivacyFilter(block, privacy).content).toBe(block);
+  });
+
+  it('masks an unclosed bracket or comment tag when those formats are enabled', () => {
+    const allFormats: Config['privacy'] = {
+      ...privacy,
+      privateTags: { ...privacy.privateTags, marker: '[REDACTED]', supportedFormats: ['xml', 'bracket', 'comment'] }
+    };
+
+    expect(applyPrivacyFilter('a [private]orchid', allFormats).content).toBe('a [REDACTED: unclosed]');
+    expect(applyPrivacyFilter('a <!-- private -->orchid', allFormats).content).toBe('a [REDACTED: unclosed]');
+  });
+
+  it('does not read a [PRIVATE] marker as an unclosed bracket tag', () => {
+    const xmlAndBracket: Config['privacy'] = {
+      ...privacy,
+      privateTags: { ...privacy.privateTags, supportedFormats: ['xml', 'bracket'] }
+    };
+
+    expect(applyPrivacyFilter('a <private>orchid</private> b', xmlAndBracket).content).toBe('a [PRIVATE]\nb');
+  });
+});
