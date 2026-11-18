@@ -162,6 +162,12 @@ import { formatBackfillVectorsResult, resolveBackfillVectorsOptions } from './ba
 import { dropSpareEventVectorTables } from '../../core/operations/spare-vector-tables.js';
 import { formatDropSpareVectorsResult, resolveDropSpareVectorsOptions } from './drop-spare-vectors-command.js';
 import {
+  formatSupersedeSessionSummariesFailure,
+  formatSupersedeSessionSummariesResult,
+  resolveSupersedeSessionSummariesOptions,
+  runSupersedeSessionSummaries
+} from './supersede-session-summaries-command.js';
+import {
   formatAutoHealToolObservationVectorsResult,
   resolveAutoHealToolObservationVectorsOptions
 } from './auto-heal-tool-observation-vectors-command.js';
@@ -1959,6 +1965,25 @@ repairCommand
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`Drop spare vectors failed: ${message}`);
+      process.exit(1);
+    }
+  });
+
+repairCommand
+  .command('supersede-session-summaries')
+  .description('Keep one visible summary per session (newest LLM summary, else newest) and hide the rest (dry-run by default)')
+  .option('-p, --project <path>', 'Project path (defaults to cwd)')
+  .option('--apply', 'Hide the other summaries (default is a dry-run preview)')
+  .action(async (options) => {
+    try {
+      const supersedeOptions = resolveSupersedeSessionSummariesOptions(options);
+      const result = await runSupersedeSessionSummaries(
+        getProjectStoragePath(supersedeOptions.projectPath),
+        supersedeOptions.dryRun
+      );
+      console.log(formatSupersedeSessionSummariesResult(result));
+    } catch (error) {
+      console.error(formatSupersedeSessionSummariesFailure(error));
       process.exit(1);
     }
   });

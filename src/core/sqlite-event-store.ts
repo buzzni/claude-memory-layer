@@ -19,7 +19,10 @@ import {
   OutboxRecoveryResult,
   ProjectScopeRepairOptions,
   ProjectScopeRepairResult,
-  ProjectScopeRepairSample
+  ProjectScopeRepairSample,
+  SessionSummarySupersedeOptions,
+  SessionSummarySupersedeResult,
+  SessionSummarySupersedeSample
 } from './types.js';
 import { makeCanonicalKey, makeDedupeKey } from './canonical-key.js';
 import { generateCitationId } from './citation-generator.js';
@@ -2580,6 +2583,69 @@ export class SQLiteEventStore {
     }
 
     return result;
+  }
+
+  /**
+   * Hide all but one visible session_summary of each session: the newest LLM
+   * summary, else the newest one. Some legacy sessions hold an LLM summary next
+   * to a later template summary ("Session with N user prompts..."), and keeping
+   * the template would hide the decisions the LLM summary recorded. Older LLM
+   * summaries of the session are hidden too; their texts are not compared.
+   *
+   * Sessions summarized before summaries were refreshed in place can hold two
+   * or more, and retrieval returned all of them. The others are hidden the way a
+   * summary refresh hides the summaries it replaces (supersedeEventsSync), in one
+   * IMMEDIATE transaction: hidden, not deleted, each with a governance audit row.
+   */
+  async supersedeDuplicateSessionSummaries(options: SessionSummarySupersedeOptions = {}): Promise<SessionSummarySupersedeResult> {
+    await this.initialize();
+
+    const dryRun = options.dryRun === true;
+    const nowIso = (options.now || new Date()).toISOString();
+    const visibleSummary = `event_type = 'session_summary' AND ${notActiveQuarantinedSql()}`;
+
+    const run = (): SessionSummarySupersedeResult => {
+      const rows = sqliteAll<{ id: string; session_id: string; generated: unknown }>(
+        this.db,
+        `SELECT id, session_id,
+           json_extract(CASE WHEN json_valid(metadata) THEN metadata ELSE '{}' END, '$.generated') AS generated
+         FROM events
+         WHERE ${visibleSummary}
+           AND session_id IN (
+             SELECT session_id FROM events WHERE ${visibleSummary}
+             GROUP BY session_id HAVING COUNT(*) > 1
+           )
+         ORDER BY session_id, COALESCE(generated, '') = 'llm' DESC, timestamp DESC, rowid DESC`
+      );
+
+      const result: SessionSummarySupersedeResult = {
+        dryRun, sessions: 0, superseded: 0, keptByKind: {}, supersededByKind: {}, samples: []
+      };
+      const sessions: SessionSummarySupersedeSample[] = [];
+      for (const row of rows) {
+        const kind = typeof row.generated === 'string' && row.generated ? row.generated : 'unlabeled';
+        const current = sessions.at(-1);
+        if (current?.sessionId !== row.session_id) {
+          sessions.push({ sessionId: row.session_id, keptEventId: row.id, supersededEventIds: [] });
+          result.keptByKind[kind] = (result.keptByKind[kind] ?? 0) + 1;
+          continue;
+        }
+        current.supersededEventIds.push(row.id);
+        result.supersededByKind[kind] = (result.supersededByKind[kind] ?? 0) + 1;
+        result.superseded++;
+      }
+      result.sessions = sessions.length;
+      result.samples = sessions.slice(0, 10);
+
+      if (!dryRun) {
+        for (const session of sessions) {
+          this.supersedeEventsSync(session.supersededEventIds, session.keptEventId, nowIso);
+        }
+      }
+      return result;
+    };
+
+    return dryRun ? run() : this.runInImmediateTransaction(run);
   }
 
   /**

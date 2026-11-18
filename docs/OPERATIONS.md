@@ -174,6 +174,7 @@ snapshots mask absolute paths and credential-looking values, so a version restor
 | `vector compact --apply`, `repair prune-tool-observation-vectors --apply` | Compact vector tables; delete `tool_observation` vectors | Yes | No |
 | `repair backfill-vectors --apply` | Only adds. For each event semantic search cannot reach: copies its vector from an unread `event_vectors_*` table when the current model made it and the event text is unchanged, otherwise queues the event for embedding | Yes: vectors are rebuilt from SQLite | No |
 | `repair drop-spare-vectors --apply` | Drops the `event_vectors_*` tables, which search does not read. Refuses unless every event worth searching has a searchable vector or is waiting for the embedding worker, since until `repair backfill-vectors` such a table could hold an event's only vector | **No** | No |
+| `repair supersede-session-summaries --apply` | In each session with two or more visible summaries, hides all but one the way a [summary refresh](HOW_IT_WORKS.md#session-summaries) does ([below](#older-sessions-with-more-than-one-summary)) | Yes: the hidden rows, their text and vectors stay; clearing `quarantine.status` shows one again | Yes, a `quarantine` row per hidden summary (no text) |
 | `retention audit` | Nothing; reads a read-only snapshot | — | — |
 | `retention apply-lifecycle` | Writes retention scores; deletes no events | Yes | Yes |
 | `lesson consolidate --apply` | Adds a runbook and switches the lessons it absorbs off | Yes: `lesson revert-consolidation --apply` | Yes |
@@ -208,3 +209,40 @@ Known limits:
   them stay valid.
 - **No audit record** for `forget`, the dashboard delete, force reimport and `repair redact-credentials` (#228).
   Afterwards nothing in the store shows when, by whom or how much was deleted.
+
+## Older sessions with more than one summary
+
+Sessions summarized before the summary refresh can hold two or more visible summaries, so search, injection and
+context packs return several summaries of one session (#254). The refresh hides only the summaries it replaces, so these
+sessions stay as they are. After upgrading, run this once per project store:
+
+```bash
+claude-memory-layer repair supersede-session-summaries --project /path/to/project          # preview
+claude-memory-layer repair supersede-session-summaries --project /path/to/project --apply  # hide the others
+```
+
+- **Which summary stays**: the newest summary written by the LLM (`metadata.generated: "llm"`), else the newest. Some
+  older sessions hold an LLM summary next to a later template summary (`Session with N user prompts…`); the LLM
+  summary stays and the template is hidden. Only the newest LLM summary of a session stays: older LLM summaries of the
+  same session are hidden too, without comparing what they say, so anything only an older one recorded is no longer
+  returned. On a tie in time, the row stored last stays.
+- **The preview writes nothing**: without `--apply` the command reads a temporary copy of the store, as the read-only
+  diagnostics do, so the store and its `-wal`/`-shm` files are not created or touched. The copy is not a consistent
+  point-in-time read: a checkpoint during the copy can make the preview a little stale or, rarely, fail (run it again).
+  `--apply` decides again from the store itself.
+- **Symlinks**: a project path that is a symlink is resolved first, so it reaches the same store as its target. A store
+  reached through a symlink in the store path itself (the memory root `~/.claude-code/memory`, `projects/`, the project
+  directory or `events.sqlite`) cannot be previewed: the copy refuses it, as for the read-only diagnostics, and the
+  command fails with `SQLITE_SNAPSHOT_UNSAFE_SOURCE` and changes nothing. `--apply` opens the store through the link
+  and changes it without a preview, so back up the project directory first.
+- **How they are hidden**: as the refresh does, with `quarantine` metadata in category `superseded` and a governance
+  audit row each. Nothing is deleted. The preview prints the number of sessions and summaries and how many of each kind
+  (`metadata.generated`, `unlabeled` when absent) it keeps and hides.
+- **All or nothing**: `--apply` takes the store's write lock first and waits up to 5 seconds for a hook that is
+  writing. If it still fails, nothing has changed; run it again. A second run finds nothing to hide.
+- **Afterwards**: a refresh treats the kept summary as the session's current one. When an older LLM summary is kept
+  over a later template summary, it covers fewer prompts and answers, so the session can become due for a refresh when
+  its next turn ends (one LLM call). A refresh whose text repeats a hidden summary shows that summary again in place of
+  the kept one, as for any summary a refresh hid.
+- **Other machines**: summaries already pushed by `mongo-sync` stay visible on the other machines until the command
+  runs there too.
