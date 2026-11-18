@@ -75,7 +75,9 @@ in [CONFIGURATION.md](CONFIGURATION.md#llm-summaries-and-lessons).
   `quarantine.status: "active"` and category `superseded`, which the store's reads leave out, and a governance audit row
   records the change (event id and status only, no text). Clearing that status brings it back. Search, injection, the
   dashboard API, MCP tools and the Endless Mode working set read through those filters; vector search drops hits of
-  hidden events before ranking and asks the index for more in their place.
+  hidden events before ranking and asks the index for more in their place. Sessions summarized before the refresh
+  existed can still hold several; hide the extra ones once with `repair supersede-session-summaries`
+  ([OPERATIONS.md](OPERATIONS.md#older-sessions-with-more-than-one-summary)).
 - **All or nothing**: the new summary is stored and the old one hidden in one SQLite transaction. If that fails, nothing
   changes: the old summary stays the only one and the session stays due, so the next Stop or the SessionStart backfill
   tries again. A failed call, or a call the [provider circuit breaker](OPERATIONS.md#llm-provider-circuit-breaker)

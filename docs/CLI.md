@@ -84,6 +84,10 @@ claude-memory-layer maintenance uninstall
 claude-memory-layer project scope-audit --days 7
 claude-memory-layer project scope-audit --days 7 --json
 
+# once after upgrading: keep one visible summary per older session (dry-run, then apply)
+claude-memory-layer repair supersede-session-summaries --project /path/to/project
+claude-memory-layer repair supersede-session-summaries --project /path/to/project --apply
+
 # perspective memory actor/session membership backfill
 claude-memory-layer actors repair --project /path/to/project --dry-run
 claude-memory-layer actors repair --project /path/to/project --apply
