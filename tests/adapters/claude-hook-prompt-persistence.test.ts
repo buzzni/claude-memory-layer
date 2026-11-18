@@ -144,6 +144,15 @@ describe('UserPromptSubmit prompt survives a killed hook', () => {
     expect(readPendingPrompt(SESSION)).toBeNull();
   });
 
+  it('stores nothing after an unclosed <private> tag, on disk or in the store', async () => {
+    const unclosed = 'Please explain the deployment approval workflow. <private>The prod approver is codename-orchid';
+    const pending = await pendingPromptDuringRetrieval(() => runPromptHook({ prompt: unclosed }));
+
+    const stored = service.storeUserPrompt.mock.calls[0][1] as string;
+    expect(stored).toBe('Please explain the deployment approval workflow. [PRIVATE: unclosed]');
+    expect(JSON.stringify(pending)).not.toContain('codename-orchid');
+  });
+
   it('keeps nothing on disk for a host that stores prompts itself', async () => {
     const pending = await pendingPromptDuringRetrieval(() => runPromptHook({ persistPrompt: false }));
 

@@ -196,6 +196,20 @@ describe('PostToolUse privacy filtering', () => {
     }
   });
 
+  it('masks everything after an unclosed <private> tag in tool input, output and stderr', async () => {
+    const stored = await runPostToolUse({
+      tool_name: 'Bash',
+      tool_input: { command: 'echo start <private>input-orchid' },
+      tool_response: { stdout: 'stdout start <private>output-orchid', stderr: 'stderr start <private>stderr-orchid' }
+    });
+
+    const serialized = JSON.stringify(stored);
+    for (const tail of ['input-orchid', 'output-orchid', 'stderr-orchid']) expect(serialized).not.toContain(tail);
+    expect(stored.toolInput.command).toBe('echo start [PRIVATE: unclosed]');
+    expect(stored.toolOutput).toContain('stdout start [PRIVATE: unclosed]');
+    expect(stored.errorMessage).toBe('stderr start [PRIVATE: unclosed]');
+  });
+
   it('leaves errorMessage undefined when the tool wrote nothing to stderr', async () => {
     const stored = await runPostToolUse({
       tool_name: 'Write',
@@ -217,6 +231,20 @@ describe('PostToolUseFailure privacy filtering', () => {
 
     expect(stored.success).toBe(false);
     expectPrivateInputMasked(stored.toolInput);
+  });
+
+  it('masks everything after an unclosed <private> tag in the failed call\'s input and error', async () => {
+    const stored = await runPostToolUseFailure({
+      tool_name: 'Bash',
+      tool_input: { command: 'deploy <private>input-orchid' },
+      error: 'Exit code 1\n<private>error-orchid'
+    });
+
+    const serialized = JSON.stringify(stored);
+    for (const tail of ['input-orchid', 'error-orchid']) expect(serialized).not.toContain(tail);
+    expect(stored.toolInput.command).toBe('deploy [PRIVATE: unclosed]');
+    expect(stored.errorMessage).toContain('Exit code 1');
+    expect(stored.errorMessage).toContain('[PRIVATE: unclosed]');
   });
 
   it('keeps the lines and indentation around masked parts of a failed multi-line edit', async () => {
