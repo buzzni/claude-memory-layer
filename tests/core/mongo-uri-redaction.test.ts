@@ -19,6 +19,13 @@ function namedError(name: string, message: string): Error {
   return error;
 }
 
+describe('mongo-sync-config module', () => {
+  it('persists no sync settings: sync runs only from the mongo-sync CLI (#192)', async () => {
+    const mod = await import('../../src/core/mongo-sync-config.js');
+    expect(Object.keys(mod).sort()).toEqual(['describeMongoConnectionError', 'redactMongoUri']);
+  });
+});
+
 describe('redactMongoUri', () => {
   it('masks the password and keeps user, hosts and database', () => {
     expect(redactMongoUri('mongodb://user:pass@db.example:27017/app')).toBe('mongodb://user:***@db.example:27017/app');
