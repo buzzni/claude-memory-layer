@@ -24,7 +24,8 @@ interface RunResult {
 const root = path.resolve(process.argv[2] ?? process.cwd());
 const dist = path.join(root, 'dist');
 const { version } = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')) as { version: string };
-const TIMEOUT_MS = 30_000;
+// How long an entry point may run before it fails as hung; tests shorten it.
+const TIMEOUT_MS = Number(process.env.SMOKE_DIST_TIMEOUT_MS) || 30_000;
 
 /**
  * The hook files `install`, the plugin's hooks.json (kept equal to

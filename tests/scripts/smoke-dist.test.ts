@@ -49,8 +49,12 @@ process.stdin.resume();
   return root;
 }
 
-function runSmoke(root: string) {
-  return spawnSync(tsxCommand, tsxArgs(smokeScript, root), { encoding: 'utf8', timeout: 60_000 });
+// A smoke run in beforeAll gets the same ceiling as the cli project's tests,
+// not vitest's 10s hook default.
+const SMOKE_RUN_TIMEOUT_MS = 60_000;
+
+function runSmoke(root: string, env: NodeJS.ProcessEnv = {}) {
+  return spawnSync(tsxCommand, tsxArgs(smokeScript, root), { encoding: 'utf8', timeout: SMOKE_RUN_TIMEOUT_MS, env: { ...process.env, ...env } });
 }
 
 afterAll(() => {
@@ -84,7 +88,7 @@ describe('dist smoke', () => {
       rmSync(path.join(root, 'dist', 'hooks', 'pre-compact.js'));
       rmSync(path.join(root, 'dist', 'hooks', 'codex-session-end.js'));
       result = runSmoke(root);
-    });
+    }, SMOKE_RUN_TIMEOUT_MS);
 
     it('exits 1 and still passes the entry points that work', () => {
       expect(result.status).toBe(1);
@@ -103,6 +107,29 @@ describe('dist smoke', () => {
     ])('%s', (_case, label, detail) => {
       expect(result.stderr).toContain(label);
       // This check's report runs up to the next failed check.
+      const report = result.stderr.slice(result.stderr.indexOf(label)).split(/\nFAIL /)[0];
+      expect(report).toContain(detail);
+    });
+  });
+
+  // Its own run with a short timeout: under load the working entry points of
+  // this fixture could also run past it, so only the hanging ones are asserted.
+  describe('fails a dist where an entry point hangs', () => {
+    let result: SpawnSyncReturns<string>;
+
+    beforeAll(() => {
+      const root = createFixture();
+      writeBundle(root, 'mcp/index.js', 'process.stdin.resume();\n');
+      writeBundle(root, 'hooks/stop.js', 'setInterval(() => {}, 1_000);\n');
+      result = runSmoke(root, { SMOKE_DIST_TIMEOUT_MS: '1000' });
+    }, SMOKE_RUN_TIMEOUT_MS);
+
+    it.each([
+      ['the MCP server never answers initialize', 'FAIL dist/mcp/index.js answers initialize', 'signal=SIGKILL'],
+      ['a hook never exits', 'FAIL dist/hooks/stop.js', 'signal=SIGTERM']
+    ])('%s', (_case, label, detail) => {
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(label);
       const report = result.stderr.slice(result.stderr.indexOf(label)).split(/\nFAIL /)[0];
       expect(report).toContain(detail);
     });
