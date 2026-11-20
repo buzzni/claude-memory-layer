@@ -7,6 +7,7 @@ import {
   DEFAULT_SESSION_SUMMARY_REFRESH,
   MemoryIngestService
 } from '../../src/core/engine/memory-ingest-service.js';
+import { buildSummaryPrompt } from '../../src/adapters/llm/session-summary-llm.js';
 import { SQLiteEventStore } from '../../src/core/sqlite-event-store.js';
 import { sqliteAll } from '../../src/core/sqlite-wrapper.js';
 import { VectorWorker } from '../../src/core/vector-worker.js';
@@ -318,6 +319,52 @@ describe('session summary judgment shared by Stop, the pending retries and the s
 
     // Unsummarized sessions keep having no window, as before refreshes existed.
     await expect(service.getSessionsDueForLlmSummary('current', 5)).resolves.toEqual(['idle-unsummarized']);
+
+    await store.close();
+  });
+
+  // Issue #284: a session the summary prompt cannot be built for never reaches
+  // the provider, so it never gets a summary and kept a backfill place forever.
+  it('leaves out unsummarized sessions the summary prompt cannot be built for, until they can', async () => {
+    const store = new SQLiteEventStore(tempDbPath());
+    await store.initialize();
+    const hiddenMetadata = { quarantine: { status: 'active', category: 'secret' } };
+    let tick = daysAgo(2).getTime();
+    const add = async (sessionId: string, eventType: string, content: string, metadata?: Record<string, unknown>) => {
+      await store.append({ eventType, sessionId, timestamp: new Date(tick++), content, metadata });
+    };
+    await seed(store, 'older-1', { at: daysAgo(3), exchangesBefore: 2, exchangesAfter: 0, summary: 'none' });
+    await seed(store, 'older-2', { at: daysAgo(3, 100), exchangesBefore: 2, exchangesAfter: 0, summary: 'none' });
+    for (const sessionId of ['tools-only', 'blank-exchanges', 'quarantined-exchanges', 'one-exchange']) {
+      for (let i = 0; i < 3; i++) await add(sessionId, 'tool_observation', `{"call":${i}}`);
+    }
+    await add('blank-exchanges', 'user_prompt', '   ');
+    await add('blank-exchanges', 'agent_response', '\n\t');
+    await add('quarantined-exchanges', 'user_prompt', '가려진 질문', hiddenMetadata);
+    await add('quarantined-exchanges', 'agent_response', '가려진 답변', hiddenMetadata);
+    await add('one-exchange', 'user_prompt', '하나뿐인 질문');
+
+    const sessions = ['older-1', 'older-2', 'tools-only', 'blank-exchanges', 'quarantined-exchanges', 'one-exchange'];
+    const promptable: string[] = [];
+    for (const sessionId of sessions) {
+      if (buildSummaryPrompt(await store.getSessionEvents(sessionId))) promptable.push(sessionId);
+    }
+    expect(promptable).toEqual(['older-1', 'older-2']);
+
+    const backfill = new MemoryIngestService({
+      initialize: async () => {},
+      eventStore: store,
+      markdownMirror: { append: async () => {} },
+      createToolEmbedding: () => '',
+      now: () => now
+    });
+    // A window of two: the four newer sessions no longer push the older ones out.
+    await expect(backfill.getSessionsDueForLlmSummary('current', 2)).resolves.toEqual(['older-2', 'older-1']);
+
+    await add('one-exchange', 'agent_response', '이제 답변도 있음');
+    await expect(backfill.getSessionsDueForLlmSummary('current', 2)).resolves.toEqual(['one-exchange', 'older-2']);
+    // The rule-based backfill keeps its own selection.
+    await expect(store.getSessionsWithoutSummary('current', 10)).resolves.toHaveLength(6);
 
     await store.close();
   });

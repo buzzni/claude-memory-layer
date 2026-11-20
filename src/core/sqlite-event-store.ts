@@ -1630,7 +1630,8 @@ export class SQLiteEventStore {
 
   /**
    * Sessions the LLM summary backfill may have to summarize, newest activity first: the
-   * `limit` most recent ones without a summary (as getSessionsWithoutSummary), and, when
+   * `limit` most recent ones without a summary (as getSessionsWithoutSummary) that hold
+   * the two non-empty prompts or answers buildSummaryPrompt needs, and, when
    * `refreshSince` is given, every summarized session with a prompt or answer since then,
    * with what MemoryIngestService needs to tell whether its summary is due for a refresh.
    * Counts match getSessionEvents: quarantined rows, superseded summaries included, are
@@ -1641,7 +1642,9 @@ export class SQLiteEventStore {
     options: { limit: number; refreshSince?: Date }
   ): Promise<SessionSummaryCandidate[]> {
     await this.initialize();
-    const candidates: SessionSummaryCandidate[] = this.sessionsWithoutSummary(currentSessionId, options.limit)
+    // A session with fewer never reaches the provider, so it would never get a summary and
+    // would keep a place in the window ahead of older sessions that can be summarized.
+    const candidates: SessionSummaryCandidate[] = this.sessionsWithoutSummary(currentSessionId, options.limit, 2)
       .map((row) => ({ sessionId: row.session_id, lastEventAt: row.last_event_at }));
     if (options.refreshSince) {
       const rows = sqliteAll<{
@@ -1694,7 +1697,8 @@ export class SQLiteEventStore {
 
   private sessionsWithoutSummary(
     currentSessionId: string,
-    limit: number
+    limit: number,
+    minExchanges = 0
   ): Array<{ session_id: string; last_event_at: string }> {
     return sqliteAll<{ session_id: string; last_event_at: string }>(
       this.db,
@@ -1707,9 +1711,13 @@ export class SQLiteEventStore {
          )
        GROUP BY e.session_id
        HAVING COUNT(*) >= 3
+         AND SUM(CASE WHEN e.event_type IN ('user_prompt', 'agent_response')
+                        AND ${notActiveQuarantinedSql('e.metadata')}
+                        AND length(trim(e.content, ' ' || char(9, 10, 13))) > 0
+                      THEN 1 ELSE 0 END) >= ?
        ORDER BY MAX(e.timestamp) DESC
        LIMIT ?`,
-      [currentSessionId, limit]
+      [currentSessionId, minExchanges, limit]
     );
   }
 
