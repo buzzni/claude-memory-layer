@@ -60,5 +60,9 @@ jobs:
       - name: Build
         run: npm run build
 
+      # The checks above all run against src/; this runs what ships (#198).
+      - name: Built artifact smoke
+        run: npm run smoke:dist
+
       - name: Architecture import boundaries
         run: npm run check:architecture

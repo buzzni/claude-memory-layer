@@ -107,6 +107,9 @@ jobs:
       - name: Typecheck · lint · test · build
         run: npm run prepublishOnly
 
+      - name: Built artifact smoke
+        run: npm run smoke:dist
+
       - name: Architecture import boundaries
         run: npm run check:architecture
 
