@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   linkError: undefined as NodeJS.ErrnoException | undefined,
   renameError: undefined as NodeJS.ErrnoException | undefined,
   rmError: undefined as NodeJS.ErrnoException | undefined,
+  oldReadError: undefined as NodeJS.ErrnoException | undefined,
 }));
 
 // The hooks append to mirror files without any lock, so a hook can land at any
@@ -23,7 +24,7 @@ vi.mock('fs', async (importOriginal) => {
     mocks[key] = undefined;
     run?.();
   };
-  const failOnce = (key: 'appendError' | 'linkError' | 'renameError' | 'rmError') => {
+  const failOnce = (key: 'appendError' | 'linkError' | 'renameError' | 'rmError' | 'oldReadError') => {
     const error = mocks[key];
     mocks[key] = undefined;
     if (error) throw error;
@@ -43,6 +44,10 @@ vi.mock('fs', async (importOriginal) => {
       failOnce('appendError');
       return actual.appendFileSync(...args);
     }) as typeof actual.appendFileSync,
+    readFileSync: ((...args: Parameters<typeof actual.readFileSync>) => {
+      if (typeof args[0] === 'string' && args[0].endsWith('.old')) failOnce('oldReadError');
+      return actual.readFileSync(...args);
+    }) as typeof actual.readFileSync,
     rmSync: ((...args: Parameters<typeof actual.rmSync>) => {
       failOnce('rmError');
       return actual.rmSync(...args);
@@ -67,6 +72,7 @@ afterEach(() => {
   mocks.linkError = undefined;
   mocks.renameError = undefined;
   mocks.rmError = undefined;
+  mocks.oldReadError = undefined;
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -310,5 +316,67 @@ describe('planMarkdownRedaction while hooks append to the mirror', () => {
 
     expect(fs.readFileSync(filePath, 'utf8')).toBe(redactedRows([first]));
     expect(fs.readdirSync(path.dirname(filePath))).toEqual([path.basename(filePath)]);
+  });
+
+  it('adds no entry twice when a hook wrote between the copied entries', async () => {
+    const a = event(`call 0 with ${SECRET}`);
+    const b = event(`hook call with ${SECRET}`);
+    const c = event('entry written right after the swap');
+    const { storagePath, filePath } = await mirrorWith(a);
+    mocks.beforeWrite = () => hookAppends(filePath, b);
+    mocks.afterRename = () => {
+      hookAppends(filePath, c);
+      mocks.rmError = errnoError('EIO');
+    };
+
+    planMarkdownRedaction(storagePath, { apply: true });
+    expect(fs.readFileSync(filePath, 'utf8')).toBe(redactedRows([a, c, b]));
+    keptFileIn(path.dirname(filePath));
+
+    planMarkdownRedaction(storagePath, { apply: true });
+
+    expect(fs.readFileSync(filePath, 'utf8')).toBe(redactedRows([a, c, b]));
+    expect(fs.readdirSync(path.dirname(filePath))).toEqual([path.basename(filePath)]);
+  });
+
+  it('adds an entry again in full when the mirror file holds only part of it', async () => {
+    const a = event('first entry');
+    const b = event(`second line one\nline two with ${SECRET}`);
+    const { storagePath, filePath } = await mirrorWith(a);
+    const partial = formatMirrorEntry({ ...b, content: 'second line one' });
+    fs.writeFileSync(filePath, redactedRows([a]) + partial, 'utf8');
+    fs.writeFileSync(`${filePath}.0b5e6f7a-1c2d-4e3f-8a9b-0c1d2e3f4a5b.old`, formatMirrorEntry(a) + formatMirrorEntry(b), 'utf8');
+
+    planMarkdownRedaction(storagePath, { apply: true });
+
+    expect(fs.readFileSync(filePath, 'utf8')).toBe(redactedRows([a]) + partial + redactedRows([b]));
+  });
+
+  it('adds a fragment with no entry header redacted rather than drop it', async () => {
+    const a = event('first entry');
+    const { storagePath, filePath } = await mirrorWith(a);
+    const fragment = `    rest of an entry with ${SECRET}\n`;
+    fs.writeFileSync(`${filePath}.0b5e6f7a-1c2d-4e3f-8a9b-0c1d2e3f4a5b.old`, fragment, 'utf8');
+
+    planMarkdownRedaction(storagePath, { apply: true });
+
+    const content = fs.readFileSync(filePath, 'utf8');
+    expect(content.startsWith(formatMirrorEntry(a))).toBe(true);
+    expect(content.slice(formatMirrorEntry(a).length)).toMatch(/^ {4}rest of an entry with \[REDACTED\] *\n$/);
+    expect(content).not.toContain('sk-live');
+    expect(fs.readdirSync(path.dirname(filePath))).toEqual([path.basename(filePath)]);
+  });
+
+  it('reports an old file it cannot read and keeps it', async () => {
+    const a = event('first entry');
+    const { storagePath, filePath } = await mirrorWith(a);
+    const keptPath = `${filePath}.0b5e6f7a-1c2d-4e3f-8a9b-0c1d2e3f4a5b.old`;
+    fs.writeFileSync(keptPath, formatMirrorEntry(event(`old call with ${SECRET}`)), 'utf8');
+    mocks.oldReadError = errnoError('EIO');
+
+    const changes = planMarkdownRedaction(storagePath, { apply: true });
+
+    expect(changes).toEqual([expect.objectContaining({ filePath: keptPath, writeFailed: true })]);
+    expect(fs.readFileSync(keptPath, 'utf8')).toContain('sk-live');
   });
 });

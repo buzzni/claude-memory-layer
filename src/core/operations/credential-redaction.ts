@@ -385,7 +385,10 @@ export function planMarkdownRedaction(
     let old: string;
     try {
       old = fs.readFileSync(keptPath, 'utf8');
-    } catch {
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      // It may hold the old text: kept, and reported so that the run is not finished.
+      changes.push({ filePath: keptPath, occurrences: 1, writeFailed: true });
       continue;
     }
     const occurrences = redactMirrorText(old).split('[REDACTED]').length - old.split('[REDACTED]').length;
@@ -512,28 +515,48 @@ function recoverKeptFile(keptPath: string, filePath: string, old: string): void 
     current = ''; // The mirror file is gone: the old text, redacted, recreates it.
   }
   if (current !== undefined) {
-    const missing = entriesMissingFrom(current, old);
-    if (missing.length > 0) fs.appendFileSync(filePath, redactMirrorText(missing), 'utf8');
+    const missing = redactedEntriesMissingFrom(current, old);
+    if (missing.length > 0) fs.appendFileSync(filePath, missing, 'utf8');
   }
   fs.rmSync(keptPath);
 }
 
-/**
- * The old text from its first entry that `current` does not hold, redacted,
- * at the same place. A replacement writes the old entries redacted
- * one after the other at the start of the copy, and redacting entry by entry
- * gives the same text as redacting them together.
- */
-function entriesMissingFrom(current: string, old: string): string {
+/** `text` cut before each entry header; the first piece may be text before any entry. */
+function mirrorEntries(text: string): string[] {
   const starts = [0];
-  for (let i = old.indexOf(MIRROR_ENTRY_START, 1); i !== -1; i = old.indexOf(MIRROR_ENTRY_START, i + 1)) starts.push(i);
-  let offset = 0;
-  for (let k = 0; k < starts.length; k++) {
-    const redacted = redactMirrorText(old.slice(starts[k], starts[k + 1] ?? old.length));
-    if (!current.startsWith(redacted, offset)) return old.slice(starts[k]);
-    offset += redacted.length;
+  for (let i = text.indexOf(MIRROR_ENTRY_START, 1); i !== -1; i = text.indexOf(MIRROR_ENTRY_START, i + 1)) starts.push(i);
+  return starts.map((start, k) => text.slice(start, starts[k + 1] ?? text.length));
+}
+
+/** The event id formatMirrorEntry writes on the line right after the entry's `- ts:` header. */
+function mirrorEntryId(entry: string): string | undefined {
+  const [blank, header, idLine] = entry.split('\n', 3);
+  if (blank !== '' || !header?.startsWith('- ts: ')) return undefined;
+  return /^ {2}id: (\S+)$/.exec(idLine ?? '')?.[1];
+}
+
+/**
+ * The entries of the old text, redacted, that `current` does not hold yet.
+ * Hooks may have written entries between the copied ones, so an entry is
+ * looked up by its event id, and it counts as held only when an entry with
+ * that id is exactly the redacted old one: a copy cut short while the entry
+ * was being written still lacks the rest. A piece with no id (text before the
+ * first entry, or a broken one) counts as held only when its redacted text is
+ * in `current` as it is. Anything else is added, redacted: at worst a
+ * duplicate, never the old text.
+ */
+function redactedEntriesMissingFrom(current: string, old: string): string {
+  const held = new Map<string, string[]>();
+  for (const entry of mirrorEntries(current)) {
+    const id = mirrorEntryId(entry);
+    if (id !== undefined) held.set(id, [...(held.get(id) ?? []), entry]);
   }
-  return '';
+  return mirrorEntries(old)
+    .map((entry) => ({ id: mirrorEntryId(entry), redacted: redactMirrorText(entry) }))
+    .filter(({ id, redacted }) =>
+      id === undefined ? !current.includes(redacted) : !held.get(id)?.includes(redacted))
+    .map(({ redacted }) => redacted)
+    .join('');
 }
 
 /**
