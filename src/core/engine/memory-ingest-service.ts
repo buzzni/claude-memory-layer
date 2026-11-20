@@ -5,7 +5,13 @@ import {
 } from '../ingest-interceptor.js';
 import { normalizeTags } from '../tag-taxonomy.js';
 import { createSummaryDeriver, type SummaryDeriver } from '../derive/summary-deriver.js';
-import type { AppendOptions, EventReplacement, SessionSummaryCandidate } from '../sqlite-event-store.js';
+import {
+  EMPTY_SUMMARY_VERDICT_KEY,
+  readEmptySummaryVerdict,
+  type AppendOptions,
+  type EventReplacement,
+  type SessionSummaryCandidate
+} from '../sqlite-event-store.js';
 import type {
   AppendResult,
   MemoryEvent,
@@ -93,17 +99,29 @@ export interface SessionSummaryProgress {
     /** Refresh attempts the provider answered, the empty ones included. */
     refreshes: number;
   };
+  /** Without a summary: the newest first summary attempt the provider found nothing durable in. */
+  emptyVerdict?: {
+    /** Prompt/answer events the provider was shown then. */
+    coveredExchanges: number;
+  };
 }
 
 /**
  * The one judgment of whether a session needs an LLM summary call: Stop,
  * the summary-pending retries and the session-start backfill all go through it.
+ *
+ * An empty first summary holds until the session gains one prompt or answer
+ * (#206), not minNewExchanges: empty verdicts come almost only from first
+ * turns, and in the measured provider calls a session that came back empty
+ * and then grew by one or two turns got a summary most of the time.
  */
 export function isLlmSessionSummaryDue(
   progress: SessionSummaryProgress,
   policy: SessionSummaryRefreshPolicy
 ): boolean {
-  if (!progress.summary) return true;
+  if (!progress.summary) {
+    return !progress.emptyVerdict || progress.exchangeCount > progress.emptyVerdict.coveredExchanges;
+  }
   if (!policy.enabled || progress.summary.refreshes >= policy.maxRefreshesPerSession) return false;
   return progress.exchangeCount - progress.summary.coveredExchanges >= policy.minNewExchanges;
 }
@@ -130,6 +148,19 @@ function summaryCoverage(
   };
 }
 
+/**
+ * Reads the empty verdict on a session's newest prompt or answer; a newer one
+ * stored after the verdict means the session went on. A row that arrives late
+ * with an older timestamp (a Mongo pull) is not newer, but it raises the
+ * count past the one the verdict covered. The verdict goes with the row it is
+ * recorded on: forget or a force reimport that drops that row, or a
+ * quarantine that hides it, lets the session be judged again.
+ */
+function emptyVerdictCoverage(exchanges: MemoryEvent[]): SessionSummaryProgress['emptyVerdict'] {
+  const verdict = readEmptySummaryVerdict(exchanges.at(-1)?.metadata);
+  return verdict && { coveredExchanges: verdict.exchangeCount };
+}
+
 export interface MemoryIngestServiceOptions {
   initialize: () => Promise<void>;
   eventStore: IngestEventStore;
@@ -142,7 +173,7 @@ export interface MemoryIngestServiceOptions {
   sourceFileDeriver?: SourceFileDeriverLike;
   /**
    * Injected so core stays free of child-process/CLI concerns. Returns null
-   * when the session holds nothing durable, which must store nothing rather
+   * when the session holds nothing durable, which must store no summary rather
    * than fall back to the rule-based text.
    */
   llmSummaryGenerator?: LlmSummaryGenerator;
@@ -345,9 +376,11 @@ export class MemoryIngestService {
    * Generate an outcome-focused summary through the injected LLM generator.
    *
    * Slow by nature, so callers must keep it off any hook response path. On
-   * failure or when the session holds nothing durable this stores nothing: the
-   * session then still has no summary and stays eligible for a later backfill
-   * attempt. It deliberately does not fall back to the rule-based text, whose
+   * failure this stores nothing: the session then still has no summary and
+   * stays eligible for a later backfill attempt. When the session holds
+   * nothing durable it records only that verdict (EMPTY_SUMMARY_VERDICT_KEY),
+   * which keeps the session from being sent again until it gains a prompt or
+   * answer. It deliberately does not fall back to the rule-based text, whose
    * table-of-contents shape is the reason this path exists.
    *
    * A session that already has a summary is summarized again when
@@ -363,13 +396,15 @@ export class MemoryIngestService {
     const events = await this.eventStore.getSessionEvents(sessionId);
     if (events.length < 3) return false;
     const previousSummaries = events.filter((event) => event.eventType === 'session_summary');
-    const exchangeCount = events.filter(isExchangeEvent).length;
+    const exchanges = events.filter(isExchangeEvent);
+    const exchangeCount = exchanges.length;
     const latestSummary = previousSummaries.at(-1);
     const coverage = latestSummary && summaryCoverage(
       latestSummary.metadata,
       events.slice(0, events.indexOf(latestSummary)).filter(isExchangeEvent).length
     );
-    if (!isLlmSessionSummaryDue({ exchangeCount, summary: coverage }, this.summaryRefresh)) return false;
+    const emptyVerdict = latestSummary ? undefined : emptyVerdictCoverage(exchanges);
+    if (!isLlmSessionSummaryDue({ exchangeCount, summary: coverage, emptyVerdict }, this.summaryRefresh)) return false;
 
     // Recorded on the new summary, or on the one that stays when the refresh
     // brings nothing new; otherwise every later turn would call the provider
@@ -383,7 +418,17 @@ export class MemoryIngestService {
       events.map((event) => ({ eventType: event.eventType, content: event.content }))
     );
     if (!summary) {
-      if (latestSummary) await this.eventStore.mergeEventMetadata(latestSummary.id, covered);
+      if (latestSummary) {
+        await this.eventStore.mergeEventMetadata(latestSummary.id, covered);
+      } else if (exchanges.length > 0) {
+        // Prompts stored while the provider ran are newer than this row or
+        // raise the count past exchangeCount, so they still count as new. A
+        // row whose metadata cannot be read keeps it (mergeEventMetadata
+        // refuses), and the session stays due.
+        await this.eventStore.mergeEventMetadata(exchanges[exchanges.length - 1].id, {
+          [EMPTY_SUMMARY_VERDICT_KEY]: { judgedAt: this.now().toISOString(), exchangeCount }
+        });
+      }
       return false;
     }
 

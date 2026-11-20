@@ -302,6 +302,32 @@ export interface AppendOptions {
   replaces?: EventReplacement;
 }
 
+/**
+ * Metadata key of an empty first LLM summary verdict (#206), recorded by
+ * MemoryIngestService on the newest prompt/answer event the provider was
+ * shown: `{ judgedAt, exchangeCount }`, exchangeCount being how many
+ * prompt/answer events it was shown.
+ */
+export const EMPTY_SUMMARY_VERDICT_KEY = 'emptySummaryVerdict';
+
+export interface EmptySummaryVerdict {
+  judgedAt: string;
+  exchangeCount: number;
+}
+
+/**
+ * The verdict in an event's metadata, or undefined when there is none of that shape. The
+ * LLM summary candidate query (sessionsWithoutSummary) checks the same shape in SQL.
+ */
+export function readEmptySummaryVerdict(metadata: Record<string, unknown> | undefined): EmptySummaryVerdict | undefined {
+  const value = metadata?.[EMPTY_SUMMARY_VERDICT_KEY];
+  if (!isRecord(value) || typeof value.judgedAt !== 'string') return undefined;
+  const { exchangeCount } = value;
+  return typeof exchangeCount === 'number' && Number.isFinite(exchangeCount)
+    ? { judgedAt: value.judgedAt, exchangeCount }
+    : undefined;
+}
+
 /** A session the LLM summary backfill may have to summarize (getLlmSummaryCandidates). */
 export interface SessionSummaryCandidate {
   sessionId: string;
@@ -1630,8 +1656,9 @@ export class SQLiteEventStore {
 
   /**
    * Sessions the LLM summary backfill may have to summarize, newest activity first: the
-   * `limit` most recent ones without a summary (as getSessionsWithoutSummary), and, when
-   * `refreshSince` is given, every summarized session with a prompt or answer since then,
+   * `limit` most recent ones without a summary (as getSessionsWithoutSummary, less those
+   * whose newest prompt or answer carries an empty verdict), and, when `refreshSince` is
+   * given, every summarized session with a prompt or answer since then,
    * with what MemoryIngestService needs to tell whether its summary is due for a refresh.
    * Counts match getSessionEvents: quarantined rows, superseded summaries included, are
    * left out. The window keeps this off a scan of every session in the store.
@@ -1641,7 +1668,7 @@ export class SQLiteEventStore {
     options: { limit: number; refreshSince?: Date }
   ): Promise<SessionSummaryCandidate[]> {
     await this.initialize();
-    const candidates: SessionSummaryCandidate[] = this.sessionsWithoutSummary(currentSessionId, options.limit)
+    const candidates: SessionSummaryCandidate[] = this.sessionsWithoutSummary(currentSessionId, options.limit, true)
       .map((row) => ({ sessionId: row.session_id, lastEventAt: row.last_event_at }));
     if (options.refreshSince) {
       const rows = sqliteAll<{
@@ -1694,11 +1721,10 @@ export class SQLiteEventStore {
 
   private sessionsWithoutSummary(
     currentSessionId: string,
-    limit: number
+    limit: number,
+    skipJudgedEmpty = false
   ): Array<{ session_id: string; last_event_at: string }> {
-    return sqliteAll<{ session_id: string; last_event_at: string }>(
-      this.db,
-      `SELECT e.session_id, MAX(e.timestamp) AS last_event_at
+    const unsummarized = `SELECT e.session_id, MAX(e.timestamp) AS last_event_at
        FROM events e
        WHERE e.session_id != ?
          AND e.event_type != 'session_summary'
@@ -1707,21 +1733,46 @@ export class SQLiteEventStore {
          )
        GROUP BY e.session_id
        HAVING COUNT(*) >= 3
-       ORDER BY MAX(e.timestamp) DESC
-       LIMIT ?`,
-      [currentSessionId, limit]
-    );
+       ORDER BY MAX(e.timestamp) DESC`;
+    // isLlmSessionSummaryDue for an empty verdict, ahead of LIMIT so judged sessions do not
+    // hold the window: left out while the newest prompt or answer (in getSessionEvents order)
+    // carries a verdict (readEmptySummaryVerdict's shape) that covers as many prompts and
+    // answers as the session holds now. Sessions are checked in order only until the window
+    // is full.
+    const meta = `CASE WHEN json_valid(x.metadata) THEN x.metadata ELSE '{}' END`;
+    const verdict = `$.${EMPTY_SUMMARY_VERDICT_KEY}`;
+    const exchangeRow = (alias: string) => `${alias}.session_id = u.session_id
+             AND ${alias}.event_type IN ('user_prompt', 'agent_response')
+             AND ${notActiveQuarantinedSql(`${alias}.metadata`)}
+             AND length(trim(${alias}.content, ' ' || char(9, 10, 13))) > 0`;
+    const sql = skipJudgedEmpty
+      ? `SELECT u.session_id, u.last_event_at FROM (${unsummarized}) u
+         WHERE NOT COALESCE((
+           SELECT CASE
+             WHEN json_type(${meta}, '${verdict}.judgedAt') = 'text'
+               AND json_type(${meta}, '${verdict}.exchangeCount') IN ('integer', 'real')
+             THEN json_extract(${meta}, '${verdict}.exchangeCount')
+           END
+           FROM events x
+           WHERE ${exchangeRow('x')}
+           ORDER BY x.timestamp DESC, x.rowid DESC
+           LIMIT 1
+         ) >= (SELECT COUNT(*) FROM events c WHERE ${exchangeRow('c')}), 0)
+         LIMIT ?`
+      : `${unsummarized} LIMIT ?`;
+    return sqliteAll<{ session_id: string; last_event_at: string }>(this.db, sql, [currentSessionId, limit]);
   }
 
   /**
-   * Get events by session ID
+   * Get events by session ID, oldest first; events with the same timestamp in the order they
+   * were stored, as the LLM summary candidate query reads them.
    */
   async getSessionEvents(sessionId: string, options?: QuarantineReadOptions): Promise<MemoryEvent[]> {
     await this.initialize();
 
     const rows = sqliteAll<Record<string, unknown>>(
       this.db,
-      `SELECT * FROM events WHERE session_id = ? AND ${maybeQuarantinePredicate(options)} ORDER BY timestamp ASC`,
+      `SELECT * FROM events WHERE session_id = ? AND ${maybeQuarantinePredicate(options)} ORDER BY timestamp ASC, rowid ASC`,
       [sessionId]
     );
 
@@ -5570,7 +5621,9 @@ export class SQLiteEventStore {
   }
 
   /**
-   * Shallow-merge `patch` into one event's metadata. Returns false when the event does not exist.
+   * Shallow-merge `patch` into one event's metadata. Returns false when the event does not exist,
+   * or when its stored metadata does not read as an object: that makes the row's origin unknown
+   * (memory-origin.ts), and replacing it with an object would raise its trust.
    */
   async mergeEventMetadata(eventId: string, patch: Record<string, unknown>): Promise<boolean> {
     await this.initialize();
@@ -5578,9 +5631,15 @@ export class SQLiteEventStore {
   }
 
   private mergeEventMetadataSync(eventId: string, patch: Record<string, unknown>): boolean {
-    const row = sqliteGet<{ metadata: unknown }>(this.db, `SELECT metadata FROM events WHERE id = ?`, [eventId]);
+    const row = sqliteGet<{ event_type: unknown; metadata: unknown }>(
+      this.db,
+      `SELECT event_type, metadata FROM events WHERE id = ?`,
+      [eventId]
+    );
     if (!row) return false;
-    const metadata = { ...(safeParseMetadataValue(row.metadata) ?? {}), ...patch };
+    const stored = readStoredMetadata(row.event_type, row.metadata);
+    if (!stored.metadata && stored.origin === 'unknown') return false;
+    const metadata = { ...(stored.metadata ?? {}), ...patch };
     return (sqliteRun(this.db, `UPDATE events SET metadata = ? WHERE id = ?`, [JSON.stringify(metadata), eventId]).changes || 0) > 0;
   }
 

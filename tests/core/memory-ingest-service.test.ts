@@ -623,13 +623,49 @@ describe('MemoryIngestService LLM session summary', () => {
     await expect(service.generateLlmSessionSummary('s')).rejects.toThrow('SQLITE_BUSY');
   });
 
-  it('records nothing when a first summary finds nothing durable', async () => {
+  it('records an empty first summary on the newest prompt/answer the provider was shown (#206)', async () => {
     const { service, store } = createService({
       eventsBySession: { s: sessionEvents },
-      llmSummaryGenerator: async () => null
+      llmSummaryGenerator: async () => null,
+      now: () => new Date('2026-11-21T00:00:00.000Z')
     });
 
     await expect(service.generateLlmSessionSummary('s')).resolves.toBe(false);
+    expect(store.mergeEventMetadata).toHaveBeenCalledExactlyOnceWith('22222222-2222-4222-8222-222222222222', {
+      emptySummaryVerdict: { judgedAt: '2026-11-21T00:00:00.000Z', exchangeCount: 2 }
+    });
+  });
+
+  it('does not ask again while nothing was said after an empty verdict, and does once something was', async () => {
+    const generator = vi.fn(async () => null);
+    const judged = sessionEvents.map((e) => e.eventType === 'agent_response'
+      ? { ...e, metadata: { emptySummaryVerdict: { judgedAt: '2026-11-20T00:00:00.000Z', exchangeCount: 2 } } }
+      : e);
+    const resumed = [...judged, event({ id: '44444444-4444-4444-8444-444444444444', sessionId: 's', content: '이어서 하자' })];
+    const { service, store } = createService({
+      eventsBySession: { judged, resumed },
+      llmSummaryGenerator: generator
+    });
+
+    await expect(service.generateLlmSessionSummary('judged')).resolves.toBe(false);
+    expect(generator).not.toHaveBeenCalled();
+    expect(store.mergeEventMetadata).not.toHaveBeenCalled();
+
+    await service.generateLlmSessionSummary('resumed');
+    expect(generator).toHaveBeenCalledOnce();
+    expect(store.mergeEventMetadata).toHaveBeenCalledExactlyOnceWith('44444444-4444-4444-8444-444444444444', {
+      emptySummaryVerdict: expect.objectContaining({ exchangeCount: 3 })
+    });
+  });
+
+  it('records no empty verdict when the provider call fails', async () => {
+    const circuitOpen = Object.assign(new Error('skipped'), { code: 'provider-circuit-open' });
+    const { service, store } = createService({
+      eventsBySession: { s: sessionEvents },
+      llmSummaryGenerator: async () => { throw circuitOpen; }
+    });
+
+    await expect(service.generateLlmSessionSummary('s')).rejects.toBe(circuitOpen);
     expect(store.mergeEventMetadata).not.toHaveBeenCalled();
   });
 
@@ -648,6 +684,13 @@ describe('isLlmSessionSummaryDue', () => {
   it('is due for a session without a summary, whatever the refresh policy', () => {
     expect(isLlmSessionSummaryDue({ exchangeCount: 2 }, policy)).toBe(true);
     expect(isLlmSessionSummaryDue({ exchangeCount: 2 }, { ...policy, enabled: false })).toBe(true);
+  });
+
+  it('holds an empty verdict until the session gains a prompt or answer, whatever the refresh policy', () => {
+    for (const p of [policy, { ...policy, enabled: false }]) {
+      expect(isLlmSessionSummaryDue({ exchangeCount: 2, emptyVerdict: { coveredExchanges: 2 } }, p)).toBe(false);
+      expect(isLlmSessionSummaryDue({ exchangeCount: 3, emptyVerdict: { coveredExchanges: 2 } }, p)).toBe(true);
+    }
   });
 
   it('is due once the session has gained minNewExchanges since its summary, not one before', () => {
