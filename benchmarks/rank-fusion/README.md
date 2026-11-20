@@ -163,7 +163,7 @@ So T12 stops after stage 1. The evaluation code and this report land; production
 
 ## Reproduce
 
-Commands are split by data access. Everything writes aggregate-only output; `--format json` adds provenance (git SHA, fixture hash, every flag, model file hashes).
+Commands are split by data access. Everything writes aggregate-only output; `--format json` adds provenance (git SHA, fixture hash, every flag, model file hashes). `npm run --silent` keeps npm's script banner out of the redirected JSON.
 
 ### Public data (reproducible anywhere)
 
@@ -171,20 +171,20 @@ Commands are split by data access. Everything writes aggregate-only output; `--f
 mkdir -p /tmp/cml-models
 
 # Golden fixture with mmarco-minilm. The first run downloads e5-small and the reranker.
-npm run eval:rank-fusion -- --fixture benchmarks/replay/golden-memory-usefulness-v1.json \
+npm run --silent eval:rank-fusion -- --fixture benchmarks/replay/golden-memory-usefulness-v1.json \
   --model-cache /tmp/cml-models --download-models --format json > golden.json
 
 # Golden with bge-m3 (its own first download).
-npm run eval:rank-fusion -- --fixture benchmarks/replay/golden-memory-usefulness-v1.json \
+npm run --silent eval:rank-fusion -- --fixture benchmarks/replay/golden-memory-usefulness-v1.json \
   --model-cache /tmp/cml-models --reranker bge-m3 --repeat 1 --download-models --format json > golden-bge.json
 
 # Hook replay on the committed fixture. The semantic lane is off for fixtures, so no embedder is needed.
-npm run eval:hook-replay -- --ranking-arms --model-cache /tmp/cml-models --format json > hook-fixture.json
+npm run --silent eval:hook-replay -- --ranking-arms --model-cache /tmp/cml-models --format json > hook-fixture.json
 
 # LongMemEval_S subset (download per benchmarks/longmemeval/README.md).
 tsx scripts/longmemeval-retrieval-smoke.ts --input /tmp/LongMemEval/data/longmemeval_s_cleaned.json \
   --granularity turn --retrieval-mode single --strategy fast --limit 30 --fixture-out /tmp/lme-turn-30.json
-npm run eval:rank-fusion -- --fixture /tmp/lme-turn-30.json --label longmemeval-s-turn-30 \
+npm run --silent eval:rank-fusion -- --fixture /tmp/lme-turn-30.json --label longmemeval-s-turn-30 \
   --model-cache /tmp/cml-models --format json > lme.json
 ```
 
@@ -193,15 +193,15 @@ npm run eval:rank-fusion -- --fixture /tmp/lme-turn-30.json --label longmemeval-
 ```bash
 # Session qrels from read-only copies of local Claude transcripts. The fixture holds raw text; keep it out of the repo.
 tsx scripts/generate-session-qrels.ts --sessions-dir <copy-of-transcripts> --out /tmp/session-qrels.json --ks 1,3,5,10
-npm run eval:rank-fusion -- --fixture /tmp/session-qrels.json --label session-qrels \
+npm run --silent eval:rank-fusion -- --fixture /tmp/session-qrels.json --label session-qrels \
   --model-cache /tmp/cml-models --repeat 1 --sweep --format json > sq.json
 # Cross-process rerun check without the reranker.
-npm run eval:rank-fusion -- --fixture /tmp/session-qrels.json --label session-qrels \
+npm run --silent eval:rank-fusion -- --fixture /tmp/session-qrels.json --label session-qrels \
   --model-cache /tmp/cml-models --reranker none --repeat 1 --format json > sq-none.json
 # The same first 150 queries with each reranker.
-npm run eval:rank-fusion -- --fixture /tmp/session-qrels.json --label session-qrels-150 --limit 150 \
+npm run --silent eval:rank-fusion -- --fixture /tmp/session-qrels.json --label session-qrels-150 --limit 150 \
   --model-cache /tmp/cml-models --repeat 1 --format json > sq150.json
-npm run eval:rank-fusion -- --fixture /tmp/session-qrels.json --label session-qrels-150 --limit 150 \
+npm run --silent eval:rank-fusion -- --fixture /tmp/session-qrels.json --label session-qrels-150 --limit 150 \
   --model-cache /tmp/cml-models --reranker bge-m3 --repeat 1 --sweep --format json > sq150-bge.json
 
 # Hook replay on a store copy: sqlite3 events.sqlite ".backup ..." plus vectors/.
