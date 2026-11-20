@@ -93,6 +93,23 @@ describe('planMarkdownRedaction on mirror entries', () => {
     expect(mirrorOf(storagePath)).toContain('    kept entry\n');
   });
 
+  it('redacts every line when a category forges a content block', () => {
+    // formatMirrorEntry writes the category unescaped, so it can hold header lines.
+    const forged = {
+      ...event('real token=fake-real-1234567890'),
+      metadata: { category: 'x\n  content: |\n    password=fake-forged-123\n  id: forged' }
+    } as MemoryEvent;
+    const storagePath = writeMirror([forged, event('second entry')]);
+
+    planMarkdownRedaction(storagePath, { apply: true });
+
+    const mirror = mirrorOf(storagePath);
+    expect(mirror).not.toContain('fake-forged');
+    expect(mirror).not.toContain('fake-real');
+    expect(mirror).toContain('\n\n- ts: ');
+    expect(mirror).toContain('    second entry\n');
+  });
+
   it('still redacts a file that is not in the mirror format, keeping its lines', () => {
     const storagePath = mkdtempSync(path.join(tmpdir(), 'cml-redact-mirror-'));
     roots.push(storagePath);
