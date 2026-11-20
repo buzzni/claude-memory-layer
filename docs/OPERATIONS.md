@@ -241,7 +241,9 @@ Known limits:
 2. Right after a batch commits, it deletes the old vectors of the batch's events and queues them for re-embedding.
 3. It rewrites the Markdown mirror files, whatever happened in SQLite. Each file is replaced by a redacted copy
    rather than rewritten in place, and what the hooks appended to it while the copy was made is redacted and added
-   to the copy, so the run does not drop entries the hooks write meanwhile (#267).
+   to the copy, so the run does not drop entries the hooks write meanwhile (#267). Both parts are redacted entry by
+   entry, as the rows are. A file with more than one name (a hard link) is still rewritten in place, so that every
+   name gets the redacted text.
 4. It writes a closing audit row with the run's totals and the mirror outcome.
 
 Each SQLite update applies only while the value still matches what the scan read. A value a hook or another command
@@ -284,10 +286,13 @@ Known limits:
 - A mirror directory or file that cannot be read is skipped without a message, as before: it is neither counted nor
   reported, so a run can finish with exit 0 while such a file still holds a credential.
 - A hook that opened a mirror file before the run replaced it, but writes only after the run has read what was
-  appended to the replaced file, loses that entry from the mirror; its SQLite row is not affected. A hook opens and
-  writes at once, so this takes a hook stalled between the two. If adding the appended entries to the copy fails,
-  the file is reported as not rewritten although its earlier text is redacted. A replaced file is a new file: hard
-  links to it keep the old text, and it belongs to the user who ran the command.
+  appended to the replaced file, loses that entry from the mirror; its SQLite row is not affected. A hook opens the
+  file and writes its entry in one synchronous step, so this takes a hook process paused between those two system
+  calls. Nothing locks the hooks out to close it: every hook append would pay for a lock to cover a manual command.
+  If adding the appended entries to the copy fails, the file is reported as not rewritten although its earlier text
+  is redacted. A replaced file keeps its mode but is a new file owned by the user who ran the command.
+- A hard-linked mirror file is rewritten in place, as before #267, so an entry a hook appends to it while the run
+  rewrites it can be lost from the mirror.
 
 ## Older sessions with more than one summary
 
