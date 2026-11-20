@@ -1,11 +1,11 @@
-# /memory-search
+# /memory-layer:memory-search
 
 Search through stored memories using semantic search.
 
 ## Usage
 
 ```
-/memory-search <query>
+/memory-layer:memory-search <query>
 ```
 
 ## Arguments
@@ -15,9 +15,9 @@ Search through stored memories using semantic search.
 ## Examples
 
 ```
-/memory-search how to implement authentication
-/memory-search React component patterns
-/memory-search database optimization
+/memory-layer:memory-search how to implement authentication
+/memory-layer:memory-search React component patterns
+/memory-layer:memory-search database optimization
 ```
 
 ## Description
@@ -31,6 +31,8 @@ The search uses AXIOMMIND weighted scoring:
 
 ## Implementation
 
+Run this command with the Bash tool and report its output:
+
 ```bash
-node dist/cli/index.js search "$ARGUMENTS"
+claude-memory-layer search "$ARGUMENTS"
 ```

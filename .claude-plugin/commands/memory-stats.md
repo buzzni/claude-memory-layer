@@ -1,11 +1,11 @@
-# /memory-stats
+# /memory-layer:memory-stats
 
 View memory storage statistics.
 
 ## Usage
 
 ```
-/memory-stats
+/memory-layer:memory-stats
 ```
 
 ## Description
@@ -29,6 +29,8 @@ The graduation pipeline moves memories through these levels:
 
 ## Implementation
 
+Run this command with the Bash tool and report its output:
+
 ```bash
-node dist/cli/index.js stats
+claude-memory-layer stats
 ```

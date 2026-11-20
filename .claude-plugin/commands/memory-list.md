@@ -1,11 +1,11 @@
-# /memory-list
+# /memory-layer:memory-list
 
 List available Claude Code sessions that can be imported.
 
 ## Usage
 
 ```
-/memory-list [options]
+/memory-layer:memory-list [options]
 ```
 
 ## Options
@@ -15,8 +15,8 @@ List available Claude Code sessions that can be imported.
 ## Examples
 
 ```
-/memory-list
-/memory-list --project /home/user/myproject
+/memory-layer:memory-list
+/memory-layer:memory-list --project /home/user/myproject
 ```
 
 ## Description
@@ -28,10 +28,12 @@ Shows all available Claude Code session files that can be imported into memory. 
 - **File size**: Size of the session file
 - **Path**: Full path to the JSONL file
 
-Use this command to identify which sessions you want to import before running `/memory-import`.
+Use this command to identify which sessions you want to import before running `/memory-layer:memory-import`.
 
 ## Implementation
 
+Run this command with the Bash tool and report its output:
+
 ```bash
-node dist/cli/index.js list $ARGUMENTS
+claude-memory-layer list $ARGUMENTS
 ```

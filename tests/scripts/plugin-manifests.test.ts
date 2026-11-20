@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import * as path from 'node:path';
 
@@ -15,7 +15,9 @@ function readJson<T = Record<string, unknown>>(relativePath: string): T {
 type HookConfig = { hooks: Record<string, Array<{ matcher: string; hooks: Array<{ type: string; command: string }> }>> };
 
 const pkg = readJson<{ version: string }>('package.json');
-const plugin = readJson<{ name: string; version: string; repository: unknown; hooks: string }>('.claude-plugin/plugin.json');
+const plugin = readJson<{ name: string; version: string; repository: unknown; hooks: string; commands?: string }>(
+  '.claude-plugin/plugin.json'
+);
 const marketplace = readJson<{
   name: string;
   owner: { name: string };
@@ -63,6 +65,53 @@ describe('Claude Code plugin manifests', () => {
       // scripts/build.ts builds dist/hooks/<name>.js from src/hooks/<name>.ts.
       expect(existsSync(path.join(repoRoot, 'src', 'hooks', `${hookName}.ts`)), hookName).toBe(true);
     }
+  });
+
+  it('points plugin.json at the slash command files, which Claude Code does not look for inside .claude-plugin/', () => {
+    // Without the field only <plugin root>/commands/ is read, so these were never loaded.
+    expect(plugin.commands).toBe('./.claude-plugin/commands/');
+    expect(readdirSync(path.join(repoRoot, plugin.commands!)).filter((file) => file.endsWith('.md')).sort()).toEqual([
+      'memory-forget.md',
+      'memory-history.md',
+      'memory-import.md',
+      'memory-list.md',
+      'memory-search.md',
+      'memory-stats.md'
+    ]);
+  });
+
+  it('runs every slash command through the claude-memory-layer bin with a top-level CLI subcommand', () => {
+    // The command runs in the user's project, and a marketplace install has no dist/,
+    // so the CLI is reached the way hook-launcher.cjs finds it: the bin on PATH.
+    const cliSource = readFileSync(path.join(repoRoot, 'src', 'apps', 'cli', 'index.ts'), 'utf8');
+    const subcommands = new Set([...cliSource.matchAll(/^program\n {2}\.command\('([\w-]+)/gm)].map((match) => match[1]));
+    const commandsDir = path.join(repoRoot, plugin.commands ?? '.claude-plugin/commands');
+
+    for (const file of readdirSync(commandsDir).filter((name) => name.endsWith('.md'))) {
+      const body = readFileSync(path.join(commandsDir, file), 'utf8');
+      // A command file is a prompt, so it has to tell Claude to run the line rather than describe it.
+      const invocations = [...body.matchAll(/^Run this command with the Bash tool and report its output:\n\n```bash\n(.+)\n```$/gm)].map(
+        (match) => match[1]
+      );
+      expect(invocations, file).toHaveLength(1);
+      const [bin, subcommand] = invocations[0].split(' ');
+      expect(bin, file).toBe('claude-memory-layer');
+      expect(subcommands, file).toContain(subcommand);
+    }
+  });
+
+  it('names the slash commands with the plugin prefix, the only form Claude Code resolves', () => {
+    const commandsDir = path.join(repoRoot, plugin.commands ?? '.claude-plugin/commands');
+    const docs = [
+      ...readdirSync(commandsDir).filter((name) => name.endsWith('.md')).map((name) => path.join(commandsDir, name)),
+      ...['README.md', 'README.ko.md', 'docs/INSTALL.md'].map((file) => path.join(repoRoot, file))
+    ];
+    const bare = docs.flatMap((file) =>
+      [...readFileSync(file, 'utf8').matchAll(/(?<![\w:./-])\/memory-(?!layer:)[\w-]+/g)].map(
+        ([name]) => `${path.relative(repoRoot, file)} ${name}`
+      )
+    );
+    expect(bare).toEqual([]);
   });
 
   it('gives the launcher the same hook-to-event map and matchers that install writes', () => {

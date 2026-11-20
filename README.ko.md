@@ -559,33 +559,35 @@ Claude Code가 컨텍스트를 압축하기 직전에 현재 세션이 어디까
 
 ### Slash 명령어
 
-Claude Code 내에서 사용할 수 있는 명령어:
+Claude Code 플러그인(`memory-layer@claude-memory-layer`)으로 설치했을 때 쓸 수 있는 명령어입니다. 플러그인 이름이 앞에 붙고(`/memory-layer:memory-stats`), 각 명령은 PATH에 있는 `claude-memory-layer` CLI를 실행합니다. `claude-memory-layer install`은 훅만 등록하므로 이 명령어는 생기지 않습니다.
+
+PATH에 CLI가 없으면 명령이 `command not found`로 실패합니다. `npm install -g claude-memory-layer@latest`로 설치한 뒤 Claude Code를 다시 시작하고, 터미널에서 `command -v claude-memory-layer`로 경로가 나오는지 확인하세요. nvm처럼 Node 버전별로 전역 패키지가 나뉘는 환경에서는 Claude Code를 실행하는 셸의 Node 버전에 설치해야 합니다.
 
 ```bash
 # 메모리 검색 - 관련 기억 찾기
-/memory-search "authentication 구현 방법"
+/memory-layer:memory-search "authentication 구현 방법"
 
 # 대화 기록 보기
-/memory-history
-/memory-history --limit 50
-/memory-history --session <session-id>
+/memory-layer:memory-history
+/memory-layer:memory-history --limit 50
+/memory-layer:memory-history --session <session-id>
 
 # 통계 확인
-/memory-stats
+/memory-layer:memory-stats
 
 # 기존 대화 기록 임포트
-/memory-import                            # 현재 프로젝트
-/memory-import --all                      # 모든 프로젝트
-/memory-import --project /path/to/project # 특정 프로젝트
+/memory-layer:memory-import                            # 현재 프로젝트
+/memory-layer:memory-import --all                      # 모든 프로젝트
+/memory-layer:memory-import --project /path/to/project # 특정 프로젝트
 
 # 임포트 가능한 세션 목록
-/memory-list
+/memory-layer:memory-list
 
 # 메모리 삭제: 이벤트 ID, --session, --before 중 하나만 지정합니다. --confirm 없이는 미리보기만 합니다.
 # 이벤트 ID·--session은 store의 Markdown mirror와 프로젝트 디렉터리 memory/ mirror를 정리하지 않습니다(#274, #276).
-/memory-forget <event-id> --confirm
-/memory-forget --session <session-id> --confirm
-/memory-forget --before 2026-01-01 --confirm
+/memory-layer:memory-forget <event-id> --confirm
+/memory-layer:memory-forget --session <session-id> --confirm
+/memory-layer:memory-forget --before 2026-01-01 --confirm
 ```
 
 ### 기존 메모리 정리 Import (구조화)

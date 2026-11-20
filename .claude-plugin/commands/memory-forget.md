@@ -1,13 +1,13 @@
-# /memory-forget
+# /memory-layer:memory-forget
 
 Remove specific memories from storage.
 
 ## Usage
 
 ```
-/memory-forget <event-id>
-/memory-forget --session <session-id>
-/memory-forget --before <date>
+/memory-layer:memory-forget <event-id>
+/memory-layer:memory-forget --session <session-id>
+/memory-layer:memory-forget --before <date>
 ```
 
 ## Arguments
@@ -23,9 +23,9 @@ Use exactly one of `event-id`, `--session` or `--before`.
 ## Examples
 
 ```
-/memory-forget abc123-def456
-/memory-forget --session session_xyz --confirm
-/memory-forget --before 2024-01-01
+/memory-layer:memory-forget abc123-def456
+/memory-layer:memory-forget --session session_xyz --confirm
+/memory-layer:memory-forget --before 2024-01-01
 ```
 
 ## Description
@@ -44,6 +44,8 @@ If vectors could not be removed, the command prints a warning; with `event-id` o
 
 ## Implementation
 
+Run this command with the Bash tool and report its output:
+
 ```bash
-node dist/cli/index.js forget $ARGUMENTS
+claude-memory-layer forget $ARGUMENTS
 ```
