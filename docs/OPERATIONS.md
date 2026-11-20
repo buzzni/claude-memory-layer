@@ -256,7 +256,7 @@ exits 1:
 | Values changed or deleted after the scan read them | The changed values, which may still hold a credential | Run `--apply` again; the next run redacts them |
 | A batch failed (an update, the removal of its queued embedding jobs, or its audit row could not be written) | The batch is retried one value at a time, so only the values that still fail keep their text (and their queued jobs), with no audit row | Run `--apply` again once the cause is fixed |
 | SQLite stayed busy past the busy timeout, in a batch or in a re-queue | The values the run had not reached, and in a re-queue that batch's events without a queued job. The SQLite pass stops; the mirror is still rewritten | Run `--apply` again; `repair backfill-vectors --apply` for events left without a vector |
-| A mirror file could not be rewritten | That file, unchanged; the run carries on | Fix the file's permissions, then run `--apply` again |
+| A mirror file could not be rewritten (permissions, or a full disk while it was being replaced) | That file, unchanged: a replaced file is put back with every entry the hooks wrote to it, credential included; the run carries on | Fix the file's permissions or free disk space, then run `--apply` again |
 | An old vector could not be deleted | That vector, which may hold the credential. The event is redacted, so a re-run does not retry the delete | No command retries it yet. The run lists the events in `redact-credentials-<runId>-vector-delete-failures.txt` in the project store (readable by you only) and prints its path. An event id that looks like it holds a credential is listed as `events rowid <n>` instead; read it with `SELECT id FROM events WHERE rowid = <n>` before the next VACUUM (`forget` runs one) |
 | Queuing for re-embedding failed | The batch's redacted events with no queued job: the old jobs went with the update. Their old vectors may or may not have been deleted | `repair backfill-vectors --apply` queues events that have no vector |
 | The closing audit row could not be written | The batch rows; the totals and mirror counts are only in the output | — |
@@ -289,10 +289,13 @@ Known limits:
   appended to the replaced file, loses that entry from the mirror; its SQLite row is not affected. A hook opens the
   file and writes its entry in one synchronous step, so this takes a hook process paused between those two system
   calls. Nothing locks the hooks out to close it: every hook append would pay for a lock to cover a manual command.
-  If adding the appended entries to the copy fails, the file is reported as not rewritten although its earlier text
-  is redacted. A replaced file keeps its mode but is a new file owned by the user who ran the command.
-- A hard-linked mirror file is rewritten in place, as before #267, so an entry a hook appends to it while the run
-  rewrites it can be lost from the mirror.
+  A replaced file keeps its mode but is a new file owned by the user who ran the command.
+- While a file is replaced, the old file keeps a second name, `<file>.<id>.old`, until what the hooks appended to it
+  is in the copy, so that a failure there (a full disk) puts it back whole. An entry a hook wrote to the copy before
+  it is put back is lost from the mirror. A run killed while it replaces a file leaves the `.old` file, with the old
+  text, next to it; a re-run does not redact it, so delete it.
+- A hard-linked mirror file, and any mirror file on a filesystem without hard links, is rewritten in place, as before
+  #267, so an entry a hook appends to it while the run rewrites it can be lost from the mirror.
 
 ## Older sessions with more than one summary
 
