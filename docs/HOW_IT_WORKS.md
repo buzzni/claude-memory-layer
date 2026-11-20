@@ -65,6 +65,13 @@ in [CONFIGURATION.md](CONFIGURATION.md#llm-summaries-and-lessons).
 - **When**: after every turn, Stop asks the daemon. The first summary is written once the session has at least two
   prompts or answers and three events. SessionStart also asks for the 5 most recent other sessions of the project that
   are due for one, which catches sessions whose last turns ended without Stop (crash, force-close).
+- **Nothing worth keeping**: when the first summary call answers that the session holds nothing worth keeping, no
+  summary is stored, and that verdict is recorded on the newest prompt or answer it was shown (`emptySummaryVerdict` in
+  that event's metadata: when, and how many prompts and answers it covered). The session is not sent again, by Stop or
+  by the SessionStart backfill, until it gains a prompt or answer; one more is enough, because such verdicts come
+  almost only from first turns and a session that goes on usually has something to keep. A judged session also stops
+  taking one of the backfill's 5 places, so older sessions behind it get theirs. The verdict lives on that one row:
+  if `forget`, a forced reimport or a quarantine removes or hides it, the session is judged again on its next call.
 - **Refresh**: the summary is written again once the session has gained 10 more prompts and answers (about five turns)
   since the last one, at most 3 times per session. The previous summary goes into the request as earlier findings, since
   the last 40 events may no longer contain what it was drawn from. An answer with nothing worth keeping still counts as

@@ -302,6 +302,13 @@ export interface AppendOptions {
   replaces?: EventReplacement;
 }
 
+/**
+ * Metadata key of an empty first LLM summary verdict (#206), recorded by
+ * MemoryIngestService on the newest prompt/answer event the provider was
+ * shown: `{ judgedAt, exchangeCount }`.
+ */
+export const EMPTY_SUMMARY_VERDICT_KEY = 'emptySummaryVerdict';
+
 /** A session the LLM summary backfill may have to summarize (getLlmSummaryCandidates). */
 export interface SessionSummaryCandidate {
   sessionId: string;
@@ -1630,8 +1637,9 @@ export class SQLiteEventStore {
 
   /**
    * Sessions the LLM summary backfill may have to summarize, newest activity first: the
-   * `limit` most recent ones without a summary (as getSessionsWithoutSummary), and, when
-   * `refreshSince` is given, every summarized session with a prompt or answer since then,
+   * `limit` most recent ones without a summary (as getSessionsWithoutSummary, less those
+   * whose newest prompt or answer carries an empty verdict), and, when `refreshSince` is
+   * given, every summarized session with a prompt or answer since then,
    * with what MemoryIngestService needs to tell whether its summary is due for a refresh.
    * Counts match getSessionEvents: quarantined rows, superseded summaries included, are
    * left out. The window keeps this off a scan of every session in the store.
@@ -1641,7 +1649,7 @@ export class SQLiteEventStore {
     options: { limit: number; refreshSince?: Date }
   ): Promise<SessionSummaryCandidate[]> {
     await this.initialize();
-    const candidates: SessionSummaryCandidate[] = this.sessionsWithoutSummary(currentSessionId, options.limit)
+    const candidates: SessionSummaryCandidate[] = this.sessionsWithoutSummary(currentSessionId, options.limit, true)
       .map((row) => ({ sessionId: row.session_id, lastEventAt: row.last_event_at }));
     if (options.refreshSince) {
       const rows = sqliteAll<{
@@ -1694,11 +1702,10 @@ export class SQLiteEventStore {
 
   private sessionsWithoutSummary(
     currentSessionId: string,
-    limit: number
+    limit: number,
+    skipJudgedEmpty = false
   ): Array<{ session_id: string; last_event_at: string }> {
-    return sqliteAll<{ session_id: string; last_event_at: string }>(
-      this.db,
-      `SELECT e.session_id, MAX(e.timestamp) AS last_event_at
+    const unsummarized = `SELECT e.session_id, MAX(e.timestamp) AS last_event_at
        FROM events e
        WHERE e.session_id != ?
          AND e.event_type != 'session_summary'
@@ -1707,10 +1714,27 @@ export class SQLiteEventStore {
          )
        GROUP BY e.session_id
        HAVING COUNT(*) >= 3
-       ORDER BY MAX(e.timestamp) DESC
-       LIMIT ?`,
-      [currentSessionId, limit]
-    );
+       ORDER BY MAX(e.timestamp) DESC`;
+    // isLlmSessionSummaryDue for an empty verdict, ahead of LIMIT so judged sessions do not
+    // hold the window: left out while the newest prompt or answer is the one it is recorded
+    // on. Sessions are checked in order only until the window is full.
+    const sql = skipJudgedEmpty
+      ? `SELECT u.session_id, u.last_event_at FROM (${unsummarized}) u
+         WHERE NOT COALESCE((
+           SELECT json_extract(
+             CASE WHEN json_valid(x.metadata) THEN x.metadata ELSE '{}' END, '$.${EMPTY_SUMMARY_VERDICT_KEY}'
+           ) IS NOT NULL
+           FROM events x
+           WHERE x.session_id = u.session_id
+             AND x.event_type IN ('user_prompt', 'agent_response')
+             AND ${notActiveQuarantinedSql('x.metadata')}
+             AND length(trim(x.content, ' ' || char(9, 10, 13))) > 0
+           ORDER BY x.timestamp DESC, x.rowid DESC
+           LIMIT 1
+         ), 0)
+         LIMIT ?`
+      : `${unsummarized} LIMIT ?`;
+    return sqliteAll<{ session_id: string; last_event_at: string }>(this.db, sql, [currentSessionId, limit]);
   }
 
   /**
