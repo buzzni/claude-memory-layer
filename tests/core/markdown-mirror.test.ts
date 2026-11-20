@@ -1,5 +1,3 @@
-// @load-sensitive: 'is wired to sqlite append flow' reads a fire-and-forget
-// mirror write after a fixed 50ms wait, which a loaded machine overruns.
 import { describe, it, expect, vi } from 'vitest';
 import * as os from 'os';
 import * as path from 'path';
@@ -72,12 +70,11 @@ describe('markdown mirror', () => {
 
       expect(result.success).toBe(true);
 
-      // mirror append is async fire-and-forget; allow small delay
-      await new Promise((r) => setTimeout(r, 50));
-
+      // The mirror append is fire-and-forget: wait for the entry, not for a fixed delay (#281).
       const file = path.join(root, 'memory', 'app', 'responses', '2026-02-24.md');
-      const content = await fs.readFile(file, 'utf8');
-      expect(content).toContain('flow content');
+      await vi.waitFor(async () => {
+        expect(await fs.readFile(file, 'utf8')).toContain('flow content');
+      }, { timeout: 10_000 });
 
       await store.close();
     } finally {
@@ -106,7 +103,7 @@ describe('markdown mirror', () => {
       await vi.waitFor(() => expect(warn).toHaveBeenCalledWith(
         '[SQLiteEventStore] markdown mirror append failed:',
         expect.objectContaining({ code: 'EISDIR' })
-      ));
+      ), { timeout: 10_000 });
       expect((await store.getEvent(result.eventId!))?.content).toBe('kept in sqlite');
 
       await store.close();
