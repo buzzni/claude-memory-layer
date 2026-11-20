@@ -70,7 +70,14 @@ describe('Claude Code plugin manifests', () => {
   it('points plugin.json at the slash command files, which Claude Code does not look for inside .claude-plugin/', () => {
     // Without the field only <plugin root>/commands/ is read, so these were never loaded.
     expect(plugin.commands).toBe('./.claude-plugin/commands/');
-    expect(readdirSync(path.join(repoRoot, plugin.commands!)).filter((file) => file.endsWith('.md'))).not.toEqual([]);
+    expect(readdirSync(path.join(repoRoot, plugin.commands!)).filter((file) => file.endsWith('.md')).sort()).toEqual([
+      'memory-forget.md',
+      'memory-history.md',
+      'memory-import.md',
+      'memory-list.md',
+      'memory-search.md',
+      'memory-stats.md'
+    ]);
   });
 
   it('runs every slash command through the claude-memory-layer bin with a top-level CLI subcommand', () => {
@@ -82,7 +89,10 @@ describe('Claude Code plugin manifests', () => {
 
     for (const file of readdirSync(commandsDir).filter((name) => name.endsWith('.md'))) {
       const body = readFileSync(path.join(commandsDir, file), 'utf8');
-      const invocations = [...body.matchAll(/^```bash\n(.+)\n```$/gm)].map((match) => match[1]);
+      // A command file is a prompt, so it has to tell Claude to run the line rather than describe it.
+      const invocations = [...body.matchAll(/^Run this command with the Bash tool and report its output:\n\n```bash\n(.+)\n```$/gm)].map(
+        (match) => match[1]
+      );
       expect(invocations, file).toHaveLength(1);
       const [bin, subcommand] = invocations[0].split(' ');
       expect(bin, file).toBe('claude-memory-layer');

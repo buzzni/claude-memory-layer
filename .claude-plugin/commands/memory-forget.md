@@ -44,6 +44,8 @@ If vectors could not be removed, the command prints a warning; with `event-id` o
 
 ## Implementation
 
+Run this command with the Bash tool and report its output:
+
 ```bash
 claude-memory-layer forget $ARGUMENTS
 ```

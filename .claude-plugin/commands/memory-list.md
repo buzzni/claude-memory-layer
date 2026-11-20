@@ -32,6 +32,8 @@ Use this command to identify which sessions you want to import before running `/
 
 ## Implementation
 
+Run this command with the Bash tool and report its output:
+
 ```bash
 claude-memory-layer list $ARGUMENTS
 ```

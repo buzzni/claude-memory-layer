@@ -51,6 +51,8 @@ Use `/memory-layer:memory-list` to see available sessions before importing.
 
 ## Implementation
 
+Run this command with the Bash tool and report its output:
+
 ```bash
 claude-memory-layer import $ARGUMENTS
 ```

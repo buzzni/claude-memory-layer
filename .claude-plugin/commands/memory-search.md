@@ -31,6 +31,8 @@ The search uses AXIOMMIND weighted scoring:
 
 ## Implementation
 
+Run this command with the Bash tool and report its output:
+
 ```bash
 claude-memory-layer search "$ARGUMENTS"
 ```

@@ -29,6 +29,8 @@ Displays stored conversation events from memory. By default shows the most recen
 
 ## Implementation
 
+Run this command with the Bash tool and report its output:
+
 ```bash
 claude-memory-layer history $ARGUMENTS
 ```

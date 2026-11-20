@@ -29,6 +29,8 @@ The graduation pipeline moves memories through these levels:
 
 ## Implementation
 
+Run this command with the Bash tool and report its output:
+
 ```bash
 claude-memory-layer stats
 ```
