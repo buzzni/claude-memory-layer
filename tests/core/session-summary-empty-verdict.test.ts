@@ -128,6 +128,79 @@ describe('empty first summary verdict on a real store', () => {
     await expect(due()).resolves.toEqual(['s']);
   });
 
+  it('counts a prompt that arrives later with an older timestamp as new (a late Mongo pull)', async () => {
+    const { store, service, generator, exchange, tool, due } = await setup();
+    await exchange('s', '첫');
+    await tool('s');
+    await service.generateLlmSessionSummary('s');
+
+    await store.append({ eventType: 'user_prompt', sessionId: 's', timestamp: new Date(tick - 60_000), content: '다른 머신에서 먼저 한 질문' });
+
+    await expect(due()).resolves.toEqual(['s']);
+    await service.generateLlmSessionSummary('s');
+    expect(generator).toHaveBeenCalledTimes(2);
+    await expect(service.generateLlmSessionSummary('s')).resolves.toBe(false);
+    expect(generator).toHaveBeenCalledTimes(2);
+  });
+
+  it('counts a prompt with an older timestamp stored while the provider was answering as new', async () => {
+    const { store, exchange, tool, due } = await setup();
+    await exchange('s', '첫');
+    await tool('s');
+    const service = new MemoryIngestService({
+      initialize: async () => {},
+      eventStore: store,
+      markdownMirror: { append: async () => {} },
+      createToolEmbedding: () => '',
+      llmSummaryGenerator: async () => {
+        await store.append({ eventType: 'user_prompt', sessionId: 's', timestamp: new Date(tick - 60_000), content: '늦게 온 질문' });
+        return null;
+      },
+      now: () => now
+    });
+
+    await service.generateLlmSessionSummary('s');
+
+    await expect(due()).resolves.toEqual(['s']);
+  });
+
+  it.each([
+    ['not JSON', '{not json'],
+    ['a JSON array', '[1]']
+  ])('records no verdict on a row whose metadata is %s, so its origin stays unknown', async (_label, raw) => {
+    const { store, service, generator, exchange, tool, due } = await setup();
+    await exchange('s', '첫');
+    await tool('s');
+    const answer = (await store.getSessionEvents('s')).find((e) => e.eventType === 'agent_response')!;
+    store.getDatabase().prepare('UPDATE events SET metadata = ? WHERE id = ?').run(raw, answer.id);
+    expect((await store.getEvent(answer.id))?.origin).toBe('unknown');
+
+    await service.generateLlmSessionSummary('s');
+
+    expect((await store.getEvent(answer.id))?.origin).toBe('unknown');
+    const stored = store.getDatabase().prepare('SELECT metadata FROM events WHERE id = ?').get(answer.id) as { metadata: string };
+    expect(stored.metadata).toBe(raw);
+    expect(generator).toHaveBeenCalledOnce();
+    await expect(due()).resolves.toEqual(['s']);
+  });
+
+  it.each([
+    ['false', false, true],
+    ['a count given as text', { judgedAt: '2026-11-20T00:00:00.000Z', exchangeCount: '2' }, true],
+    ['no judgedAt', { exchangeCount: 2 }, true],
+    ['the recorded shape', { judgedAt: '2026-11-20T00:00:00.000Z', exchangeCount: 2 }, false]
+  ])('treats a verdict of %s the same in the backfill and in the summary run', async (_label, verdict, isDue) => {
+    const { store, service, generator, exchange, tool, due } = await setup();
+    await exchange('s', '첫');
+    await tool('s');
+    const answer = (await store.getSessionEvents('s')).find((e) => e.eventType === 'agent_response')!;
+    await store.mergeEventMetadata(answer.id, { emptySummaryVerdict: verdict });
+
+    await expect(due()).resolves.toEqual(isDue ? ['s'] : []);
+    await service.generateLlmSessionSummary('s');
+    expect(generator).toHaveBeenCalledTimes(isDue ? 1 : 0);
+  });
+
   it('is judged again after forget removes the prompt or answer it was recorded on, not after an older one', async () => {
     const { store, service, generator, exchange, tool, due } = await setup();
     await exchange('s', '첫');
@@ -144,6 +217,23 @@ describe('empty first summary verdict on a real store', () => {
     await store.deleteEventById(exchanges.at(-1)!.id);
     await expect(due()).resolves.toEqual(['s']);
     await service.generateLlmSessionSummary('s');
+    expect(generator).toHaveBeenCalledTimes(2);
+  });
+
+  it('holds on an older verdict again once forget leaves exactly what it judged', async () => {
+    const { store, service, generator, exchange, tool, due } = await setup();
+    await exchange('s', '첫');
+    await tool('s');
+    await service.generateLlmSessionSummary('s');
+    await exchange('s', '둘째');
+    await service.generateLlmSessionSummary('s');
+    expect(generator).toHaveBeenCalledTimes(2);
+    const second = (await store.getSessionEvents('s')).filter((e) => e.content.startsWith('둘째'));
+
+    for (const row of second) await store.deleteEventById(row.id);
+
+    await expect(due()).resolves.toEqual([]);
+    await expect(service.generateLlmSessionSummary('s')).resolves.toBe(false);
     expect(generator).toHaveBeenCalledTimes(2);
   });
 

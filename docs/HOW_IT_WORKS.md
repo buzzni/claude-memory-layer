@@ -67,11 +67,20 @@ in [CONFIGURATION.md](CONFIGURATION.md#llm-summaries-and-lessons).
   are due for one, which catches sessions whose last turns ended without Stop (crash, force-close).
 - **Nothing worth keeping**: when the first summary call answers that the session holds nothing worth keeping, no
   summary is stored, and that verdict is recorded on the newest prompt or answer it was shown (`emptySummaryVerdict` in
-  that event's metadata: when, and how many prompts and answers it covered). The session is not sent again, by Stop or
-  by the SessionStart backfill, until it gains a prompt or answer; one more is enough, because such verdicts come
-  almost only from first turns and a session that goes on usually has something to keep. A judged session also stops
-  taking one of the backfill's 5 places, so older sessions behind it get theirs. The verdict lives on that one row:
-  if `forget`, a forced reimport or a quarantine removes or hides it, the session is judged again on its next call.
+  that event's metadata: when, and how many prompts and answers it was shown). The session is not sent again, by Stop or
+  by the SessionStart backfill, until it holds more prompts and answers than that, or a newer one than the row the
+  verdict is on. A prompt that arrives later with an older time (pulled from another machine) counts too. One more is
+  enough, because such verdicts come almost only from first turns and a session that goes on usually has something to
+  keep. A judged session also stops taking one of the backfill's 5 places, so older sessions behind it get theirs.
+  - The verdict lives on that one row: if `forget`, a forced reimport or a quarantine removes or hides it, the session
+    is judged again on its next call. The exception is a session judged more than once: removing the newer verdict's
+    row together with everything after the older one leaves the older verdict on the newest row, and it holds again,
+    since what is left is what it judged.
+  - A row whose metadata cannot be read as an object gets no verdict: writing one would replace that metadata and
+    raise the row's [source trust](#source-trust-labels) from unknown. Its session keeps being sent, as before.
+  - The verdict is local. Mongo sync carries it to another machine only when the row is pushed after the verdict was
+    recorded, since a push sends new rows and leaves rows already sent as they are. A machine without it judges the
+    session once itself.
 - **Refresh**: the summary is written again once the session has gained 10 more prompts and answers (about five turns)
   since the last one, at most 3 times per session. The previous summary goes into the request as earlier findings, since
   the last 40 events may no longer contain what it was drawn from. An answer with nothing worth keeping still counts as

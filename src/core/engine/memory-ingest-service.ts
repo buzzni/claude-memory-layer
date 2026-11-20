@@ -7,6 +7,7 @@ import { normalizeTags } from '../tag-taxonomy.js';
 import { createSummaryDeriver, type SummaryDeriver } from '../derive/summary-deriver.js';
 import {
   EMPTY_SUMMARY_VERDICT_KEY,
+  readEmptySummaryVerdict,
   type AppendOptions,
   type EventReplacement,
   type SessionSummaryCandidate
@@ -100,7 +101,7 @@ export interface SessionSummaryProgress {
   };
   /** Without a summary: the newest first summary attempt the provider found nothing durable in. */
   emptyVerdict?: {
-    /** Prompt/answer events stored up to the one the verdict is recorded on. */
+    /** Prompt/answer events the provider was shown then. */
     coveredExchanges: number;
   };
 }
@@ -148,15 +149,16 @@ function summaryCoverage(
 }
 
 /**
- * Reads the newest empty verdict among a session's prompt/answer events. It
- * goes with the rows it is recorded on: forget or a force reimport that drops
- * that row, or a quarantine that hides it, lets the session be judged again.
+ * Reads the empty verdict on a session's newest prompt or answer; a newer one
+ * stored after the verdict means the session went on. A row that arrives late
+ * with an older timestamp (a Mongo pull) is not newer, but it raises the
+ * count past the one the verdict covered. The verdict goes with the row it is
+ * recorded on: forget or a force reimport that drops that row, or a
+ * quarantine that hides it, lets the session be judged again.
  */
 function emptyVerdictCoverage(exchanges: MemoryEvent[]): SessionSummaryProgress['emptyVerdict'] {
-  for (let i = exchanges.length - 1; i >= 0; i--) {
-    if (exchanges[i].metadata?.[EMPTY_SUMMARY_VERDICT_KEY]) return { coveredExchanges: i + 1 };
-  }
-  return undefined;
+  const verdict = readEmptySummaryVerdict(exchanges.at(-1)?.metadata);
+  return verdict && { coveredExchanges: verdict.exchangeCount };
 }
 
 export interface MemoryIngestServiceOptions {
@@ -419,8 +421,10 @@ export class MemoryIngestService {
       if (latestSummary) {
         await this.eventStore.mergeEventMetadata(latestSummary.id, covered);
       } else if (exchanges.length > 0) {
-        // Prompts stored while the provider ran come after this row, so they
-        // still count as new conversation.
+        // Prompts stored while the provider ran are newer than this row or
+        // raise the count past exchangeCount, so they still count as new. A
+        // row whose metadata cannot be read keeps it (mergeEventMetadata
+        // refuses), and the session stays due.
         await this.eventStore.mergeEventMetadata(exchanges[exchanges.length - 1].id, {
           [EMPTY_SUMMARY_VERDICT_KEY]: { judgedAt: this.now().toISOString(), exchangeCount }
         });
