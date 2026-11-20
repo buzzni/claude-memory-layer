@@ -292,8 +292,11 @@ Known limits:
   A replaced file keeps its mode but is a new file owned by the user who ran the command.
 - While a file is replaced, the old file keeps a second name, `<file>.<id>.old`, until what the hooks appended to it
   is in the copy, so that a failure there (a full disk) puts it back whole. An entry a hook wrote to the copy before
-  it is put back is lost from the mirror. A run killed while it replaces a file leaves the `.old` file, with the old
-  text, next to it; a re-run does not redact it, so delete it.
+  it is put back is lost from the mirror. A `.old` file the run could neither delete nor put back holds the old text,
+  so it is listed under `NOT FINISHED` (exit 1). The next run finds it, as it finds one a killed run left: a dry run
+  lists it, and `--apply` first gives the mirror file, redacted and added at its end, the entries of the old text it
+  does not hold yet, then deletes the `.old` file. An entry the copy holds only in part (it was being written when
+  the run read the file) is added again in full.
 - A hard-linked mirror file, and any mirror file on a filesystem without hard links, is rewritten in place, as before
   #267, so an entry a hook appends to it while the run rewrites it can be lost from the mirror.
 
