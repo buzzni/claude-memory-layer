@@ -7,6 +7,7 @@ memory/
 test_access.js
 .omc/
 graphify-out/
+.DS_Store
 benchmarks/field-memory/*.local.json
 benchmarks/field-memory/*.local-report.json
 benchmarks/field-memory/fixtures/*.local/
