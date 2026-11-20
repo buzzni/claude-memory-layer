@@ -413,18 +413,26 @@ export function planMarkdownRedaction(
  * the read stopped, picks up whatever was appended to it before the swap.
  */
 function replaceMirrorFile(filePath: string, fd: number, redacted: string): void {
+  const { mode, nlink } = fs.fstatSync(fd);
+  // A rename would leave the file's other names on the old text, so a
+  // hard-linked file is still rewritten in place, race and all.
+  if (nlink > 1) {
+    fs.writeFileSync(filePath, redacted, 'utf8');
+    return;
+  }
   // Rename ignores the file's own permissions; keep refusing read-only files.
   fs.accessSync(filePath, fs.constants.W_OK);
   const stagingPath = `${filePath}.${randomUUID()}.tmp`;
   try {
-    fs.writeFileSync(stagingPath, redacted, { encoding: 'utf8', mode: fs.fstatSync(fd).mode & 0o777, flag: 'wx' });
+    fs.writeFileSync(stagingPath, redacted, { encoding: 'utf8', flag: 'wx' });
+    fs.chmodSync(stagingPath, mode & 0o777);
     fs.renameSync(stagingPath, filePath);
   } catch (error) {
     fs.rmSync(stagingPath, { force: true });
     throw error;
   }
   const appended = fs.readFileSync(fd, 'utf8');
-  if (appended.length > 0) fs.appendFileSync(filePath, redactText(appended), 'utf8');
+  if (appended.length > 0) fs.appendFileSync(filePath, redactMirrorText(appended), 'utf8');
 }
 
 /**

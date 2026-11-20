@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as path from 'node:path';
 import { tmpdir } from 'node:os';
 
+import type { MemoryEvent } from '../../src/core/types.js';
+
 const mocks = vi.hoisted(() => ({
   beforeWrite: undefined as (() => void) | undefined,
   afterRename: undefined as (() => void) | undefined,
@@ -31,6 +33,7 @@ vi.mock('fs', async (importOriginal) => {
 
 const fs = await import('fs');
 const { planMarkdownRedaction, redactText } = await import('../../src/core/operations/credential-redaction.js');
+const { MarkdownMirror, formatMirrorEntry } = await import('../../src/core/markdown-mirror.js');
 
 const roots: string[] = [];
 
@@ -41,66 +44,116 @@ afterEach(() => {
 });
 
 const SECRET = 'api_key=sk-live-1234567890abcdef';
-const ORIGINAL = `## 00:00\ncall 0 with ${SECRET}\n`;
 
-function writeMirrorFile(): { storagePath: string; filePath: string } {
+let n = 0;
+function event(content: string): MemoryEvent {
+  n += 1;
+  return {
+    id: `e${n}`,
+    eventType: 'user_prompt',
+    sessionId: 's1',
+    timestamp: new Date(2026, 0, 1, 0, 0, 0, n),
+    content,
+    metadata: {}
+  } as MemoryEvent;
+}
+
+/** A store whose mirror file was written by MarkdownMirror.append, as the hooks write it. */
+async function mirrorWith(first: MemoryEvent): Promise<{ storagePath: string; filePath: string }> {
   const storagePath = fs.mkdtempSync(path.join(tmpdir(), 'cml-redact-mirror-race-'));
   roots.push(storagePath);
-  const dir = path.join(storagePath, 'memory', 'default', 'user_prompt');
-  fs.mkdirSync(dir, { recursive: true });
-  const filePath = path.join(dir, '2026-01-01.md');
-  fs.writeFileSync(filePath, ORIGINAL, 'utf8');
+  const filePath = await new MarkdownMirror(storagePath).append(first);
   return { storagePath, filePath };
 }
 
+/** What a hook writes for `ev`: the entry MarkdownMirror.append would add to the same file. */
+function hookAppends(filePath: string, ev: MemoryEvent): void {
+  fs.appendFileSync(filePath, formatMirrorEntry(ev), 'utf8');
+}
+
+/** What the mirror would hold had each event been written already redacted, as its row is. */
+const redactedRows = (events: MemoryEvent[]) =>
+  events.map((e) => formatMirrorEntry({ ...e, content: redactText(e.content) })).join('');
+
 describe('planMarkdownRedaction while hooks append to the mirror', () => {
-  it('keeps an entry a hook appends after the file was read', () => {
-    const { storagePath, filePath } = writeMirrorFile();
-    mocks.beforeWrite = () => fs.appendFileSync(filePath, '\n## 00:01\nhook entry\n', 'utf8');
+  it('keeps an entry a hook appends after the file was read', async () => {
+    const first = event(`call 0 with ${SECRET}`);
+    const hook = event('hook entry');
+    const { storagePath, filePath } = await mirrorWith(first);
+    mocks.beforeWrite = () => hookAppends(filePath, hook);
 
     const changes = planMarkdownRedaction(storagePath, { apply: true });
 
-    const content = fs.readFileSync(filePath, 'utf8');
     expect(changes).toEqual([expect.objectContaining({ filePath })]);
     expect(changes[0].writeFailed).toBeUndefined();
-    expect(content).toBe(`${redactText(ORIGINAL)}\n## 00:01\nhook entry\n`);
-    expect(content).not.toContain('sk-live');
+    expect(fs.readFileSync(filePath, 'utf8')).toBe(redactedRows([first, hook]));
   });
 
-  it('redacts a credential in the entry appended during the rewrite', () => {
-    const { storagePath, filePath } = writeMirrorFile();
-    mocks.beforeWrite = () => fs.appendFileSync(filePath, `\n## 00:01\nhook call with ${SECRET}\n`, 'utf8');
+  it('redacts the appended entry entry by entry, keeping the next header on its own line', async () => {
+    const first = event(`call 0 with ${SECRET}`);
+    const hook = event(`hook call ends with ${SECRET}`);
+    const later = event('later entry');
+    const { storagePath, filePath } = await mirrorWith(first);
+    mocks.beforeWrite = () => hookAppends(filePath, hook);
 
     planMarkdownRedaction(storagePath, { apply: true });
+    hookAppends(filePath, later);
 
     const content = fs.readFileSync(filePath, 'utf8');
-    expect(content).toContain('hook call with');
+    expect(content).toBe(redactedRows([first, hook, later]));
     expect(content).not.toContain('sk-live');
   });
 
-  it('keeps an entry from a hook that opened the file before the swap and wrote after it', () => {
-    const { storagePath, filePath } = writeMirrorFile();
+  it('keeps an entry from a hook that opened the file before the swap and wrote after it', async () => {
+    const first = event(`call 0 with ${SECRET}`);
+    const slow = event('slow hook entry');
+    const { storagePath, filePath } = await mirrorWith(first);
     let hookFd: number | undefined;
     mocks.beforeWrite = () => { hookFd = fs.openSync(filePath, 'a'); };
     mocks.afterRename = () => {
-      fs.writeSync(hookFd!, '\n## 00:01\nslow hook entry\n');
+      fs.writeSync(hookFd!, formatMirrorEntry(slow));
       fs.closeSync(hookFd!);
     };
 
     planMarkdownRedaction(storagePath, { apply: true });
 
-    const content = fs.readFileSync(filePath, 'utf8');
-    expect(content).toBe(`${redactText(ORIGINAL)}\n## 00:01\nslow hook entry\n`);
-    expect(content).not.toContain('sk-live');
+    expect(fs.readFileSync(filePath, 'utf8')).toBe(redactedRows([first, slow]));
   });
 
-  it('keeps an entry a hook appends after the swap and leaves no staging file', () => {
-    const { storagePath, filePath } = writeMirrorFile();
-    mocks.afterRename = () => fs.appendFileSync(filePath, '\n## 00:02\nlater hook entry\n', 'utf8');
+  it('keeps an entry a hook appends after the swap and leaves no staging file', async () => {
+    const first = event(`call 0 with ${SECRET}`);
+    const later = event('later hook entry');
+    const { storagePath, filePath } = await mirrorWith(first);
+    mocks.afterRename = () => hookAppends(filePath, later);
 
     planMarkdownRedaction(storagePath, { apply: true });
 
-    expect(fs.readFileSync(filePath, 'utf8')).toBe(`${redactText(ORIGINAL)}\n## 00:02\nlater hook entry\n`);
-    expect(fs.readdirSync(path.dirname(filePath))).toEqual(['2026-01-01.md']);
+    expect(fs.readFileSync(filePath, 'utf8')).toBe(redactedRows([first, later]));
+    expect(fs.readdirSync(path.dirname(filePath))).toEqual([path.basename(filePath)]);
+  });
+
+  it('keeps the file mode the umask would narrow on a new file', async () => {
+    const { storagePath, filePath } = await mirrorWith(event(`call 0 with ${SECRET}`));
+    fs.chmodSync(filePath, 0o664);
+    const umask = process.umask(0o022);
+    try {
+      planMarkdownRedaction(storagePath, { apply: true });
+    } finally {
+      process.umask(umask);
+    }
+
+    expect(fs.statSync(filePath).mode & 0o777).toBe(0o664);
+  });
+
+  it('redacts a hard-linked file under every name', async () => {
+    const first = event(`call 0 with ${SECRET}`);
+    const { storagePath, filePath } = await mirrorWith(first);
+    const otherName = path.join(storagePath, 'linked-copy.txt');
+    fs.linkSync(filePath, otherName);
+
+    planMarkdownRedaction(storagePath, { apply: true });
+
+    expect(fs.readFileSync(filePath, 'utf8')).toBe(redactedRows([first]));
+    expect(fs.readFileSync(otherName, 'utf8')).toBe(redactedRows([first]));
   });
 });
