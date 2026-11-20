@@ -318,6 +318,44 @@ function walkMarkdown(dir: string, found: string[]): void {
   }
 }
 
+/** The lines formatMirrorEntry writes around an event's content. */
+const MIRROR_CONTENT_HEADER = '  content: |';
+const MIRROR_CONTENT_INDENT = '    ';
+
+/**
+ * Redact a mirror file entry by entry. Run over the whole file, the marker
+ * cleanup ate the newline and indentation after each marker — the next
+ * entry's `- ts:` header landed on the previous content line — and a tag
+ * opened in one entry could match a close in a later one. So each content
+ * block is redacted on its own, exactly as its row is, and everything outside
+ * one (headers, or a file not in the mirror format) keeps its whitespace.
+ */
+function redactMirrorText(text: string): string {
+  const lines = text.split('\n');
+  const out: string[] = [];
+  let other: string[] = [];
+  const flushOther = () => {
+    if (other.length === 0) return;
+    out.push(applyPrivacyFilter(other.join('\n'), REDACTION_PRIVACY_CONFIG, { collapseMarkers: false }).content);
+    other = [];
+  };
+
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i++];
+    other.push(line);
+    if (line !== MIRROR_CONTENT_HEADER) continue;
+    const start = i;
+    while (i < lines.length && lines[i].startsWith(MIRROR_CONTENT_INDENT)) i++;
+    if (i === start) continue;
+    flushOther();
+    const content = lines.slice(start, i).map((l) => l.slice(MIRROR_CONTENT_INDENT.length)).join('\n');
+    out.push(redactText(content).split('\n').map((l) => `${MIRROR_CONTENT_INDENT}${l}`).join('\n'));
+  }
+  flushOther();
+  return out.join('\n');
+}
+
 /**
  * The markdown mirror is a plain-text copy of ingested events, so it leaks
  * independently of the database.
@@ -340,7 +378,7 @@ export function planMarkdownRedaction(
     } catch {
       continue;
     }
-    const redacted = redactText(original);
+    const redacted = redactMirrorText(original);
     if (redacted === original) continue;
 
     const occurrences = redacted.split('[REDACTED]').length - original.split('[REDACTED]').length;
