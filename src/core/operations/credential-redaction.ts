@@ -304,7 +304,13 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function walkMarkdown(dir: string, found: string[]): void {
+/**
+ * The old text of a mirror file, kept under a second name while a run replaced
+ * it (see replaceMirrorFile). Only this command makes such names.
+ */
+const KEPT_SUFFIX = /(?<=\.md)\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.old$/;
+
+function walkMarkdown(dir: string, found: string[], kept: string[]): void {
   let entries: fs.Dirent[];
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -313,8 +319,9 @@ function walkMarkdown(dir: string, found: string[]): void {
   }
   for (const entry of entries) {
     const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) walkMarkdown(full, found);
+    if (entry.isDirectory()) walkMarkdown(full, found, kept);
     else if (entry.isFile() && entry.name.endsWith('.md')) found.push(full);
+    else if (entry.isFile() && KEPT_SUFFIX.test(entry.name)) kept.push(full);
   }
 }
 
@@ -368,9 +375,30 @@ export function planMarkdownRedaction(
   if (!fs.existsSync(memoryRoot)) return [];
 
   const files: string[] = [];
-  walkMarkdown(memoryRoot, files);
+  const keptFiles: string[] = [];
+  walkMarkdown(memoryRoot, files, keptFiles);
 
   const changes: RedactionFileChange[] = [];
+  // Before the scan, so that a second name left on a mirror file does not make
+  // it look hard-linked.
+  for (const keptPath of keptFiles) {
+    let old: string;
+    try {
+      old = fs.readFileSync(keptPath, 'utf8');
+    } catch {
+      continue;
+    }
+    const occurrences = redactMirrorText(old).split('[REDACTED]').length - old.split('[REDACTED]').length;
+    changes.push({ filePath: keptPath, occurrences: Math.max(1, occurrences) });
+    if (options.apply) {
+      try {
+        recoverKeptFile(keptPath, keptPath.replace(KEPT_SUFFIX, ''), old);
+      } catch {
+        changes[changes.length - 1].writeFailed = true;
+      }
+    }
+  }
+
   for (const filePath of files) {
     let fd: number;
     try {
@@ -391,12 +419,15 @@ export function planMarkdownRedaction(
       const occurrences = redacted.split('[REDACTED]').length - original.split('[REDACTED]').length;
       changes.push({ filePath, occurrences: Math.max(1, occurrences) });
       if (options.apply) {
+        const keptPath = `${filePath}.${randomUUID()}.old`;
         try {
-          replaceMirrorFile(filePath, fd, redacted);
+          replaceMirrorFile(filePath, fd, redacted, keptPath);
         } catch {
           // A write failure must not abort the rest; it is reported per file.
           changes[changes.length - 1].writeFailed = true;
         }
+        // Left behind only when it could be neither deleted nor put back.
+        if (fs.existsSync(keptPath)) changes.push({ filePath: keptPath, occurrences, writeFailed: true });
       }
     } finally {
       fs.closeSync(fd);
@@ -415,7 +446,7 @@ const NO_HARD_LINKS = new Set(['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS']);
  * append to the copy, and `fd`, still on the replaced file and positioned where
  * the read stopped, picks up whatever was appended to it before the swap.
  */
-function replaceMirrorFile(filePath: string, fd: number, redacted: string): void {
+function replaceMirrorFile(filePath: string, fd: number, redacted: string, keptPath: string): void {
   const { mode, nlink } = fs.fstatSync(fd);
   // A rename would leave the file's other names on the old text, so a
   // hard-linked file is still rewritten in place, race and all.
@@ -425,12 +456,11 @@ function replaceMirrorFile(filePath: string, fd: number, redacted: string): void
   }
   // Rename ignores the file's own permissions; keep refusing read-only files.
   fs.accessSync(filePath, fs.constants.W_OK);
-  const base = `${filePath}.${randomUUID()}`;
-  const stagingPath = `${base}.tmp`;
-  // The replaced file keeps this name until what the hooks appended to it is in
-  // the copy. Renaming it back needs no disk space, so a full disk cannot lose
-  // those entries: the file is left as it was, for a re-run.
-  const keptPath = `${base}.old`;
+  const stagingPath = `${filePath}.${randomUUID()}.tmp`;
+  // The replaced file keeps `keptPath` as a second name until what the hooks
+  // appended to it is in the copy. Renaming it back needs no disk space, so a
+  // full disk cannot lose those entries: the file is left as it was, for a
+  // re-run. If it can be neither deleted nor put back, a re-run recovers it.
   try {
     fs.linkSync(filePath, keptPath);
   } catch (error) {
@@ -455,7 +485,55 @@ function replaceMirrorFile(filePath: string, fd: number, redacted: string): void
     fs.renameSync(keptPath, filePath);
     throw error;
   }
+  try {
+    fs.rmSync(keptPath);
+  } catch {
+    // The copy is complete; the caller reports the old text left at keptPath.
+  }
+}
+
+const MIRROR_ENTRY_START = '\n- ts: ';
+
+/**
+ * Finish what a run left at `keptPath`: the mirror file gets, redacted, the
+ * entries of the old text it does not hold yet, and the old text goes. It only
+ * ever appends to the mirror file, as the hooks do, so nothing they wrote
+ * since is lost. When both names are still the same file, the run stopped
+ * before the swap and the second name just goes.
+ */
+function recoverKeptFile(keptPath: string, filePath: string, old: string): void {
+  const kept = fs.statSync(keptPath);
+  let current: string | undefined;
+  try {
+    const mirror = fs.statSync(filePath);
+    if (mirror.dev !== kept.dev || mirror.ino !== kept.ino) current = fs.readFileSync(filePath, 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    current = ''; // The mirror file is gone: the old text, redacted, recreates it.
+  }
+  if (current !== undefined) {
+    const missing = entriesMissingFrom(current, old);
+    if (missing.length > 0) fs.appendFileSync(filePath, redactMirrorText(missing), 'utf8');
+  }
   fs.rmSync(keptPath);
+}
+
+/**
+ * The old text from its first entry that `current` does not hold, redacted,
+ * at the same place. A replacement writes the old entries redacted
+ * one after the other at the start of the copy, and redacting entry by entry
+ * gives the same text as redacting them together.
+ */
+function entriesMissingFrom(current: string, old: string): string {
+  const starts = [0];
+  for (let i = old.indexOf(MIRROR_ENTRY_START, 1); i !== -1; i = old.indexOf(MIRROR_ENTRY_START, i + 1)) starts.push(i);
+  let offset = 0;
+  for (let k = 0; k < starts.length; k++) {
+    const redacted = redactMirrorText(old.slice(starts[k], starts[k + 1] ?? old.length));
+    if (!current.startsWith(redacted, offset)) return old.slice(starts[k]);
+    offset += redacted.length;
+  }
+  return '';
 }
 
 /**

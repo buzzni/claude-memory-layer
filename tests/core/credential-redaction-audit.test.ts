@@ -286,6 +286,23 @@ describe('applyCredentialRedaction failures', () => {
     expect(formatRedactionPlan(plan)).toContain('1 Markdown file(s) could not be rewritten');
   });
 
+  it('reports an old mirror file a replacement left that it cannot finish', async () => {
+    if (process.getuid?.() === 0) return; // root ignores the read-only mode
+    const { store, storagePath } = await seededStore();
+    const mirrorFile = writeMirrorFile(storagePath);
+    const keptFile = `${mirrorFile}.0b5e6f7a-1c2d-4e3f-8a9b-0c1d2e3f4a5b.old`;
+    writeFileSync(keptFile, `## 00:00\n${leakedText(1)}\n`, 'utf8');
+    chmodSync(mirrorFile, 0o444); // so the old file's entries cannot be added to it
+
+    const plan = await apply(store, storagePath);
+
+    expect(readFileSync(keptFile, 'utf8')).toContain('sk-live');
+    expect(plan.fileChanges).toContainEqual(expect.objectContaining({ filePath: keptFile, writeFailed: true }));
+    expect(credentialRedactionExitCode(plan)).toBe(1);
+    const output = formatRedactionPlan(plan);
+    expect(output.slice(output.indexOf('NOT FINISHED'))).toContain(keptFile);
+  });
+
   it('lists every event whose old vectors could not be deleted in a file, and still re-queues them', async () => {
     const { store, storagePath } = await openStore();
     const ids = await leakEvents(store, 7);
