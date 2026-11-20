@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 
@@ -7,13 +7,12 @@ import {
   formatForgetBeforeReport,
   formatForgetTargetReport,
   listMirrorFilesBefore,
-  removeMirrorEntries,
   resolveForgetBeforeOptions,
   resolveForgetSelection,
   runForgetBefore,
   runForgetTarget
 } from '../../src/apps/cli/forget-command.js';
-import { formatMirrorEntry, MarkdownMirror } from '../../src/core/markdown-mirror.js';
+import { formatMirrorEntry } from '../../src/core/markdown-mirror.js';
 import { SQLiteEventStore } from '../../src/core/sqlite-event-store.js';
 import { sqliteAll, sqliteRun } from '../../src/core/sqlite-wrapper.js';
 import type { MemoryEvent } from '../../src/core/types.js';
@@ -248,140 +247,12 @@ describe('resolveForgetSelection', () => {
   });
 });
 
-function mirrorEntry(id: string, sessionId: string, content: string, eventType = 'user_prompt'): string {
+function mirrorEntry(id: string, sessionId: string, content: string): string {
   return formatMirrorEntry({
-    id, sessionId, eventType: eventType as MemoryEvent['eventType'], timestamp: new Date('2026-01-01T00:00:00.000Z'),
+    id, sessionId, eventType: 'user_prompt', timestamp: new Date('2026-01-01T00:00:00.000Z'),
     content, canonicalKey: id, dedupeKey: id
   } satisfies MemoryEvent);
 }
-
-describe('removeMirrorEntries', () => {
-  it('cuts only the matching entries out of shared day files and removes files left empty', () => {
-    const storagePath = tempStoragePath();
-    const shared = path.join(storagePath, 'memory', 'default', 'user_prompt', '2026-01-01.md');
-    const onlyA = path.join(storagePath, 'memory', 'default', 'agent_response', '2026-01-01.md');
-    mkdirSync(path.dirname(shared), { recursive: true });
-    mkdirSync(path.dirname(onlyA), { recursive: true });
-    // The b entry quotes an a header line in its content; content is indented, so it must survive.
-    const keep = mirrorEntry('b1', 's-b', 'mentions\n  session: s-a\n- ts: fake');
-    writeFileSync(shared, mirrorEntry('a1', 's-a', 'first\nline') + keep + mirrorEntry('a2', 's-a', 'second'));
-    writeFileSync(onlyA, mirrorEntry('a3', 's-a', 'third'));
-
-    const preview = removeMirrorEntries(storagePath, { kind: 'session', sessionId: 's-a' }, false);
-    expect(preview).toMatchObject({ entries: 3, removed: 0, files: [onlyA, shared].sort() });
-    expect(existsSync(onlyA)).toBe(true);
-
-    const applied = removeMirrorEntries(storagePath, { kind: 'session', sessionId: 's-a' }, true);
-    expect(applied).toMatchObject({ entries: 3, removed: 3, warnings: [] });
-    expect(readFileSync(shared, 'utf8')).toBe(keep);
-    expect(existsSync(onlyA)).toBe(false);
-  });
-
-  it('matches an event id exactly, not as a prefix', () => {
-    const storagePath = tempStoragePath();
-    const file = path.join(storagePath, 'memory', 'default', 'user_prompt', '2026-01-01.md');
-    mkdirSync(path.dirname(file), { recursive: true });
-    const longer = mirrorEntry('evt-10', 's1', 'keep');
-    writeFileSync(file, mirrorEntry('evt-1', 's1', 'drop') + longer);
-
-    expect(removeMirrorEntries(storagePath, { kind: 'event', eventId: 'evt-1' }, true).removed).toBe(1);
-    expect(readFileSync(file, 'utf8')).toBe(longer);
-  });
-
-  // formatMirrorEntry writes metadata.category unescaped, so a category can hold lines that look
-  // like another entry's header fields or an entry boundary. Only the real fields count. The
-  // category is also the mirror directory, so these entries land in different files.
-  const mirrorFile = (storagePath: string) => path.join(storagePath, 'memory', 'default', 'notes', '2026-01-01.md');
-
-  async function writeMirror(storagePath: string, events: Array<{ id: string; sessionId: string; category: string; content: string }>): Promise<Map<string, string>> {
-    const mirror = new MarkdownMirror(storagePath);
-    const files = new Set<string>();
-    for (const event of events) {
-      files.add(await mirror.append({
-        id: event.id, sessionId: event.sessionId, eventType: 'user_prompt', timestamp: new Date('2026-01-01T12:00:00.000Z'),
-        content: event.content, canonicalKey: event.id, dedupeKey: event.id, metadata: { category: event.category }
-      }));
-    }
-    return new Map([...files].map((file) => [file, readFileSync(file, 'utf8')]));
-  }
-
-  const forged = (id: string, sessionId: string) =>
-    `notes\n---\n- ts: 2026-01-01T00:00:00.000Z\n  id: ${id}\n  type: user_prompt\n  session: ${sessionId}\n  category: notes`;
-
-  /** Every file as written, minus the real a1 entry (its file, `notes`, holds only that one). */
-  function expectOnlyRealEntryRemoved(storagePath: string, before: Map<string, string>): void {
-    expect(before.size).toBe(3);
-    for (const [file, text] of before) {
-      if (file === mirrorFile(storagePath)) {
-        expect(text).toContain('alpha one');
-        expect(existsSync(file)).toBe(false);
-      } else {
-        expect(readFileSync(file, 'utf8')).toBe(text);
-      }
-    }
-  }
-
-  it('--session matches only the real session field, not session or boundary lines inside a category', async () => {
-    const storagePath = tempStoragePath();
-    const before = await writeMirror(storagePath, [
-      { id: 'b1', sessionId: 's-b', category: 'notes\n  session: s-a', content: 'bravo one' },
-      { id: 'a1', sessionId: 's-a', category: 'notes', content: 'alpha one' },
-      { id: 'b2', sessionId: 's-b', category: forged('a9', 's-a'), content: 'bravo two' }
-    ]);
-
-    const report = removeMirrorEntries(storagePath, { kind: 'session', sessionId: 's-a' }, true);
-
-    expect(report).toMatchObject({ files: [mirrorFile(storagePath)], entries: 1, removed: 1, warnings: [] });
-    expectOnlyRealEntryRemoved(storagePath, before);
-  });
-
-  it('<eventId> matches only the real id field, not id or boundary lines inside a category', async () => {
-    const storagePath = tempStoragePath();
-    const before = await writeMirror(storagePath, [
-      { id: 'b1', sessionId: 's-b', category: 'notes\n  id: a1', content: 'bravo one' },
-      { id: 'b2', sessionId: 's-b', category: forged('a1', 's-b'), content: 'bravo two' },
-      { id: 'a1', sessionId: 's-a', category: 'notes', content: 'alpha one' }
-    ]);
-
-    const report = removeMirrorEntries(storagePath, { kind: 'event', eventId: 'a1' }, true);
-
-    expect(report).toMatchObject({ files: [mirrorFile(storagePath)], entries: 1, removed: 1, warnings: [] });
-    expectOnlyRealEntryRemoved(storagePath, before);
-  });
-
-  it('keeps the other entries of a shared file byte for byte when a category forges a boundary', () => {
-    const storagePath = tempStoragePath();
-    const file = mirrorFile(storagePath);
-    mkdirSync(path.dirname(file), { recursive: true });
-    const entry = (id: string, sessionId: string, category: string, content: string) => formatMirrorEntry({
-      id, sessionId, eventType: 'user_prompt', timestamp: new Date('2026-01-01T12:00:00.000Z'),
-      content, canonicalKey: id, dedupeKey: id, metadata: { category }
-    });
-    const keep = entry('b1', 's-b', forged('a1', 's-a'), 'bravo one');
-    writeFileSync(file, entry('a1', 's-a', 'notes', 'alpha one') + keep);
-
-    expect(removeMirrorEntries(storagePath, { kind: 'session', sessionId: 's-a' }, true)).toMatchObject({ entries: 1, removed: 1 });
-    expect(readFileSync(file, 'utf8')).toBe(keep);
-    expect(removeMirrorEntries(storagePath, { kind: 'event', eventId: 'a1' }, true)).toMatchObject({ entries: 0, removed: 0 });
-    expect(readFileSync(file, 'utf8')).toBe(keep);
-  });
-
-  it('leaves a file it cannot read as mirror entries unchanged and warns when it names the target', () => {
-    const storagePath = tempStoragePath();
-    const file = mirrorFile(storagePath);
-    mkdirSync(path.dirname(file), { recursive: true });
-    // A torn last entry (no content section) makes the file ambiguous.
-    const torn = mirrorEntry('a1', 's-a', 'alpha one') + '\n- ts: 2026-01-01T00:00:00.000Z\n  id: a2\n  type: user_prompt\n  session: s-a\n';
-    writeFileSync(file, torn);
-
-    const report = removeMirrorEntries(storagePath, { kind: 'session', sessionId: 's-a' }, true);
-
-    expect(report).toMatchObject({ entries: 0, removed: 0 });
-    expect(report.warnings).toEqual([expect.stringContaining('left unchanged')]);
-    expect(readFileSync(file, 'utf8')).toBe(torn);
-    expect(removeMirrorEntries(storagePath, { kind: 'session', sessionId: 's-other' }, true).warnings).toEqual([]);
-  });
-});
 
 /**
  * #211: `forget <eventId>` and `forget --session` used to print "requires additional
@@ -394,7 +265,7 @@ describe('runForgetTarget', () => {
     b: { prompt: string };
     all: string[];
     mirrorFile: string;
-    keptMirror: string;
+    mirrorText: string;
   }
 
   async function seedTarget(storagePath: string): Promise<Seeded> {
@@ -433,9 +304,9 @@ describe('runForgetTarget', () => {
 
     const mirrorFile = path.join(storagePath, 'memory', 'default', 'user_prompt', '2026-01-01.md');
     mkdirSync(path.dirname(mirrorFile), { recursive: true });
-    const keptMirror = mirrorEntry(b.prompt, 's-b', 'bravo prompt');
-    writeFileSync(mirrorFile, mirrorEntry(a.prompt, 's-a', 'alpha prompt') + keptMirror + mirrorEntry(a.imported, 's-a', 'alpha imported'));
-    return { a, b, all, mirrorFile, keptMirror };
+    const mirrorText = mirrorEntry(a.prompt, 's-a', 'alpha prompt') + mirrorEntry(b.prompt, 's-b', 'bravo prompt');
+    writeFileSync(mirrorFile, mirrorText);
+    return { a, b, all, mirrorFile, mirrorText };
   }
 
   async function readState(storagePath: string) {
@@ -470,14 +341,13 @@ describe('runForgetTarget', () => {
     const session = await runForgetTarget(storagePath, { target: { kind: 'session', sessionId: 's-a' }, apply: false });
     const event = await runForgetTarget(storagePath, { target: { kind: 'event', eventId: seeded.a.response }, apply: false });
 
-    expect(session).toMatchObject({ rows: 6, mirrorEntries: 2, applied: null });
-    expect(event).toMatchObject({ rows: 1, contentBytes: Buffer.byteLength('alpha response'), mirrorEntries: 0, applied: null });
+    expect(session).toMatchObject({ rows: 6, applied: null });
+    expect(event).toMatchObject({ rows: 1, contentBytes: Buffer.byteLength('alpha response'), applied: null });
     expect(await readState(storagePath)).toEqual(before);
-    expect(readFileSync(seeded.mirrorFile, 'utf8')).toContain(seeded.a.prompt);
     expect((await new VectorStore(path.join(storagePath, 'vectors')).listEventIds()).sort()).toEqual([...seeded.all].sort());
   });
 
-  it('--session deletes every row of the session whatever wrote it, with its dependents, vectors, outbox jobs and mirror entries', async () => {
+  it('--session deletes every row of the session whatever wrote it, with its dependents, vectors and outbox jobs', async () => {
     const storagePath = tempStoragePath();
     const seeded = await seedTarget(storagePath);
     const sessionA = Object.values(seeded.a);
@@ -485,7 +355,7 @@ describe('runForgetTarget', () => {
 
     const report = await runForgetTarget(storagePath, { target: { kind: 'session', sessionId: 's-a' }, apply: true });
 
-    expect(report.applied).toEqual({ deleted: 6, vectorsPurged: true, mirrorEntriesRemoved: 2 });
+    expect(report.applied).toEqual({ deleted: 6, vectorsPurged: true });
     expect(report.warnings).toBeUndefined();
     const state = await readState(storagePath);
     expect(state.events).toEqual([seeded.b.prompt]);
@@ -497,7 +367,8 @@ describe('runForgetTarget', () => {
     const vectors = new VectorStore(path.join(storagePath, 'vectors'));
     expect(await vectors.listEventIds()).toEqual([seeded.b.prompt]);
     expect((await vectors.readRowsByEventIds('event_vectors_v1', seeded.all)).map((row) => row.eventId)).toEqual([seeded.b.prompt]);
-    expect(readFileSync(seeded.mirrorFile, 'utf8')).toBe(seeded.keptMirror);
+    // #274/#276: the markdown mirror is not cleaned by forget <eventId> or --session.
+    expect(readFileSync(seeded.mirrorFile, 'utf8')).toBe(seeded.mirrorText);
 
     expect(state.audit).toHaveLength(1);
     expect(state.audit[0]).toMatchObject({ operation: 'event_delete', actor: 'cli', target_type: 'session', target_id: 's-a' });
@@ -505,23 +376,22 @@ describe('runForgetTarget', () => {
       command: 'forget --session',
       sessionId: 's-a',
       matchingRows: 6,
-      contentBytes: report.contentBytes,
-      mirrorEntries: 2
+      contentBytes: report.contentBytes
     });
     expect(JSON.parse(state.audit[0].after_json)).toEqual({ deletedEvents: 6 });
     for (const id of sessionA) expect(JSON.stringify(state.audit[0])).not.toContain(id);
     expect(JSON.stringify(state.audit[0])).not.toContain('alpha');
   });
 
-  it('<eventId> deletes only that event, its dependents, vectors, outbox jobs and mirror entry', async () => {
+  it('<eventId> deletes only that event, its dependents, vectors and outbox jobs', async () => {
     const storagePath = tempStoragePath();
     const seeded = await seedTarget(storagePath);
     const rest = seeded.all.filter((id) => id !== seeded.a.prompt).sort();
 
     const report = await runForgetTarget(storagePath, { target: { kind: 'event', eventId: seeded.a.prompt }, apply: true });
 
-    expect(report).toMatchObject({ rows: 1, contentBytes: Buffer.byteLength('alpha prompt'), mirrorEntries: 1 });
-    expect(report.applied).toEqual({ deleted: 1, vectorsPurged: true, mirrorEntriesRemoved: 1 });
+    expect(report).toMatchObject({ rows: 1, contentBytes: Buffer.byteLength('alpha prompt') });
+    expect(report.applied).toEqual({ deleted: 1, vectorsPurged: true });
     const state = await readState(storagePath);
     expect(state.events).toEqual(rest);
     expect(state.fts).toEqual(rest);
@@ -532,7 +402,7 @@ describe('runForgetTarget', () => {
     const vectors = new VectorStore(path.join(storagePath, 'vectors'));
     expect((await vectors.listEventIds()).sort()).toEqual(rest);
     expect((await vectors.readRowsByEventIds('event_vectors_v1', seeded.all)).map((row) => row.eventId).sort()).toEqual(rest);
-    expect(readFileSync(seeded.mirrorFile, 'utf8')).toBe(seeded.keptMirror + mirrorEntry(seeded.a.imported, 's-a', 'alpha imported'));
+    expect(readFileSync(seeded.mirrorFile, 'utf8')).toBe(seeded.mirrorText);
 
     expect(state.audit).toHaveLength(1);
     expect(state.audit[0]).toMatchObject({ actor: 'cli', target_type: 'event', target_id: seeded.a.prompt });
@@ -542,21 +412,19 @@ describe('runForgetTarget', () => {
       sessionId: 's-a',
       eventType: 'user_prompt',
       matchingRows: 1,
-      contentBytes: Buffer.byteLength('alpha prompt'),
-      mirrorEntries: 1
+      contentBytes: Buffer.byteLength('alpha prompt')
     });
     expect(JSON.parse(state.audit[0].after_json)).toEqual({ deletedEvents: 1 });
     expect(JSON.stringify(state.audit[0])).not.toContain('alpha');
   });
 
-  it('rolls the delete back, and leaves vectors and mirror alone, when the audit cannot be written', async () => {
+  it('rolls the delete back, and leaves vectors alone, when the audit cannot be written', async () => {
     const storagePath = tempStoragePath();
     const seeded = await seedTarget(storagePath);
     const store = new SQLiteEventStore(path.join(storagePath, 'events.sqlite'));
     await store.initialize();
     sqliteRun(store.getDatabase(), `CREATE TRIGGER fail_audit BEFORE INSERT ON memory_governance_audit BEGIN SELECT RAISE(ABORT, 'audit down'); END`);
     await store.close();
-    const mirrorBefore = readFileSync(seeded.mirrorFile, 'utf8');
     const vectorDeletes: string[][] = [];
     const vectorStore = { deleteEvents: async (ids: readonly string[]) => { vectorDeletes.push([...ids]); } };
 
@@ -569,7 +437,6 @@ describe('runForgetTarget', () => {
     expect(sqliteAll<{ id: string }>(raw.getDatabase(), `SELECT id FROM events`)).toHaveLength(seeded.all.length);
     await raw.close();
     expect(vectorDeletes).toEqual([]);
-    expect(readFileSync(seeded.mirrorFile, 'utf8')).toBe(mirrorBefore);
   });
 
   it('warns when vectors cannot be deleted, and a re-run for the event finishes the job', async () => {
@@ -596,25 +463,14 @@ describe('runForgetTarget', () => {
 
     const report = await runForgetTarget(storagePath, { target: { kind: 'session', sessionId: 's-a' }, apply: true }, { vectorStore: failing });
 
-    expect(report.applied).toMatchObject({ deleted: 6, vectorsPurged: false, mirrorEntriesRemoved: 2 });
+    expect(report.applied).toMatchObject({ deleted: 6, vectorsPurged: false });
     expect(report.warnings).toEqual([expect.stringContaining('orphaned vectors of 6 event(s) remain (a re-run of --session cannot find them again): lance down')]);
-  });
-
-  it.skipIf(process.getuid?.() === 0)('warns when a mirror file cannot be rewritten', async () => {
-    const storagePath = tempStoragePath();
-    const seeded = await seedTarget(storagePath);
-    chmodSync(seeded.mirrorFile, 0o444);
-
-    const report = await runForgetTarget(storagePath, { target: { kind: 'event', eventId: seeded.a.prompt }, apply: true });
-
-    expect(report.applied).toMatchObject({ deleted: 1, mirrorEntriesRemoved: 0 });
-    expect(report.warnings?.[0]).toContain('could not rewrite');
   });
 
   it('creates nothing when the project has no store, and deletes nothing for an unknown id', async () => {
     const missing = path.join(tempStoragePath(), 'missing');
     const report = await runForgetTarget(missing, { target: { kind: 'session', sessionId: 's-a' }, apply: true });
-    expect(report).toMatchObject({ rows: 0, applied: { deleted: 0, vectorsPurged: true, mirrorEntriesRemoved: 0 } });
+    expect(report).toMatchObject({ rows: 0, applied: { deleted: 0, vectorsPurged: true } });
     expect(existsSync(missing)).toBe(false);
 
     const storagePath = tempStoragePath();
@@ -629,12 +485,13 @@ describe('runForgetTarget', () => {
 
 describe('formatForgetTargetReport', () => {
   it('distinguishes a dry-run plan from an applied delete', () => {
-    const base = { target: { kind: 'session' as const, sessionId: 's1' }, rows: 2, contentBytes: 2048, mirrorEntries: 2, mirrorFiles: ['/x/2026-01-01.md'] };
+    const base = { target: { kind: 'session' as const, sessionId: 's1' }, rows: 2, contentBytes: 2048 };
     const dry = formatForgetTargetReport({ ...base, apply: false, applied: null });
     expect(dry).toContain('session s1 (dry-run)');
     expect(dry).toContain('Matching rows: 2');
     expect(dry).toContain('--confirm');
-    const applied = formatForgetTargetReport({ ...base, apply: true, applied: { deleted: 2, vectorsPurged: true, mirrorEntriesRemoved: 2 } });
+    expect(dry).toContain('Markdown mirrors are not cleaned');
+    const applied = formatForgetTargetReport({ ...base, apply: true, applied: { deleted: 2, vectorsPurged: true } });
     expect(applied).toContain('Events deleted 2');
     expect(applied).not.toContain('--confirm');
   });

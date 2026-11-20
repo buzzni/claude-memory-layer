@@ -1,6 +1,6 @@
 // @load-sensitive: loads the whole CLI module graph in-process (about 5s cold) to run
 // the registered forget command; under parallel load that nears the unit timeout.
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 
@@ -13,7 +13,7 @@ import { SQLiteEventStore } from '../../src/core/sqlite-event-store.js';
 /**
  * #211: the registered `forget` command, run in this process (no CLI process, no embedding
  * model). What it deletes is covered in forget-command.test.ts; this checks the wiring: preview
- * by default, `--confirm` deletes, a mixed selection and a partial cleanup exit 1.
+ * by default, `--confirm` deletes, a mixed selection and a vector delete failure exit 1.
  */
 
 let home = '';
@@ -80,6 +80,7 @@ describe('forget <eventId> / --session command', () => {
 
   afterEach(() => {
     process.exitCode = undefined;
+    vi.doUnmock('../../src/core/vector-store.js');
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
     rmSync(home, { recursive: true, force: true });
@@ -119,19 +120,24 @@ describe('forget <eventId> / --session command', () => {
     expect(await remaining(ids.dbPath, [ids.a1, ids.a2, ids.b1])).toEqual([ids.a1, ids.a2, ids.b1]);
   });
 
-  it.skipIf(process.getuid?.() === 0)('exits 1 when part of the forgotten data could not be removed', async () => {
+  it('exits 1 when the vectors of the forgotten event could not be removed', async () => {
     const ids = await seed();
-    const mirrorFile = path.join(getProjectStoragePath(project()), 'memory', 'default', 'user_prompt', '2026-01-01.md');
-    mkdirSync(path.dirname(mirrorFile), { recursive: true });
-    // A second entry that stays forces a rewrite (a file left empty would just be unlinked).
-    const entry = (id: string, sessionId: string) =>
-      `\n- ts: 2026-01-01T00:00:00.000Z\n  id: ${id}\n  type: user_prompt\n  session: ${sessionId}\n  category: user_prompt\n  content: |\n    text\n`;
-    writeFileSync(mirrorFile, entry(ids.a1, 'session-a') + entry(ids.b1, 'session-b'));
-    chmodSync(mirrorFile, 0o444);
+    mkdirSync(path.join(getProjectStoragePath(project()), 'vectors'), { recursive: true });
+    vi.doMock('../../src/core/vector-store.js', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('../../src/core/vector-store.js')>();
+      return {
+        ...actual,
+        VectorStore: class extends actual.VectorStore {
+          override async deleteEvents(): Promise<void> {
+            throw new Error('lance down');
+          }
+        }
+      };
+    });
 
     await runCli(ids.a1, '--confirm');
 
-    expect(output()).toContain('Warning: could not rewrite');
+    expect(output()).toContain('Warning: vector deletion failed');
     expect(process.exitCode).toBe(1);
     expect(await remaining(ids.dbPath, [ids.a1])).toEqual([]);
   });

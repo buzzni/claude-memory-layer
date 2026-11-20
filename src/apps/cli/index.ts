@@ -1575,7 +1575,7 @@ program
       } else {
         const report = await runForgetTarget(storagePath, selection.options);
         console.log(formatForgetTargetReport(report));
-        // Every warning here means vectors or mirror text of the forgotten data may remain.
+        // Every warning here means vectors of the forgotten data may remain.
         if (report.applied && report.warnings) process.exitCode = 1;
       }
     } catch (error) {

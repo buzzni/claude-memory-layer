@@ -582,6 +582,7 @@ Claude Code 내에서 사용할 수 있는 명령어:
 /memory-list
 
 # 메모리 삭제: 이벤트 ID, --session, --before 중 하나만 지정합니다. --confirm 없이는 미리보기만 합니다.
+# 이벤트 ID·--session은 store의 Markdown mirror와 프로젝트 디렉터리 memory/ mirror를 정리하지 않습니다(#274, #276).
 /memory-forget <event-id> --confirm
 /memory-forget --session <session-id> --confirm
 /memory-forget --before 2026-01-01 --confirm

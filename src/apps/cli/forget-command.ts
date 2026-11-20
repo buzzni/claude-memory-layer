@@ -189,14 +189,11 @@ export interface ForgetTargetOptions {
 export interface ForgetTargetApplied {
   deleted: number;
   vectorsPurged: boolean;
-  mirrorEntriesRemoved: number;
 }
 
 export interface ForgetTargetReport extends ForgetTargetOptions {
   rows: number;
   contentBytes: number;
-  mirrorEntries: number;
-  mirrorFiles: string[];
   applied: ForgetTargetApplied | null;
   warnings?: string[];
 }
@@ -225,138 +222,18 @@ export function resolveForgetSelection(
   return { kind: 'target', options: { target, apply: options.confirm === true } };
 }
 
-interface MirrorEntrySpan {
-  start: number;
-  end: number;
-  id: string;
-  session: string;
-}
-
-const MIRROR_TS_LINE = /^- ts: \d{4}-\d{2}-\d{2}T\S*Z$/;
-
-/**
- * Split a store mirror file into the entries `formatMirrorEntry` wrote, or null when the text is
- * not exactly a run of such entries. Each entry is a blank line, then `- ts:`, `  id:`, `  type:`,
- * `  session:` and `  category:` on fixed lines, then `  content: |` and the content lines, each
- * indented four spaces. The category is written unescaped and may span lines that look like
- * header fields or a new entry, so it runs to the `  content: |` line and only the fields on the
- * fixed lines are read. A category that itself holds a `  content: |` line followed by indented
- * lines and a whole forged entry still parses as two entries; telling those apart needs the
- * writer to escape the category.
- */
-function parseMirrorEntries(text: string): MirrorEntrySpan[] | null {
-  const lines = text.split('\n');
-  const lineStart: number[] = [];
-  let offset = 0;
-  for (const line of lines) {
-    lineStart.push(offset);
-    offset += line.length + 1;
-  }
-
-  const field = (index: number, name: string): string | null => {
-    const line = lines[index];
-    return line !== undefined && line.startsWith(`  ${name}: `) ? line.slice(name.length + 4) : null;
-  };
-
-  const entries: MirrorEntrySpan[] = [];
-  let i = 0;
-  if (lines[0] !== '') return null;
-  while (i < lines.length - 1) {
-    if (!MIRROR_TS_LINE.test(lines[i + 1])) return null;
-    const id = field(i + 2, 'id');
-    const session = field(i + 4, 'session');
-    if (id === null || field(i + 3, 'type') === null || session === null || field(i + 5, 'category') === null) return null;
-
-    let j = i + 6;
-    while (j < lines.length && lines[j] !== '  content: |') j++;
-    let k = j + 1;
-    while (k < lines.length && lines[k].startsWith('    ')) k++;
-    // At least one content line, then the blank line that ends this entry and starts the next.
-    if (j >= lines.length || k === j + 1 || lines[k] !== '') return null;
-
-    entries.push({ start: lineStart[i + 1] - 1, end: lineStart[k], id, session });
-    i = k;
-  }
-  return entries;
-}
-
-/**
- * Remove the markdown mirror entries written for one event or one session. Mirror files are
- * day-keyed and shared by every session, so entries are cut out of the file instead of the file
- * being removed; a file left with no entries is removed. Every file is scanned rather than only
- * the event's day because the mirror day is the writer's local date. Entries are matched on the
- * `id` or `session` field `parseMirrorEntries` reads, never on text elsewhere in the entry; a
- * file that does not parse is left unchanged, with a warning when it names the target.
- *
- * The rewrite is read-then-write: a hook entry appended to the same file in between is lost
- * (the same race as #267).
- */
-export function removeMirrorEntries(
-  storagePath: string,
-  target: ForgetTarget,
-  apply: boolean
-): { files: string[]; entries: number; removed: number; warnings: string[] } {
-  const memoryRoot = path.join(storagePath, 'memory');
-  const result = { files: [] as string[], entries: 0, removed: 0, warnings: [] as string[] };
-  if (!fs.existsSync(memoryRoot)) return result;
-
-  const targetValue = target.kind === 'event' ? target.eventId : target.sessionId;
-  const matches = (entry: MirrorEntrySpan) =>
-    (target.kind === 'event' ? entry.id : entry.session) === targetValue;
-  const pending = [memoryRoot];
-  const files: string[] = [];
-  while (pending.length > 0) {
-    const current = pending.pop()!;
-    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
-      const entryPath = path.join(current, entry.name);
-      if (entry.isDirectory()) pending.push(entryPath);
-      else if (entry.isFile() && entry.name.endsWith('.md')) files.push(entryPath);
-    }
-  }
-
-  for (const file of files.sort()) {
-    let text: string;
-    try {
-      text = fs.readFileSync(file, 'utf8');
-    } catch (error) {
-      result.warnings.push(`could not read ${file}: ${error instanceof Error ? error.message : String(error)}`);
-      continue;
-    }
-    if (!text.includes(targetValue)) continue;
-
-    const entries = parseMirrorEntries(text);
-    if (entries === null) {
-      result.warnings.push(`could not read ${file} as mirror entries; left unchanged`);
-      continue;
-    }
-    const kept = entries.filter((entry) => !matches(entry));
-    const removed = entries.length - kept.length;
-    if (removed === 0) continue;
-
-    result.files.push(file);
-    result.entries += removed;
-    if (!apply) continue;
-    try {
-      const rest = kept.map((entry) => text.slice(entry.start, entry.end)).join('');
-      if (rest.trim() === '') fs.unlinkSync(file);
-      else fs.writeFileSync(file, rest, 'utf8');
-      result.removed += removed;
-    } catch (error) {
-      result.warnings.push(`could not rewrite ${file}: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
-  return result;
-}
-
 /**
  * Forget one event or one session: preview by default, and with `apply` delete the SQLite rows
  * with their dependent rows and outbox jobs (one transaction, with its `event_delete` audit),
- * then the vectors of exactly the deleted ids, then the markdown mirror entries. A session takes
- * every row whatever wrote it, unlike the force-reimport scope (`importedFrom`).
+ * then the vectors of exactly the deleted ids. A session takes every row whatever wrote it,
+ * unlike the force-reimport scope (`importedFrom`).
  *
- * Mirror entries, and an event's vectors, are removed even when SQLite no longer has the row, so
- * a re-run after a vector or mirror failure finishes the cleanup. A session's vectors are picked
- * by the ids the delete returned, so a session re-run cannot find them again; the warning says so.
+ * The markdown mirrors are left as they are (#274, #276): the store mirror writes the category
+ * unescaped, so one entry cannot be cut out of a shared day file safely.
+ *
+ * An event's vectors are removed even when SQLite no longer has the row, so a re-run after a
+ * vector failure finishes the cleanup. A session's vectors are picked by the ids the delete
+ * returned, so a session re-run cannot find them again; the warning says so.
  */
 export async function runForgetTarget(
   storagePath: string,
@@ -365,7 +242,6 @@ export async function runForgetTarget(
 ): Promise<ForgetTargetReport> {
   const { target, apply } = options;
   const dbPath = path.join(storagePath, 'events.sqlite');
-  const mirror = removeMirrorEntries(storagePath, target, false);
 
   let rows = 0;
   let contentBytes = 0;
@@ -392,8 +268,7 @@ export async function runForgetTarget(
               sessionId: event.sessionId,
               eventType: event.eventType,
               matchingRows: rows,
-              contentBytes,
-              mirrorEntries: mirror.entries
+              contentBytes
             },
             sourceEventIds: [target.eventId]
           });
@@ -411,8 +286,7 @@ export async function runForgetTarget(
                 command: 'forget --session',
                 sessionId: target.sessionId,
                 matchingRows: rows,
-                contentBytes,
-                mirrorEntries: mirror.entries
+                contentBytes
               }
             }
           }));
@@ -423,10 +297,8 @@ export async function runForgetTarget(
     }
   }
 
-  const report = { ...options, rows, contentBytes, mirrorEntries: mirror.entries, mirrorFiles: mirror.files };
-  if (!apply) {
-    return { ...report, applied: null, ...(mirror.warnings.length > 0 ? { warnings: mirror.warnings } : {}) };
-  }
+  const report = { ...options, rows, contentBytes };
+  if (!apply) return { ...report, applied: null };
 
   const warnings: string[] = [];
   let vectorsPurged = true;
@@ -444,12 +316,9 @@ export async function runForgetTarget(
     }
   }
 
-  const mirrorApplied = removeMirrorEntries(storagePath, target, true);
-  warnings.push(...mirrorApplied.warnings);
-
   return {
     ...report,
-    applied: { deleted, vectorsPurged, mirrorEntriesRemoved: mirrorApplied.removed },
+    applied: { deleted, vectorsPurged },
     ...(warnings.length > 0 ? { warnings } : {})
   };
 }
@@ -460,11 +329,11 @@ export function formatForgetTargetReport(report: ForgetTargetReport): string {
   const lines = [
     `Forget ${scope} (${report.apply ? 'applied' : 'dry-run'})`,
     `Matching rows: ${report.rows} (${kb} KB of content)`,
-    `Mirror entries: ${report.mirrorEntries} in ${report.mirrorFiles.length} file(s)`
+    'Markdown mirrors are not cleaned: the store mirror and the project memory/ mirror keep their entries (#274, #276)'
   ];
   if (report.applied) {
     lines.push(
-      `Events deleted ${report.applied.deleted}; vectors purged: ${report.applied.vectorsPurged ? 'yes' : 'no'}; mirror entries removed ${report.applied.mirrorEntriesRemoved}`
+      `Events deleted ${report.applied.deleted}; vectors purged: ${report.applied.vectorsPurged ? 'yes' : 'no'}`
     );
   } else {
     lines.push('Nothing was deleted. Re-run with --confirm to apply.');
