@@ -581,8 +581,10 @@ Claude Code 내에서 사용할 수 있는 명령어:
 # 임포트 가능한 세션 목록
 /memory-list
 
-# 메모리 삭제: 날짜 기준(--before)만 구현돼 있습니다. --confirm 없이는 미리보기만 합니다.
-# 이벤트 ID·--session 단위 삭제는 아직 구현되지 않아 아무것도 지우지 않습니다.
+# 메모리 삭제: 이벤트 ID, --session, --before 중 하나만 지정합니다. --confirm 없이는 미리보기만 합니다.
+# 이벤트 ID·--session은 store의 Markdown mirror와 프로젝트 디렉터리 memory/ mirror를 정리하지 않습니다(#274, #276).
+/memory-forget <event-id> --confirm
+/memory-forget --session <session-id> --confirm
 /memory-forget --before 2026-01-01 --confirm
 ```
 

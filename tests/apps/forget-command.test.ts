@@ -1,16 +1,22 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 
 import {
   formatForgetBeforeReport,
+  formatForgetTargetReport,
   listMirrorFilesBefore,
   resolveForgetBeforeOptions,
-  runForgetBefore
+  resolveForgetSelection,
+  runForgetBefore,
+  runForgetTarget
 } from '../../src/apps/cli/forget-command.js';
+import { formatMirrorEntry } from '../../src/core/markdown-mirror.js';
 import { SQLiteEventStore } from '../../src/core/sqlite-event-store.js';
-import { sqliteAll } from '../../src/core/sqlite-wrapper.js';
+import { sqliteAll, sqliteRun } from '../../src/core/sqlite-wrapper.js';
+import type { MemoryEvent } from '../../src/core/types.js';
+import { VectorStore } from '../../src/core/vector-store.js';
 
 const roots: string[] = [];
 
@@ -215,6 +221,278 @@ describe('formatForgetBeforeReport', () => {
     expect(dry).toContain('--confirm');
     const applied = formatForgetBeforeReport({ ...base, apply: true, applied: { deleted: 3, vectorsPurged: true, mirrorFilesRemoved: 1, vacuumed: true } });
     expect(applied).toContain('deleted 3');
+    expect(applied).not.toContain('--confirm');
+  });
+});
+
+describe('resolveForgetSelection', () => {
+  it('picks the single selector given and keeps --confirm as apply', () => {
+    expect(resolveForgetSelection('evt-1', { confirm: true })).toEqual({
+      kind: 'target', options: { target: { kind: 'event', eventId: 'evt-1' }, apply: true }
+    });
+    expect(resolveForgetSelection(undefined, { session: 's1' })).toEqual({
+      kind: 'target', options: { target: { kind: 'session', sessionId: 's1' }, apply: false }
+    });
+    expect(resolveForgetSelection(undefined, { before: '2026-02-01', type: 'tool_observation' })).toMatchObject({
+      kind: 'before', options: { eventType: 'tool_observation', apply: false }
+    });
+  });
+
+  it('refuses no selector, several selectors, or --type without --before', () => {
+    expect(() => resolveForgetSelection(undefined, {})).toThrow('Please specify');
+    expect(() => resolveForgetSelection('  ', { session: '' })).toThrow('Please specify');
+    expect(() => resolveForgetSelection('evt-1', { session: 's1' })).toThrow('only one');
+    expect(() => resolveForgetSelection(undefined, { session: 's1', before: '2026-02-01' })).toThrow('only one');
+    expect(() => resolveForgetSelection('evt-1', { type: 'tool_observation' })).toThrow('--type');
+  });
+});
+
+function mirrorEntry(id: string, sessionId: string, content: string): string {
+  return formatMirrorEntry({
+    id, sessionId, eventType: 'user_prompt', timestamp: new Date('2026-01-01T00:00:00.000Z'),
+    content, canonicalKey: id, dedupeKey: id
+  } satisfies MemoryEvent);
+}
+
+/**
+ * #211: `forget <eventId>` and `forget --session` used to print "requires additional
+ * implementation" and delete nothing. These run against a real SQLite store (with the vector
+ * outbox on) and a real LanceDB directory holding both the legacy and a versioned event table.
+ */
+describe('runForgetTarget', () => {
+  interface Seeded {
+    a: { prompt: string; response: string; imported: string; synced: string; summary: string; tool: string };
+    b: { prompt: string };
+    all: string[];
+    mirrorFile: string;
+    mirrorText: string;
+  }
+
+  async function seedTarget(storagePath: string): Promise<Seeded> {
+    const store = new SQLiteEventStore(path.join(storagePath, 'events.sqlite'), { vectorOutbox: {} });
+    await store.initialize();
+    const at = (minute: number) => new Date(Date.UTC(2026, 0, 1, 9, minute));
+    const append = async (sessionId: string, eventType: MemoryEvent['eventType'], content: string, minute: number, metadata?: Record<string, unknown>) =>
+      (await store.append({ eventType, sessionId, timestamp: at(minute), content, ...(metadata ? { metadata } : {}) })).eventId!;
+    const a = {
+      prompt: await append('s-a', 'user_prompt', 'alpha prompt', 0),
+      response: await append('s-a', 'agent_response', 'alpha response', 1),
+      // Rows the force-reimport scope (`importedFrom`) would keep or pick: forget takes all of them.
+      imported: await append('s-a', 'user_prompt', 'alpha imported', 2, { importedFrom: '/sessions/s-a.jsonl' }),
+      synced: await append('s-a', 'agent_response', 'alpha synced', 3, { mongoSync: { origin: 'other-machine' } }),
+      summary: await append('s-a', 'session_summary', 'alpha summary', 4),
+      tool: await append('s-a', 'tool_observation', 'alpha tool output', 5)
+    };
+    const b = { prompt: await append('s-b', 'user_prompt', 'bravo prompt', 6) };
+    const all = [...Object.values(a), ...Object.values(b)];
+    for (const id of all) await store.enqueueForEmbedding(id, 'embed me');
+    await store.close();
+
+    const vectors = new VectorStore(path.join(storagePath, 'vectors'));
+    const records = (embeddingVersion?: string) => all.map((eventId, index) => ({
+      id: embeddingVersion ? `event:${eventId}` : `legacy-${eventId}`,
+      eventId,
+      sessionId: Object.values(b).includes(eventId) ? 's-b' : 's-a',
+      eventType: 'user_prompt',
+      content: 'vector text',
+      vector: Array.from({ length: 4 }, (_, i) => (i === index % 4 ? 1 : 0.1)),
+      timestamp: at(index).toISOString(),
+      ...(embeddingVersion ? { metadata: { itemKind: 'event', embeddingVersion } } : {})
+    }));
+    await vectors.upsertBatch(records());
+    await vectors.upsertBatch(records('v1'));
+
+    const mirrorFile = path.join(storagePath, 'memory', 'default', 'user_prompt', '2026-01-01.md');
+    mkdirSync(path.dirname(mirrorFile), { recursive: true });
+    const mirrorText = mirrorEntry(a.prompt, 's-a', 'alpha prompt') + mirrorEntry(b.prompt, 's-b', 'bravo prompt');
+    writeFileSync(mirrorFile, mirrorText);
+    return { a, b, all, mirrorFile, mirrorText };
+  }
+
+  async function readState(storagePath: string) {
+    const store = new SQLiteEventStore(path.join(storagePath, 'events.sqlite'));
+    await store.initialize();
+    const db = store.getDatabase();
+    const ids = (sql: string) => sqliteAll<{ id: string }>(db, sql).map((row) => row.id).sort();
+    try {
+      return {
+        events: ids(`SELECT id FROM events`),
+        fts: ids(`SELECT event_id AS id FROM events_fts`),
+        dedup: ids(`SELECT event_id AS id FROM event_dedup`),
+        levels: ids(`SELECT event_id AS id FROM memory_levels`),
+        embeddingOutbox: ids(`SELECT event_id AS id FROM embedding_outbox`),
+        vectorOutbox: ids(`SELECT item_id AS id FROM vector_outbox WHERE item_kind = 'event'`),
+        audit: sqliteAll<Record<string, string>>(db, `SELECT * FROM memory_governance_audit WHERE operation = 'event_delete'`)
+      };
+    } finally {
+      await store.close();
+    }
+  }
+
+  it('dry-run reports a session (quarantined rows included) and changes nothing', async () => {
+    const storagePath = tempStoragePath();
+    const seeded = await seedTarget(storagePath);
+    const store = new SQLiteEventStore(path.join(storagePath, 'events.sqlite'));
+    await store.initialize();
+    sqliteRun(store.getDatabase(), `UPDATE events SET metadata = json_set(COALESCE(metadata, '{}'), '$.quarantine.status', 'active') WHERE id = ?`, [seeded.a.response]);
+    await store.close();
+    const before = await readState(storagePath);
+
+    const session = await runForgetTarget(storagePath, { target: { kind: 'session', sessionId: 's-a' }, apply: false });
+    const event = await runForgetTarget(storagePath, { target: { kind: 'event', eventId: seeded.a.response }, apply: false });
+
+    expect(session).toMatchObject({ rows: 6, applied: null });
+    expect(event).toMatchObject({ rows: 1, contentBytes: Buffer.byteLength('alpha response'), applied: null });
+    expect(await readState(storagePath)).toEqual(before);
+    expect((await new VectorStore(path.join(storagePath, 'vectors')).listEventIds()).sort()).toEqual([...seeded.all].sort());
+  });
+
+  it('--session deletes every row of the session whatever wrote it, with its dependents, vectors and outbox jobs', async () => {
+    const storagePath = tempStoragePath();
+    const seeded = await seedTarget(storagePath);
+    const sessionA = Object.values(seeded.a);
+    expect((await readState(storagePath)).vectorOutbox).toEqual(expect.arrayContaining([seeded.a.prompt, seeded.b.prompt]));
+
+    const report = await runForgetTarget(storagePath, { target: { kind: 'session', sessionId: 's-a' }, apply: true });
+
+    expect(report.applied).toEqual({ deleted: 6, vectorsPurged: true });
+    expect(report.warnings).toBeUndefined();
+    const state = await readState(storagePath);
+    expect(state.events).toEqual([seeded.b.prompt]);
+    expect(state.fts).toEqual([seeded.b.prompt]);
+    expect(state.dedup).toEqual([seeded.b.prompt]);
+    expect(state.levels).toEqual([seeded.b.prompt]);
+    expect(state.embeddingOutbox).toEqual([seeded.b.prompt]);
+    expect(state.vectorOutbox).toEqual([seeded.b.prompt]);
+    const vectors = new VectorStore(path.join(storagePath, 'vectors'));
+    expect(await vectors.listEventIds()).toEqual([seeded.b.prompt]);
+    expect((await vectors.readRowsByEventIds('event_vectors_v1', seeded.all)).map((row) => row.eventId)).toEqual([seeded.b.prompt]);
+    // #274/#276: the markdown mirror is not cleaned by forget <eventId> or --session.
+    expect(readFileSync(seeded.mirrorFile, 'utf8')).toBe(seeded.mirrorText);
+
+    expect(state.audit).toHaveLength(1);
+    expect(state.audit[0]).toMatchObject({ operation: 'event_delete', actor: 'cli', target_type: 'session', target_id: 's-a' });
+    expect(JSON.parse(state.audit[0].before_json)).toEqual({
+      command: 'forget --session',
+      sessionId: 's-a',
+      matchingRows: 6,
+      contentBytes: report.contentBytes
+    });
+    expect(JSON.parse(state.audit[0].after_json)).toEqual({ deletedEvents: 6 });
+    for (const id of sessionA) expect(JSON.stringify(state.audit[0])).not.toContain(id);
+    expect(JSON.stringify(state.audit[0])).not.toContain('alpha');
+  });
+
+  it('<eventId> deletes only that event, its dependents, vectors and outbox jobs', async () => {
+    const storagePath = tempStoragePath();
+    const seeded = await seedTarget(storagePath);
+    const rest = seeded.all.filter((id) => id !== seeded.a.prompt).sort();
+
+    const report = await runForgetTarget(storagePath, { target: { kind: 'event', eventId: seeded.a.prompt }, apply: true });
+
+    expect(report).toMatchObject({ rows: 1, contentBytes: Buffer.byteLength('alpha prompt') });
+    expect(report.applied).toEqual({ deleted: 1, vectorsPurged: true });
+    const state = await readState(storagePath);
+    expect(state.events).toEqual(rest);
+    expect(state.fts).toEqual(rest);
+    expect(state.dedup).toEqual(rest);
+    expect(state.embeddingOutbox).toEqual(rest);
+    expect(state.vectorOutbox).not.toContain(seeded.a.prompt);
+    expect(state.vectorOutbox).toContain(seeded.a.response);
+    const vectors = new VectorStore(path.join(storagePath, 'vectors'));
+    expect((await vectors.listEventIds()).sort()).toEqual(rest);
+    expect((await vectors.readRowsByEventIds('event_vectors_v1', seeded.all)).map((row) => row.eventId).sort()).toEqual(rest);
+    expect(readFileSync(seeded.mirrorFile, 'utf8')).toBe(seeded.mirrorText);
+
+    expect(state.audit).toHaveLength(1);
+    expect(state.audit[0]).toMatchObject({ actor: 'cli', target_type: 'event', target_id: seeded.a.prompt });
+    expect(JSON.parse(state.audit[0].before_json)).toEqual({
+      command: 'forget <eventId>',
+      eventId: seeded.a.prompt,
+      sessionId: 's-a',
+      eventType: 'user_prompt',
+      matchingRows: 1,
+      contentBytes: Buffer.byteLength('alpha prompt')
+    });
+    expect(JSON.parse(state.audit[0].after_json)).toEqual({ deletedEvents: 1 });
+    expect(JSON.stringify(state.audit[0])).not.toContain('alpha');
+  });
+
+  it('rolls the delete back, and leaves vectors alone, when the audit cannot be written', async () => {
+    const storagePath = tempStoragePath();
+    const seeded = await seedTarget(storagePath);
+    const store = new SQLiteEventStore(path.join(storagePath, 'events.sqlite'));
+    await store.initialize();
+    sqliteRun(store.getDatabase(), `CREATE TRIGGER fail_audit BEFORE INSERT ON memory_governance_audit BEGIN SELECT RAISE(ABORT, 'audit down'); END`);
+    await store.close();
+    const vectorDeletes: string[][] = [];
+    const vectorStore = { deleteEvents: async (ids: readonly string[]) => { vectorDeletes.push([...ids]); } };
+
+    for (const target of [{ kind: 'session' as const, sessionId: 's-a' }, { kind: 'event' as const, eventId: seeded.a.prompt }]) {
+      await expect(runForgetTarget(storagePath, { target, apply: true }, { vectorStore })).rejects.toThrow('audit down');
+    }
+
+    const raw = new SQLiteEventStore(path.join(storagePath, 'events.sqlite'), { readonly: true });
+    await raw.initialize();
+    expect(sqliteAll<{ id: string }>(raw.getDatabase(), `SELECT id FROM events`)).toHaveLength(seeded.all.length);
+    await raw.close();
+    expect(vectorDeletes).toEqual([]);
+  });
+
+  it('warns when vectors cannot be deleted, and a re-run for the event finishes the job', async () => {
+    const storagePath = tempStoragePath();
+    const seeded = await seedTarget(storagePath);
+    const failing = { deleteEvents: async () => { throw new Error('lance down'); } };
+
+    const first = await runForgetTarget(storagePath, { target: { kind: 'event', eventId: seeded.a.prompt }, apply: true }, { vectorStore: failing });
+    expect(first.applied).toMatchObject({ deleted: 1, vectorsPurged: false });
+    expect(first.warnings?.[0]).toContain('lance down');
+    expect(formatForgetTargetReport(first)).toContain('Warning: vector deletion failed');
+    expect(first.warnings?.[0]).toContain('re-run to retry');
+
+    const rerun = await runForgetTarget(storagePath, { target: { kind: 'event', eventId: seeded.a.prompt }, apply: true });
+    expect(rerun.applied).toMatchObject({ deleted: 0, vectorsPurged: true });
+    expect(await new VectorStore(path.join(storagePath, 'vectors')).listEventIds()).not.toContain(seeded.a.prompt);
+    expect((await readState(storagePath)).audit).toHaveLength(1);
+  });
+
+  it('says a session re-run cannot retry a failed vector delete', async () => {
+    const storagePath = tempStoragePath();
+    await seedTarget(storagePath);
+    const failing = { deleteEvents: async () => { throw new Error('lance down'); } };
+
+    const report = await runForgetTarget(storagePath, { target: { kind: 'session', sessionId: 's-a' }, apply: true }, { vectorStore: failing });
+
+    expect(report.applied).toMatchObject({ deleted: 6, vectorsPurged: false });
+    expect(report.warnings).toEqual([expect.stringContaining('orphaned vectors of 6 event(s) remain (a re-run of --session cannot find them again): lance down')]);
+  });
+
+  it('creates nothing when the project has no store, and deletes nothing for an unknown id', async () => {
+    const missing = path.join(tempStoragePath(), 'missing');
+    const report = await runForgetTarget(missing, { target: { kind: 'session', sessionId: 's-a' }, apply: true });
+    expect(report).toMatchObject({ rows: 0, applied: { deleted: 0, vectorsPurged: true } });
+    expect(existsSync(missing)).toBe(false);
+
+    const storagePath = tempStoragePath();
+    const seeded = await seedTarget(storagePath);
+    const unknown = await runForgetTarget(storagePath, { target: { kind: 'event', eventId: 'no-such-event' }, apply: true });
+    expect(unknown).toMatchObject({ rows: 0, applied: { deleted: 0 } });
+    const state = await readState(storagePath);
+    expect(state.events).toHaveLength(seeded.all.length);
+    expect(state.audit).toEqual([]);
+  });
+});
+
+describe('formatForgetTargetReport', () => {
+  it('distinguishes a dry-run plan from an applied delete', () => {
+    const base = { target: { kind: 'session' as const, sessionId: 's1' }, rows: 2, contentBytes: 2048 };
+    const dry = formatForgetTargetReport({ ...base, apply: false, applied: null });
+    expect(dry).toContain('session s1 (dry-run)');
+    expect(dry).toContain('Matching rows: 2');
+    expect(dry).toContain('--confirm');
+    expect(dry).toContain('Markdown mirrors are not cleaned');
+    const applied = formatForgetTargetReport({ ...base, apply: true, applied: { deleted: 2, vectorsPurged: true } });
+    expect(applied).toContain('Events deleted 2');
     expect(applied).not.toContain('--confirm');
   });
 });

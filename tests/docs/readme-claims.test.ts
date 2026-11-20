@@ -173,14 +173,15 @@ describe('README procedures', () => {
     expect(unknown).toEqual([]);
   });
 
-  it('shows forget only with --before while event-id and --session forget are unimplemented', () => {
-    const cli = read('src/apps/cli/index.ts');
-    if (!cli.includes('Forget functionality requires additional implementation')) return;
+  it('does not call forget <eventId> or --session unimplemented once the CLI deletes by them', () => {
+    // #211: both paths used to print "requires additional implementation" and delete nothing.
+    if (!read('src/apps/cli/index.ts').includes('runForgetTarget')) return;
 
-    const unsupported = blocks.flat()
-      .filter((line) => /\bclaude-memory-layer forget\b|\/memory-forget\b/.test(line))
-      .filter((line) => !line.includes('--before'));
-    expect(unsupported).toEqual([]);
+    const docs = [...USER_DOCS, 'docs/OPERATIONS.md', '.claude-plugin/commands/memory-forget.md'];
+    const stale = docs.filter((file) =>
+      /requires additional implementation|not implemented \(#211\)|those paths are \*\*not implemented\*\*|아직 구현되지 않아|Marks events as deleted/i.test(read(file))
+    );
+    expect(stale).toEqual([]);
   });
 
   it('takes Codex/Hermes session paths and ids from a JSON validate report, since the Markdown one has only totals', () => {

@@ -174,3 +174,170 @@ export function formatForgetBeforeReport(report: ForgetBeforeReport): string {
   for (const warning of report.warnings ?? []) lines.push(`Warning: ${warning}`);
   return lines.join('\n');
 }
+
+export type ForgetTarget = { kind: 'event'; eventId: string } | { kind: 'session'; sessionId: string };
+
+export type ForgetSelection =
+  | { kind: 'before'; options: ForgetBeforeOptions }
+  | { kind: 'target'; options: ForgetTargetOptions };
+
+export interface ForgetTargetOptions {
+  target: ForgetTarget;
+  apply: boolean;
+}
+
+export interface ForgetTargetApplied {
+  deleted: number;
+  vectorsPurged: boolean;
+}
+
+export interface ForgetTargetReport extends ForgetTargetOptions {
+  rows: number;
+  contentBytes: number;
+  applied: ForgetTargetApplied | null;
+  warnings?: string[];
+}
+
+export interface ForgetTargetDeps {
+  vectorStore?: { deleteEvents(eventIds: readonly string[]): Promise<void> };
+}
+
+/**
+ * Exactly one of `<eventId>`, `--session` or `--before` picks what to forget. Combining them used
+ * to fall through to whichever branch ran first, so a mix is refused instead of guessed at.
+ */
+export function resolveForgetSelection(
+  eventId: string | undefined,
+  options: { session?: string; before?: string; type?: string; confirm?: boolean }
+): ForgetSelection {
+  const id = typeof eventId === 'string' ? eventId.trim() : '';
+  const session = typeof options.session === 'string' ? options.session.trim() : '';
+  const hasBefore = options.before !== undefined;
+  const chosen = [id !== '', session !== '', hasBefore].filter(Boolean).length;
+  if (chosen === 0) throw new Error('Please specify an event ID, --session, or --before option');
+  if (chosen > 1) throw new Error('Specify only one of an event ID, --session, or --before');
+  if (hasBefore) return { kind: 'before', options: resolveForgetBeforeOptions(options) };
+  if (options.type !== undefined) throw new Error('--type can only be combined with --before');
+  const target: ForgetTarget = id !== '' ? { kind: 'event', eventId: id } : { kind: 'session', sessionId: session };
+  return { kind: 'target', options: { target, apply: options.confirm === true } };
+}
+
+/**
+ * Forget one event or one session: preview by default, and with `apply` delete the SQLite rows
+ * with their dependent rows and outbox jobs (one transaction, with its `event_delete` audit),
+ * then the vectors of exactly the deleted ids. A session takes every row whatever wrote it,
+ * unlike the force-reimport scope (`importedFrom`).
+ *
+ * The markdown mirrors are left as they are (#274, #276): the store mirror writes the category
+ * unescaped, so one entry cannot be cut out of a shared day file safely.
+ *
+ * An event's vectors are removed even when SQLite no longer has the row, so a re-run after a
+ * vector failure finishes the cleanup. A session's vectors are picked by the ids the delete
+ * returned, so a session re-run cannot find them again; the warning says so.
+ */
+export async function runForgetTarget(
+  storagePath: string,
+  options: ForgetTargetOptions,
+  deps: ForgetTargetDeps = {}
+): Promise<ForgetTargetReport> {
+  const { target, apply } = options;
+  const dbPath = path.join(storagePath, 'events.sqlite');
+
+  let rows = 0;
+  let contentBytes = 0;
+  let deleted = 0;
+  let deletedIds: string[] = [];
+  if (fs.existsSync(dbPath)) {
+    const store = new SQLiteEventStore(dbPath, { readonly: !apply });
+    try {
+      await store.initialize();
+      const audit = { operation: 'event_delete' as const, actor: 'cli' };
+      if (target.kind === 'event') {
+        const event = await store.getEvent(target.eventId, { includeQuarantined: true });
+        rows = event ? 1 : 0;
+        contentBytes = event ? Buffer.byteLength(event.content, 'utf8') : 0;
+        if (apply && event) {
+          // Scope and counts only, committed with the delete; never the content.
+          const removed = await store.deleteEventById(target.eventId, {
+            ...audit,
+            targetType: 'event',
+            targetId: target.eventId,
+            beforeJson: {
+              command: 'forget <eventId>',
+              eventId: target.eventId,
+              sessionId: event.sessionId,
+              eventType: event.eventType,
+              matchingRows: rows,
+              contentBytes
+            },
+            sourceEventIds: [target.eventId]
+          });
+          deleted = removed ? 1 : 0;
+        }
+      } else {
+        ({ rows, contentBytes } = await store.countSessionEvents(target.sessionId));
+        if (apply && rows > 0) {
+          ({ deleted, eventIds: deletedIds } = await store.deleteSessionEventsWithIds(target.sessionId, {
+            audit: {
+              ...audit,
+              targetType: 'session',
+              targetId: target.sessionId,
+              beforeJson: {
+                command: 'forget --session',
+                sessionId: target.sessionId,
+                matchingRows: rows,
+                contentBytes
+              }
+            }
+          }));
+        }
+      }
+    } finally {
+      await store.close().catch(() => undefined);
+    }
+  }
+
+  const report = { ...options, rows, contentBytes };
+  if (!apply) return { ...report, applied: null };
+
+  const warnings: string[] = [];
+  let vectorsPurged = true;
+  const vectorIds = target.kind === 'event' ? [target.eventId] : deletedIds;
+  const vectorsPath = path.join(storagePath, 'vectors');
+  if (vectorIds.length > 0 && (deps.vectorStore || fs.existsSync(vectorsPath))) {
+    try {
+      await (deps.vectorStore ?? new VectorStore(vectorsPath)).deleteEvents(vectorIds);
+    } catch (error) {
+      vectorsPurged = false;
+      const retry = target.kind === 'event' ? 're-run to retry' : 'a re-run of --session cannot find them again';
+      warnings.push(
+        `vector deletion failed; orphaned vectors of ${vectorIds.length} event(s) remain (${retry}): ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+  }
+
+  return {
+    ...report,
+    applied: { deleted, vectorsPurged },
+    ...(warnings.length > 0 ? { warnings } : {})
+  };
+}
+
+export function formatForgetTargetReport(report: ForgetTargetReport): string {
+  const scope = report.target.kind === 'event' ? `event ${report.target.eventId}` : `session ${report.target.sessionId}`;
+  const kb = (report.contentBytes / 1024).toFixed(1);
+  const lines = [
+    `Forget ${scope} (${report.apply ? 'applied' : 'dry-run'})`,
+    `Matching rows: ${report.rows} (${kb} KB of content)`,
+    'Markdown mirrors are not cleaned: the store mirror and the project memory/ mirror keep their entries (#274, #276)'
+  ];
+  if (report.applied) {
+    lines.push(
+      `Events deleted ${report.applied.deleted}; vectors purged: ${report.applied.vectorsPurged ? 'yes' : 'no'}`
+    );
+  } else {
+    lines.push('Nothing was deleted. Re-run with --confirm to apply.');
+  }
+  for (const warning of report.warnings ?? []) lines.push(`Warning: ${warning}`);
+  return lines.join('\n');
+}
