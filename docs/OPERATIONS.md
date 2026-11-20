@@ -182,6 +182,14 @@ snapshots mask absolute paths and credential-looking values, so a version restor
 | `cleanup stores` | Nothing; preview only | — | — |
 | `mongo-sync` (pull) | Only adds rows | — | — |
 
+Without `--apply`, the `repair` commands above, `repair backfill-trace-items` and `retrieval reevaluate` only preview.
+The preview reads a temporary copy of the store, as the read-only diagnostics do, so the store and its `-wal`/`-shm`
+files are not created or touched. The copy is not a consistent point-in-time read: a checkpoint during the copy can make
+the preview a little stale or, rarely, fail (run it again). A store reached through a symlink in the store path (the
+memory root `~/.claude-code/memory`, `projects/`, the project directory or `events.sqlite`) cannot be previewed: the
+copy refuses it with `SQLITE_SNAPSHOT_UNSAFE_SOURCE` and nothing changes. `--apply` opens the store through the link and
+changes it without a preview, so back up the project directory first.
+
 Known limits:
 
 - **Force reimport replaces only rows it can put back** (#227). It deletes a row only when all of these hold: it is a

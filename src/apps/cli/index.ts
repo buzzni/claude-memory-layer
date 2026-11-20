@@ -162,6 +162,7 @@ import { backfillVectorCoverage } from '../../core/operations/vector-coverage-ba
 import { formatBackfillVectorsResult, resolveBackfillVectorsOptions } from './backfill-vectors-command.js';
 import { dropSpareEventVectorTables } from '../../core/operations/spare-vector-tables.js';
 import { formatDropSpareVectorsResult, resolveDropSpareVectorsOptions } from './drop-spare-vectors-command.js';
+import { formatPreviewableCommandFailure, openPreviewableStore } from './preview-store.js';
 import {
   formatSupersedeSessionSummariesFailure,
   formatSupersedeSessionSummariesResult,
@@ -1791,9 +1792,7 @@ repairCommand
         }));
         return;
       }
-      const store = new SQLiteEventStore(dbPath, {
-        readonly: repairOptions.dryRun
-      });
+      const store = openPreviewableStore(storagePath, repairOptions.dryRun === true);
       try {
         const result = await store.repairLegacyProjectScope(repairOptions);
         console.log(formatLegacyProjectScopeRepairResult(result));
@@ -1801,8 +1800,7 @@ repairCommand
         await store.close().catch(() => undefined);
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.error(`Repair failed: ${message}`);
+      console.error(formatPreviewableCommandFailure('Repair failed', error));
       process.exit(1);
     }
   });
@@ -1829,7 +1827,7 @@ repairCommand
         return;
       }
 
-      const store = new SQLiteEventStore(dbPath, { readonly: pruneOptions.dryRun });
+      const store = openPreviewableStore(storagePath, pruneOptions.dryRun);
       const vectorStore = new VectorStore(path.join(storagePath, 'vectors'));
       try {
         const result = await pruneToolObservationVectors(store, vectorStore, { dryRun: pruneOptions.dryRun });
@@ -1838,8 +1836,7 @@ repairCommand
         await store.close().catch(() => undefined);
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.error(`Prune tool_observation vectors failed: ${message}`);
+      console.error(formatPreviewableCommandFailure('Prune tool_observation vectors failed', error));
       process.exit(1);
     }
   });
@@ -1872,7 +1869,7 @@ repairCommand
         }
       }
 
-      const store = new SQLiteEventStore(dbPath, { readonly: backfillOptions.dryRun });
+      const store = openPreviewableStore(storagePath, backfillOptions.dryRun);
       const vectorStore = new VectorStore(path.join(storagePath, 'vectors'), { readOnly: backfillOptions.dryRun });
       try {
         const result = await backfillVectorCoverage({
@@ -1893,8 +1890,7 @@ repairCommand
         writerLock.release();
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.error(`Backfill vectors failed: ${message}`);
+      console.error(formatPreviewableCommandFailure('Backfill vectors failed', error));
       process.exit(1);
     }
   });
@@ -1927,7 +1923,7 @@ repairCommand
         }
       }
 
-      const store = new SQLiteEventStore(dbPath, { readonly: dropOptions.dryRun });
+      const store = openPreviewableStore(storagePath, dropOptions.dryRun);
       const vectorStore = new VectorStore(path.join(storagePath, 'vectors'), { readOnly: dropOptions.dryRun });
       try {
         const result = await dropSpareEventVectorTables({
@@ -1945,8 +1941,7 @@ repairCommand
         writerLock.release();
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.error(`Drop spare vectors failed: ${message}`);
+      console.error(formatPreviewableCommandFailure('Drop spare vectors failed', error));
       process.exit(1);
     }
   });
@@ -1996,9 +1991,9 @@ repairCommand
         return;
       }
 
-      // A dry run opens the store read-only, so previewing the backfill cannot
+      // A dry run reads a copy of the store, so previewing the backfill cannot
       // modify anything (specs R1).
-      const store = new SQLiteEventStore(dbPath, { readonly: backfillOptions.dryRun });
+      const store = openPreviewableStore(storagePath, backfillOptions.dryRun);
       try {
         const result = await store.backfillRetrievalTraceItems({
           dryRun: backfillOptions.dryRun,
@@ -2010,8 +2005,7 @@ repairCommand
         await store.close().catch(() => undefined);
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.error(`Backfill trace items failed: ${message}`);
+      console.error(formatPreviewableCommandFailure('Backfill trace items failed', error));
       process.exit(1);
     }
   });
@@ -2036,7 +2030,7 @@ repairCommand
         return;
       }
 
-      const store = new SQLiteEventStore(dbPath, { readonly: dryRun });
+      const store = openPreviewableStore(storagePath, dryRun);
       try {
         await store.initialize();
         const db = store.getDatabase();
@@ -2063,8 +2057,7 @@ repairCommand
         await store.close().catch(() => undefined);
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.error(`Redact credentials failed: ${message}`);
+      console.error(formatPreviewableCommandFailure('Redact credentials failed', error));
       process.exit(1);
     }
   });
@@ -2731,16 +2724,16 @@ retrievalCommand
     try {
       const projectPath: string = options.project ?? process.cwd();
       const limit = parsePositiveIntegerOption(options.limit, 'limit') ?? 200;
-      const dbPath = path.join(getProjectStoragePath(projectPath), 'events.sqlite');
-      if (!fs.existsSync(dbPath)) {
+      const storagePath = getProjectStoragePath(projectPath);
+      if (!fs.existsSync(path.join(storagePath, 'events.sqlite'))) {
         console.log('No store for this project; nothing to re-evaluate.');
         return;
       }
       const apply = options.apply === true;
       // A bounded, explicitly invoked job — the counterpart to the pass that
-      // rides along with the conversation hook. The dry run opens the store
-      // read-only so previewing cannot write (specs R3).
-      const store = new SQLiteEventStore(dbPath, { readonly: !apply });
+      // rides along with the conversation hook. The dry run reads a copy of the
+      // store so previewing cannot write (specs R3).
+      const store = openPreviewableStore(storagePath, !apply);
       try {
         if (!apply) {
           const pending = await store.countPendingBoundedUsefulness();
@@ -2759,8 +2752,7 @@ retrievalCommand
         await store.close().catch(() => undefined);
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.error(`Retrieval reevaluate failed: ${message}`);
+      console.error(formatPreviewableCommandFailure('Retrieval reevaluate failed', error));
       process.exit(1);
     }
   });
