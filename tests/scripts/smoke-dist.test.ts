@@ -6,7 +6,9 @@ import * as path from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-const smokeScript = path.join(process.cwd(), 'scripts', 'smoke-dist.mjs');
+import { tsxArgs, tsxCommand } from '../helpers/tsx-process.js';
+
+const smokeScript = path.join(process.cwd(), 'scripts', 'smoke-dist.ts');
 
 // The prelude scripts/build.ts puts at the top of every bundle.
 const BANNER = "import { createRequire } from 'module';\nconst require = createRequire(import.meta.url);\n";
@@ -44,7 +46,7 @@ process.stdin.resume();
 }
 
 function runSmoke(root: string) {
-  return spawnSync(process.execPath, [smokeScript, root], { encoding: 'utf8', timeout: 60_000 });
+  return spawnSync(tsxCommand, tsxArgs(smokeScript, root), { encoding: 'utf8', timeout: 60_000 });
 }
 
 afterEach(() => {

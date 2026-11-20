@@ -1,6 +1,5 @@
-#!/usr/bin/env node
 // Starts the built bundles in dist/ the way users and hosts do. Run after
-// `npm run build`: node scripts/smoke-dist.mjs [package-root]
+// `npm run build`: tsx scripts/smoke-dist.ts [package-root]
 //
 // typecheck, lint and vitest all run against src/, so a bundle that dies at
 // startup passes every one of them (#198). The known case: a source file that
