@@ -136,6 +136,8 @@ export function buildCliProviderEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv 
   // cannot recurse into lesson extraction or vice versa.
   env.CLAUDE_MEMORY_SUMMARY_MODE = 'off';
   env.CLAUDE_MEMORY_LESSON_MODE = 'off';
+  // runHook (hook-runtime.ts) reads this and skips the hook body, so the
+  // child run is neither stored nor given recalled context.
   env.CLAUDE_MEMORY_DISABLE_HOOKS = 'true';
   return env;
 }

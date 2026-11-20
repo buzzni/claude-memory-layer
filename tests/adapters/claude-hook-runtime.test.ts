@@ -43,6 +43,7 @@ function captureStdout(): string[] {
 describe('runHook', () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
     vi.useRealTimers();
   });
 
@@ -57,6 +58,23 @@ describe('runHook', () => {
     const writes = captureStdout();
     await runHook({ name: 'test', fallbackOutput: '' }, async () => '');
     expect(writes).toEqual(['']);
+  });
+
+  it('skips the body and emits the fallback when a provider run disables hooks', async () => {
+    // buildCliProviderEnv sets this in every `claude -p` / `codex exec` child.
+    vi.stubEnv('CLAUDE_MEMORY_DISABLE_HOOKS', 'true');
+    const writes = captureStdout();
+    const body = vi.fn(async () => '{"context":"stored"}');
+    await runHook({ name: 'test', fallbackOutput: '{}' }, body);
+    expect(body).not.toHaveBeenCalled();
+    expect(writes).toEqual(['{}\n']);
+  });
+
+  it('runs the body when hooks are not disabled', async () => {
+    vi.stubEnv('CLAUDE_MEMORY_DISABLE_HOOKS', 'false');
+    const writes = captureStdout();
+    await runHook({ name: 'test', fallbackOutput: '{}' }, async () => '{"context":"ok"}');
+    expect(writes).toEqual(['{"context":"ok"}\n']);
   });
 
   it('emits the fallback envelope when the body throws (e.g. malformed stdin JSON)', async () => {

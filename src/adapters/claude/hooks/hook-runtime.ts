@@ -130,6 +130,14 @@ export async function runHook(options: RunHookOptions, run: () => Promise<string
     emitHookOutput(json);
   };
 
+  // Provider runs (`claude -p` / `codex exec` for summaries and lessons) set
+  // this in the child env: a child that loads the hooks anyway must neither
+  // store nor recall, so it gets the context-free envelope and nothing else.
+  if (process.env.CLAUDE_MEMORY_DISABLE_HOOKS === 'true') {
+    emit(options.fallbackOutput);
+    return;
+  }
+
   // The fallback envelope carries no injected context, so anything the hook
   // body had selected was never delivered. Report that before emitting, which
   // also clears the reporter so the write callback cannot then claim `emitted`.
