@@ -11,17 +11,40 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import { PLUGIN_HOOKS } from '../src/apps/cli/claude-settings-hooks.js';
+import { getCodexMemoryHooks } from '../src/apps/cli/codex-hooks-config.js';
+
+interface RunResult {
+  status: number | null;
+  signal: NodeJS.Signals | null;
+  stdout: string;
+  stderr: string;
+}
+
 const root = path.resolve(process.argv[2] ?? process.cwd());
 const dist = path.join(root, 'dist');
-const { version } = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+const { version } = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')) as { version: string };
 const TIMEOUT_MS = 30_000;
 
-// Hooks Claude Code and Codex spawn with an event on stdin. Worker and daemon
-// bundles are only syntax-checked: running them starts background work.
-const STDIN_HOOKS = [
-  'session-start', 'user-prompt-submit', 'post-tool-use', 'stop', 'session-end',
-  'codex-session-start', 'codex-user-prompt-submit', 'codex-session-end'
-];
+/**
+ * The hook files `install`, the plugin's hooks.json (kept equal to
+ * PLUGIN_HOOKS by plugin-manifests.test.ts) and `install --codex` register,
+ * read from the same lists so a newly registered hook is run here too. Worker,
+ * handler and daemon bundles are only syntax-checked: running them starts
+ * background work.
+ */
+function registeredHookFiles(): string[] {
+  const codexFiles = Object.values(getCodexMemoryHooks(dist)).flat().flatMap((entry) => entry.hooks).map(({ command }) => {
+    const file = /[\\/]hooks[\\/]([\w-]+\.js)\W*$/.exec(command ?? '')?.[1];
+    if (!file) throw new Error(`cannot find the hook file in the Codex hook command: ${command}`);
+    return file;
+  });
+  return [...new Set([...Object.values(PLUGIN_HOOKS), ...codexFiles])];
+}
+
+// An empty stdout is these hooks' answer: PreCompact's stdout becomes
+// compaction instructions, and PreToolUse prints nothing to allow the call.
+const SILENT_HOOK_FILES = new Set(['pre-compact.js', 'pre-tool-use.js']);
 // Copied as-is by the build, not bundled.
 const COPIED_DIRS = new Set(['ui', 'skills', '.claude-plugin']);
 
@@ -29,9 +52,9 @@ const home = fs.mkdtempSync(path.join(os.tmpdir(), 'cml-dist-smoke-'));
 // Nothing inherited beyond PATH, so a CLAUDE_MEMORY_* override in the caller's
 // environment cannot point the bundles at a real memory store.
 const env = { PATH: process.env.PATH, HOME: home, USERPROFILE: home, TMPDIR: home };
-const failures = [];
+const failures: string[] = [];
 
-function report(label, ok, detail) {
+function report(label: string, ok: boolean, detail: string) {
   if (ok) {
     console.log(`ok   ${label}`);
     return;
@@ -40,18 +63,18 @@ function report(label, ok, detail) {
   console.error(`FAIL ${label}\n${detail.trim()}\n`);
 }
 
-function describeRun({ status, signal, stdout, stderr }) {
+function describeRun({ status, signal, stdout, stderr }: RunResult) {
   return `exit=${status} signal=${signal ?? 'none'}\nstdout: ${stdout.trim().slice(0, 500)}\nstderr: ${stderr.trim().slice(0, 2000)}`;
 }
 
-function run(relativePath, args, input = '') {
+function run(relativePath: string, args: string[], input = ''): RunResult {
   const result = spawnSync(process.execPath, [path.join(dist, relativePath), ...args], {
     cwd: home, env, input, encoding: 'utf8', timeout: TIMEOUT_MS
   });
   return { status: result.status, signal: result.signal, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
 }
 
-function parseJson(text) {
+function parseJson(text: string): unknown {
   try {
     return JSON.parse(text);
   } catch {
@@ -60,7 +83,7 @@ function parseJson(text) {
 }
 
 /** Sends `initialize` and closes stdin once the reply line arrives. */
-function initializeMcp(relativePath) {
+function initializeMcp(relativePath: string): Promise<RunResult> {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [path.join(dist, relativePath)], { cwd: home, env });
     let stdout = '';
@@ -97,19 +120,21 @@ try {
   report(`dist/cli/index.js --version prints ${version}`, cli.status === 0 && cli.stdout.trim() === version, describeRun(cli));
 
   const mcp = await initializeMcp('mcp/index.js');
-  const reply = parseJson(mcp.stdout.split('\n')[0]);
+  const reply = parseJson(mcp.stdout.split('\n')[0]) as { id?: unknown; result?: { serverInfo?: { version?: unknown } } } | undefined;
   report(
     'dist/mcp/index.js answers initialize',
     mcp.status === 0 && reply?.id === 1 && reply.result?.serverInfo?.version === version,
     describeRun(mcp)
   );
 
-  for (const hook of STDIN_HOOKS) {
-    const result = run(`hooks/${hook}.js`, []);
+  for (const file of registeredHookFiles()) {
+    const result = run(`hooks/${file}`, []);
     const output = parseJson(result.stdout);
+    const answered = typeof output === 'object' && output !== null && !Array.isArray(output);
+    const silent = SILENT_HOOK_FILES.has(file) && result.stdout === '';
     report(
-      `dist/hooks/${hook}.js prints a JSON envelope on empty stdin`,
-      result.status === 0 && typeof output === 'object' && output !== null && !Array.isArray(output),
+      `dist/hooks/${file} exits 0 and prints ${SILENT_HOOK_FILES.has(file) ? 'nothing or ' : ''}a JSON envelope on empty stdin`,
+      result.status === 0 && (answered || silent),
       describeRun(result)
     );
   }
