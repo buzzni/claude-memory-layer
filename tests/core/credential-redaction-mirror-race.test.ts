@@ -7,16 +7,24 @@ import type { MemoryEvent } from '../../src/core/types.js';
 const mocks = vi.hoisted(() => ({
   beforeWrite: undefined as (() => void) | undefined,
   afterRename: undefined as (() => void) | undefined,
+  appendError: undefined as NodeJS.ErrnoException | undefined,
+  linkError: undefined as NodeJS.ErrnoException | undefined,
 }));
 
 // The hooks append to mirror files without any lock, so a hook can land at any
-// point of the rewrite. These seams put one exactly where it used to be lost.
+// point of the rewrite. These seams put one exactly where it used to be lost,
+// and fail the calls a full disk or a filesystem without hard links would.
 vi.mock('fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('fs')>();
   const once = (key: 'beforeWrite' | 'afterRename') => {
     const run = mocks[key];
     mocks[key] = undefined;
     run?.();
+  };
+  const failOnce = (key: 'appendError' | 'linkError') => {
+    const error = mocks[key];
+    mocks[key] = undefined;
+    if (error) throw error;
   };
   return {
     ...actual,
@@ -28,6 +36,14 @@ vi.mock('fs', async (importOriginal) => {
       actual.renameSync(...args);
       once('afterRename');
     }) as typeof actual.renameSync,
+    appendFileSync: ((...args: Parameters<typeof actual.appendFileSync>) => {
+      failOnce('appendError');
+      return actual.appendFileSync(...args);
+    }) as typeof actual.appendFileSync,
+    linkSync: ((...args: Parameters<typeof actual.linkSync>) => {
+      failOnce('linkError');
+      return actual.linkSync(...args);
+    }) as typeof actual.linkSync,
   };
 });
 
@@ -40,10 +56,16 @@ const roots: string[] = [];
 afterEach(() => {
   mocks.beforeWrite = undefined;
   mocks.afterRename = undefined;
+  mocks.appendError = undefined;
+  mocks.linkError = undefined;
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
 
 const SECRET = 'api_key=sk-live-1234567890abcdef';
+
+function errnoError(code: string): NodeJS.ErrnoException {
+  return Object.assign(new Error(`${code}: injected`), { code });
+}
 
 let n = 0;
 function event(content: string): MemoryEvent {
@@ -155,5 +177,46 @@ describe('planMarkdownRedaction while hooks append to the mirror', () => {
 
     expect(fs.readFileSync(filePath, 'utf8')).toBe(redactedRows([first]));
     expect(fs.readFileSync(otherName, 'utf8')).toBe(redactedRows([first]));
+  });
+
+  it('puts the replaced file back, appended entries and all, when adding them to the copy fails', async () => {
+    const first = event(`call 0 with ${SECRET}`);
+    const hook = event('hook entry');
+    const { storagePath, filePath } = await mirrorWith(first);
+    mocks.beforeWrite = () => hookAppends(filePath, hook);
+    mocks.afterRename = () => { mocks.appendError = errnoError('ENOSPC'); };
+
+    const changes = planMarkdownRedaction(storagePath, { apply: true });
+
+    expect(changes).toEqual([expect.objectContaining({ filePath, writeFailed: true })]);
+    expect(fs.readFileSync(filePath, 'utf8')).toBe(formatMirrorEntry(first) + formatMirrorEntry(hook));
+    expect(fs.readdirSync(path.dirname(filePath))).toEqual([path.basename(filePath)]);
+
+    expect(planMarkdownRedaction(storagePath, { apply: true })).toEqual([expect.objectContaining({ filePath })]);
+    expect(fs.readFileSync(filePath, 'utf8')).toBe(redactedRows([first, hook]));
+  });
+
+  it('rewrites in place when the file cannot take a second name', async () => {
+    const first = event(`call 0 with ${SECRET}`);
+    const { storagePath, filePath } = await mirrorWith(first);
+    mocks.linkError = errnoError('EPERM');
+
+    const changes = planMarkdownRedaction(storagePath, { apply: true });
+
+    expect(changes[0].writeFailed).toBeUndefined();
+    expect(fs.readFileSync(filePath, 'utf8')).toBe(redactedRows([first]));
+    expect(fs.readdirSync(path.dirname(filePath))).toEqual([path.basename(filePath)]);
+  });
+
+  it('leaves the file as it was when it cannot take a second name for another reason', async () => {
+    const first = event(`call 0 with ${SECRET}`);
+    const { storagePath, filePath } = await mirrorWith(first);
+    mocks.linkError = errnoError('ENOSPC');
+
+    const changes = planMarkdownRedaction(storagePath, { apply: true });
+
+    expect(changes).toEqual([expect.objectContaining({ filePath, writeFailed: true })]);
+    expect(fs.readFileSync(filePath, 'utf8')).toBe(formatMirrorEntry(first));
+    expect(fs.readdirSync(path.dirname(filePath))).toEqual([path.basename(filePath)]);
   });
 });

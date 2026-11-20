@@ -405,6 +405,9 @@ export function planMarkdownRedaction(
   return changes;
 }
 
+/** How link() says the filesystem has no hard links, as opposed to a full disk or a permission. */
+const NO_HARD_LINKS = new Set(['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS']);
+
 /**
  * Hooks append to mirror files with no lock, so truncating and rewriting one in
  * place drops every entry appended after it was read. The redacted copy
@@ -422,17 +425,37 @@ function replaceMirrorFile(filePath: string, fd: number, redacted: string): void
   }
   // Rename ignores the file's own permissions; keep refusing read-only files.
   fs.accessSync(filePath, fs.constants.W_OK);
-  const stagingPath = `${filePath}.${randomUUID()}.tmp`;
+  const base = `${filePath}.${randomUUID()}`;
+  const stagingPath = `${base}.tmp`;
+  // The replaced file keeps this name until what the hooks appended to it is in
+  // the copy. Renaming it back needs no disk space, so a full disk cannot lose
+  // those entries: the file is left as it was, for a re-run.
+  const keptPath = `${base}.old`;
+  try {
+    fs.linkSync(filePath, keptPath);
+  } catch (error) {
+    if (!NO_HARD_LINKS.has((error as NodeJS.ErrnoException).code ?? '')) throw error;
+    // A filesystem without hard links: rewrite in place, as before #267.
+    fs.writeFileSync(filePath, redacted, 'utf8');
+    return;
+  }
   try {
     fs.writeFileSync(stagingPath, redacted, { encoding: 'utf8', flag: 'wx' });
     fs.chmodSync(stagingPath, mode & 0o777);
     fs.renameSync(stagingPath, filePath);
   } catch (error) {
     fs.rmSync(stagingPath, { force: true });
+    fs.rmSync(keptPath, { force: true });
     throw error;
   }
-  const appended = fs.readFileSync(fd, 'utf8');
-  if (appended.length > 0) fs.appendFileSync(filePath, redactMirrorText(appended), 'utf8');
+  try {
+    const appended = fs.readFileSync(fd, 'utf8');
+    if (appended.length > 0) fs.appendFileSync(filePath, redactMirrorText(appended), 'utf8');
+  } catch (error) {
+    fs.renameSync(keptPath, filePath);
+    throw error;
+  }
+  fs.rmSync(keptPath);
 }
 
 /**
@@ -658,7 +681,7 @@ function unfinishedRedaction(plan: CredentialRedactionPlan): string[] {
   if (failedFiles.length > 0) {
     notes.push(
       `${failedFiles.length} Markdown file(s) could not be rewritten and still hold the credential; ` +
-      'fix their permissions and re-run with --apply:'
+      'fix their permissions or free disk space, then re-run with --apply:'
     );
     for (const change of failedFiles.slice(0, 10)) notes.push(`    ${change.filePath}`);
     if (failedFiles.length > 10) notes.push(`    … and ${failedFiles.length - 10} more`);
