@@ -295,8 +295,11 @@ Known limits:
   it is put back is lost from the mirror. A `.old` file the run could neither delete nor put back holds the old text,
   so it is listed under `NOT FINISHED` (exit 1). The next run finds it, as it finds one a killed run left: a dry run
   lists it, and `--apply` first gives the mirror file, redacted and added at its end, the entries of the old text it
-  does not hold yet, then deletes the `.old` file. An entry the copy holds only in part (it was being written when
-  the run read the file) is added again in full.
+  does not hold yet, then deletes the `.old` file. Entries are matched by their event id (the `id:` line), wherever
+  the hooks put theirs in between. An entry the mirror file holds only in part (it was being written when the run
+  read the file) is added again in full, and so is a piece with no `id:` line unless its redacted text is already
+  there: at worst a duplicate, never the old text. A `.old` file a run cannot read stays, listed under
+  `NOT FINISHED`.
 - A hard-linked mirror file, and any mirror file on a filesystem without hard links, is rewritten in place, as before
   #267, so an entry a hook appends to it while the run rewrites it can be lost from the mirror.
 
