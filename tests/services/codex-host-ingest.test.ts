@@ -113,6 +113,47 @@ describe('Codex host completed-turn import', () => {
     }
   });
 
+  it('reads the host turn guard within the imported session when a fork shares the native turn id (#207)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'cml-host-fork-'));
+    const store = join(root, 'store');
+    const rollout = (sessionId: string, prompt: string, answer: string) => [
+      { type: 'session_meta', payload: { id: sessionId, cwd: root } },
+      { type: 'event_msg', payload: { type: 'task_started', turn_id: 'native-turn', started_at: 1_790_000_000 } },
+      { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: prompt }] } },
+      { type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: answer }], phase: 'final_answer' } },
+      { type: 'event_msg', payload: { type: 'task_complete', turn_id: 'native-turn', completed_at: 1_790_000_001 } }
+    ].map(row => JSON.stringify(row)).join('\n');
+    const hostFile = join(root, 'host.jsonl');
+    const forkFile = join(root, 'fork.jsonl');
+    try {
+      await writeFile(hostFile, rollout('host-thread', 'Keep the host turn durable.', 'The host stored this turn.'));
+      await writeFile(forkFile, rollout('fork-thread', 'Continue the forked work.', 'The fork answered on its own.'));
+      const { MemoryService, DISABLED_SHARED_STORE_CONFIG } = await import('../../src/services/memory-service.js');
+      const createService = async () => new MemoryService({ storagePath: store, projectPath: root,
+        projectHash: hashProjectPath(root), lightweightMode: true, analyticsEnabled: false,
+        sharedStoreConfig: DISABLED_SHARED_STORE_CONFIG });
+      await importCodexCompletedTurns(
+        { projectPath: root, transcriptPath: hostFile, sessionId: 'host-thread', throughTurnId: 'native-turn' },
+        { readTranscript: readCodexCompletedTurns, hashProjectPath, writeStatus: () => {}, createService }
+      );
+
+      const service = await createService();
+      try {
+        const turnReads = vi.spyOn(service, 'getEventsByTurn');
+        const legacy = await createCodexSessionHistoryImporter(service, { sessionsDir: root });
+        const result = await legacy.importSessionFile(forkFile);
+
+        expect(result).toMatchObject({ importedPrompts: 1, importedResponses: 1 });
+        expect(turnReads).toHaveBeenCalled();
+        for (const call of turnReads.mock.calls) expect(call).toEqual(['native-turn', { sessionId: 'fork-thread' }]);
+      } finally {
+        await service.shutdown();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('imports completed user work with original clocks, closes its lightweight service, and leaves the session live', async () => {
     const { deps, service, input } = fixture();
     const result = await importCodexCompletedTurns(input, deps as unknown as CodexCompletedImportDeps);

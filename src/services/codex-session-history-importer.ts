@@ -549,7 +549,7 @@ type HostManagedEvent = {
 };
 
 type HostGuardMemoryService = MemoryService & {
-  getEventsByTurn?: (turnId: string) => Promise<HostManagedEvent[]>;
+  getEventsByTurn?: (turnId: string, options?: { sessionId?: string }) => Promise<HostManagedEvent[]>;
   getSessionHistory?: (sessionId: string) => Promise<HostManagedEvent[]>;
 };
 
@@ -566,7 +566,8 @@ async function hasCompleteHostTurn(
 ): Promise<boolean> {
   if (!turnId || typeof memoryService.getEventsByTurn !== 'function') return false;
   try {
-    const events = await memoryService.getEventsByTurn(turnId);
+    // A forked or re-imported transcript can share this native turn id.
+    const events = await memoryService.getEventsByTurn(turnId, { sessionId });
     let prompt = false;
     let response = false;
     for (const event of events) {
