@@ -284,6 +284,16 @@ describe('time-bound stores', () => {
     expect(await bounded.keywordSearch('q', 1)).toEqual([{ event: earlier, rank: -3 }]);
     expect(store.keywordSearch).toHaveBeenCalledWith('q', 2, undefined);
   });
+
+  it('keeps the session scope of a turn read (#207)', async () => {
+    const earlier = { id: 'earlier', timestamp: new Date('2026-09-30T00:00:00.000Z') } as MemoryEvent;
+    const store = { getEventsByTurn: vi.fn().mockResolvedValue([earlier]) };
+    const bounded = timeBoundEventStore(store as never, asOf, 1) as unknown as typeof store;
+
+    await bounded.getEventsByTurn('turn-1', { sessionId: 'session-a' });
+
+    expect(store.getEventsByTurn).toHaveBeenCalledWith('turn-1', { sessionId: 'session-a' });
+  });
 });
 
 describe('source-trust fixture', () => {

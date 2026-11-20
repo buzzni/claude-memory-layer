@@ -162,8 +162,8 @@ export class ReadOnlyDiagnosticsService {
     return (await this.store())?.getSessionTurns(sessionId, options) ?? [];
   }
 
-  async getEventsByTurn(turnId: string): Promise<MemoryEvent[]> {
-    return (await this.store())?.getEventsByTurn(turnId) ?? [];
+  async getEventsByTurn(turnId: string, options?: { sessionId?: string }): Promise<MemoryEvent[]> {
+    return (await this.store())?.getEventsByTurn(turnId, options) ?? [];
   }
 
   async countSessionTurns(sessionId: string): Promise<number> {

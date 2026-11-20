@@ -267,6 +267,14 @@ interface QuarantineReadOptions {
   includeQuarantined?: boolean;
 }
 
+export interface TurnEventsReadOptions extends QuarantineReadOptions {
+  /**
+   * Restrict the turn to this session. A turn id is not unique across sessions:
+   * a forked or re-imported Codex transcript keeps the host's native turn ids.
+   */
+  sessionId?: string;
+}
+
 export interface RecentEventsReadOptions extends QuarantineReadOptions {
   /** Restrict to these event types. An empty/omitted list means "any type". */
   eventTypes?: EventType[];
@@ -5470,11 +5478,7 @@ export class SQLiteEventStore {
     for (const turnRow of turnRows) {
       // Scoped to the session too: a forked or re-imported transcript keeps
       // its host turn ids under a new session id.
-      const events = sqliteAll<Record<string, unknown>>(
-        this.db,
-        `SELECT * FROM events WHERE turn_id = ? AND session_id = ? AND ${maybeQuarantinePredicate(options)} ORDER BY timestamp ASC`,
-        [turnRow.turn_id, sessionId]
-      ).map(this.rowToEvent);
+      const events = await this.getEventsByTurn(turnRow.turn_id, { ...options, sessionId });
 
       const promptEvent = events.find(e => e.eventType === 'user_prompt');
       const toolEvents = events.filter(e => e.eventType === 'tool_observation');
@@ -5499,13 +5503,15 @@ export class SQLiteEventStore {
   /**
    * Get all events for a specific turn_id
    */
-  async getEventsByTurn(turnId: string, options?: QuarantineReadOptions): Promise<MemoryEvent[]> {
+  async getEventsByTurn(turnId: string, options?: TurnEventsReadOptions): Promise<MemoryEvent[]> {
     await this.initialize();
 
+    const sessionId = options?.sessionId;
     const rows = sqliteAll<Record<string, unknown>>(
       this.db,
-      `SELECT * FROM events WHERE turn_id = ? AND ${maybeQuarantinePredicate(options)} ORDER BY timestamp ASC`,
-      [turnId]
+      `SELECT * FROM events WHERE turn_id = ?${sessionId === undefined ? '' : ' AND session_id = ?'}
+         AND ${maybeQuarantinePredicate(options)} ORDER BY timestamp ASC`,
+      sessionId === undefined ? [turnId] : [turnId, sessionId]
     );
 
     return rows.map(this.rowToEvent);

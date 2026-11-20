@@ -374,7 +374,9 @@ export function timeBoundEventStore<T extends EventReader>(store: T, asOf: Date,
   if (store.getSessionEvents) {
     reader.getSessionEvents = async (sessionId, options) => (await store.getSessionEvents!(sessionId, options)).filter(visible);
   }
-  if (store.getEventsByTurn) reader.getEventsByTurn = async (turnId) => (await store.getEventsByTurn!(turnId)).filter(visible);
+  if (store.getEventsByTurn) {
+    reader.getEventsByTurn = async (turnId, options) => (await store.getEventsByTurn!(turnId, options)).filter(visible);
+  }
   return bounded;
 }
 
@@ -456,7 +458,7 @@ function selectionDeps(
         .filter((injection) => injection.value.createdAt.getTime() < turn.asOf.getTime()),
     expandDisclosure: async (resultId, options) =>
       boundExpansion(await sources.service.expandDisclosure(resultId, options), turn.asOf),
-    getEventsByTurn: (turnId) => queryService.getEventsByTurn(turnId),
+    getEventsByTurn: (turnId, options) => queryService.getEventsByTurn(turnId, options),
     getEvent: (id) => store.getEvent(id)
   } as HookSelectionMemoryService;
 
