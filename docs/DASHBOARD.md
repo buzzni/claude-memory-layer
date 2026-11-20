@@ -44,3 +44,16 @@ Details (Host matching rules, cookie settings, Origin checks): [SECURITY.md](../
 With a password set, everything except `/health` and `/api/auth/*` requires login.
 
 Dashboard chat passes your question and recalled memories to the local `claude` CLI, which sends them to its provider.
+
+## Turn endpoints
+
+- `GET /api/turns?sessionId=<session>`: the session's turns, each with only that session's events. `sessionId` is required (`400` without it).
+- `GET /api/turns/<turnId>?sessionId=<session>`: one turn's prompt, tool calls and responses (`turnId`, `sessionId`, `startedAt`, `prompt`, `tools`, `responses`, `totalEvents`). `404` when that session holds no event with this turn id.
+
+A turn id is not unique across sessions: a forked or re-imported Codex transcript keeps the host's turn ids under a new session id. Pass `sessionId` with the turn id you got from the session's turn list. Without it, a turn id held by more than one session is not merged; it answers `409`:
+
+```json
+{ "error": "Turn id is shared by more than one session; pass sessionId", "sessionIds": ["<session-a>", "<session-b>"] }
+```
+
+Retry with one of the listed `sessionIds`. A turn id that only one session holds still answers `200` without `sessionId`.
