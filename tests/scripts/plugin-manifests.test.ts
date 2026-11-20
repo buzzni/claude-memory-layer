@@ -90,6 +90,20 @@ describe('Claude Code plugin manifests', () => {
     }
   });
 
+  it('names the slash commands with the plugin prefix, the only form Claude Code resolves', () => {
+    const commandsDir = path.join(repoRoot, plugin.commands ?? '.claude-plugin/commands');
+    const docs = [
+      ...readdirSync(commandsDir).filter((name) => name.endsWith('.md')).map((name) => path.join(commandsDir, name)),
+      ...['README.md', 'README.ko.md', 'docs/INSTALL.md'].map((file) => path.join(repoRoot, file))
+    ];
+    const bare = docs.flatMap((file) =>
+      [...readFileSync(file, 'utf8').matchAll(/(?<![\w:./-])\/memory-(?!layer:)[\w-]+/g)].map(
+        ([name]) => `${path.relative(repoRoot, file)} ${name}`
+      )
+    );
+    expect(bare).toEqual([]);
+  });
+
   it('gives the launcher the same hook-to-event map and matchers that install writes', () => {
     const { HOOK_EVENTS, HOOK_MATCHERS } = createRequire(import.meta.url)('../../.claude-plugin/hook-launcher.cjs') as {
       HOOK_EVENTS: Record<string, string>;

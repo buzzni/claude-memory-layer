@@ -1,11 +1,11 @@
-# /memory-history
+# /memory-layer:memory-history
 
 View conversation history from memory.
 
 ## Usage
 
 ```
-/memory-history [options]
+/memory-layer:memory-history [options]
 ```
 
 ## Options
@@ -17,10 +17,10 @@ View conversation history from memory.
 ## Examples
 
 ```
-/memory-history
-/memory-history --limit 50
-/memory-history --session abc123
-/memory-history --type user_prompt
+/memory-layer:memory-history
+/memory-layer:memory-history --limit 50
+/memory-layer:memory-history --session abc123
+/memory-layer:memory-history --type user_prompt
 ```
 
 ## Description

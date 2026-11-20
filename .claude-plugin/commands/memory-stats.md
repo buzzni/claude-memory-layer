@@ -1,11 +1,11 @@
-# /memory-stats
+# /memory-layer:memory-stats
 
 View memory storage statistics.
 
 ## Usage
 
 ```
-/memory-stats
+/memory-layer:memory-stats
 ```
 
 ## Description

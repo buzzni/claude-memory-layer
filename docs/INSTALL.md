@@ -11,6 +11,7 @@ There are two ways to connect it to Claude Code. **Use one of them, not both.**
 | What registers the hooks | The CLI writes them into `~/.claude/settings.json` | Claude Code loads them from the `memory-layer` plugin |
 | npm package needed | Yes | Yes. The plugin's hooks run the globally installed package |
 | Remove with | `claude-memory-layer uninstall` | `claude plugin uninstall memory-layer@claude-memory-layer` |
+| Slash commands (`/memory-layer:memory-*`) | No | Yes |
 
 Both register the same eight hooks: SessionStart, UserPromptSubmit, PostToolUse, PostToolUseFailure, PreToolUse, PreCompact, Stop and SessionEnd. After upgrading from a version without one of them, run `claude-memory-layer install` again to register it; `claude-memory-layer doctor` names any hook that is missing.
 
@@ -59,6 +60,7 @@ claude-memory-layer doctor
 
 - The plugin is named `memory-layer`, not `claude-memory-layer`, because Claude Code reserves plugin names that start with `claude-`. Its id is `memory-layer@claude-memory-layer` (plugin `memory-layer` from the marketplace `claude-memory-layer`).
 - A git-based plugin install has neither `dist/` nor `node_modules`, so the plugin's hook launcher runs the hooks of the `claude-memory-layer` package found on `PATH`. Without the npm package the hooks do nothing; at session start they print one line asking you to run `npm install -g claude-memory-layer`.
+- The plugin also adds the slash commands `/memory-layer:memory-search`, `memory-history`, `memory-stats`, `memory-import`, `memory-list` and `memory-forget` (always with the `memory-layer:` prefix). Each runs the `claude-memory-layer` CLI found on `PATH` in your project directory. If it is not on `PATH`, the command fails with `command not found`: install it with `npm install -g claude-memory-layer@latest`, restart Claude Code, and check that `command -v claude-memory-layer` prints a path. With nvm or another per-version Node manager, install it under the Node version of the shell that starts Claude Code.
 - If you previously loaded this repository with `--plugin-dir` under its old plugin name, the key in `enabledPlugins` and the `memory-layer:` prefix of its components change.
 
 ## Switching between A and B

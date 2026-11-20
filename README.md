@@ -45,7 +45,7 @@ On Claude Code 2.1.275 or later this also works in one step:
 /plugin install memory-layer --marketplace buzzni/claude-memory-layer
 ```
 
-The plugin's hooks run the npm package, so also run `npm install -g claude-memory-layer@latest`. Without the package the plugin does nothing.
+The plugin's hooks run the npm package, so also run `npm install -g claude-memory-layer@latest`. Without the package the plugin does nothing. The plugin also adds slash commands such as `/memory-layer:memory-search`, which run the `claude-memory-layer` CLI on `PATH`; see [docs/INSTALL.md](docs/INSTALL.md#b-claude-code-plugin-marketplace).
 
 Restart Claude Code afterwards. If you upgrade from an earlier version and use ①, run `claude-memory-layer install` again so newly added hooks (such as PreCompact and PreToolUse) are registered; `doctor` reports any that are missing. To switch from one to the other, keep only the plugin with `claude-memory-layer uninstall`, or keep only the `settings.json` hooks with `claude plugin uninstall memory-layer@claude-memory-layer`. `claude-memory-layer doctor` warns when both are active.
 

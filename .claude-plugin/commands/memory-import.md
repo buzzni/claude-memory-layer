@@ -1,11 +1,11 @@
-# /memory-import
+# /memory-layer:memory-import
 
 Import existing Claude Code conversation history into memory.
 
 ## Usage
 
 ```
-/memory-import [options]
+/memory-layer:memory-import [options]
 ```
 
 ## Options
@@ -19,11 +19,11 @@ Import existing Claude Code conversation history into memory.
 ## Examples
 
 ```
-/memory-import
-/memory-import --project /home/user/myproject
-/memory-import --all
-/memory-import --session ~/.claude/projects/xyz/abc123.jsonl
-/memory-import --all --limit 100 --verbose
+/memory-layer:memory-import
+/memory-layer:memory-import --project /home/user/myproject
+/memory-layer:memory-import --all
+/memory-layer:memory-import --session ~/.claude/projects/xyz/abc123.jsonl
+/memory-layer:memory-import --all --limit 100 --verbose
 ```
 
 ## Description
@@ -47,7 +47,7 @@ Claude Code stores session history in:
 ~/.claude/projects/<project-hash>/<session-id>.jsonl
 ```
 
-Use `/memory-list` to see available sessions before importing.
+Use `/memory-layer:memory-list` to see available sessions before importing.
 
 ## Implementation
 
