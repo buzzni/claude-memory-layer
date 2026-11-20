@@ -36,7 +36,7 @@ Without `--confirm` the command only reports what matches and deletes nothing. W
 2. Removes the vectors of the deleted events from LanceDB
 3. With `--before` only, removes the whole dated files of the store's markdown mirror under `~/.claude-code/memory`
 
-If vectors could not be removed, the command prints a warning and exits 1.
+If vectors could not be removed, the command prints a warning; with `event-id` or `--session` it also exits 1, while `--before` only warns.
 
 `event-id` and `--session` do not clean the store's markdown mirror or the second mirror written under the project directory (`<project>/memory/`), so forgotten text can remain in both (#274, #276). `--before` does not clean the project directory's mirror either.
 
