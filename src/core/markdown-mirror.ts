@@ -1,3 +1,4 @@
+import { appendFileSync } from 'fs';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import type { MemoryEvent } from './types.js';
@@ -64,7 +65,11 @@ export class MarkdownMirror {
   async append(event: MemoryEvent): Promise<string> {
     const outPath = buildMirrorPath(this.rootDir, event);
     await fs.mkdir(path.dirname(outPath), { recursive: true });
-    await fs.appendFile(outPath, formatMirrorEntry(event), 'utf8');
+    // Open and write in one step. redact-credentials replaces mirror files by
+    // rename, and an entry written through a descriptor opened before the swap
+    // but written after the run read the old file is lost (#267); an async
+    // append waits on the event loop between the two.
+    appendFileSync(outPath, formatMirrorEntry(event), 'utf8');
     return outPath;
   }
 }

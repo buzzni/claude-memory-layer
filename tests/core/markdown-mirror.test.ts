@@ -1,6 +1,4 @@
-// @load-sensitive: 'is wired to sqlite append flow' reads a fire-and-forget
-// mirror write after a fixed 50ms wait, which a loaded machine overruns.
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs/promises';
@@ -72,15 +70,45 @@ describe('markdown mirror', () => {
 
       expect(result.success).toBe(true);
 
-      // mirror append is async fire-and-forget; allow small delay
-      await new Promise((r) => setTimeout(r, 50));
-
+      // The mirror append is fire-and-forget: wait for the entry, not for a fixed delay (#281).
       const file = path.join(root, 'memory', 'app', 'responses', '2026-02-24.md');
-      const content = await fs.readFile(file, 'utf8');
-      expect(content).toContain('flow content');
+      await vi.waitFor(async () => {
+        expect(await fs.readFile(file, 'utf8')).toContain('flow content');
+      }, { timeout: 10_000 });
 
       await store.close();
     } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps the sqlite append when the mirror write fails', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'cml-md-fail-'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      // A directory where the day's file goes makes the synchronous append throw.
+      await fs.mkdir(path.join(root, 'memory', 'app', 'responses', '2026-02-24.md'), { recursive: true });
+      const store = new SQLiteEventStore(path.join(root, 'events.sqlite'), {
+        markdownMirrorRoot: root
+      });
+      const result = await store.append({
+        eventType: 'agent_response',
+        sessionId: 'sess-fail',
+        timestamp: new Date('2026-02-24T12:00:00.000Z'),
+        content: 'kept in sqlite',
+        metadata: { namespace: 'app', category: 'responses' }
+      });
+
+      expect(result.success).toBe(true);
+      await vi.waitFor(() => expect(warn).toHaveBeenCalledWith(
+        '[SQLiteEventStore] markdown mirror append failed:',
+        expect.objectContaining({ code: 'EISDIR' })
+      ), { timeout: 10_000 });
+      expect((await store.getEvent(result.eventId!))?.content).toBe('kept in sqlite');
+
+      await store.close();
+    } finally {
+      warn.mockRestore();
       await fs.rm(root, { recursive: true, force: true });
     }
   });

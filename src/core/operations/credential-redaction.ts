@@ -304,7 +304,13 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function walkMarkdown(dir: string, found: string[]): void {
+/**
+ * The old text of a mirror file, kept under a second name while a run replaced
+ * it (see replaceMirrorFile). Only this command makes such names.
+ */
+const KEPT_SUFFIX = /(?<=\.md)\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.old$/;
+
+function walkMarkdown(dir: string, found: string[], kept: string[]): void {
   let entries: fs.Dirent[];
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -313,8 +319,9 @@ function walkMarkdown(dir: string, found: string[]): void {
   }
   for (const entry of entries) {
     const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) walkMarkdown(full, found);
+    if (entry.isDirectory()) walkMarkdown(full, found, kept);
     else if (entry.isFile() && entry.name.endsWith('.md')) found.push(full);
+    else if (entry.isFile() && KEPT_SUFFIX.test(entry.name)) kept.push(full);
   }
 }
 
@@ -368,31 +375,188 @@ export function planMarkdownRedaction(
   if (!fs.existsSync(memoryRoot)) return [];
 
   const files: string[] = [];
-  walkMarkdown(memoryRoot, files);
+  const keptFiles: string[] = [];
+  walkMarkdown(memoryRoot, files, keptFiles);
 
   const changes: RedactionFileChange[] = [];
-  for (const filePath of files) {
-    let original: string;
+  // Before the scan, so that a second name left on a mirror file does not make
+  // it look hard-linked.
+  for (const keptPath of keptFiles) {
+    let old: string;
     try {
-      original = fs.readFileSync(filePath, 'utf8');
-    } catch {
+      old = fs.readFileSync(keptPath, 'utf8');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      // It may hold the old text: kept, and reported so that the run is not finished.
+      changes.push({ filePath: keptPath, occurrences: 1, writeFailed: true });
       continue;
     }
-    const redacted = redactMirrorText(original);
-    if (redacted === original) continue;
-
-    const occurrences = redacted.split('[REDACTED]').length - original.split('[REDACTED]').length;
-    changes.push({ filePath, occurrences: Math.max(1, occurrences) });
+    const occurrences = redactMirrorText(old).split('[REDACTED]').length - old.split('[REDACTED]').length;
+    changes.push({ filePath: keptPath, occurrences: Math.max(1, occurrences) });
     if (options.apply) {
       try {
-        fs.writeFileSync(filePath, redacted, 'utf8');
+        recoverKeptFile(keptPath, keptPath.replace(KEPT_SUFFIX, ''), old);
       } catch {
-        // A write failure must not abort the rest; it is reported per file.
         changes[changes.length - 1].writeFailed = true;
       }
     }
   }
+
+  for (const filePath of files) {
+    let fd: number;
+    try {
+      fd = fs.openSync(filePath, 'r');
+    } catch {
+      continue;
+    }
+    try {
+      let original: string;
+      try {
+        original = fs.readFileSync(fd, 'utf8');
+      } catch {
+        continue;
+      }
+      const redacted = redactMirrorText(original);
+      if (redacted === original) continue;
+
+      const occurrences = redacted.split('[REDACTED]').length - original.split('[REDACTED]').length;
+      changes.push({ filePath, occurrences: Math.max(1, occurrences) });
+      if (options.apply) {
+        const keptPath = `${filePath}.${randomUUID()}.old`;
+        try {
+          replaceMirrorFile(filePath, fd, redacted, keptPath);
+        } catch {
+          // A write failure must not abort the rest; it is reported per file.
+          changes[changes.length - 1].writeFailed = true;
+        }
+        // Left behind only when it could be neither deleted nor put back.
+        if (fs.existsSync(keptPath)) changes.push({ filePath: keptPath, occurrences, writeFailed: true });
+      }
+    } finally {
+      fs.closeSync(fd);
+    }
+  }
   return changes;
+}
+
+/** How link() says the filesystem has no hard links, as opposed to a full disk or a permission. */
+const NO_HARD_LINKS = new Set(['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS']);
+
+/**
+ * Hooks append to mirror files with no lock, so truncating and rewriting one in
+ * place drops every entry appended after it was read. The redacted copy
+ * replaces the file by rename instead: hooks that open the path afterwards
+ * append to the copy, and `fd`, still on the replaced file and positioned where
+ * the read stopped, picks up whatever was appended to it before the swap.
+ */
+function replaceMirrorFile(filePath: string, fd: number, redacted: string, keptPath: string): void {
+  const { mode, nlink } = fs.fstatSync(fd);
+  // A rename would leave the file's other names on the old text, so a
+  // hard-linked file is still rewritten in place, race and all.
+  if (nlink > 1) {
+    fs.writeFileSync(filePath, redacted, 'utf8');
+    return;
+  }
+  // Rename ignores the file's own permissions; keep refusing read-only files.
+  fs.accessSync(filePath, fs.constants.W_OK);
+  const stagingPath = `${filePath}.${randomUUID()}.tmp`;
+  // The replaced file keeps `keptPath` as a second name until what the hooks
+  // appended to it is in the copy. Renaming it back needs no disk space, so a
+  // full disk cannot lose those entries: the file is left as it was, for a
+  // re-run. If it can be neither deleted nor put back, a re-run recovers it.
+  try {
+    fs.linkSync(filePath, keptPath);
+  } catch (error) {
+    if (!NO_HARD_LINKS.has((error as NodeJS.ErrnoException).code ?? '')) throw error;
+    // A filesystem without hard links: rewrite in place, as before #267.
+    fs.writeFileSync(filePath, redacted, 'utf8');
+    return;
+  }
+  try {
+    fs.writeFileSync(stagingPath, redacted, { encoding: 'utf8', flag: 'wx' });
+    fs.chmodSync(stagingPath, mode & 0o777);
+    fs.renameSync(stagingPath, filePath);
+  } catch (error) {
+    fs.rmSync(stagingPath, { force: true });
+    fs.rmSync(keptPath, { force: true });
+    throw error;
+  }
+  try {
+    const appended = fs.readFileSync(fd, 'utf8');
+    if (appended.length > 0) fs.appendFileSync(filePath, redactMirrorText(appended), 'utf8');
+  } catch (error) {
+    fs.renameSync(keptPath, filePath);
+    throw error;
+  }
+  try {
+    fs.rmSync(keptPath);
+  } catch {
+    // The copy is complete; the caller reports the old text left at keptPath.
+  }
+}
+
+const MIRROR_ENTRY_START = '\n- ts: ';
+
+/**
+ * Finish what a run left at `keptPath`: the mirror file gets, redacted, the
+ * entries of the old text it does not hold yet, and the old text goes. It only
+ * ever appends to the mirror file, as the hooks do, so nothing they wrote
+ * since is lost. When both names are still the same file, the run stopped
+ * before the swap and the second name just goes.
+ */
+function recoverKeptFile(keptPath: string, filePath: string, old: string): void {
+  const kept = fs.statSync(keptPath);
+  let current: string | undefined;
+  try {
+    const mirror = fs.statSync(filePath);
+    if (mirror.dev !== kept.dev || mirror.ino !== kept.ino) current = fs.readFileSync(filePath, 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    current = ''; // The mirror file is gone: the old text, redacted, recreates it.
+  }
+  if (current !== undefined) {
+    const missing = redactedEntriesMissingFrom(current, old);
+    if (missing.length > 0) fs.appendFileSync(filePath, missing, 'utf8');
+  }
+  fs.rmSync(keptPath);
+}
+
+/** `text` cut before each entry header; the first piece may be text before any entry. */
+function mirrorEntries(text: string): string[] {
+  const starts = [0];
+  for (let i = text.indexOf(MIRROR_ENTRY_START, 1); i !== -1; i = text.indexOf(MIRROR_ENTRY_START, i + 1)) starts.push(i);
+  return starts.map((start, k) => text.slice(start, starts[k + 1] ?? text.length));
+}
+
+/** The event id formatMirrorEntry writes on the line right after the entry's `- ts:` header. */
+function mirrorEntryId(entry: string): string | undefined {
+  const [blank, header, idLine] = entry.split('\n', 3);
+  if (blank !== '' || !header?.startsWith('- ts: ')) return undefined;
+  return /^ {2}id: (\S+)$/.exec(idLine ?? '')?.[1];
+}
+
+/**
+ * The entries of the old text, redacted, that `current` does not hold yet.
+ * Hooks may have written entries between the copied ones, so an entry is
+ * looked up by its event id, and it counts as held only when an entry with
+ * that id is exactly the redacted old one: a copy cut short while the entry
+ * was being written still lacks the rest. A piece with no id (text before the
+ * first entry, or a broken one) counts as held only when its redacted text is
+ * in `current` as it is. Anything else is added, redacted: at worst a
+ * duplicate, never the old text.
+ */
+function redactedEntriesMissingFrom(current: string, old: string): string {
+  const held = new Map<string, string[]>();
+  for (const entry of mirrorEntries(current)) {
+    const id = mirrorEntryId(entry);
+    if (id !== undefined) held.set(id, [...(held.get(id) ?? []), entry]);
+  }
+  return mirrorEntries(old)
+    .map((entry) => ({ id: mirrorEntryId(entry), redacted: redactMirrorText(entry) }))
+    .filter(({ id, redacted }) =>
+      id === undefined ? !current.includes(redacted) : !held.get(id)?.includes(redacted))
+    .map(({ redacted }) => redacted)
+    .join('');
 }
 
 /**
@@ -618,7 +782,7 @@ function unfinishedRedaction(plan: CredentialRedactionPlan): string[] {
   if (failedFiles.length > 0) {
     notes.push(
       `${failedFiles.length} Markdown file(s) could not be rewritten and still hold the credential; ` +
-      'fix their permissions and re-run with --apply:'
+      'fix their permissions or free disk space, then re-run with --apply:'
     );
     for (const change of failedFiles.slice(0, 10)) notes.push(`    ${change.filePath}`);
     if (failedFiles.length > 10) notes.push(`    … and ${failedFiles.length - 10} more`);
