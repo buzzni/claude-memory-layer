@@ -14,8 +14,8 @@ export interface ParseResult {
   filtered: string;
   sections: PrivateSection[];
   /**
-   * An opening tag had no end. Everything from it on was masked, unless
-   * maskUnclosed is false.
+   * An opening tag of a format that fails closed had no end. Everything from
+   * it on was masked, unless maskUnclosed is false.
    */
   unclosed: boolean;
   stats: {

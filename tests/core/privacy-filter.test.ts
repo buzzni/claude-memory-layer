@@ -316,20 +316,39 @@ describe('unclosed private tags', () => {
   });
 
   // #296: the parser only reported an unclosed tag it masked to the end, and
-  // the tag count does not cover the comment format.
-  it('flags an unclosed tag it keeps with maskUnclosed: false, where the tag count misses it', () => {
-    const commentOnly: Config['privacy'] = {
+  // the tag count does not cover the comment format. maskUnclosed: false
+  // changes what is masked, not what is flagged.
+  it.each([
+    ['an unclosed comment tag, which the tag count does not cover', 'comment', 'a <!-- private --> b', 'a [PRIVATE: unclosed]'],
+    ['an unclosed comment tag after a stray closing tag', 'comment', 'a <!-- /private --> b <!-- private -->orchid', 'a <!-- /private --> b [PRIVATE: unclosed]'],
+    ['an unclosed xml tag evened out by a stray closing tag', 'xml', 'a </private> b <private>orchid', 'a </private> b [PRIVATE: unclosed]'],
+    // The bracket format does not fail closed, so only the tag count flags it.
+    ['an unclosed bracket tag', 'bracket', 'a [private] b', 'a [private] b']
+  ] as const)('flags %s whether or not it is masked', (_kind, format, text, masked) => {
+    const config: Config['privacy'] = {
       ...privacy,
-      privateTags: { ...privacy.privateTags, supportedFormats: ['comment'] }
+      privateTags: { ...privacy.privateTags, supportedFormats: [format] }
     };
 
-    const comment = applyPrivacyFilter('a <!-- private --> b', commentOnly, { maskUnclosed: false });
-    expect(comment.content).toBe('a <!-- private --> b');
-    expect(comment.metadata.hasUnmatchedTags).toBe(true);
+    const kept = applyPrivacyFilter(text, config, { maskUnclosed: false });
+    expect(kept.content).toBe(text);
+    expect(kept.metadata.hasUnmatchedTags).toBe(true);
 
-    const evenedOut = applyPrivacyFilter('a </private> b <private>orchid', privacy, { maskUnclosed: false });
-    expect(evenedOut.content).toBe('a </private> b <private>orchid');
-    expect(evenedOut.metadata.hasUnmatchedTags).toBe(true);
+    const byDefault = applyPrivacyFilter(text, config);
+    expect(byDefault.content).toBe(masked);
+    expect(byDefault.metadata.hasUnmatchedTags).toBe(true);
+  });
+
+  it('does not flag text whose tags are all closed with maskUnclosed: false', () => {
+    // Bracket first, so it does not read the marker another format left as a tag.
+    const allFormats: Config['privacy'] = {
+      ...privacy,
+      privateTags: { ...privacy.privateTags, supportedFormats: ['bracket', 'xml', 'comment'] }
+    };
+    const result = applyPrivacyFilter('a <private>o</private> b [private]p[/private] c <!-- private -->q<!-- /private --> d', allFormats, { maskUnclosed: false });
+
+    expect(result.content).toBe('a [PRIVATE]\nb [PRIVATE]\nc [PRIVATE]\nd');
+    expect(result.metadata.hasUnmatchedTags).toBe(false);
   });
 
   // The code is set aside under a placeholder while tags are parsed. The same
