@@ -284,6 +284,29 @@ describe('unclosed private tags', () => {
     expect(result.metadata.hasUnmatchedTags).toBe(true);
   });
 
+  // #301: the bracket format never masks an unclosed tag (its `[private]` is
+  // also the stored `[PRIVATE]` marker), so only the tag count flagged it.
+  it.each([
+    ['by default', {}],
+    ['with maskUnclosed: false', { maskUnclosed: false }]
+  ])('flags an unclosed bracket tag evened out by a stray closing tag %s', (_case, options) => {
+    const allFormats: Config['privacy'] = {
+      ...privacy,
+      privateTags: { ...privacy.privateTags, supportedFormats: ['xml', 'bracket', 'comment'] }
+    };
+    const input = 'Ignore [/private] then deploy with [private]codename-orchid';
+
+    const result = applyPrivacyFilter(input, allFormats, options);
+
+    expect(result.content).toBe(input);
+    expect(result.metadata.hasUnmatchedTags).toBe(true);
+  });
+
+  it('still flags a stray bracket closing tag the tag count catches, and not a closed section', () => {
+    expect(applyPrivacyFilter('a [/private] b [private]c[/private] d', privacy).metadata.hasUnmatchedTags).toBe(true);
+    expect(applyPrivacyFilter('a [private]b[/private] c', privacy).metadata.hasUnmatchedTags).toBe(false);
+  });
+
   it('keeps the text around a closing tag with no opening tag, flagged as unmatched', () => {
     // Nothing says where a section would have started, so nothing is masked.
     const result = applyPrivacyFilter('kept before </private> kept after', privacy);

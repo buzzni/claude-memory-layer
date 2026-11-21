@@ -342,5 +342,11 @@ export function hasUnmatchedOpenTag(text: string): boolean {
   const openBracket = (text.match(/\[private\]/gi) || []).length;
   const closeBracket = (text.match(/\[\/private\]/gi) || []).length;
 
-  return openXml !== closeXml || openBracket !== closeBracket;
+  // The counts even out when a stray closing tag comes before an unclosed
+  // opening tag. The bracket format is never masked to the end, so this is
+  // the only place that catches it (#301).
+  const unclosed = nestedSections(text, TAG_PATTERNS.xml).unclosedAt !== undefined
+    || nestedSections(text, TAG_PATTERNS.bracket).unclosedAt !== undefined;
+
+  return openXml !== closeXml || openBracket !== closeBracket || unclosed;
 }
