@@ -83,3 +83,24 @@ describe('unclosed <private> tag in stored copies', () => {
     }
   });
 });
+
+// #288: a nested section used to end at its first closing tag, so the text up
+// to the outer closing tag reached every stored copy.
+const NESTED_PROMPT = 'Explain the flow. <private>approver <private>codename-orchid</private> backup codename-lily</private> Thanks.';
+
+describe('nested <private> tags in stored copies', () => {
+  it.each([
+    ['UserPromptSubmit', redactForStorage(NESTED_PROMPT)],
+    ['session-history importer', planPromptStorage(NESTED_PROMPT).storedText],
+    ['Stop', normalizeAgentResponse(NESTED_PROMPT).content]
+  ])('keeps the text up to the outer closing tag out of the row, the index and the mirror (%s)', async (_writer, stored) => {
+    const copies = await storedCopies(event('user_prompt', stored));
+
+    expect(copies.row).toBe('Explain the flow. [PRIVATE]\nThanks.');
+    for (const copy of Object.values(copies)) {
+      expect(copy).not.toContain('codename-orchid');
+      expect(copy).not.toContain('codename-lily');
+      expect(copy).not.toContain('</private>');
+    }
+  });
+});

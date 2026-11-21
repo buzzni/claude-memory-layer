@@ -64,8 +64,8 @@ Claude Code 훅은 저장하기 전에 아래 마스킹을 적용합니다. 어�
 - **닫히지 않은 `<private>` 태그**: 닫는 태그가 없으면 여는 태그부터 그 텍스트 끝까지를 `[PRIVATE: unclosed]` 하나로 바꿔 저장하고, privacy metadata의 `hasUnmatchedTags`를 `true`로 남깁니다. 도구 입력은 문자열 값마다 따로 거르므로 그 값의 끝까지만 가립니다. 몇 가지 규칙이 따릅니다.
   - 코드 블록·인라인 코드 밖에서 태그 이름을 문장 속에 언급만 해도 닫히지 않은 태그로 보고 그 뒤를 모두 가립니다. 태그 이름을 적을 때는 `` `<private>` ``처럼 인라인 코드로 감싸세요. 닫히지 않은 코드 펜스(```` ``` ````) 안은 코드 블록으로 보지 않습니다.
   - 여는 태그 없이 `</private>`만 있으면 어디부터 가릴지 알 수 없으므로 아무것도 가리지 않고 `hasUnmatchedTags`만 `true`가 됩니다.
-  - 태그는 중첩되지 않습니다. 구간은 처음 나오는 `</private>`에서 끝납니다.
-  - 이 규칙이 생기기 전에 저장된 행은 다시 가리지 않습니다. `repair redact-credentials --apply`도 예전 행과 Markdown mirror를 다시 거를 때 이 규칙은 쓰지 않고, 닫힌 태그와 자격 증명만 예전처럼 가립니다.
+  - 태그를 중첩하면 구간은 바깥 여는 태그와 짝이 맞는 `</private>`에서 끝납니다. 바깥 태그가 끝내 닫히지 않으면 안쪽 태그가 닫혀 있어도 바깥 여는 태그부터 끝까지 가립니다.
+  - 이 규칙이 생기기 전에 저장된 행은 다시 가리지 않습니다. `repair redact-credentials --apply`도 예전 행과 Markdown mirror를 다시 거를 때 이 규칙은 쓰지 않고, 닫힌 태그와 자격 증명만 가립니다. 중첩된 태그는 바깥 닫는 태그까지 가리고, 바깥 태그가 닫히지 않았으면 그 뒤의 마지막 `</private>`까지 가립니다.
 - **자격 증명 마스킹**: 다음 패턴을 `[REDACTED]`로 바꿉니다. `password`·`secret`·`token`·`api_key` 형태의 할당, `--password` 같은 CLI 옵션 값, 사용자 정보가 들어간 URI(`scheme://user:pass@host`), Bearer 토큰, PEM 개인 키, AWS·GitHub·GitLab·Slack·Hugging Face·OpenAI·Anthropic 토큰 접두사. 도구 입력은 키 이름에 `password`·`secret`·`key`·`token`·`auth`·`credential`이 들어간 문자열 값을 통째로 가립니다.
 - **경로 마스킹**: retention·governance 감사 결과는 절대 경로를 마스킹합니다. Hermes 세션 원본 경로는 공개 source ref에서 가려집니다.
 

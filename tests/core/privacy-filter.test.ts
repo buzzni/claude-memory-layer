@@ -293,13 +293,6 @@ describe('unclosed private tags', () => {
     expect(result.metadata.hasPrivateTags).toBe(false);
   });
 
-  it('ends a section at its first closing tag: tags do not nest', () => {
-    const result = applyPrivacyFilter('a <private>outer <private>inner</private> tail</private> b', privacy);
-
-    expect(result.content).toBe('a [PRIVATE]\ntail</private> b');
-    expect(result.metadata.privateTagCount).toBe(1);
-  });
-
   it('masks several closed sections and keeps the text between them', () => {
     const result = applyPrivacyFilter('a <private>1</private> b <private>2</private> c', privacy);
 
@@ -357,5 +350,104 @@ describe('unclosed private tags', () => {
 
     expect(applyPrivacyFilter('Fixed parsing [PRIVATE]\nand moved on to the dashboard', readBack).content)
       .toBe('Fixed parsing [PRIVATE]\nand moved on to the dashboard');
+  });
+});
+
+describe('nested private tags', () => {
+  const allFormats: Config['privacy'] = {
+    ...privacy,
+    privateTags: { ...privacy.privateTags, marker: '[REDACTED]', supportedFormats: ['xml', 'bracket', 'comment'] }
+  };
+
+  // #288: a section used to end at its first closing tag, so the text between
+  // an inner and the outer closing tag was stored as written, unflagged.
+  it('masks a section up to the closing tag of its outer opening tag', () => {
+    const result = applyPrivacyFilter('a <private>outer <private>inner</private> tail-orchid</private> b', privacy);
+
+    expect(result.content).toBe('a [PRIVATE]\nb');
+    expect(result.metadata.privateTagCount).toBe(1);
+    expect(result.metadata.hasUnmatchedTags).toBe(false);
+  });
+
+  it('masks each nesting level and keeps the text between outer sections', () => {
+    const result = applyPrivacyFilter(
+      'x <private>1 <private>2 <private>3</private> 2b</private> 1b</private> y <private>z</private> w',
+      privacy
+    );
+
+    expect(result.content).toBe('x [PRIVATE]\ny [PRIVATE]\nw');
+    expect(result.metadata.privateTagCount).toBe(2);
+  });
+
+  it('masks nested bracket and comment tags the same way', () => {
+    expect(applyPrivacyFilter('a [private]o [private]i[/private] tail-orchid[/private] b', allFormats).content)
+      .toBe('a [REDACTED] b');
+    expect(applyPrivacyFilter('a <!-- private -->o <!-- private -->i<!-- /private --> tail-orchid<!-- /private --> b', allFormats).content)
+      .toBe('a [REDACTED] b');
+  });
+
+  it('masks from an outer tag that is never closed to the end, even when the tags inside it are closed', () => {
+    const result = applyPrivacyFilter('a <private>o <private>i</private> mid-orchid tail-lily', privacy);
+
+    expect(result.content).toBe('a [PRIVATE: unclosed]');
+    expect(result.metadata.privateTagCount).toBe(1);
+    expect(result.metadata.hasUnmatchedTags).toBe(true);
+    expect(applyPrivacyFilter('a <!-- private -->o <!-- private -->i<!-- /private --> mid-orchid', allFormats).content)
+      .toBe('a [REDACTED: unclosed]');
+  });
+
+  it('masks a bracket section left open up to its last closing tag, never to the end', () => {
+    // The bracket format does not fail closed: its opening tag is also the stored [PRIVATE] marker.
+    expect(applyPrivacyFilter('a [private]o [private]i[/private] mid-orchid [private]j[/private] tail', allFormats).content)
+      .toBe('a [REDACTED] tail');
+  });
+
+  it('reads a stored [PRIVATE] marker as a bracket tag that only ever masks more', () => {
+    expect(applyPrivacyFilter('Fixed [PRIVATE]\nthen [private]a[/private] mid-orchid [private]b[/private] end', allFormats).content)
+      .toBe('Fixed [REDACTED] end');
+  });
+
+  it('leaves a closing tag with no opening tag before it as it was', () => {
+    expect(applyPrivacyFilter('a <private>s</private> b</private> c', privacy).content)
+      .toBe('a [PRIVATE]\nb</private> c');
+  });
+
+  it('keeps code and placeholder text out of a nested section', () => {
+    const result = applyPrivacyFilter(
+      'see `<private>` __INLINE_CODE_0__ <private>o `code-orchid` <private>i</private> tail-lily</private> end',
+      privacy
+    );
+
+    expect(result.content).toBe('see `<private>` __INLINE_CODE_0__ [PRIVATE]\nend');
+  });
+
+  it('masks closed nested sections with maskUnclosed: false, and an outer tag left open only up to its last closing tag', () => {
+    // How redact-credentials re-filters stored rows: no masking to the end.
+    expect(applyPrivacyFilter('a <private>o <private>i</private> tail-orchid</private> b', privacy, { maskUnclosed: false }).content)
+      .toBe('a [PRIVATE]\nb');
+
+    const result = applyPrivacyFilter('a <private>o <private>i</private> mid-orchid <private>j</private> tail', privacy, { maskUnclosed: false });
+    expect(result.content).toBe('a [PRIVATE]\ntail');
+    expect(result.metadata.hasUnmatchedTags).toBe(true);
+  });
+
+  // Formats are matched one after another, so a section that now runs to its
+  // outer closing tag can hide the closing tag another format's section used.
+  // Nothing the first-closing-tag rule masked may come back.
+  it('never reveals what a section ending at the first closing tag masked, across formats', () => {
+    const result = applyPrivacyFilter(
+      '[private] secret-orchid <private>a <private>b</private> mid-lily [/private] more-iris </private> after',
+      allFormats
+    );
+
+    expect(result.content).toBe('[REDACTED] after');
+    expect(result.metadata.hasPrivateTags).toBe(true);
+  });
+
+  it('still masks to the end from an unclosed tag that a nested section of another format runs over', () => {
+    const result = applyPrivacyFilter('[private] a [private] b [/private] <!-- private --> c [/private] d-orchid', allFormats);
+
+    expect(result.content).toBe('[REDACTED: unclosed]');
+    expect(result.metadata.hasUnmatchedTags).toBe(true);
   });
 });
