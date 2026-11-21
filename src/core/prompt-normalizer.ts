@@ -78,6 +78,14 @@ export function redactPromptForStorage(text: string): string {
   return applyPrivacyFilter(text, PROMPT_PRIVACY_CONFIG).content;
 }
 
+/**
+ * What redactPromptForStorage stored before #269: the text after an unclosed
+ * private tag kept. Only for recognizing those rows on re-import; never stored.
+ */
+export function redactPromptAsStoredBeforeUnclosedMasking(text: string): string {
+  return applyPrivacyFilter(text, PROMPT_PRIVACY_CONFIG, { maskUnclosed: false }).content;
+}
+
 export interface PromptStoragePlan {
   normalized: NormalizedPrompt;
   /** normalizer -> privacy (-> writer-specific bounds); empty unless normalized.kind === 'user'. */
@@ -94,7 +102,12 @@ export interface PromptStoragePlan {
 export function planPromptStorage(raw: string): PromptStoragePlan {
   const normalized = normalizeUserPrompt(raw);
   const storedText = normalized.kind === 'user' ? redactPromptForStorage(normalized.requestText) : '';
-  const legacy = new Set([raw, redactPromptForStorage(raw)]);
+  const legacy = new Set([
+    raw,
+    redactPromptForStorage(raw),
+    redactPromptAsStoredBeforeUnclosedMasking(raw),
+    ...(normalized.kind === 'user' ? [redactPromptAsStoredBeforeUnclosedMasking(normalized.requestText)] : [])
+  ]);
   legacy.delete(storedText);
   legacy.delete('');
   return { normalized, storedText, legacyContents: [...legacy] };

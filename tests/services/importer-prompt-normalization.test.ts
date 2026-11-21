@@ -115,6 +115,40 @@ describe('importer prompt normalization', () => {
     expect((await sessionEvents(service, memorySessionId)).prompts.map((event) => event.content)).toEqual([request]);
   });
 
+  // #269: the text after an unclosed tag is masked now, but a row stored
+  // before keeps it. Re-importing must recognize that row, not add the masked copy.
+  const UNCLOSED_REQUEST = 'Explain approval api_key=fake-key-abcdef <private>codename-orchid';
+  const STORED_BEFORE_MASKING = 'Explain approval [REDACTED] <private>codename-orchid';
+
+  it.each(['claude', 'codex', 'hermes'] as const)('%s: a prompt stored before unclosed tags were masked is not imported again', async (source) => {
+    const service = realService();
+    const memorySessionId = source === 'hermes' ? 'hermes:pre-masking' : 'pre-masking';
+    await service.storeUserPrompt(memorySessionId, STORED_BEFORE_MASKING, { turnId: 'old-turn' });
+
+    await importPrompt(service, source, 'pre-masking', `${WRAPPER}\n\n${UNCLOSED_REQUEST}`);
+
+    expect((await sessionEvents(service, memorySessionId)).prompts.map((event) => event.content)).toEqual([STORED_BEFORE_MASKING]);
+  });
+
+  it.each([
+    ['an earlier import', { importedFrom: 'earlier-import.jsonl' }],
+    ['the Stop hook', {}]
+  ] as const)('Claude: a response %s stored before unclosed tags were masked is not imported again', async (_writer, provenance) => {
+    const service = realService();
+    const file = join(tempDir(), 'pre-masking-response.jsonl');
+    const reply = `${LONG_REPLY('answer')} api_key=fake-key-abcdef <private>codename-orchid`;
+    const storedBefore = `${LONG_REPLY('answer')} [REDACTED] <private>codename-orchid`;
+    writeJsonl(file, [
+      { type: 'user', timestamp: '2026-10-01T00:00:00.000Z', message: { role: 'user', content: REQUEST } },
+      { type: 'assistant', timestamp: '2026-10-01T00:00:01.000Z', message: { role: 'assistant', content: [{ type: 'text', text: reply }] } }
+    ]);
+    await service.storeAgentResponse('pre-masking-response', storedBefore, { turnId: 'old-turn', ...provenance });
+
+    await new SessionHistoryImporter(service).importSessionFile(file);
+
+    expect((await sessionEvents(service, 'pre-masking-response')).responses.map((event) => event.content)).toEqual([storedBefore]);
+  });
+
   it('Claude: a banner-wrapped notification in an explicit subagent transcript opens a task_notification turn', async () => {
     const service = realService();
     const file = join(tempDir(), 'agent-banner.jsonl');
