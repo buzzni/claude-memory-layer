@@ -149,6 +149,37 @@ describe('importer prompt normalization', () => {
     expect((await sessionEvents(service, 'pre-masking-response')).responses.map((event) => event.content)).toEqual([storedBefore]);
   });
 
+  // #295: before #288 a nested section ended at its first closing tag, so a
+  // row stored then keeps the text up to the outer closing tag.
+  const NESTED_REQUEST = 'Explain approval api_key=fake-key-abcdef <private>outer <private>inner</private> tail-orchid</private> done';
+  const STORED_BEFORE_NESTING = 'Explain approval [REDACTED] [PRIVATE]\ntail-orchid</private> done';
+
+  it.each(['claude', 'codex', 'hermes'] as const)('%s: a prompt with nested tags stored before #288 is not imported again', async (source) => {
+    const service = realService();
+    const memorySessionId = source === 'hermes' ? 'hermes:pre-nesting' : 'pre-nesting';
+    await service.storeUserPrompt(memorySessionId, STORED_BEFORE_NESTING, { turnId: 'old-turn' });
+
+    await importPrompt(service, source, 'pre-nesting', `${WRAPPER}\n\n${NESTED_REQUEST}`);
+
+    expect((await sessionEvents(service, memorySessionId)).prompts.map((event) => event.content)).toEqual([STORED_BEFORE_NESTING]);
+  });
+
+  it('Claude: a response with nested tags stored before #288 is not imported again', async () => {
+    const service = realService();
+    const file = join(tempDir(), 'pre-nesting-response.jsonl');
+    const reply = `${LONG_REPLY('answer')} ${NESTED_REQUEST}`;
+    const storedBefore = `${LONG_REPLY('answer')} ${STORED_BEFORE_NESTING}`;
+    writeJsonl(file, [
+      { type: 'user', timestamp: '2026-10-01T00:00:00.000Z', message: { role: 'user', content: REQUEST } },
+      { type: 'assistant', timestamp: '2026-10-01T00:00:01.000Z', message: { role: 'assistant', content: [{ type: 'text', text: reply }] } }
+    ]);
+    await service.storeAgentResponse('pre-nesting-response', storedBefore, { turnId: 'old-turn' });
+
+    await new SessionHistoryImporter(service).importSessionFile(file);
+
+    expect((await sessionEvents(service, 'pre-nesting-response')).responses.map((event) => event.content)).toEqual([storedBefore]);
+  });
+
   it('Claude: a banner-wrapped notification in an explicit subagent transcript opens a task_notification turn', async () => {
     const service = realService();
     const file = join(tempDir(), 'agent-banner.jsonl');
