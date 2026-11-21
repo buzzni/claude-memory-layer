@@ -109,6 +109,39 @@ export function redactText(value: string): string {
   return applyPrivacyFilter(value, REDACTION_PRIVACY_CONFIG).content;
 }
 
+/**
+ * A tool_observation row holds JSON. Filtered as one string, the marker
+ * cleanup put a raw newline inside a string value and the row no longer
+ * parsed, and a tag opened in one value could match a close in another. So
+ * each string value is filtered on its own, as the hook masks tool input, and
+ * the row is serialized again only when one changed. A row that is not JSON
+ * is filtered as text.
+ */
+function redactToolObservation(value: string): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return redactText(value);
+  }
+  if (!parsed || typeof parsed !== 'object') return redactText(value);
+  let changed = false;
+  const redactValue = (node: unknown): unknown => {
+    if (typeof node === 'string') {
+      const redacted = applyPrivacyFilter(node, REDACTION_PRIVACY_CONFIG, { collapseMarkers: false }).content;
+      if (redacted !== node) changed = true;
+      return redacted;
+    }
+    if (Array.isArray(node)) return node.map(redactValue);
+    if (node && typeof node === 'object') {
+      return Object.fromEntries(Object.entries(node).map(([key, child]) => [key, redactValue(child)]));
+    }
+    return node;
+  };
+  const redacted = redactValue(parsed);
+  return changed ? JSON.stringify(redacted) : value;
+}
+
 function previewOf(redacted: string): string {
   const compact = redacted.replace(/\s+/g, ' ').trim();
   return compact.length > 120 ? `${compact.slice(0, 120)}…` : compact;
@@ -178,9 +211,10 @@ function* scanSqliteRedaction(db: SQLiteDatabase): Generator<PendingRowRedaction
     for (const column of target.columns) {
       if (!columnExists(db, target.table, column)) continue;
 
+      const isEvents = target.table === 'events';
       const rows = sqliteAll<Record<string, unknown>>(
         db,
-        `SELECT ${target.idColumn} AS row_id, rowid AS row_rowid, ${column} AS value
+        `SELECT ${target.idColumn} AS row_id, rowid AS row_rowid, ${column} AS value${isEvents ? ', event_type' : ''}
          FROM ${target.table}
          WHERE ${column} IS NOT NULL AND ${column} <> ''`
       );
@@ -190,7 +224,7 @@ function* scanSqliteRedaction(db: SQLiteDatabase): Generator<PendingRowRedaction
         const rowId = row.row_id === null || row.row_id === undefined ? null : String(row.row_id);
         if (!value || !rowId) continue;
 
-        const redacted = redactText(value);
+        const redacted = row.event_type === 'tool_observation' ? redactToolObservation(value) : redactText(value);
         if (redacted === value) continue;
 
         yield {
