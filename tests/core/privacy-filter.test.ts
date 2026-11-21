@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyPrivacyFilter, showsAllTextOf } from '../../src/core/privacy/index.js';
+import { applyPrivacyFilter, maskSensitiveInput, showsAllTextOf } from '../../src/core/privacy/index.js';
 import type { Config } from '../../src/core/types.js';
 
 const privacy: Config['privacy'] = {
@@ -484,8 +484,24 @@ describe('a credential right before a private tag', () => {
       .toBe('db [REDACTED] [PRIVATE]\n<br>');
   });
 
-  // Credentials and markers in random order. Value text is written in CJK
-  // characters, each used once, so whether one was kept is exact.
+  // #304 review: a kept marker let a config pattern take the next marker
+  // apart, or lost a config pattern that used a marker as its key, and a
+  // value those hid before was shown. Where stopping would show more, the
+  // marker is given up.
+  it.each([
+    ['[a-z_]+', '--token a[PRIVATE: unclosed]>[PRIVATE: unclosed]hunter2', '--token [REDACTED] unclosed]>[[REDACTED] '],
+    ['PRIVATE', '--token a[PRIVATE: unclosed]>[PRIVATE: unclosed]hunter2', '--token [REDACTED] unclosed]>[[REDACTED] '],
+    ['[a-z\\]]+', 'x <private>x</private>=hunter2', 'x [[REDACTED] ']
+  ])('never shows what a config pattern %s hid through a marker', (pattern, input, expected) => {
+    const custom: Config['privacy'] = { ...privacy, excludePatterns: [pattern] };
+
+    expect(applyPrivacyFilter(input, custom).content).toBe(expected);
+    expect(JSON.stringify(maskSensitiveInput({ command: input, list: [input] }, custom))).not.toContain('hunter2');
+  });
+
+  // Credentials and markers in random order, chained, with config patterns
+  // that match markers. Value text is written in CJK characters, each used
+  // once, so whether one was kept is exact.
   it('never keeps a character of a credential value, nor half a marker', () => {
     let seed = 304;
     const random = () => {
@@ -498,12 +514,12 @@ describe('a credential right before a private tag', () => {
     const pick = <T>(items: T[]): T => items[Math.floor(random() * items.length)];
     let next = 0x4e00;
     const tracked = () => Array.from({ length: 1 + Math.floor(random() * 3) }, () => String.fromCharCode(next++)).join('');
-    const custom: Config['privacy'] = { ...privacy, excludePatterns: [...privacy.excludePatterns, 'passphrase'] };
     const keys = ['token=', 'password: ', 'api_key="', "secret='", 'AWS_SECRET_ACCESS_KEY=', 'passphrase=', '--token ', '--api-key=', 'postgres://'];
     const chunks = [tracked, tracked, () => `<private>${tracked()}</private>`, () => `<private>${tracked()}`,
       () => '[PRIVATE]', () => '[private]', () => '[REDACTED]'];
-
-    for (let i = 0; i < 3000; i++) {
+    const configPatterns = [[], [], ['[a-z_]+'], ['PRIVATE'], ['REDACTED'], ['unclosed'], ['.+'], ['\\w+'], ['[^\\s]+']];
+    /** A credential, and the characters of its value. */
+    const credential = () => {
       const key = pick(keys);
       // A value never starts with a bracket (that is code, not a secret), so
       // it starts with text.
@@ -511,12 +527,26 @@ describe('a credential right before a private tag', () => {
       // A credential URL's userinfo is all secret; what follows it may be only a tag.
       if (key === 'postgres://') value += `@${pick(chunks)()}`;
       while (random() < 0.6) value += pick(chunks)();
-      const input = `run ${key}${value}${pick([' ', '"', "'", '\n', '', '<br>'])}${pick([tracked(), ''])} done`;
       const hidden = value.replace(/<private>[^<]*(?:<\/private>)?/g, '').match(/[\u4e00-\u9fff]/g) ?? [];
+      return { text: `${key}${value}${pick([' ', '"', "'", '\n', '', '<br>'])}`, hidden };
+    };
+
+    for (let i = 0; i < 3000; i++) {
+      const patterns = pick(configPatterns);
+      const custom: Config['privacy'] = { ...privacy, excludePatterns: [...privacy.excludePatterns, 'passphrase', ...patterns] };
+      const credentials = Array.from({ length: 1 + Math.floor(random() * 3) }, credential);
+      const separators = [' ', '\n', ' [PRIVATE: unclosed]>[PRIVATE: unclosed] ', ' <private>x '];
+      const input = `run ${credentials.map(({ text }) => text).join(pick(separators))}${pick([tracked(), ''])} done`;
+      const hidden = credentials.flatMap((c) => c.hidden);
 
       const output = applyPrivacyFilter(input, custom).content;
       expect(hidden.filter((char) => output.includes(char)), input).toEqual([]);
-      expect(output.replaceAll('[PRIVATE: unclosed]', ''), input).not.toContain('unclosed]');
+      // Where stopping would show what was hidden before #304 (marker text
+      // a config pattern matches, a `[private]` that is text), a marker can
+      // still be taken apart, as it was then.
+      if (patterns.length === 0 && !input.includes('[PRIVATE: unclosed]>') && !input.includes('[private]')) {
+        expect(output.replaceAll('[PRIVATE: unclosed]', ''), input).not.toContain('unclosed]');
+      }
     }
   });
 });

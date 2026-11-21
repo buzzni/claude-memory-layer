@@ -41,8 +41,8 @@ const NOT_A_SECRET_VALUE =
   + '(?!process\\.env\\.)';
 
 /**
- * A credential value: a run of `chars` that stops at a marker. The tag pass
- * runs first, so `token=abc<private>…` reaches these rules as
+ * A credential value: a run of `chars`. With `stop`, it stops at a marker. The
+ * tag pass runs first, so `token=abc<private>…` reaches these rules as
  * `token=abc[PRIVATE: unclosed]`, and a value that ran on into the marker
  * left a stray `unclosed]` behind (#304). It stops only where the value would
  * end after the marker anyway, at a character it cannot hold or the end: in
@@ -51,16 +51,29 @@ const NOT_A_SECRET_VALUE =
  * the rule still redacts what comes before it: the userinfo of
  * `postgres://admin:pw@[PRIVATE]`.
  */
-const secretValue = (chars: string): string => {
+const secretValue = (chars: string, stop: boolean): string => {
+  if (!stop) return `${chars}+`;
   const endingMarker = `\\[(?:PRIVATE|REDACTED)(?:: unclosed)?\\](?!${chars})`;
   return `(?:(?:(?!${endingMarker})${chars})+|(?=${endingMarker}))`;
 };
 
-const SENSITIVE_PATTERNS = [
+/**
+ * A credential rule: each match keeps its first `keep(match)` characters and
+ * the rest becomes `[REDACTED]`; undefined leaves the match as it is.
+ */
+interface Rule {
+  pattern: RegExp;
+  keep: (match: RegExpMatchArray) => number | undefined;
+}
+
+const redactWhole = (pattern: RegExp): Rule => ({ pattern, keep: () => 0 });
+const keepFirstGroup = (pattern: RegExp): Rule => ({ pattern, keep: (match) => match[1].length });
+
+const sensitivePatterns = (stop: boolean): RegExp[] => [
   // Credential-bearing URLs/connection strings with userinfo before the host.
   // Redact the whole URI so usernames, credentials, hosts, paths, and query
   // params do not leak either.
-  new RegExp(`\\b[a-z][a-z0-9+.-]*://[^\\s'"\`<>/@]+@${secretValue('[^\\s\'"`<>]')}`, 'gi'),
+  new RegExp(`\\b[a-z][a-z0-9+.-]*://[^\\s'"\`<>/@]+@${secretValue('[^\\s\'"`<>]', stop)}`, 'gi'),
   // Two guards keep source code out of these rules. Without them a stored
   // discussion of real code gets mangled — `getAccessToken: () => …` became
   // `getAccess[REDACTED] => …` on live data.
@@ -70,10 +83,10 @@ const SENSITIVE_PATTERNS = [
   // optional prefix group. The trailing guard rejects values that are plainly
   // code rather than a secret: a type annotation, an arrow function, or an
   // opening bracket.
-  new RegExp(`(?<![A-Za-z0-9])(?:[\\w.-]+[-_])?password\\s*[:=]\\s*${NOT_A_SECRET_VALUE}['"]?${secretValue(`[^\\s'"]`)}`, 'gi'),
-  new RegExp(`(?<![A-Za-z0-9])(?:[\\w.-]+[-_])?api[-_]?key\\s*[:=]\\s*${NOT_A_SECRET_VALUE}['"]?${secretValue(`[^\\s'"]`)}`, 'gi'),
-  new RegExp(`(?<![A-Za-z0-9])(?:[\\w.-]+[-_])?secret\\s*[:=]\\s*${NOT_A_SECRET_VALUE}['"]?${secretValue(`[^\\s'"]`)}`, 'gi'),
-  new RegExp(`(?<![A-Za-z0-9])(?:[\\w.-]+[-_])?token\\s*[:=]\\s*${NOT_A_SECRET_VALUE}['"]?${secretValue(`[^\\s'"]`)}`, 'gi'),
+  new RegExp(`(?<![A-Za-z0-9])(?:[\\w.-]+[-_])?password\\s*[:=]\\s*${NOT_A_SECRET_VALUE}['"]?${secretValue(`[^\\s'"]`, stop)}`, 'gi'),
+  new RegExp(`(?<![A-Za-z0-9])(?:[\\w.-]+[-_])?api[-_]?key\\s*[:=]\\s*${NOT_A_SECRET_VALUE}['"]?${secretValue(`[^\\s'"]`, stop)}`, 'gi'),
+  new RegExp(`(?<![A-Za-z0-9])(?:[\\w.-]+[-_])?secret\\s*[:=]\\s*${NOT_A_SECRET_VALUE}['"]?${secretValue(`[^\\s'"]`, stop)}`, 'gi'),
+  new RegExp(`(?<![A-Za-z0-9])(?:[\\w.-]+[-_])?token\\s*[:=]\\s*${NOT_A_SECRET_VALUE}['"]?${secretValue(`[^\\s'"]`, stop)}`, 'gi'),
   // camelCase keys are excluded above because `accessToken: () => …` is code.
   // But `accessToken: "eyJhbGciOi…"` is a real credential, and the difference
   // is the value, not the key. A quoted, long, secret-shaped literal is the
@@ -85,7 +98,7 @@ const SENSITIVE_PATTERNS = [
   // one of those nouns and the value has to be long enough to be a credential.
   /bearer\s+(?!token\b|jwt\b|auth\b|authentication\b|access\b|scheme\b|header\b|prefix\b)[a-zA-Z0-9\-_.]{16,}/gi,
   /AWS[_-]?ACCESS[_-]?KEY[_-]?ID\s*[:=]\s*['"]?[A-Z0-9]+/gi,
-  new RegExp(`AWS[_-]?SECRET[_-]?ACCESS[_-]?KEY\\s*[:=]\\s*['"]?${secretValue(`[^\\s'"]`)}`, 'gi'),
+  new RegExp(`AWS[_-]?SECRET[_-]?ACCESS[_-]?KEY\\s*[:=]\\s*['"]?${secretValue(`[^\\s'"]`, stop)}`, 'gi'),
   /-----BEGIN\s+(RSA\s+)?PRIVATE\s+KEY-----[\s\S]*?-----END\s+(RSA\s+)?PRIVATE\s+KEY-----/g,
   /ghp_[a-zA-Z0-9]{36}/g,  // GitHub Personal Access Token
   /sk-[a-zA-Z0-9]{48}/g,   // OpenAI API Key
@@ -102,13 +115,11 @@ const SENSITIVE_PATTERNS = [
   /\bAKIA[0-9A-Z]{16}\b/g,             // AWS access key id
 ];
 
-const CLI_SECRET_OPTION_PATTERNS = [
-  new RegExp(
-    `(--(?:[a-z0-9]+[-_])*(?:password|secret|api[-_]?key|token|bearer)(?:[-_][a-z0-9]+)*(?:\\s+|=))`
-      + `(?:"[^"]*"|'[^']*'|${secretValue('[^\\s\'"`<>]')})`,
-    'gi'
-  )
-];
+const cliSecretOptionPattern = (stop: boolean): RegExp => new RegExp(
+  `(--(?:[a-z0-9]+[-_])*(?:password|secret|api[-_]?key|token|bearer)(?:[-_][a-z0-9]+)*(?:\\s+|=))`
+    + `(?:"[^"]*"|'[^']*'|${secretValue('[^\\s\'"`<>]', stop)})`,
+  'gi'
+);
 
 const URL_FOLLOWING_SECRET_PATTERN = /((?:https?:\/\/[^\s'"`<>]+)\s*\r?\n\s*)([A-Za-z0-9!@#$%^&*._+\-~:=/]{6,})(?=\s*(?:\r?\n|$))/gi;
 
@@ -118,36 +129,133 @@ function looksLikePastedSecret(value: string): boolean {
   return value.length >= 8 && /(?:\d|[^A-Za-z0-9])/.test(value);
 }
 
-function maskUrlFollowingSecret(value: string): { content: string; count: number } {
-  let count = 0;
-  const content = value.replace(URL_FOLLOWING_SECRET_PATTERN, (_match, prefix: string, secret: string) => {
-    if (!looksLikePastedSecret(secret)) return `${prefix}${secret}`;
-    count++;
-    return `${prefix}[REDACTED]`;
-  });
-  return { content, count };
+/** Contextual paste filtering (a URL followed by a password-looking line). */
+const URL_FOLLOWING_SECRET: Rule = {
+  pattern: URL_FOLLOWING_SECRET_PATTERN,
+  keep: (match) => (looksLikePastedSecret(match[2]) ? match[1].length : undefined)
+};
+
+/** The built-in rules, values stopping at a marker or running on through it. */
+const builtInRules = (stop: boolean) => ({
+  cli: keepFirstGroup(cliSecretOptionPattern(stop)),
+  sensitive: sensitivePatterns(stop).map(redactWhole)
+});
+const BUILT_IN = { stopping: builtInRules(true), through: builtInRules(false) };
+
+/**
+ * A config pattern mirrors the built-in keyword rules, so it needs the same
+ * value guard. Without it the config list silently re-introduced every false
+ * positive the built-ins had been taught to avoid — `token = json.dumps(payload)`
+ * was still being rewritten to `[REDACTED]` through this rule alone. An
+ * invalid pattern is skipped.
+ */
+function excludeRules(patterns: string[], stop: boolean): Rule[] {
+  const rules: Rule[] = [];
+  for (const patternStr of patterns) {
+    try {
+      rules.push(keepFirstGroup(new RegExp(
+        `(^|[^\\w-])(${patternStr})\\s*[:=]\\s*${NOT_A_SECRET_VALUE}['"]?${secretValue(`[^\\s'"]`, stop)}`,
+        'gi'
+      )));
+    } catch {
+      // Invalid regex pattern, skip
+    }
+  }
+  return rules;
 }
 
-function maskCliSecretOptions(value: string): { content: string; count: number } {
-  let count = 0;
-  let filtered = value;
-  for (const pattern of CLI_SECRET_OPTION_PATTERNS) {
-    pattern.lastIndex = 0;
-    filtered = filtered.replace(pattern, (_match, prefix: string) => {
-      count++;
-      return `${prefix}[REDACTED]`;
-    });
+interface Redacted {
+  text: string;
+  count: number;
+  /** Where each character is in the text the rules started from, -1 for a marker they put in. */
+  from: Int32Array;
+}
+
+const INSERTED = '[REDACTED]';
+
+function applyRule(state: Redacted, { pattern, keep }: Rule): Redacted {
+  pattern.lastIndex = 0;
+  let text = '';
+  const kept: Array<[number, number]> = [];
+  let cursor = 0;
+  for (const match of state.text.matchAll(pattern)) {
+    const length = keep(match);
+    if (length === undefined) continue;
+    const end = match.index! + length;
+    text += state.text.slice(cursor, end) + INSERTED;
+    kept.push([cursor, end]);
+    cursor = match.index! + match[0].length;
   }
-  return { content: filtered, count };
+  if (kept.length === 0) return state;
+  text += state.text.slice(cursor);
+
+  const from = new Int32Array(text.length);
+  let at = 0;
+  for (const [start, end] of kept) {
+    from.set(state.from.subarray(start, end), at);
+    at += end - start;
+    from.fill(-1, at, at + INSERTED.length);
+    at += INSERTED.length;
+  }
+  from.set(state.from.subarray(cursor), at);
+  return { text, count: state.count + kept.length, from };
+}
+
+function applyRules(text: string, rules: Rule[]): Redacted {
+  const from = new Int32Array(text.length);
+  for (let i = 0; i < from.length; i++) from[i] = i;
+  let state: Redacted = { text, count: 0, from };
+  for (const rule of rules) state = applyRule(state, rule);
+  return state;
+}
+
+const MARKER = /\[(?:PRIVATE|REDACTED)(?:: unclosed)?\]/g;
+
+/**
+ * Whether the rules with values stopping at a marker (`stopping`) left hidden
+ * every character of `text` that they hid with values running on through
+ * markers (`through`), apart from markers they kept whole. A piece of a
+ * marker is text like any other.
+ */
+function stoppingHidesAll(text: string, stopping: Redacted, through: Redacted): boolean {
+  const shownBy = ({ from }: Redacted) => {
+    const at = new Uint8Array(text.length);
+    for (const i of from) if (i >= 0) at[i] = 1;
+    return at;
+  };
+  const shownStopping = shownBy(stopping);
+  const shownThrough = shownBy(through);
+  for (const match of text.matchAll(MARKER)) {
+    const start = match.index!;
+    const end = start + match[0].length;
+    if (shownStopping.subarray(start, end).every((isShown) => isShown === 1)) shownThrough.fill(1, start, end);
+  }
+  return shownStopping.every((isShown, i) => !isShown || shownThrough[i] === 1);
+}
+
+/**
+ * The credential rules, with values stopping at a marker when that hides all
+ * they hid before #304, apart from markers. A kept marker changes what the
+ * rules after it see: a config pattern can start a match in it that takes the
+ * next marker apart (`[a-z_]+` in `a[PRIVATE: unclosed]>[PRIVATE: unclosed]x`),
+ * or have used a marker's text as its key (`[a-z\]]+` takes `PRIVATE]` in
+ * `[PRIVATE]=hunter2`). No placeholder keeps an arbitrary config pattern from
+ * matching, and hiding the marker from it would lose the second case, so the
+ * two results are compared character by character instead, and where stopping
+ * would show more, the marker is given up.
+ */
+function redactCredentials(text: string, rules: (stop: boolean) => Rule[]): { content: string; count: number } {
+  const stopping = applyRules(text, rules(true));
+  const through = applyRules(text, rules(false));
+  const kept = stopping.text === through.text || stoppingHidesAll(text, stopping, through) ? stopping : through;
+  return { content: kept.text, count: kept.count };
 }
 
 function maskSensitiveString(value: string): string {
-  let filtered = maskCliSecretOptions(value).content;
-  for (const pattern of SENSITIVE_PATTERNS) {
-    pattern.lastIndex = 0;
-    filtered = filtered.replace(pattern, '[REDACTED]');
-  }
-  return filtered;
+  return redactCredentials(value, (stop) => {
+    const { cli, sensitive } = stop ? BUILT_IN.stopping : BUILT_IN.through;
+    return [cli, ...sensitive];
+  }).content;
 }
 
 /**
@@ -191,50 +299,20 @@ export function applyPrivacyFilter(
     hasUnmatchedTags ||= tagResult.unclosed;
   }
 
-  // 2. CLI option filtering (`--password value`, `--password=value`, etc.)
-  const cliResult = maskCliSecretOptions(filtered);
-  filtered = cliResult.content;
-  patternMatchCount += cliResult.count;
+  // 2. Credential rules: CLI options (`--password value`), a URL followed by
+  // a password-looking line, the built-in patterns, then the config patterns.
+  const exclude = {
+    stopping: excludeRules(config.excludePatterns || [], true),
+    through: excludeRules(config.excludePatterns || [], false)
+  };
+  const credentials = redactCredentials(filtered, (stop) => {
+    const { cli, sensitive } = stop ? BUILT_IN.stopping : BUILT_IN.through;
+    return [cli, URL_FOLLOWING_SECRET, ...sensitive, ...(stop ? exclude.stopping : exclude.through)];
+  });
+  filtered = credentials.content;
+  patternMatchCount += credentials.count;
 
-  // 3. Contextual paste filtering (URL followed by a password-looking line)
-  const urlSecretResult = maskUrlFollowingSecret(filtered);
-  filtered = urlSecretResult.content;
-  patternMatchCount += urlSecretResult.count;
-
-  // 4. Built-in sensitive pattern filtering
-  for (const pattern of SENSITIVE_PATTERNS) {
-    // Reset lastIndex for global regex
-    pattern.lastIndex = 0;
-    const matches = filtered.match(pattern);
-    if (matches) {
-      patternMatchCount += matches.length;
-      filtered = filtered.replace(pattern, '[REDACTED]');
-    }
-  }
-
-  // 3. Custom pattern filtering from config
-  //
-  // This mirrors the built-in keyword rules, so it needs the same value guard.
-  // Without it the config list silently re-introduced every false positive the
-  // built-ins had been taught to avoid — `token = json.dumps(payload)` was
-  // still being rewritten to `[REDACTED]` through this loop alone.
-  for (const patternStr of config.excludePatterns || []) {
-    try {
-      const regex = new RegExp(
-        `(^|[^\\w-])(${patternStr})\\s*[:=]\\s*${NOT_A_SECRET_VALUE}['"]?${secretValue(`[^\\s'"]`)}`,
-        'gi'
-      );
-      const matches = filtered.match(regex);
-      if (matches) {
-        patternMatchCount += matches.length;
-        filtered = filtered.replace(regex, '$1[REDACTED]');
-      }
-    } catch {
-      // Invalid regex pattern, skip
-    }
-  }
-
-  // 4. Clean up consecutive markers
+  // 3. Clean up consecutive markers
   if (options.collapseMarkers !== false) {
     filtered = filtered.replace(/(\[PRIVATE\]\s*)+/g, '[PRIVATE]\n');
     filtered = filtered.replace(/(\[REDACTED\]\s*)+/g, '[REDACTED] ');
