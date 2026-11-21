@@ -45,11 +45,16 @@ const NOT_A_SECRET_VALUE =
  * runs first, so `token=abc<private>…` reaches these rules as
  * `token=abc[PRIVATE: unclosed]`, and a value that ran on into the marker
  * left a stray `unclosed]` behind (#304). It stops only where the value would
- * end after the marker anyway: in `token=abc[PRIVATE]def` the `def` is still
- * part of the value, and keeping the marker would store it.
+ * end after the marker anyway, at a character it cannot hold or the end: in
+ * `token=abc[PRIVATE]def` the `def` is still part of the value, and keeping
+ * the marker would store it. A value that is only such a marker is empty, so
+ * the rule still redacts what comes before it: the userinfo of
+ * `postgres://admin:pw@[PRIVATE]`.
  */
-const secretValue = (chars: string): string =>
-  `(?:(?!\\[(?:PRIVATE|REDACTED)(?:: unclosed)?\\](?:[\\s'"]|$))${chars})+`;
+const secretValue = (chars: string): string => {
+  const endingMarker = `\\[(?:PRIVATE|REDACTED)(?:: unclosed)?\\](?!${chars})`;
+  return `(?:(?:(?!${endingMarker})${chars})+|(?=${endingMarker}))`;
+};
 
 const SENSITIVE_PATTERNS = [
   // Credential-bearing URLs/connection strings with userinfo before the host.

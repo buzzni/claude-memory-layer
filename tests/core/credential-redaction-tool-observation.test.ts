@@ -139,6 +139,30 @@ describe('repair redact-credentials on tool_observation rows (#290)', () => {
     expect(JSON.parse(stored).toolInput.command).toBe('export [REDACTED] -la');
   });
 
+  it('keeps the marker a credential value runs into, and a second run changes nothing (#304)', async () => {
+    const { store, storagePath } = await openStore();
+    const id = await legacyRow(store, 'tool_observation', JSON.stringify({
+      toolName: 'Bash',
+      toolInput: { command: 'psql postgres://admin:hunter2@<private>db.internal</private> -c 1' },
+      toolOutput: 'deploy token=abc<private>x</private>',
+      success: true
+    }));
+
+    await apply(store, storagePath);
+
+    const stored = JSON.parse(contentOf(store, id));
+    expect(stored.toolInput.command).toBe('psql [REDACTED][PRIVATE] -c 1');
+    expect(stored.toolOutput).toBe('deploy [REDACTED][PRIVATE]');
+    expect((await apply(store, storagePath)).rowChanges).toEqual([]);
+  });
+
+  it('keeps the marker a credential value runs into in a text row, and a second run changes nothing (#304)', () => {
+    const once = redactText('deploy token=abc<private>x</private> done');
+
+    expect(once).toBe('deploy [REDACTED] [PRIVATE]\ndone');
+    expect(redactText(once)).toBe(once);
+  });
+
   it('rewrites only the values it masks, so other text keeps its exact form', async () => {
     const stored = await redactRow(
       '{"toolName":"Bash", "toolInput":{"command":"echo <private>x</private>"},\n "toolOutput":"caf\\u00e9 \\/ok", "metadata":{"bytes":12345678901234567890}}'

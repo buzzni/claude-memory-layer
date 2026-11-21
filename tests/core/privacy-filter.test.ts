@@ -467,6 +467,58 @@ describe('a credential right before a private tag', () => {
     expect(applyPrivacyFilter('deploy token=abc<private>codename-orchid', redactedMarker).content)
       .toBe('deploy [REDACTED] [REDACTED: unclosed]');
   });
+
+  // A value that is only a marker: stopping there must still redact the rule's
+  // match, or the userinfo of a credential URL is kept.
+  it.each([
+    ['a credential URL', 'db postgres://admin:hunter2@<private>db.internal</private> ok', 'db [REDACTED] [PRIVATE]\nok'],
+    ['an unclosed credential URL', 'db postgres://admin:hunter2@<private>db.internal', 'db [REDACTED] [PRIVATE: unclosed]'],
+    ['a quoted value', 'deploy token="<private>x</private>"', 'deploy [REDACTED] [PRIVATE]\n"'],
+    ['a CLI option', 'deploy --token <private>x</private> next', 'deploy --token [REDACTED] [PRIVATE]\nnext']
+  ])('keeps the marker that is all of the value of %s', (_label, input, expected) => {
+    expect(applyPrivacyFilter(input, privacy).content).toBe(expected);
+  });
+
+  it('keeps the marker where a character the value cannot hold follows it', () => {
+    expect(applyPrivacyFilter('db postgres://u:pw@db<private>x</private><br>', privacy).content)
+      .toBe('db [REDACTED] [PRIVATE]\n<br>');
+  });
+
+  // Credentials and markers in random order. Value text is written in CJK
+  // characters, each used once, so whether one was kept is exact.
+  it('never keeps a character of a credential value, nor half a marker', () => {
+    let seed = 304;
+    const random = () => {
+      seed = (seed + 0x6d2b79f5) >>> 0;
+      let t = seed;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    const pick = <T>(items: T[]): T => items[Math.floor(random() * items.length)];
+    let next = 0x4e00;
+    const tracked = () => Array.from({ length: 1 + Math.floor(random() * 3) }, () => String.fromCharCode(next++)).join('');
+    const custom: Config['privacy'] = { ...privacy, excludePatterns: [...privacy.excludePatterns, 'passphrase'] };
+    const keys = ['token=', 'password: ', 'api_key="', "secret='", 'AWS_SECRET_ACCESS_KEY=', 'passphrase=', '--token ', '--api-key=', 'postgres://'];
+    const chunks = [tracked, tracked, () => `<private>${tracked()}</private>`, () => `<private>${tracked()}`,
+      () => '[PRIVATE]', () => '[private]', () => '[REDACTED]'];
+
+    for (let i = 0; i < 3000; i++) {
+      const key = pick(keys);
+      // A value never starts with a bracket (that is code, not a secret), so
+      // it starts with text.
+      let value = tracked();
+      // A credential URL's userinfo is all secret; what follows it may be only a tag.
+      if (key === 'postgres://') value += `@${pick(chunks)()}`;
+      while (random() < 0.6) value += pick(chunks)();
+      const input = `run ${key}${value}${pick([' ', '"', "'", '\n', '', '<br>'])}${pick([tracked(), ''])} done`;
+      const hidden = value.replace(/<private>[^<]*(?:<\/private>)?/g, '').match(/[\u4e00-\u9fff]/g) ?? [];
+
+      const output = applyPrivacyFilter(input, custom).content;
+      expect(hidden.filter((char) => output.includes(char)), input).toEqual([]);
+      expect(output.replaceAll('[PRIVATE: unclosed]', ''), input).not.toContain('unclosed]');
+    }
+  });
 });
 
 describe('nested private tags', () => {
