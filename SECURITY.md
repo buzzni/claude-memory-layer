@@ -60,7 +60,7 @@ Claude Code 훅은 저장하기 전에 아래 마스킹을 적용합니다. 어�
 | 도구 입력 (PostToolUse) | ❌ | ✅ |
 | 도구 stderr (PostToolUse) | ❌ | ❌ 원본 그대로 저장 |
 
-- **`<private>` 태그**: `<private>…</private>`로 감싼 부분은 `[PRIVATE]`로 바뀐 채 저장됩니다. 위 표에서 ✅인 필드에만 적용되고, 코드 블록이나 인라인 코드 안에 쓴 `<private>` 태그는 마스킹 지시로 처리하지 않습니다.
+- **`<private>` 태그**: `<private>…</private>`로 감싼 부분은 `[PRIVATE]`로 바뀐 채 저장됩니다. 태그를 중첩하면 바깥 태그가 닫히는 곳까지 가려집니다. 위 표에서 ✅인 필드에만 적용되고, 코드 블록이나 인라인 코드 안에 쓴 `<private>` 태그는 마스킹 지시로 처리하지 않습니다.
 - **자격 증명 마스킹**: 다음 패턴을 `[REDACTED]`로 바꿉니다. `password`·`secret`·`token`·`api_key` 형태의 할당, `--password` 같은 CLI 옵션 값, 사용자 정보가 들어간 URI(`scheme://user:pass@host`), Bearer 토큰, PEM 개인 키, AWS·GitHub·GitLab·Slack·Hugging Face·OpenAI·Anthropic 토큰 접두사. 도구 입력은 키 이름에 `password`·`secret`·`key`·`token`·`auth`·`credential`이 들어간 문자열 값을 통째로 가립니다.
 - **경로 마스킹**: retention·governance 감사 결과는 절대 경로를 마스킹합니다. Hermes 세션 원본 경로는 공개 source ref에서 가려집니다.
 

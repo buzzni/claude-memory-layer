@@ -226,3 +226,47 @@ describe('marker cleanup', () => {
       .toBe('  // [REDACTED]\n  return 42;\n    [PRIVATE]\n  done();\n');
   });
 });
+
+describe('nested private tags', () => {
+  const allFormats: Config['privacy'] = {
+    ...privacy,
+    privateTags: { ...privacy.privateTags, marker: '[REDACTED]', supportedFormats: ['xml', 'bracket', 'comment'] }
+  };
+
+  // #288: a section used to end at its first closing tag, so the text between
+  // an inner and the outer closing tag was stored as written.
+  it('masks a section up to the closing tag of its outer opening tag', () => {
+    const result = applyPrivacyFilter('a <private>outer <private>inner</private> tail-orchid</private> b', privacy);
+
+    expect(result.content).toBe('a [PRIVATE]\nb');
+    expect(result.metadata.privateTagCount).toBe(1);
+    expect(result.metadata.hasUnmatchedTags).toBe(false);
+  });
+
+  it('masks each nesting level and the sections next to it', () => {
+    const result = applyPrivacyFilter(
+      'x <private>1 <private>2 <private>3</private> 2b</private> 1b</private> y <private>z</private> w',
+      privacy
+    );
+
+    expect(result.content).toBe('x [PRIVATE]\ny [PRIVATE]\nw');
+    expect(result.metadata.privateTagCount).toBe(2);
+  });
+
+  it('masks nested bracket and comment tags the same way', () => {
+    expect(applyPrivacyFilter('a [private]o [private]i[/private] tail-orchid[/private] b', allFormats).content)
+      .toBe('a [REDACTED] b');
+    expect(applyPrivacyFilter('a <!-- private -->o <!-- private -->i<!-- /private --> tail-orchid<!-- /private --> b', allFormats).content)
+      .toBe('a [REDACTED] b');
+  });
+
+  it('still masks the inner sections when the outer tag is left open, up to the last closing tag', () => {
+    expect(applyPrivacyFilter('a <private>o <private>i1</private> mid-orchid <private>i2</private> tail', privacy).content)
+      .toBe('a [PRIVATE]\ntail');
+  });
+
+  it('leaves a closing tag with no opening tag before it as it was', () => {
+    expect(applyPrivacyFilter('a <private>s</private> b</private> c', privacy).content)
+      .toBe('a [PRIVATE]\nb</private> c');
+  });
+});

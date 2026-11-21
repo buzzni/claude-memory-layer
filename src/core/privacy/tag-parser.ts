@@ -24,12 +24,57 @@ export interface ParseOptions {
   marker: string;
 }
 
-// Tag patterns for different formats
-const TAG_PATTERNS: Record<string, RegExp> = {
-  xml: /<private>([\s\S]*?)<\/private>/gi,
-  bracket: /\[private\]([\s\S]*?)\[\/private\]/gi,
-  comment: /<!--\s*private\s*-->([\s\S]*?)<!--\s*\/private\s*-->/gi
+interface TagPair {
+  open: RegExp;
+  close: RegExp;
+}
+
+// Opening and closing tag of each format
+const TAG_PATTERNS: Record<string, TagPair> = {
+  xml: { open: /<private>/, close: /<\/private>/ },
+  bracket: { open: /\[private\]/, close: /\[\/private\]/ },
+  comment: { open: /<!--\s*private\s*-->/, close: /<!--\s*\/private\s*-->/ }
 };
+
+/**
+ * The outermost private sections of one tag format. Tags nest: a section ends
+ * at the closing tag that balances its opening tag, not at the first one, or
+ * the text between an inner and the outer closing tag would be kept. When the
+ * outer tag is never closed, the section still runs to the last closing tag
+ * after it, so the inner sections stay masked. A closing tag with no opening
+ * tag before it is left as text.
+ */
+function findSections(text: string, tags: TagPair): Array<Omit<PrivateSection, 'format'>> {
+  const sections: Array<Omit<PrivateSection, 'format'>> = [];
+  const tagPattern = new RegExp(`(${tags.open.source})|${tags.close.source}`, 'gi');
+  let depth = 0;
+  let start = 0;
+  let contentStart = 0;
+  let lastClose: RegExpExecArray | undefined;
+  const endAt = (close: RegExpExecArray) => ({
+    start,
+    end: close.index + close[0].length,
+    content: text.slice(contentStart, close.index)
+  });
+
+  for (const match of text.matchAll(tagPattern)) {
+    if (match[1] !== undefined) {
+      if (depth === 0) {
+        start = match.index;
+        contentStart = match.index + match[0].length;
+        lastClose = undefined;
+      }
+      depth++;
+    } else if (depth > 0) {
+      depth--;
+      lastClose = match;
+      if (depth === 0) sections.push(endAt(match));
+    }
+  }
+  if (depth > 0 && lastClose) sections.push(endAt(lastClose));
+
+  return sections;
+}
 
 /**
  * Parse and remove private tags from text
@@ -43,36 +88,27 @@ export function parsePrivateTags(
 
   // Find all private sections for each format
   for (const format of options.formats) {
-    const pattern = TAG_PATTERNS[format];
-    if (!pattern) continue;
+    const tags = TAG_PATTERNS[format];
+    if (!tags) continue;
 
-    // Reset lastIndex for global regex
-    pattern.lastIndex = 0;
-
-    let match;
-    while ((match = pattern.exec(text)) !== null) {
-      sections.push({
-        start: match.index,
-        end: match.index + match[0].length,
-        content: match[1],
-        format: format as PrivateSection['format']
-      });
+    for (const section of findSections(text, tags)) {
+      sections.push({ ...section, format: format as PrivateSection['format'] });
     }
   }
 
   // Remove all tags and replace with marker
   for (const format of options.formats) {
-    const pattern = TAG_PATTERNS[format];
-    if (!pattern) continue;
+    const tags = TAG_PATTERNS[format];
+    if (!tags) continue;
 
-    // Need to create new regex for replacement (global flag issues)
-    const replacePattern = new RegExp(pattern.source, 'gi');
-
-    filtered = filtered.replace(replacePattern, (_match, content: string) => {
+    let replaced = '';
+    let cursor = 0;
+    for (const section of findSections(filtered, tags)) {
       // Empty tags are completely removed
-      if (!content.trim()) return '';
-      return options.marker;
-    });
+      replaced += filtered.slice(cursor, section.start) + (section.content.trim() ? options.marker : '');
+      cursor = section.end;
+    }
+    filtered = replaced + filtered.slice(cursor);
   }
 
   return {
