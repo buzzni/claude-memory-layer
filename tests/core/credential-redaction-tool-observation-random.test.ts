@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { redactText, redactToolObservation } from '../../src/core/operations/credential-redaction.js';
+import { applyPrivacyFilter } from '../../src/core/privacy/filter.js';
 
 /**
  * Random tool_observation rows, compared with redacting the row as one text
@@ -56,6 +57,17 @@ function randomRow(): string {
   return JSON.stringify(row).replace('"n":0', `"n":${BIG}`);
 }
 
+/**
+ * One pass of the repair's filter over the row as one text: what the repair
+ * did before #290. redactText now repeats it until nothing changes (#308),
+ * and a later pass over a row the first one broke pairs tags across values.
+ */
+const redactRowOnce = (row: string) => applyPrivacyFilter(row, {
+  excludePatterns: ['password', 'secret', 'api_key', 'token', 'bearer'],
+  anonymize: false,
+  privateTags: { enabled: true, marker: '[PRIVATE]', preserveLineCount: false, supportedFormats: ['xml'] }
+}, { maskUnclosed: false }).content;
+
 /** The row with every string value replaced: its keys, numbers and layout. */
 const skeleton = (json: string) => json.replace(/"(?:[^"\\]|\\.)*"(\s*:)?/g, (match, colon) => (colon ? match : 'S'));
 
@@ -75,7 +87,7 @@ describe('redactToolObservation against redacting the row as one text (#290)', (
     for (let i = 0; i < 600; i++) {
       nextTracked = FIRST_TRACKED;
       const original = randomRow();
-      const whole = redactText(original);
+      const whole = redactRowOnce(original);
       const redacted = redactToolObservation(original);
 
       expect(() => JSON.parse(redacted)).not.toThrow();
