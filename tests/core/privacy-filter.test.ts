@@ -315,6 +315,23 @@ describe('unclosed private tags', () => {
     expect(result.metadata.privateTagCount).toBe(1);
   });
 
+  // #296: the parser only reported an unclosed tag it masked to the end, and
+  // the tag count does not cover the comment format.
+  it('flags an unclosed tag it keeps with maskUnclosed: false, where the tag count misses it', () => {
+    const commentOnly: Config['privacy'] = {
+      ...privacy,
+      privateTags: { ...privacy.privateTags, supportedFormats: ['comment'] }
+    };
+
+    const comment = applyPrivacyFilter('a <!-- private --> b', commentOnly, { maskUnclosed: false });
+    expect(comment.content).toBe('a <!-- private --> b');
+    expect(comment.metadata.hasUnmatchedTags).toBe(true);
+
+    const evenedOut = applyPrivacyFilter('a </private> b <private>orchid', privacy, { maskUnclosed: false });
+    expect(evenedOut.content).toBe('a </private> b <private>orchid');
+    expect(evenedOut.metadata.hasUnmatchedTags).toBe(true);
+  });
+
   // The code is set aside under a placeholder while tags are parsed. The same
   // text typed in the input used to be restored to code that was masked.
   it.each([
