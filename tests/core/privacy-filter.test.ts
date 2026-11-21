@@ -315,6 +315,19 @@ describe('unclosed private tags', () => {
     expect(result.metadata.hasUnmatchedTags).toBe(false);
   });
 
+  // Known limit of #301: the bracket check reads the raw text whatever formats
+  // are enabled, like the tag count, so it cannot tell a tag in code or a
+  // stored `[PRIVATE]` marker from an unclosed tag. Both are only flagged.
+  it.each([
+    ['an opening tag, both quoted in code', 'Close with `[/private]`, open with `[private]`'],
+    ['a stored [PRIVATE] marker', 'Use [/private] to close. Kept [PRIVATE]']
+  ])('flags a stray bracket closing tag before %s, keeping the text', (_case, input) => {
+    const result = applyPrivacyFilter(input, privacy, { collapseMarkers: false });
+
+    expect(result.content).toBe(input);
+    expect(result.metadata.hasUnmatchedTags).toBe(true);
+  });
+
   it('keeps the text around a closing tag with no opening tag, flagged as unmatched', () => {
     // Nothing says where a section would have started, so nothing is masked.
     const result = applyPrivacyFilter('kept before </private> kept after', privacy);
