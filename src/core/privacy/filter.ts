@@ -40,11 +40,22 @@ const NOT_A_SECRET_VALUE =
   // `process.env.<NAME>`.
   + '(?!process\\.env\\.)';
 
+/**
+ * A credential value: a run of `chars` that stops at a marker. The tag pass
+ * runs first, so `token=abc<private>…` reaches these rules as
+ * `token=abc[PRIVATE: unclosed]`, and a value that ran on into the marker
+ * left a stray `unclosed]` behind (#304). It stops only where the value would
+ * end after the marker anyway: in `token=abc[PRIVATE]def` the `def` is still
+ * part of the value, and keeping the marker would store it.
+ */
+const secretValue = (chars: string): string =>
+  `(?:(?!\\[(?:PRIVATE|REDACTED)(?:: unclosed)?\\](?:[\\s'"]|$))${chars})+`;
+
 const SENSITIVE_PATTERNS = [
   // Credential-bearing URLs/connection strings with userinfo before the host.
   // Redact the whole URI so usernames, credentials, hosts, paths, and query
   // params do not leak either.
-  /\b[a-z][a-z0-9+.-]*:\/\/[^\s'"`<>/@]+@[^\s'"`<>]+/gi,
+  new RegExp(`\\b[a-z][a-z0-9+.-]*://[^\\s'"\`<>/@]+@${secretValue('[^\\s\'"`<>]')}`, 'gi'),
   // Two guards keep source code out of these rules. Without them a stored
   // discussion of real code gets mangled — `getAccessToken: () => …` became
   // `getAccess[REDACTED] => …` on live data.
@@ -54,10 +65,10 @@ const SENSITIVE_PATTERNS = [
   // optional prefix group. The trailing guard rejects values that are plainly
   // code rather than a secret: a type annotation, an arrow function, or an
   // opening bracket.
-  new RegExp(`(?<![A-Za-z0-9])(?:[\\w.-]+[-_])?password\\s*[:=]\\s*${NOT_A_SECRET_VALUE}['"]?[^\\s'"]+`, 'gi'),
-  new RegExp(`(?<![A-Za-z0-9])(?:[\\w.-]+[-_])?api[-_]?key\\s*[:=]\\s*${NOT_A_SECRET_VALUE}['"]?[^\\s'"]+`, 'gi'),
-  new RegExp(`(?<![A-Za-z0-9])(?:[\\w.-]+[-_])?secret\\s*[:=]\\s*${NOT_A_SECRET_VALUE}['"]?[^\\s'"]+`, 'gi'),
-  new RegExp(`(?<![A-Za-z0-9])(?:[\\w.-]+[-_])?token\\s*[:=]\\s*${NOT_A_SECRET_VALUE}['"]?[^\\s'"]+`, 'gi'),
+  new RegExp(`(?<![A-Za-z0-9])(?:[\\w.-]+[-_])?password\\s*[:=]\\s*${NOT_A_SECRET_VALUE}['"]?${secretValue(`[^\\s'"]`)}`, 'gi'),
+  new RegExp(`(?<![A-Za-z0-9])(?:[\\w.-]+[-_])?api[-_]?key\\s*[:=]\\s*${NOT_A_SECRET_VALUE}['"]?${secretValue(`[^\\s'"]`)}`, 'gi'),
+  new RegExp(`(?<![A-Za-z0-9])(?:[\\w.-]+[-_])?secret\\s*[:=]\\s*${NOT_A_SECRET_VALUE}['"]?${secretValue(`[^\\s'"]`)}`, 'gi'),
+  new RegExp(`(?<![A-Za-z0-9])(?:[\\w.-]+[-_])?token\\s*[:=]\\s*${NOT_A_SECRET_VALUE}['"]?${secretValue(`[^\\s'"]`)}`, 'gi'),
   // camelCase keys are excluded above because `accessToken: () => …` is code.
   // But `accessToken: "eyJhbGciOi…"` is a real credential, and the difference
   // is the value, not the key. A quoted, long, secret-shaped literal is the
@@ -69,7 +80,7 @@ const SENSITIVE_PATTERNS = [
   // one of those nouns and the value has to be long enough to be a credential.
   /bearer\s+(?!token\b|jwt\b|auth\b|authentication\b|access\b|scheme\b|header\b|prefix\b)[a-zA-Z0-9\-_.]{16,}/gi,
   /AWS[_-]?ACCESS[_-]?KEY[_-]?ID\s*[:=]\s*['"]?[A-Z0-9]+/gi,
-  /AWS[_-]?SECRET[_-]?ACCESS[_-]?KEY\s*[:=]\s*['"]?[^\s'"]+/gi,
+  new RegExp(`AWS[_-]?SECRET[_-]?ACCESS[_-]?KEY\\s*[:=]\\s*['"]?${secretValue(`[^\\s'"]`)}`, 'gi'),
   /-----BEGIN\s+(RSA\s+)?PRIVATE\s+KEY-----[\s\S]*?-----END\s+(RSA\s+)?PRIVATE\s+KEY-----/g,
   /ghp_[a-zA-Z0-9]{36}/g,  // GitHub Personal Access Token
   /sk-[a-zA-Z0-9]{48}/g,   // OpenAI API Key
@@ -87,7 +98,11 @@ const SENSITIVE_PATTERNS = [
 ];
 
 const CLI_SECRET_OPTION_PATTERNS = [
-  /(--(?:[a-z0-9]+[-_])*(?:password|secret|api[-_]?key|token|bearer)(?:[-_][a-z0-9]+)*(?:\s+|=))(?:"[^"]*"|'[^']*'|[^\s'"`<>]+)/gi
+  new RegExp(
+    `(--(?:[a-z0-9]+[-_])*(?:password|secret|api[-_]?key|token|bearer)(?:[-_][a-z0-9]+)*(?:\\s+|=))`
+      + `(?:"[^"]*"|'[^']*'|${secretValue('[^\\s\'"`<>]')})`,
+    'gi'
+  )
 ];
 
 const URL_FOLLOWING_SECRET_PATTERN = /((?:https?:\/\/[^\s'"`<>]+)\s*\r?\n\s*)([A-Za-z0-9!@#$%^&*._+\-~:=/]{6,})(?=\s*(?:\r?\n|$))/gi;
@@ -201,7 +216,7 @@ export function applyPrivacyFilter(
   for (const patternStr of config.excludePatterns || []) {
     try {
       const regex = new RegExp(
-        `(^|[^\\w-])(${patternStr})\\s*[:=]\\s*${NOT_A_SECRET_VALUE}['"]?[^\\s'"]+`,
+        `(^|[^\\w-])(${patternStr})\\s*[:=]\\s*${NOT_A_SECRET_VALUE}['"]?${secretValue(`[^\\s'"]`)}`,
         'gi'
       );
       const matches = filtered.match(regex);
