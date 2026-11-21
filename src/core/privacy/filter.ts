@@ -142,11 +142,14 @@ function maskSensitiveString(value: string): string {
  * the last closing tag. Only for re-filtering rows stored before then, which
  * are not masked retroactively; every storage path keeps the default. The tag
  * is flagged in hasUnmatchedTags either way.
+ *
+ * `nestTags: false` ends a private section at its first closing tag, as the
+ * filter did before #288. Only for recognizing rows stored before then.
  */
 export function applyPrivacyFilter(
   content: string,
   config: Config['privacy'],
-  options: { collapseMarkers?: boolean; maskUnclosed?: boolean } = {}
+  options: { collapseMarkers?: boolean; maskUnclosed?: boolean; nestTags?: boolean } = {}
 ): FilterResult {
   let filtered = content;
   let privateTagCount = 0;
@@ -158,7 +161,8 @@ export function applyPrivacyFilter(
     const tagResult = parsePrivateTagsSafe(filtered, {
       formats: config.privateTags?.supportedFormats || ['xml'],
       marker: config.privateTags?.marker || '[PRIVATE]',
-      maskUnclosed: options.maskUnclosed
+      maskUnclosed: options.maskUnclosed,
+      nestTags: options.nestTags
     });
     filtered = tagResult.filtered;
     privateTagCount = tagResult.stats.count;
