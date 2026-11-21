@@ -164,8 +164,8 @@ snapshots mask absolute paths and credential-looking values, so a version restor
 
 | Command | What it removes or changes | Recoverable | Audit |
 |---|---|---|---|
-| `forget --before <date> [--type <type>] --confirm` | Deletes the matching events, their vectors and dated mirror files in the store, then runs VACUUM. The project directory's `memory/` mirror is not cleaned (#274). Without `--confirm` it only previews | No | Yes, one `event_delete` row per run (actor `cli`; cutoff, type, the plan counted before the delete: matching rows and bytes and the number of mirror files to remove, not how many were removed; rows deleted; no text or event ids) |
-| `forget <eventId> --confirm`, `forget --session <id> --confirm` | Deletes the event, or every event of the session whatever wrote it, with dependent rows and pending embedding jobs, and the vectors of the deleted ids. Neither the store's Markdown mirror nor the project directory's `memory/` mirror is cleaned, so the forgotten text stays there (#274, #276). Exits 1 if vectors were left. Without `--confirm` it only previews | No | Yes, one `event_delete` row per run that deletes rows; a preview, or an id or session with no rows, writes none (actor `cli`; target `event` or `session` and its id, the planned row and byte counts, rows deleted; no text) |
+| `forget --before <date> [--type <type>] --confirm` | Deletes the matching events, their vectors and dated mirror files in the store, then runs VACUUM. Copies older versions wrote under the project directory's `memory/` are not touched (#274). Without `--confirm` it only previews | No | Yes, one `event_delete` row per run (actor `cli`; cutoff, type, the plan counted before the delete: matching rows and bytes and the number of mirror files to remove, not how many were removed; rows deleted; no text or event ids) |
+| `forget <eventId> --confirm`, `forget --session <id> --confirm` | Deletes the event, or every event of the session whatever wrote it, with dependent rows and pending embedding jobs, and the vectors of the deleted ids. The store's Markdown mirror is not cleaned, so the forgotten text stays there (#276), and neither are copies older versions wrote under the project directory's `memory/` (#274). Exits 1 if vectors were left. Without `--confirm` it only previews | No | Yes, one `event_delete` row per run that deletes rows; a preview, or an id or session with no rows, writes none (actor `cli`; target `event` or `session` and its id, the planned row and byte counts, rows deleted; no text) |
 | Dashboard `DELETE /api/events/:id` | Deletes one event and its vectors; the response names the event (id, type, time, session, content length), not its content | No | Yes, an `event_delete` row (actor `dashboard`; the same fields as the response, no text) |
 | `import --force`, `codex import --force`, `hermes import --force` | Deletes the session's prompts and responses that earlier imports of the same transcript (Hermes: the same `state.db`) wrote, with their vectors and embedding jobs, then imports the transcript again and queues the rows it puts back for embedding. With `--limit`, a session the limit could cut short is skipped, nothing deleted, and the command exits 1. A session whose source has nothing to import again is skipped with a warning (exit 0). See the known limits below for what it keeps | **Partly**: the deleted rows come back from the transcript, with new event ids | Yes, a `session_reimport` row per session with deleted rows (actor `cli`; session id, source, rows deleted; no text) |
 | `lesson add --apply`, `action update --apply`, `facet tag --apply` | The same changes as `mem-lesson-save`, `mem-action-update` and `mem-facet-tag` above | From the audit's before snapshot | Yes |
@@ -226,6 +226,55 @@ Known limits:
   that removes nothing writes no row. The row records scope and counts, never the deleted text, so it shows when,
   by whom and how much was deleted, not what. `repair redact-credentials --apply` writes each batch's
   `credential_redact` row in the transaction that rewrites that batch's rows; a dry run writes none.
+- **Project directories can hold an old copy of event text** (#274). Earlier versions also wrote every stored event
+  under the project directory's `memory/`. Ingest no longer writes there, but none of the commands above touches what
+  is already there, so text they deleted or redacted can still be in it. See
+  [Old copies of event text in project directories](#old-copies-of-event-text-in-project-directories) to remove it.
+
+## Old copies of event text in project directories
+
+Versions released before the #274 fix wrote a second copy of every stored event outside the store: each event was
+appended to `<project>/memory/<type>/…/YYYY-MM-DD.md` and the files were listed in `<project>/memory/_index.md`.
+`<project>` was the directory the writing process resolved its project to: the project root, a worktree's main
+checkout, or the directory a `.claude-memory-root` marker names. A process with no project path resolved the
+directory it ran in the same way. `forget`, the dashboard delete and `repair redact-credentials` never cleaned this
+copy, so text they removed or redacted may still be there in plain text.
+
+Ingest no longer writes this copy, and no command deletes it for you. The store's own mirror under
+`~/.claude-code/memory/projects/<hash>/memory/` is a different copy: it is still written and still cleaned as described
+above. Search, context injection, the MCP tools and the dashboard never read the old copy. `organize-import` can: it
+imports every Markdown file under the folder it is given (by default the project directory), so run on a project
+that still holds the old copy it stores that text again, including text you had deleted or redacted.
+
+To find the old copies, look for their index, whose header the store's mirror never writes:
+
+```bash
+find ~ -path '*/memory/_index.md' -not -path '*/node_modules/*' \
+  -exec grep -l 'Generated automatically by MarkdownMirror' {} + 2>/dev/null
+```
+
+Searching all of `~` can take a while and, on macOS, ask for access to protected folders; replace `~` with the
+folder that holds your projects to search less. Each path printed is the `_index.md` of one old copy.
+
+The old writer did not check whose files it wrote to. It appended its entries to a dated `YYYY-MM-DD.md` file even
+when that file already held something else, and `_index.md` lists every Markdown file under `memory/`, not only the
+ones it wrote. So read each file in full before deleting it:
+
+- `_index.md` and any leftover `_index.md.<pid>.<n>.tmp` are rewritten whole by the writer; delete them.
+- A dated file the writer made holds only its entries. Each entry starts with a line `## <ISO timestamp> | <event id>`
+  followed by `- type:` and `- session:` lines, then the event's text, and runs to the next such line or the end of
+  the file. Delete a dated file whole only when everything in it is such entries.
+- If a file also holds your own text, or you cannot tell where an entry's text ends (the text can contain headings
+  and blank lines of its own), keep the file and delete only the generated entries you can identify.
+- Any other file under `memory/` is yours; the writer never created it.
+
+If you are unsure, you can leave a file as it is: nothing writes to it any more. Keep it out of commits, though, and
+out of `organize-import`.
+
+If the copy was committed (`git log --oneline -- memory/` in that repository prints commits), deleting the files in a
+new commit leaves the text in the repository's history and in every clone and remote that has those commits. If it
+may hold credentials, rotate them first; removing the text from history needs a history rewrite (for example
+`git filter-repo`) and a force push, which every collaborator has to follow.
 
 ## Credential redaction runs and what it leaves undone
 
@@ -302,6 +351,9 @@ Known limits:
   `NOT FINISHED`.
 - A hard-linked mirror file, and any mirror file on a filesystem without hard links, is rewritten in place, as before
   #267, so an entry a hook appends to it while the run rewrites it can be lost from the mirror.
+- The mirror it rewrites is the store's. Copies older versions wrote under a project directory's `memory/` are not
+  touched and can still hold the credential (#274); see
+  [Old copies of event text in project directories](#old-copies-of-event-text-in-project-directories).
 
 ## Older sessions with more than one summary
 

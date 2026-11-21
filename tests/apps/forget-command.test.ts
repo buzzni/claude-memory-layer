@@ -367,7 +367,7 @@ describe('runForgetTarget', () => {
     const vectors = new VectorStore(path.join(storagePath, 'vectors'));
     expect(await vectors.listEventIds()).toEqual([seeded.b.prompt]);
     expect((await vectors.readRowsByEventIds('event_vectors_v1', seeded.all)).map((row) => row.eventId)).toEqual([seeded.b.prompt]);
-    // #274/#276: the markdown mirror is not cleaned by forget <eventId> or --session.
+    // #276: the store's markdown mirror is not cleaned by forget <eventId> or --session.
     expect(readFileSync(seeded.mirrorFile, 'utf8')).toBe(seeded.mirrorText);
 
     expect(state.audit).toHaveLength(1);
@@ -490,7 +490,8 @@ describe('formatForgetTargetReport', () => {
     expect(dry).toContain('session s1 (dry-run)');
     expect(dry).toContain('Matching rows: 2');
     expect(dry).toContain('--confirm');
-    expect(dry).toContain('Markdown mirrors are not cleaned');
+    expect(dry).toContain("The store's markdown mirror is not cleaned (#276)");
+    expect(dry).toContain('Copies older versions wrote under <project>/memory/ are not touched either (#274)');
     const applied = formatForgetTargetReport({ ...base, apply: true, applied: { deleted: 2, vectorsPurged: true } });
     expect(applied).toContain('Events deleted 2');
     expect(applied).not.toContain('--confirm');

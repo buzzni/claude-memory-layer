@@ -12,8 +12,6 @@ import { Embedder, getDefaultEmbedder } from '../embedder.js';
 import type { EventStore } from '../event-store.js';
 import { createGraduationPipeline, type GraduationPipeline } from '../graduation.js';
 import { getDefaultMatcher, type Matcher } from '../matcher.js';
-import { MarkdownMirror } from '../md-mirror.js';
-import { resolveProjectAnchorPath } from '../registry/project-path.js';
 import type { Retriever } from '../retriever.js';
 import { SQLiteEventStore } from '../sqlite-event-store.js';
 import type { MemoryOperationsConfig, ToolObservationPayload } from '../types.js';
@@ -45,7 +43,6 @@ export interface MemoryEngineServicesOptions {
   readOnly: boolean;
   snapshotReads?: boolean;
   embeddingModel?: string;
-  cwd?: string;
   initialize: () => Promise<void>;
   getProjectHash: () => string | null;
   getProjectPath?: () => string | null;
@@ -74,7 +71,6 @@ export interface MemoryEngineServicesFactories {
   createEmbedder?: (model: string) => Embedder;
   getDefaultEmbedder?: () => Embedder;
   getDefaultMatcher?: () => Matcher;
-  createMarkdownMirror?: (cwd: string) => MarkdownMirror;
   createGraduationPipeline?: (eventStore: EventStore) => GraduationPipeline;
   createRetrievalServices?: (deps: RetrievalServicesDeps) => RetrievalServices;
 }
@@ -90,7 +86,6 @@ export interface MemoryEngineServices {
   retrievalDisclosureService: RetrievalDisclosureService;
   retrievalAnalyticsService: RetrievalAnalyticsService;
   graduation: GraduationPipeline;
-  mdMirror: MarkdownMirror;
   ingestService: MemoryIngestService;
   queryService: MemoryQueryService;
 }
@@ -123,9 +118,6 @@ export function createMemoryEngineServices(options: MemoryEngineServicesOptions)
     ? (factories.createEmbedder ?? defaultCreateEmbedder)(embeddingModel)
     : (factories.getDefaultEmbedder ?? getDefaultEmbedder)();
   const matcher = (factories.getDefaultMatcher ?? getDefaultMatcher)();
-  const mdMirror = (factories.createMarkdownMirror ?? defaultCreateMarkdownMirror)(
-    resolveProjectAnchorPath(options.cwd ?? process.cwd())
-  );
   const graduation = (factories.createGraduationPipeline ?? defaultCreateGraduationPipeline)(
     sqliteStore as unknown as EventStore
   );
@@ -159,7 +151,6 @@ export function createMemoryEngineServices(options: MemoryEngineServicesOptions)
   const ingestService = new MemoryIngestService({
     initialize: options.initialize,
     eventStore: sqliteStore,
-    markdownMirror: mdMirror,
     createToolEmbedding: options.createToolObservationEmbedding,
     getProjectHash: options.getProjectHash,
     getProjectPath: options.getProjectPath,
@@ -185,7 +176,6 @@ export function createMemoryEngineServices(options: MemoryEngineServicesOptions)
     retrievalDisclosureService: retrievalServices.retrievalDisclosureService,
     retrievalAnalyticsService: retrievalServices.retrievalAnalyticsService,
     graduation,
-    mdMirror,
     ingestService,
     queryService
   };
@@ -228,10 +218,6 @@ function defaultCreateVectorStore(
 
 function defaultCreateEmbedder(model: string): Embedder {
   return new Embedder(model);
-}
-
-function defaultCreateMarkdownMirror(cwd: string): MarkdownMirror {
-  return new MarkdownMirror(cwd);
 }
 
 function defaultCreateGraduationPipeline(eventStore: EventStore): GraduationPipeline {

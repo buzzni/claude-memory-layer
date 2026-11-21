@@ -435,7 +435,7 @@ MCP 서버는 client의 stdio가 닫히거나 부모 프로세스가 사라지�
 - **Perspective Query Agent**: 관점별 observation + raw memory를 읽기 전용으로 조합하고 source refs를 유지
 - **Governance Audit**: facet/action/checkpoint/perspective mutation은 actor/evidence metadata와 함께 기록
 - **Privacy Guardrails**: `<private>` 태그, credential/path redaction, aggregate-only dashboard/API/CLI 출력
-- **Append-only Markdown Mirror**: 선택적으로 저장 이벤트를 `memory/<namespace>/.../YYYY-MM-DD.md`에 append
+- **Append-only Markdown Mirror**: 쓰기 가능한 store는 저장한 이벤트를 store 안 `<storagePath>/memory/<namespace>/.../YYYY-MM-DD.md`에 append(기본 `~/.claude-code/memory/projects/<hash>/memory/`). 프로젝트 디렉터리에는 쓰지 않습니다(#274)
 - **Mongo Sync**: 멀티 서버 협업을 위한 선택적 이벤트 push/pull sync
 - **Endless Mode / Shared Memory**: 세션 경계 없는 연속 기억 및 공유 store 실험 기능
 
@@ -584,7 +584,8 @@ PATH에 CLI가 없으면 명령이 `command not found`로 실패합니다. `npm 
 /memory-layer:memory-list
 
 # 메모리 삭제: 이벤트 ID, --session, --before 중 하나만 지정합니다. --confirm 없이는 미리보기만 합니다.
-# 이벤트 ID·--session은 store의 Markdown mirror와 프로젝트 디렉터리 memory/ mirror를 정리하지 않습니다(#274, #276).
+# 이벤트 ID·--session은 store의 Markdown mirror를 정리하지 않습니다(#276).
+# 예전 버전이 프로젝트 디렉터리 memory/에 쓴 사본은 어떤 형태로도 건드리지 않습니다(#274, 정리 방법: docs/OPERATIONS.md).
 /memory-layer:memory-forget <event-id> --confirm
 /memory-layer:memory-forget --session <session-id> --confirm
 /memory-layer:memory-forget --before 2026-01-01 --confirm

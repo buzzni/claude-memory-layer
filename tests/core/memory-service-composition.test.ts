@@ -56,7 +56,6 @@ describe('createMemoryServiceComposition', () => {
         retrievalDisclosureService,
         retrievalAnalyticsService,
         graduation,
-        mdMirror: { name: 'md-mirror' },
         ingestService,
         queryService
       }) as any),
@@ -89,7 +88,6 @@ describe('createMemoryServiceComposition', () => {
       storagePath: '/home/test/memory-store',
       readOnly: true,
       embeddingModel: 'explicit-model',
-      cwd: '/repo/project',
       initialize,
       getProjectHash: expect.any(Function),
       getProjectPath: expect.any(Function),
