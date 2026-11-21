@@ -335,12 +335,13 @@ const TRIMMED_CHARS_SQL = 'char(9, 10, 11, 12, 13, 32, 160, 5760, 8192, 8193, 81
 /**
  * SQL true for an event row the LLM summary counts as a prompt or answer
  * (MemoryIngestService's isExchangeEvent, buildSummaryPrompt): not quarantined,
- * content not empty once trimmed as they trim it.
+ * content not empty once trimmed as they trim it. Compared with '' rather than
+ * through length(), which stops at the first NUL.
  */
 function exchangeEventSql(alias: string): string {
   return `${alias}.event_type IN ('user_prompt', 'agent_response')
              AND ${notActiveQuarantinedSql(`${alias}.metadata`)}
-             AND length(trim(${alias}.content, ${TRIMMED_CHARS_SQL})) > 0`;
+             AND trim(${alias}.content, ${TRIMMED_CHARS_SQL}) != ''`;
 }
 
 /** A session the LLM summary backfill may have to summarize (getLlmSummaryCandidates). */
@@ -1755,7 +1756,9 @@ export class SQLiteEventStore {
     // them. Then isLlmSessionSummaryDue for an empty verdict: left out while the newest
     // prompt or answer (in getSessionEvents order) carries a verdict (readEmptySummaryVerdict's
     // shape) that covers as many prompts and answers as the session holds now. Sessions are
-    // checked in order only until the window is full.
+    // checked in order only until the window is full. One exception to matching the run: a
+    // session whose summaries are all quarantined counts as summarized here, while the run
+    // reads none and would write a first one; Stop still does.
     const meta = `CASE WHEN json_valid(x.metadata) THEN x.metadata ELSE '{}' END`;
     const verdict = `$.${EMPTY_SUMMARY_VERDICT_KEY}`;
     const exchangeRow = (alias: string) => `${alias}.session_id = u.session_id

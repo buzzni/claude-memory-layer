@@ -71,6 +71,8 @@ describe('LLM summary backfill and sessions the summary prompt cannot be built f
     return { store, add, exchange, tool, run, reached, due };
   }
 
+  // Not covered: a session whose summaries are all quarantined. The query counts it as
+  // summarized, while its run reads no summary and would write a first one.
   it('picks exactly the unsummarized sessions whose summary run would reach the provider', async () => {
     const { add, exchange, tool, run, reached, due } = await setup();
     await exchange('buildable', '보통');
@@ -92,12 +94,22 @@ describe('LLM summary backfill and sessions the summary prompt cannot be built f
     await add('invisible-content', 'user_prompt', '​');
     await add('invisible-content', 'agent_response', '\u0085');
     await tool('invisible-content');
-    const sessions = ['buildable', 'tools-only', 'blank', 'quarantined', 'one-exchange', 'two-visible-events', 'invisible-content'];
+    // SQLite's length() stops at the first NUL; what follows is still content.
+    await add('nul-led', 'user_prompt', '질문');
+    await add('nul-led', 'agent_response', '\u0000actual answer');
+    await tool('nul-led');
+    await add('nul-after-blank', 'user_prompt', ' \u0000질문');
+    await add('nul-after-blank', 'agent_response', '\u3000\u0000');
+    await tool('nul-after-blank');
+    const sessions = [
+      'buildable', 'tools-only', 'blank', 'quarantined', 'one-exchange', 'two-visible-events', 'invisible-content',
+      'nul-led', 'nul-after-blank'
+    ];
 
     const picked = await due(sessions.length);
     for (const sessionId of sessions) await run(sessionId);
 
-    expect(picked.sort()).toEqual(['buildable', 'invisible-content']);
+    expect(picked.sort()).toEqual(['buildable', 'invisible-content', 'nul-after-blank', 'nul-led']);
     expect(reached.sort()).toEqual(picked);
   });
 
@@ -152,5 +164,28 @@ describe('LLM summary backfill and sessions the summary prompt cannot be built f
 
     expect(picked).toEqual([]);
     expect(reached).toEqual([]);
+  });
+
+  it('counts a prompt that begins with NUL as new toward an empty verdict and a refresh, as trim() does', async () => {
+    const { add, exchange, tool, run, reached, due } = await setup();
+    await exchange('judged', '판정');
+    await tool('judged');
+    await run('judged');
+    await add('judged', 'user_prompt', '\u0000판정 뒤 질문');
+    await exchange('summarized', '요약됨');
+    await tool('summarized');
+    await add('summarized', 'session_summary', '- 결정: 요약', { summarizedExchangeCount: 2 });
+    for (let i = 0; i < DEFAULT_SESSION_SUMMARY_REFRESH.minNewExchanges - 1; i++) {
+      await add('summarized', 'user_prompt', `후속 ${i}`);
+    }
+    await add('summarized', 'agent_response', ' \u0000후속 답변');
+    reached.length = 0;
+
+    const picked = await due(5);
+    await run('judged');
+    await run('summarized');
+
+    expect(picked.sort()).toEqual(['judged', 'summarized']);
+    expect(reached.sort()).toEqual(picked);
   });
 });
