@@ -249,7 +249,9 @@ describe('LessonService manual promotion', () => {
   it.each([
     ['an unclosed <private> tag', 'Deploy with <private>codename-orchid'],
     ['an unclosed tag evened out by a stray closing tag', 'Ignore </private> then deploy with <private>codename-orchid'],
-    ['an unclosed comment tag', 'Deploy with <!-- private -->codename-orchid']
+    ['an unclosed comment tag', 'Deploy with <!-- private -->codename-orchid'],
+    // #301: the bracket format is never masked to the end, so only the flag catches it.
+    ['an unclosed bracket tag evened out by a stray closing tag', 'Ignore [/private] then deploy with [private]codename-orchid']
   ])('fails closed when an explicit curated lesson contains %s', async (_case, step) => {
     const { store, lessonService, cleanup } = await createFixture();
 

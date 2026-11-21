@@ -166,8 +166,8 @@ export function applyPrivacyFilter(
     });
     filtered = tagResult.filtered;
     privateTagCount = tagResult.stats.count;
-    // The tag count misses an unclosed tag evened out by a stray closing tag,
-    // and the comment format entirely.
+    // hasUnmatchedOpenTag misses an unclosed xml tag evened out by a stray
+    // closing tag, and the comment format entirely.
     hasUnmatchedTags ||= tagResult.unclosed;
   }
 

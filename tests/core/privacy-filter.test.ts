@@ -284,6 +284,50 @@ describe('unclosed private tags', () => {
     expect(result.metadata.hasUnmatchedTags).toBe(true);
   });
 
+  // #301: the bracket format never masks an unclosed tag (its `[private]` is
+  // also the stored `[PRIVATE]` marker), so only the tag count flagged it.
+  it.each([
+    ['by default', {}],
+    ['with maskUnclosed: false', { maskUnclosed: false }]
+  ])('flags an unclosed bracket tag evened out by a stray closing tag %s', (_case, options) => {
+    const allFormats: Config['privacy'] = {
+      ...privacy,
+      privateTags: { ...privacy.privateTags, supportedFormats: ['xml', 'bracket', 'comment'] }
+    };
+    const input = 'Ignore [/private] then deploy with [private]codename-orchid';
+
+    const result = applyPrivacyFilter(input, allFormats, options);
+
+    expect(result.content).toBe(input);
+    expect(result.metadata.hasUnmatchedTags).toBe(true);
+  });
+
+  it('still flags a stray bracket closing tag the tag count catches, and not a closed section', () => {
+    expect(applyPrivacyFilter('a [/private] b [private]c[/private] d', privacy).metadata.hasUnmatchedTags).toBe(true);
+    expect(applyPrivacyFilter('a [private]b[/private] c', privacy).metadata.hasUnmatchedTags).toBe(false);
+  });
+
+  it('does not flag xml tags quoted in code with the closing tag first', () => {
+    // The xml format fails closed, so an evened-out xml tag outside code is
+    // already masked and flagged; in code it is not a tag.
+    const result = applyPrivacyFilter('Close with `</private>`, open with `<private>`', privacy);
+
+    expect(result.metadata.hasUnmatchedTags).toBe(false);
+  });
+
+  // Known limit of #301: the bracket check reads the raw text whatever formats
+  // are enabled, like the tag count, so it cannot tell a tag in code or a
+  // stored `[PRIVATE]` marker from an unclosed tag. Both are only flagged.
+  it.each([
+    ['an opening tag, both quoted in code', 'Close with `[/private]`, open with `[private]`'],
+    ['a stored [PRIVATE] marker', 'Use [/private] to close. Kept [PRIVATE]']
+  ])('flags a stray bracket closing tag before %s, keeping the text', (_case, input) => {
+    const result = applyPrivacyFilter(input, privacy, { collapseMarkers: false });
+
+    expect(result.content).toBe(input);
+    expect(result.metadata.hasUnmatchedTags).toBe(true);
+  });
+
   it('keeps the text around a closing tag with no opening tag, flagged as unmatched', () => {
     // Nothing says where a section would have started, so nothing is masked.
     const result = applyPrivacyFilter('kept before </private> kept after', privacy);
