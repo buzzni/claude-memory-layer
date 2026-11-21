@@ -307,6 +307,14 @@ describe('unclosed private tags', () => {
     expect(applyPrivacyFilter('a [private]b[/private] c', privacy).metadata.hasUnmatchedTags).toBe(false);
   });
 
+  it('does not flag xml tags quoted in code with the closing tag first', () => {
+    // The xml format fails closed, so an evened-out xml tag outside code is
+    // already masked and flagged; in code it is not a tag.
+    const result = applyPrivacyFilter('Close with `</private>`, open with `<private>`', privacy);
+
+    expect(result.metadata.hasUnmatchedTags).toBe(false);
+  });
+
   it('keeps the text around a closing tag with no opening tag, flagged as unmatched', () => {
     // Nothing says where a section would have started, so nothing is masked.
     const result = applyPrivacyFilter('kept before </private> kept after', privacy);
