@@ -50,7 +50,6 @@ describe('LLM summary backfill and sessions the summary prompt cannot be built f
       const service = new MemoryIngestService({
         initialize: async () => {},
         eventStore: store,
-        markdownMirror: { append: async () => {} },
         createToolEmbedding: () => '',
         llmSummaryGenerator: async (events) => {
           if (buildSummaryPrompt(events)) reached.push(sessionId);
@@ -63,7 +62,6 @@ describe('LLM summary backfill and sessions the summary prompt cannot be built f
     const backfill = new MemoryIngestService({
       initialize: async () => {},
       eventStore: store,
-      markdownMirror: { append: async () => {} },
       createToolEmbedding: () => '',
       now: () => now
     });

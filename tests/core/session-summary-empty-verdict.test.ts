@@ -32,7 +32,6 @@ describe('empty first summary verdict on a real store', () => {
     const service = new MemoryIngestService({
       initialize: async () => {},
       eventStore: store,
-      markdownMirror: { append: async () => {} },
       createToolEmbedding: () => '',
       llmSummaryGenerator: generator,
       now: () => now
@@ -114,7 +113,6 @@ describe('empty first summary verdict on a real store', () => {
     const service = new MemoryIngestService({
       initialize: async () => {},
       eventStore: store,
-      markdownMirror: { append: async () => {} },
       createToolEmbedding: () => '',
       llmSummaryGenerator: async () => {
         await say('s', '그 사이에 들어온 질문');
@@ -150,7 +148,6 @@ describe('empty first summary verdict on a real store', () => {
     const service = new MemoryIngestService({
       initialize: async () => {},
       eventStore: store,
-      markdownMirror: { append: async () => {} },
       createToolEmbedding: () => '',
       llmSummaryGenerator: async () => {
         await store.append({ eventType: 'user_prompt', sessionId: 's', timestamp: new Date(tick - 60_000), content: '늦게 온 질문' });
