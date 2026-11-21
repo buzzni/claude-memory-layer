@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyPrivacyFilter, showsAllTextOf } from '../../src/core/privacy/index.js';
+import { applyPrivacyFilter, maskSensitiveInput, showsAllTextOf } from '../../src/core/privacy/index.js';
 import type { Config } from '../../src/core/types.js';
 
 const privacy: Config['privacy'] = {
@@ -430,6 +430,124 @@ describe('unclosed private tags', () => {
 
     expect(applyPrivacyFilter('Fixed parsing [PRIVATE]\nand moved on to the dashboard', readBack).content)
       .toBe('Fixed parsing [PRIVATE]\nand moved on to the dashboard');
+  });
+});
+
+describe('a credential right before a private tag', () => {
+  // #304: the credential rules run after the tag pass, and their value ran on
+  // into the marker it had just inserted.
+  it.each([
+    ['an unclosed tag', 'deploy token=abc<private>codename-orchid', 'deploy [REDACTED] [PRIVATE: unclosed]'],
+    ['a closed tag', 'deploy password=abc<private>x</private> done', 'deploy [REDACTED] [PRIVATE]\ndone'],
+    ['a CLI option', 'deploy --token abc<private>codename-orchid', 'deploy --token [REDACTED] [PRIVATE: unclosed]'],
+    ['a credential URL', 'db postgres://u:pw@db.internal<private>codename-orchid', 'db [REDACTED] [PRIVATE: unclosed]'],
+    ['an AWS secret key', 'AWS_SECRET_ACCESS_KEY=abc<private>codename-orchid', '[REDACTED] [PRIVATE: unclosed]']
+  ])('keeps the marker after %s', (_label, input, expected) => {
+    expect(applyPrivacyFilter(input, privacy).content).toBe(expected);
+  });
+
+  it('still redacts a value that goes on after a closed tag', () => {
+    expect(applyPrivacyFilter('deploy token=abc<private>x</private>def done', privacy).content)
+      .toBe('deploy [REDACTED] done');
+  });
+
+  it('keeps the marker after a custom exclude pattern', () => {
+    const custom: Config['privacy'] = { ...privacy, excludePatterns: ['passphrase'] };
+
+    expect(applyPrivacyFilter('use passphrase=abc<private>codename-orchid', custom).content)
+      .toBe('use [REDACTED] [PRIVATE: unclosed]');
+  });
+
+  it('keeps a [REDACTED] marker whole', () => {
+    const redactedMarker: Config['privacy'] = {
+      ...privacy,
+      privateTags: { ...privacy.privateTags, marker: '[REDACTED]' }
+    };
+
+    expect(applyPrivacyFilter('deploy token=abc<private>codename-orchid', redactedMarker).content)
+      .toBe('deploy [REDACTED] [REDACTED: unclosed]');
+  });
+
+  // A value that is only a marker: stopping there must still redact the rule's
+  // match, or the userinfo of a credential URL is kept.
+  it.each([
+    ['a credential URL', 'db postgres://admin:hunter2@<private>db.internal</private> ok', 'db [REDACTED] [PRIVATE]\nok'],
+    ['an unclosed credential URL', 'db postgres://admin:hunter2@<private>db.internal', 'db [REDACTED] [PRIVATE: unclosed]'],
+    ['a quoted value', 'deploy token="<private>x</private>"', 'deploy [REDACTED] [PRIVATE]\n"'],
+    ['a CLI option', 'deploy --token <private>x</private> next', 'deploy --token [REDACTED] [PRIVATE]\nnext']
+  ])('keeps the marker that is all of the value of %s', (_label, input, expected) => {
+    expect(applyPrivacyFilter(input, privacy).content).toBe(expected);
+  });
+
+  it('keeps the marker where a character the value cannot hold follows it', () => {
+    expect(applyPrivacyFilter('db postgres://u:pw@db<private>x</private><br>', privacy).content)
+      .toBe('db [REDACTED] [PRIVATE]\n<br>');
+  });
+
+  // #304 review: a kept marker let a config pattern take the next marker
+  // apart, or lost a config pattern that used a marker as its key, and a
+  // value those hid before was shown. Where stopping would show more, the
+  // marker is given up.
+  it.each([
+    ['[a-z_]+', '--token a[PRIVATE: unclosed]>[PRIVATE: unclosed]hunter2', '--token [REDACTED] unclosed]>[[REDACTED] '],
+    ['PRIVATE', '--token a[PRIVATE: unclosed]>[PRIVATE: unclosed]hunter2', '--token [REDACTED] unclosed]>[[REDACTED] '],
+    ['[a-z\\]]+', 'x <private>x</private>=hunter2', 'x [[REDACTED] ']
+  ])('never shows what a config pattern %s hid through a marker', (pattern, input, expected) => {
+    const custom: Config['privacy'] = { ...privacy, excludePatterns: [pattern] };
+
+    expect(applyPrivacyFilter(input, custom).content).toBe(expected);
+    expect(JSON.stringify(maskSensitiveInput({ command: input, list: [input] }, custom))).not.toContain('hunter2');
+  });
+
+  // Credentials and markers in random order, chained, with config patterns
+  // that match markers. Value text is written in CJK characters, each used
+  // once, so whether one was kept is exact.
+  it('never keeps a character of a credential value, nor half a marker', () => {
+    let seed = 304;
+    const random = () => {
+      seed = (seed + 0x6d2b79f5) >>> 0;
+      let t = seed;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    const pick = <T>(items: T[]): T => items[Math.floor(random() * items.length)];
+    let next = 0x4e00;
+    const tracked = () => Array.from({ length: 1 + Math.floor(random() * 3) }, () => String.fromCharCode(next++)).join('');
+    const keys = ['token=', 'password: ', 'api_key="', "secret='", 'AWS_SECRET_ACCESS_KEY=', 'passphrase=', '--token ', '--api-key=', 'postgres://'];
+    const chunks = [tracked, tracked, () => `<private>${tracked()}</private>`, () => `<private>${tracked()}`,
+      () => '[PRIVATE]', () => '[private]', () => '[REDACTED]'];
+    const configPatterns = [[], [], ['[a-z_]+'], ['PRIVATE'], ['REDACTED'], ['unclosed'], ['.+'], ['\\w+'], ['[^\\s]+']];
+    /** A credential, and the characters of its value. */
+    const credential = () => {
+      const key = pick(keys);
+      // A value never starts with a bracket (that is code, not a secret), so
+      // it starts with text.
+      let value = tracked();
+      // A credential URL's userinfo is all secret; what follows it may be only a tag.
+      if (key === 'postgres://') value += `@${pick(chunks)()}`;
+      while (random() < 0.6) value += pick(chunks)();
+      const hidden = value.replace(/<private>[^<]*(?:<\/private>)?/g, '').match(/[\u4e00-\u9fff]/g) ?? [];
+      return { text: `${key}${value}${pick([' ', '"', "'", '\n', '', '<br>'])}`, hidden };
+    };
+
+    for (let i = 0; i < 3000; i++) {
+      const patterns = pick(configPatterns);
+      const custom: Config['privacy'] = { ...privacy, excludePatterns: [...privacy.excludePatterns, 'passphrase', ...patterns] };
+      const credentials = Array.from({ length: 1 + Math.floor(random() * 3) }, credential);
+      const separators = [' ', '\n', ' [PRIVATE: unclosed]>[PRIVATE: unclosed] ', ' <private>x '];
+      const input = `run ${credentials.map(({ text }) => text).join(pick(separators))}${pick([tracked(), ''])} done`;
+      const hidden = credentials.flatMap((c) => c.hidden);
+
+      const output = applyPrivacyFilter(input, custom).content;
+      expect(hidden.filter((char) => output.includes(char)), input).toEqual([]);
+      // Where stopping would show what was hidden before #304 (marker text
+      // a config pattern matches, a `[private]` that is text), a marker can
+      // still be taken apart, as it was then.
+      if (patterns.length === 0 && !input.includes('[PRIVATE: unclosed]>') && !input.includes('[private]')) {
+        expect(output.replaceAll('[PRIVATE: unclosed]', ''), input).not.toContain('unclosed]');
+      }
+    }
   });
 });
 
