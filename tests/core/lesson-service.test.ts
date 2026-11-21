@@ -243,6 +243,29 @@ describe('LessonService manual promotion', () => {
     expect(storedAuditRows).toHaveLength(0);
   });
 
+  // #269: the filter masks from an unclosed tag to the end and flags it in
+  // hasUnmatchedTags, which the tag count alone missed when a stray closing
+  // tag evened it out or the tag was a comment.
+  it.each([
+    ['an unclosed <private> tag', 'Deploy with <private>codename-orchid'],
+    ['an unclosed tag evened out by a stray closing tag', 'Ignore </private> then deploy with <private>codename-orchid'],
+    ['an unclosed comment tag', 'Deploy with <!-- private -->codename-orchid']
+  ])('fails closed when an explicit curated lesson contains %s', async (_case, step) => {
+    const { store, lessonService, cleanup } = await createFixture();
+
+    await expect(lessonService.saveCurated({
+      projectHash: 'project-curated-unclosed',
+      actor: 'operator',
+      name: 'Deployment approval',
+      trigger: 'When deploying to production',
+      steps: [step]
+    })).rejects.toThrow(/private or credential/i);
+    const storedLessons = lessonRows(store);
+    await cleanup();
+
+    expect(storedLessons).toHaveLength(0);
+  });
+
   it('promotes an explicitly approved generated candidate with source refs and one audit row', async () => {
     const { store, candidateService, lessonService, cleanup } = await createFixture();
     const projectHash = 'project-promote-generated';

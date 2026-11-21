@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
@@ -80,6 +80,34 @@ async function storedObservation(): Promise<StoredObservation> {
   } finally {
     db.close();
   }
+}
+
+/**
+ * The stored observation's other copies, read after storedObservation: its
+ * full-text index entry and the Markdown mirror the store appends to.
+ */
+async function indexAndMirrorCopies(): Promise<string> {
+  const storagePath = join(home, '.claude-code', 'memory');
+  const db = new Database(join(storagePath, 'events.sqlite'), { readonly: true });
+  let fts: string[];
+  try {
+    fts = (db.prepare('SELECT content FROM events_fts').all() as Array<{ content: string }>).map((row) => row.content);
+  } finally {
+    db.close();
+  }
+  expect(fts).toHaveLength(1);
+  // The mirror append is fire-and-forget: wait for the entry (#281).
+  const mirrorRoot = join(storagePath, 'memory');
+  const mirror = await vi.waitFor(() => {
+    const files = existsSync(mirrorRoot)
+      ? readdirSync(mirrorRoot, { recursive: true, encoding: 'utf8' }).filter((file) => file.endsWith('.md'))
+      : [];
+    expect(files).toHaveLength(1);
+    const text = readFileSync(join(mirrorRoot, files[0]), 'utf8');
+    expect(text).toContain('[PRIVATE: unclosed]');
+    return text;
+  }, { timeout: 10_000 });
+  return [...fts, mirror].join('\n');
 }
 
 /** 150 lines with a `<private>` section on lines 40-60, across the 50-line head the truncation keeps. */
@@ -199,13 +227,20 @@ describe('PostToolUse privacy filtering', () => {
   it('masks everything after an unclosed <private> tag in tool input, output and stderr', async () => {
     const stored = await runPostToolUse({
       tool_name: 'Bash',
-      tool_input: { command: 'echo start <private>input-orchid' },
+      tool_input: { command: 'echo start <private>input-orchid', description: 'kept description' },
       tool_response: { stdout: 'stdout start <private>output-orchid', stderr: 'stderr start <private>stderr-orchid' }
     });
 
     const serialized = JSON.stringify(stored);
-    for (const tail of ['input-orchid', 'output-orchid', 'stderr-orchid']) expect(serialized).not.toContain(tail);
+    const copies = await indexAndMirrorCopies();
+    for (const tail of ['input-orchid', 'output-orchid', 'stderr-orchid']) {
+      expect(serialized).not.toContain(tail);
+      expect(copies).not.toContain(tail);
+    }
+    expect(copies).toContain('[PRIVATE: unclosed]');
     expect(stored.toolInput.command).toBe('echo start [PRIVATE: unclosed]');
+    // An input string masks to its own end, not over the next value.
+    expect(stored.toolInput.description).toBe('kept description');
     expect(stored.toolOutput).toContain('stdout start [PRIVATE: unclosed]');
     expect(stored.errorMessage).toBe('stderr start [PRIVATE: unclosed]');
   });
@@ -241,7 +276,12 @@ describe('PostToolUseFailure privacy filtering', () => {
     });
 
     const serialized = JSON.stringify(stored);
-    for (const tail of ['input-orchid', 'error-orchid']) expect(serialized).not.toContain(tail);
+    const copies = await indexAndMirrorCopies();
+    for (const tail of ['input-orchid', 'error-orchid']) {
+      expect(serialized).not.toContain(tail);
+      expect(copies).not.toContain(tail);
+    }
+    expect(copies).toContain('[PRIVATE: unclosed]');
     expect(stored.toolInput.command).toBe('deploy [PRIVATE: unclosed]');
     expect(stored.errorMessage).toContain('Exit code 1');
     expect(stored.errorMessage).toContain('[PRIVATE: unclosed]');

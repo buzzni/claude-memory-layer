@@ -57,21 +57,26 @@ Claude Code 훅은 저장하기 전에 아래 마스킹을 적용합니다. 어�
 | 사용자 프롬프트 (세션 기록 importer 포함) | ✅ | ✅ |
 | 어시스턴트 응답 | ✅ | ✅ |
 | 도구 출력 (PostToolUse) | ✅ | ✅ |
-| 도구 입력 (PostToolUse) | ❌ | ✅ |
-| 도구 stderr (PostToolUse) | ❌ | ❌ 원본 그대로 저장 |
+| 도구 입력 (PostToolUse) | ✅ | ✅ |
+| 도구 stderr (PostToolUse) | ✅ | ✅ |
 
 - **`<private>` 태그**: `<private>…</private>`로 감싼 부분은 `[PRIVATE]`로 바뀐 채 저장됩니다. 위 표에서 ✅인 필드에만 적용되고, 코드 블록이나 인라인 코드 안에 쓴 `<private>` 태그는 마스킹 지시로 처리하지 않습니다.
+- **닫히지 않은 `<private>` 태그**: 닫는 태그가 없으면 여는 태그부터 그 텍스트 끝까지를 `[PRIVATE: unclosed]` 하나로 바꿔 저장하고, privacy metadata의 `hasUnmatchedTags`를 `true`로 남깁니다. 도구 입력은 문자열 값마다 따로 거르므로 그 값의 끝까지만 가립니다. 몇 가지 규칙이 따릅니다.
+  - 코드 블록·인라인 코드 밖에서 태그 이름을 문장 속에 언급만 해도 닫히지 않은 태그로 보고 그 뒤를 모두 가립니다. 태그 이름을 적을 때는 `` `<private>` ``처럼 인라인 코드로 감싸세요. 닫히지 않은 코드 펜스(```` ``` ````) 안은 코드 블록으로 보지 않습니다.
+  - 여는 태그 없이 `</private>`만 있으면 어디부터 가릴지 알 수 없으므로 아무것도 가리지 않고 `hasUnmatchedTags`만 `true`가 됩니다.
+  - 태그는 중첩되지 않습니다. 구간은 처음 나오는 `</private>`에서 끝납니다.
+  - 이 규칙이 생기기 전에 저장된 행은 다시 가리지 않습니다. `repair redact-credentials --apply`를 실행하면 그 명령이 다시 쓰는 행과 Markdown mirror에 같은 규칙이 적용됩니다.
 - **자격 증명 마스킹**: 다음 패턴을 `[REDACTED]`로 바꿉니다. `password`·`secret`·`token`·`api_key` 형태의 할당, `--password` 같은 CLI 옵션 값, 사용자 정보가 들어간 URI(`scheme://user:pass@host`), Bearer 토큰, PEM 개인 키, AWS·GitHub·GitLab·Slack·Hugging Face·OpenAI·Anthropic 토큰 접두사. 도구 입력은 키 이름에 `password`·`secret`·`key`·`token`·`auth`·`credential`이 들어간 문자열 값을 통째로 가립니다.
 - **경로 마스킹**: retention·governance 감사 결과는 절대 경로를 마스킹합니다. Hermes 세션 원본 경로는 공개 source ref에서 가려집니다.
 
-이 필터는 패턴 기반입니다. 패턴에 맞지 않는 비밀값은 그대로 저장될 수 있습니다. `<private>`는 프롬프트와 응답에 쓴 내용을 가릴 때 쓰세요. 도구에 넘기는 입력이나 도구가 stderr로 내보내는 값은 이 태그로 가려지지 않습니다.
+이 필터는 패턴 기반입니다. 패턴에 맞지 않는 비밀값은 그대로 저장될 수 있습니다. `<private>`는 프롬프트와 응답에 쓴 내용을 가릴 때 쓰세요.
 
 ### Mongo sync
 
 Mongo sync는 기본으로 꺼져 있습니다. 훅에서는 실행되지 않고, `mongo-sync` 명령을 직접 실행할 때(1회 또는 `--watch`로 계속)만 동작합니다.
 
 - 연결 정보는 `--mongo-uri`/`--mongo-db` 옵션이나 `CLAUDE_MEMORY_MONGO_URI`/`CLAUDE_MEMORY_MONGO_DB` 환경 변수로 받습니다. 연결 오류 메시지에서는 URI의 비밀값을 가립니다.
-- push는 로컬에 저장된 이벤트를 저장된 그대로, 이 머신의 hostname·인스턴스 ID와 함께 MongoDB로 보냅니다. 따라서 위 "저장 전 마스킹" 표에서 마스킹되지 않는 필드(도구 입력의 `<private>`, 도구 stderr)도 그대로 전송됩니다.
+- push는 로컬에 저장된 이벤트를 저장된 그대로, 이 머신의 hostname·인스턴스 ID와 함께 MongoDB로 보냅니다. 따라서 위 "저장 전 마스킹" 필터가 놓친 내용과, 필터가 그 필드에 적용되기 전에 저장된 행도 그대로 전송됩니다.
 - pull은 다른 머신이 push한 이벤트를 로컬 저장소에 넣습니다. 이 이벤트는 이후 회상 결과로 프롬프트에 주입될 수 있습니다. **그 MongoDB 데이터베이스에 쓰기 권한이 있는 모든 주체를 신뢰 경계 안쪽으로 보세요.** 직접 관리하고 쓰기 권한을 통제하는 데이터베이스만 연결하세요.
 
 ## 기기 밖으로 나가는 데이터
