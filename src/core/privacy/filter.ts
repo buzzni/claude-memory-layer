@@ -142,11 +142,14 @@ function maskSensitiveString(value: string): string {
  * the last closing tag. Only for re-filtering rows stored before then, which
  * are not masked retroactively; every storage path keeps the default. The tag
  * is flagged in hasUnmatchedTags either way.
+ *
+ * `nestTags: false` ends a private section at its first closing tag, as the
+ * filter did before #288. Only for recognizing rows stored before then.
  */
 export function applyPrivacyFilter(
   content: string,
   config: Config['privacy'],
-  options: { collapseMarkers?: boolean; maskUnclosed?: boolean } = {}
+  options: { collapseMarkers?: boolean; maskUnclosed?: boolean; nestTags?: boolean } = {}
 ): FilterResult {
   let filtered = content;
   let privateTagCount = 0;
@@ -158,7 +161,8 @@ export function applyPrivacyFilter(
     const tagResult = parsePrivateTagsSafe(filtered, {
       formats: config.privateTags?.supportedFormats || ['xml'],
       marker: config.privateTags?.marker || '[PRIVATE]',
-      maskUnclosed: options.maskUnclosed
+      maskUnclosed: options.maskUnclosed,
+      nestTags: options.nestTags
     });
     filtered = tagResult.filtered;
     privateTagCount = tagResult.stats.count;
@@ -278,6 +282,42 @@ export function maskSensitiveInput(
   }
 
   return result;
+}
+
+// What the filter and the truncation put in place of text: the private
+// markers, the credential marker and the truncation notices.
+const CUT = /\.\.\.\[truncated\]|\.\.\. \[\d+ (?:lines|characters) truncated\] \.\.\./;
+const HIDDEN_TEXT = new RegExp(`\\[PRIVATE(?:: unclosed)?\\]|\\[REDACTED\\]|${CUT.source}`, 'g');
+
+/**
+ * Whether `stored` shows all the text `current` shows, in the same order: each
+ * piece of `current` between markers and whitespace is found in the text of
+ * `stored` between its markers, after the piece before it and never across a
+ * marker. A marker is not text: `D` is not shown by `[REDACTED]`. Nor is the
+ * text next to a cut in `stored`, which can be part of a marker (`[PR` before
+ * `...[truncated]`). An older form of a message can hide text the current
+ * form shows (a credential pattern running past a closing tag, a cut at the
+ * length limit), so a row in that form alone does not prove the message is
+ * stored.
+ */
+export function showsAllTextOf(stored: string, current: string): boolean {
+  // Text and markers alternate: text at even indexes, markers at odd ones.
+  const parts = stored.split(new RegExp(`(${HIDDEN_TEXT.source})`));
+  const shown = parts.filter((_, i) => i % 2 === 0)
+    .map((text, i) => (CUT.test(parts[2 * i - 1] ?? '') || CUT.test(parts[2 * i + 1] ?? '') ? '' : text));
+  let part = 0;
+  let at = 0;
+  for (const piece of current.split(HIDDEN_TEXT).flatMap((text) => text.split(/\s+/))) {
+    if (!piece) continue;
+    let found = shown[part].indexOf(piece, at);
+    while (found === -1 && ++part < shown.length) {
+      at = 0;
+      found = shown[part].indexOf(piece);
+    }
+    if (found === -1) return false;
+    at = found + piece.length;
+  }
+  return true;
 }
 
 /**

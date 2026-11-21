@@ -9,6 +9,8 @@ import { SessionHistoryImporter } from '../../src/services/session-history-impor
 import { createCodexSessionHistoryImporter } from '../../src/services/codex-session-history-importer.js';
 import { createHermesSessionHistoryImporter } from '../../src/services/hermes-session-history-importer.js';
 import { redactPromptForStorage } from '../../src/core/prompt-normalizer.js';
+import { truncateOutput } from '../../src/core/privacy/index.js';
+import { truncateAgentResponse } from '../../src/services/turn-buffering.js';
 
 /**
  * specs/memory-usage-followup-2026-10-03 R1: every importer applies the same
@@ -147,6 +149,128 @@ describe('importer prompt normalization', () => {
     await new SessionHistoryImporter(service).importSessionFile(file);
 
     expect((await sessionEvents(service, 'pre-masking-response')).responses.map((event) => event.content)).toEqual([storedBefore]);
+  });
+
+  // #295: before #288 a nested section ended at its first closing tag, so a
+  // row stored then keeps the text up to the outer closing tag.
+  const NESTED_REQUEST = 'Explain approval api_key=fake-key-abcdef <private>outer <private>inner</private> tail-orchid</private> done';
+  const STORED_BEFORE_NESTING = 'Explain approval [REDACTED] [PRIVATE]\ntail-orchid</private> done';
+
+  it.each(['claude', 'codex', 'hermes'] as const)('%s: a prompt with nested tags stored before #288 is not imported again', async (source) => {
+    const service = realService();
+    const memorySessionId = source === 'hermes' ? 'hermes:pre-nesting' : 'pre-nesting';
+    await service.storeUserPrompt(memorySessionId, STORED_BEFORE_NESTING, { turnId: 'old-turn' });
+
+    await importPrompt(service, source, 'pre-nesting', `${WRAPPER}\n\n${NESTED_REQUEST}`);
+
+    expect((await sessionEvents(service, memorySessionId)).prompts.map((event) => event.content)).toEqual([STORED_BEFORE_NESTING]);
+  });
+
+  it('Claude: a response with nested tags stored before #288 is not imported again', async () => {
+    const service = realService();
+    const file = join(tempDir(), 'pre-nesting-response.jsonl');
+    const reply = `${LONG_REPLY('answer')} ${NESTED_REQUEST}`;
+    const storedBefore = `${LONG_REPLY('answer')} ${STORED_BEFORE_NESTING}`;
+    writeJsonl(file, [
+      { type: 'user', timestamp: '2026-10-01T00:00:00.000Z', message: { role: 'user', content: REQUEST } },
+      { type: 'assistant', timestamp: '2026-10-01T00:00:01.000Z', message: { role: 'assistant', content: [{ type: 'text', text: reply }] } }
+    ]);
+    await service.storeAgentResponse('pre-nesting-response', storedBefore, { turnId: 'old-turn' });
+
+    await new SessionHistoryImporter(service).importSessionFile(file);
+
+    expect((await sessionEvents(service, 'pre-nesting-response')).responses.map((event) => event.content)).toEqual([storedBefore]);
+  });
+
+  // The form stored before #288 is only compared, within the session and the
+  // role; what is stored is masked up to the outer closing tag.
+  const STORED_NOW = 'Explain approval [REDACTED] [PRIVATE]\ndone';
+
+  it.each([
+    ['claude', 'another session'], ['codex', 'another session'], ['hermes', 'another session'],
+    ['claude', 'an assistant response'], ['codex', 'an assistant response'], ['hermes', 'an assistant response']
+  ] as const)('%s: a prompt with nested tags is stored masked when only %s has the form stored before #288', async (source, where) => {
+    const service = realService();
+    const memorySessionId = source === 'hermes' ? 'hermes:nesting-scope' : 'nesting-scope';
+    if (where === 'another session') await service.storeUserPrompt(`${memorySessionId}-other`, STORED_BEFORE_NESTING, { turnId: 'old-turn' });
+    else await service.storeAgentResponse(memorySessionId, STORED_BEFORE_NESTING, { turnId: 'old-turn' });
+
+    await importPrompt(service, source, 'nesting-scope', `${WRAPPER}\n\n${NESTED_REQUEST}`);
+
+    expect((await sessionEvents(service, memorySessionId)).prompts.map((event) => event.content)).toEqual([STORED_NOW]);
+  });
+
+  it('Claude: a response with nested tags is stored masked when only another session has the form stored before #288', async () => {
+    const service = realService();
+    const file = join(tempDir(), 'nesting-scope-response.jsonl');
+    writeJsonl(file, [
+      { type: 'user', timestamp: '2026-10-01T00:00:00.000Z', message: { role: 'user', content: REQUEST } },
+      { type: 'assistant', timestamp: '2026-10-01T00:00:01.000Z', message: { role: 'assistant', content: [{ type: 'text', text: `${LONG_REPLY('answer')} ${NESTED_REQUEST}` }] } }
+    ]);
+    await service.storeAgentResponse('other-session', `${LONG_REPLY('answer')} ${STORED_BEFORE_NESTING}`, { turnId: 'old-turn' });
+
+    await new SessionHistoryImporter(service).importSessionFile(file);
+
+    expect((await sessionEvents(service, 'nesting-scope-response')).responses.map((event) => event.content)).toEqual([`${LONG_REPLY('answer')} ${STORED_NOW}`]);
+  });
+
+  // The form stored before #288 can drop text the message shows now: there the
+  // credential pattern runs past the outer closing tag. Two messages that
+  // differ only in that text have the same old form, so it does not prove the
+  // message is already stored.
+  const SWALLOWED = (suffix: string) => `Release <private>outer <private>inner</private> password=hidden</private>${suffix}`;
+
+  it.each([
+    ['claude', 'PUBLIC_NEW'], ['codex', 'PUBLIC_NEW'], ['hermes', 'PUBLIC_NEW'],
+    // Text that is also part of a marker in the old form.
+    ['claude', 'D'], ['codex', 'D'], ['hermes', 'D'], ['claude', 'PRIVATE'], ['codex', 'REDACTED']
+  ] as const)('%s: a prompt whose old form drops the text %s it shows now is stored beside that old form', async (source, suffix) => {
+    const service = realService();
+    const memorySessionId = source === 'hermes' ? 'hermes:swallowed' : 'swallowed';
+    // What SWALLOWED('PUBLIC_OLD') was stored as before #288.
+    await service.storeUserPrompt(memorySessionId, 'Release [PRIVATE]\n[REDACTED] ', { turnId: 'old-turn' });
+
+    await importPrompt(service, source, 'swallowed', `${WRAPPER}\n\n${SWALLOWED(suffix)}`);
+
+    expect((await sessionEvents(service, memorySessionId)).prompts.map((event) => event.content))
+      .toEqual(['Release [PRIVATE]\n[REDACTED] ', `Release [PRIVATE]\n${suffix}`]);
+  });
+
+  it('hermes: a prompt whose old form was cut in the middle, inside a marker, is stored beside that old form', async () => {
+    const service = realService();
+    // Hermes keeps the first and last 5,000 characters of a long prompt; the
+    // cut leaves `[PRI` of a marker, which is not the text PRI.
+    const prompt = (word: string) =>
+      `Release <private>o <private>i</private>${'x'.repeat(4978)}<private>s</private>${'q'.repeat(100)}</private>${word} ${'y '.repeat(2499)}y`;
+    // What prompt('ZZZ') was stored as before #288.
+    const storedBefore = truncateOutput(
+      `Release [PRIVATE]\n${'x'.repeat(4978)}[PRIVATE]\n${'q'.repeat(100)}</private>ZZZ ${'y '.repeat(2499)}y`,
+      { maxLength: 10_000, maxLines: 200 }
+    );
+    await service.storeUserPrompt('hermes:middle-cut', storedBefore, { turnId: 'old-turn' });
+
+    await importPrompt(service, 'hermes', 'middle-cut', prompt('PRI'));
+
+    expect((await sessionEvents(service, 'hermes:middle-cut')).prompts.map((event) => event.content))
+      .toEqual([storedBefore, `Release [PRIVATE]\nPRI ${'y '.repeat(2499)}y`]);
+  });
+
+  it('Claude: a response whose old form was cut before text it shows now is stored beside that old form', async () => {
+    const service = realService();
+    const file = join(tempDir(), 'cut-response.jsonl');
+    const reply = (suffix: string) => `Release <private>outer <private>inner</private>${' hidden'.repeat(1600)}</private>${suffix}`;
+    writeJsonl(file, [
+      { type: 'user', timestamp: '2026-10-01T00:00:00.000Z', message: { role: 'user', content: REQUEST } },
+      { type: 'assistant', timestamp: '2026-10-01T00:00:01.000Z', message: { role: 'assistant', content: [{ type: 'text', text: reply('PUBLIC_NEW') }] } }
+    ]);
+    // What reply('PUBLIC_OLD') was stored as before #288.
+    const storedBefore = truncateAgentResponse(`Release [PRIVATE]\nhidden${' hidden'.repeat(1599)}</private>PUBLIC_OLD`);
+    await service.storeAgentResponse('cut-response', storedBefore, { turnId: 'old-turn', importedFrom: 'earlier-import.jsonl' });
+
+    await new SessionHistoryImporter(service).importSessionFile(file);
+
+    expect((await sessionEvents(service, 'cut-response')).responses.map((event) => event.content))
+      .toEqual([storedBefore, 'Release [PRIVATE]\nPUBLIC_NEW']);
   });
 
   it('Claude: a banner-wrapped notification in an explicit subagent transcript opens a task_notification turn', async () => {

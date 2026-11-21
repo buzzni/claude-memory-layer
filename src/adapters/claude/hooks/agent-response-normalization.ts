@@ -32,10 +32,10 @@ export interface NormalizedAgentResponse {
 
 /**
  * Apply the privacy filter, then truncate very long responses.
- * `maskUnclosed: false` gives what was stored before #269, only to recognize
- * those rows; see applyPrivacyFilter.
+ * `maskUnclosed: false` and `nestTags: false` give what was stored before #269
+ * and #288, only to recognize those rows; see applyPrivacyFilter.
  */
-export function normalizeAgentResponse(text: string, options: { maskUnclosed?: boolean } = {}): NormalizedAgentResponse {
+export function normalizeAgentResponse(text: string, options: { maskUnclosed?: boolean; nestTags?: boolean } = {}): NormalizedAgentResponse {
   const filterResult = applyPrivacyFilter(text, DEFAULT_PRIVACY_CONFIG, options);
   let content = filterResult.content;
 

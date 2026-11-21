@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyPrivacyFilter } from '../../src/core/privacy/index.js';
+import { applyPrivacyFilter, showsAllTextOf } from '../../src/core/privacy/index.js';
 import type { Config } from '../../src/core/types.js';
 
 const privacy: Config['privacy'] = {
@@ -465,6 +465,63 @@ describe('nested private tags', () => {
     const result = applyPrivacyFilter('a <private>o <private>i</private> mid-orchid <private>j</private> tail', privacy, { maskUnclosed: false });
     expect(result.content).toBe('a [PRIVATE]\ntail');
     expect(result.metadata.hasUnmatchedTags).toBe(true);
+  });
+
+  it('ends a section at its first closing tag with nestTags: false, as rows stored before #288 were masked', () => {
+    // How the duplicate checks recognize those rows (#295).
+    const legacy = { maskUnclosed: false, nestTags: false };
+    expect(applyPrivacyFilter('a <private>o <private>i</private> tail</private> b', privacy, legacy).content)
+      .toBe('a [PRIVATE]\ntail</private> b');
+    expect(applyPrivacyFilter('a <private>o <private>i</private> tail b', privacy, legacy).content)
+      .toBe('a [PRIVATE]\ntail b');
+  });
+
+  it('nests tags unless nestTags is false', () => {
+    const text = 'a <private>o <private>i</private> tail-orchid</private> b';
+    expect(applyPrivacyFilter(text, privacy, { nestTags: true })).toEqual(applyPrivacyFilter(text, privacy));
+    expect(applyPrivacyFilter(text, privacy, { maskUnclosed: false, nestTags: true }).content).toBe('a [PRIVATE]\nb');
+  });
+
+  describe('showsAllTextOf', () => {
+    it('finds each piece between markers and whitespace, in order', () => {
+      expect(showsAllTextOf('a [PRIVATE]\ntail</private> b', 'a [PRIVATE]\nb')).toBe(true);
+      expect(showsAllTextOf('a [REDACTED] b', 'a [PRIVATE: unclosed]')).toBe(true);
+      expect(showsAllTextOf('b a', 'a b')).toBe(false);
+    });
+
+    it('does not find text the stored form hides', () => {
+      // The credential pattern ran past the outer closing tag before #288.
+      expect(showsAllTextOf('Release [PRIVATE]\n[REDACTED] ', 'Release [PRIVATE]\nPUBLIC_NEW')).toBe(false);
+      expect(showsAllTextOf('Release [PRIVATE]\nhidden hid...[truncated]', 'Release [PRIVATE]\nPUBLIC_NEW')).toBe(false);
+    });
+
+    it('does not find text in a marker of the stored form', () => {
+      expect(showsAllTextOf('Release [PRIVATE]\n[REDACTED] ', 'Release [PRIVATE]\nD')).toBe(false);
+      for (const piece of ['PRIVATE', 'REDACTED', 'unclosed', 'truncated', 'characters', '...', '12']) {
+        expect(showsAllTextOf('a [PRIVATE: unclosed] [REDACTED] b...[truncated]\n... [12 characters truncated] ...\nc', `a ${piece}`)).toBe(false);
+      }
+    });
+
+    it('finds a piece only within one stretch of text between markers', () => {
+      expect(showsAllTextOf('ab[REDACTED] cd', 'abcd')).toBe(false);
+      expect(showsAllTextOf('xab[REDACTED] cdx', 'ab cd')).toBe(true);
+    });
+
+    it('reads a truncation notice as a marker', () => {
+      expect(showsAllTextOf('x hidden', 'x hid...[truncated]')).toBe(true);
+      expect(showsAllTextOf('head tail', 'head\n... [12 characters truncated] ...\ntail')).toBe(true);
+    });
+
+    it('does not find text next to a cut in the stored form, which can end in part of a marker', () => {
+      expect(showsAllTextOf('Release [PRIVATE]\nxx[PR...[truncated]', 'Release [PRIVATE]\nPR')).toBe(false);
+      expect(showsAllTextOf('Release [PRIVATE]\nx PR [PR...[truncated]', 'Release PR')).toBe(false);
+      const middle = 'Release [PRIVATE]\nx [PRI\n... [12 characters truncated] ...\nVATE]\ny';
+      for (const current of ['Release PRI', 'Release VATE]', 'Release x', 'Release y']) {
+        expect(showsAllTextOf(middle, current)).toBe(false);
+      }
+      expect(showsAllTextOf(middle, 'Release')).toBe(true);
+      expect(showsAllTextOf('a [lines]\n... [3 lines truncated] ...\nb', 'a')).toBe(false);
+    });
   });
 
   // Formats are matched one after another, so a section that now runs to its

@@ -11,7 +11,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { createHash, randomUUID } from 'crypto';
 import { createDatabase, type Database } from '../core/db-wrapper.js';
-import { applyPrivacyFilter, truncateOutput } from '../core/privacy/index.js';
+import { applyPrivacyFilter, showsAllTextOf, truncateOutput } from '../core/privacy/index.js';
 import { registerTerminalSession } from '../core/registry/session-registry.js';
 import type { Config } from '../core/types.js';
 import { MemoryService } from './memory-service.js';
@@ -280,7 +280,7 @@ function normalizeHermesMessage(
   };
 }
 
-function sanitizeForMemory(content: string, options: { maskUnclosed?: boolean } = {}): string {
+function sanitizeForMemory(content: string, options: { maskUnclosed?: boolean; nestTags?: boolean } = {}): string {
   const filtered = applyPrivacyFilter(content, DEFAULT_PRIVACY_CONFIG, options).content;
   return truncateOutput(filtered, { maxLength: HERMES_VALIDATION_DEFAULT_MAX_CONTENT_CHARS, maxLines: 200 });
 }
@@ -780,12 +780,14 @@ export class HermesSessionHistoryImporter {
         currentTurnId = randomUUID();
         currentTurnTrigger = 'user';
         const storedText = sanitizeForMemory(normalized.content);
-        // Rows stored before #269 kept the text after an unclosed tag.
+        // Rows stored before #269 kept the text after an unclosed tag, and
+        // before #288 a nested section ended at its first closing tag. A form
+        // that hides text storedText shows proves nothing (see planPromptStorage).
         const legacySources = normalized.legacyContent !== undefined ? [normalized.legacyContent] : [];
         const legacyContents = [...new Set([
           ...legacySources.map((content) => sanitizeForMemory(content)),
-          ...[normalized.content, ...legacySources].map((content) => sanitizeForMemory(content, { maskUnclosed: false }))
-        ])].filter((content) => content !== storedText);
+          ...[normalized.content, ...legacySources].map((content) => sanitizeForMemory(content, { maskUnclosed: false, nestTags: false }))
+        ])].filter((content) => content !== storedText && showsAllTextOf(content, storedText));
         if (legacyContents.length > 0 && await this.memoryService.hasSessionUserPrompt(memorySessionId, legacyContents)) {
           result.skippedDuplicates++;
           setStoredCount(getStoredCount() + 1);

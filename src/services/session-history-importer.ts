@@ -20,6 +20,7 @@ import {
   redactPromptAsStoredBeforeUnclosedMasking,
   redactPromptForStorage
 } from '../core/prompt-normalizer.js';
+import { showsAllTextOf } from '../core/privacy/index.js';
 import { isHarnessBoilerplate } from '../core/harness-boilerplate.js';
 import { reconcileSessionTranscript } from '../adapters/claude/hooks/session-end-reconcile.js';
 import { isProviderScratchProjectDir } from '../adapters/llm/cli-provider.js';
@@ -445,8 +446,9 @@ export class SessionHistoryImporter {
       // filter, or before #269 with the text after an unclosed tag kept; a
       // re-import must not add the filtered copy beside it. A force re-import
       // deletes that row first (unless a lesson cites it), so it replaces it.
+      // A form that hides text the filtered copy shows proves nothing.
       const earlierForms = [truncateAgentResponse(merged), truncateAgentResponse(redactPromptAsStoredBeforeUnclosedMasking(merged))];
-      if (earlierForms.some((form) => form !== truncated && storedResponses.has(form))) {
+      if (earlierForms.some((form) => form !== truncated && storedResponses.has(form) && showsAllTextOf(form, truncated))) {
         result.skippedDuplicates++;
         lineCount++;
         textBuffer = [];

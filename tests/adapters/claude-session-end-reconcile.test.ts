@@ -261,6 +261,72 @@ describe('SessionEnd transcript reconcile', () => {
     expect(readResponses().map((row) => row.content)).not.toContain(longText('resumed answer'));
   });
 
+  it.each([
+    ['an unclosed tag, before #269', 'Deployed <private>codename-orchid', 'Deployed <private>codename-orchid'],
+    ['nested tags, before #288', 'Deployed <private>o <private>i</private> tail-orchid</private> done', 'Deployed [PRIVATE]\ntail-orchid</private> done']
+  ])('recognizes a message with %s as stored the way it was then', async (_case, text, storedThen) => {
+    await submitPrompt('first request', 'turn-1');
+    answer(longText(text));
+    await (await service()).storeAgentResponse(SESSION, longText(storedThen), { turnId: 'turn-1' });
+
+    expect(await reconcile()).toMatchObject({ recovered: 0, alreadyStored: 1 });
+    expect(readResponses().map((row) => row.content)).toEqual([longText(storedThen)]);
+  });
+
+  it.each([
+    ['another session', 'other-session', 'response'],
+    ['a prompt', SESSION, 'prompt']
+  ] as const)('recovers a message with nested tags masked when only %s has the form stored before #288', async (_where, session, role) => {
+    const storedThen = longText('Deployed [PRIVATE]\ntail-orchid</private> done');
+    await submitPrompt('first request', 'turn-1');
+    answer(longText('Deployed <private>o <private>i</private> tail-orchid</private> done'));
+    if (role === 'prompt') await (await service()).storeUserPrompt(session, storedThen, { turnId: 'turn-1' });
+    else await (await service()).storeAgentResponse(session, storedThen, { turnId: 'turn-1' });
+
+    expect(await reconcile()).toMatchObject({ recovered: 1, alreadyStored: 0 });
+    expect(readResponses().map((row) => row.content)).toContain(longText('Deployed [PRIVATE]\ndone'));
+  });
+
+  // Before #288 the credential pattern ran past the outer closing tag, and a
+  // long response was cut: two messages that differ only in the text after it
+  // have the same old form, so it does not prove the message is stored.
+  it.each([
+    [
+      'drops',
+      longText('Release <private>outer <private>inner</private> password=hidden</private>PUBLIC_NEW'),
+      longText('Release [PRIVATE]\n[REDACTED] ').replace('[REDACTED] : ', '[REDACTED] '),
+      longText('Release [PRIVATE]\nPUBLIC_NEW')
+    ],
+    [
+      // D is also text in the old form's [REDACTED] marker.
+      'drops one-letter',
+      'Release <private>outer <private>inner</private> password=hidden</private>D',
+      'Release [PRIVATE]\n[REDACTED] ',
+      'Release [PRIVATE]\nD'
+    ],
+    [
+      'was cut before',
+      `Release <private>outer <private>inner</private>${' hidden'.repeat(800)}</private>PUBLIC_NEW`,
+      // Stop cuts a response at 5,000 characters.
+      `${`Release [PRIVATE]\nhidden${' hidden'.repeat(799)}`.slice(0, 5000)}...[truncated]`,
+      'Release [PRIVATE]\nPUBLIC_NEW'
+    ],
+    [
+      // The cut left `[PR` of a marker, which is not the text PR.
+      'was cut inside a marker before',
+      `Release <private>outer <private>inner</private>${'x'.repeat(4979)}<private>secret</private></private>PR`,
+      `${`Release [PRIVATE]\n${'x'.repeat(4979)}[PRIVATE]\n</private>ZZZ`.slice(0, 5000)}...[truncated]`,
+      'Release [PRIVATE]\nPR'
+    ]
+  ])('recovers a message whose old form %s text it shows now', async (_case, message, storedThen, storedNow) => {
+    await submitPrompt('first request', 'turn-1');
+    answer(message);
+    await (await service()).storeAgentResponse(SESSION, storedThen, { turnId: 'turn-1' });
+
+    expect(await reconcile()).toMatchObject({ recovered: 1, alreadyStored: 0 });
+    expect(readResponses().map((row) => row.content)).toEqual([storedThen, storedNow].sort());
+  });
+
   it('is a no-op the second time', async () => {
     await submitPrompt('first request', 'turn-1');
     answer(longText('answer'));
