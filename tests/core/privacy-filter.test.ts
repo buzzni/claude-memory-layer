@@ -511,6 +511,17 @@ describe('nested private tags', () => {
       expect(showsAllTextOf('x hidden', 'x hid...[truncated]')).toBe(true);
       expect(showsAllTextOf('head tail', 'head\n... [12 characters truncated] ...\ntail')).toBe(true);
     });
+
+    it('does not find text next to a cut in the stored form, which can end in part of a marker', () => {
+      expect(showsAllTextOf('Release [PRIVATE]\nxx[PR...[truncated]', 'Release [PRIVATE]\nPR')).toBe(false);
+      expect(showsAllTextOf('Release [PRIVATE]\nx PR [PR...[truncated]', 'Release PR')).toBe(false);
+      const middle = 'Release [PRIVATE]\nx [PRI\n... [12 characters truncated] ...\nVATE]\ny';
+      for (const current of ['Release PRI', 'Release VATE]', 'Release x', 'Release y']) {
+        expect(showsAllTextOf(middle, current)).toBe(false);
+      }
+      expect(showsAllTextOf(middle, 'Release')).toBe(true);
+      expect(showsAllTextOf('a [lines]\n... [3 lines truncated] ...\nb', 'a')).toBe(false);
+    });
   });
 
   // Formats are matched one after another, so a section that now runs to its

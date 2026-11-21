@@ -310,6 +310,13 @@ describe('SessionEnd transcript reconcile', () => {
       // Stop cuts a response at 5,000 characters.
       `${`Release [PRIVATE]\nhidden${' hidden'.repeat(799)}`.slice(0, 5000)}...[truncated]`,
       'Release [PRIVATE]\nPUBLIC_NEW'
+    ],
+    [
+      // The cut left `[PR` of a marker, which is not the text PR.
+      'was cut inside a marker before',
+      `Release <private>outer <private>inner</private>${'x'.repeat(4979)}<private>secret</private></private>PR`,
+      `${`Release [PRIVATE]\n${'x'.repeat(4979)}[PRIVATE]\n</private>ZZZ`.slice(0, 5000)}...[truncated]`,
+      'Release [PRIVATE]\nPR'
     ]
   ])('recovers a message whose old form %s text it shows now', async (_case, message, storedThen, storedNow) => {
     await submitPrompt('first request', 'turn-1');

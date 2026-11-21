@@ -286,19 +286,25 @@ export function maskSensitiveInput(
 
 // What the filter and the truncation put in place of text: the private
 // markers, the credential marker and the truncation notices.
-const HIDDEN_TEXT = /\[PRIVATE(?:: unclosed)?\]|\[REDACTED\]|\.\.\.\[truncated\]|\.\.\. \[\d+ (?:lines|characters) truncated\] \.\.\./g;
+const CUT = /\.\.\.\[truncated\]|\.\.\. \[\d+ (?:lines|characters) truncated\] \.\.\./;
+const HIDDEN_TEXT = new RegExp(`\\[PRIVATE(?:: unclosed)?\\]|\\[REDACTED\\]|${CUT.source}`, 'g');
 
 /**
  * Whether `stored` shows all the text `current` shows, in the same order: each
  * piece of `current` between markers and whitespace is found in the text of
  * `stored` between its markers, after the piece before it and never across a
- * marker. A marker is not text: `D` is not shown by `[REDACTED]`. An older
- * form of a message can hide text the current form shows (a credential
- * pattern running past a closing tag, a cut at the length limit), so a row in
- * that form alone does not prove the message is stored.
+ * marker. A marker is not text: `D` is not shown by `[REDACTED]`. Nor is the
+ * text next to a cut in `stored`, which can be part of a marker (`[PR` before
+ * `...[truncated]`). An older form of a message can hide text the current
+ * form shows (a credential pattern running past a closing tag, a cut at the
+ * length limit), so a row in that form alone does not prove the message is
+ * stored.
  */
 export function showsAllTextOf(stored: string, current: string): boolean {
-  const shown = stored.split(HIDDEN_TEXT);
+  // Text and markers alternate: text at even indexes, markers at odd ones.
+  const parts = stored.split(new RegExp(`(${HIDDEN_TEXT.source})`));
+  const shown = parts.filter((_, i) => i % 2 === 0)
+    .map((text, i) => (CUT.test(parts[2 * i - 1] ?? '') || CUT.test(parts[2 * i + 1] ?? '') ? '' : text));
   let part = 0;
   let at = 0;
   for (const piece of current.split(HIDDEN_TEXT).flatMap((text) => text.split(/\s+/))) {

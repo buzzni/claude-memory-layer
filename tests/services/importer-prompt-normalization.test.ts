@@ -9,6 +9,7 @@ import { SessionHistoryImporter } from '../../src/services/session-history-impor
 import { createCodexSessionHistoryImporter } from '../../src/services/codex-session-history-importer.js';
 import { createHermesSessionHistoryImporter } from '../../src/services/hermes-session-history-importer.js';
 import { redactPromptForStorage } from '../../src/core/prompt-normalizer.js';
+import { truncateOutput } from '../../src/core/privacy/index.js';
 import { truncateAgentResponse } from '../../src/services/turn-buffering.js';
 
 /**
@@ -233,6 +234,25 @@ describe('importer prompt normalization', () => {
 
     expect((await sessionEvents(service, memorySessionId)).prompts.map((event) => event.content))
       .toEqual(['Release [PRIVATE]\n[REDACTED] ', `Release [PRIVATE]\n${suffix}`]);
+  });
+
+  it('hermes: a prompt whose old form was cut in the middle, inside a marker, is stored beside that old form', async () => {
+    const service = realService();
+    // Hermes keeps the first and last 5,000 characters of a long prompt; the
+    // cut leaves `[PRI` of a marker, which is not the text PRI.
+    const prompt = (word: string) =>
+      `Release <private>o <private>i</private>${'x'.repeat(4978)}<private>s</private>${'q'.repeat(100)}</private>${word} ${'y '.repeat(2499)}y`;
+    // What prompt('ZZZ') was stored as before #288.
+    const storedBefore = truncateOutput(
+      `Release [PRIVATE]\n${'x'.repeat(4978)}[PRIVATE]\n${'q'.repeat(100)}</private>ZZZ ${'y '.repeat(2499)}y`,
+      { maxLength: 10_000, maxLines: 200 }
+    );
+    await service.storeUserPrompt('hermes:middle-cut', storedBefore, { turnId: 'old-turn' });
+
+    await importPrompt(service, 'hermes', 'middle-cut', prompt('PRI'));
+
+    expect((await sessionEvents(service, 'hermes:middle-cut')).prompts.map((event) => event.content))
+      .toEqual([storedBefore, `Release [PRIVATE]\nPRI ${'y '.repeat(2499)}y`]);
   });
 
   it('Claude: a response whose old form was cut before text it shows now is stored beside that old form', async () => {
