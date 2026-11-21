@@ -66,6 +66,7 @@ Claude Code 훅은 저장하기 전에 아래 마스킹을 적용합니다. 어�
   - 여는 태그 없이 `</private>`만 있으면 어디부터 가릴지 알 수 없으므로 아무것도 가리지 않고 `hasUnmatchedTags`만 `true`가 됩니다.
   - 태그를 중첩하면 구간은 바깥 여는 태그와 짝이 맞는 `</private>`에서 끝납니다. 바깥 태그가 끝내 닫히지 않으면 안쪽 태그가 닫혀 있어도 바깥 여는 태그부터 끝까지 가립니다.
   - 이 규칙이 생기기 전에 저장된 행은 다시 가리지 않습니다. `repair redact-credentials --apply`도 예전 행과 Markdown mirror를 다시 거를 때 이 규칙은 쓰지 않고, 닫힌 태그와 자격 증명만 가립니다. 중첩된 태그는 바깥 닫는 태그까지 가리고, 바깥 태그가 닫히지 않았으면 그 뒤의 마지막 `</private>`까지 가립니다.
+  - 도구 기록(tool_observation) 행은 JSON이 깨지지 않도록 `repair redact-credentials --apply`가 문자열 값마다 따로 거르고, 가린 값만 그 자리에서 바꿉니다. 행을 한 텍스트로 거를 때 가려지던 부분(한 값에서 열고 다른 값에서 닫은 태그 등)은 그대로 가립니다.
 - **자격 증명 마스킹**: 다음 패턴을 `[REDACTED]`로 바꿉니다. `password`·`secret`·`token`·`api_key` 형태의 할당, `--password` 같은 CLI 옵션 값, 사용자 정보가 들어간 URI(`scheme://user:pass@host`), Bearer 토큰, PEM 개인 키, AWS·GitHub·GitLab·Slack·Hugging Face·OpenAI·Anthropic 토큰 접두사. 도구 입력은 키 이름에 `password`·`secret`·`key`·`token`·`auth`·`credential`이 들어간 문자열 값을 통째로 가립니다.
 - **경로 마스킹**: retention·governance 감사 결과는 절대 경로를 마스킹합니다. Hermes 세션 원본 경로는 공개 source ref에서 가려집니다.
 
