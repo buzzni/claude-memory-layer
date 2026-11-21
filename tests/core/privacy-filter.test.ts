@@ -495,6 +495,18 @@ describe('nested private tags', () => {
       expect(showsAllTextOf('Release [PRIVATE]\nhidden hid...[truncated]', 'Release [PRIVATE]\nPUBLIC_NEW')).toBe(false);
     });
 
+    it('does not find text in a marker of the stored form', () => {
+      expect(showsAllTextOf('Release [PRIVATE]\n[REDACTED] ', 'Release [PRIVATE]\nD')).toBe(false);
+      for (const piece of ['PRIVATE', 'REDACTED', 'unclosed', 'truncated', 'characters', '...', '12']) {
+        expect(showsAllTextOf('a [PRIVATE: unclosed] [REDACTED] b...[truncated]\n... [12 characters truncated] ...\nc', `a ${piece}`)).toBe(false);
+      }
+    });
+
+    it('finds a piece only within one stretch of text between markers', () => {
+      expect(showsAllTextOf('ab[REDACTED] cd', 'abcd')).toBe(false);
+      expect(showsAllTextOf('xab[REDACTED] cdx', 'ab cd')).toBe(true);
+    });
+
     it('reads a truncation notice as a marker', () => {
       expect(showsAllTextOf('x hidden', 'x hid...[truncated]')).toBe(true);
       expect(showsAllTextOf('head tail', 'head\n... [12 characters truncated] ...\ntail')).toBe(true);

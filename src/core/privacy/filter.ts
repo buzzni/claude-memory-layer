@@ -290,17 +290,24 @@ const HIDDEN_TEXT = /\[PRIVATE(?:: unclosed)?\]|\[REDACTED\]|\.\.\.\[truncated\]
 
 /**
  * Whether `stored` shows all the text `current` shows, in the same order: each
- * piece of `current` between markers and whitespace is found in `stored`
- * after the piece before it. An older form of a message can hide text the
- * current form shows (a credential pattern running past a closing tag, a cut
- * at the length limit), so a row in that form alone does not prove the
- * message is stored.
+ * piece of `current` between markers and whitespace is found in the text of
+ * `stored` between its markers, after the piece before it and never across a
+ * marker. A marker is not text: `D` is not shown by `[REDACTED]`. An older
+ * form of a message can hide text the current form shows (a credential
+ * pattern running past a closing tag, a cut at the length limit), so a row in
+ * that form alone does not prove the message is stored.
  */
 export function showsAllTextOf(stored: string, current: string): boolean {
+  const shown = stored.split(HIDDEN_TEXT);
+  let part = 0;
   let at = 0;
-  for (const piece of current.split(HIDDEN_TEXT).flatMap((part) => part.split(/\s+/))) {
+  for (const piece of current.split(HIDDEN_TEXT).flatMap((text) => text.split(/\s+/))) {
     if (!piece) continue;
-    const found = stored.indexOf(piece, at);
+    let found = shown[part].indexOf(piece, at);
+    while (found === -1 && ++part < shown.length) {
+      at = 0;
+      found = shown[part].indexOf(piece);
+    }
     if (found === -1) return false;
     at = found + piece.length;
   }

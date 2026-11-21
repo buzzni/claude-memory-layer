@@ -219,16 +219,20 @@ describe('importer prompt normalization', () => {
   // message is already stored.
   const SWALLOWED = (suffix: string) => `Release <private>outer <private>inner</private> password=hidden</private>${suffix}`;
 
-  it.each(['claude', 'codex', 'hermes'] as const)('%s: a prompt whose old form drops text it shows now is stored beside that old form', async (source) => {
+  it.each([
+    ['claude', 'PUBLIC_NEW'], ['codex', 'PUBLIC_NEW'], ['hermes', 'PUBLIC_NEW'],
+    // Text that is also part of a marker in the old form.
+    ['claude', 'D'], ['codex', 'D'], ['hermes', 'D'], ['claude', 'PRIVATE'], ['codex', 'REDACTED']
+  ] as const)('%s: a prompt whose old form drops the text %s it shows now is stored beside that old form', async (source, suffix) => {
     const service = realService();
     const memorySessionId = source === 'hermes' ? 'hermes:swallowed' : 'swallowed';
     // What SWALLOWED('PUBLIC_OLD') was stored as before #288.
     await service.storeUserPrompt(memorySessionId, 'Release [PRIVATE]\n[REDACTED] ', { turnId: 'old-turn' });
 
-    await importPrompt(service, source, 'swallowed', `${WRAPPER}\n\n${SWALLOWED('PUBLIC_NEW')}`);
+    await importPrompt(service, source, 'swallowed', `${WRAPPER}\n\n${SWALLOWED(suffix)}`);
 
     expect((await sessionEvents(service, memorySessionId)).prompts.map((event) => event.content))
-      .toEqual(['Release [PRIVATE]\n[REDACTED] ', 'Release [PRIVATE]\nPUBLIC_NEW']);
+      .toEqual(['Release [PRIVATE]\n[REDACTED] ', `Release [PRIVATE]\n${suffix}`]);
   });
 
   it('Claude: a response whose old form was cut before text it shows now is stored beside that old form', async () => {

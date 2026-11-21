@@ -293,20 +293,27 @@ describe('SessionEnd transcript reconcile', () => {
   it.each([
     [
       'drops',
-      (suffix: string) => longText(`Release <private>outer <private>inner</private> password=hidden</private>${suffix}`),
+      longText('Release <private>outer <private>inner</private> password=hidden</private>PUBLIC_NEW'),
       longText('Release [PRIVATE]\n[REDACTED] ').replace('[REDACTED] : ', '[REDACTED] '),
       longText('Release [PRIVATE]\nPUBLIC_NEW')
     ],
     [
+      // D is also text in the old form's [REDACTED] marker.
+      'drops one-letter',
+      'Release <private>outer <private>inner</private> password=hidden</private>D',
+      'Release [PRIVATE]\n[REDACTED] ',
+      'Release [PRIVATE]\nD'
+    ],
+    [
       'was cut before',
-      (suffix: string) => `Release <private>outer <private>inner</private>${' hidden'.repeat(800)}</private>${suffix}`,
+      `Release <private>outer <private>inner</private>${' hidden'.repeat(800)}</private>PUBLIC_NEW`,
       // Stop cuts a response at 5,000 characters.
       `${`Release [PRIVATE]\nhidden${' hidden'.repeat(799)}`.slice(0, 5000)}...[truncated]`,
       'Release [PRIVATE]\nPUBLIC_NEW'
     ]
   ])('recovers a message whose old form %s text it shows now', async (_case, message, storedThen, storedNow) => {
     await submitPrompt('first request', 'turn-1');
-    answer(message('PUBLIC_NEW'));
+    answer(message);
     await (await service()).storeAgentResponse(SESSION, storedThen, { turnId: 'turn-1' });
 
     expect(await reconcile()).toMatchObject({ recovered: 1, alreadyStored: 0 });
