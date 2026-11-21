@@ -435,7 +435,7 @@ MCP 서버는 client의 stdio가 닫히거나 부모 프로세스가 사라지�
 - **Perspective Query Agent**: 관점별 observation + raw memory를 읽기 전용으로 조합하고 source refs를 유지
 - **Governance Audit**: facet/action/checkpoint/perspective mutation은 actor/evidence metadata와 함께 기록
 - **Privacy Guardrails**: `<private>` 태그, credential/path redaction, aggregate-only dashboard/API/CLI 출력
-- **Append-only Markdown Mirror**: 선택적으로 저장 이벤트를 `memory/<namespace>/.../YYYY-MM-DD.md`에 append
+- **Append-only Markdown Mirror**: 쓰기 가능한 store는 저장한 이벤트를 store 안 `<storagePath>/memory/<namespace>/.../YYYY-MM-DD.md`에 append(기본 `~/.claude-code/memory/projects/<hash>/memory/`). 프로젝트 디렉터리에는 쓰지 않습니다(#274)
 - **Mongo Sync**: 멀티 서버 협업을 위한 선택적 이벤트 push/pull sync
 - **Endless Mode / Shared Memory**: 세션 경계 없는 연속 기억 및 공유 store 실험 기능
 

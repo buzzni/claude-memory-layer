@@ -237,12 +237,14 @@ Versions released before the #274 fix wrote a second copy of every stored event 
 appended to `<project>/memory/<type>/…/YYYY-MM-DD.md` and the files were listed in `<project>/memory/_index.md`.
 `<project>` was the directory the writing process resolved its project to: the project root, a worktree's main
 checkout, or the directory a `.claude-memory-root` marker names. A process with no project path resolved the
-directory it ran in the same way. Nothing read this copy, and `forget`, the dashboard delete and
-`repair redact-credentials` never cleaned it, so text they removed or redacted may still be there in plain text.
+directory it ran in the same way. `forget`, the dashboard delete and `repair redact-credentials` never cleaned this
+copy, so text they removed or redacted may still be there in plain text.
 
 Ingest no longer writes this copy, and no command deletes it for you. The store's own mirror under
 `~/.claude-code/memory/projects/<hash>/memory/` is a different copy: it is still written and still cleaned as described
-above. Deleting the old copy loses nothing, since every event it holds is in the store unless you deleted it there.
+above. Search, context injection, the MCP tools and the dashboard never read the old copy. `organize-import` can: it
+imports every Markdown file under the folder it is given (by default the project directory), so run on a project
+that still holds the old copy it stores that text again, including text you had deleted or redacted.
 
 To find the old copies, look for their index, whose header the store's mirror never writes:
 
@@ -252,11 +254,22 @@ find ~ -path '*/memory/_index.md' -not -path '*/node_modules/*' \
 ```
 
 Searching all of `~` can take a while and, on macOS, ask for access to protected folders; replace `~` with the
-folder that holds your projects to search less. Each path printed is the `_index.md` of one old copy. In that
-`memory/` directory, delete `_index.md`, any leftover `_index.md.<pid>.<n>.tmp`, and the dated `YYYY-MM-DD.md` files
-whose entries start with `## <timestamp> | <event id>` followed by `- type:` and `- session:` lines. If the project
-keeps nothing else in `memory/`, delete the whole directory. If it has its own files there, delete only the files
-above.
+folder that holds your projects to search less. Each path printed is the `_index.md` of one old copy.
+
+The old writer did not check whose files it wrote to. It appended its entries to a dated `YYYY-MM-DD.md` file even
+when that file already held something else, and `_index.md` lists every Markdown file under `memory/`, not only the
+ones it wrote. So read each file in full before deleting it:
+
+- `_index.md` and any leftover `_index.md.<pid>.<n>.tmp` are rewritten whole by the writer; delete them.
+- A dated file the writer made holds only its entries. Each entry starts with a line `## <ISO timestamp> | <event id>`
+  followed by `- type:` and `- session:` lines, then the event's text, and runs to the next such line or the end of
+  the file. Delete a dated file whole only when everything in it is such entries.
+- If a file also holds your own text, or you cannot tell where an entry's text ends (the text can contain headings
+  and blank lines of its own), keep the file and delete only the generated entries you can identify.
+- Any other file under `memory/` is yours; the writer never created it.
+
+If you are unsure, you can leave a file as it is: nothing writes to it any more. Keep it out of commits, though, and
+out of `organize-import`.
 
 If the copy was committed (`git log --oneline -- memory/` in that repository prints commits), deleting the files in a
 new commit leaves the text in the repository's history and in every clone and remote that has those commits. If it
