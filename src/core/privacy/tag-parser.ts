@@ -13,7 +13,10 @@ export interface PrivateSection {
 export interface ParseResult {
   filtered: string;
   sections: PrivateSection[];
-  /** An opening tag had no end, so everything from it on was masked. */
+  /**
+   * An opening tag of a format that fails closed had no end. Everything from
+   * it on was masked, unless maskUnclosed is false.
+   */
   unclosed: boolean;
   stats: {
     count: number;
@@ -250,7 +253,8 @@ export function parsePrivateTags(
   // An opening tag that is never closed: fail closed and mask from it to the
   // end of the text, with a marker that says why. maskUnclosed: false keeps
   // the text after it, for rows stored before #269 (see applyPrivacyFilter).
-  let cut = options.maskUnclosed === false ? Infinity : Math.min(firstClose.unclosedAt, nested.unclosedAt);
+  const unclosedAt = Math.min(firstClose.unclosedAt, nested.unclosedAt);
+  let cut = options.maskUnclosed === false ? Infinity : unclosedAt;
   cut = masks.find((mask) => mask.start < cut && cut < mask.end)?.start ?? cut;
   const hasUnclosed = cut !== Infinity;
 
@@ -262,7 +266,7 @@ export function parsePrivateTags(
   return {
     filtered,
     sections,
-    unclosed: hasUnclosed,
+    unclosed: unclosedAt !== Infinity,
     stats: {
       // Every masked part, including those only the first-closing-tag rule masks.
       count: kept.length + (hasUnclosed ? 1 : 0),

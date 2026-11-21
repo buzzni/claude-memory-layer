@@ -315,6 +315,42 @@ describe('unclosed private tags', () => {
     expect(result.metadata.privateTagCount).toBe(1);
   });
 
+  // #296: the parser only reported an unclosed tag it masked to the end, and
+  // the tag count does not cover the comment format. maskUnclosed: false
+  // changes what is masked, not what is flagged.
+  it.each([
+    ['an unclosed comment tag, which the tag count does not cover', 'comment', 'a <!-- private --> b', 'a [PRIVATE: unclosed]'],
+    ['an unclosed comment tag after a stray closing tag', 'comment', 'a <!-- /private --> b <!-- private -->orchid', 'a <!-- /private --> b [PRIVATE: unclosed]'],
+    ['an unclosed xml tag evened out by a stray closing tag', 'xml', 'a </private> b <private>orchid', 'a </private> b [PRIVATE: unclosed]'],
+    // The bracket format does not fail closed, so only the tag count flags it.
+    ['an unclosed bracket tag', 'bracket', 'a [private] b', 'a [private] b']
+  ] as const)('flags %s whether or not it is masked', (_kind, format, text, masked) => {
+    const config: Config['privacy'] = {
+      ...privacy,
+      privateTags: { ...privacy.privateTags, supportedFormats: [format] }
+    };
+
+    const kept = applyPrivacyFilter(text, config, { maskUnclosed: false });
+    expect(kept.content).toBe(text);
+    expect(kept.metadata.hasUnmatchedTags).toBe(true);
+
+    const byDefault = applyPrivacyFilter(text, config);
+    expect(byDefault.content).toBe(masked);
+    expect(byDefault.metadata.hasUnmatchedTags).toBe(true);
+  });
+
+  it('does not flag text whose tags are all closed with maskUnclosed: false', () => {
+    // Bracket first, so it does not read the marker another format left as a tag.
+    const allFormats: Config['privacy'] = {
+      ...privacy,
+      privateTags: { ...privacy.privateTags, supportedFormats: ['bracket', 'xml', 'comment'] }
+    };
+    const result = applyPrivacyFilter('a <private>o</private> b [private]p[/private] c <!-- private -->q<!-- /private --> d', allFormats, { maskUnclosed: false });
+
+    expect(result.content).toBe('a [PRIVATE]\nb [PRIVATE]\nc [PRIVATE]\nd');
+    expect(result.metadata.hasUnmatchedTags).toBe(false);
+  });
+
   // The code is set aside under a placeholder while tags are parsed. The same
   // text typed in the input used to be restored to code that was masked.
   it.each([

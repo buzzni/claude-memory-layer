@@ -140,7 +140,8 @@ function maskSensitiveString(value: string): string {
  * `maskUnclosed: false` keeps the text after an unclosed private tag, as the
  * filter did before #269; when tags inside it are closed, it is masked up to
  * the last closing tag. Only for re-filtering rows stored before then, which
- * are not masked retroactively; every storage path keeps the default.
+ * are not masked retroactively; every storage path keeps the default. The tag
+ * is flagged in hasUnmatchedTags either way.
  */
 export function applyPrivacyFilter(
   content: string,
