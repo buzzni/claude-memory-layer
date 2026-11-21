@@ -228,8 +228,8 @@ export function resolveForgetSelection(
  * then the vectors of exactly the deleted ids. A session takes every row whatever wrote it,
  * unlike the force-reimport scope (`importedFrom`).
  *
- * The markdown mirrors are left as they are (#274, #276): the store mirror writes the category
- * unescaped, so one entry cannot be cut out of a shared day file safely.
+ * The store's markdown mirror is left as it is (#276): it writes the category unescaped, so one
+ * entry cannot be cut out of a shared day file safely.
  *
  * An event's vectors are removed even when SQLite no longer has the row, so a re-run after a
  * vector failure finishes the cleanup. A session's vectors are picked by the ids the delete
@@ -329,7 +329,8 @@ export function formatForgetTargetReport(report: ForgetTargetReport): string {
   const lines = [
     `Forget ${scope} (${report.apply ? 'applied' : 'dry-run'})`,
     `Matching rows: ${report.rows} (${kb} KB of content)`,
-    'Markdown mirrors are not cleaned: the store mirror and the project memory/ mirror keep their entries (#274, #276)'
+    "The store's markdown mirror is not cleaned (#276)",
+    'Copies older versions wrote under <project>/memory/ are not touched either (#274)'
   ];
   if (report.applied) {
     lines.push(

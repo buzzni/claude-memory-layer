@@ -584,7 +584,8 @@ PATH에 CLI가 없으면 명령이 `command not found`로 실패합니다. `npm 
 /memory-layer:memory-list
 
 # 메모리 삭제: 이벤트 ID, --session, --before 중 하나만 지정합니다. --confirm 없이는 미리보기만 합니다.
-# 이벤트 ID·--session은 store의 Markdown mirror와 프로젝트 디렉터리 memory/ mirror를 정리하지 않습니다(#274, #276).
+# 이벤트 ID·--session은 store의 Markdown mirror를 정리하지 않습니다(#276).
+# 예전 버전이 프로젝트 디렉터리 memory/에 쓴 사본은 어떤 형태로도 건드리지 않습니다(#274, 정리 방법: docs/OPERATIONS.md).
 /memory-layer:memory-forget <event-id> --confirm
 /memory-layer:memory-forget --session <session-id> --confirm
 /memory-layer:memory-forget --before 2026-01-01 --confirm

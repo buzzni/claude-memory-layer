@@ -107,6 +107,8 @@ Beta import result:
 
 ### 4.2 Project-scoped markdown mirror writes to the target project
 
+> Ingest no longer writes this project-directory mirror (#274); this section records the behavior at the time of the audit.
+
 The audit verified markdown mirrors were written under each temporary target project, not under the `claude-memory-layer` repository working directory.
 
 Examples:

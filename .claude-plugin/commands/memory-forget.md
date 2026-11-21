@@ -38,7 +38,7 @@ Without `--confirm` the command only reports what matches and deletes nothing. W
 
 If vectors could not be removed, the command prints a warning; with `event-id` or `--session` it also exits 1, while `--before` only warns.
 
-`event-id` and `--session` do not clean the store's markdown mirror or the second mirror written under the project directory (`<project>/memory/`), so forgotten text can remain in both (#274, #276). `--before` does not clean the project directory's mirror either.
+`event-id` and `--session` do not clean the store's markdown mirror, so forgotten text can remain there (#276). No form of the command touches the copies older versions wrote under the project directory (`<project>/memory/`, #274); `docs/OPERATIONS.md` ("Old copies of event text in project directories") shows how to remove them.
 
 ⚠️ **Note**: Deletion is permanent. Only `--before` runs `VACUUM`; after deleting a single event or session, freed database pages are reused but the file does not shrink until a later vacuum.
 
