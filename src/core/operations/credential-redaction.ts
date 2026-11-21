@@ -355,7 +355,12 @@ function redactMirrorText(text: string): string {
     const start = i;
     while (i < lines.length && lines[i].startsWith(MIRROR_CONTENT_INDENT)) i++;
     if (i === start) continue;
+    // The header line stays out of the filter: an unclosed tag in a line
+    // before it (formatMirrorEntry writes the category unescaped) masks to
+    // the end of that text, and would take the header with it.
+    other.pop();
     flushOther();
+    out.push(MIRROR_CONTENT_HEADER);
     const content = lines.slice(start, i).map((l) => l.slice(MIRROR_CONTENT_INDENT.length)).join('\n');
     out.push(redactText(content).split('\n').map((l) => `${MIRROR_CONTENT_INDENT}${l}`).join('\n'));
   }
