@@ -389,6 +389,42 @@ describe('unclosed private tags', () => {
   });
 });
 
+describe('a credential right before a private tag', () => {
+  // #304: the credential rules run after the tag pass, and their value ran on
+  // into the marker it had just inserted.
+  it.each([
+    ['an unclosed tag', 'deploy token=abc<private>codename-orchid', 'deploy [REDACTED] [PRIVATE: unclosed]'],
+    ['a closed tag', 'deploy password=abc<private>x</private> done', 'deploy [REDACTED] [PRIVATE]\ndone'],
+    ['a CLI option', 'deploy --token abc<private>codename-orchid', 'deploy --token [REDACTED] [PRIVATE: unclosed]'],
+    ['a credential URL', 'db postgres://u:pw@db.internal<private>codename-orchid', 'db [REDACTED] [PRIVATE: unclosed]'],
+    ['an AWS secret key', 'AWS_SECRET_ACCESS_KEY=abc<private>codename-orchid', '[REDACTED] [PRIVATE: unclosed]']
+  ])('keeps the marker after %s', (_label, input, expected) => {
+    expect(applyPrivacyFilter(input, privacy).content).toBe(expected);
+  });
+
+  it('still redacts a value that goes on after a closed tag', () => {
+    expect(applyPrivacyFilter('deploy token=abc<private>x</private>def done', privacy).content)
+      .toBe('deploy [REDACTED] done');
+  });
+
+  it('keeps the marker after a custom exclude pattern', () => {
+    const custom: Config['privacy'] = { ...privacy, excludePatterns: ['passphrase'] };
+
+    expect(applyPrivacyFilter('use passphrase=abc<private>codename-orchid', custom).content)
+      .toBe('use [REDACTED] [PRIVATE: unclosed]');
+  });
+
+  it('keeps a [REDACTED] marker whole', () => {
+    const redactedMarker: Config['privacy'] = {
+      ...privacy,
+      privateTags: { ...privacy.privateTags, marker: '[REDACTED]' }
+    };
+
+    expect(applyPrivacyFilter('deploy token=abc<private>codename-orchid', redactedMarker).content)
+      .toBe('deploy [REDACTED] [REDACTED: unclosed]');
+  });
+});
+
 describe('nested private tags', () => {
   const allFormats: Config['privacy'] = {
     ...privacy,
