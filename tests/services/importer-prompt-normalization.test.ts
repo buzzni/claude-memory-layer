@@ -69,43 +69,48 @@ async function sessionEvents(service: MemoryService, sessionId: string) {
   };
 }
 
+/** Imports one user prompt through the given importer, as its own session. */
+async function importPrompt(service: MemoryService, source: 'claude' | 'codex' | 'hermes', sessionId: string, raw: string): Promise<void> {
+  const dir = tempDir();
+  if (source === 'claude') {
+    const file = join(dir, `${sessionId}.jsonl`);
+    writeJsonl(file, [{ type: 'user', message: { role: 'user', content: raw } }]);
+    await new SessionHistoryImporter(service).importSessionFile(file);
+  } else if (source === 'codex') {
+    const file = join(dir, `rollout-${sessionId}.jsonl`);
+    writeJsonl(file, [
+      { type: 'session_meta', payload: { id: sessionId, cwd: dir } },
+      { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: raw }] } }
+    ]);
+    await createCodexSessionHistoryImporter(service, { sessionsDir: dir }).importSessionFile(file);
+  } else {
+    const stateDbPath = join(dir, 'state.db');
+    const db = new Database(stateDbPath);
+    db.exec(`
+      CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT, user_id TEXT, model TEXT, system_prompt TEXT,
+        started_at REAL, ended_at REAL, title TEXT);
+      CREATE TABLE messages (id INTEGER PRIMARY KEY, session_id TEXT, role TEXT, content TEXT, tool_name TEXT, timestamp REAL);
+    `);
+    db.prepare(`INSERT INTO sessions VALUES (?, 'cli', NULL, NULL, NULL, 1779000000, NULL, NULL)`).run(sessionId);
+    db.prepare(`INSERT INTO messages VALUES (1, ?, 'user', ?, NULL, 1779000001)`).run(sessionId, raw);
+    db.close();
+    await createHermesSessionHistoryImporter(service, { stateDbPath }).importSession(sessionId);
+  }
+}
+
 describe('importer prompt normalization', () => {
   it.each([
     ['claude', 'legacy'], ['codex', 'legacy'], ['hermes', 'legacy'],
     ['claude', 'normalized'], ['codex', 'normalized'], ['hermes', 'normalized']
   ] as const)('%s: an assistant copy of the %s prompt does not suppress the actual user prompt', async (source, copyForm) => {
     const service = realService();
-    const dir = tempDir();
     const sessionId = 'role-collision';
     const memorySessionId = source === 'hermes' ? `hermes:${sessionId}` : sessionId;
     const request = '메모리 조회 로직의 오류를 검토하고 고쳐줘';
     const raw = `${WRAPPER}\n\n${request}`;
     await service.storeAgentResponse(memorySessionId, copyForm === 'legacy' ? redactPromptForStorage(raw) : request, { turnId: 'earlier-answer' });
 
-    if (source === 'claude') {
-      const file = join(dir, `${sessionId}.jsonl`);
-      writeJsonl(file, [{ type: 'user', message: { role: 'user', content: raw } }]);
-      await new SessionHistoryImporter(service).importSessionFile(file);
-    } else if (source === 'codex') {
-      const file = join(dir, `rollout-${sessionId}.jsonl`);
-      writeJsonl(file, [
-        { type: 'session_meta', payload: { id: sessionId, cwd: dir } },
-        { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: raw }] } }
-      ]);
-      await createCodexSessionHistoryImporter(service, { sessionsDir: dir }).importSessionFile(file);
-    } else {
-      const stateDbPath = join(dir, 'state.db');
-      const db = new Database(stateDbPath);
-      db.exec(`
-        CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT, user_id TEXT, model TEXT, system_prompt TEXT,
-          started_at REAL, ended_at REAL, title TEXT);
-        CREATE TABLE messages (id INTEGER PRIMARY KEY, session_id TEXT, role TEXT, content TEXT, tool_name TEXT, timestamp REAL);
-      `);
-      db.prepare(`INSERT INTO sessions VALUES (?, 'cli', NULL, NULL, NULL, 1779000000, NULL, NULL)`).run(sessionId);
-      db.prepare(`INSERT INTO messages VALUES (1, ?, 'user', ?, NULL, 1779000001)`).run(sessionId, raw);
-      db.close();
-      await createHermesSessionHistoryImporter(service, { stateDbPath }).importSession(sessionId);
-    }
+    await importPrompt(service, source, sessionId, raw);
 
     expect((await sessionEvents(service, memorySessionId)).prompts.map((event) => event.content)).toEqual([request]);
   });
