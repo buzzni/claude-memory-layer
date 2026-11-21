@@ -136,25 +136,33 @@ function maskSensitiveString(value: string): string {
  * `collapseMarkers: false` skips the final cleanup that merges each run of
  * markers and the whitespace after it, so the lines and indentation around a
  * masked part are kept as they were.
+ *
+ * `maskUnclosed: false` keeps the text after an unclosed private tag, as the
+ * filter did before #269. Only for re-filtering rows stored before then, which
+ * are not masked retroactively; every storage path keeps the default.
  */
 export function applyPrivacyFilter(
   content: string,
   config: Config['privacy'],
-  options: { collapseMarkers?: boolean } = {}
+  options: { collapseMarkers?: boolean; maskUnclosed?: boolean } = {}
 ): FilterResult {
   let filtered = content;
   let privateTagCount = 0;
   let patternMatchCount = 0;
-  const hasUnmatchedTags = hasUnmatchedOpenTag(content);
+  let hasUnmatchedTags = hasUnmatchedOpenTag(content);
 
   // 1. Private tag filtering
   if (config.privateTags?.enabled !== false) {
     const tagResult = parsePrivateTagsSafe(filtered, {
       formats: config.privateTags?.supportedFormats || ['xml'],
-      marker: config.privateTags?.marker || '[PRIVATE]'
+      marker: config.privateTags?.marker || '[PRIVATE]',
+      maskUnclosed: options.maskUnclosed
     });
     filtered = tagResult.filtered;
     privateTagCount = tagResult.stats.count;
+    // The tag count misses an unclosed tag evened out by a stray closing tag,
+    // and the comment format entirely.
+    hasUnmatchedTags ||= tagResult.unclosed;
   }
 
   // 2. CLI option filtering (`--password value`, `--password=value`, etc.)

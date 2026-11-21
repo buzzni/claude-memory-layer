@@ -14,7 +14,12 @@ import { randomUUID } from 'crypto';
 import { MemoryService } from './memory-service.js';
 import { registerTerminalSession } from '../core/registry/session-registry.js';
 import { mergeAgentResponseBlocks, truncateAgentResponse } from './turn-buffering.js';
-import { planPromptStorage, promptClassifierMetadata, redactPromptForStorage } from '../core/prompt-normalizer.js';
+import {
+  planPromptStorage,
+  promptClassifierMetadata,
+  redactPromptAsStoredBeforeUnclosedMasking,
+  redactPromptForStorage
+} from '../core/prompt-normalizer.js';
 import { isHarnessBoilerplate } from '../core/harness-boilerplate.js';
 import { reconcileSessionTranscript } from '../adapters/claude/hooks/session-end-reconcile.js';
 import { isProviderScratchProjectDir } from '../adapters/llm/cli-provider.js';
@@ -437,11 +442,11 @@ export class SessionHistoryImporter {
       const truncated = truncateAgentResponse(redactPromptForStorage(merged));
 
       // Earlier imports stored the merged response without the privacy
-      // filter; a re-import must not add the filtered copy beside it. A force
-      // re-import deletes that row first (unless a lesson cites it), so it
-      // replaces it.
-      const unfiltered = truncateAgentResponse(merged);
-      if (unfiltered !== truncated && storedResponses.has(unfiltered)) {
+      // filter, or before #269 with the text after an unclosed tag kept; a
+      // re-import must not add the filtered copy beside it. A force re-import
+      // deletes that row first (unless a lesson cites it), so it replaces it.
+      const earlierForms = [truncateAgentResponse(merged), truncateAgentResponse(redactPromptAsStoredBeforeUnclosedMasking(merged))];
+      if (earlierForms.some((form) => form !== truncated && storedResponses.has(form))) {
         result.skippedDuplicates++;
         lineCount++;
         textBuffer = [];

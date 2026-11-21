@@ -118,7 +118,8 @@ export async function reconcileSessionTranscript(
       const { content, privacy } = normalizeAgentResponse(text);
       const isLast = keepLastMessage && i === turn.messages.length - 1;
       if (!isStorableAgentResponse(content, isLast, minResponseLength)) continue;
-      if (storedContents.has(content)) {
+      // A row stored before #269 kept the text after an unclosed tag.
+      if (storedContents.has(content) || storedContents.has(normalizeAgentResponse(text, { maskUnclosed: false }).content)) {
         result.alreadyStored++;
         continue;
       }

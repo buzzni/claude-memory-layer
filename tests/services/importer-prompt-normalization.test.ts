@@ -69,45 +69,84 @@ async function sessionEvents(service: MemoryService, sessionId: string) {
   };
 }
 
+/** Imports one user prompt through the given importer, as its own session. */
+async function importPrompt(service: MemoryService, source: 'claude' | 'codex' | 'hermes', sessionId: string, raw: string): Promise<void> {
+  const dir = tempDir();
+  if (source === 'claude') {
+    const file = join(dir, `${sessionId}.jsonl`);
+    writeJsonl(file, [{ type: 'user', message: { role: 'user', content: raw } }]);
+    await new SessionHistoryImporter(service).importSessionFile(file);
+  } else if (source === 'codex') {
+    const file = join(dir, `rollout-${sessionId}.jsonl`);
+    writeJsonl(file, [
+      { type: 'session_meta', payload: { id: sessionId, cwd: dir } },
+      { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: raw }] } }
+    ]);
+    await createCodexSessionHistoryImporter(service, { sessionsDir: dir }).importSessionFile(file);
+  } else {
+    const stateDbPath = join(dir, 'state.db');
+    const db = new Database(stateDbPath);
+    db.exec(`
+      CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT, user_id TEXT, model TEXT, system_prompt TEXT,
+        started_at REAL, ended_at REAL, title TEXT);
+      CREATE TABLE messages (id INTEGER PRIMARY KEY, session_id TEXT, role TEXT, content TEXT, tool_name TEXT, timestamp REAL);
+    `);
+    db.prepare(`INSERT INTO sessions VALUES (?, 'cli', NULL, NULL, NULL, 1779000000, NULL, NULL)`).run(sessionId);
+    db.prepare(`INSERT INTO messages VALUES (1, ?, 'user', ?, NULL, 1779000001)`).run(sessionId, raw);
+    db.close();
+    await createHermesSessionHistoryImporter(service, { stateDbPath }).importSession(sessionId);
+  }
+}
+
 describe('importer prompt normalization', () => {
   it.each([
     ['claude', 'legacy'], ['codex', 'legacy'], ['hermes', 'legacy'],
     ['claude', 'normalized'], ['codex', 'normalized'], ['hermes', 'normalized']
   ] as const)('%s: an assistant copy of the %s prompt does not suppress the actual user prompt', async (source, copyForm) => {
     const service = realService();
-    const dir = tempDir();
     const sessionId = 'role-collision';
     const memorySessionId = source === 'hermes' ? `hermes:${sessionId}` : sessionId;
     const request = '메모리 조회 로직의 오류를 검토하고 고쳐줘';
     const raw = `${WRAPPER}\n\n${request}`;
     await service.storeAgentResponse(memorySessionId, copyForm === 'legacy' ? redactPromptForStorage(raw) : request, { turnId: 'earlier-answer' });
 
-    if (source === 'claude') {
-      const file = join(dir, `${sessionId}.jsonl`);
-      writeJsonl(file, [{ type: 'user', message: { role: 'user', content: raw } }]);
-      await new SessionHistoryImporter(service).importSessionFile(file);
-    } else if (source === 'codex') {
-      const file = join(dir, `rollout-${sessionId}.jsonl`);
-      writeJsonl(file, [
-        { type: 'session_meta', payload: { id: sessionId, cwd: dir } },
-        { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: raw }] } }
-      ]);
-      await createCodexSessionHistoryImporter(service, { sessionsDir: dir }).importSessionFile(file);
-    } else {
-      const stateDbPath = join(dir, 'state.db');
-      const db = new Database(stateDbPath);
-      db.exec(`
-        CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT, user_id TEXT, model TEXT, system_prompt TEXT,
-          started_at REAL, ended_at REAL, title TEXT);
-        CREATE TABLE messages (id INTEGER PRIMARY KEY, session_id TEXT, role TEXT, content TEXT, tool_name TEXT, timestamp REAL);
-      `);
-      db.prepare(`INSERT INTO sessions VALUES (?, 'cli', NULL, NULL, NULL, 1779000000, NULL, NULL)`).run(sessionId);
-      db.prepare(`INSERT INTO messages VALUES (1, ?, 'user', ?, NULL, 1779000001)`).run(sessionId, raw);
-      db.close();
-      await createHermesSessionHistoryImporter(service, { stateDbPath }).importSession(sessionId);
-    }
+    await importPrompt(service, source, sessionId, raw);
 
     expect((await sessionEvents(service, memorySessionId)).prompts.map((event) => event.content)).toEqual([request]);
+  });
+
+  // #269: the text after an unclosed tag is masked now, but a row stored
+  // before keeps it. Re-importing must recognize that row, not add the masked copy.
+  const UNCLOSED_REQUEST = 'Explain approval api_key=fake-key-abcdef <private>codename-orchid';
+  const STORED_BEFORE_MASKING = 'Explain approval [REDACTED] <private>codename-orchid';
+
+  it.each(['claude', 'codex', 'hermes'] as const)('%s: a prompt stored before unclosed tags were masked is not imported again', async (source) => {
+    const service = realService();
+    const memorySessionId = source === 'hermes' ? 'hermes:pre-masking' : 'pre-masking';
+    await service.storeUserPrompt(memorySessionId, STORED_BEFORE_MASKING, { turnId: 'old-turn' });
+
+    await importPrompt(service, source, 'pre-masking', `${WRAPPER}\n\n${UNCLOSED_REQUEST}`);
+
+    expect((await sessionEvents(service, memorySessionId)).prompts.map((event) => event.content)).toEqual([STORED_BEFORE_MASKING]);
+  });
+
+  it.each([
+    ['an earlier import', { importedFrom: 'earlier-import.jsonl' }],
+    ['the Stop hook', {}]
+  ] as const)('Claude: a response %s stored before unclosed tags were masked is not imported again', async (_writer, provenance) => {
+    const service = realService();
+    const file = join(tempDir(), 'pre-masking-response.jsonl');
+    const reply = `${LONG_REPLY('answer')} api_key=fake-key-abcdef <private>codename-orchid`;
+    const storedBefore = `${LONG_REPLY('answer')} [REDACTED] <private>codename-orchid`;
+    writeJsonl(file, [
+      { type: 'user', timestamp: '2026-10-01T00:00:00.000Z', message: { role: 'user', content: REQUEST } },
+      { type: 'assistant', timestamp: '2026-10-01T00:00:01.000Z', message: { role: 'assistant', content: [{ type: 'text', text: reply }] } }
+    ]);
+    await service.storeAgentResponse('pre-masking-response', storedBefore, { turnId: 'old-turn', ...provenance });
+
+    await new SessionHistoryImporter(service).importSessionFile(file);
+
+    expect((await sessionEvents(service, 'pre-masking-response')).responses.map((event) => event.content)).toEqual([storedBefore]);
   });
 
   it('Claude: a banner-wrapped notification in an explicit subagent transcript opens a task_notification turn', async () => {

@@ -30,9 +30,13 @@ export interface NormalizedAgentResponse {
   privacy: ReturnType<typeof applyPrivacyFilter>['metadata'];
 }
 
-/** Apply the privacy filter, then truncate very long responses. */
-export function normalizeAgentResponse(text: string): NormalizedAgentResponse {
-  const filterResult = applyPrivacyFilter(text, DEFAULT_PRIVACY_CONFIG);
+/**
+ * Apply the privacy filter, then truncate very long responses.
+ * `maskUnclosed: false` gives what was stored before #269, only to recognize
+ * those rows; see applyPrivacyFilter.
+ */
+export function normalizeAgentResponse(text: string, options: { maskUnclosed?: boolean } = {}): NormalizedAgentResponse {
+  const filterResult = applyPrivacyFilter(text, DEFAULT_PRIVACY_CONFIG, options);
   let content = filterResult.content;
 
   // Truncate very long responses

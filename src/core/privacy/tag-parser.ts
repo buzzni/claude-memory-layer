@@ -13,6 +13,8 @@ export interface PrivateSection {
 export interface ParseResult {
   filtered: string;
   sections: PrivateSection[];
+  /** An opening tag had no end, so everything from it on was masked. */
+  unclosed: boolean;
   stats: {
     count: number;
     totalLength: number;
@@ -22,6 +24,8 @@ export interface ParseResult {
 export interface ParseOptions {
   formats: Array<'xml' | 'bracket' | 'comment'>;
   marker: string;
+  /** Mask from an unclosed opening tag to the end (default). */
+  maskUnclosed?: boolean;
 }
 
 // Tag patterns for different formats
@@ -29,6 +33,17 @@ const TAG_PATTERNS: Record<string, RegExp> = {
   xml: /<private>([\s\S]*?)<\/private>/gi,
   bracket: /\[private\]([\s\S]*?)\[\/private\]/gi,
   comment: /<!--\s*private\s*-->([\s\S]*?)<!--\s*\/private\s*-->/gi
+};
+
+/**
+ * Opening tags that mask to the end of the text when left unclosed. Not the
+ * bracket format: its `[private]` is also the `[PRIVATE]` marker stored rows
+ * carry, so failing closed on it would cut every stored row read back with
+ * that format enabled at its first marker.
+ */
+const UNCLOSED_OPENING_PATTERNS: Record<string, RegExp> = {
+  xml: /<private>/i,
+  comment: /<!--\s*private\s*-->/i
 };
 
 /**
@@ -75,11 +90,24 @@ export function parsePrivateTags(
     });
   }
 
+  // An opening tag still left has no closing tag: fail closed and mask from
+  // it to the end of the text, with a marker that says why. maskUnclosed:
+  // false keeps it, for rows stored before #269 (see applyPrivacyFilter).
+  const unclosedAt = options.maskUnclosed === false ? Infinity : Math.min(...options.formats.map((format) => {
+    const index = UNCLOSED_OPENING_PATTERNS[format] ? filtered.search(UNCLOSED_OPENING_PATTERNS[format]) : -1;
+    return index === -1 ? Infinity : index;
+  }));
+  const hasUnclosed = unclosedAt !== Infinity;
+  if (hasUnclosed) {
+    filtered = filtered.slice(0, unclosedAt) + options.marker.replace(/\]$/, ': unclosed]');
+  }
+
   return {
     filtered,
     sections,
+    unclosed: hasUnclosed,
     stats: {
-      count: sections.length,
+      count: sections.length + (hasUnclosed ? 1 : 0),
       totalLength: sections.reduce((sum, s) => sum + s.content.length, 0)
     }
   };
@@ -92,13 +120,21 @@ export function parsePrivateTagsSafe(
   text: string,
   options: ParseOptions
 ): ParseResult {
+  // Placeholders carry a prefix the text does not contain. A fixed one could
+  // be typed in the text, and restoring it would put back code that a
+  // private section masked.
+  let prefix: string;
+  do {
+    prefix = `__CML_${Math.random().toString(36).slice(2, 10)}_`;
+  } while (text.includes(prefix));
+
   // 1. Extract and protect code blocks
   const codeBlocks: string[] = [];
   const textWithPlaceholders = text.replace(
     /```[\s\S]*?```/g,
     (match) => {
       codeBlocks.push(match);
-      return `__CODE_BLOCK_${codeBlocks.length - 1}__`;
+      return `${prefix}CODE_BLOCK_${codeBlocks.length - 1}__`;
     }
   );
 
@@ -108,7 +144,7 @@ export function parsePrivateTagsSafe(
     /`[^`]+`/g,
     (match) => {
       inlineCode.push(match);
-      return `__INLINE_CODE_${inlineCode.length - 1}__`;
+      return `${prefix}INLINE_CODE_${inlineCode.length - 1}__`;
     }
   );
 
@@ -117,13 +153,13 @@ export function parsePrivateTagsSafe(
 
   // 3. Restore inline code
   result.filtered = result.filtered.replace(
-    /__INLINE_CODE_(\d+)__/g,
+    new RegExp(`${prefix}INLINE_CODE_(\\d+)__`, 'g'),
     (_, idx) => inlineCode[Number(idx)]
   );
 
   // 4. Restore code blocks
   result.filtered = result.filtered.replace(
-    /__CODE_BLOCK_(\d+)__/g,
+    new RegExp(`${prefix}CODE_BLOCK_(\\d+)__`, 'g'),
     (_, idx) => codeBlocks[Number(idx)]
   );
 

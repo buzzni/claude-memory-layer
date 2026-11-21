@@ -280,8 +280,8 @@ function normalizeHermesMessage(
   };
 }
 
-function sanitizeForMemory(content: string): string {
-  const filtered = applyPrivacyFilter(content, DEFAULT_PRIVACY_CONFIG).content;
+function sanitizeForMemory(content: string, options: { maskUnclosed?: boolean } = {}): string {
+  const filtered = applyPrivacyFilter(content, DEFAULT_PRIVACY_CONFIG, options).content;
   return truncateOutput(filtered, { maxLength: HERMES_VALIDATION_DEFAULT_MAX_CONTENT_CHARS, maxLines: 200 });
 }
 
@@ -780,9 +780,12 @@ export class HermesSessionHistoryImporter {
         currentTurnId = randomUUID();
         currentTurnTrigger = 'user';
         const storedText = sanitizeForMemory(normalized.content);
-        const legacyContents = normalized.legacyContent !== undefined
-          ? [sanitizeForMemory(normalized.legacyContent)].filter((content) => content !== storedText)
-          : [];
+        // Rows stored before #269 kept the text after an unclosed tag.
+        const legacySources = normalized.legacyContent !== undefined ? [normalized.legacyContent] : [];
+        const legacyContents = [...new Set([
+          ...legacySources.map((content) => sanitizeForMemory(content)),
+          ...[normalized.content, ...legacySources].map((content) => sanitizeForMemory(content, { maskUnclosed: false }))
+        ])].filter((content) => content !== storedText);
         if (legacyContents.length > 0 && await this.memoryService.hasSessionUserPrompt(memorySessionId, legacyContents)) {
           result.skippedDuplicates++;
           setStoredCount(getStoredCount() + 1);
