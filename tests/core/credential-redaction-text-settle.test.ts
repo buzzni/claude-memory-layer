@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 
 import { applyCredentialRedaction, redactText } from '../../src/core/operations/credential-redaction.js';
+import { applyPrivacyFilter } from '../../src/core/privacy/filter.js';
 import { SQLiteEventStore } from '../../src/core/sqlite-event-store.js';
 
 /**
@@ -37,8 +38,36 @@ const FRAGMENTS: Array<() => string> = [
   () => '`', () => '```', () => '`code`',
   () => 'password=', () => 'api_key: ', () => 'token=', () => '--token ', () => 'secret: ',
   () => `Bearer ${alnum(20)}`, () => `ghp_${alnum(36)}`,
-  () => '[PRIVATE]', () => '[REDACTED]', () => '[PRIVATE: unclosed]', () => 'echo ', () => '='
+  () => '[PRIVATE]', () => '[REDACTED]', () => '[PRIVATE: unclosed]', () => 'echo ', () => '=',
+  // What #304 changed: markers a credential value runs into, URL credentials, the config patterns as bare words.
+  () => '[REDACTED: unclosed]', () => `postgres://admin:${alnum(8)}@`, () => `https://u:${alnum(8)}@host/x`, () => alnum(12),
+  () => 'password', () => 'secret', () => 'bearer', () => 'token',
+  // Tags the repair does not mask: mixed case, and the bracket and comment formats.
+  () => '<PRIVATE>', () => '</Private>', () => '[private]', () => '[/private]', () => '<!-- private -->', () => '<!-- /private -->'
 ];
+
+/** One pass of the repair's filter: what redactText did before #308. */
+const redactOnce = (text: string) => applyPrivacyFilter(text, {
+  excludePatterns: ['password', 'secret', 'api_key', 'token', 'bearer'],
+  anonymize: false,
+  privateTags: { enabled: true, marker: '[PRIVATE]', preserveLineCount: false, supportedFormats: ['xml'] }
+}, { maskUnclosed: false }).content;
+
+/**
+ * Whether `settled` shows only characters `once` shows, in the same order,
+ * apart from the markers and whitespace the filter puts in. Removing a tag
+ * joins the text around it, so this compares characters rather than the
+ * pieces showsAllTextOf compares.
+ */
+function showsNoMoreThan(once: string, settled: string): boolean {
+  const shown = once.replace(/\s+/g, '');
+  let at = 0;
+  for (const char of settled.replace(/\[(?:PRIVATE|REDACTED)\]/g, '').replace(/\s+/g, '')) {
+    at = shown.indexOf(char, at) + 1;
+    if (at === 0) return false;
+  }
+  return true;
+}
 
 describe('redactText settles (#308)', () => {
   it('masks the private section whose closing tag a removed code fence uncovered', () => {
@@ -55,6 +84,15 @@ describe('redactText settles (#308)', () => {
     expect(redactText(once)).toBe(once);
   });
 
+  it('masks a credential URL that a first pass leaves whole after the token it runs on from', () => {
+    // The URL rule needs a word boundary before the scheme, and `ghp_…postgres`
+    // has none; masking the token makes one.
+    const once = redactText(`see ghp_${'a1'.repeat(18)}postgres://admin:pw-orchid@db.internal/app`);
+
+    expect(once).not.toContain('pw-orchid');
+    expect(redactText(once)).toBe(once);
+  });
+
   it('masks text still changing after the last pass whole', () => {
     const once = redactText(`a ${assembledTag(150)} hidden b</private> c`);
 
@@ -62,14 +100,17 @@ describe('redactText settles (#308)', () => {
     expect(redactText(once)).toBe(once);
   });
 
-  it('is idempotent over random text mixing credentials, tags, code fences and markers', () => {
+  it('is idempotent over random text mixing credentials, tags, code fences and markers, and shows nothing one pass hid', () => {
     const changed: Array<{ original: string; once: string }> = [];
+    const shown: Array<{ original: string; once: string }> = [];
     for (let i = 0; i < 5000; i++) {
       const original = Array.from({ length: Math.floor(random() * 12) }, () => pick(FRAGMENTS)()).join('');
       const once = redactText(original);
       if (redactText(once) !== once) changed.push({ original, once });
+      if (!showsNoMoreThan(redactOnce(original), once)) shown.push({ original, once });
     }
     expect(changed).toEqual([]);
+    expect(shown).toEqual([]);
   });
 });
 
@@ -81,28 +122,40 @@ describe('redact-credentials over a text row whose credential match removed a co
     for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
   });
 
-  it('hides the section in the first run and finds nothing in the second', async () => {
+  it('hides the section in the first run, in the row and its mirror entry, and finds nothing in the second', async () => {
     const storagePath = mkdtempSync(path.join(tmpdir(), 'cml-redact-settle-'));
     roots.push(storagePath);
-    const store = new SQLiteEventStore(path.join(storagePath, 'events.sqlite'));
+    const store = new SQLiteEventStore(path.join(storagePath, 'events.sqlite'), { markdownMirrorRoot: storagePath });
     await store.initialize();
     stores.push(store);
-    const { eventId } = await store.append({
-      eventType: 'user_prompt',
-      sessionId: 'session-settle',
-      timestamp: new Date('2026-11-21T00:00:00.000Z'),
-      content: 'a <private>api_key: ``` secret-orchid</private>```',
-      metadata: {}
-    });
+    const eventIds: string[] = [];
+    // The second one still changes after the last pass, and is masked whole.
+    for (const [i, content] of ['a <private>api_key: ``` secret-orchid</private>```', `a ${assembledTag(150)} secret-iris</private> c`].entries()) {
+      const { eventId } = await store.append({
+        eventType: 'user_prompt',
+        sessionId: 'session-settle',
+        timestamp: new Date(Date.parse('2026-11-21T12:00:00.000Z') + i),
+        content,
+        metadata: {}
+      });
+      eventIds.push(eventId);
+    }
     const redact = () => applyCredentialRedaction(store.getDatabase(), storagePath, { actor: 'test', deleteEventVectors: async () => {} });
 
     const first = await redact();
-    const content = (store.getDatabase().prepare('SELECT content FROM events WHERE id = ?').get(eventId) as { content: string }).content;
+    const rows = eventIds.map((id) => (store.getDatabase().prepare('SELECT content FROM events WHERE id = ?').get(id) as { content: string }).content);
+    const mirror = readFileSync(first.fileChanges[0].filePath, 'utf8');
     const second = await redact();
 
-    expect(first.affectedEventIds).toEqual([eventId]);
-    expect(content).not.toContain('secret-orchid');
+    expect([...first.affectedEventIds].sort()).toEqual([...eventIds].sort());
+    expect(rows[1]).toBe('[PRIVATE]\n');
+    for (const row of rows) {
+      expect(row).not.toContain('secret-');
+      expect(mirror).toContain(`  content: |\n${row.split('\n').map((line) => `    ${line}`).join('\n')}\n`);
+    }
+    expect(mirror).not.toContain('secret-');
     expect(second.affectedEventIds).toEqual([]);
     expect(second.rowChanges).toEqual([]);
+    expect(second.fileChanges).toEqual([]);
   });
 });
