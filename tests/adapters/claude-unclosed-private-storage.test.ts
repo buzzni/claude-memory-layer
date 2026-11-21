@@ -37,8 +37,13 @@ async function storedCopies(input: MemoryEventInput): Promise<{ row: string; fts
   const row = (db.prepare('SELECT content FROM events WHERE id = ?').get(eventId) as { content: string }).content;
   const fts = (db.prepare('SELECT content FROM events_fts WHERE event_id = ?').get(eventId) as { content: string }).content;
   const mirrorFile = buildMirrorPath(root, { ...input, id: eventId! } as Parameters<typeof buildMirrorPath>[1]);
-  // The mirror append is fire-and-forget: wait for the entry (#281).
-  const mirror = await vi.waitFor(() => readFileSync(mirrorFile, 'utf8'), { timeout: 10_000 });
+  // The mirror append is fire-and-forget: wait for the whole entry (#281).
+  const mirror = await vi.waitFor(() => {
+    const text = readFileSync(mirrorFile, 'utf8');
+    expect(text).toContain(`  id: ${eventId}\n`);
+    expect(text.endsWith(`${row.split('\n').map((line) => `    ${line}`).join('\n')}\n`)).toBe(true);
+    return text;
+  }, { timeout: 10_000 });
   return { row, fts, mirror };
 }
 
