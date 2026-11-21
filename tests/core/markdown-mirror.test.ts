@@ -82,6 +82,36 @@ describe('markdown mirror', () => {
     }
   });
 
+  it('is wired to the sqlite import flow that mongo-sync pulls use', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'cml-md-import-'));
+    try {
+      const store = new SQLiteEventStore(path.join(root, 'events.sqlite'), {
+        markdownMirrorRoot: root
+      });
+      const result = await store.importEvents([{
+        id: randomUUID(),
+        eventType: 'user_prompt',
+        sessionId: 'sess-import',
+        timestamp: new Date('2026-02-24T12:00:00.000Z'),
+        content: 'imported content',
+        canonicalKey: 'import-k',
+        dedupeKey: 'import-d',
+        metadata: { namespace: 'app', category: 'prompts' }
+      }]);
+
+      expect(result.inserted).toBe(1);
+
+      const file = path.join(root, 'memory', 'app', 'prompts', '2026-02-24.md');
+      await vi.waitFor(async () => {
+        expect(await fs.readFile(file, 'utf8')).toContain('imported content');
+      }, { timeout: 10_000 });
+
+      await store.close();
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('keeps the sqlite append when the mirror write fails', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'cml-md-fail-'));
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
