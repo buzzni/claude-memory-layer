@@ -109,10 +109,29 @@ export interface CredentialRedactionPlan {
  * Rows stored before #269 are not masked retroactively, so the text after an
  * unclosed tag is kept: masking it would also cut a tool_observation row's
  * JSON at the tag.
+ *
+ * Masking can change what the next pass matches: a credential match that
+ * takes a code fence uncovers the closing tag it hid, and removing a tag
+ * joins the halves of one split by it. So the text is filtered until nothing
+ * changes, and running the repair again finds nothing to redact (#308). Text
+ * still changing after the last pass is masked whole, its text outside any
+ * private section included. So is text that changes on the last pass: no pass
+ * is left to show it would not change again.
  */
 export function redactText(value: string): string {
-  return applyPrivacyFilter(value, REDACTION_PRIVACY_CONFIG, { maskUnclosed: false }).content;
+  let current = value;
+  for (let pass = 0; pass < TEXT_PASSES; pass++) {
+    const next = applyPrivacyFilter(current, REDACTION_PRIVACY_CONFIG, { maskUnclosed: false }).content;
+    if (next === current) return current;
+    current = next;
+  }
+  return MASKED_TEXT;
 }
+
+/** Each pass takes one level of a tag split by tags apart, so this allows tags split that deep. */
+const TEXT_PASSES = 100;
+/** What the filter leaves of a `[PRIVATE]` marker, so masked text stays as it is on the next run. */
+const MASKED_TEXT = '[PRIVATE]\n';
 
 /** How a string value of a row is filtered: as the hook masks tool input, keeping the lines around a marker. */
 function redactValueText(value: string): string {

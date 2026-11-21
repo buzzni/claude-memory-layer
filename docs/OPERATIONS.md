@@ -290,6 +290,9 @@ may hold credentials, rotate them first; removing the text from history needs a 
    A tool_observation row holds JSON, so its string values are redacted one by one and only the values that change
    are rewritten, in place, which keeps the row parseable; what redacting the row as one text masked (a tag opened in
    one value and closed in another, for example) stays masked. Its Markdown mirror entry is still redacted as one text.
+   Masking one part can uncover another (a credential match takes the code fence that hid a closing tag), so each
+   value, and the content of each mirror entry, is filtered again until that changes nothing, and a second run finds
+   nothing more to hide there (#308).
 2. Right after a batch commits, it deletes the old vectors of the batch's events and queues them for re-embedding.
 3. It rewrites the Markdown mirror files, whatever happened in SQLite. Each file is replaced by a redacted copy
    rather than rewritten in place, and what the hooks appended to it while the copy was made is redacted and added
