@@ -114,7 +114,9 @@ export interface CredentialRedactionPlan {
  * takes a code fence uncovers the closing tag it hid, and removing a tag
  * joins the halves of one split by it. So the text is filtered until nothing
  * changes, and running the repair again finds nothing to redact (#308). Text
- * still changing after the last pass is masked whole.
+ * still changing after the last pass is masked whole, its text outside any
+ * private section included. So is text that changes on the last pass: no pass
+ * is left to show it would not change again.
  */
 export function redactText(value: string): string {
   let current = value;

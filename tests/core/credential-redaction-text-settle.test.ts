@@ -25,6 +25,11 @@ function random(): number {
 const pick = <T>(items: T[]): T => items[Math.floor(random() * items.length)];
 const alnum = (n: number) => Array.from({ length: n }, () => pick([...'abcdefghijklmnopqrstuvwxyz0123456789'])).join('');
 
+/** Plain text in CJK characters, each used once per text, so where a shown one came from is exact. */
+const FIRST_TRACKED = 0x4e00;
+let nextTracked = FIRST_TRACKED;
+const tracked = () => Array.from({ length: 1 + Math.floor(random() * 4) }, () => String.fromCharCode(nextTracked++)).join('');
+
 /** A tag assembled from a tag split by another, `depth` times: each pass of the filter takes one level apart. */
 function assembledTag(depth: number): string {
   let tag = '<private>';
@@ -33,7 +38,7 @@ function assembledTag(depth: number): string {
 }
 
 const FRAGMENTS: Array<() => string> = [
-  () => 'word', () => ' ', () => '\n', () => '"', () => "'", () => assembledTag(1 + Math.floor(random() * 14)),
+  tracked, tracked, () => 'word', () => ' ', () => '\n', () => '"', () => "'", () => assembledTag(1 + Math.floor(random() * 14)),
   () => '<private>', () => '</private>', () => '<private>', () => '</private>',
   () => '`', () => '```', () => '`code`',
   () => 'password=', () => 'api_key: ', () => 'token=', () => '--token ', () => 'secret: ',
@@ -55,14 +60,15 @@ const redactOnce = (text: string) => applyPrivacyFilter(text, {
 
 /**
  * Whether `settled` shows only characters `once` shows, in the same order,
- * apart from the markers and whitespace the filter puts in. Removing a tag
- * joins the text around it, so this compares characters rather than the
- * pieces showsAllTextOf compares.
+ * apart from markers and whitespace: a marker is not text, so `D` is not
+ * shown by `[REDACTED]`. Removing a tag joins the text around it, so this
+ * compares characters rather than the pieces showsAllTextOf compares.
  */
 function showsNoMoreThan(once: string, settled: string): boolean {
-  const shown = once.replace(/\s+/g, '');
+  const text = (value: string) => value.replace(/\[(?:PRIVATE|REDACTED)\]/g, '').replace(/\s+/g, '');
+  const shown = text(once);
   let at = 0;
-  for (const char of settled.replace(/\[(?:PRIVATE|REDACTED)\]/g, '').replace(/\s+/g, '')) {
+  for (const char of text(settled)) {
     at = shown.indexOf(char, at) + 1;
     if (at === 0) return false;
   }
@@ -100,14 +106,32 @@ describe('redactText settles (#308)', () => {
     expect(redactText(once)).toBe(once);
   });
 
+  it('masks the text outside the section too when only the last pass settles it', () => {
+    // A tag split 98 deep takes 98 passes apart, a 99th masks the section and a
+    // 100th finds nothing to change. Split 99 deep, the 100th pass masks the
+    // section and no pass is left to show the text would not change again.
+    const text = (depth: number) => `PUBLIC head ${assembledTag(depth)} hidden</private> PUBLIC tail`;
+
+    expect(redactText(text(98))).toBe('PUBLIC head [PRIVATE]\nPUBLIC tail');
+    expect(redactText(text(99))).toBe('[PRIVATE]\n');
+  });
+
+  it('shows no marker letter as text', () => {
+    expect(showsNoMoreThan('[REDACTED] ', 'D')).toBe(false);
+  });
+
   it('is idempotent over random text mixing credentials, tags, code fences and markers, and shows nothing one pass hid', () => {
     const changed: Array<{ original: string; once: string }> = [];
     const shown: Array<{ original: string; once: string }> = [];
     for (let i = 0; i < 5000; i++) {
+      nextTracked = FIRST_TRACKED;
       const original = Array.from({ length: Math.floor(random() * 12) }, () => pick(FRAGMENTS)()).join('');
       const once = redactText(original);
+      const onePass = redactOnce(original);
       if (redactText(once) !== once) changed.push({ original, once });
-      if (!showsNoMoreThan(redactOnce(original), once)) shown.push({ original, once });
+      const shownByPosition = Array.from({ length: nextTracked - FIRST_TRACKED }, (_, k) => String.fromCharCode(FIRST_TRACKED + k))
+        .some((char) => once.includes(char) && !onePass.includes(char));
+      if (shownByPosition || !showsNoMoreThan(onePass, once)) shown.push({ original, once });
     }
     expect(changed).toEqual([]);
     expect(shown).toEqual([]);
