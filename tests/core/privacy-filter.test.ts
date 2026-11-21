@@ -444,6 +444,13 @@ describe('nested private tags', () => {
     expect(result.metadata.hasPrivateTags).toBe(true);
   });
 
+  it('masks 120,000 sections in one text', () => {
+    const result = applyPrivacyFilter('<private>x</private> '.repeat(120_000), privacy, { collapseMarkers: false });
+
+    expect(result.content).toBe('[PRIVATE] '.repeat(120_000));
+    expect(result.metadata.privateTagCount).toBe(120_000);
+  });
+
   it('still masks to the end from an unclosed tag that a nested section of another format runs over', () => {
     const result = applyPrivacyFilter('[private] a [private] b [/private] <!-- private --> c [/private] d-orchid', allFormats);
 

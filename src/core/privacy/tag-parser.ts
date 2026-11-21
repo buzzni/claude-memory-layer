@@ -211,7 +211,10 @@ function maskFormats(text: string, options: ParseOptions, find: (text: string, t
       end: view.endOf(section.end),
       shown: section.content.trim() ? options.marker : ''
     }));
-    sections.push(...found.sections.map((section, i) => ({ start: added[i].start, end: added[i].end, content: section.content, format })));
+    // A loop, not push(...): one argument per section overflows the stack on large texts.
+    found.sections.forEach((section, i) => {
+      sections.push({ start: added[i].start, end: added[i].end, content: section.content, format });
+    });
     if (found.unclosedAt !== undefined && FAILS_CLOSED.has(format)) {
       unclosedAt = Math.min(unclosedAt, view.startOf(found.unclosedAt));
     }
