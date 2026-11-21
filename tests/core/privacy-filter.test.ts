@@ -431,6 +431,15 @@ describe('nested private tags', () => {
     expect(result.metadata.hasUnmatchedTags).toBe(true);
   });
 
+  it('ends a section at its first closing tag with nestTags: false, as rows stored before #288 were masked', () => {
+    // How the duplicate checks recognize those rows (#295).
+    const legacy = { maskUnclosed: false, nestTags: false };
+    expect(applyPrivacyFilter('a <private>o <private>i</private> tail</private> b', privacy, legacy).content)
+      .toBe('a [PRIVATE]\ntail</private> b');
+    expect(applyPrivacyFilter('a <private>o <private>i</private> tail b', privacy, legacy).content)
+      .toBe('a [PRIVATE]\ntail b');
+  });
+
   // Formats are matched one after another, so a section that now runs to its
   // outer closing tag can hide the closing tag another format's section used.
   // Nothing the first-closing-tag rule masked may come back.

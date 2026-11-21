@@ -26,6 +26,8 @@ export interface ParseOptions {
   marker: string;
   /** Mask from an unclosed opening tag to the end (default). */
   maskUnclosed?: boolean;
+  /** End a section at the closing tag of its outer opening tag (default). */
+  nestTags?: boolean;
 }
 
 type Format = PrivateSection['format'];
@@ -238,13 +240,14 @@ function maskFormats(text: string, options: ParseOptions, find: (text: string, t
  * before #288, would mask it. Formats are matched one after another, so a
  * longer section in one format can hide a closing tag a section of another
  * format ended at; keeping both means no input reveals what was masked before.
+ * `nestTags: false` keeps only the first-closing-tag sections, as before #288.
  */
 export function parsePrivateTags(
   text: string,
   options: ParseOptions
 ): ParseResult {
   const firstClose = maskFormats(text, options, firstCloseSections);
-  const nested = maskFormats(text, options, nestedSections);
+  const nested = options.nestTags === false ? firstClose : maskFormats(text, options, nestedSections);
   const masks = unionMasks(firstClose.masks, nested.masks);
 
   // An opening tag that is never closed: fail closed and mask from it to the
