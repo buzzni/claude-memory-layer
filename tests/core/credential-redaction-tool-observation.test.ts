@@ -156,6 +156,18 @@ describe('repair redact-credentials on tool_observation rows (#290)', () => {
     expect(planSqliteRedaction(store.getDatabase()).rowChanges).toEqual([]);
   });
 
+  it('masks a value the filter takes apart one level per run, so a second run changes nothing', async () => {
+    let tag = '<private>';
+    for (let i = 0; i < 20; i++) tag = tag.replace('<private>', '<pri<private></private>vate>');
+    const { store, storagePath } = await openStore();
+    const id = await legacyRow(store, 'tool_observation', JSON.stringify({ toolName: 'Bash', toolOutput: `${tag}secret-value</private>` }));
+
+    await apply(store, storagePath);
+
+    expect(JSON.parse(contentOf(store, id))).toEqual({ toolName: 'Bash', toolOutput: '[PRIVATE]' });
+    expect((await apply(store, storagePath)).rowChanges).toEqual([]);
+  });
+
   it('still redacts other event types as one text', async () => {
     const { store, storagePath } = await openStore();
     const content = '{"note":"echo <private>x</private> done"}';
