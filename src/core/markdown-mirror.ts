@@ -1,5 +1,4 @@
-import { appendFileSync } from 'fs';
-import * as fs from 'fs/promises';
+import { appendFileSync, mkdirSync } from 'fs';
 import * as path from 'path';
 import type { MemoryEvent } from './types.js';
 
@@ -64,7 +63,10 @@ export class MarkdownMirror {
 
   async append(event: MemoryEvent): Promise<string> {
     const outPath = buildMirrorPath(this.rootDir, event);
-    await fs.mkdir(path.dirname(outPath), { recursive: true });
+    // Synchronous too, so the entry is on disk before SQLiteEventStore.append
+    // resolves: a caller that removes or leaves the store right after never
+    // races a pending directory creation.
+    mkdirSync(path.dirname(outPath), { recursive: true });
     // Open and write in one step. redact-credentials replaces mirror files by
     // rename, and an entry written through a descriptor opened before the swap
     // but written after the run read the old file is lost (#267); an async
