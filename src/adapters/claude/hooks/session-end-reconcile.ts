@@ -16,6 +16,7 @@
 
 import type { AppendResult, MemoryEvent } from '../../../core/types.js';
 import type { TurnTrigger } from '../../../core/turn-state.js';
+import { showsAllTextOf } from '../../../core/privacy/index.js';
 import { readTranscriptTurns } from '../transcript/transcript-turns.js';
 import { isStorableAgentResponse, normalizeAgentResponse, readMinAgentResponseLength } from './agent-response-normalization.js';
 
@@ -120,7 +121,9 @@ export async function reconcileSessionTranscript(
       if (!isStorableAgentResponse(content, isLast, minResponseLength)) continue;
       // A row stored before #269 kept the text after an unclosed tag, and one
       // stored before #288 ended a nested section at its first closing tag.
-      if (storedContents.has(content) || storedContents.has(normalizeAgentResponse(text, { maskUnclosed: false, nestTags: false }).content)) {
+      // Only a row that shows all the text this message shows is this message.
+      const storedBefore = normalizeAgentResponse(text, { maskUnclosed: false, nestTags: false }).content;
+      if (storedContents.has(content) || (storedContents.has(storedBefore) && showsAllTextOf(storedBefore, content))) {
         result.alreadyStored++;
         continue;
       }

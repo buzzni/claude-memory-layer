@@ -287,6 +287,32 @@ describe('SessionEnd transcript reconcile', () => {
     expect(readResponses().map((row) => row.content)).toContain(longText('Deployed [PRIVATE]\ndone'));
   });
 
+  // Before #288 the credential pattern ran past the outer closing tag, and a
+  // long response was cut: two messages that differ only in the text after it
+  // have the same old form, so it does not prove the message is stored.
+  it.each([
+    [
+      'drops',
+      (suffix: string) => longText(`Release <private>outer <private>inner</private> password=hidden</private>${suffix}`),
+      longText('Release [PRIVATE]\n[REDACTED] ').replace('[REDACTED] : ', '[REDACTED] '),
+      longText('Release [PRIVATE]\nPUBLIC_NEW')
+    ],
+    [
+      'was cut before',
+      (suffix: string) => `Release <private>outer <private>inner</private>${' hidden'.repeat(800)}</private>${suffix}`,
+      // Stop cuts a response at 5,000 characters.
+      `${`Release [PRIVATE]\nhidden${' hidden'.repeat(799)}`.slice(0, 5000)}...[truncated]`,
+      'Release [PRIVATE]\nPUBLIC_NEW'
+    ]
+  ])('recovers a message whose old form %s text it shows now', async (_case, message, storedThen, storedNow) => {
+    await submitPrompt('first request', 'turn-1');
+    answer(message('PUBLIC_NEW'));
+    await (await service()).storeAgentResponse(SESSION, storedThen, { turnId: 'turn-1' });
+
+    expect(await reconcile()).toMatchObject({ recovered: 1, alreadyStored: 0 });
+    expect(readResponses().map((row) => row.content)).toEqual([storedThen, storedNow].sort());
+  });
+
   it('is a no-op the second time', async () => {
     await submitPrompt('first request', 'turn-1');
     answer(longText('answer'));

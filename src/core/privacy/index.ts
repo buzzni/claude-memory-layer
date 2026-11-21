@@ -15,6 +15,7 @@ export {
 export {
   applyPrivacyFilter,
   maskSensitiveInput,
+  showsAllTextOf,
   truncateOutput,
   type FilterResult
 } from './filter.js';

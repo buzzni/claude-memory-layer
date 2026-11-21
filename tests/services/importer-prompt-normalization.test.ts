@@ -9,6 +9,7 @@ import { SessionHistoryImporter } from '../../src/services/session-history-impor
 import { createCodexSessionHistoryImporter } from '../../src/services/codex-session-history-importer.js';
 import { createHermesSessionHistoryImporter } from '../../src/services/hermes-session-history-importer.js';
 import { redactPromptForStorage } from '../../src/core/prompt-normalizer.js';
+import { truncateAgentResponse } from '../../src/services/turn-buffering.js';
 
 /**
  * specs/memory-usage-followup-2026-10-03 R1: every importer applies the same
@@ -210,6 +211,42 @@ describe('importer prompt normalization', () => {
     await new SessionHistoryImporter(service).importSessionFile(file);
 
     expect((await sessionEvents(service, 'nesting-scope-response')).responses.map((event) => event.content)).toEqual([`${LONG_REPLY('answer')} ${STORED_NOW}`]);
+  });
+
+  // The form stored before #288 can drop text the message shows now: there the
+  // credential pattern runs past the outer closing tag. Two messages that
+  // differ only in that text have the same old form, so it does not prove the
+  // message is already stored.
+  const SWALLOWED = (suffix: string) => `Release <private>outer <private>inner</private> password=hidden</private>${suffix}`;
+
+  it.each(['claude', 'codex', 'hermes'] as const)('%s: a prompt whose old form drops text it shows now is stored beside that old form', async (source) => {
+    const service = realService();
+    const memorySessionId = source === 'hermes' ? 'hermes:swallowed' : 'swallowed';
+    // What SWALLOWED('PUBLIC_OLD') was stored as before #288.
+    await service.storeUserPrompt(memorySessionId, 'Release [PRIVATE]\n[REDACTED] ', { turnId: 'old-turn' });
+
+    await importPrompt(service, source, 'swallowed', `${WRAPPER}\n\n${SWALLOWED('PUBLIC_NEW')}`);
+
+    expect((await sessionEvents(service, memorySessionId)).prompts.map((event) => event.content))
+      .toEqual(['Release [PRIVATE]\n[REDACTED] ', 'Release [PRIVATE]\nPUBLIC_NEW']);
+  });
+
+  it('Claude: a response whose old form was cut before text it shows now is stored beside that old form', async () => {
+    const service = realService();
+    const file = join(tempDir(), 'cut-response.jsonl');
+    const reply = (suffix: string) => `Release <private>outer <private>inner</private>${' hidden'.repeat(1600)}</private>${suffix}`;
+    writeJsonl(file, [
+      { type: 'user', timestamp: '2026-10-01T00:00:00.000Z', message: { role: 'user', content: REQUEST } },
+      { type: 'assistant', timestamp: '2026-10-01T00:00:01.000Z', message: { role: 'assistant', content: [{ type: 'text', text: reply('PUBLIC_NEW') }] } }
+    ]);
+    // What reply('PUBLIC_OLD') was stored as before #288.
+    const storedBefore = truncateAgentResponse(`Release [PRIVATE]\nhidden${' hidden'.repeat(1599)}</private>PUBLIC_OLD`);
+    await service.storeAgentResponse('cut-response', storedBefore, { turnId: 'old-turn', importedFrom: 'earlier-import.jsonl' });
+
+    await new SessionHistoryImporter(service).importSessionFile(file);
+
+    expect((await sessionEvents(service, 'cut-response')).responses.map((event) => event.content))
+      .toEqual([storedBefore, 'Release [PRIVATE]\nPUBLIC_NEW']);
   });
 
   it('Claude: a banner-wrapped notification in an explicit subagent transcript opens a task_notification turn', async () => {

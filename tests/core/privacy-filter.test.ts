@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyPrivacyFilter } from '../../src/core/privacy/index.js';
+import { applyPrivacyFilter, showsAllTextOf } from '../../src/core/privacy/index.js';
 import type { Config } from '../../src/core/types.js';
 
 const privacy: Config['privacy'] = {
@@ -480,6 +480,25 @@ describe('nested private tags', () => {
     const text = 'a <private>o <private>i</private> tail-orchid</private> b';
     expect(applyPrivacyFilter(text, privacy, { nestTags: true })).toEqual(applyPrivacyFilter(text, privacy));
     expect(applyPrivacyFilter(text, privacy, { maskUnclosed: false, nestTags: true }).content).toBe('a [PRIVATE]\nb');
+  });
+
+  describe('showsAllTextOf', () => {
+    it('finds each piece between markers and whitespace, in order', () => {
+      expect(showsAllTextOf('a [PRIVATE]\ntail</private> b', 'a [PRIVATE]\nb')).toBe(true);
+      expect(showsAllTextOf('a [REDACTED] b', 'a [PRIVATE: unclosed]')).toBe(true);
+      expect(showsAllTextOf('b a', 'a b')).toBe(false);
+    });
+
+    it('does not find text the stored form hides', () => {
+      // The credential pattern ran past the outer closing tag before #288.
+      expect(showsAllTextOf('Release [PRIVATE]\n[REDACTED] ', 'Release [PRIVATE]\nPUBLIC_NEW')).toBe(false);
+      expect(showsAllTextOf('Release [PRIVATE]\nhidden hid...[truncated]', 'Release [PRIVATE]\nPUBLIC_NEW')).toBe(false);
+    });
+
+    it('reads a truncation notice as a marker', () => {
+      expect(showsAllTextOf('x hidden', 'x hid...[truncated]')).toBe(true);
+      expect(showsAllTextOf('head tail', 'head\n... [12 characters truncated] ...\ntail')).toBe(true);
+    });
   });
 
   // Formats are matched one after another, so a section that now runs to its

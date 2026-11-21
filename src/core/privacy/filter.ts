@@ -284,6 +284,29 @@ export function maskSensitiveInput(
   return result;
 }
 
+// What the filter and the truncation put in place of text: the private
+// markers, the credential marker and the truncation notices.
+const HIDDEN_TEXT = /\[PRIVATE(?:: unclosed)?\]|\[REDACTED\]|\.\.\.\[truncated\]|\.\.\. \[\d+ (?:lines|characters) truncated\] \.\.\./g;
+
+/**
+ * Whether `stored` shows all the text `current` shows, in the same order: each
+ * piece of `current` between markers and whitespace is found in `stored`
+ * after the piece before it. An older form of a message can hide text the
+ * current form shows (a credential pattern running past a closing tag, a cut
+ * at the length limit), so a row in that form alone does not prove the
+ * message is stored.
+ */
+export function showsAllTextOf(stored: string, current: string): boolean {
+  let at = 0;
+  for (const piece of current.split(HIDDEN_TEXT).flatMap((part) => part.split(/\s+/))) {
+    if (!piece) continue;
+    const found = stored.indexOf(piece, at);
+    if (found === -1) return false;
+    at = found + piece.length;
+  }
+  return true;
+}
+
 /**
  * Truncate output with head + tail strategy
  */

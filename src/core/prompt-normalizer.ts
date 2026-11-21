@@ -15,7 +15,7 @@
  * input and the number of strip passes is bounded.
  */
 
-import { applyPrivacyFilter } from './privacy/index.js';
+import { applyPrivacyFilter, showsAllTextOf } from './privacy/index.js';
 import type { Config } from './types.js';
 
 export const PROMPT_CLASSIFIER_VERSION = 2;
@@ -95,7 +95,9 @@ export interface PromptStoragePlan {
    * Content forms earlier writers stored for the same source prompt (raw,
    * privacy-filtered raw, the writer's own legacy transform). An importer that
    * finds any of them already in the session skips the prompt, so re-imports
-   * and hook-then-import sequences do not add a normalized duplicate.
+   * and hook-then-import sequences do not add a normalized duplicate. A form
+   * that hides text the stored text shows is left out: another message can
+   * have the same form, and skipping it would lose that text.
    */
   legacyContents: string[];
 }
@@ -111,7 +113,7 @@ export function planPromptStorage(raw: string): PromptStoragePlan {
   ]);
   legacy.delete(storedText);
   legacy.delete('');
-  return { normalized, storedText, legacyContents: [...legacy] };
+  return { normalized, storedText, legacyContents: [...legacy].filter((content) => showsAllTextOf(content, storedText)) };
 }
 
 const LESSON_PROPOSAL_START = 'If this turn corrects an earlier mistake or verifies recovery from a failure, you may propose one reusable project lesson before finishing.';
