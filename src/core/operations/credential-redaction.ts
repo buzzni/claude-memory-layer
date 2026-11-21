@@ -105,8 +105,13 @@ export interface CredentialRedactionPlan {
   summaryAuditError?: string;
 }
 
+/**
+ * Rows stored before #269 are not masked retroactively, so the text after an
+ * unclosed tag is kept: masking it would also cut a tool_observation row's
+ * JSON at the tag.
+ */
 export function redactText(value: string): string {
-  return applyPrivacyFilter(value, REDACTION_PRIVACY_CONFIG).content;
+  return applyPrivacyFilter(value, REDACTION_PRIVACY_CONFIG, { maskUnclosed: false }).content;
 }
 
 function previewOf(redacted: string): string {
@@ -343,7 +348,7 @@ function redactMirrorText(text: string): string {
   let other: string[] = [];
   const flushOther = () => {
     if (other.length === 0) return;
-    out.push(applyPrivacyFilter(other.join('\n'), REDACTION_PRIVACY_CONFIG, { collapseMarkers: false }).content);
+    out.push(applyPrivacyFilter(other.join('\n'), REDACTION_PRIVACY_CONFIG, { collapseMarkers: false, maskUnclosed: false }).content);
     other = [];
   };
 

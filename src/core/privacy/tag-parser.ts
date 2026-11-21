@@ -24,6 +24,8 @@ export interface ParseResult {
 export interface ParseOptions {
   formats: Array<'xml' | 'bracket' | 'comment'>;
   marker: string;
+  /** Mask from an unclosed opening tag to the end (default). */
+  maskUnclosed?: boolean;
 }
 
 // Tag patterns for different formats
@@ -89,8 +91,9 @@ export function parsePrivateTags(
   }
 
   // An opening tag still left has no closing tag: fail closed and mask from
-  // it to the end of the text, with a marker that says why.
-  const unclosedAt = Math.min(...options.formats.map((format) => {
+  // it to the end of the text, with a marker that says why. maskUnclosed:
+  // false keeps it, for rows stored before #269 (see applyPrivacyFilter).
+  const unclosedAt = options.maskUnclosed === false ? Infinity : Math.min(...options.formats.map((format) => {
     const index = UNCLOSED_OPENING_PATTERNS[format] ? filtered.search(UNCLOSED_OPENING_PATTERNS[format]) : -1;
     return index === -1 ? Infinity : index;
   }));

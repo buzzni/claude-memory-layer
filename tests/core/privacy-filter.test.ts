@@ -314,6 +314,14 @@ describe('unclosed private tags', () => {
     expect(result.content).toBe('see\n```\n<private>\n```\nthen [PRIVATE: unclosed]');
   });
 
+  it('keeps the text after an unclosed tag with maskUnclosed: false, masking the rest as before', () => {
+    // How redact-credentials re-filters rows stored before #269: no retroactive masking.
+    const result = applyPrivacyFilter('a <private>orchid</private> b <private>lily api_key=fake-key-abcdef', privacy, { maskUnclosed: false });
+
+    expect(result.content).toBe('a [PRIVATE]\nb <private>lily [REDACTED] ');
+    expect(result.metadata.privateTagCount).toBe(1);
+  });
+
   it('masks from a tag inside a code fence that is never closed', () => {
     // An unclosed fence is not a code block, so the tag in it counts.
     expect(applyPrivacyFilter('see\n```\n<private>orchid', privacy).content).toBe('see\n```\n[PRIVATE: unclosed]');
