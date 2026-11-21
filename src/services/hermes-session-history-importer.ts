@@ -280,7 +280,7 @@ function normalizeHermesMessage(
   };
 }
 
-function sanitizeForMemory(content: string, options: { maskUnclosed?: boolean } = {}): string {
+function sanitizeForMemory(content: string, options: { maskUnclosed?: boolean; nestTags?: boolean } = {}): string {
   const filtered = applyPrivacyFilter(content, DEFAULT_PRIVACY_CONFIG, options).content;
   return truncateOutput(filtered, { maxLength: HERMES_VALIDATION_DEFAULT_MAX_CONTENT_CHARS, maxLines: 200 });
 }
@@ -780,11 +780,12 @@ export class HermesSessionHistoryImporter {
         currentTurnId = randomUUID();
         currentTurnTrigger = 'user';
         const storedText = sanitizeForMemory(normalized.content);
-        // Rows stored before #269 kept the text after an unclosed tag.
+        // Rows stored before #269 kept the text after an unclosed tag, and
+        // before #288 a nested section ended at its first closing tag.
         const legacySources = normalized.legacyContent !== undefined ? [normalized.legacyContent] : [];
         const legacyContents = [...new Set([
           ...legacySources.map((content) => sanitizeForMemory(content)),
-          ...[normalized.content, ...legacySources].map((content) => sanitizeForMemory(content, { maskUnclosed: false }))
+          ...[normalized.content, ...legacySources].map((content) => sanitizeForMemory(content, { maskUnclosed: false, nestTags: false }))
         ])].filter((content) => content !== storedText);
         if (legacyContents.length > 0 && await this.memoryService.hasSessionUserPrompt(memorySessionId, legacyContents)) {
           result.skippedDuplicates++;

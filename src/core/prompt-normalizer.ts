@@ -80,10 +80,11 @@ export function redactPromptForStorage(text: string): string {
 
 /**
  * What redactPromptForStorage stored before #269: the text after an unclosed
- * private tag kept. Only for recognizing those rows on re-import; never stored.
+ * private tag kept, and a nested section ended at its first closing tag (#288).
+ * Only for recognizing those rows on re-import; never stored.
  */
 export function redactPromptAsStoredBeforeUnclosedMasking(text: string): string {
-  return applyPrivacyFilter(text, PROMPT_PRIVACY_CONFIG, { maskUnclosed: false }).content;
+  return applyPrivacyFilter(text, PROMPT_PRIVACY_CONFIG, { maskUnclosed: false, nestTags: false }).content;
 }
 
 export interface PromptStoragePlan {

@@ -261,6 +261,18 @@ describe('SessionEnd transcript reconcile', () => {
     expect(readResponses().map((row) => row.content)).not.toContain(longText('resumed answer'));
   });
 
+  it.each([
+    ['an unclosed tag, before #269', 'Deployed <private>codename-orchid', 'Deployed <private>codename-orchid'],
+    ['nested tags, before #288', 'Deployed <private>o <private>i</private> tail-orchid</private> done', 'Deployed [PRIVATE]\ntail-orchid</private> done']
+  ])('recognizes a message with %s as stored the way it was then', async (_case, text, storedThen) => {
+    await submitPrompt('first request', 'turn-1');
+    answer(longText(text));
+    await (await service()).storeAgentResponse(SESSION, longText(storedThen), { turnId: 'turn-1' });
+
+    expect(await reconcile()).toMatchObject({ recovered: 0, alreadyStored: 1 });
+    expect(readResponses().map((row) => row.content)).toEqual([longText(storedThen)]);
+  });
+
   it('is a no-op the second time', async () => {
     await submitPrompt('first request', 'turn-1');
     answer(longText('answer'));
