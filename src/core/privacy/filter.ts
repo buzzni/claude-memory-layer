@@ -145,7 +145,7 @@ export function applyPrivacyFilter(
   let filtered = content;
   let privateTagCount = 0;
   let patternMatchCount = 0;
-  const hasUnmatchedTags = hasUnmatchedOpenTag(content);
+  let hasUnmatchedTags = hasUnmatchedOpenTag(content);
 
   // 1. Private tag filtering
   if (config.privateTags?.enabled !== false) {
@@ -155,6 +155,9 @@ export function applyPrivacyFilter(
     });
     filtered = tagResult.filtered;
     privateTagCount = tagResult.stats.count;
+    // The tag count misses an unclosed tag evened out by a stray closing tag,
+    // and the comment format entirely.
+    hasUnmatchedTags ||= tagResult.unclosed;
   }
 
   // 2. CLI option filtering (`--password value`, `--password=value`, etc.)

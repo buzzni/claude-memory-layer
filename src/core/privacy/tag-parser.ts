@@ -13,6 +13,8 @@ export interface PrivateSection {
 export interface ParseResult {
   filtered: string;
   sections: PrivateSection[];
+  /** An opening tag had no end, so everything from it on was masked. */
+  unclosed: boolean;
   stats: {
     count: number;
     totalLength: number;
@@ -86,8 +88,8 @@ export function parsePrivateTags(
     });
   }
 
-  // An opening tag left now has no end: fail closed and mask from it to the
-  // end of the text, with a marker that says why.
+  // An opening tag still left has no closing tag: fail closed and mask from
+  // it to the end of the text, with a marker that says why.
   const unclosedAt = Math.min(...options.formats.map((format) => {
     const index = UNCLOSED_OPENING_PATTERNS[format] ? filtered.search(UNCLOSED_OPENING_PATTERNS[format]) : -1;
     return index === -1 ? Infinity : index;
@@ -100,6 +102,7 @@ export function parsePrivateTags(
   return {
     filtered,
     sections,
+    unclosed: hasUnclosed,
     stats: {
       count: sections.length + (hasUnclosed ? 1 : 0),
       totalLength: sections.reduce((sum, s) => sum + s.content.length, 0)

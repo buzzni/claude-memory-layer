@@ -271,7 +271,52 @@ describe('unclosed private tags', () => {
       privateTags: { ...privacy.privateTags, marker: '[REDACTED]', supportedFormats: ['xml', 'bracket', 'comment'] }
     };
 
-    expect(applyPrivacyFilter('a <!-- private -->orchid', allFormats).content).toBe('a [REDACTED: unclosed]');
+    const result = applyPrivacyFilter('a <!-- private -->orchid', allFormats);
+
+    expect(result.content).toBe('a [REDACTED: unclosed]');
+    expect(result.metadata.hasUnmatchedTags).toBe(true);
+  });
+
+  it('flags a masked unclosed tag even when a stray closing tag evens out the tag count', () => {
+    const result = applyPrivacyFilter('a </private> b <private>orchid', privacy);
+
+    expect(result.content).toBe('a </private> b [PRIVATE: unclosed]');
+    expect(result.metadata.hasUnmatchedTags).toBe(true);
+  });
+
+  it('keeps the text around a closing tag with no opening tag, flagged as unmatched', () => {
+    // Nothing says where a section would have started, so nothing is masked.
+    const result = applyPrivacyFilter('kept before </private> kept after', privacy);
+
+    expect(result.content).toBe('kept before </private> kept after');
+    expect(result.metadata.hasUnmatchedTags).toBe(true);
+    expect(result.metadata.hasPrivateTags).toBe(false);
+  });
+
+  it('ends a section at its first closing tag: tags do not nest', () => {
+    const result = applyPrivacyFilter('a <private>outer <private>inner</private> tail</private> b', privacy);
+
+    expect(result.content).toBe('a [PRIVATE]\ntail</private> b');
+    expect(result.metadata.privateTagCount).toBe(1);
+  });
+
+  it('masks several closed sections and keeps the text between them', () => {
+    const result = applyPrivacyFilter('a <private>1</private> b <private>2</private> c', privacy);
+
+    expect(result.content).toBe('a [PRIVATE]\nb [PRIVATE]\nc');
+    expect(result.metadata.privateTagCount).toBe(2);
+    expect(result.metadata.hasUnmatchedTags).toBe(false);
+  });
+
+  it('masks an unclosed tag after a code block that holds the tag, and keeps the block', () => {
+    const result = applyPrivacyFilter('see\n```\n<private>\n```\nthen <private>orchid', privacy);
+
+    expect(result.content).toBe('see\n```\n<private>\n```\nthen [PRIVATE: unclosed]');
+  });
+
+  it('masks from a tag inside a code fence that is never closed', () => {
+    // An unclosed fence is not a code block, so the tag in it counts.
+    expect(applyPrivacyFilter('see\n```\n<private>orchid', privacy).content).toBe('see\n```\n[PRIVATE: unclosed]');
   });
 
   it('does not read a [PRIVATE] marker as an unclosed bracket tag', () => {
