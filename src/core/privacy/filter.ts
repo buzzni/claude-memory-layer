@@ -167,18 +167,20 @@ function excludeRules(patterns: string[], stop: boolean): Rule[] {
 interface Redacted {
   text: string;
   count: number;
-  /** Where each character is in the text the rules started from, -1 for a marker they put in. */
-  from: Int32Array;
+  /** When tracked: where each character is in the text the rules started from, -1 for a marker they put in. */
+  from?: Int32Array;
 }
 
 const INSERTED = '[REDACTED]';
 
-function applyRule(state: Redacted, { pattern, keep }: Rule): Redacted {
+/** Undefined when `stopsAt` says a match takes in a marker a stopping value could stop at. */
+function applyRule(state: Redacted, { pattern, keep }: Rule, stopsAt?: (start: number, end: number) => boolean): Redacted | undefined {
   pattern.lastIndex = 0;
   let text = '';
   const kept: Array<[number, number]> = [];
   let cursor = 0;
   for (const match of state.text.matchAll(pattern)) {
+    if (stopsAt?.(match.index!, match.index! + match[0].length)) return undefined;
     const length = keep(match);
     if (length === undefined) continue;
     const end = match.index! + length;
@@ -188,6 +190,7 @@ function applyRule(state: Redacted, { pattern, keep }: Rule): Redacted {
   }
   if (kept.length === 0) return state;
   text += state.text.slice(cursor);
+  if (!state.from) return { text, count: state.count + kept.length };
 
   const from = new Int32Array(text.length);
   let at = 0;
@@ -201,15 +204,32 @@ function applyRule(state: Redacted, { pattern, keep }: Rule): Redacted {
   return { text, count: state.count + kept.length, from };
 }
 
-function applyRules(text: string, rules: Rule[]): Redacted {
+function applyRulesTracked({ text, count }: Redacted, rules: Rule[]): Redacted {
   const from = new Int32Array(text.length);
   for (let i = 0; i < from.length; i++) from[i] = i;
-  let state: Redacted = { text, count: 0, from };
-  for (const rule of rules) state = applyRule(state, rule);
+  let state: Redacted = { text, count, from };
+  for (const rule of rules) state = applyRule(state, rule)!;
   return state;
 }
 
 const MARKER = /\[(?:PRIVATE|REDACTED)(?:: unclosed)?\]/g;
+/** What a stopping value stops at, in any case. */
+const MARKER_ANY_CASE = /\[(?:PRIVATE|REDACTED)(?:: unclosed)?\]/gi;
+
+/**
+ * Whether a range holds one of `starts`, where markers start. A rule whose
+ * values stop at a marker matches where the other one does, and as far,
+ * unless its match takes in the start of one: the two differ only in a
+ * lookahead for it.
+ */
+function startsIn(starts: number[]): (start: number, end: number) => boolean {
+  let next = 0;
+  // Matches come in order, so each looks on from where the last one did.
+  return (start, end) => {
+    while (next < starts.length && starts[next] < start) next++;
+    return next < starts.length && starts[next] < end;
+  };
+}
 
 /**
  * Whether the rules with values stopping at a marker (`stopping`) left hidden
@@ -220,7 +240,7 @@ const MARKER = /\[(?:PRIVATE|REDACTED)(?:: unclosed)?\]/g;
 function stoppingHidesAll(text: string, stopping: Redacted, through: Redacted): boolean {
   const shownBy = ({ from }: Redacted) => {
     const at = new Uint8Array(text.length);
-    for (const i of from) if (i >= 0) at[i] = 1;
+    for (const i of from!) if (i >= 0) at[i] = 1;
     return at;
   };
   const shownStopping = shownBy(stopping);
@@ -245,10 +265,31 @@ function stoppingHidesAll(text: string, stopping: Redacted, through: Redacted): 
  * would show more, the marker is given up.
  */
 function redactCredentials(text: string, rules: (stop: boolean) => Rule[]): { content: string; count: number } {
-  const stopping = applyRules(text, rules(true));
-  const through = applyRules(text, rules(false));
-  const kept = stopping.text === through.text || stoppingHidesAll(text, stopping, through) ? stopping : through;
-  return { content: kept.text, count: kept.count };
+  const stoppingRules = rules(true);
+  const throughRules = rules(false);
+  // The two runs are the same rule by rule until a stopping rule's match takes
+  // in a marker. Most text never gets there, so it is redacted once.
+  let state: Redacted = { text, count: 0 };
+  let markerStarts: number[] | undefined;
+  for (let i = 0; i < throughRules.length; i++) {
+    let stopsAt: ((start: number, end: number) => boolean) | undefined;
+    if (stoppingRules[i].pattern.source !== throughRules[i].pattern.source) {
+      markerStarts ??= Array.from(state.text.matchAll(MARKER_ANY_CASE), (match) => match.index!);
+      if (markerStarts.length > 0) stopsAt = startsIn(markerStarts);
+    }
+    const next = applyRule(state, throughRules[i], stopsAt);
+    if (!next) {
+      // The runs part here. A marker an earlier rule put in counts as text
+      // from here on unless kept whole, which only asks more of stopping.
+      const stopping = applyRulesTracked(state, stoppingRules.slice(i));
+      const through = applyRulesTracked(state, throughRules.slice(i));
+      const kept = stopping.text === through.text || stoppingHidesAll(state.text, stopping, through) ? stopping : through;
+      return { content: kept.text, count: kept.count };
+    }
+    if (next !== state) markerStarts = undefined;
+    state = next;
+  }
+  return { content: state.text, count: state.count };
 }
 
 function maskSensitiveString(value: string): string {
