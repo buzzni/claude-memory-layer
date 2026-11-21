@@ -328,14 +328,19 @@ export function readEmptySummaryVerdict(metadata: Record<string, unknown> | unde
     : undefined;
 }
 
+/** The characters String.prototype.trim() strips, as an SQLite string. */
+const TRIMMED_CHARS_SQL = 'char(9, 10, 11, 12, 13, 32, 160, 5760, 8192, 8193, 8194, 8195, 8196, 8197, 8198, '
+  + '8199, 8200, 8201, 8202, 8232, 8233, 8239, 8287, 12288, 65279)';
+
 /**
  * SQL true for an event row the LLM summary counts as a prompt or answer
- * (MemoryIngestService's isExchangeEvent): not quarantined, content not blank.
+ * (MemoryIngestService's isExchangeEvent, buildSummaryPrompt): not quarantined,
+ * content not empty once trimmed as they trim it.
  */
 function exchangeEventSql(alias: string): string {
   return `${alias}.event_type IN ('user_prompt', 'agent_response')
              AND ${notActiveQuarantinedSql(`${alias}.metadata`)}
-             AND length(trim(${alias}.content, ' ' || char(9, 10, 13))) > 0`;
+             AND length(trim(${alias}.content, ${TRIMMED_CHARS_SQL})) > 0`;
 }
 
 /** A session the LLM summary backfill may have to summarize (getLlmSummaryCandidates). */
@@ -1667,7 +1672,8 @@ export class SQLiteEventStore {
   /**
    * Sessions the LLM summary backfill may have to summarize, newest activity first: the
    * `limit` most recent ones without a summary (as getSessionsWithoutSummary, less those
-   * whose newest prompt or answer carries an empty verdict), and, when `refreshSince` is
+   * a summary run would not send to the provider and those whose newest prompt or answer
+   * carries an empty verdict), and, when `refreshSince` is
    * given, every summarized session with a prompt or answer since then,
    * with what MemoryIngestService needs to tell whether its summary is due for a refresh.
    * Counts match getSessionEvents: quarantined rows, superseded summaries included, are
@@ -1730,7 +1736,7 @@ export class SQLiteEventStore {
   private sessionsWithoutSummary(
     currentSessionId: string,
     limit: number,
-    skipJudgedEmpty = false
+    forLlmSummary = false
   ): Array<{ session_id: string; last_event_at: string }> {
     const unsummarized = `SELECT e.session_id, MAX(e.timestamp) AS last_event_at
        FROM events e
@@ -1742,18 +1748,25 @@ export class SQLiteEventStore {
        GROUP BY e.session_id
        HAVING COUNT(*) >= 3
        ORDER BY MAX(e.timestamp) DESC`;
-    // isLlmSessionSummaryDue for an empty verdict, ahead of LIMIT so judged sessions do not
-    // hold the window: left out while the newest prompt or answer (in getSessionEvents order)
-    // carries a verdict (readEmptySummaryVerdict's shape) that covers as many prompts and
-    // answers as the session holds now. Sessions are checked in order only until the window
-    // is full.
+    // Ahead of LIMIT, so sessions no run would send to the provider do not hold the window
+    // (#284). Left out are sessions the run (generateLlmSessionSummary) stops short of the
+    // provider for: fewer than 3 events it reads, fewer than 2 prompts or answers to build
+    // the prompt from (buildSummaryPrompt); they become candidates again once they have
+    // them. Then isLlmSessionSummaryDue for an empty verdict: left out while the newest
+    // prompt or answer (in getSessionEvents order) carries a verdict (readEmptySummaryVerdict's
+    // shape) that covers as many prompts and answers as the session holds now. Sessions are
+    // checked in order only until the window is full.
     const meta = `CASE WHEN json_valid(x.metadata) THEN x.metadata ELSE '{}' END`;
     const verdict = `$.${EMPTY_SUMMARY_VERDICT_KEY}`;
     const exchangeRow = (alias: string) => `${alias}.session_id = u.session_id
              AND ${exchangeEventSql(alias)}`;
-    const sql = skipJudgedEmpty
+    const exchangeCount = `(SELECT COUNT(*) FROM events c WHERE ${exchangeRow('c')})`;
+    const sql = forLlmSummary
       ? `SELECT u.session_id, u.last_event_at FROM (${unsummarized}) u
-         WHERE NOT COALESCE((
+         WHERE ${exchangeCount} >= 2
+           AND (SELECT COUNT(*) FROM events v
+                WHERE v.session_id = u.session_id AND ${notActiveQuarantinedSql('v.metadata')}) >= 3
+           AND NOT COALESCE((
            SELECT CASE
              WHEN json_type(${meta}, '${verdict}.judgedAt') = 'text'
                AND json_type(${meta}, '${verdict}.exchangeCount') IN ('integer', 'real')
@@ -1763,7 +1776,7 @@ export class SQLiteEventStore {
            WHERE ${exchangeRow('x')}
            ORDER BY x.timestamp DESC, x.rowid DESC
            LIMIT 1
-         ) >= (SELECT COUNT(*) FROM events c WHERE ${exchangeRow('c')}), 0)
+         ) >= ${exchangeCount}, 0)
          LIMIT ?`
       : `${unsummarized} LIMIT ?`;
     return sqliteAll<{ session_id: string; last_event_at: string }>(this.db, sql, [currentSessionId, limit]);

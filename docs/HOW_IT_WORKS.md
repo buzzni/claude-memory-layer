@@ -64,7 +64,9 @@ in [CONFIGURATION.md](CONFIGURATION.md#llm-summaries-and-lessons).
 
 - **When**: after every turn, Stop asks the daemon. The first summary is written once the session has at least two
   prompts or answers and three events. SessionStart also asks for the 5 most recent other sessions of the project that
-  are due for one, which catches sessions whose last turns ended without Stop (crash, force-close).
+  are due for one, which catches sessions whose last turns ended without Stop (crash, force-close). Blank prompts and
+  answers do not count toward those two, and quarantined (hidden) events count toward neither number. A session short of
+  them, such as one with only tool output, is not picked and takes none of the 5 places until it has them.
 - **Nothing worth keeping**: when the first summary call answers that the session holds nothing worth keeping, no
   summary is stored, and that verdict is recorded on the newest prompt or answer it was shown (`emptySummaryVerdict` in
   that event's metadata: when, and how many prompts and answers it was shown). The session is not sent again, by Stop or
