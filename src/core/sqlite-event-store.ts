@@ -328,6 +328,16 @@ export function readEmptySummaryVerdict(metadata: Record<string, unknown> | unde
     : undefined;
 }
 
+/**
+ * SQL true for an event row the LLM summary counts as a prompt or answer
+ * (MemoryIngestService's isExchangeEvent): not quarantined, content not blank.
+ */
+function exchangeEventSql(alias: string): string {
+  return `${alias}.event_type IN ('user_prompt', 'agent_response')
+             AND ${notActiveQuarantinedSql(`${alias}.metadata`)}
+             AND length(trim(${alias}.content, ' ' || char(9, 10, 13))) > 0`;
+}
+
 /** A session the LLM summary backfill may have to summarize (getLlmSummaryCandidates). */
 export interface SessionSummaryCandidate {
   sessionId: string;
@@ -1698,9 +1708,7 @@ export class SQLiteEventStore {
                 SUM(CASE WHEN e.timestamp < l.summarized_at THEN 1 ELSE 0 END) AS exchanges_before_summary,
                 MAX(e.timestamp) AS last_event_at
          FROM latest l CROSS JOIN events e ON e.session_id = l.session_id
-         WHERE e.event_type IN ('user_prompt', 'agent_response')
-           AND ${notActiveQuarantinedSql('e.metadata')}
-           AND length(trim(e.content, ' ' || char(9, 10, 13))) > 0
+         WHERE ${exchangeEventSql('e')}
          GROUP BY l.session_id`,
         [currentSessionId, toSQLiteTimestamp(options.refreshSince)]
       );
@@ -1742,9 +1750,7 @@ export class SQLiteEventStore {
     const meta = `CASE WHEN json_valid(x.metadata) THEN x.metadata ELSE '{}' END`;
     const verdict = `$.${EMPTY_SUMMARY_VERDICT_KEY}`;
     const exchangeRow = (alias: string) => `${alias}.session_id = u.session_id
-             AND ${alias}.event_type IN ('user_prompt', 'agent_response')
-             AND ${notActiveQuarantinedSql(`${alias}.metadata`)}
-             AND length(trim(${alias}.content, ' ' || char(9, 10, 13))) > 0`;
+             AND ${exchangeEventSql(alias)}`;
     const sql = skipJudgedEmpty
       ? `SELECT u.session_id, u.last_event_at FROM (${unsummarized}) u
          WHERE NOT COALESCE((
