@@ -322,6 +322,19 @@ describe('unclosed private tags', () => {
     expect(result.metadata.privateTagCount).toBe(1);
   });
 
+  // The code is set aside under a placeholder while tags are parsed. The same
+  // text typed in the input used to be restored to code that was masked.
+  it.each([
+    ['inline code', '__INLINE_CODE_0__', '`codename-orchid`'],
+    ['fenced code', '__CODE_BLOCK_0__', '```\ncodename-orchid\n```']
+  ])('never restores masked %s into placeholder text typed before the tag', (_kind, placeholder, code) => {
+    const unclosed = applyPrivacyFilter(`public ${placeholder} <private>${code}`, privacy).content;
+    const closed = applyPrivacyFilter(`public ${placeholder} <private>${code}</private> end`, privacy).content;
+
+    expect(unclosed).toBe(`public ${placeholder} [PRIVATE: unclosed]`);
+    expect(closed).toBe(`public ${placeholder} [PRIVATE]\nend`);
+  });
+
   it('masks from a tag inside a code fence that is never closed', () => {
     // An unclosed fence is not a code block, so the tag in it counts.
     expect(applyPrivacyFilter('see\n```\n<private>orchid', privacy).content).toBe('see\n```\n[PRIVATE: unclosed]');

@@ -120,13 +120,21 @@ export function parsePrivateTagsSafe(
   text: string,
   options: ParseOptions
 ): ParseResult {
+  // Placeholders carry a prefix the text does not contain. A fixed one could
+  // be typed in the text, and restoring it would put back code that a
+  // private section masked.
+  let prefix: string;
+  do {
+    prefix = `__CML_${Math.random().toString(36).slice(2, 10)}_`;
+  } while (text.includes(prefix));
+
   // 1. Extract and protect code blocks
   const codeBlocks: string[] = [];
   const textWithPlaceholders = text.replace(
     /```[\s\S]*?```/g,
     (match) => {
       codeBlocks.push(match);
-      return `__CODE_BLOCK_${codeBlocks.length - 1}__`;
+      return `${prefix}CODE_BLOCK_${codeBlocks.length - 1}__`;
     }
   );
 
@@ -136,7 +144,7 @@ export function parsePrivateTagsSafe(
     /`[^`]+`/g,
     (match) => {
       inlineCode.push(match);
-      return `__INLINE_CODE_${inlineCode.length - 1}__`;
+      return `${prefix}INLINE_CODE_${inlineCode.length - 1}__`;
     }
   );
 
@@ -145,13 +153,13 @@ export function parsePrivateTagsSafe(
 
   // 3. Restore inline code
   result.filtered = result.filtered.replace(
-    /__INLINE_CODE_(\d+)__/g,
+    new RegExp(`${prefix}INLINE_CODE_(\\d+)__`, 'g'),
     (_, idx) => inlineCode[Number(idx)]
   );
 
   // 4. Restore code blocks
   result.filtered = result.filtered.replace(
-    /__CODE_BLOCK_(\d+)__/g,
+    new RegExp(`${prefix}CODE_BLOCK_(\\d+)__`, 'g'),
     (_, idx) => codeBlocks[Number(idx)]
   );
 
