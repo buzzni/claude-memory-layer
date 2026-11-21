@@ -114,15 +114,29 @@ export function redactText(value: string): string {
   return applyPrivacyFilter(value, REDACTION_PRIVACY_CONFIG, { maskUnclosed: false }).content;
 }
 
+/** How a string value of a row is filtered: as the hook masks tool input, keeping the lines around a marker. */
+function redactValueText(value: string): string {
+  return applyPrivacyFilter(value, REDACTION_PRIVACY_CONFIG, { collapseMarkers: false, maskUnclosed: false }).content;
+}
+
 /**
  * A tool_observation row holds JSON. Filtered as one string, the marker
  * cleanup put a raw newline inside a string value and the row no longer
- * parsed, and a tag opened in one value could match a close in another. So
- * each string value is filtered on its own, as the hook masks tool input, and
- * the row is serialized again only when one changed. A row that is not JSON
- * is filtered as text.
+ * parsed (#290). So each string value is filtered on its own, and only the
+ * values that changed are written back, in place: keys, numbers and the
+ * other values keep their exact text.
+ *
+ * Filtering values one by one must not show what filtering the row as one
+ * string hid: a tag opened in one value and closed in another, a code span
+ * across values hiding a closing tag, or a credential match running on past
+ * an escape such as `\n`. So the row is first filtered as one string, as
+ * before, with characters the row does not hold marking where each value
+ * starts and ends, and each value starts from its own part of that result. A
+ * value whose mark a mask crossed keeps only its text before the first marker
+ * or after the last one. Keys are not filtered, as the hook leaves them. A row
+ * that is not JSON is filtered as text.
  */
-function redactToolObservation(value: string): string {
+export function redactToolObservation(value: string): string {
   let parsed: unknown;
   try {
     parsed = JSON.parse(value);
@@ -130,21 +144,134 @@ function redactToolObservation(value: string): string {
     return redactText(value);
   }
   if (!parsed || typeof parsed !== 'object') return redactText(value);
-  let changed = false;
-  const redactValue = (node: unknown): unknown => {
-    if (typeof node === 'string') {
-      const redacted = applyPrivacyFilter(node, REDACTION_PRIVACY_CONFIG, { collapseMarkers: false }).content;
-      if (redacted !== node) changed = true;
-      return redacted;
+
+  // Masking can change what the next pass matches: a masked backtick ends a
+  // code span that hid a tag. So the values are filtered until nothing
+  // changes, and running the repair again finds nothing to redact.
+  let current = value;
+  for (let pass = 0; pass < 10; pass++) {
+    const next = redactStringValues(current);
+    if (next === null) return redactText(value);
+    if (next === current) break;
+    current = next;
+  }
+  return current;
+}
+
+/** One pass over a JSON row's string values; null when the row has too many to mark. */
+function redactStringValues(value: string): string | null {
+  const spans = stringValueSpans(value);
+  const free = unusedCharacters(value);
+  const marks = spans.map(() => ({ start: free.next().value, end: free.next().value }));
+  if (marks.some(({ start, end }) => !start || !end)) return null;
+
+  let marked = '';
+  let cursor = 0;
+  spans.forEach(({ start, after }, i) => {
+    marked += value.slice(cursor, start + 1) + marks[i].start + value.slice(start + 1, after) + marks[i].end;
+    cursor = after;
+  });
+  const whole = applyPrivacyFilter(marked + value.slice(cursor), REDACTION_PRIVACY_CONFIG, { collapseMarkers: false, maskUnclosed: false }).content;
+  const markAt = markPositions(whole, new Set(marks.flatMap(({ start, end }) => [start!, end!])));
+
+  let out = '';
+  cursor = 0;
+  spans.forEach(({ start, end }, i) => {
+    const original = JSON.parse(value.slice(start, end)) as string;
+    const redacted = redactValueText(decodeStringContent(valueIn(whole, markAt, marks[i].start!, marks[i].end!)));
+    if (redacted === original) return;
+    out += value.slice(cursor, start) + JSON.stringify(redacted);
+    cursor = end;
+  });
+  return cursor === 0 ? value : out + value.slice(cursor);
+}
+
+/**
+ * Where each string value of valid JSON text is, quotes included, and where
+ * the whitespace after it ends; object keys are left out.
+ */
+function stringValueSpans(json: string): Array<{ start: number; end: number; after: number }> {
+  const spans: Array<{ start: number; end: number; after: number }> = [];
+  for (let i = 0; i < json.length; i++) {
+    if (json[i] !== '"') continue;
+    const start = i;
+    for (i++; json[i] !== '"'; i++) if (json[i] === '\\') i++;
+    let after = i + 1;
+    while (' \t\n\r'.includes(json[after])) after++;
+    if (json[after] !== ':') spans.push({ start, end: i + 1, after });
+  }
+  return spans;
+}
+
+/** Private-use characters the text does not hold. */
+function* unusedCharacters(text: string): Generator<string> {
+  const used = new Set(text);
+  for (const [from, to] of [[0xe000, 0xf8ff], [0xf0000, 0xffffd], [0x100000, 0x10fffd]]) {
+    for (let code = from; code <= to; code++) {
+      const char = String.fromCodePoint(code);
+      if (!used.has(char)) yield char;
     }
-    if (Array.isArray(node)) return node.map(redactValue);
-    if (node && typeof node === 'object') {
-      return Object.fromEntries(Object.entries(node).map(([key, child]) => [key, redactValue(child)]));
-    }
-    return node;
+  }
+}
+
+/** Where each mark the filter left is in its result, and where it ends. */
+function markPositions(text: string, marks: Set<string>): Map<string, [number, number]> {
+  const at = new Map<string, [number, number]>();
+  let index = 0;
+  for (const char of text) {
+    if (marks.has(char)) at.set(char, [index, index + char.length]);
+    index += char.length;
+  }
+  return at;
+}
+
+const MARKERS = ['[PRIVATE]', '[REDACTED]'];
+
+/**
+ * A value's raw JSON text as filtering the whole row left it. Its start mark
+ * follows its opening quote, and its end mark the whitespace after its
+ * closing quote: there the row holds a comma or bracket, which a credential
+ * match running past the quote takes in any case, never a space. A mask that
+ * crossed a mark also took text of other values or keys, so the value keeps
+ * its text before the first marker after its start, or after the last marker
+ * before its end; a marker found too early or late only keeps less.
+ */
+function valueIn(whole: string, markAt: Map<string, [number, number]>, startMark: string, endMark: string): string {
+  const start = markAt.get(startMark);
+  const end = markAt.get(endMark);
+  const withoutQuote = (text: string) => {
+    const trimmed = text.replace(/[ \t\n\r]+$/, '');
+    return trimmed.endsWith('"') ? trimmed.slice(0, -1) : trimmed;
   };
-  const redacted = redactValue(parsed);
-  return changed ? JSON.stringify(redacted) : value;
+  if (start && end) return withoutQuote(whole.slice(start[1], end[0]));
+
+  // The map holds the marks in the order they appear.
+  const positions = Array.from(markAt.values());
+  if (start) {
+    const next = positions.find(([at]) => at > start[0])?.[0] ?? whole.length;
+    const text = whole.slice(start[1], next);
+    let cut = Infinity;
+    for (const marker of MARKERS) {
+      const at = text.indexOf(marker);
+      if (at >= 0) cut = Math.min(cut, at + marker.length);
+    }
+    return cut === Infinity ? '[PRIVATE]' : text.slice(0, cut);
+  }
+  if (end) {
+    const previous = positions.filter(([, after]) => after <= end[0]).pop()?.[1] ?? 0;
+    const text = withoutQuote(whole.slice(previous, end[0]));
+    const cut = Math.max(...MARKERS.map((marker) => text.lastIndexOf(marker)));
+    return cut >= 0 ? text.slice(cut) : '[PRIVATE]';
+  }
+  return '[PRIVATE]';
+}
+
+/**
+ * The string a value's raw JSON text holds. A mask that ended inside an
+ * escape (`\"`, `\n`) leaves half of it, which is dropped.
+ */
+function decodeStringContent(raw: string): string {
+  return JSON.parse(`"${raw.replace(/\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4})|\\|"/g, (match) => (match.length > 1 ? match : ''))}"`) as string;
 }
 
 function previewOf(redacted: string): string {
@@ -373,7 +500,8 @@ const MIRROR_CONTENT_INDENT = '    ';
  * cleanup ate the newline and indentation after each marker — the next
  * entry's `- ts:` header landed on the previous content line — and a tag
  * opened in one entry could match a close in a later one. So each content
- * block is redacted on its own, exactly as its row is, and everything outside
+ * block is redacted on its own, as text (a tool_observation row is redacted
+ * value by value, see redactToolObservation), and everything outside
  * one (headers, or a file not in the mirror format) keeps its whitespace.
  */
 function redactMirrorText(text: string): string {

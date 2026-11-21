@@ -93,7 +93,8 @@ describe('redact-credentials over rows with an unclosed <private> tag', () => {
 
     expect(plan.affectedEventIds).toEqual([events[0].id]);
     const stored = JSON.parse(contentOf(store, events[0].id));
-    expect(stored.toolInput.command).toBe('deploy [REDACTED] ');
+    // Each value is filtered on its own without the marker cleanup (#290), so no space follows the marker.
+    expect(stored.toolInput.command).toBe('deploy [REDACTED]');
     expect(stored.toolOutput).toBe('deployed <private>kept-tail');
     expect(contentOf(store, events[1].id)).toBe('second entry');
 
