@@ -476,6 +476,12 @@ describe('nested private tags', () => {
       .toBe('a [PRIVATE]\ntail b');
   });
 
+  it('nests tags unless nestTags is false', () => {
+    const text = 'a <private>o <private>i</private> tail-orchid</private> b';
+    expect(applyPrivacyFilter(text, privacy, { nestTags: true })).toEqual(applyPrivacyFilter(text, privacy));
+    expect(applyPrivacyFilter(text, privacy, { maskUnclosed: false, nestTags: true }).content).toBe('a [PRIVATE]\nb');
+  });
+
   // Formats are matched one after another, so a section that now runs to its
   // outer closing tag can hide the closing tag another format's section used.
   // Nothing the first-closing-tag rule masked may come back.

@@ -273,6 +273,20 @@ describe('SessionEnd transcript reconcile', () => {
     expect(readResponses().map((row) => row.content)).toEqual([longText(storedThen)]);
   });
 
+  it.each([
+    ['another session', 'other-session', 'response'],
+    ['a prompt', SESSION, 'prompt']
+  ] as const)('recovers a message with nested tags masked when only %s has the form stored before #288', async (_where, session, role) => {
+    const storedThen = longText('Deployed [PRIVATE]\ntail-orchid</private> done');
+    await submitPrompt('first request', 'turn-1');
+    answer(longText('Deployed <private>o <private>i</private> tail-orchid</private> done'));
+    if (role === 'prompt') await (await service()).storeUserPrompt(session, storedThen, { turnId: 'turn-1' });
+    else await (await service()).storeAgentResponse(session, storedThen, { turnId: 'turn-1' });
+
+    expect(await reconcile()).toMatchObject({ recovered: 1, alreadyStored: 0 });
+    expect(readResponses().map((row) => row.content)).toContain(longText('Deployed [PRIVATE]\ndone'));
+  });
+
   it('is a no-op the second time', async () => {
     await submitPrompt('first request', 'turn-1');
     answer(longText('answer'));

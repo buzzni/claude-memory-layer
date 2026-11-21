@@ -180,6 +180,38 @@ describe('importer prompt normalization', () => {
     expect((await sessionEvents(service, 'pre-nesting-response')).responses.map((event) => event.content)).toEqual([storedBefore]);
   });
 
+  // The form stored before #288 is only compared, within the session and the
+  // role; what is stored is masked up to the outer closing tag.
+  const STORED_NOW = 'Explain approval [REDACTED] [PRIVATE]\ndone';
+
+  it.each([
+    ['claude', 'another session'], ['codex', 'another session'], ['hermes', 'another session'],
+    ['claude', 'an assistant response'], ['codex', 'an assistant response'], ['hermes', 'an assistant response']
+  ] as const)('%s: a prompt with nested tags is stored masked when only %s has the form stored before #288', async (source, where) => {
+    const service = realService();
+    const memorySessionId = source === 'hermes' ? 'hermes:nesting-scope' : 'nesting-scope';
+    if (where === 'another session') await service.storeUserPrompt(`${memorySessionId}-other`, STORED_BEFORE_NESTING, { turnId: 'old-turn' });
+    else await service.storeAgentResponse(memorySessionId, STORED_BEFORE_NESTING, { turnId: 'old-turn' });
+
+    await importPrompt(service, source, 'nesting-scope', `${WRAPPER}\n\n${NESTED_REQUEST}`);
+
+    expect((await sessionEvents(service, memorySessionId)).prompts.map((event) => event.content)).toEqual([STORED_NOW]);
+  });
+
+  it('Claude: a response with nested tags is stored masked when only another session has the form stored before #288', async () => {
+    const service = realService();
+    const file = join(tempDir(), 'nesting-scope-response.jsonl');
+    writeJsonl(file, [
+      { type: 'user', timestamp: '2026-10-01T00:00:00.000Z', message: { role: 'user', content: REQUEST } },
+      { type: 'assistant', timestamp: '2026-10-01T00:00:01.000Z', message: { role: 'assistant', content: [{ type: 'text', text: `${LONG_REPLY('answer')} ${NESTED_REQUEST}` }] } }
+    ]);
+    await service.storeAgentResponse('other-session', `${LONG_REPLY('answer')} ${STORED_BEFORE_NESTING}`, { turnId: 'old-turn' });
+
+    await new SessionHistoryImporter(service).importSessionFile(file);
+
+    expect((await sessionEvents(service, 'nesting-scope-response')).responses.map((event) => event.content)).toEqual([`${LONG_REPLY('answer')} ${STORED_NOW}`]);
+  });
+
   it('Claude: a banner-wrapped notification in an explicit subagent transcript opens a task_notification turn', async () => {
     const service = realService();
     const file = join(tempDir(), 'agent-banner.jsonl');
