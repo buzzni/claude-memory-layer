@@ -124,3 +124,84 @@ describe('planMarkdownRedaction on mirror entries', () => {
     expect(readFileSync(filePath, 'utf8')).toBe('## heading\n[REDACTED]\n  indented\n');
   });
 });
+
+/**
+ * Masking a header line can change what the next pass matches: a credential
+ * match that takes a code fence uncovers the closing tag it hid. The lines
+ * outside content blocks are filtered until nothing changes, so running the
+ * repair again finds nothing to redact (#312).
+ */
+describe('planMarkdownRedaction on mirror header lines (#312)', () => {
+  let seed = 312;
+  function random(): number {
+    seed = (seed + 0x6d2b79f5) >>> 0;
+    let t = seed;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  }
+  const pick = <T>(items: T[]): T => items[Math.floor(random() * items.length)];
+
+  /** A tag assembled from a tag split by another, `depth` times: each pass of the filter takes one level apart. */
+  function assembledTag(depth: number): string {
+    let tag = '<private>';
+    for (let i = 0; i < depth; i++) tag = tag.replace('<private>', '<pri<private></private>vate>');
+    return tag;
+  }
+
+  const withCategory = (category: string, content = 'entry') =>
+    ({ ...event(content), metadata: { category } }) as MemoryEvent;
+
+  it('masks the private section a credential match uncovers in the first run, and finds nothing in the second', () => {
+    const storagePath = writeMirror([withCategory('api_key: ``` <private>secret-orchid</private>```'), event('second entry')]);
+
+    planMarkdownRedaction(storagePath, { apply: true });
+    const first = mirrorOf(storagePath);
+
+    expect(first).not.toContain('secret-orchid');
+    expect(first).toContain('\n  category: [REDACTED] [PRIVATE]```\n');
+    expect(planMarkdownRedaction(storagePath, { apply: true })).toEqual([]);
+    expect(mirrorOf(storagePath)).toBe(first);
+  });
+
+  it('masks header text still changing after the last pass line by line, keeping the header keys', () => {
+    const events = [withCategory(`x ${assembledTag(150)} hidden\nforged line</private> y`), event('second entry')];
+    const storagePath = writeMirror(events);
+
+    planMarkdownRedaction(storagePath, { apply: true });
+    const first = mirrorOf(storagePath);
+
+    expect(first).toBe(
+      [
+        '',
+        '- ts: [PRIVATE]',
+        '  id: [PRIVATE]',
+        '  type: [PRIVATE]',
+        '  session: [PRIVATE]',
+        '  category: [PRIVATE]',
+        '[PRIVATE]',
+        '  content: |',
+        '    entry',
+        ''
+      ].join('\n') + formatMirrorEntry(events[1])
+    );
+    expect(planMarkdownRedaction(storagePath, { apply: true })).toEqual([]);
+  });
+
+  it('is idempotent over random categories mixing credentials, tags, code fences and markers', () => {
+    const fragments: Array<() => string> = [
+      () => 'word', () => ' ', () => '\n', () => assembledTag(1 + Math.floor(random() * 14)),
+      () => '<private>', () => '</private>', () => '<private>', () => '</private>',
+      () => '`', () => '```', () => '`code`',
+      () => 'password=', () => 'api_key: ', () => 'token=', () => 'secret: ', () => 'Bearer abcdefghijklmnopqrstuvwxyz0123',
+      () => '[PRIVATE]', () => '[REDACTED]', () => '[PRIVATE: unclosed]', () => '  id: ', () => '- ts: '
+    ];
+    const events = Array.from({ length: 2000 }, () =>
+      withCategory(Array.from({ length: Math.floor(random() * 10) }, () => pick(fragments)()).join('')));
+    const storagePath = writeMirror(events);
+
+    planMarkdownRedaction(storagePath, { apply: true });
+
+    expect(planMarkdownRedaction(storagePath, { apply: true })).toEqual([]);
+  });
+});

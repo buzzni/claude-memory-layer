@@ -597,7 +597,7 @@ function redactMirrorText(text: string): string {
   let other: string[] = [];
   const flushOther = () => {
     if (other.length === 0) return;
-    out.push(applyPrivacyFilter(other.join('\n'), REDACTION_PRIVACY_CONFIG, { collapseMarkers: false, maskUnclosed: false }).content);
+    out.push(redactMirrorHeaderText(other.join('\n')));
     other = [];
   };
 
@@ -620,6 +620,35 @@ function redactMirrorText(text: string): string {
   }
   flushOther();
   return out.join('\n');
+}
+
+const filterMirrorHeaderText = (text: string) =>
+  applyPrivacyFilter(text, REDACTION_PRIVACY_CONFIG, { collapseMarkers: false, maskUnclosed: false }).content;
+
+/** Each pass takes one level of a tag split by tags apart, as for a content block. */
+const MIRROR_HEADER_PASSES = 100;
+/** The header keys formatMirrorEntry writes, kept on a masked line. */
+const MIRROR_HEADER_KEY = /^(?:- ts|  id|  type|  session|  category): /;
+
+/**
+ * The lines outside content blocks, filtered until nothing changes, so that
+ * running the repair again finds nothing to redact (#312): as in a content
+ * block, masking can change what the next pass matches. Text still changing
+ * after the last pass is masked line by line rather than whole, which would
+ * take the `- ts:` and `id:` lines that mirrorEntries and mirrorEntryId rely
+ * on: each line keeps only its header key, and an empty line stays empty.
+ */
+function redactMirrorHeaderText(text: string): string {
+  let current = text;
+  for (let pass = 0; pass < MIRROR_HEADER_PASSES; pass++) {
+    const next = filterMirrorHeaderText(current);
+    if (next === current) return current;
+    current = next;
+  }
+  return current
+    .split('\n')
+    .map((line) => (line === '' ? line : `${MIRROR_HEADER_KEY.exec(line)?.[0] ?? ''}[PRIVATE]`))
+    .join('\n');
 }
 
 /**
